@@ -14,13 +14,13 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { API_BASE_URL } from '../api/auth';
+import { API_BASE_URL } from '../lib/auth';
 import {
   fetchTransactionDetail,
   findLookupTransaction,
   formatAmount,
   parseDocReference,
-} from '../api/transactions';
+} from '../lib/transactions';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',

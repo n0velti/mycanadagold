@@ -17,19 +17,19 @@ import {
   AI_CHAT_APPS,
   ingestAiChatContext,
   sendAiChatMessage,
-} from '../api/aiChat';
-import { peekInventoryMatrix, fetchInventoryMatrix } from '../api/inventory';
+} from '../lib/aiChat';
+import { peekInventoryMatrix, fetchInventoryMatrix } from '../lib/inventory';
 import {
   formatModelReleased,
   getModelMeta,
   OPENROUTER_MODELS,
-} from '../api/openrouter';
+} from '../lib/openrouter';
 import {
   defaultDateRange,
   formatDateParam,
   formatPickerDate,
   parseDateParam,
-} from '../api/transactions';
+} from '../lib/transactions';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',

@@ -10,7 +10,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { fetchTransferStores } from '../api/locations';
+import { fetchTransferStores } from '../lib/locations';
 import {
   TERRITORY_KEYS,
   TERRITORY_LABELS,
@@ -25,7 +25,7 @@ import {
   formatQty,
   isWorkshopStore,
   moveQtyKey,
-} from '../api/transferPlan';
+} from '../lib/transferPlan';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',

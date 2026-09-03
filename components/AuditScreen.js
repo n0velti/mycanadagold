@@ -19,29 +19,29 @@ import {
   formatQty,
   formatWeekColumnLabel,
   saveInventoryLog,
-} from '../api/bullionAudit';
+} from '../lib/bullionAudit';
 import {
   analyzeBullionDiscrepancy,
   buildUnbalancedBullionItems,
   continueBullionAuditChat,
-} from '../api/bullionAuditAi';
-import { analyzeCashDiscrepancy, continueCashAuditChat } from '../api/cashAudit';
+} from '../lib/bullionAuditAi';
+import { analyzeCashDiscrepancy, continueCashAuditChat } from '../lib/cashAudit';
 import {
   AUDIT_CASH_STORES,
   fetchStoreCashPosition,
   formatAmount,
   QUEBEC_STORES,
-} from '../api/cashTill';
+} from '../lib/cashTill';
 import {
   formatDateParam,
   formatPickerDate,
   parseDateParam,
-} from '../api/transactions';
+} from '../lib/transactions';
 import {
   formatModelReleased,
   getModelMeta,
   OPENROUTER_MODELS,
-} from '../api/openrouter';
+} from '../lib/openrouter';
 import { AuditAiChat, AuditTxnDrawer, useAuditTxnDrawer } from './AuditAiOutput';
 
 const fontFamily = Platform.select({

@@ -10,7 +10,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { AI_MODEL_PROVIDERS, loadAiApiKeys, saveAiApiKeys } from '../api/aiKeys';
+import { AI_MODEL_PROVIDERS, loadAiApiKeys, saveAiApiKeys } from '../lib/aiKeys';
 import {
   USER_CATEGORIES,
   canManageAppAccess,
@@ -19,8 +19,8 @@ import {
   loadRoleAppAccess,
   saveRoleAppAccess,
   updateStaffAccess,
-} from '../api/permissions';
-import { getSupabaseConnectionStatus } from '../api/supabase';
+} from '../lib/permissions';
+import { getSupabaseConnectionStatus } from '../lib/supabase';
 import StoreSettingsPanel from './StoreSettingsPanel';
 
 const fontFamily = Platform.select({

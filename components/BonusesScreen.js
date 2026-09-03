@@ -16,12 +16,12 @@ import {
   monthRange,
   NEGATIVE_COLUMNS,
   PHOTO_BONUS,
-} from '../api/bonuses';
-import { GOOGLE_STORE_PLACES } from '../api/googleReviews';
+} from '../lib/bonuses';
+import { GOOGLE_STORE_PLACES } from '../lib/googleReviews';
 import {
   fetchTransactionsAcrossPos,
   formatDateParam,
-} from '../api/transactions';
+} from '../lib/transactions';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',

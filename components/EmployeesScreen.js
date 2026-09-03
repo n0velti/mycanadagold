@@ -33,10 +33,10 @@ import {
   readRipplingOAuthCallback,
   readRipplingOAuthState,
   saveRipplingSession,
-} from '../api/rippling';
-import { syncStaffRoles } from '../api/auth';
-import { fetchAureusEmployees, mergeEmployeesWithProfiles } from '../api/aureusEmployees';
-import { categoryLabel, listStaffProfiles } from '../api/permissions';
+} from '../lib/rippling';
+import { syncStaffRoles } from '../lib/auth';
+import { fetchAureusEmployees, mergeEmployeesWithProfiles } from '../lib/aureusEmployees';
+import { categoryLabel, listStaffProfiles } from '../lib/permissions';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',

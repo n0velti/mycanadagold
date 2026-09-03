@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
-import { getLinkedPosSessions } from '../api/auth';
+import { getLinkedPosSessions } from '../lib/auth';
 import {
   defaultDateRange,
   fetchTransactionDetail,
@@ -23,7 +23,7 @@ import {
   parseDateParam,
   resolvePosAuthForRow,
   withLineItems,
-} from '../api/transactions';
+} from '../lib/transactions';
 import {
   createClient,
   fetchLookupLocations,
@@ -31,7 +31,7 @@ import {
   mergeEmployeeOptions,
   searchClients,
   searchProducts,
-} from '../api/triageLookups';
+} from '../lib/triageLookups';
 
 if (Platform.OS === 'web' && typeof document !== 'undefined') {
   const styleId = 'cgold-triage-row-hover';

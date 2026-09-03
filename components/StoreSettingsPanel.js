@@ -22,8 +22,8 @@ import {
   saveStoreSettings,
   summarizeHours,
   WEEKDAY_LABELS,
-} from '../api/storeSettings';
-import { formatDateParam, formatPickerDate, parseDateParam } from '../api/transactions';
+} from '../lib/storeSettings';
+import { formatDateParam, formatPickerDate, parseDateParam } from '../lib/transactions';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',

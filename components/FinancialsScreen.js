@@ -17,12 +17,12 @@ import {
   formatAmount,
   summarizeCashByStore,
   summarizeCashTotals,
-} from '../api/payments';
+} from '../lib/payments';
 import {
   formatDateParam,
   formatPickerDate,
   parseDateParam,
-} from '../api/transactions';
+} from '../lib/transactions';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
