@@ -27,7 +27,7 @@ Client secrets that must exist on the device (FINTRAC portal token, Rippling tok
 | Path | Purpose |
 | --- | --- |
 | `App.js` | Shell: session bootstrap, navigation, tool grid |
-| `api/` | Client modules. `auth.js` (session), `proxy.js` (gateway client), `supabase.js`, vendor clients |
+| `lib/` | Client modules. `auth.js` (session), `proxy.js` (gateway client), `supabase.js`, vendor clients |
 | `components/` | Screens |
 | `supabase/migrations/` | Schema, RLS, triggers, login throttling |
 | `supabase/functions/aureus-login` | Sign-in gateway (verify_jwt off; validates everything itself) |
@@ -98,7 +98,11 @@ npm run build:web        # → dist/
 npm run check:secrets    # refuses to ship if a key or dev fallback leaked into the bundle
 ```
 
-Deploy `dist/` to any static host over HTTPS. `public/_headers` is picked up by Cloudflare Pages / Netlify; on other hosts set the same headers (`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, HSTS, `Permissions-Policy`). Add the production origin to `CGOLD_ALLOWED_ORIGINS` and, for Rippling sign-in, register `https://<your-host>/` as the OAuth redirect URI.
+Deploy `dist/` to any static host over HTTPS. `public/_headers` is picked up by Cloudflare Pages / Netlify; Vercel uses `vercel.json`. On other hosts set the same headers (`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, HSTS, `Permissions-Policy`). Add the production origin to `CGOLD_ALLOWED_ORIGINS` and, for Rippling sign-in, register `https://<your-host>/` as the OAuth redirect URI.
+
+### Vercel
+
+Connect the Git repo. `vercel.json` exports the web app into `dist/` and serves it as a single-page app. Client modules live in `lib/` (not `api/`) so Vercel does not compile them as serverless functions.
 
 ## Operations
 

@@ -11,13 +11,13 @@ import {
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
-import { fetchPremiumJewelryByStore } from '../api/premiumJewelry';
+import { fetchPremiumJewelryByStore } from '../lib/premiumJewelry';
 import {
   defaultDateRange,
   formatDateParam,
   formatPickerDate,
   parseDateParam,
-} from '../api/transactions';
+} from '../lib/transactions';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',

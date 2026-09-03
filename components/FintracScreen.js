@@ -25,7 +25,7 @@ import {
   saveLinkedFintracReport,
   submitFintracReport,
   validateFintracReport,
-} from '../api/fintrac';
+} from '../lib/fintrac';
 import {
   buildLctrReportContentFromFields,
   buildLctrReportContentFromTransaction,
@@ -34,14 +34,14 @@ import {
   FINTRAC_LOCATION_IDS,
   mapAureusDetailToLctrFields,
   validateLctrFieldBag,
-} from '../api/fintracLctr';
+} from '../lib/fintracLctr';
 import {
   buildIrsReportedByTxn,
   fetchIrsReportingPayments,
   getIrsPaymentIdsToMark,
   markPaymentsReportedToIrs,
   normalizeAureusTxnId,
-} from '../api/aureusIrs';
+} from '../lib/aureusIrs';
 import {
   defaultDateRange,
   fetchTransactionDetail,
@@ -56,7 +56,7 @@ import {
   parseDateParam,
   resolvePosAuthForRow,
   withPaymentBreakdown,
-} from '../api/transactions';
+} from '../lib/transactions';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',

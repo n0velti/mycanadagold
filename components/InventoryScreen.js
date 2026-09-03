@@ -11,7 +11,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { fetchInventoryMatrix, formatQty, peekInventoryMatrix } from '../api/inventory';
+import { fetchInventoryMatrix, formatQty, peekInventoryMatrix } from '../lib/inventory';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',

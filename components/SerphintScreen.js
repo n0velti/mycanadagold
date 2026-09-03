@@ -21,7 +21,7 @@ import {
   reasonBullionConsensus,
   REASONER_MODELS,
   sampleImageFrames,
-} from '../api/openrouter';
+} from '../lib/openrouter';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',

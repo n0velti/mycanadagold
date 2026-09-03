@@ -27,7 +27,7 @@ import {
   logout as logoutRequest,
   onSessionRevoked,
   restoreSession,
-} from './api/auth';
+} from './lib/auth';
 import {
   DEFAULT_APPS_VIEW,
   loadAppsView,
@@ -39,7 +39,7 @@ import {
   allocatedStoreName,
   filterRowsToAllocatedStore,
   uploadOwnAvatar,
-} from './api/profiles';
+} from './lib/profiles';
 import {
   AppAccessContext,
   canManageAppAccess,
@@ -47,8 +47,8 @@ import {
   loadRoleAppAccess,
   useAppAccess,
   visibleAppKeysForProfile,
-} from './api/permissions';
-import { clearInventoryCache, prefetchInventoryMatrix } from './api/inventory';
+} from './lib/permissions';
+import { clearInventoryCache, prefetchInventoryMatrix } from './lib/inventory';
 import {
   buildEmailCaptureByStore,
   defaultDateRange,
@@ -63,8 +63,8 @@ import {
   needsPaymentEnrichment,
   parseDateParam,
   withPaymentBreakdown,
-} from './api/transactions';
-import { readRipplingOAuthCallback } from './api/rippling';
+} from './lib/transactions';
+import { readRipplingOAuthCallback } from './lib/rippling';
 import AiScreen from './components/AiScreen';
 import AccountingScreen from './components/AccountingScreen';
 import AuditScreen from './components/AuditScreen';

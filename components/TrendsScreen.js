@@ -16,13 +16,13 @@ import {
   METAL_COLORS,
   fetchMetalTrends,
   formatPureGrams,
-} from '../api/metalTrends';
+} from '../lib/metalTrends';
 import {
   defaultDateRange,
   formatDateParam,
   formatPickerDate,
   parseDateParam,
-} from '../api/transactions';
+} from '../lib/transactions';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
