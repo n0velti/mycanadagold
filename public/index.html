@@ -32,12 +32,47 @@
     <title>%WEB_TITLE%</title>
     <!-- The `react-native-web` recommended style reset: https://necolas.github.io/react-native-web/docs/setup/#root-element -->
     <style id="expo-reset">
+      @font-face {
+        font-family: Sohne;
+        src: url('/fonts/Sohne-Buch.otf') format('opentype');
+        font-weight: 400;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: SohneLeicht;
+        src: url('/fonts/Sohne-Leicht.otf') format('opentype');
+        font-weight: 300;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: ionicons;
+        src: url('/fonts/Ionicons.ttf') format('truetype');
+        font-weight: normal;
+        font-style: normal;
+        font-display: block;
+      }
+      @font-face {
+        font-family: material-community;
+        src: url('/fonts/MaterialCommunityIcons.ttf') format('truetype');
+        font-weight: normal;
+        font-style: normal;
+        font-display: block;
+      }
       html,
       body {
         height: 100%;
+        font-family: Sohne, sans-serif;
       }
       body {
         overflow: hidden;
+      }
+      input,
+      textarea,
+      button,
+      select {
+        font-family: Sohne, sans-serif;
       }
       #root {
         display: flex;

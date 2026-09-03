@@ -93,6 +93,7 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
   }
   style.textContent = [
     'html,body,#root{height:100%;max-height:100dvh;overflow:hidden;}',
+    'html,body,input,textarea,button,select{font-family:Sohne,sans-serif;}',
     '.cgold-tx-row{cursor:pointer;transition:none!important;background-color:transparent;}',
     '.cgold-tx-row:hover{background-color:#e8e8ed!important;}',
     '.cgold-tx-row:active{background-color:#e5e5ea!important;}',
@@ -4049,11 +4050,23 @@ export default function App() {
   const [avatarError, setAvatarError] = useState('');
   const emailsFocusSeq = useRef(0);
 
-  const [fontsLoaded, fontsError] = useFonts({
-    Sohne: require('./assets/sohne-font-family/TestSohne-Buch-BF663d89cd32e6a.otf'),
-    SohneLeicht: require('./assets/sohne-font-family/TestSohne-Leicht-BF663d89cd4952e.otf'),
-    SohneMono: require('./assets/sohne-font-family/TestSohneMono-Buch-BF663d89cbcec64.otf'),
-  });
+  const [fontsLoaded, fontsError] = useFonts(
+    Platform.OS === 'web'
+      ? {
+          Sohne: '/fonts/Sohne-Buch.otf',
+          SohneLeicht: '/fonts/Sohne-Leicht.otf',
+          SohneMono: '/fonts/SohneMono-Buch.otf',
+          ionicons: '/fonts/Ionicons.ttf',
+          'material-community': '/fonts/MaterialCommunityIcons.ttf',
+        }
+      : {
+          Sohne: require('./assets/sohne-font-family/TestSohne-Buch-BF663d89cd32e6a.otf'),
+          SohneLeicht: require('./assets/sohne-font-family/TestSohne-Leicht-BF663d89cd4952e.otf'),
+          SohneMono: require('./assets/sohne-font-family/TestSohneMono-Buch-BF663d89cbcec64.otf'),
+          ...Ionicons.font,
+          ...MaterialCommunityIcons.font,
+        },
+  );
 
   const isLoggedIn = Boolean(session?.token && session?.supabaseUserId);
   const userLabel = displayName(session) || PROFILE_TAB.label;
