@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="%LANG_ISO_CODE%">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+    <!--
+      Content Security Policy. The app only ever talks to Supabase (auth, data,
+      Edge Function gateway) and the Aureus POS hosts; every other vendor is
+      reached through the gateway. localhost/ws entries keep `expo start --web`
+      (Metro HMR) working and are harmless in production.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self';
+        base-uri 'self';
+        object-src 'none';
+        form-action 'self' https://app.rippling.com;
+        script-src 'self' http://localhost:* http://127.0.0.1:*;
+        style-src 'self' 'unsafe-inline';
+        font-src 'self' data:;
+        img-src 'self' data: blob: https:;
+        media-src 'self' blob:;
+        worker-src 'self' blob:;
+        connect-src 'self'
+          https://bkvyyddtevzvuanzkobd.supabase.co wss://bkvyyddtevzvuanzkobd.supabase.co
+          https://canadagoldeast.aureuspos.com https://gta.aureuspos.com https://canadianpmx.com
+          http://localhost:* ws://localhost:* http://127.0.0.1:* ws://127.0.0.1:*;
+        upgrade-insecure-requests"
+    />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>%WEB_TITLE%</title>
+    <!-- The `react-native-web` recommended style reset: https://necolas.github.io/react-native-web/docs/setup/#root-element -->
+    <style id="expo-reset">
+      html,
+      body {
+        height: 100%;
+      }
+      body {
+        overflow: hidden;
+      }
+      #root {
+        display: flex;
+        height: 100%;
+        flex: 1;
+      }
+    </style>
+  </head>
+
+  <body>
+    <noscript>You need to enable JavaScript to run this app.</noscript>
+    <div id="root"></div>
+  </body>
+</html>
