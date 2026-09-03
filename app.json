@@ -1,13 +1,16 @@
 {
   "expo": {
-    "name": "cgold",
-    "slug": "cgold",
+    "name": "MyCanadaGold",
+    "slug": "mycanadagold",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "config": {
+        "usesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -18,7 +21,34 @@
       }
     },
     "web": {
-      "favicon": "./assets/favicon.png"
-    }
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/favicon.png",
+      "name": "MyCanadaGold",
+      "shortName": "MyCanadaGold",
+      "lang": "en",
+      "description": "Canada Gold staff tools",
+      "themeColor": "#1a1a1a",
+      "backgroundColor": "#ffffff"
+    },
+    "plugins": [
+      "@react-native-community/datetimepicker",
+      "expo-font",
+      [
+        "expo-secure-store",
+        {
+          "configureAndroidBackup": true,
+          "faceIDPermission": "Allow MyCanadaGold to unlock stored session data."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow MyCanadaGold to use a photo for your profile picture.",
+          "cameraPermission": false,
+          "microphonePermission": false
+        }
+      ]
+    ]
   }
 }
