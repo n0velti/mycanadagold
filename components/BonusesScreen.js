@@ -9,6 +9,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useAppAccess } from '../lib/permissions';
 import {
   buildBonusBoard,
   currentBonusMonth,
@@ -299,6 +300,8 @@ function ReviewList({ reviews }) {
 }
 
 export default function BonusesScreen({ session, onRequireLogin, onOpenEmails }) {
+  const { canFilter } = useAppAccess();
+  const allowFilters = canFilter('bonuses');
   const initial = useMemo(() => currentBonusMonth(), []);
   const [year, setYear] = useState(() => parseInt(initial.startDate.slice(0, 4), 10));
   const [monthIndex, setMonthIndex] = useState(
@@ -362,6 +365,10 @@ export default function BonusesScreen({ session, onRequireLogin, onOpenEmails })
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (!allowFilters) setSelectedStore(null);
+  }, [allowFilters]);
 
   const storeNames = useMemo(
     () => (board?.stores || []).map((store) => store.storeName),
@@ -451,6 +458,7 @@ export default function BonusesScreen({ session, onRequireLogin, onOpenEmails })
           × negative reviews — and how payouts split across employees.
         </Text>
 
+        {allowFilters ? (
         <View style={styles.storeFilterRow}>
           <Pressable
             style={[styles.storeChip, !selectedStore && styles.storeChipActive]}
@@ -484,6 +492,7 @@ export default function BonusesScreen({ session, onRequireLogin, onOpenEmails })
             </Pressable>
           ))}
         </View>
+        ) : null}
 
         {loading && !board ? (
           <View style={styles.loadingBlock}>

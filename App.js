@@ -42,8 +42,10 @@ import {
 } from './lib/profiles';
 import {
   AppAccessContext,
+  canFilterApp,
   canManageAppAccess,
   categoryLabel,
+  loadOwnUserAppAccess,
   loadRoleAppAccess,
   useAppAccess,
   visibleAppKeysForProfile,
@@ -60,8 +62,12 @@ import {
   formatDateParam,
   formatPickerDate,
   isFintracCash,
+  needsLineItemEnrichment,
   needsPaymentEnrichment,
   parseDateParam,
+  queryLooksLikeItem,
+  rowMatchesQuery,
+  withLineItems,
   withPaymentBreakdown,
 } from './lib/transactions';
 import { readRipplingOAuthCallback } from './lib/rippling';
@@ -82,6 +88,8 @@ import TransferScreen from './components/TransferScreen';
 import TrendsScreen from './components/TrendsScreen';
 import TriageScreen, { clearTriageCache } from './components/TriageScreen';
 import LoginScreen from './components/LoginScreen';
+import MessagesScreen from './components/MessagesScreen';
+import { useDirectMessages } from './lib/messages';
 
 if (Platform.OS === 'web' && typeof document !== 'undefined') {
   const styleId = 'cgold-tx-row-hover';
@@ -104,6 +112,9 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-sidebar-item .cgold-sidebar-unpin{opacity:0;transition:opacity 120ms;}',
     '.cgold-sidebar-item:hover .cgold-sidebar-unpin,.cgold-sidebar-item:focus-within .cgold-sidebar-unpin{opacity:1;}',
     '.cgold-apps-toolbar-blur{-webkit-backdrop-filter:saturate(180%) blur(16px);backdrop-filter:saturate(180%) blur(16px);}',
+    '.cgold-dm-row{cursor:pointer;}',
+    '.cgold-dm-row:hover{background-color:#f5f5f7!important;}',
+    '.cgold-dm-row-active,.cgold-dm-row-active:hover{background-color:#ececef!important;}',
   ].join('');
 }
 
@@ -390,6 +401,7 @@ function filledIonicon(name) {
 const MAIN_TABS = [
   { key: 'home', label: 'Home', icon: 'home-outline' },
   { key: 'tools', label: 'Apps', icon: 'apps-outline' },
+  { key: 'messages', label: 'Direct Messages', shortLabel: 'Messages', icon: 'chatbubbles-outline' },
 ];
 
 const PROFILE_TAB = { key: 'profile', label: 'Profile', icon: 'person-outline' };
@@ -399,6 +411,7 @@ const TOOL_CARDS = [
   { key: 'inventory', label: 'Inventory', icon: 'cube-outline', tint: '#FFF4E5', accent: '#C47A12' },
   { key: 'preorders', label: 'Preorders', icon: 'cart-outline', tint: '#FFF7ED', accent: '#EA580C' },
   { key: 'ai', label: 'AI', icon: 'sparkles-outline', tint: '#F3EEFF', accent: '#6B4DE6' },
+  { key: 'messages', label: 'Direct Messages', icon: 'chatbubbles-outline', tint: '#EEF4FF', accent: '#0A84FF' },
   { key: 'audit', label: 'Audit', icon: 'clipboard-outline', tint: '#EEF8F1', accent: '#2F8A4E' },
   { key: 'transfer', label: 'Transfer', icon: 'arrow-forward-outline', tint: '#EEF7FB', accent: '#1F7A9A' },
   { key: 'fintrac', label: 'FINTRAC', icon: 'document-text-outline', tint: '#F7F0EA', accent: '#8A5A3A' },
@@ -2370,7 +2383,9 @@ function HomeStoreTableRow({ row, selected, last, onOpenStore }) {
       accessibilityRole="button"
       accessibilityLabel={row.store}
     >
-      <View style={[styles.homeStoreAccent, { backgroundColor: accent }]} />
+      <View style={[styles.homeStoreIconTile, { backgroundColor: accent }]}>
+        <Ionicons name="storefront" size={13} color="#fff" />
+      </View>
       <Text style={[styles.homeStoreName, styles.homeStoreColStore]} numberOfLines={1}>
         {row.store}
       </Text>
@@ -2409,7 +2424,7 @@ function HomeStoresTable({ rows, selectedStore, totals, onOpenStore }) {
       >
         <View style={styles.homeStoreTable}>
           <View style={[styles.homeStoreRow, styles.homeStoreHeaderRow]}>
-            <View style={styles.homeStoreAccent} />
+            <View style={styles.homeStoreIconSpacer} />
             <Text style={[styles.homeStoreHeader, styles.homeStoreColStore]}>Store</Text>
             <Text style={[styles.homeStoreHeader, styles.homeStoreColCount]}>Tx</Text>
             <Text style={[styles.homeStoreHeader, styles.homeStoreColMoney]}>Amount</Text>
@@ -2430,7 +2445,7 @@ function HomeStoresTable({ rows, selectedStore, totals, onOpenStore }) {
           ))}
           {totals ? (
             <View style={[styles.homeStoreRow, styles.homeStoreTotalRow]}>
-              <View style={styles.homeStoreAccent} />
+              <View style={styles.homeStoreIconSpacer} />
               <Text style={[styles.homeStoreTotalLabel, styles.homeStoreColStore]} numberOfLines={1}>
                 Total
               </Text>
@@ -3238,6 +3253,8 @@ function EmailsScreen({ session, onRequireLogin, focus = null, onFocusConsumed }
 
 function TransactionsScreen({ session, onRequireLogin }) {
   const isMobile = useIsMobile();
+  const { canFilter } = useAppAccess();
+  const allowFilters = canFilter('transactions');
   const initialRange = useMemo(() => defaultDateRange(7), []);
   const [dateMode, setDateMode] = useState('day'); // 'day' | 'range'
   const [startDate, setStartDate] = useState(() => parseDateParam(new Date()));
@@ -3258,6 +3275,8 @@ function TransactionsScreen({ session, onRequireLogin }) {
   const detailRequestId = useRef(0);
   const paymentCache = useRef({});
   const enrichRequestId = useRef(0);
+  const [itemLookup, setItemLookup] = useState(false);
+  const [lookupQuery, setLookupQuery] = useState('');
 
   const todayKey = formatDateParam(parseDateParam(new Date()));
   const startKey = formatDateParam(startDate);
@@ -3290,6 +3309,7 @@ function TransactionsScreen({ session, onRequireLogin }) {
       setDetail(null);
       setDetailError('');
       paymentCache.current = {};
+      setItemLookup(false);
       setSummary({
         orderCount: result.orderCount,
         purchaseCount: result.purchaseCount,
@@ -3309,43 +3329,71 @@ function TransactionsScreen({ session, onRequireLogin }) {
   }, [load]);
 
   useEffect(() => {
+    const timer = setTimeout(() => setLookupQuery(query.trim()), 220);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  useEffect(() => {
     if (!session?.token || rows.length === 0) return;
 
-    const candidates = rows.filter(needsPaymentEnrichment);
-    if (candidates.length === 0) return;
+    const wantItems =
+      lookupQuery.length >= 2 &&
+      (queryLooksLikeItem(lookupQuery) || !rows.some((row) => rowMatchesQuery(row, lookupQuery)));
+    const candidates = rows.filter((row) => {
+      if (paymentCache.current[row.id]?.lineItemsLoaded && !needsPaymentEnrichment(row)) {
+        return false;
+      }
+      if (needsPaymentEnrichment(row)) return true;
+      return wantItems && needsLineItemEnrichment(row);
+    });
+    if (candidates.length === 0) {
+      setItemLookup(false);
+      return;
+    }
 
     const enrichId = ++enrichRequestId.current;
     let cancelled = false;
+    if (wantItems && candidates.some(needsLineItemEnrichment)) setItemLookup(true);
 
     (async () => {
       const queue = [...candidates];
       const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
         while (queue.length && !cancelled && enrichId === enrichRequestId.current) {
           const row = queue.shift();
-          if (!row || paymentCache.current[row.id]) continue;
+          if (!row || paymentCache.current[row.id]?.lineItemsLoaded) continue;
           try {
             const detailPayload = await fetchTransactionDetail(session.token, {
               type: row.type,
               sourceId: row.sourceId,
             });
             if (cancelled || enrichId !== enrichRequestId.current) return;
-            const enriched = withPaymentBreakdown(row, detailPayload);
+            const enriched = needsPaymentEnrichment(row)
+              ? withPaymentBreakdown(row, detailPayload)
+              : withLineItems(row, detailPayload);
             paymentCache.current[row.id] = enriched;
             setRows((current) =>
               current.map((entry) => (entry.id === row.id ? enriched : entry)),
             );
           } catch {
-            // leave heuristic flag as-is
+            if (wantItems) {
+              paymentCache.current[row.id] = { ...row, lineItemsLoaded: true };
+              setRows((current) =>
+                current.map((entry) =>
+                  entry.id === row.id ? { ...entry, lineItemsLoaded: true } : entry,
+                ),
+              );
+            }
           }
         }
       });
       await Promise.all(workers);
+      if (!cancelled && enrichId === enrichRequestId.current) setItemLookup(false);
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [session?.token, rows.length, startKey, endKey]);
+  }, [session?.token, rows.length, startKey, endKey, lookupQuery]);
 
   const columnOptions = useMemo(() => buildColumnOptions(rows), [rows]);
 
@@ -3385,9 +3433,8 @@ function TransactionsScreen({ session, onRequireLogin }) {
       }
     }
 
-    const q = query.trim().toLowerCase();
-    if (q) {
-      result = result.filter((row) => row.searchText.includes(q));
+    if (query.trim()) {
+      result = result.filter((row) => rowMatchesQuery(row, query));
     }
 
     return result;
@@ -3402,6 +3449,13 @@ function TransactionsScreen({ session, onRequireLogin }) {
     setOpenFilter(null);
     setFintracCashOnly(false);
   };
+
+  useEffect(() => {
+    if (allowFilters) return;
+    setColumnFilters({});
+    setOpenFilter(null);
+    setFintracCashOnly(false);
+  }, [allowFilters]);
 
   const closeDetail = useCallback(() => {
     setSelectedRow(null);
@@ -3540,7 +3594,7 @@ function TransactionsScreen({ session, onRequireLogin }) {
             style={styles.toolsSearchInput}
             value={query}
             onChangeText={setQuery}
-            placeholder="Search"
+            placeholder="Search items, customers, SO#"
             placeholderTextColor="#8e8e93"
             autoCapitalize="none"
             autoCorrect={false}
@@ -3654,7 +3708,9 @@ function TransactionsScreen({ session, onRequireLogin }) {
             <Text style={styles.clearFiltersText}>Clear</Text>
           </Pressable>
         ) : null}
-        {loading && rows.length > 0 ? <ActivityIndicator size="small" color="#8e8e93" /> : null}
+        {(loading && rows.length > 0) || itemLookup ? (
+          <ActivityIndicator size="small" color="#8e8e93" />
+        ) : null}
       </View>
 
       {error ? <Text style={[styles.errorText, styles.homeError]}>{error}</Text> : null}
@@ -3669,6 +3725,7 @@ function TransactionsScreen({ session, onRequireLogin }) {
             columnFilters={columnFilters}
             fintracCashOnly={fintracCashOnly}
             onOpenFilter={setOpenFilter}
+            interactive={allowFilters}
           />
           <FlashList
             data={filteredRows}
@@ -3682,7 +3739,9 @@ function TransactionsScreen({ session, onRequireLogin }) {
             ListEmptyComponent={
               !loading && !error ? (
                 <Text style={styles.homeTxEmpty}>
-                  {query.trim() || activeFilterCount > 0
+                  {itemLookup
+                    ? 'Looking up items…'
+                    : query.trim() || activeFilterCount > 0
                     ? 'No transactions match the current filters.'
                     : dateMode === 'day'
                       ? isToday
@@ -3694,7 +3753,7 @@ function TransactionsScreen({ session, onRequireLogin }) {
             }
           />
 
-          {openFilterColumn ? (
+          {openFilterColumn && allowFilters ? (
             <ColumnFilterMenu
               field={openFilterColumn.key}
               label={openFilterColumn.label}
@@ -3816,16 +3875,47 @@ function SidebarNavGroup({
   collapsed,
   homeActive,
   appsActive,
+  messagesActive,
   profileActive,
   onSelectHome,
   onSelectApps,
+  onSelectMessages,
   onSelectProfile,
   profileLabel,
   profileAvatarUrl,
+  showMessages = true,
+  messagesUnread = 0,
 }) {
   const items = [
     { key: 'home', label: 'Home', icon: 'home-outline', active: homeActive, onPress: onSelectHome },
     { key: 'tools', label: 'Apps', icon: 'apps-outline', active: appsActive, onPress: onSelectApps },
+    showMessages
+      ? {
+          key: 'messages',
+          label: 'Direct Messages',
+          icon: 'chatbubbles-outline',
+          active: messagesActive,
+          onPress: onSelectMessages,
+          leading: (
+            <View style={[!collapsed ? styles.tabIcon : null, styles.sidebarMessagesIcon]}>
+              <Ionicons
+                name={messagesActive ? 'chatbubbles' : 'chatbubbles-outline'}
+                size={20}
+                color={messagesActive ? '#1d1d1f' : '#6e6e73'}
+              />
+              {collapsed && messagesUnread > 0 ? <View style={styles.sidebarUnreadDot} /> : null}
+            </View>
+          ),
+          trailing:
+            messagesUnread > 0 ? (
+              <View style={styles.sidebarUnreadPill}>
+                <Text style={styles.sidebarUnreadPillText}>
+                  {messagesUnread > 99 ? '99+' : String(messagesUnread)}
+                </Text>
+              </View>
+            ) : null,
+        }
+      : null,
     {
       key: 'profile',
       label: profileLabel || PROFILE_TAB.label,
@@ -3841,7 +3931,7 @@ function SidebarNavGroup({
         />
       ),
     },
-  ];
+  ].filter(Boolean);
 
   return (
     <View style={[styles.sidebarNavGroup, collapsed && styles.sidebarNavGroupCollapsed]}>
@@ -4046,6 +4136,7 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false);
   const [emailsFocus, setEmailsFocus] = useState(null);
   const [accessByRole, setAccessByRole] = useState(null);
+  const [ownUserAccess, setOwnUserAccess] = useState(null);
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [avatarError, setAvatarError] = useState('');
   const emailsFocusSeq = useRef(0);
@@ -4078,18 +4169,27 @@ export default function App() {
   // Always enforced. When role_app_access is unreadable the category defaults
   // apply; there is no "show everything" fallback.
   const allowedToolKeys = useMemo(
-    () => new Set(visibleAppKeysForProfile(session?.profile, accessByRole, TOOL_KEYS)),
-    [session?.profile, accessByRole],
+    () => new Set(visibleAppKeysForProfile(session?.profile, accessByRole, TOOL_KEYS, ownUserAccess)),
+    [session?.profile, accessByRole, ownUserAccess],
   );
   const hasApp = useCallback((key) => allowedToolKeys.has(key), [allowedToolKeys]);
+  const canFilter = useCallback(
+    (key) => canFilterApp(session?.profile, key, ownUserAccess, allowedToolKeys),
+    [session?.profile, ownUserAccess, allowedToolKeys],
+  );
   const appAccessValue = useMemo(
     () => ({
       allowedKeys: allowedToolKeys,
       canManageAccess: canManageAppAccess(session?.profile),
       hasApp,
+      canFilter,
     }),
-    [allowedToolKeys, hasApp, session?.profile],
+    [allowedToolKeys, hasApp, canFilter, session?.profile],
   );
+
+  const { unread: messagesUnread } = useDirectMessages(session, {
+    enabled: isLoggedIn && hasApp('messages'),
+  });
 
   const normalizedToolsQuery = toolsQuery.trim().toLowerCase();
   const matchesToolsQuery = (tool) =>
@@ -4108,6 +4208,7 @@ export default function App() {
     setPinnedKeys([]);
     setAppsView(DEFAULT_APPS_VIEW);
     setAccessByRole(null);
+    setOwnUserAccess(null);
     setLoginId('');
     setPassword('');
     setLoginError('');
@@ -4131,22 +4232,25 @@ export default function App() {
       if (cancelled) return;
 
       if (restored?.token) {
-        const [pins, access, view] = await Promise.all([
+        const [pins, access, view, userAccess] = await Promise.all([
           loadPinnedTools(restored, TOOL_KEYS),
           loadRoleAppAccess(TOOL_KEYS),
           loadAppsView(restored),
+          loadOwnUserAppAccess(restored.supabaseUserId || restored.profile?.id, TOOL_KEYS),
         ]);
         if (cancelled) return;
         setSession(restored);
         setPinnedKeys(pins);
         setAppsView(view);
         setAccessByRole(access.byRole);
+        setOwnUserAccess(userAccess);
         prefetchInventoryMatrix(restored);
       } else {
         setSession(null);
         setPinnedKeys([]);
         setAppsView(DEFAULT_APPS_VIEW);
         setAccessByRole(null);
+        setOwnUserAccess(null);
       }
 
       setBootstrapping(false);
@@ -4270,15 +4374,17 @@ export default function App() {
 
     try {
       const next = await loginRequest(loginId, password);
-      const [pins, access, view] = await Promise.all([
+      const [pins, access, view, userAccess] = await Promise.all([
         loadPinnedTools(next, TOOL_KEYS),
         loadRoleAppAccess(TOOL_KEYS),
         loadAppsView(next),
+        loadOwnUserAppAccess(next.supabaseUserId || next.profile?.id, TOOL_KEYS),
       ]);
       setSession(next);
       setPinnedKeys(pins);
       setAppsView(view);
       setAccessByRole(access.byRole);
+      setOwnUserAccess(userAccess);
       prefetchInventoryMatrix(next);
       setPassword('');
       setActiveTab('home');
@@ -4332,6 +4438,9 @@ export default function App() {
 
   const renderToolsHeader = () => {
     if (!activeTool) {
+      return null;
+    }
+    if (activeTool.key === 'messages' && !isMobile) {
       return null;
     }
 
@@ -4601,6 +4710,10 @@ export default function App() {
                     };
                   });
                 }}
+                onUserAccessSaved={(userId, access) => {
+                  if (userId !== (session?.supabaseUserId || session?.profile?.id)) return;
+                  setOwnUserAccess(access);
+                }}
               />
             ) : activeTool.key === 'transfer' ? (
               <TransferScreen
@@ -4657,6 +4770,10 @@ export default function App() {
                 session={session}
                 onRequireLogin={() => selectTab('profile')}
               />
+            ) : activeTool.key === 'messages' ? (
+              <View style={styles.messagesHost}>
+                <MessagesScreen session={session} />
+              </View>
             ) : (
               <Text style={styles.toolPageBody}>{activeTool.label} page</Text>
             )}
@@ -4792,6 +4909,21 @@ export default function App() {
       );
     }
 
+    if (activeTab === 'messages') {
+      if (!hasApp('messages')) {
+        return (
+          <View style={styles.centered}>
+            <Text style={styles.toolsEmpty}>You don’t have access to Direct Messages.</Text>
+          </View>
+        );
+      }
+      return (
+        <View style={styles.messagesHost}>
+          <MessagesScreen session={session} />
+        </View>
+      );
+    }
+
     if (activeTab === 'home') {
       return (
         <HomeScreen
@@ -4804,8 +4936,11 @@ export default function App() {
     return <Text style={styles.contentTitle}>{activeLabel}</Text>;
   };
 
+  const showingMessages =
+    activeTab === 'messages' || (activeTab === 'tools' && activeTool?.key === 'messages');
   const isFullBleedTool =
-    activeTab === 'tools' &&
+    showingMessages ||
+    (activeTab === 'tools' &&
     (activeTool?.key === 'transactions' ||
       activeTool?.key === 'inventory' ||
       activeTool?.key === 'audit' ||
@@ -4815,14 +4950,15 @@ export default function App() {
       activeTool?.key === 'fintrac' ||
       activeTool?.key === 'bonuses' ||
       activeTool?.key === 'employees' ||
-      activeTool?.key === 'triage');
+      activeTool?.key === 'triage'));
 
   const isAppsLibrary = activeTab === 'tools' && !activeTool;
   const contentStyle = [
     styles.content,
     isMobile && styles.contentMobile,
     isFullBleedTool && styles.contentTransactions,
-    isMobile && activeTab === 'tools' && activeTool && styles.contentMobileApp,
+    showingMessages && styles.contentMessages,
+    isMobile && ((activeTab === 'tools' && activeTool) || showingMessages) && styles.contentMobileApp,
     styles.contentScrollFix,
     isAppsLibrary && styles.contentAppsLibrary,
   ];
@@ -4888,11 +5024,12 @@ export default function App() {
         <View style={contentStyle}>{renderContent()}</View>
 
         <View style={styles.bottomTabBar}>
-          {MAIN_TABS.map((tab) => {
+          {MAIN_TABS.filter((tab) => tab.key !== 'messages' || hasApp('messages')).map((tab) => {
             const isActive = activeTab === tab.key;
             const iconName = isActive
               ? tab.icon.replace('-outline', '')
               : tab.icon;
+            const unread = tab.key === 'messages' ? messagesUnread : 0;
             return (
               <Pressable
                 key={tab.key}
@@ -4902,13 +5039,22 @@ export default function App() {
                 accessibilityRole="button"
                 accessibilityState={{ selected: isActive }}
               >
-                <Ionicons
-                  name={iconName}
-                  size={22}
-                  color={isActive ? '#1a1a1a' : '#8a8a8a'}
-                />
+                <View>
+                  <Ionicons
+                    name={iconName}
+                    size={22}
+                    color={isActive ? '#1a1a1a' : '#8a8a8a'}
+                  />
+                  {unread > 0 ? (
+                    <View style={styles.bottomTabBadge}>
+                      <Text style={styles.bottomTabBadgeText}>
+                        {unread > 9 ? '9+' : String(unread)}
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
                 <Text style={[styles.bottomTabLabel, isActive && styles.bottomTabLabelActive]}>
-                  {tab.label}
+                  {tab.shortLabel || tab.label}
                 </Text>
               </Pressable>
             );
@@ -4952,14 +5098,22 @@ export default function App() {
             homeActive={activeTab === 'home'}
             appsActive={
               activeTab === 'tools' &&
+              activeTool?.key !== 'messages' &&
               !pinnedTools.some((tool) => tool.key === activeTool?.key)
+            }
+            messagesActive={
+              activeTab === 'messages' ||
+              (activeTab === 'tools' && activeTool?.key === 'messages')
             }
             profileActive={activeTab === PROFILE_TAB.key}
             onSelectHome={() => selectTab('home')}
             onSelectApps={() => selectTab('tools')}
+            onSelectMessages={() => selectTab('messages')}
             onSelectProfile={() => selectTab(PROFILE_TAB.key)}
             profileLabel={userLabel}
             profileAvatarUrl={session?.profile?.avatarUrl || ''}
+            showMessages={hasApp('messages')}
+            messagesUnread={messagesUnread}
           />
 
           <PinnedToolsList
@@ -5076,6 +5230,24 @@ const styles = StyleSheet.create({
     color: '#1a1a1a',
     fontWeight: '600',
   },
+  bottomTabBadge: {
+    position: 'absolute',
+    top: -5,
+    right: -10,
+    minWidth: 16,
+    height: 16,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    backgroundColor: '#0A84FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bottomTabBadgeText: {
+    fontFamily,
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#fff',
+  },
   mobileAppHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -5181,6 +5353,36 @@ const styles = StyleSheet.create({
   },
   sidebarNavItem: {
     backgroundColor: 'transparent',
+  },
+  sidebarMessagesIcon: {
+    position: 'relative',
+  },
+  sidebarUnreadDot: {
+    position: 'absolute',
+    top: -2,
+    right: -3,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#0A84FF',
+    borderWidth: 1.5,
+    borderColor: '#e8e8ed',
+  },
+  sidebarUnreadPill: {
+    marginLeft: 'auto',
+    minWidth: 20,
+    height: 18,
+    paddingHorizontal: 6,
+    borderRadius: 9,
+    backgroundColor: '#0A84FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sidebarUnreadPillText: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#fff',
   },
   sidebarFooter: {
     flexDirection: 'row',
@@ -5345,6 +5547,17 @@ const styles = StyleSheet.create({
     paddingTop: 0,
     paddingBottom: 0,
     paddingHorizontal: 0,
+  },
+  contentMessages: {
+    padding: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
+    paddingHorizontal: 0,
+  },
+  messagesHost: {
+    flex: 1,
+    minHeight: 0,
+    width: '100%',
   },
   contentTransactions: {
     paddingBottom: 0,
@@ -5544,11 +5757,18 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  homeStoreAccent: {
-    width: 3,
-    alignSelf: 'stretch',
-    borderRadius: 1,
-    marginVertical: 8,
+  homeStoreIconTile: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 8,
+    flexShrink: 0,
+  },
+  homeStoreIconSpacer: {
+    width: 22,
+    height: 22,
     marginLeft: 8,
     flexShrink: 0,
   },

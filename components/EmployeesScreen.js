@@ -36,7 +36,7 @@ import {
 } from '../lib/rippling';
 import { syncStaffRoles } from '../lib/auth';
 import { fetchAureusEmployees, mergeEmployeesWithProfiles } from '../lib/aureusEmployees';
-import { categoryLabel, listStaffProfiles } from '../lib/permissions';
+import { categoryLabel, listStaffProfiles, useAppAccess } from '../lib/permissions';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -243,6 +243,8 @@ function StaffEmployeeDetail({ person, onClose, compact }) {
 function AppEmployeesPanel({ session, onProfileUpdated }) {
   const { width } = useWindowDimensions();
   const isMobile = width < MOBILE_BREAKPOINT;
+  const { canFilter } = useAppAccess();
+  const allowFilters = canFilter('employees');
   const [people, setPeople] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -294,6 +296,10 @@ function AppEmployeesPanel({ session, onProfileUpdated }) {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (!allowFilters) setLocation(null);
+  }, [allowFilters]);
 
   const locations = useMemo(() => {
     const names = new Set();
@@ -355,7 +361,7 @@ function AppEmployeesPanel({ session, onProfileUpdated }) {
         </Pressable>
       </View>
 
-      {locations.length > 1 ? (
+      {allowFilters && locations.length > 1 ? (
         <View style={styles.filterRow}>
           <Pressable
             style={[styles.filterChip, !location && styles.filterChipActive]}
@@ -823,6 +829,8 @@ function EmployeeRow({ employee, selected, onPress, compact }) {
 function RipplingPanel() {
   const { width } = useWindowDimensions();
   const isMobile = width < MOBILE_BREAKPOINT;
+  const { canFilter } = useAppAccess();
+  const allowFilters = canFilter('employees');
   const [session, setSession] = useState(null);
   const [employees, setEmployees] = useState([]);
   const [company, setCompany] = useState(null);
@@ -893,6 +901,13 @@ function RipplingPanel() {
     if (!bootstrapped) return;
     load();
   }, [bootstrapped, load]);
+
+  useEffect(() => {
+    if (!allowFilters) {
+      setStatusFilter('ALL');
+      setDepartment(null);
+    }
+  }, [allowFilters]);
 
   const departments = useMemo(() => {
     const names = new Set();
@@ -1025,6 +1040,7 @@ function RipplingPanel() {
         </View>
       </View>
 
+      {allowFilters ? (
       <View style={styles.filterRow}>
         {STATUS_FILTERS.map((filter) => (
           <Pressable
@@ -1068,6 +1084,7 @@ function RipplingPanel() {
           </>
         ) : null}
       </View>
+      ) : null}
 
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
 

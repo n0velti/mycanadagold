@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
+import { useAppAccess } from '../lib/permissions';
 import {
   METALS,
   METAL_COLORS,
@@ -414,8 +415,10 @@ function TotalsStrip({ totals }) {
 }
 
 export default function TrendsScreen({ session, onRequireLogin, storeFilter }) {
+  const { canFilter } = useAppAccess();
+  const allowFilters = canFilter('trends');
   const initialRange = useMemo(() => defaultDateRange(7), []);
-  const lockedStore = Boolean(storeFilter);
+  const lockedStore = Boolean(storeFilter) || !allowFilters;
   const [dateMode, setDateMode] = useState('day');
   const [startDate, setStartDate] = useState(() => parseDateParam(new Date()));
   const [endDate, setEndDate] = useState(() => parseDateParam(new Date()));

@@ -6,7 +6,7 @@
  *     2. Verifies the credentials against Aureus POS.
  *     3. Finds or creates the matching Supabase Auth user (email pre-confirmed,
  *        so no confirmation mail is ever sent) and stamps app_metadata with the
- *        Aureus identity that RLS checks.
+ *        Aureus identity (`aureus_user_id`) that RLS and the proxy check.
  *     4. Upserts the staff profile with the service role.
  *     5. Refuses deactivated staff.
  *     6. Mints a Supabase session via a one-time token hash (never emailed).
@@ -20,6 +20,7 @@
  */
 import { createClient, type SupabaseClient } from 'npm:@supabase/supabase-js@2';
 import { bearerToken, clientIp, error, json, preflight, readJson, sha256Hex } from '../_shared/http.ts';
+import { aureusUserIdFromAppMetadata } from '../_shared/staff.ts';
 import {
   AUREUS_BASE_URL,
   AureusError,
@@ -163,9 +164,10 @@ async function findAuthUserId(admin: SupabaseClient, identity: AureusIdentity, e
 }
 
 async function ensureAuthUser(admin: SupabaseClient, identity: AureusIdentity, email: string): Promise<string> {
+  // `aureus_user_id` is the claim RLS and the proxy trust. `provider` /
+  // `providers` are owned by GoTrue and get reset to "email" whenever the
+  // magic-link OTP session is minted, so nothing may depend on them.
   const appMetadata = {
-    provider: 'aureus',
-    providers: ['aureus'],
     aureus_user_id: identity.aureusUserId,
     aureus_login: identity.aureusLogin,
   };
@@ -184,7 +186,7 @@ async function ensureAuthUser(admin: SupabaseClient, identity: AureusIdentity, e
     // to an unknown value so signInWithPassword can never work again. GoTrue
     // also revokes every existing session on an admin password change, which
     // is exactly what we want for sessions minted by the old client flow.
-    const migrating = current?.user?.app_metadata?.provider !== 'aureus';
+    const migrating = !aureusUserIdFromAppMetadata(current?.user?.app_metadata);
     const patch: Record<string, unknown> = {
       email_confirm: true,
       app_metadata: appMetadata,
@@ -367,7 +369,8 @@ async function requireAureusStaff(req: Request): Promise<{ admin: SupabaseClient
     throw Object.assign(new Error('Session expired. Sign in again.'), { status: 401, code: 'unauthenticated' });
   }
   const user = userData.user;
-  if (user.app_metadata?.provider !== 'aureus') {
+  const aureusUserId = aureusUserIdFromAppMetadata(user.app_metadata);
+  if (!aureusUserId) {
     throw Object.assign(new Error('This account was not verified with Aureus.'), { status: 403, code: 'forbidden' });
   }
   const { data: profile, error: profileError } = await admin
@@ -378,7 +381,7 @@ async function requireAureusStaff(req: Request): Promise<{ admin: SupabaseClient
   if (profileError || !profile) {
     throw Object.assign(new Error('No staff profile for this account.'), { status: 403, code: 'forbidden' });
   }
-  if (!profile.is_active || profile.aureus_user_id !== user.app_metadata?.aureus_user_id) {
+  if (!profile.is_active || profile.aureus_user_id !== aureusUserId) {
     throw Object.assign(new Error('Your MyCanadaGold access has been disabled.'), { status: 403, code: 'deactivated' });
   }
   return { admin, userId: user.id };
@@ -517,7 +520,8 @@ async function handleRefreshLinked(req: Request): Promise<Response> {
   }
 
   const user = userData.user;
-  if (user.app_metadata?.provider !== 'aureus') {
+  const aureusUserId = aureusUserIdFromAppMetadata(user.app_metadata);
+  if (!aureusUserId) {
     return error(req, 403, 'This account was not verified with Aureus.', 'forbidden');
   }
 
@@ -529,7 +533,7 @@ async function handleRefreshLinked(req: Request): Promise<Response> {
   if (profileError || !profile) {
     return error(req, 403, 'No staff profile for this account.', 'forbidden');
   }
-  if (!profile.is_active || profile.aureus_user_id !== user.app_metadata?.aureus_user_id) {
+  if (!profile.is_active || profile.aureus_user_id !== aureusUserId) {
     return error(req, 403, 'Your MyCanadaGold access has been disabled.', 'deactivated');
   }
 

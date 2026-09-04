@@ -1,16 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
+  Easing,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { rowMatchesQuery } from '../lib/itemSearch';
 import { fetchTransferStores } from '../lib/locations';
+import { fetchTransferDetail, fetchDashboardTransfers, mergeTransferDetail } from '../lib/transfers';
 import {
   TERRITORY_KEYS,
   TERRITORY_LABELS,
@@ -36,6 +42,18 @@ const fontFamily = Platform.select({
 const ACCENT = '#1F7A9A';
 const MIN_STOPS = 2;
 const HAIRLINE = '#e6e6e6';
+const MOBILE_BREAKPOINT = 768;
+const DRAWER_OPEN_MS = 280;
+const DRAWER_CLOSE_MS = 220;
+const ITEM_LOOKUP_CONCURRENCY = 6;
+
+const FILTER_COLUMNS = [
+  { key: 'dateLabel', label: 'Date', colStyle: 'colDate' },
+  { key: 'reference', label: 'Transfer', colStyle: 'colId' },
+  { key: 'fromName', label: 'From', colStyle: 'colFrom' },
+  { key: 'toName', label: 'To', colStyle: 'colTo' },
+  { key: 'statusDisplay', label: 'Status', colStyle: 'colStatus' },
+];
 
 const TRANSFER_TABS = [
   {
@@ -316,6 +334,948 @@ function EmptyTab({ tab }) {
   );
 }
 
+function formatListDate(value) {
+  if (!value) return '—';
+  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return String(value);
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return date.toLocaleDateString('en-CA', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+function locationLabel(side, stores) {
+  if (side?.name) return side.name;
+  if (!side?.id) return '—';
+  const match = stores.find((store) => String(store.sourceId) === String(side.id));
+  return match?.name || `#${side.id}`;
+}
+
+function statusLabel(status) {
+  const value = String(status || '').trim();
+  if (!value) return '—';
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function SignInPrompt({ onRequireLogin, title, body }) {
+  return (
+    <View style={styles.signInWrap}>
+      <Text style={styles.signInTitle}>{title}</Text>
+      <Text style={styles.signInBody}>{body}</Text>
+      {onRequireLogin ? (
+        <Pressable style={styles.signInButton} onPress={onRequireLogin}>
+          <Text style={styles.signInButtonText}>Go to Profile</Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
+function buildColumnOptions(rows) {
+  const options = {};
+  for (const col of FILTER_COLUMNS) {
+    const seen = new Set();
+    for (let i = 0; i < rows.length; i += 1) {
+      seen.add(rows[i][col.key] || '—');
+    }
+    options[col.key] = Array.from(seen).sort((a, b) =>
+      String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' }),
+    );
+  }
+  return options;
+}
+
+function FilterableHeaderCell({ label, colStyle, active, onPress }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ hovered, pressed }) => [
+        styles.listThCell,
+        colStyle,
+        (hovered || pressed) && styles.listThCellHover,
+      ]}
+    >
+      <Text style={[styles.listTh, active && styles.listThActive]} numberOfLines={1}>
+        {label}
+      </Text>
+      <Ionicons
+        name={active ? 'funnel' : 'chevron-down'}
+        size={11}
+        color={active ? '#1a1a1a' : '#c7c7cc'}
+      />
+    </Pressable>
+  );
+}
+
+function ColumnFilterMenu({ label, options, filter, onChange, onClose }) {
+  const [search, setSearch] = useState('');
+  const allValues = options;
+  const selectedCount = filter == null ? allValues.length : Object.keys(filter).length;
+  const allSelected = filter == null;
+  const noneSelected = filter != null && selectedCount === 0;
+
+  const visibleOptions = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return allValues;
+    return allValues.filter((value) => String(value).toLowerCase().includes(q));
+  }, [allValues, search]);
+
+  const isChecked = (value) => (filter == null ? true : Boolean(filter[value]));
+
+  const selectAll = () => onChange(null);
+
+  const clearAll = () => onChange({});
+
+  const toggleValue = (value) => {
+    const nextSelected = new Set(filter == null ? allValues : Object.keys(filter));
+    if (nextSelected.has(value)) nextSelected.delete(value);
+    else nextSelected.add(value);
+
+    if (nextSelected.size === allValues.length) {
+      onChange(null);
+      return;
+    }
+
+    const next = {};
+    nextSelected.forEach((item) => {
+      next[item] = true;
+    });
+    onChange(next);
+  };
+
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      <View style={styles.filterModalRoot}>
+        <Pressable style={styles.filterModalBackdrop} onPress={onClose} />
+        <View style={styles.filterMenu}>
+          <View style={styles.filterMenuHeader}>
+            <Text style={styles.filterMenuTitle}>{label}</Text>
+            <Pressable onPress={onClose} hitSlop={8}>
+              <Ionicons name="close" size={20} color="#8e8e93" />
+            </Pressable>
+          </View>
+
+          <View style={styles.filterField}>
+            <Text style={styles.filterFieldLabel}>Search</Text>
+            <TextInput
+              style={styles.filterFieldInput}
+              value={search}
+              onChangeText={setSearch}
+              placeholder="Filter values"
+              placeholderTextColor="#999"
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoFocus={Platform.OS === 'web'}
+            />
+            {search ? (
+              <Pressable onPress={() => setSearch('')} hitSlop={8}>
+                <Ionicons name="close-circle" size={13} color="#b0b0b0" />
+              </Pressable>
+            ) : null}
+          </View>
+
+          <View style={styles.filterActions}>
+            <Pressable onPress={selectAll} disabled={allSelected}>
+              <Text style={[styles.filterActionText, allSelected && styles.filterActionDisabled]}>
+                Select all
+              </Text>
+            </Pressable>
+            <Text style={styles.filterActionSep}>·</Text>
+            <Pressable onPress={clearAll} disabled={noneSelected}>
+              <Text style={[styles.filterActionText, noneSelected && styles.filterActionDisabled]}>
+                Clear
+              </Text>
+            </Pressable>
+            <Text style={styles.filterCount}>
+              {selectedCount}/{allValues.length}
+            </Text>
+          </View>
+
+          <ScrollView style={styles.filterList} nestedScrollEnabled>
+            {visibleOptions.length === 0 ? (
+              <Text style={styles.filterEmpty}>No matching values</Text>
+            ) : (
+              visibleOptions.map((item) => {
+                const checked = isChecked(item);
+                return (
+                  <Pressable
+                    key={String(item)}
+                    style={styles.filterOption}
+                    onPress={() => toggleValue(item)}
+                    {...(Platform.OS === 'web' ? { className: 'cgold-filter-option' } : null)}
+                  >
+                    <Ionicons
+                      name={checked ? 'checkbox' : 'square-outline'}
+                      size={20}
+                      color={checked ? '#1d1d1f' : '#c7c7cc'}
+                    />
+                    <Text style={styles.filterOptionText} numberOfLines={1}>
+                      {item}
+                    </Text>
+                  </Pressable>
+                );
+              })
+            )}
+          </ScrollView>
+
+          <Pressable style={styles.filterDoneButton} onPress={onClose}>
+            <Text style={styles.filterDoneButtonText}>Done</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function useRightDrawerAnimation(visible, slideDistance) {
+  const [mounted, setMounted] = useState(visible);
+  const slide = useRef(new Animated.Value(slideDistance)).current;
+  const backdrop = useRef(new Animated.Value(0)).current;
+  const slideDistanceRef = useRef(slideDistance);
+  const activeAnim = useRef(null);
+  slideDistanceRef.current = slideDistance;
+
+  const stopActiveAnim = () => {
+    if (activeAnim.current) {
+      activeAnim.current.stop();
+      activeAnim.current = null;
+    }
+  };
+
+  useEffect(() => {
+    if (!mounted) {
+      slide.setValue(slideDistance);
+    }
+  }, [slideDistance, mounted, slide]);
+
+  useEffect(() => {
+    if (visible) {
+      setMounted(true);
+      return undefined;
+    }
+
+    if (!mounted) return undefined;
+
+    stopActiveAnim();
+    const anim = Animated.parallel([
+      Animated.timing(slide, {
+        toValue: slideDistanceRef.current,
+        duration: DRAWER_CLOSE_MS,
+        easing: Easing.bezier(0.4, 0, 0.2, 1),
+        useNativeDriver: true,
+      }),
+      Animated.timing(backdrop, {
+        toValue: 0,
+        duration: DRAWER_CLOSE_MS,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }),
+    ]);
+    activeAnim.current = anim;
+
+    anim.start(({ finished }) => {
+      if (activeAnim.current === anim) activeAnim.current = null;
+      if (finished) setMounted(false);
+    });
+
+    return () => {
+      if (activeAnim.current === anim) {
+        anim.stop();
+        activeAnim.current = null;
+      }
+    };
+  }, [visible, mounted, slide, backdrop]);
+
+  useLayoutEffect(() => {
+    if (!visible || !mounted) return undefined;
+
+    stopActiveAnim();
+    slide.setValue(slideDistanceRef.current);
+    backdrop.setValue(0);
+
+    let cancelled = false;
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        if (cancelled) return;
+        const anim = Animated.parallel([
+          Animated.timing(slide, {
+            toValue: 0,
+            duration: DRAWER_OPEN_MS,
+            easing: Easing.bezier(0.2, 0.8, 0.2, 1),
+            useNativeDriver: true,
+          }),
+          Animated.timing(backdrop, {
+            toValue: 1,
+            duration: DRAWER_OPEN_MS,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+          }),
+        ]);
+        activeAnim.current = anim;
+        anim.start(({ finished }) => {
+          if (finished && activeAnim.current === anim) activeAnim.current = null;
+        });
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
+  }, [visible, mounted, slide, backdrop]);
+
+  return { mounted, slide, backdrop };
+}
+
+function useHeldValue(value) {
+  const held = useRef(value);
+  if (value != null) held.current = value;
+  return value ?? held.current;
+}
+
+function DetailRow({ label, value, last }) {
+  return (
+    <View style={[styles.detailRow, last && styles.detailRowLast]}>
+      <Text style={styles.detailLabel}>{label}</Text>
+      <Text style={styles.detailValue}>{value || '—'}</Text>
+    </View>
+  );
+}
+
+function TransferDetailDrawer({ visible, transfer, stores, loading, error, onClose }) {
+  const { width: windowWidth } = useWindowDimensions();
+  const isMobile = windowWidth < MOBILE_BREAKPOINT;
+  const panelWidth = isMobile
+    ? Math.max(windowWidth, 240)
+    : Math.min(Math.max(Math.round(windowWidth * 0.46), 420), 560);
+  const { mounted, slide, backdrop } = useRightDrawerAnimation(visible, panelWidth);
+  const held = useHeldValue(transfer);
+
+  if (!mounted || !held) return null;
+
+  const from = locationLabel(held.from, stores);
+  const to = locationLabel(held.to, stores);
+  const items = Array.isArray(held.items) ? held.items : [];
+  const received = held.status === 'received';
+
+  return (
+    <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose}>
+      <View style={styles.drawerRoot}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose}>
+          <Animated.View style={[styles.drawerBackdrop, { opacity: backdrop }]} />
+        </Pressable>
+        <Animated.View
+          style={[
+            styles.drawerPanel,
+            { width: panelWidth, transform: [{ translateX: slide }] },
+          ]}
+        >
+          <View style={[styles.drawerTopBar, isMobile && styles.drawerTopBarMobile]}>
+            <Text style={styles.drawerTitle} numberOfLines={1}>
+              Transfer
+            </Text>
+            <Pressable
+              onPress={onClose}
+              hitSlop={8}
+              style={styles.drawerClose}
+              accessibilityLabel="Close"
+            >
+              <Ionicons name="close" size={18} color="#1a1a1a" />
+            </Pressable>
+          </View>
+
+          <ScrollView
+            style={styles.drawerBody}
+            contentContainerStyle={[
+              styles.drawerBodyContent,
+              isMobile && styles.drawerBodyContentMobile,
+            ]}
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={styles.drawerHero}>
+              <Text style={styles.drawerHeroRoute}>
+                {from} → {to}
+              </Text>
+              <Text style={styles.drawerHeroMeta}>
+                {held.reference}
+                {held.date ? ` · ${formatListDate(held.date)}` : ''}
+              </Text>
+              <View
+                style={[
+                  styles.statusPill,
+                  styles.drawerStatus,
+                  received ? styles.statusReceived : styles.statusOther,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.statusPillText,
+                    received ? styles.statusReceivedText : styles.statusOtherText,
+                  ]}
+                >
+                  {statusLabel(held.status)}
+                </Text>
+              </View>
+            </View>
+
+            <Text style={styles.drawerSectionLabel}>Details</Text>
+            <View style={styles.drawerGroup}>
+              <DetailRow label="Transfer" value={held.reference} />
+              <DetailRow label="Date" value={formatListDate(held.date)} />
+              <DetailRow
+                label="Received"
+                value={
+                  held.status === 'pending'
+                    ? 'Not received yet'
+                    : formatListDate(held.receivedDate)
+                }
+              />
+              <DetailRow label="From" value={from} />
+              <DetailRow label="To" value={to} />
+              {held.createdBy ? <DetailRow label="Created by" value={held.createdBy} /> : null}
+              {held.receivedBy ? <DetailRow label="Received by" value={held.receivedBy} /> : null}
+              {held.tracking ? <DetailRow label="Tracking" value={held.tracking} /> : null}
+              <DetailRow label="Comments" value={held.comments || '—'} last />
+            </View>
+
+            <Text style={styles.drawerSectionLabel}>
+              Items{items.length ? ` · ${items.length}` : ''}
+              {held.totalQty ? ` · ${formatQty(held.totalQty)} sent` : ''}
+            </Text>
+
+            {loading ? (
+              <View style={styles.drawerLoading}>
+                <ActivityIndicator color={ACCENT} />
+              </View>
+            ) : null}
+            {error ? <Text style={styles.errorText}>{error}</Text> : null}
+
+            <View style={styles.drawerGroup}>
+              <View style={styles.itemHead}>
+                <Text style={[styles.itemTh, styles.itemColName]}>Item</Text>
+                <Text style={[styles.itemTh, styles.itemColQty]}>Sent</Text>
+                <Text style={[styles.itemTh, styles.itemColQty]}>Recv</Text>
+              </View>
+              {items.length === 0 && !loading ? (
+                <Text style={styles.itemEmpty}>No line items on this transfer.</Text>
+              ) : (
+                items.map((item, index) => {
+                  const name = item.name || item.sku || item.productId || 'Untitled item';
+                  const short = item.shortfall != null && item.shortfall > 0;
+                  return (
+                    <View
+                      key={item.productId || `${name}-${index}`}
+                      style={[
+                        styles.itemRow,
+                        index === items.length - 1 && !held.totalQty && styles.itemRowLast,
+                      ]}
+                    >
+                      <View style={styles.itemColName}>
+                        <Text style={styles.itemName} numberOfLines={2}>
+                          {name}
+                        </Text>
+                        {item.sku && item.sku !== name ? (
+                          <Text style={styles.itemSku} numberOfLines={1}>
+                            {item.sku}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <Text style={[styles.itemQty, styles.itemColQty]}>
+                        {item.quantity == null ? '—' : formatQty(item.quantity)}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.itemQty,
+                          styles.itemColQty,
+                          short && styles.itemQtyShort,
+                        ]}
+                      >
+                        {item.receivedQuantity == null
+                          ? '—'
+                          : formatQty(item.receivedQuantity)}
+                      </Text>
+                    </View>
+                  );
+                })
+              )}
+              {items.length > 0 ? (
+                <View style={[styles.itemRow, styles.itemRowLast, styles.itemTotalRow]}>
+                  <Text style={[styles.itemTotalLabel, styles.itemColName]}>Total</Text>
+                  <Text style={[styles.itemQty, styles.itemColQty, styles.itemTotalQty]}>
+                    {formatQty(held.totalQty)}
+                  </Text>
+                  <Text style={[styles.itemQty, styles.itemColQty, styles.itemTotalQty]}>
+                    {held.receivedQty ? formatQty(held.receivedQty) : '—'}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          </ScrollView>
+        </Animated.View>
+      </View>
+    </Modal>
+  );
+}
+
+function DashboardPanel({ session, stores, onRequireLogin }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [total, setTotal] = useState(null);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [receivedCount, setReceivedCount] = useState(0);
+  const [warning, setWarning] = useState('');
+  const [query, setQuery] = useState('');
+  const [lookupQuery, setLookupQuery] = useState('');
+  const [itemLookup, setItemLookup] = useState(false);
+  const [listEpoch, setListEpoch] = useState(0);
+  const [columnFilters, setColumnFilters] = useState({});
+  const [openFilter, setOpenFilter] = useState(null);
+  const [selectedRow, setSelectedRow] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState('');
+  const requestId = useRef(0);
+  const detailRequestId = useRef(0);
+  const enrichRequestId = useRef(0);
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+
+  const load = useCallback(async () => {
+    if (!session?.token) {
+      setRows([]);
+      setError('');
+      setTotal(null);
+      setPendingCount(0);
+      setReceivedCount(0);
+      setWarning('');
+      return;
+    }
+
+    const id = ++requestId.current;
+    setLoading(true);
+    setError('');
+    setWarning('');
+    setColumnFilters({});
+    setOpenFilter(null);
+    setSelectedRow(null);
+    setDetailError('');
+
+    try {
+      const result = await fetchDashboardTransfers(session.token, {
+        page: 1,
+        baseUrl: session.baseUrl,
+      });
+      if (id !== requestId.current) return;
+      setRows(result.transfers);
+      setTotal(result.total);
+      setPendingCount(result.pendingCount);
+      setReceivedCount(result.receivedCount);
+      setWarning(result.warning || '');
+      setListEpoch((value) => value + 1);
+    } catch (err) {
+      if (id !== requestId.current) return;
+      setRows([]);
+      setTotal(null);
+      setPendingCount(0);
+      setReceivedCount(0);
+      setWarning('');
+      setError(err?.message || 'Failed to load transfers.');
+    } finally {
+      if (id === requestId.current) setLoading(false);
+    }
+  }, [session]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setLookupQuery(query.trim()), 220);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  useEffect(() => {
+    const currentRows = rowsRef.current;
+    if (!session?.token || currentRows.length === 0) return undefined;
+
+    const wantItems = lookupQuery.length >= 2;
+    const candidates = currentRows.filter((row) => wantItems && row.id && !row.itemsLoaded);
+    if (candidates.length === 0) {
+      setItemLookup(false);
+      return undefined;
+    }
+
+    const enrichId = ++enrichRequestId.current;
+    let cancelled = false;
+    setItemLookup(true);
+
+    (async () => {
+      const queue = [...candidates];
+      const workers = Array.from(
+        { length: Math.min(ITEM_LOOKUP_CONCURRENCY, queue.length) },
+        async () => {
+          while (queue.length && !cancelled && enrichId === enrichRequestId.current) {
+            const row = queue.shift();
+            if (!row?.id) continue;
+            try {
+              const detail = await fetchTransferDetail(session.token, row.id, session.baseUrl);
+              if (cancelled || enrichId !== enrichRequestId.current) return;
+              const enriched = mergeTransferDetail(row, detail);
+              setRows((current) =>
+                current.map((entry) => (entry.id === row.id ? enriched : entry)),
+              );
+            } catch {
+              if (cancelled || enrichId !== enrichRequestId.current) return;
+              setRows((current) =>
+                current.map((entry) =>
+                  entry.id === row.id ? { ...entry, itemsLoaded: true } : entry,
+                ),
+              );
+            }
+          }
+        },
+      );
+      await Promise.all(workers);
+      if (!cancelled && enrichId === enrichRequestId.current) setItemLookup(false);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.token, session?.baseUrl, listEpoch, lookupQuery]);
+
+  const displayRows = useMemo(
+    () =>
+      rows.map((row) => {
+        const fromName = locationLabel(row.from, stores);
+        const toName = locationLabel(row.to, stores);
+        const dateLabel = formatListDate(row.date);
+        const statusDisplay = statusLabel(row.status);
+        return {
+          ...row,
+          fromName,
+          toName,
+          dateLabel,
+          statusDisplay,
+          searchText: [
+            row.searchText,
+            fromName,
+            toName,
+            dateLabel,
+            statusDisplay,
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase(),
+        };
+      }),
+    [rows, stores],
+  );
+
+  const columnOptions = useMemo(() => buildColumnOptions(displayRows), [displayRows]);
+
+  const activeFilterCount = useMemo(
+    () => FILTER_COLUMNS.reduce((count, col) => count + (columnFilters[col.key] != null ? 1 : 0), 0),
+    [columnFilters],
+  );
+
+  const filteredRows = useMemo(() => {
+    let result = displayRows;
+    for (const col of FILTER_COLUMNS) {
+      const filter = columnFilters[col.key];
+      if (filter) {
+        result = result.filter((row) => filter[row[col.key] || '—']);
+      }
+    }
+    if (query.trim()) {
+      result = result.filter((row) => rowMatchesQuery(row, query));
+    }
+    return result;
+  }, [displayRows, columnFilters, query]);
+
+  const openFilterColumn = openFilter
+    ? FILTER_COLUMNS.find((col) => col.key === openFilter)
+    : null;
+
+  const clearColumnFilters = () => {
+    setColumnFilters({});
+    setOpenFilter(null);
+  };
+
+  const closeDetail = useCallback(() => {
+    setSelectedRow(null);
+    setDetailError('');
+    setDetailLoading(false);
+  }, []);
+
+  const openDetail = useCallback(
+    async (row) => {
+      setSelectedRow(row);
+      setDetailError('');
+      setDetailLoading(true);
+      const id = ++detailRequestId.current;
+      if (!session?.token || !row?.id) {
+        setDetailLoading(false);
+        return;
+      }
+
+      try {
+        const detail = await fetchTransferDetail(session.token, row.id, session.baseUrl);
+        if (id !== detailRequestId.current) return;
+        const enriched = mergeTransferDetail(row, detail);
+        setRows((current) =>
+          current.map((entry) => (entry.id === row.id ? enriched : entry)),
+        );
+        setSelectedRow(enriched);
+      } catch (err) {
+        if (id !== detailRequestId.current) return;
+        setDetailError(err?.message || 'Failed to load transfer details.');
+      } finally {
+        if (id === detailRequestId.current) setDetailLoading(false);
+      }
+    },
+    [session?.token, session?.baseUrl],
+  );
+
+  const selectedDisplay =
+    selectedRow &&
+    (displayRows.find((row) => row.id === selectedRow.id) || selectedRow);
+
+  const metaLabel = useMemo(() => {
+    if (loading && rows.length === 0) return 'Loading transfers…';
+    if (error && rows.length === 0) return '';
+    const shown = filteredRows.length;
+    const suffix = query.trim() || activeFilterCount > 0 ? '' : ' · pending first';
+    if (shown !== rows.length || query.trim() || activeFilterCount > 0) {
+      return `${shown} of ${rows.length} transfers`;
+    }
+    if (shown === 0) return 'No transfers.';
+    const parts = [`${shown} transfer${shown === 1 ? '' : 's'}`];
+    if (pendingCount) parts.push(`${pendingCount} pending`);
+    if (receivedCount) parts.push(`${receivedCount} received`);
+    return `${parts.join(' · ')}${suffix}`;
+  }, [
+    activeFilterCount,
+    error,
+    filteredRows.length,
+    loading,
+    pendingCount,
+    query,
+    receivedCount,
+    rows.length,
+  ]);
+
+  if (!session?.token) {
+    return (
+      <SignInPrompt
+        onRequireLogin={onRequireLogin}
+        title="Sign in required"
+        body="Log in from Profile to see pending and received transfers."
+      />
+    );
+  }
+
+  return (
+    <View style={styles.dashboard}>
+      <View style={styles.searchBar}>
+        <Ionicons name="search" size={16} color="#8e8e93" style={styles.searchIcon} />
+        <TextInput
+          style={styles.searchInput}
+          value={query}
+          onChangeText={setQuery}
+          placeholder="Search items, stores, TR#"
+          placeholderTextColor="#8e8e93"
+          autoCapitalize="none"
+          autoCorrect={false}
+          clearButtonMode="while-editing"
+        />
+        {query ? (
+          <Pressable onPress={() => setQuery('')} hitSlop={8}>
+            <Ionicons name="close-circle" size={18} color="#c7c7cc" />
+          </Pressable>
+        ) : null}
+      </View>
+
+      <View style={styles.dashboardToolbar}>
+        <Text style={styles.dashboardMeta} numberOfLines={1}>
+          {metaLabel}
+          {activeFilterCount > 0
+            ? ` · ${activeFilterCount} filter${activeFilterCount > 1 ? 's' : ''}`
+            : ''}
+        </Text>
+        <View style={styles.dashboardToolbarRight}>
+          {activeFilterCount > 0 ? (
+            <Pressable onPress={clearColumnFilters} hitSlop={6}>
+              <Text style={styles.clearFiltersText}>Clear</Text>
+            </Pressable>
+          ) : null}
+          {(loading && rows.length > 0) || itemLookup ? (
+            <ActivityIndicator size="small" color="#8a8a8a" />
+          ) : null}
+          <Pressable
+            onPress={load}
+            disabled={loading}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Refresh transfers"
+            style={({ hovered, pressed }) => [
+              styles.refreshButton,
+              (hovered || pressed) && styles.refreshButtonHover,
+            ]}
+          >
+            <Ionicons name="refresh-outline" size={18} color={loading ? '#c0c0c0' : ACCENT} />
+          </Pressable>
+        </View>
+      </View>
+
+      {error ? <Text style={[styles.errorText, styles.dashboardError]}>{error}</Text> : null}
+      {warning && !error ? (
+        <Text style={[styles.warningText, styles.dashboardError]}>{warning}</Text>
+      ) : null}
+
+      <View style={styles.listTable}>
+        <View style={styles.listHead}>
+          {FILTER_COLUMNS.slice(0, 4).map((col) => (
+            <FilterableHeaderCell
+              key={col.key}
+              label={col.label}
+              colStyle={styles[col.colStyle]}
+              active={columnFilters[col.key] != null}
+              onPress={() => setOpenFilter(col.key)}
+            />
+          ))}
+          <Text style={[styles.listTh, styles.colItems]}>Items</Text>
+          {FILTER_COLUMNS.slice(4).map((col) => (
+            <FilterableHeaderCell
+              key={col.key}
+              label={col.label}
+              colStyle={styles[col.colStyle]}
+              active={columnFilters[col.key] != null}
+              onPress={() => setOpenFilter(col.key)}
+            />
+          ))}
+        </View>
+
+        {loading && rows.length === 0 ? (
+          <View style={styles.listEmpty}>
+            <ActivityIndicator color={ACCENT} />
+          </View>
+        ) : filteredRows.length === 0 ? (
+          <View style={styles.listEmpty}>
+            <Text style={styles.listEmptyText}>
+              {itemLookup
+                ? 'Looking up items…'
+                : error
+                  ? 'Could not load transfers.'
+                  : query.trim() || activeFilterCount > 0
+                    ? 'No transfers match the current filters.'
+                    : 'No transfers yet.'}
+            </Text>
+          </View>
+        ) : (
+          <ScrollView
+            style={styles.listScroll}
+            contentContainerStyle={styles.listScrollContent}
+            showsVerticalScrollIndicator={false}
+          >
+            {filteredRows.map((row) => {
+              const received = row.status === 'received';
+              const selected = selectedRow?.id === row.id;
+              return (
+                <Pressable
+                  key={row.id || `${row.date}-${row.reference}`}
+                  onPress={() => openDetail(row)}
+                  style={({ hovered, pressed }) => [
+                    styles.listRow,
+                    !selected && (hovered || pressed) && styles.listRowHover,
+                    selected && styles.listRowSelected,
+                  ]}
+                  {...(Platform.OS === 'web'
+                    ? {
+                        className: selected
+                          ? 'cgold-tx-row cgold-tx-row-selected'
+                          : 'cgold-tx-row',
+                      }
+                    : null)}
+                >
+                  <Text style={[styles.listTd, styles.colDate]} numberOfLines={1}>
+                    {row.dateLabel}
+                  </Text>
+                  <Text style={[styles.listTd, styles.colId, styles.listRef]} numberOfLines={1}>
+                    {row.reference}
+                  </Text>
+                  <View style={styles.colFrom}>
+                    <Text style={styles.listTd} numberOfLines={1}>
+                      {row.fromName}
+                    </Text>
+                    {row.comments ? (
+                      <Text style={styles.listComment} numberOfLines={1}>
+                        {row.comments}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <Text style={[styles.listTd, styles.colTo]} numberOfLines={1}>
+                    {row.toName}
+                  </Text>
+                  <Text style={[styles.listTd, styles.colItems, styles.listItems]} numberOfLines={1}>
+                    {row.itemCount || '—'}
+                  </Text>
+                  <View style={styles.colStatus}>
+                    <View
+                      style={[
+                        styles.statusPill,
+                        received ? styles.statusReceived : styles.statusOther,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.statusPillText,
+                          received ? styles.statusReceivedText : styles.statusOtherText,
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {row.statusDisplay}
+                      </Text>
+                    </View>
+                  </View>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        )}
+
+        {openFilterColumn ? (
+          <ColumnFilterMenu
+            label={openFilterColumn.label}
+            options={columnOptions[openFilterColumn.key] || []}
+            filter={columnFilters[openFilterColumn.key] ?? null}
+            onChange={(next) => {
+              setColumnFilters((current) => ({
+                ...current,
+                [openFilterColumn.key]: next,
+              }));
+            }}
+            onClose={() => setOpenFilter(null)}
+          />
+        ) : null}
+
+        <TransferDetailDrawer
+          visible={Boolean(selectedRow)}
+          transfer={selectedDisplay}
+          stores={stores}
+          loading={detailLoading}
+          error={detailError}
+          onClose={closeDetail}
+        />
+      </View>
+    </View>
+  );
+}
+
 async function downloadTransferPdf(html, filename) {
   if (Platform.OS === 'web' && typeof window !== 'undefined') {
     const printWindow = window.open('', '_blank');
@@ -343,7 +1303,7 @@ async function downloadTransferPdf(html, filename) {
 }
 
 export default function TransferScreen({ session, onRequireLogin }) {
-  const [activeTab, setActiveTab] = useState('create');
+  const [activeTab, setActiveTab] = useState('dashboard');
   const [stores, setStores] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -618,17 +1578,11 @@ export default function TransferScreen({ session, onRequireLogin }) {
   let createBody;
   if (!session?.token) {
     createBody = (
-      <View style={styles.signInWrap}>
-        <Text style={styles.signInTitle}>Sign in required</Text>
-        <Text style={styles.signInBody}>
-          Log in from Profile to choose stores and create a transfer route.
-        </Text>
-        {onRequireLogin ? (
-          <Pressable style={styles.signInButton} onPress={onRequireLogin}>
-            <Text style={styles.signInButtonText}>Go to Profile</Text>
-          </Pressable>
-        ) : null}
-      </View>
+      <SignInPrompt
+        onRequireLogin={onRequireLogin}
+        title="Sign in required"
+        body="Log in from Profile to choose stores and create a transfer route."
+      />
     );
   } else {
     createBody = (
@@ -1083,7 +2037,17 @@ export default function TransferScreen({ session, onRequireLogin }) {
   return (
     <View style={styles.screen}>
       <TabBar options={TRANSFER_TABS} value={activeTab} onChange={setActiveTab} />
-      {activeTab === 'create' ? createBody : <EmptyTab tab={currentTab} />}
+      {activeTab === 'create' ? (
+        createBody
+      ) : activeTab === 'dashboard' ? (
+        <DashboardPanel
+          session={session}
+          stores={stores}
+          onRequireLogin={onRequireLogin}
+        />
+      ) : (
+        <EmptyTab tab={currentTab} />
+      )}
     </View>
   );
 }
@@ -1170,6 +2134,578 @@ const styles = StyleSheet.create({
     color: '#6b6b6b',
     textAlign: 'center',
     maxWidth: 320,
+  },
+  dashboard: {
+    flex: 1,
+    minHeight: 0,
+    maxWidth: 960,
+    width: '100%',
+    alignSelf: 'center',
+    paddingHorizontal: 20,
+  },
+  dashboardToolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    minHeight: 28,
+    marginBottom: 8,
+  },
+  dashboardMeta: {
+    fontFamily,
+    fontSize: 12,
+    color: '#8a8a8a',
+    flex: 1,
+    minWidth: 0,
+  },
+  dashboardToolbarRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  refreshButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  refreshButtonHover: {
+    backgroundColor: '#EEF7FB',
+  },
+  dashboardError: {
+    marginBottom: 8,
+  },
+  listTable: {
+    flex: 1,
+    minHeight: 0,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: HAIRLINE,
+  },
+  listHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
+  },
+  listTh: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#8a8a8a',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  listScroll: {
+    flex: 1,
+  },
+  listScrollContent: {
+    paddingBottom: 24,
+  },
+  listEmpty: {
+    paddingVertical: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  listEmptyText: {
+    fontFamily,
+    fontSize: 13,
+    color: '#8a8a8a',
+  },
+  listRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 9,
+    paddingHorizontal: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#f0f0f0',
+    minHeight: 42,
+    backgroundColor: '#fff',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  listRowHover: {
+    backgroundColor: '#f5f5f7',
+  },
+  listRowSelected: {
+    backgroundColor: '#e8e8ed',
+  },
+  listThCell: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  listThCellHover: {
+    opacity: 0.72,
+  },
+  listThActive: {
+    color: '#1a1a1a',
+  },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minWidth: 0,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    backgroundColor: '#e8e8ed',
+    minHeight: 42,
+    marginBottom: 8,
+  },
+  searchIcon: {
+    marginRight: 8,
+  },
+  searchInput: {
+    flex: 1,
+    fontFamily,
+    fontSize: 16,
+    color: '#1d1d1f',
+    paddingVertical: 10,
+    ...Platform.select({
+      web: { outlineStyle: 'none' },
+      default: {},
+    }),
+  },
+  clearFiltersText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: ACCENT,
+  },
+  filterModalRoot: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  filterModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.28)',
+  },
+  filterMenu: {
+    width: '100%',
+    maxWidth: 340,
+    maxHeight: '80%',
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    overflow: 'hidden',
+    ...Platform.select({
+      web: { boxShadow: '0 12px 40px rgba(0,0,0,0.18)' },
+      default: { elevation: 10 },
+    }),
+  },
+  filterMenuHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 8,
+  },
+  filterMenuTitle: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    letterSpacing: -0.4,
+  },
+  filterField: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 16,
+    marginBottom: 10,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    backgroundColor: '#e8e8ed',
+    minHeight: 36,
+  },
+  filterFieldLabel: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#8e8e93',
+    width: 56,
+  },
+  filterFieldInput: {
+    flex: 1,
+    fontFamily,
+    fontSize: 15,
+    color: '#1d1d1f',
+    paddingVertical: 8,
+    paddingHorizontal: 0,
+    ...Platform.select({
+      web: { outlineStyle: 'none' },
+      default: {},
+    }),
+  },
+  filterActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+    gap: 6,
+  },
+  filterActionText: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '500',
+    color: '#1d1d1f',
+  },
+  filterActionDisabled: {
+    color: '#c0c0c0',
+  },
+  filterActionSep: {
+    fontFamily,
+    fontSize: 12,
+    color: '#d0d0d0',
+  },
+  filterCount: {
+    fontFamily,
+    fontSize: 11,
+    color: '#8a8a8a',
+    marginLeft: 'auto',
+  },
+  filterList: {
+    maxHeight: 240,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#e5e5e5',
+  },
+  filterOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    minHeight: 44,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  filterOptionText: {
+    fontFamily,
+    fontSize: 15,
+    color: '#1d1d1f',
+    letterSpacing: -0.2,
+    flex: 1,
+  },
+  filterEmpty: {
+    fontFamily,
+    fontSize: 13,
+    color: '#8a8a8a',
+    textAlign: 'center',
+    paddingVertical: 20,
+  },
+  filterDoneButton: {
+    marginHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 16,
+    backgroundColor: '#1d1d1f',
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    minHeight: 40,
+    justifyContent: 'center',
+  },
+  filterDoneButtonText: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#fff',
+    letterSpacing: -0.2,
+  },
+  drawerRoot: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    overflow: 'visible',
+  },
+  drawerBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.28)',
+  },
+  drawerPanel: {
+    height: '100%',
+    backgroundColor: '#f5f5f7',
+    ...Platform.select({
+      web: { boxShadow: '-12px 0 32px rgba(0,0,0,0.18)' },
+      default: { elevation: 12 },
+    }),
+  },
+  drawerTopBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 8,
+    gap: 12,
+    backgroundColor: '#f5f5f7',
+  },
+  drawerTopBarMobile: {
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 54 : 18,
+    paddingBottom: 10,
+  },
+  drawerTitle: {
+    fontFamily,
+    flex: 1,
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    letterSpacing: -0.4,
+  },
+  drawerClose: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#e8e8ed',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  drawerBody: {
+    flex: 1,
+    minHeight: 0,
+  },
+  drawerBodyContent: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    paddingBottom: 48,
+  },
+  drawerBodyContentMobile: {
+    paddingHorizontal: 16,
+    paddingBottom: 32,
+  },
+  drawerHero: {
+    marginBottom: 20,
+    gap: 6,
+  },
+  drawerHeroRoute: {
+    fontFamily,
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#1a1a1a',
+    letterSpacing: -0.4,
+  },
+  drawerHeroMeta: {
+    fontFamily,
+    fontSize: 14,
+    color: '#6b6b6b',
+  },
+  drawerStatus: {
+    alignSelf: 'flex-start',
+    marginTop: 4,
+  },
+  drawerSectionLabel: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#8a8a8a',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginBottom: 8,
+    marginTop: 4,
+  },
+  drawerGroup: {
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    overflow: 'hidden',
+    marginBottom: 20,
+  },
+  drawerLoading: {
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  detailRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    minHeight: 44,
+    paddingVertical: 11,
+    paddingHorizontal: 16,
+    gap: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e5e5ea',
+  },
+  detailRowLast: {
+    borderBottomWidth: 0,
+  },
+  detailLabel: {
+    fontFamily,
+    width: 96,
+    flexShrink: 0,
+    fontSize: 14,
+    color: '#8a8a8a',
+    paddingTop: 1,
+  },
+  detailValue: {
+    fontFamily,
+    flex: 1,
+    fontSize: 14,
+    color: '#1a1a1a',
+  },
+  itemHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e5e5ea',
+    backgroundColor: '#fafafa',
+  },
+  itemTh: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#8a8a8a',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  itemRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#f0f0f0',
+    gap: 8,
+  },
+  itemRowLast: {
+    borderBottomWidth: 0,
+  },
+  itemColName: {
+    flex: 1,
+    minWidth: 0,
+    paddingRight: 8,
+  },
+  itemColQty: {
+    width: 52,
+    textAlign: 'right',
+  },
+  itemName: {
+    fontFamily,
+    fontSize: 14,
+    color: '#1a1a1a',
+  },
+  itemSku: {
+    fontFamily,
+    fontSize: 11,
+    color: '#8a8a8a',
+    marginTop: 2,
+  },
+  itemQty: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    fontVariant: ['tabular-nums'],
+    textAlign: 'right',
+  },
+  itemQtyShort: {
+    color: '#C43C3C',
+  },
+  itemEmpty: {
+    fontFamily,
+    fontSize: 13,
+    color: '#8a8a8a',
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+  },
+  itemTotalRow: {
+    backgroundColor: '#fafafa',
+  },
+  itemTotalLabel: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1a1a1a',
+  },
+  itemTotalQty: {
+    fontWeight: '700',
+  },
+  listTd: {
+    fontFamily,
+    fontSize: 13,
+    color: '#1a1a1a',
+  },
+  listRef: {
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
+  listItems: {
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
+  listComment: {
+    fontFamily,
+    fontSize: 11,
+    color: '#8a8a8a',
+    marginTop: 2,
+  },
+  colDate: {
+    width: 104,
+    paddingRight: 8,
+  },
+  colId: {
+    width: 78,
+    paddingRight: 8,
+  },
+  colFrom: {
+    flex: 1.15,
+    minWidth: 0,
+    paddingRight: 8,
+  },
+  colTo: {
+    flex: 1.05,
+    minWidth: 0,
+    paddingRight: 8,
+  },
+  colItems: {
+    width: 52,
+    paddingRight: 10,
+    textAlign: 'right',
+  },
+  colStatus: {
+    width: 88,
+    alignItems: 'flex-start',
+  },
+  statusPill: {
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  statusReceived: {
+    backgroundColor: '#E8F5EE',
+  },
+  statusOther: {
+    backgroundColor: '#F4F0E0',
+  },
+  statusPillText: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  statusReceivedText: {
+    color: '#2F8A4E',
+  },
+  statusOtherText: {
+    color: '#9A6B00',
   },
   signInWrap: {
     flex: 1,

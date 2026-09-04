@@ -14,10 +14,16 @@ import { AI_MODEL_PROVIDERS, loadAiApiKeys, saveAiApiKeys } from '../lib/aiKeys'
 import {
   USER_CATEGORIES,
   canManageAppAccess,
+  clearUserAppAccess,
   defaultAccessByRole,
+  getCategory,
+  hasFullAppAccess,
   listStaffProfiles,
   loadRoleAppAccess,
+  loadUserAppAccessMap,
+  resolvedAccessForProfile,
   saveRoleAppAccess,
+  saveUserAppAccess,
   updateStaffAccess,
 } from '../lib/permissions';
 import { getSupabaseConnectionStatus } from '../lib/supabase';
@@ -109,7 +115,7 @@ function SettingsHome({ onOpenAiModels, onOpenPermissions, onOpenDatabase, onOpe
           <View style={styles.menuTextWrap}>
             <Text style={styles.menuLabel}>Permissions</Text>
             <Text style={styles.menuHint}>
-              App visibility by user category, plus camera and microphone access
+              Apps and filters for each signed-in employee, plus camera and microphone
             </Text>
           </View>
           <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
@@ -246,19 +252,57 @@ function staffName(row) {
   return row.fullName || [row.firstName, row.lastName].filter(Boolean).join(' ') || row.email || row.aureusLogin || 'Staff';
 }
 
-function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved }) {
+function personDraftFromResolved(resolved) {
+  return {
+    visibleApps: [...(resolved.visibleApps || [])],
+    filterableApps: [...(resolved.filterableApps || [])],
+  };
+}
+
+function accessSummary(row, accessByRole, userAccessMap, catalogKeys) {
+  if (hasFullAppAccess(row)) return 'All apps · can filter';
+  const resolved = resolvedAccessForProfile(row, accessByRole, catalogKeys, userAccessMap[row.id]);
+  const filterCount = resolved.filterableApps.length;
+  const custom = resolved.inherited ? '' : ' · custom';
+  return `${resolved.visibleApps.length} app${resolved.visibleApps.length === 1 ? '' : 's'} · filter ${filterCount}${custom}`;
+}
+
+function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUserAccessSaved }) {
   const catalogKeys = useMemo(() => (apps || []).map((app) => app.key), [apps]);
+  const actorId = session?.supabaseUserId || session?.profile?.id;
   const [activeRole, setActiveRole] = useState('precious_metal_analyst');
   const [draft, setDraft] = useState(() => defaultAccessByRole(catalogKeys));
   const [staff, setStaff] = useState([]);
+  const [userAccessMap, setUserAccessMap] = useState({});
+  const [staffQuery, setStaffQuery] = useState('');
+  const [expandedId, setExpandedId] = useState('');
+  const [personDraft, setPersonDraft] = useState({ visibleApps: [], filterableApps: [] });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [personSaving, setPersonSaving] = useState(false);
   const [updatingId, setUpdatingId] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
   const activeCategory = USER_CATEGORIES.find((category) => category.key === activeRole);
   const locked = activeRole === 'system_admin';
+  const expandedRow = staff.find((row) => row.id === expandedId) || null;
+  const expandedResolved = expandedRow
+    ? resolvedAccessForProfile(expandedRow, draft, catalogKeys, userAccessMap[expandedRow.id])
+    : null;
+  const expandedLocked = Boolean(expandedResolved?.locked);
+
+  const visibleStaff = useMemo(() => {
+    const q = staffQuery.trim().toLowerCase();
+    if (!q) return staff;
+    return staff.filter((row) => {
+      const haystack = [staffName(row), row.email, row.aureusLogin, row.locationName]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [staff, staffQuery]);
 
   useEffect(() => {
     let cancelled = false;
@@ -267,15 +311,17 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved }) {
       setLoading(true);
       setError('');
       try {
-        const [access, people] = await Promise.all([
+        const [access, people, userAccess] = await Promise.all([
           loadRoleAppAccess(catalogKeys),
           listStaffProfiles().catch(() => []),
+          loadUserAppAccessMap(catalogKeys),
         ]);
         if (cancelled) return;
         setDraft(access.byRole);
         setStaff(people);
-        if (access.error) {
-          setError(access.error);
+        setUserAccessMap(userAccess.byUser);
+        if (access.error || userAccess.error) {
+          setError(access.error || userAccess.error);
         }
       } catch (nextError) {
         if (!cancelled) {
@@ -310,14 +356,103 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved }) {
     setError('');
     setMessage('');
     try {
-      const next = await saveRoleAppAccess(draft, catalogKeys, session?.supabaseUserId || session?.profile?.id);
+      const next = await saveRoleAppAccess(draft, catalogKeys, actorId);
       setDraft(next);
       onAccessSaved?.(next);
-      setMessage('App visibility saved.');
+      if (expandedRow && !userAccessMap[expandedRow.id] && !hasFullAppAccess(expandedRow)) {
+        setPersonDraft(
+          personDraftFromResolved(resolvedAccessForProfile(expandedRow, next, catalogKeys, null)),
+        );
+      }
+      setMessage('Category defaults saved.');
     } catch (nextError) {
       setError(nextError?.message || 'Could not save app visibility.');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const openPersonApps = (row) => {
+    if (expandedId === row.id) {
+      setExpandedId('');
+      return;
+    }
+    const resolved = resolvedAccessForProfile(row, draft, catalogKeys, userAccessMap[row.id]);
+    setPersonDraft(personDraftFromResolved(resolved));
+    setExpandedId(row.id);
+    setMessage('');
+  };
+
+  const togglePersonApp = (appKey) => {
+    if (expandedLocked || personSaving) return;
+    setMessage('');
+    setPersonDraft((current) => {
+      const visible = current.visibleApps.includes(appKey);
+      const visibleApps = visible
+        ? current.visibleApps.filter((key) => key !== appKey)
+        : [...current.visibleApps, appKey];
+      const filterableApps = visible
+        ? current.filterableApps.filter((key) => key !== appKey)
+        : current.filterableApps.includes(appKey)
+          ? current.filterableApps
+          : [...current.filterableApps, appKey];
+      return { visibleApps, filterableApps };
+    });
+  };
+
+  const togglePersonFilter = (appKey) => {
+    if (expandedLocked || personSaving) return;
+    if (!personDraft.visibleApps.includes(appKey)) return;
+    setMessage('');
+    setPersonDraft((current) => {
+      const on = current.filterableApps.includes(appKey);
+      const filterableApps = on
+        ? current.filterableApps.filter((key) => key !== appKey)
+        : [...current.filterableApps, appKey];
+      return { ...current, filterableApps };
+    });
+  };
+
+  const handleSavePersonApps = async (row) => {
+    if (personSaving || expandedLocked) return;
+    setPersonSaving(true);
+    setError('');
+    setMessage('');
+    try {
+      const saved = await saveUserAppAccess(row.id, personDraft, catalogKeys, actorId);
+      setUserAccessMap((current) => ({ ...current, [row.id]: saved }));
+      onUserAccessSaved?.(row.id, saved);
+      setMessage(`Saved apps for ${staffName(row)}.`);
+    } catch (nextError) {
+      setError(nextError?.message || "Could not save that person's apps.");
+    } finally {
+      setPersonSaving(false);
+    }
+  };
+
+  const handleResetPersonApps = async (row) => {
+    if (personSaving || expandedLocked) return;
+    setPersonSaving(true);
+    setError('');
+    setMessage('');
+    try {
+      await clearUserAppAccess(row.id);
+      setUserAccessMap((current) => {
+        const next = { ...current };
+        delete next[row.id];
+        return next;
+      });
+      const resolved = resolvedAccessForProfile(row, draft, catalogKeys, null);
+      setPersonDraft(personDraftFromResolved(resolved));
+      onUserAccessSaved?.(row.id, null);
+      const category = getCategory(row.appRole);
+      setMessage(
+        `Restored ${staffName(row)} to ${category?.label || 'category'} defaults.`,
+      );
+    } catch (nextError) {
+      setError(nextError?.message || 'Could not restore category defaults.');
+    } finally {
+      setPersonSaving(false);
     }
   };
 
@@ -334,6 +469,15 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved }) {
       });
       setStaff((current) => current.map((entry) => (entry.id === updated.id ? updated : entry)));
       onStaffAccessSaved?.(updated);
+      if (expandedId === updated.id) {
+        const resolved = resolvedAccessForProfile(
+          updated,
+          draft,
+          catalogKeys,
+          userAccessMap[updated.id],
+        );
+        setPersonDraft(personDraftFromResolved(resolved));
+      }
       setMessage(`Updated ${staffName(updated)}.`);
     } catch (nextError) {
       setError(nextError?.message || 'Could not update that person.');
@@ -352,10 +496,187 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved }) {
 
   return (
     <>
-      <Text style={styles.sectionTitle}>App visibility</Text>
+      <Text style={styles.sectionTitle}>Employees with accounts</Text>
       <Text style={styles.aiIntro}>
-        Choose which apps each category can open. System Admin always has every app. A General
-        Manager can also be marked a System Admin, which grants every app.
+        Everyone who has signed in. Open a person to choose which apps they can see, and whether
+        they can filter inside each app. Category defaults apply until you save a custom set.
+        System Admin always has every app and can filter.
+      </Text>
+
+      {staff.length > 0 ? (
+        <View style={styles.staffSearch}>
+          <Ionicons name="search-outline" size={15} color="#8a8a8a" />
+          <TextInput
+            style={styles.staffSearchInput}
+            value={staffQuery}
+            onChangeText={setStaffQuery}
+            placeholder="Search name, email, store…"
+            placeholderTextColor="#999"
+            autoCapitalize="none"
+            autoCorrect={false}
+            clearButtonMode="while-editing"
+          />
+          {staffQuery ? (
+            <Pressable onPress={() => setStaffQuery('')} hitSlop={8}>
+              <Ionicons name="close-circle" size={15} color="#b0b0b0" />
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+
+      {staff.length === 0 ? (
+        <Text style={styles.menuHint}>No staff profiles yet. People appear here after they sign in.</Text>
+      ) : visibleStaff.length === 0 ? (
+        <Text style={styles.menuHint}>No employees match that search.</Text>
+      ) : (
+        visibleStaff.map((row) => {
+          const busy = updatingId === row.id;
+          const isSelf = row.id === actorId;
+          const showAdminToggle = row.appRole === 'general_manager';
+          const expanded = expandedId === row.id;
+          const summary = accessSummary(row, draft, userAccessMap, catalogKeys);
+          return (
+            <View key={row.id} style={[styles.staffRow, !row.isActive && styles.staffRowDisabled]}>
+              <Pressable
+                onPress={() => openPersonApps(row)}
+                style={styles.staffHeader}
+                accessibilityRole="button"
+                accessibilityState={{ expanded }}
+              >
+                <View style={styles.menuTextWrap}>
+                  <Text style={styles.menuLabel}>
+                    {staffName(row)}
+                    {!row.isActive ? '  ·  Access disabled' : ''}
+                  </Text>
+                  <Text style={styles.menuHint}>
+                    {[row.locationName || 'Store not set in Aureus', row.email || row.aureusLogin, summary]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </Text>
+                </View>
+                <Ionicons
+                  name={expanded ? 'chevron-up' : 'chevron-down'}
+                  size={16}
+                  color="#9a9a9a"
+                />
+              </Pressable>
+              <View style={styles.staffControls}>
+                <CategorySelect
+                  value={row.appRole}
+                  disabled={busy || !row.isActive}
+                  onChange={(appRole) => handleStaffChange(row, { appRole })}
+                />
+                {showAdminToggle && row.isActive ? (
+                  <Pressable
+                    style={[styles.adminFlag, row.isSystemAdmin && styles.adminFlagOn]}
+                    onPress={() =>
+                      handleStaffChange(row, { appRole: row.appRole, isSystemAdmin: !row.isSystemAdmin })
+                    }
+                    disabled={busy}
+                  >
+                    <Text style={[styles.adminFlagText, row.isSystemAdmin && styles.adminFlagTextOn]}>
+                      Also System Admin
+                    </Text>
+                  </Pressable>
+                ) : null}
+                {!isSelf ? (
+                  <Pressable
+                    style={[styles.adminFlag, !row.isActive && styles.accessFlagOff]}
+                    onPress={() => handleStaffChange(row, { isActive: !row.isActive })}
+                    disabled={busy}
+                    accessibilityRole="button"
+                    accessibilityLabel={row.isActive ? 'Disable access' : 'Enable access'}
+                  >
+                    <Text style={[styles.adminFlagText, !row.isActive && styles.accessFlagOffText]}>
+                      {row.isActive ? 'Disable access' : 'Enable access'}
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
+
+              {expanded ? (
+                <View style={styles.personApps}>
+                  {expandedLocked ? (
+                    <Text style={styles.menuHint}>
+                      System Admin always sees every app and can filter in each one.
+                    </Text>
+                  ) : (
+                    <Text style={styles.menuHint}>
+                      {userAccessMap[row.id]
+                        ? 'Custom apps for this person. Filter is only available on apps they can open.'
+                        : `Using ${getCategory(row.appRole)?.label || 'category'} defaults until you save.`}
+                    </Text>
+                  )}
+                  <View style={styles.appAccessHeader}>
+                    <Text style={styles.appAccessHeaderLabel}>App</Text>
+                    <Text style={styles.appAccessColLabel}>Show</Text>
+                    <Text style={[styles.appAccessColLabel, styles.appAccessColLabelFilter]}>
+                      Filter
+                    </Text>
+                  </View>
+                  {(apps || []).map((app) => {
+                    const visible = expandedLocked || personDraft.visibleApps.includes(app.key);
+                    const filterOn = expandedLocked || personDraft.filterableApps.includes(app.key);
+                    return (
+                      <View key={app.key} style={styles.appRow}>
+                        <View style={[styles.menuIcon, { backgroundColor: app.tint || '#F4F4F5' }]}>
+                          <Ionicons
+                            name={app.icon || 'apps-outline'}
+                            size={16}
+                            color={app.accent || '#52525B'}
+                          />
+                        </View>
+                        <Text style={styles.appRowLabel}>{app.label}</Text>
+                        <AccessToggle
+                          on={visible}
+                          disabled={expandedLocked}
+                          onPress={() => togglePersonApp(app.key)}
+                        />
+                        <View style={styles.filterToggleWrap}>
+                          <AccessToggle
+                            on={visible && filterOn}
+                            disabled={expandedLocked || !visible}
+                            onPress={() => togglePersonFilter(app.key)}
+                          />
+                        </View>
+                      </View>
+                    );
+                  })}
+                  {!expandedLocked ? (
+                    <View style={styles.personAppActions}>
+                      <Pressable
+                        style={[styles.saveButton, personSaving && styles.saveButtonDisabled]}
+                        onPress={() => handleSavePersonApps(row)}
+                        disabled={personSaving}
+                      >
+                        {personSaving ? (
+                          <ActivityIndicator color="#fff" />
+                        ) : (
+                          <Text style={styles.saveButtonText}>Save apps</Text>
+                        )}
+                      </Pressable>
+                      {userAccessMap[row.id] ? (
+                        <Pressable
+                          style={[styles.resetButton, personSaving && styles.saveButtonDisabled]}
+                          onPress={() => handleResetPersonApps(row)}
+                          disabled={personSaving}
+                        >
+                          <Text style={styles.resetButtonText}>Use category defaults</Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                  ) : null}
+                </View>
+              ) : null}
+            </View>
+          );
+        })
+      )}
+
+      <Text style={[styles.sectionTitle, styles.sectionTitleSpaced]}>Category defaults</Text>
+      <Text style={styles.aiIntro}>
+        Starting apps for each category when a person has no custom set. System Admin always has
+        every app. A General Manager can also be marked a System Admin.
       </Text>
 
       <View style={styles.categoryTabs}>
@@ -397,75 +718,11 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved }) {
         onPress={handleSave}
         disabled={saving}
       >
-        {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveButtonText}>Save visibility</Text>}
+        {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveButtonText}>Save defaults</Text>}
       </Pressable>
 
-      <Text style={[styles.sectionTitle, styles.sectionTitleSpaced]}>People</Text>
-      <Text style={styles.aiIntro}>
-        Assign each signed-in person to a category. General Managers can also be System Admins.
-        Disabling access signs the person out everywhere and blocks new sign-ins until re-enabled.
-      </Text>
-
-      {staff.length === 0 ? (
-        <Text style={styles.menuHint}>No staff profiles yet. People appear here after they sign in.</Text>
-      ) : (
-        staff.map((row) => {
-          const busy = updatingId === row.id;
-          const isSelf = row.id === (session?.supabaseUserId || session?.profile?.id);
-          const showAdminToggle = row.appRole === 'general_manager';
-          return (
-            <View key={row.id} style={[styles.staffRow, !row.isActive && styles.staffRowDisabled]}>
-              <View style={styles.menuTextWrap}>
-                <Text style={styles.menuLabel}>
-                  {staffName(row)}
-                  {!row.isActive ? '  ·  Access disabled' : ''}
-                </Text>
-                <Text style={styles.menuHint}>
-                  {[row.locationName || 'Store not set in Aureus', row.email || row.aureusLogin]
-                    .filter(Boolean)
-                    .join(' · ')}
-                </Text>
-              </View>
-              <View style={styles.staffControls}>
-                <CategorySelect
-                  value={row.appRole}
-                  disabled={busy || !row.isActive}
-                  onChange={(appRole) => handleStaffChange(row, { appRole })}
-                />
-                {showAdminToggle && row.isActive ? (
-                  <Pressable
-                    style={[styles.adminFlag, row.isSystemAdmin && styles.adminFlagOn]}
-                    onPress={() =>
-                      handleStaffChange(row, { appRole: row.appRole, isSystemAdmin: !row.isSystemAdmin })
-                    }
-                    disabled={busy}
-                  >
-                    <Text style={[styles.adminFlagText, row.isSystemAdmin && styles.adminFlagTextOn]}>
-                      Also System Admin
-                    </Text>
-                  </Pressable>
-                ) : null}
-                {!isSelf ? (
-                  <Pressable
-                    style={[styles.adminFlag, !row.isActive && styles.accessFlagOff]}
-                    onPress={() => handleStaffChange(row, { isActive: !row.isActive })}
-                    disabled={busy}
-                    accessibilityRole="button"
-                    accessibilityLabel={row.isActive ? 'Disable access' : 'Enable access'}
-                  >
-                    <Text style={[styles.adminFlagText, !row.isActive && styles.accessFlagOffText]}>
-                      {row.isActive ? 'Disable access' : 'Enable access'}
-                    </Text>
-                  </Pressable>
-                ) : null}
-              </View>
-            </View>
-          );
-        })
-      )}
-
-      {error ? <Text style={styles.errorText}>{error}</Text> : null}
-      {message ? <Text style={styles.savedText}>{message}</Text> : null}
+      {error ? <Text style={[styles.errorText, styles.feedbackSpaced]}>{error}</Text> : null}
+      {message ? <Text style={[styles.savedText, styles.feedbackSpaced]}>{message}</Text> : null}
     </>
   );
 }
@@ -579,7 +836,7 @@ function DevicePermissionsPanel() {
   );
 }
 
-function PermissionsPanel({ session, apps, canManageAccess, onAccessSaved, onStaffAccessSaved }) {
+function PermissionsPanel({ session, apps, canManageAccess, onAccessSaved, onStaffAccessSaved, onUserAccessSaved }) {
   return (
     <ScrollView style={styles.body} contentContainerStyle={styles.permissionsContent}>
       {canManageAccess ? (
@@ -588,13 +845,14 @@ function PermissionsPanel({ session, apps, canManageAccess, onAccessSaved, onSta
           apps={apps}
           onAccessSaved={onAccessSaved}
           onStaffAccessSaved={onStaffAccessSaved}
+          onUserAccessSaved={onUserAccessSaved}
         />
       ) : (
         <>
           <Text style={styles.sectionTitle}>App visibility</Text>
           <Text style={styles.aiIntro}>
-            A System Admin sets which apps each user category can open. Ask them if you need access
-            to another tool.
+            A System Admin sets which apps you can open and whether you can filter inside each
+            one. Ask them if you need access to another tool.
           </Text>
         </>
       )}
@@ -802,6 +1060,7 @@ export default function SettingsScreen({
   storeName,
   onAccessSaved,
   onStaffAccessSaved,
+  onUserAccessSaved,
 }) {
   const canManageAccess = canManageAppAccess(session?.profile);
 
@@ -817,6 +1076,7 @@ export default function SettingsScreen({
         canManageAccess={canManageAccess}
         onAccessSaved={onAccessSaved}
         onStaffAccessSaved={onStaffAccessSaved}
+        onUserAccessSaved={onUserAccessSaved}
       />
     );
   }
@@ -1023,7 +1283,7 @@ const styles = StyleSheet.create({
   },
   permissionsContent: {
     paddingBottom: 40,
-    maxWidth: 640,
+    maxWidth: 720,
   },
   sectionTitle: {
     fontFamily,
@@ -1191,5 +1451,100 @@ const styles = StyleSheet.create({
   },
   accessFlagOffText: {
     color: '#B42318',
+  },
+  staffSearch: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#d0d0d0',
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    backgroundColor: '#fff',
+    marginBottom: 12,
+    gap: 8,
+  },
+  staffSearchInput: {
+    flex: 1,
+    fontFamily,
+    fontSize: 13,
+    color: '#1a1a1a',
+    paddingVertical: 10,
+    outlineStyle: 'none',
+  },
+  staffHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  personApps: {
+    marginTop: 4,
+    paddingTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#efefef',
+    gap: 4,
+  },
+  appAccessHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+  appAccessHeaderLabel: {
+    flex: 1,
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#8a8a8a',
+    marginLeft: 44,
+  },
+  appAccessColLabel: {
+    width: 40,
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#8a8a8a',
+    textAlign: 'center',
+  },
+  appAccessColLabelFilter: {
+    marginLeft: 8,
+  },
+  filterToggleWrap: {
+    width: 40,
+    alignItems: 'center',
+    marginLeft: 8,
+  },
+  personAppActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 12,
+  },
+  resetButton: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#d0d0d0',
+    borderRadius: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    backgroundColor: '#fff',
+    minHeight: 40,
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  resetButtonText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1a1a1a',
+  },
+  feedbackSpaced: {
+    marginTop: 16,
   },
 });

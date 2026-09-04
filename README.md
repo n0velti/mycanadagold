@@ -17,7 +17,7 @@ LoginScreen ──► Edge Function `aureus-login` ──► Aureus POS /login
 
 Everything after sign-in is enforced twice:
 
-- **Database (RLS)** — every policy requires `is_active_staff()`: a JWT minted by `aureus-login` (`app_metadata.provider = 'aureus'`) whose Aureus identity matches an active, verified profile. Deactivating a profile revokes that user's sessions immediately (trigger).
+- **Database (RLS)** — every policy requires `is_active_staff()`: a JWT minted by `aureus-login` (`app_metadata.aureus_user_id`, writable only by the service role) whose Aureus identity matches an active, verified profile. `app_metadata.provider` is not used — GoTrue resets it to `email` when the OTP session is minted. Deactivating a profile revokes that user's sessions immediately (trigger).
 - **Edge Function `proxy`** — the only path to third-party APIs (Anthropic, OpenAI, OpenRouter, FINTRAC, Rippling, Google reviews). It re-verifies the JWT and the profile on every call. Vendor keys and the Rippling OAuth client secret exist only as function secrets; the browser bundle contains none of them (`npm run check:secrets` enforces this).
 
 Client secrets that must exist on the device (FINTRAC portal token, Rippling token, optional personal AI keys) are stored with `expo-secure-store` on native. On web they live in `localStorage`, scoped to the app origin and protected by the CSP in `public/index.html`.

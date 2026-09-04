@@ -13,13 +13,16 @@ import {
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
+import { useAppAccess } from '../lib/permissions';
 import {
+  countedPhysicalTotal,
   fetchBullionAudit,
   fetchBullionAuditStores,
   formatQty,
   formatWeekColumnLabel,
   saveInventoryLog,
 } from '../lib/bullionAudit';
+import { saveNightCount } from '../lib/bullionNight';
 import {
   analyzeBullionDiscrepancy,
   buildUnbalancedBullionItems,
@@ -220,8 +223,17 @@ function qtyInputText(value) {
   return formatQty(value);
 }
 
-const QTY_FIELDS = ['vault', 'store', 'other'];
-const BULLION_TABLE_BASE_WIDTH = 628;
+function emptyQtyDraft() {
+  return { vault: '', night: '', store: '', other: '' };
+}
+
+function countedTotalFromDraft(draft) {
+  return countedPhysicalTotal(parseQtyInput(draft?.vault), parseQtyInput(draft?.night));
+}
+
+const QTY_FIELDS = ['vault', 'night', 'store', 'other'];
+const QTY_HEADER_LABELS = { vault: 'Vault', night: 'Night', store: 'Store', other: 'Other' };
+const BULLION_TABLE_BASE_WIDTH = 692;
 const BULLION_HIST_COL_WIDTH = 48;
 
 function DateChip({ label, value, onChange, maximumDate }) {
@@ -473,6 +485,7 @@ function BullionQtyInput({
   value,
   onChangeText,
   onSubmitEditing,
+  onBlur,
   inputRef,
   label,
   dense,
@@ -492,6 +505,7 @@ function BullionQtyInput({
       blurOnSubmit={false}
       returnKeyType="next"
       onSubmitEditing={onSubmitEditing}
+      onBlur={onBlur}
       accessibilityLabel={label}
       style={[styles.bInput, dense && styles.bInputDense]}
       onFocus={(event) => {
@@ -514,14 +528,12 @@ function BullionTableRow({
   savingAll,
   showDiff,
   onChangeField,
+  onBlurField,
   onUpdate,
   registerQtyInput,
   onSubmitField,
 }) {
-  const vault = parseQtyInput(draft.vault);
-  const store = parseQtyInput(draft.store);
-  const other = parseQtyInput(draft.other);
-  const total = (vault ?? 0) + (store ?? 0) + (other ?? 0);
+  const total = countedTotalFromDraft(draft);
   const accent = metalAccent(row.metal);
   const mismatch =
     showDiff && Math.abs(total - (Number(row.systemCount) || 0)) >= 0.0005;
@@ -562,6 +574,7 @@ function BullionTableRow({
             value={draft[field]}
             onChangeText={(value) => onChangeField(field, value)}
             onSubmitEditing={() => onSubmitField(field)}
+            onBlur={field === 'night' ? () => onBlurField?.(field) : undefined}
             inputRef={registerQtyInput(field)}
             label={field}
             dense={dense}
@@ -689,6 +702,8 @@ function BullionAuditPanel({
   storeFilter,
   embedded = false,
 }) {
+  const { canFilter } = useAppAccess();
+  const allowFilters = canFilter('audit');
   const isMobile = useIsMobile();
   const [date, setDate] = useState(() => parseDateParam(new Date()));
   const [stores, setStores] = useState([]);
@@ -716,8 +731,10 @@ function BullionAuditPanel({
   const storesRequestId = useRef(0);
   const aiAbortRef = useRef(null);
   const qtyInputRefs = useRef(new Map());
+  const nightSaveTimers = useRef(new Map());
+  const draftsRef = useRef({});
 
-  const lockedStore = Boolean(storeFilter);
+  const lockedStore = Boolean(storeFilter) || !allowFilters;
   const dateKey = formatDateParam(date);
   const todayKey = formatDateParam(parseDateParam(new Date()));
   const isToday = dateKey === todayKey;
@@ -820,6 +837,7 @@ function BullionAuditPanel({
         date: dateKey,
         locationId: selectedStore.id,
         systemKey: selectedStore.systemKey,
+        storeName: selectedStore.name,
       });
       if (id !== requestId.current) return;
 
@@ -830,11 +848,13 @@ function BullionAuditPanel({
       for (const row of result.rows) {
         nextDrafts[row.id] = {
           vault: qtyInputText(row.vaultCount),
+          night: qtyInputText(row.nightCount),
           store: qtyInputText(row.storeCount),
           other: qtyInputText(row.otherCount),
         };
-        if (row.amount != null) nextConfirmed[row.id] = true;
+        if (row.amount != null || row.nightCount != null) nextConfirmed[row.id] = true;
       }
+      draftsRef.current = nextDrafts;
       setDrafts(nextDrafts);
       setConfirmed(nextConfirmed);
     } catch (err) {
@@ -845,15 +865,18 @@ function BullionAuditPanel({
     } finally {
       if (id === requestId.current) setLoading(false);
     }
-  }, [session, dateKey, selectedStore?.id, selectedStore?.systemKey]);
+  }, [session, dateKey, selectedStore?.id, selectedStore?.systemKey, selectedStore?.name]);
 
   useEffect(() => {
     load();
   }, [load]);
 
   useEffect(() => {
+    const timers = nightSaveTimers.current;
     return () => {
       aiAbortRef.current?.abort();
+      for (const timer of timers.values()) clearTimeout(timer);
+      timers.clear();
     };
   }, []);
 
@@ -866,10 +889,11 @@ function BullionAuditPanel({
   const visibleRows = useMemo(() => {
     const q = query.trim().toLowerCase();
     return rows.filter((row) => {
-      if (hideZero && !(row.systemCount > 0 || row.amount > 0)) {
+      if (hideZero && !(row.systemCount > 0 || row.amount > 0 || row.nightCount > 0)) {
         const draft = drafts[row.id];
         const vault = parseQtyInput(draft?.vault);
-        if (!(vault > 0)) return false;
+        const night = parseQtyInput(draft?.night);
+        if (!(vault > 0) && !(night > 0)) return false;
       }
       if (!q) return true;
       return [row.name, row.sku, row.metal, row.description]
@@ -883,18 +907,69 @@ function BullionAuditPanel({
     [rows, drafts],
   );
 
+  const clearNightSaveTimer = (productId) => {
+    const timers = nightSaveTimers.current;
+    const timer = timers.get(productId);
+    if (timer) clearTimeout(timer);
+    timers.delete(productId);
+  };
+
+  const persistNightCount = async (productId, value) => {
+    if (!selectedStore?.name) return;
+    clearNightSaveTimer(productId);
+    const saved = await saveNightCount(
+      selectedStore.name,
+      productId,
+      parseQtyInput(value),
+      session?.supabaseUserId,
+    );
+    setRows((prev) =>
+      prev.map((entry) =>
+        entry.id === productId
+          ? {
+              ...entry,
+              nightCount: saved,
+              amount: countedPhysicalTotal(entry.vaultCount, saved),
+            }
+          : entry,
+      ),
+    );
+  };
+
+  const scheduleNightSave = (productId, value) => {
+    if (!selectedStore?.name) return;
+    clearNightSaveTimer(productId);
+    const storeName = selectedStore.name;
+    const userId = session?.supabaseUserId;
+    nightSaveTimers.current.set(
+      productId,
+      setTimeout(() => {
+        nightSaveTimers.current.delete(productId);
+        saveNightCount(storeName, productId, parseQtyInput(value), userId).catch((err) => {
+          setError(err?.message || 'Failed to save night count.');
+        });
+      }, 450),
+    );
+  };
+
   const setDraftField = (productId, field, value) => {
-    setDrafts((prev) => ({
-      ...prev,
-      [productId]: {
-        vault: '',
-        store: '',
-        other: '',
-        ...(prev[productId] || {}),
-        [field]: value,
-      },
-    }));
+    setDrafts((prev) => {
+      const next = {
+        ...prev,
+        [productId]: {
+          ...emptyQtyDraft(),
+          ...(prev[productId] || {}),
+          [field]: value,
+        },
+      };
+      draftsRef.current = next;
+      return next;
+    });
+    if (field === 'night') scheduleNightSave(productId, value);
     setConfirmed((prev) => {
+      if (field === 'night') {
+        return { ...prev, [productId]: true };
+      }
       if (!prev[productId]) return prev;
       const next = { ...prev };
       delete next[productId];
@@ -912,28 +987,43 @@ function BullionAuditPanel({
   };
 
   const persistRow = async (row) => {
-    const draft = drafts[row.id] || {};
+    const draft = draftsRef.current[row.id] || drafts[row.id] || {};
     const vaultCount = parseQtyInput(draft.vault);
+    const nightCount = parseQtyInput(draft.night);
     const storeCount = parseQtyInput(draft.store);
     const otherCount = parseQtyInput(draft.other);
     const token = selectedStore.token || session.token;
     const baseUrl = selectedStore.baseUrl || session.baseUrl;
-    await saveInventoryLog(
-      token,
-      {
-        productId: row.id,
-        locationId: selectedStore.id,
-        date: dateKey,
-        vaultCount,
-        storeCount,
-        otherCount,
-      },
-      baseUrl,
-    );
-    const total = (vaultCount ?? 0) + (storeCount ?? 0) + (otherCount ?? 0);
+    clearNightSaveTimer(row.id);
+    const shouldSaveNight =
+      String(draft.night || '').trim() !== '' || row.nightCount != null;
+    const [ , savedNight] = await Promise.all([
+      saveInventoryLog(
+        token,
+        {
+          productId: row.id,
+          locationId: selectedStore.id,
+          date: dateKey,
+          vaultCount,
+          storeCount,
+          otherCount,
+        },
+        baseUrl,
+      ),
+      shouldSaveNight
+        ? saveNightCount(
+            selectedStore.name,
+            row.id,
+            nightCount,
+            session?.supabaseUserId,
+          )
+        : Promise.resolve(row.nightCount ?? null),
+    ]);
+    const total = countedPhysicalTotal(vaultCount, savedNight);
     return {
       id: row.id,
       vaultCount,
+      nightCount: savedNight,
       storeCount,
       otherCount,
       amount: total,
@@ -960,6 +1050,7 @@ function BullionAuditPanel({
             ? {
                 ...entry,
                 vaultCount: saved.vaultCount,
+                nightCount: saved.nightCount,
                 storeCount: saved.storeCount,
                 otherCount: saved.otherCount,
                 amount: saved.amount,
@@ -1033,6 +1124,7 @@ function BullionAuditPanel({
             return {
               ...entry,
               vaultCount: saved.vaultCount,
+              nightCount: saved.nightCount,
               storeCount: saved.storeCount,
               otherCount: saved.otherCount,
               amount: saved.amount,
@@ -1379,7 +1471,8 @@ function BullionAuditPanel({
             </Pressable>
           ) : null}
         </View>
-        {!isMobile ? (
+        {allowFilters ? (
+        !isMobile ? (
           <SegmentedControl
             options={[
               { key: 'nonzero', label: 'Non-zero' },
@@ -1400,7 +1493,8 @@ function BullionAuditPanel({
               color={hideZero ? TEXT : SECONDARY}
             />
           </Pressable>
-        )}
+        )
+        ) : null}
         {lockedStore ? (
           <Text style={styles.storeTitle} numberOfLines={1}>
             {selectedStore?.name || storeFilter || 'Store'}
@@ -1538,26 +1632,26 @@ function BullionAuditPanel({
                     </Text>
                   ))}
                   <Text style={[styles.bullionH, styles.bColNum]}>Sys</Text>
-                  <Text style={[styles.bullionH, styles.bColInput, styles.bullionHFill]}>
-                    Vault
-                  </Text>
-                  <Text style={[styles.bullionH, styles.bColInput, styles.bullionHFill]}>
-                    Store
-                  </Text>
-                  <Text style={[styles.bullionH, styles.bColInput, styles.bullionHFill]}>
-                    Other
-                  </Text>
+                  {QTY_FIELDS.map((field) => (
+                    <Text
+                      key={field}
+                      style={[styles.bullionH, styles.bColInput, styles.bullionHFill]}
+                    >
+                      {QTY_HEADER_LABELS[field]}
+                    </Text>
+                  ))}
                   <Text style={[styles.bullionH, styles.bColNum]}>Tot</Text>
                   <View style={styles.bColDiff} />
                   <View style={styles.bColAction} />
                 </View>
                 {visibleRows.map((row, rowIndex) => {
-                  const draft = drafts[row.id] || { vault: '', store: '', other: '' };
+                  const draft = drafts[row.id] || emptyQtyDraft();
                   const isSaving = savingId === row.id;
                   const isConfirmed = Boolean(confirmed[row.id]);
                   const showDiff =
                     isConfirmed ||
                     draft.vault !== '' ||
+                    draft.night !== '' ||
                     draft.store !== '' ||
                     draft.other !== '';
                   const metal = metalGroupLabel(row);
@@ -1586,9 +1680,27 @@ function BullionAuditPanel({
                         savingAll={savingAll}
                         showDiff={showDiff}
                         onChangeField={(field, value) => setDraftField(row.id, field, value)}
+                        onBlurField={(field) => {
+                          if (field !== 'night') return;
+                          const next = parseQtyInput(draftsRef.current[row.id]?.night);
+                          if (next == null && row.nightCount == null) return;
+                          persistNightCount(row.id, draftsRef.current[row.id]?.night).catch((err) => {
+                            setError(err?.message || 'Failed to save night count.');
+                          });
+                        }}
                         onUpdate={() => updateRow(row)}
                         registerQtyInput={(field) => registerQtyInput(row.id, field)}
-                        onSubmitField={(field) => focusNextQtyInput(rowIndex, field)}
+                        onSubmitField={(field) => {
+                          if (field === 'night') {
+                            const next = parseQtyInput(draftsRef.current[row.id]?.night);
+                            if (next != null || row.nightCount != null) {
+                              persistNightCount(row.id, draftsRef.current[row.id]?.night).catch((err) => {
+                                setError(err?.message || 'Failed to save night count.');
+                              });
+                            }
+                          }
+                          focusNextQtyInput(rowIndex, field);
+                        }}
                       />
                     </Fragment>
                   );
@@ -1619,6 +1731,8 @@ function CashAuditPanel({
   storeFilter,
   embedded = false,
 }) {
+  const { canFilter } = useAppAccess();
+  const allowFilters = canFilter('audit');
   const isMobile = useIsMobile();
   const [date, setDate] = useState(() => parseDateParam(new Date()));
   const [selectedStore, setSelectedStore] = useState(
@@ -1653,7 +1767,7 @@ function CashAuditPanel({
   const aiAbortRef = useRef(null);
   const cashInputRefs = useRef(new Map());
 
-  const lockedStore = Boolean(storeFilter);
+  const lockedStore = Boolean(storeFilter) || !allowFilters;
   const dateKey = formatDateParam(date);
   const todayKey = formatDateParam(parseDateParam(new Date()));
   const isToday = dateKey === todayKey;

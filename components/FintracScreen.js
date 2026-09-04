@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useAppAccess } from '../lib/permissions';
 import {
   buildFintracReportPortalUrl,
   clearFintracSession,
@@ -55,6 +56,7 @@ import {
   needsPaymentEnrichment,
   parseDateParam,
   resolvePosAuthForRow,
+  rowMatchesQuery,
   withPaymentBreakdown,
 } from '../lib/transactions';
 
@@ -660,6 +662,8 @@ function FintracRow({
 }
 
 export default function FintracScreen({ session, onRequireLogin }) {
+  const { canFilter } = useAppAccess();
+  const allowFilters = canFilter('fintrac');
   const initialRange = useMemo(() => defaultDateRange(31), []);
   const [startDate, setStartDate] = useState(() => initialRange.start);
   const [endDate, setEndDate] = useState(() => initialRange.end);
@@ -702,6 +706,11 @@ export default function FintracScreen({ session, onRequireLogin }) {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (allowFilters) return;
+    setSelectedStore(null);
+  }, [allowFilters]);
 
   const applyIrsOverlay = useCallback((txRows, irsMap) => {
     if (!irsMap || irsMap.size === 0) return txRows;
@@ -861,9 +870,8 @@ export default function FintracScreen({ session, onRequireLogin }) {
     if (cashOnly) {
       result = result.filter((row) => isFintracCash(row));
     }
-    const q = query.trim().toLowerCase();
-    if (q) {
-      result = result.filter((row) => row.searchText.includes(q));
+    if (query.trim()) {
+      result = result.filter((row) => rowMatchesQuery(row, query));
     }
     return result;
   }, [rows, selectedStore, cashOnly, query]);
@@ -1313,6 +1321,7 @@ export default function FintracScreen({ session, onRequireLogin }) {
         </View>
       </View>
 
+      {allowFilters ? (
       <View style={styles.filterRow}>
         <Pressable
           style={[styles.filterChip, cashOnly && styles.filterChipActive]}
@@ -1329,7 +1338,9 @@ export default function FintracScreen({ session, onRequireLogin }) {
           </Text>
         </Pressable>
       </View>
+      ) : null}
 
+      {allowFilters ? (
       <View style={styles.storeFilterRow}>
         <Pressable
           style={[styles.storeChip, !selectedStore && styles.storeChipActive]}
@@ -1358,6 +1369,7 @@ export default function FintracScreen({ session, onRequireLogin }) {
           </Pressable>
         ))}
       </View>
+      ) : null}
 
       <View style={styles.metaRow}>
         <Text style={styles.metaText}>
