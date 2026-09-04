@@ -442,7 +442,10 @@ function AppEmployeesPanel({ session, onProfileUpdated }) {
           animationType="slide"
           onRequestClose={() => setSelectedId(null)}
         >
-          <View style={styles.mobileDetail}>
+          <View
+            style={styles.mobileDetail}
+            {...(Platform.OS === 'web' ? { className: 'cgold-mobile-sheet-top' } : null)}
+          >
             <StaffEmployeeDetail person={selected} compact onClose={() => setSelectedId(null)} />
           </View>
         </Modal>
@@ -1141,7 +1144,10 @@ function RipplingPanel() {
           animationType="slide"
           onRequestClose={() => setSelectedId(null)}
         >
-          <View style={styles.mobileDetail}>
+          <View
+            style={styles.mobileDetail}
+            {...(Platform.OS === 'web' ? { className: 'cgold-mobile-sheet-top' } : null)}
+          >
             <EmployeeDetail
               employee={selected}
               compact

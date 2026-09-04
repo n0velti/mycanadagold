@@ -473,7 +473,10 @@ export function AuditTxnDrawer({ visible, summary, detail, loading, error, onClo
         </Pressable>
 
         <Animated.View style={[styles.drawerPanel, { width: panelWidth, transform: [{ translateX: slide }] }]}>
-          <View style={[styles.drawerTopBar, isMobile && styles.drawerTopBarMobile]}>
+          <View
+            style={[styles.drawerTopBar, isMobile && styles.drawerTopBarMobile]}
+            {...(Platform.OS === 'web' && isMobile ? { className: 'cgold-mobile-sheet-top' } : null)}
+          >
             <Text style={styles.drawerTitle} numberOfLines={1}>
               {docLabel}
             </Text>
