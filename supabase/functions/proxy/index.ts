@@ -151,17 +151,24 @@ async function handleOpenAI(req: Request, body: ArrayBuffer | null): Promise<Res
 const AVATAR_IMAGE_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']);
 const AVATAR_MAX_BYTES = 8 * 1024 * 1024;
 const AVATAR_MODELS = ['gpt-image-1.5', 'gpt-image-1'];
+const AVATAR_DESCRIBE_MODELS = ['gpt-4.1-mini', 'gpt-4o-mini'];
+const AVATAR_DESCRIBE_TIMEOUT_MS = 25_000;
 
 /**
- * Locked look for every staff portrait. Identity (face, hair, glasses) comes
- * from the photo; wardrobe, lighting, and proportions stay in Canada Gold land.
+ * Shared Canada Gold look. Identity — sex, face, hair — is read from the photo
+ * and restated in the prompt so the model cannot default to a generic (often male) cartoon.
  */
 const AVATAR_STYLE_PROMPT = [
-  'Restyle this photograph as a polished 3D animated character portrait for the Canada Gold staff universe.',
-  'Art direction that every portrait must share: modern Pixar / Disney feature-film CGI, head-and-shoulders bust, centered, facing the camera, soft studio lighting with a gentle rim light, smooth skin with subtle highlights, large expressive eyes with detailed irises, slightly stylized proportions (narrower chin, softly rounded ears), voluminous hair with individual strands, friendly slight smile.',
+  'Edit this photograph into a polished 3D animated Canada Gold staff portrait of the SAME person.',
+  'This is a likeness of the photographed person, not a new character and not a generic cartoon.',
+  'Hard identity rules — violating any of these fails the request:',
+  '1. The cartoon must be immediately recognizable as the person in the photo.',
+  '2. Keep their sex and gender presentation exactly as photographed. If the photo is a woman or girl, the cartoon MUST be a woman or girl with feminine facial structure, hair length, and features — never a man. If the photo is a man or boy, the cartoon MUST be a man or boy — never a woman. Never default to a male character. Never swap or guess a different gender.',
+  '3. Keep age, face shape, bone structure, skin tone, eye color, hair color, hair length, how the hair is parted, facial hair or a clean-shaven face, freckles, moles, and glasses.',
+  '4. Do not give them a different haircut, an invented narrower chin, oversized generic cartoon eyes, or other stock Pixar features that erase who they are.',
+  'Shared look (style only — do not change identity): modern 3D feature-film CGI, head-and-shoulders bust, centered, facing the camera, soft studio lighting with a gentle rim light, smooth skin with subtle highlights, friendly slight smile.',
   'Background: plain dark charcoal-to-warm-gray studio gradient. No text, logos, watermarks, props, extra people, or scenery.',
-  'Identity lock: keep this exact person — age, face shape, skin tone, eye color, hair color and style, facial hair, freckles, and glasses. Do not invent a different person.',
-  'Wardrobe: a simple solid muted gold-olive crew-neck shirt with no logos, so every staff portrait belongs in the same Canada Gold world.',
+  'Wardrobe: the same simple solid muted gold-olive crew-neck shirt with no logos, worn by every staff member whether woman or man.',
 ].join(' ');
 
 function parseImageDataUrl(value: string): { mediaType: string; bytes: Uint8Array; filename: string } | null {
@@ -188,16 +195,75 @@ function isRetryableImageModelError(payload: unknown): boolean {
   return /model|unknown|not found|does not exist|not available/i.test(`${code} ${message}`);
 }
 
-function buildAvatarEditForm(image: { mediaType: string; bytes: Uint8Array; filename: string }, model: string): FormData {
+function sanitizeSubjectDescription(value: string): string {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.slice(0, 400);
+}
+
+function buildAvatarPrompt(subject: string): string {
+  if (!subject) return AVATAR_STYLE_PROMPT;
+  return `${AVATAR_STYLE_PROMPT} The person in the photo: ${subject}`;
+}
+
+function buildAvatarEditForm(
+  image: { mediaType: string; bytes: Uint8Array; filename: string },
+  model: string,
+  prompt: string,
+): FormData {
   const form = new FormData();
   form.set('model', model);
-  form.set('prompt', AVATAR_STYLE_PROMPT);
+  form.set('prompt', prompt);
   form.set('size', '1024x1024');
   form.set('quality', 'medium');
   form.set('input_fidelity', 'high');
   form.set('output_format', 'jpeg');
   form.set('image', new File([image.bytes], image.filename, { type: image.mediaType }));
   return form;
+}
+
+async function describePortraitSubject(key: string, dataUrl: string): Promise<string> {
+  const messages = [
+    {
+      role: 'user',
+      content: [
+        {
+          type: 'text',
+          text: [
+            'Describe the single person in this photo in one factual sentence for a portrait artist.',
+            'Include apparent sex or gender presentation (woman, man, girl, boy, or as photographed), approximate age,',
+            'face shape, skin tone, eye color, hair color, hair length, hair style, facial hair or clean-shaven,',
+            'glasses, and any distinctive marks.',
+            'Do not guess a name. Do not invent features that are not visible.',
+          ].join(' '),
+        },
+        { type: 'image_url', image_url: { url: dataUrl } },
+      ],
+    },
+  ];
+
+  for (const model of AVATAR_DESCRIBE_MODELS) {
+    try {
+      const upstream = await forward(
+        'https://api.openai.com/v1/chat/completions',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${key}`,
+          },
+          body: JSON.stringify({ model, max_tokens: 180, messages }),
+        },
+        AVATAR_DESCRIBE_TIMEOUT_MS,
+      );
+      const result = await upstream.json().catch(() => null);
+      const text = sanitizeSubjectDescription(result?.choices?.[0]?.message?.content || '');
+      if (upstream.ok && text) return text;
+    } catch {
+      // Fall through to the next vision model, then to the locked prompt alone.
+    }
+  }
+  return '';
 }
 
 async function handleAvatarStylize(req: Request, body: ArrayBuffer | null): Promise<Response> {
@@ -212,10 +278,14 @@ async function handleAvatarStylize(req: Request, body: ArrayBuffer | null): Prom
     return error(req, 400, 'Body must be JSON.', 'bad_request');
   }
 
-  const image = parseImageDataUrl(String(payload.image || ''));
+  const dataUrl = String(payload.image || '');
+  const image = parseImageDataUrl(dataUrl);
   if (!image) {
     return error(req, 400, 'Send a JPEG, PNG, or WebP photo under 8 MB.', 'bad_request');
   }
+
+  const subject = await describePortraitSubject(key, dataUrl);
+  const prompt = buildAvatarPrompt(subject);
 
   let lastMessage = 'Could not draw that portrait.';
   for (const model of AVATAR_MODELS) {
@@ -224,7 +294,7 @@ async function handleAvatarStylize(req: Request, body: ArrayBuffer | null): Prom
       {
         method: 'POST',
         headers: { Authorization: `Bearer ${key}` },
-        body: buildAvatarEditForm(image, model),
+        body: buildAvatarEditForm(image, model, prompt),
       },
       AVATAR_TIMEOUT_MS,
     );

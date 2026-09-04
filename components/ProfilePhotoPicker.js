@@ -221,8 +221,8 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
             <>
               <Text style={styles.title}>Canada Gold portrait</Text>
               <Text style={styles.body}>
-                Take a photo or choose one. We redraw everyone in the same 3D cartoon style, keeping
-                your face, hair, and glasses.
+                Take a photo or choose one. We redraw everyone in the same 3D cartoon style — it
+                should still look like you, including if you are a woman or a man.
               </Text>
               <Pressable style={styles.choice} onPress={handleTakePhoto}>
                 <View style={[styles.choiceIcon, { backgroundColor: '#EEF4FF' }]}>
