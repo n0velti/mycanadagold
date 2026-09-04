@@ -1,6 +1,6 @@
 import { BlurView } from 'expo-blur';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { Image, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { MOBILE, mobileSafeBottom, mobileSafeTop } from '../lib/mobileUi';
 
 const fontFamily = 'Sohne';
@@ -19,7 +19,12 @@ export function MobileHomeHeader() {
   return (
     <View style={styles.homeHeader}>
       <View style={styles.brandMark}>
-        <MaterialCommunityIcons name="gold" size={15} color={MOBILE.gold} />
+        <Image
+          source={require('../assets/small_logo.png')}
+          style={styles.brandLogo}
+          resizeMode="cover"
+          accessibilityLabel="Canada Gold"
+        />
       </View>
       <Text style={styles.wordmark}>MyCanadaGold</Text>
     </View>
@@ -105,10 +110,12 @@ const styles = StyleSheet.create({
   brandMark: {
     width: 28,
     height: 28,
-    borderRadius: 8,
-    backgroundColor: '#FFF6D8',
-    alignItems: 'center',
-    justifyContent: 'center',
+    borderRadius: 14,
+    overflow: 'hidden',
+  },
+  brandLogo: {
+    width: 28,
+    height: 28,
   },
   wordmark: {
     fontFamily: titleFontFamily,

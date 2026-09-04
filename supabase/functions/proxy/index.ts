@@ -14,12 +14,13 @@
  *   /proxy/rippling/<path>                 GET   → rest.ripplingapis.com
  *   /proxy/google/local-boq                GET   → Google local reviews (GetLocalBoqProxy)
  *
- * AI providers use the server key from secrets unless the caller supplies its
- * own via `X-Upstream-Api-Key`. FINTRAC and Rippling user tokens are forwarded
- * from `X-Upstream-Authorization` (the caller's own session with that vendor).
+ * AI providers use the company key saved in Settings (System Admin / GM) or,
+ * if none is saved, the Edge Function secret. Clients never send vendor keys.
+ * FINTRAC and Rippling user tokens are forwarded from
+ * `X-Upstream-Authorization` (the caller's own session with that vendor).
  */
 import { corsHeaders, error, json, preflight, securityHeaders } from '../_shared/http.ts';
-import { requireActiveStaff, StaffAuthError } from '../_shared/staff.ts';
+import { adminClient, requireActiveStaff, StaffAuthError } from '../_shared/staff.ts';
 
 const FUNCTION_PREFIX = '/proxy';
 const MAX_BODY_BYTES = 25 * 1024 * 1024;
@@ -56,9 +57,29 @@ function upstreamAuthorization(req: Request): string {
   return req.headers.get('x-upstream-authorization') || '';
 }
 
-function upstreamApiKey(req: Request, envName: string): string {
-  const fromClient = (req.headers.get('x-upstream-api-key') || '').trim();
-  if (fromClient) return fromClient;
+const MISSING_AI_KEY =
+  'No company API key is configured. A System Admin or General Manager can add one in Settings → AI models.';
+
+async function loadCompanyAiKeys(): Promise<Record<string, string>> {
+  const keys: Record<string, string> = {};
+  try {
+    const { data, error: queryError } = await adminClient().from('company_ai_keys').select('provider, api_key');
+    if (!queryError) {
+      for (const row of data || []) {
+        const provider = String((row as { provider?: string }).provider || '').trim();
+        const apiKey = String((row as { api_key?: string }).api_key || '').trim();
+        if (provider && apiKey) keys[provider] = apiKey;
+      }
+    }
+  } catch {
+    // Table missing or unreachable: fall through to Edge Function secrets.
+  }
+  return keys;
+}
+
+async function resolveAiApiKey(provider: string, envName: string): Promise<string> {
+  const company = await loadCompanyAiKeys();
+  if (company[provider]) return company[provider];
   return (Deno.env.get(envName) || '').trim();
 }
 
@@ -98,8 +119,8 @@ async function forward(url: string, init: RequestInit, timeoutMs = UPSTREAM_TIME
 // ---------------------------------------------------------------------------
 
 async function handleAnthropic(req: Request, body: ArrayBuffer | null): Promise<Response> {
-  const key = upstreamApiKey(req, 'ANTHROPIC_API_KEY');
-  if (!key) return error(req, 400, 'No Anthropic API key is configured. Add one in Settings → AI models.', 'missing_key');
+  const key = await resolveAiApiKey('anthropic', 'ANTHROPIC_API_KEY');
+  if (!key) return error(req, 400, MISSING_AI_KEY, 'missing_key');
   const headers: Record<string, string> = {
     'Content-Type': req.headers.get('content-type') || 'application/json',
     Accept: req.headers.get('accept') || 'text/event-stream',
@@ -113,8 +134,8 @@ async function handleAnthropic(req: Request, body: ArrayBuffer | null): Promise<
 }
 
 async function handleOpenAI(req: Request, body: ArrayBuffer | null): Promise<Response> {
-  const key = upstreamApiKey(req, 'OPENAI_API_KEY');
-  if (!key) return error(req, 400, 'No OpenAI API key is configured. Add one in Settings → AI models.', 'missing_key');
+  const key = await resolveAiApiKey('openai', 'OPENAI_API_KEY');
+  if (!key) return error(req, 400, MISSING_AI_KEY, 'missing_key');
   const upstream = await forward('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -181,8 +202,8 @@ function buildAvatarEditForm(image: { mediaType: string; bytes: Uint8Array; file
 
 async function handleAvatarStylize(req: Request, body: ArrayBuffer | null): Promise<Response> {
   if (req.method !== 'POST') return error(req, 405, 'Use POST.', 'method_not_allowed');
-  const key = upstreamApiKey(req, 'OPENAI_API_KEY');
-  if (!key) return error(req, 400, 'No OpenAI API key is configured. Add one in Settings → AI models.', 'missing_key');
+  const key = await resolveAiApiKey('openai', 'OPENAI_API_KEY');
+  if (!key) return error(req, 400, MISSING_AI_KEY, 'missing_key');
 
   let payload: { image?: string } = {};
   try {
@@ -236,8 +257,8 @@ async function handleAvatarStylize(req: Request, body: ArrayBuffer | null): Prom
 }
 
 async function handleOpenRouter(req: Request, body: ArrayBuffer | null): Promise<Response> {
-  const key = upstreamApiKey(req, 'OPENROUTER_API_KEY');
-  if (!key) return error(req, 400, 'No OpenRouter API key is configured. Add one in Settings → AI models.', 'missing_key');
+  const key = await resolveAiApiKey('openrouter', 'OPENROUTER_API_KEY');
+  if (!key) return error(req, 400, MISSING_AI_KEY, 'missing_key');
   const upstream = await forward('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
