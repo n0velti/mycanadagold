@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useIsMobile } from '../lib/mobileUi';
-import { AI_MODEL_PROVIDERS, loadAiApiKeys, saveAiApiKeys } from '../lib/aiKeys';
+import { AI_MODEL_PROVIDERS, canManageCompanyAiKeys, loadCompanyAiKeyState, saveAiApiKeys } from '../lib/aiKeys';
 import {
   USER_CATEGORIES,
   canManageAppAccess,
@@ -39,9 +39,15 @@ const fontFamily = Platform.select({
 const emptyKeys = () =>
   Object.fromEntries(AI_MODEL_PROVIDERS.map((provider) => [provider.key, '']));
 
-export { AI_MODEL_PROVIDERS, loadAiApiKeys };
+export { AI_MODEL_PROVIDERS };
 
-function SettingsHome({ onOpenAiModels, onOpenPermissions, onOpenDatabase, onOpenStoreSettings }) {
+function SettingsHome({
+  onOpenAiModels,
+  onOpenPermissions,
+  onOpenDatabase,
+  onOpenStoreSettings,
+  canManageAiKeys,
+}) {
   const isMobile = useIsMobile();
   const [dbStatus, setDbStatus] = useState(null);
 
@@ -97,18 +103,20 @@ function SettingsHome({ onOpenAiModels, onOpenPermissions, onOpenDatabase, onOpe
           <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
         </Pressable>
 
-        <Pressable style={[styles.menuRow, isMobile && styles.menuRowMobile]} onPress={onOpenAiModels}>
-          <View style={[styles.menuIcon, { backgroundColor: '#F3EEFF' }]}>
-            <Ionicons name="sparkles-outline" size={16} color="#6B4DE6" />
-          </View>
-          <View style={styles.menuTextWrap}>
-            <Text style={styles.menuLabel}>AI models</Text>
-            <Text style={styles.menuHint}>
-              OpenRouter for open models · Anthropic/OpenAI keys for direct Claude & GPT
-            </Text>
-          </View>
-          <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
-        </Pressable>
+        {canManageAiKeys ? (
+          <Pressable style={[styles.menuRow, isMobile && styles.menuRowMobile]} onPress={onOpenAiModels}>
+            <View style={[styles.menuIcon, { backgroundColor: '#F3EEFF' }]}>
+              <Ionicons name="sparkles-outline" size={16} color="#6B4DE6" />
+            </View>
+            <View style={styles.menuTextWrap}>
+              <Text style={styles.menuLabel}>AI models</Text>
+              <Text style={styles.menuHint}>
+                Company keys for portraits, Serphint, and AI chat — used by everyone
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
+          </Pressable>
+        ) : null}
 
         <Pressable style={[styles.menuRow, isMobile && styles.menuRowMobile]} onPress={onOpenPermissions}>
           <View style={[styles.menuIcon, { backgroundColor: '#EEF4FF' }]}>
@@ -865,6 +873,8 @@ function PermissionsPanel({ session, apps, canManageAccess, onAccessSaved, onSta
 
 function AiModelsPanel() {
   const [keys, setKeys] = useState(emptyKeys);
+  const [shared, setShared] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -875,10 +885,18 @@ function AiModelsPanel() {
     let cancelled = false;
 
     (async () => {
-      const stored = await loadAiApiKeys();
-      if (cancelled) return;
-      setKeys(stored);
-      setLoading(false);
+      try {
+        const state = await loadCompanyAiKeyState();
+        if (cancelled) return;
+        setKeys(state.keys);
+        setShared(Boolean(state.shared));
+        setUnavailable(Boolean(state.unavailable));
+      } catch (nextError) {
+        if (cancelled) return;
+        setError(nextError?.message || 'Could not load API keys.');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     })();
 
     return () => {
@@ -906,9 +924,11 @@ function AiModelsPanel() {
       );
       await saveAiApiKeys(trimmed);
       setKeys(trimmed);
+      setShared(true);
+      setUnavailable(false);
       setSaved(true);
-    } catch {
-      setError('Could not save API keys.');
+    } catch (nextError) {
+      setError(nextError?.message || 'Could not save API keys.');
     } finally {
       setSaving(false);
     }
@@ -925,11 +945,21 @@ function AiModelsPanel() {
   return (
     <ScrollView style={styles.body} contentContainerStyle={styles.aiContent}>
       <Text style={styles.aiIntro}>
-        AI requests go through the company gateway using the company keys, so nothing is
-        required here. Add a personal key below only if you want your own usage billed
-        separately. Personal keys are stored encrypted on this device and sent only to the
-        gateway, never to the browser bundle.
+        These keys are shared with every signed-in employee. Analysts can run AI chat and
+        generate portraits without pasting a key. Only a System Admin or General Manager can
+        open this screen or see the values.
       </Text>
+      {unavailable ? (
+        <Text style={styles.errorText}>
+          The company key table is not in the database yet. Run the latest Supabase migration,
+          then save again.
+        </Text>
+      ) : null}
+      {!shared && !unavailable && Object.values(keys).some(Boolean) ? (
+        <Text style={styles.savedText}>
+          These keys are only on this device until you save. Saving shares them with everyone.
+        </Text>
+      ) : null}
 
       {AI_MODEL_PROVIDERS.map((provider) => (
         <View key={provider.key} style={styles.providerBlock}>
@@ -964,7 +994,7 @@ function AiModelsPanel() {
       ))}
 
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
-      {saved ? <Text style={styles.savedText}>API keys saved.</Text> : null}
+      {saved ? <Text style={styles.savedText}>API keys saved for everyone in the app.</Text> : null}
 
       <Pressable
         style={[styles.saveButton, saving && styles.saveButtonDisabled]}
@@ -977,6 +1007,18 @@ function AiModelsPanel() {
           <Text style={styles.saveButtonText}>Save</Text>
         )}
       </Pressable>
+    </ScrollView>
+  );
+}
+
+function AiModelsDenied() {
+  return (
+    <ScrollView style={styles.body} contentContainerStyle={styles.aiContent}>
+      <Text style={styles.sectionTitle}>AI models</Text>
+      <Text style={styles.aiIntro}>
+        Company AI keys are managed by a System Admin or General Manager. Ask them if portraits
+        or AI chat are not working.
+      </Text>
     </ScrollView>
   );
 }
@@ -1065,9 +1107,10 @@ export default function SettingsScreen({
   onUserAccessSaved,
 }) {
   const canManageAccess = canManageAppAccess(session?.profile);
+  const canManageAiKeys = canManageCompanyAiKeys(session?.profile);
 
   if (panel === 'ai-models') {
-    return <AiModelsPanel />;
+    return canManageAiKeys ? <AiModelsPanel /> : <AiModelsDenied />;
   }
 
   if (panel === 'permissions') {
@@ -1097,6 +1140,7 @@ export default function SettingsScreen({
       onOpenPermissions={() => onOpenPanel('permissions')}
       onOpenDatabase={() => onOpenPanel('database')}
       onOpenStoreSettings={() => onOpenPanel('store-settings')}
+      canManageAiKeys={canManageAiKeys}
     />
   );
 }

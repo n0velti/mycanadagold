@@ -30,14 +30,12 @@ export default function LoginScreen({
       {isMobile ? <MobileSafeTop /> : null}
       <View style={[styles.inner, isMobile && styles.innerMobile]}>
         <View style={[styles.logoSlot, isMobile && styles.logoSlotMobile]} pointerEvents="none">
-          <View style={[styles.logoWrap, isMobile && styles.logoWrapMobile]}>
-            <Image
-              source={require('../assets/canada-gold-logo.png')}
-              style={styles.logo}
-              resizeMode="contain"
-              accessibilityLabel="Canada Gold"
-            />
-          </View>
+          <Image
+            source={require('../assets/small_logo.png')}
+            style={[styles.logo, isMobile && styles.logoMobile]}
+            resizeMode="cover"
+            accessibilityLabel="Canada Gold"
+          />
         </View>
 
         <View style={[styles.card, isMobile && styles.cardMobile]}>
@@ -121,18 +119,10 @@ const styles = StyleSheet.create({
   logoSlot: {
     width: '100%',
     alignItems: 'center',
-    marginBottom: 48,
-  },
-  logoSlotMobile: {
     marginBottom: 36,
   },
-  logoWrap: {
-    width: '100%',
-    maxWidth: 340,
-    aspectRatio: 800 / 157,
-  },
-  logoWrapMobile: {
-    maxWidth: 260,
+  logoSlotMobile: {
+    marginBottom: 28,
   },
   card: {
     width: '100%',
@@ -143,8 +133,15 @@ const styles = StyleSheet.create({
     maxWidth: 400,
   },
   logo: {
-    width: '100%',
-    height: '100%',
+    width: 112,
+    height: 112,
+    borderRadius: 56,
+    overflow: 'hidden',
+  },
+  logoMobile: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
   },
   fields: {
     borderWidth: StyleSheet.hairlineWidth,

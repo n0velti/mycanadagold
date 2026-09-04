@@ -5207,7 +5207,11 @@ export default function App() {
             accessibilityLabel="MyCanadaGold"
           >
             <View style={styles.sidebarBrandIcon}>
-              <MaterialCommunityIcons name="gold" size={16} color="#B8860B" />
+              <Image
+                source={require('./assets/small_logo.png')}
+                style={styles.sidebarBrandLogo}
+                resizeMode="cover"
+              />
             </View>
             {!sidebarCollapsed ? (
               <Text style={styles.sidebarTitle} numberOfLines={1}>
@@ -5518,10 +5522,14 @@ const styles = StyleSheet.create({
   sidebarBrandIcon: {
     width: 28,
     height: 28,
-    borderRadius: 8,
+    borderRadius: 14,
+    overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#FFF8E8',
+  },
+  sidebarBrandLogo: {
+    width: 28,
+    height: 28,
   },
   brandIcon: {
     width: 28,
