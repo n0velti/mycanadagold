@@ -158,15 +158,19 @@ function FilterSelect({
   );
 }
 
-function SegmentedControl({ options, value, onChange, style }) {
+function SegmentedControl({ options, value, onChange, style, stretch = false }) {
   return (
-    <View style={[styles.segment, style]} accessibilityRole="tablist">
+    <View style={[styles.segment, stretch && styles.segmentStretch, style]} accessibilityRole="tablist">
       {options.map((option) => {
         const active = option.key === value;
         return (
           <Pressable
             key={option.key}
-            style={[styles.segmentButton, active && styles.segmentButtonActive]}
+            style={[
+              styles.segmentButton,
+              stretch && styles.segmentButtonStretch,
+              active && styles.segmentButtonActive,
+            ]}
             onPress={() => onChange(option.key)}
             accessibilityRole="tab"
             accessibilityState={{ selected: active }}
@@ -235,6 +239,17 @@ const QTY_FIELDS = ['vault', 'night', 'store', 'other'];
 const QTY_HEADER_LABELS = { vault: 'Vault', night: 'Night', store: 'Store', other: 'Other' };
 const BULLION_TABLE_BASE_WIDTH = 692;
 const BULLION_HIST_COL_WIDTH = 48;
+
+function formatHistoryWeekday(dateKey) {
+  return parseDateParam(dateKey).toLocaleDateString('en-CA', { weekday: 'narrow' });
+}
+
+function draftShowsDiff(draft, confirmed) {
+  return (
+    Boolean(confirmed) ||
+    QTY_FIELDS.some((field) => String(draft?.[field] || '') !== '')
+  );
+}
 
 function DateChip({ label, value, onChange, maximumDate }) {
   const [open, setOpen] = useState(false);
@@ -489,6 +504,7 @@ function BullionQtyInput({
   inputRef,
   label,
   dense,
+  large,
 }) {
   return (
     <TextInput
@@ -507,7 +523,7 @@ function BullionQtyInput({
       onSubmitEditing={onSubmitEditing}
       onBlur={onBlur}
       accessibilityLabel={label}
-      style={[styles.bInput, dense && styles.bInputDense]}
+      style={[styles.bInput, dense && !large && styles.bInputDense, large && styles.bInputLarge]}
       onFocus={(event) => {
         const node = event?.target;
         if (node && typeof node.select === 'function') {
@@ -605,6 +621,101 @@ function BullionTableRow({
             <Ionicons name="checkmark" size={16} color="#fff" />
           )}
         </Pressable>
+      </View>
+    </View>
+  );
+}
+
+function BullionMobileCard({
+  row,
+  draft,
+  historyDates,
+  isSaving,
+  savingAll,
+  showDiff,
+  onChangeField,
+  onBlurField,
+  onUpdate,
+  registerQtyInput,
+  onSubmitField,
+}) {
+  const total = countedTotalFromDraft(draft);
+  const accent = metalAccent(row.metal);
+  const mismatch =
+    showDiff && Math.abs(total - (Number(row.systemCount) || 0)) >= 0.0005;
+
+  return (
+    <View style={[styles.bMobileCard, mismatch && styles.bMobileCardOff]}>
+      <View style={[styles.bMobileAccent, { backgroundColor: accent }]} />
+      <View style={styles.bMobileInner}>
+        <View style={styles.bMobileHead}>
+          <View style={styles.bMobileTitleWrap}>
+            <Text style={styles.bMobileName}>{row.name}</Text>
+            {row.sku ? (
+              <Text style={styles.bMobileSku} numberOfLines={1}>
+                {row.sku}
+              </Text>
+            ) : null}
+          </View>
+          <DiffBadge total={total} systemCount={row.systemCount} confirmed={showDiff} />
+          <Pressable
+            style={[styles.bMobileUpdate, (isSaving || savingAll) && styles.rowActionDisabled]}
+            onPress={onUpdate}
+            disabled={isSaving || savingAll}
+            accessibilityLabel="Update"
+          >
+            {isSaving ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Ionicons name="checkmark" size={18} color="#fff" />
+            )}
+          </Pressable>
+        </View>
+
+        <View style={styles.bMobileStats}>
+          <View style={styles.bMobileStat}>
+            <Text style={styles.bMobileStatLabel}>System</Text>
+            <Text style={styles.bMobileStatValue}>{formatQty(row.systemCount)}</Text>
+          </View>
+          <View style={styles.bMobileStatDivider} />
+          <View style={styles.bMobileStat}>
+            <Text style={styles.bMobileStatLabel}>Physical</Text>
+            <Text style={styles.bMobileStatValue}>{formatQty(total)}</Text>
+          </View>
+        </View>
+
+        {historyDates.length ? (
+          <View style={styles.bMobileHistory}>
+            {historyDates.map((day) => {
+              const value = row.history?.[day];
+              return (
+                <View key={day} style={styles.bMobileHistCell}>
+                  <Text style={styles.bMobileHistLabel}>{formatHistoryWeekday(day)}</Text>
+                  <Text style={styles.bMobileHistValue} numberOfLines={1}>
+                    {value == null ? '—' : formatQty(value)}
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
+        ) : null}
+
+        <View style={styles.bMobileFields}>
+          {QTY_FIELDS.map((field) => (
+            <View key={field} style={styles.bMobileField}>
+              <Text style={styles.bMobileFieldLabel}>{QTY_HEADER_LABELS[field]}</Text>
+              <BullionQtyInput
+                value={draft[field]}
+                onChangeText={(value) => onChangeField(field, value)}
+                onSubmitEditing={() => onSubmitField(field)}
+                onBlur={field === 'night' ? () => onBlurField?.(field) : undefined}
+                inputRef={registerQtyInput(field)}
+                label={QTY_HEADER_LABELS[field]}
+                large
+              />
+            </View>
+          ))}
+        </View>
       </View>
     </View>
   );
@@ -1449,101 +1560,141 @@ function BullionAuditPanel({
     label: store.name,
   }));
 
-  const renderBullionToolbar = () => {
+  const renderSearchField = (style) => (
+    <View style={[styles.appleSearch, style]}>
+      <Ionicons name="search" size={16} color={SECONDARY} style={styles.appleSearchIcon} />
+      <TextInput
+        style={styles.appleSearchInput}
+        value={query}
+        onChangeText={setQuery}
+        placeholder="Search"
+        placeholderTextColor={SECONDARY}
+        autoCapitalize="none"
+        autoCorrect={false}
+        clearButtonMode="while-editing"
+      />
+      {query ? (
+        <Pressable onPress={() => setQuery('')} hitSlop={8}>
+          <Ionicons name="close-circle" size={18} color={CHEVRON} />
+        </Pressable>
+      ) : null}
+    </View>
+  );
+
+  const renderZeroFilter = () =>
+    allowFilters ? (
+      !isMobile ? (
+        <SegmentedControl
+          options={[
+            { key: 'nonzero', label: 'Non-zero' },
+            { key: 'all', label: 'All' },
+          ]}
+          value={hideZero ? 'nonzero' : 'all'}
+          onChange={(next) => setHideZero(next === 'nonzero')}
+        />
+      ) : (
+        <Pressable
+          style={[styles.iconToggle, hideZero && styles.iconToggleActive]}
+          onPress={() => setHideZero((prev) => !prev)}
+          accessibilityLabel={hideZero ? 'Showing non-zero' : 'Showing all'}
+        >
+          <Ionicons
+            name={hideZero ? 'filter' : 'filter-outline'}
+            size={16}
+            color={hideZero ? TEXT : SECONDARY}
+          />
+        </Pressable>
+      )
+    ) : null;
+
+  const renderStoreControl = (selectStyle) =>
+    lockedStore ? (
+      <Text style={[styles.storeTitle, isMobile && styles.storeTitleMobile]} numberOfLines={1}>
+        {selectedStore?.name || storeFilter || 'Store'}
+      </Text>
+    ) : (
+      <FilterSelect
+        label="Store"
+        value={selectedStore?.name || selectedStoreName}
+        options={storeSelectOptions}
+        onChange={setSelectedStoreName}
+        style={[styles.storeSelect, selectStyle]}
+      />
+    );
+
+  const renderRefreshButton = () => (
+    <Pressable
+      style={styles.iconToggle}
+      onPress={load}
+      disabled={loading}
+      accessibilityLabel="Refresh"
+    >
+      {loading ? (
+        <ActivityIndicator size="small" color={SECONDARY} />
+      ) : (
+        <Ionicons name="refresh" size={16} color={TEXT} />
+      )}
+    </Pressable>
+  );
+
+  const renderUpdateAllButton = (style) => {
     const canUpdateAll = visibleRows.some(rowHasDraftCounts);
     return (
-      <FilterBar>
-        <View style={styles.appleSearch}>
-          <Ionicons name="search" size={16} color={SECONDARY} style={styles.appleSearchIcon} />
-          <TextInput
-            style={styles.appleSearchInput}
-            value={query}
-            onChangeText={setQuery}
-            placeholder="Search"
-            placeholderTextColor={SECONDARY}
-            autoCapitalize="none"
-            autoCorrect={false}
-            clearButtonMode="while-editing"
-          />
-          {query ? (
-            <Pressable onPress={() => setQuery('')} hitSlop={8}>
-              <Ionicons name="close-circle" size={18} color={CHEVRON} />
-            </Pressable>
-          ) : null}
-        </View>
-        {allowFilters ? (
-        !isMobile ? (
-          <SegmentedControl
-            options={[
-              { key: 'nonzero', label: 'Non-zero' },
-              { key: 'all', label: 'All' },
-            ]}
-            value={hideZero ? 'nonzero' : 'all'}
-            onChange={(next) => setHideZero(next === 'nonzero')}
-          />
-        ) : (
-          <Pressable
-            style={[styles.iconToggle, hideZero && styles.iconToggleActive]}
-            onPress={() => setHideZero((prev) => !prev)}
-            accessibilityLabel={hideZero ? 'Showing non-zero' : 'Showing all'}
-          >
-            <Ionicons
-              name={hideZero ? 'filter' : 'filter-outline'}
-              size={16}
-              color={hideZero ? TEXT : SECONDARY}
-            />
-          </Pressable>
-        )
-        ) : null}
-        {lockedStore ? (
-          <Text style={styles.storeTitle} numberOfLines={1}>
-            {selectedStore?.name || storeFilter || 'Store'}
+      <Pressable
+        style={[
+          styles.fillButton,
+          style,
+          (savingAll || savingId || !canUpdateAll) && styles.fillButtonDisabled,
+        ]}
+        onPress={updateAll}
+        disabled={savingAll || Boolean(savingId) || !canUpdateAll}
+      >
+        {savingAll ? (
+          <Text style={styles.fillButtonText} numberOfLines={1}>
+            {saveAllProgress || 'Updating…'}
           </Text>
         ) : (
-          <FilterSelect
-            label="Store"
-            value={selectedStore?.name || selectedStoreName}
-            options={storeSelectOptions}
-            onChange={setSelectedStoreName}
-            style={styles.storeSelect}
-          />
+          <Text style={styles.fillButtonText} numberOfLines={1}>
+            Update all
+          </Text>
         )}
+      </Pressable>
+    );
+  };
+
+  const renderBullionToolbar = () => {
+    if (isMobile) {
+      return (
+        <View style={styles.mobileToolbar}>
+          {renderSearchField(styles.appleSearchMobile)}
+          {renderStoreControl(styles.storeSelectMobile)}
+          <View style={styles.mobileToolbarRow}>
+            {renderZeroFilter()}
+            <SegmentedControl
+              options={[{ key: 'today', label: 'Today' }]}
+              value={isToday ? 'today' : ''}
+              onChange={() => setDate(parseDateParam(new Date()))}
+            />
+            <DateChip label="Date" value={date} onChange={setDate} maximumDate={new Date()} />
+            {renderRefreshButton()}
+          </View>
+          {renderUpdateAllButton(styles.fillButtonMobile)}
+        </View>
+      );
+    }
+    return (
+      <FilterBar>
+        {renderSearchField()}
+        {renderZeroFilter()}
+        {renderStoreControl()}
         <SegmentedControl
           options={[{ key: 'today', label: 'Today' }]}
           value={isToday ? 'today' : ''}
           onChange={() => setDate(parseDateParam(new Date()))}
         />
         <DateChip label="Date" value={date} onChange={setDate} maximumDate={new Date()} />
-        <Pressable
-          style={styles.iconToggle}
-          onPress={load}
-          disabled={loading}
-          accessibilityLabel="Refresh"
-        >
-          {loading ? (
-            <ActivityIndicator size="small" color={SECONDARY} />
-          ) : (
-            <Ionicons name="refresh" size={16} color={TEXT} />
-          )}
-        </Pressable>
-        <Pressable
-          style={[
-            styles.fillButton,
-            (savingAll || savingId || !canUpdateAll) && styles.fillButtonDisabled,
-          ]}
-          onPress={updateAll}
-          disabled={savingAll || Boolean(savingId) || !canUpdateAll}
-        >
-          {savingAll ? (
-            <Text style={styles.fillButtonText} numberOfLines={1}>
-              {saveAllProgress || 'Updating…'}
-            </Text>
-          ) : (
-            <Text style={styles.fillButtonText} numberOfLines={1}>
-              {isMobile ? 'Update' : 'Update all'}
-            </Text>
-          )}
-        </Pressable>
+        {renderRefreshButton()}
+        {renderUpdateAllButton()}
       </FilterBar>
     );
   };
@@ -1565,7 +1716,7 @@ function BullionAuditPanel({
   };
 
   return (
-    <View style={[styles.panelBody, embedded && styles.panelBodyEmbedded]}>
+    <View style={[styles.panelBody, embedded && styles.panelBodyEmbedded, isMobile && styles.panelBodyMobile]}>
       {renderBullionToolbar()}
 
       <View style={styles.metaRow}>
@@ -1592,6 +1743,7 @@ function BullionAuditPanel({
         contentContainerStyle={styles.appleScrollContent}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        automaticallyAdjustKeyboardInsets
       >
         {loading && !rows.length ? (
           <View style={[styles.centered, embedded && styles.centeredEmbedded]}>
@@ -1603,6 +1755,62 @@ function BullionAuditPanel({
               ? `No items match “${query.trim()}”.`
               : 'No bullion items match these filters.'}
           </Text>
+        ) : isMobile ? (
+          <View style={styles.bMobileStack}>
+            {visibleRows.map((row, rowIndex) => {
+              const draft = drafts[row.id] || emptyQtyDraft();
+              const isSaving = savingId === row.id;
+              const showDiff = draftShowsDiff(draft, confirmed[row.id]);
+              const metal = metalGroupLabel(row);
+              const prevMetal =
+                rowIndex === 0 ? null : metalGroupLabel(visibleRows[rowIndex - 1]);
+              return (
+                <Fragment key={row.id}>
+                  {metal !== prevMetal ? (
+                    <View style={styles.bMobileSection}>
+                      <View
+                        style={[
+                          styles.bullionMetalDot,
+                          { backgroundColor: metalAccent(row.metal) },
+                        ]}
+                      />
+                      <Text style={styles.bMobileSectionTitle}>{metal}</Text>
+                    </View>
+                  ) : null}
+                  <BullionMobileCard
+                    row={row}
+                    draft={draft}
+                    historyDates={historyDates}
+                    isSaving={isSaving}
+                    savingAll={savingAll}
+                    showDiff={showDiff}
+                    onChangeField={(field, value) => setDraftField(row.id, field, value)}
+                    onBlurField={(field) => {
+                      if (field !== 'night') return;
+                      const next = parseQtyInput(draftsRef.current[row.id]?.night);
+                      if (next == null && row.nightCount == null) return;
+                      persistNightCount(row.id, draftsRef.current[row.id]?.night).catch((err) => {
+                        setError(err?.message || 'Failed to save night count.');
+                      });
+                    }}
+                    onUpdate={() => updateRow(row)}
+                    registerQtyInput={(field) => registerQtyInput(row.id, field)}
+                    onSubmitField={(field) => {
+                      if (field === 'night') {
+                        const next = parseQtyInput(draftsRef.current[row.id]?.night);
+                        if (next != null || row.nightCount != null) {
+                          persistNightCount(row.id, draftsRef.current[row.id]?.night).catch((err) => {
+                            setError(err?.message || 'Failed to save night count.');
+                          });
+                        }
+                      }
+                      focusNextQtyInput(rowIndex, field);
+                    }}
+                  />
+                </Fragment>
+              );
+            })}
+          </View>
         ) : (
           <View style={styles.bullionTableCard}>
             <ScrollView
@@ -1647,13 +1855,7 @@ function BullionAuditPanel({
                 {visibleRows.map((row, rowIndex) => {
                   const draft = drafts[row.id] || emptyQtyDraft();
                   const isSaving = savingId === row.id;
-                  const isConfirmed = Boolean(confirmed[row.id]);
-                  const showDiff =
-                    isConfirmed ||
-                    draft.vault !== '' ||
-                    draft.night !== '' ||
-                    draft.store !== '' ||
-                    draft.other !== '';
+                  const showDiff = draftShowsDiff(draft, confirmed[row.id]);
                   const metal = metalGroupLabel(row);
                   const prevMetal =
                     rowIndex === 0 ? null : metalGroupLabel(visibleRows[rowIndex - 1]);
@@ -1674,7 +1876,7 @@ function BullionAuditPanel({
                         row={row}
                         draft={draft}
                         historyDates={historyDates}
-                        dense={!isMobile}
+                        dense
                         striped={rowIndex % 2 === 1}
                         isSaving={isSaving}
                         savingAll={savingAll}
@@ -2111,23 +2313,24 @@ function CashAuditPanel({
     if (node && typeof node.focus === 'function') node.focus();
   };
 
-  const renderCashToolbar = () => (
-    <FilterBar>
-      {lockedStore ? (
-        <Text style={styles.storeTitle} numberOfLines={1}>
-          {selectedStore || 'Store'}
-        </Text>
-      ) : (
-        <FilterSelect
-          label="Store"
-          value={selectedStore}
-          options={storeOptions.map((name) => ({ value: name, label: name }))}
-          onChange={setSelectedStore}
-          style={styles.storeSelect}
-        />
-      )}
+  const renderCashToolbar = () => {
+    const storeControl = lockedStore ? (
+      <Text style={[styles.storeTitle, isMobile && styles.storeTitleMobile]} numberOfLines={1}>
+        {selectedStore || 'Store'}
+      </Text>
+    ) : (
+      <FilterSelect
+        label="Store"
+        value={selectedStore}
+        options={storeOptions.map((name) => ({ value: name, label: name }))}
+        onChange={setSelectedStore}
+        style={[styles.storeSelect, isMobile && styles.storeSelectMobile]}
+      />
+    );
+    const drawerControl = (
       <SegmentedControl
-        style={styles.drawerSegment}
+        style={isMobile ? undefined : styles.drawerSegment}
+        stretch={isMobile}
         options={CASH_DRAWERS.map((drawer) => ({
           key: drawer.key,
           label: drawer.key === 'usd' ? 'USD' : 'CAD',
@@ -2135,26 +2338,48 @@ function CashAuditPanel({
         value={cashDrawer}
         onChange={setCashDrawer}
       />
-      <SegmentedControl
-        options={[{ key: 'today', label: 'Today' }]}
-        value={isToday ? 'today' : ''}
-        onChange={() => setDate(parseDateParam(new Date()))}
-      />
-      <DateChip label="Date" value={date} onChange={setDate} maximumDate={new Date()} />
-      <Pressable
-        style={styles.iconToggle}
-        onPress={load}
-        disabled={loading}
-        accessibilityLabel="Refresh"
-      >
-        {loading ? (
-          <ActivityIndicator size="small" color={SECONDARY} />
-        ) : (
-          <Ionicons name="refresh" size={16} color={TEXT} />
-        )}
-      </Pressable>
-    </FilterBar>
-  );
+    );
+    const dateRow = (
+      <>
+        <SegmentedControl
+          options={[{ key: 'today', label: 'Today' }]}
+          value={isToday ? 'today' : ''}
+          onChange={() => setDate(parseDateParam(new Date()))}
+        />
+        <DateChip label="Date" value={date} onChange={setDate} maximumDate={new Date()} />
+        <Pressable
+          style={styles.iconToggle}
+          onPress={load}
+          disabled={loading}
+          accessibilityLabel="Refresh"
+        >
+          {loading ? (
+            <ActivityIndicator size="small" color={SECONDARY} />
+          ) : (
+            <Ionicons name="refresh" size={16} color={TEXT} />
+          )}
+        </Pressable>
+      </>
+    );
+
+    if (isMobile) {
+      return (
+        <View style={styles.mobileToolbar}>
+          {storeControl}
+          {drawerControl}
+          <View style={styles.mobileToolbarRow}>{dateRow}</View>
+        </View>
+      );
+    }
+
+    return (
+      <FilterBar>
+        {storeControl}
+        {drawerControl}
+        {dateRow}
+      </FilterBar>
+    );
+  };
 
   const renderCashHero = () => {
     const varianceTone = !hasCount
@@ -2164,12 +2389,101 @@ function CashAuditPanel({
         : variance > 0
           ? 'over'
           : 'short';
+    const varianceLabel = !hasCount
+      ? '—'
+      : balanced
+        ? 'Balanced'
+        : `${variance > 0 ? 'Over' : 'Short'} ${money(Math.abs(variance))}`;
+    const trail = (
+      <View style={styles.cashTrail}>
+        <Text style={styles.cashTrailText}>Open {money(openingBalance)}</Text>
+        <Text style={styles.cashTrailDot}>·</Text>
+        <Text
+          style={[
+            styles.cashTrailText,
+            paymentTotals.net >= 0 ? styles.cashIn : styles.cashOut,
+          ]}
+        >
+          Pay {money(paymentTotals.net)}
+        </Text>
+        <Text style={styles.cashTrailDot}>·</Text>
+        <Text
+          style={[
+            styles.cashTrailText,
+            cashTxnTotals.net >= 0 ? styles.cashIn : styles.cashOut,
+          ]}
+        >
+          Till {money(cashTxnTotals.net)}
+        </Text>
+        <Text style={styles.cashTrailDot}>·</Text>
+        <Text style={styles.cashTrailText}>
+          {previousDateLabel} {money(yesterdayClosing)}
+        </Text>
+      </View>
+    );
+
+    if (isMobile) {
+      return (
+        <View style={styles.cashHeroBlock}>
+          <View style={styles.group}>
+            <View style={styles.cashMobileHeroRow}>
+              <View style={styles.cashMobileHeroCopy}>
+                <Text style={styles.cashMobileHeroLabel}>Expected</Text>
+                <Text style={styles.cashMobileHeroMeta}>
+                  {posPhysical > 0 ? `POS ${money(posPhysical)}` : 'POS not counted'}
+                </Text>
+              </View>
+              <Text style={styles.cashMobileHeroValue}>{money(expectedOnHand)}</Text>
+            </View>
+            <View style={styles.cashMobileHeroRow}>
+              <View style={styles.cashMobileHeroCopy}>
+                <Text style={styles.cashMobileHeroLabel}>Counted</Text>
+                <Text style={styles.cashMobileHeroMeta}>
+                  {hasCount
+                    ? activeCountedManual
+                      ? 'Manual total'
+                      : 'From worksheet'
+                    : 'Enter loose / stacks'}
+                </Text>
+              </View>
+              <Text style={styles.cashMobileHeroValue}>{hasCount ? money(cashOnHand) : '—'}</Text>
+            </View>
+            <View
+              style={[
+                styles.cashMobileHeroRow,
+                styles.cashMobileHeroRowLast,
+                varianceTone === 'ok' && styles.cashHeroOk,
+                varianceTone === 'short' && styles.cashHeroShort,
+                varianceTone === 'over' && styles.cashHeroOver,
+              ]}
+            >
+              <View style={styles.cashMobileHeroCopy}>
+                <Text style={styles.cashMobileHeroLabel}>Variance</Text>
+                <Text style={styles.cashMobileHeroMeta}>{drawerLabel}</Text>
+              </View>
+              <Text
+                style={[
+                  styles.cashMobileHeroValue,
+                  varianceTone === 'ok' && styles.cashIn,
+                  varianceTone === 'short' && styles.short,
+                  varianceTone === 'over' && styles.over,
+                ]}
+              >
+                {varianceLabel}
+              </Text>
+            </View>
+          </View>
+          {trail}
+        </View>
+      );
+    }
+
     return (
       <View style={styles.cashHeroBlock}>
-        <View style={[styles.cashHero, isMobile && styles.cashHeroMobile]}>
+        <View style={styles.cashHero}>
           <View style={styles.cashHeroCard}>
             <Text style={styles.cashHeroLabel}>Expected</Text>
-            <Text style={[styles.cashHeroValue, isMobile && styles.cashHeroValueMobile]} numberOfLines={1}>
+            <Text style={styles.cashHeroValue} numberOfLines={1}>
               {money(expectedOnHand)}
             </Text>
             <Text style={styles.cashHeroMeta} numberOfLines={1}>
@@ -2178,7 +2492,7 @@ function CashAuditPanel({
           </View>
           <View style={styles.cashHeroCard}>
             <Text style={styles.cashHeroLabel}>Counted</Text>
-            <Text style={[styles.cashHeroValue, isMobile && styles.cashHeroValueMobile]} numberOfLines={1}>
+            <Text style={styles.cashHeroValue} numberOfLines={1}>
               {hasCount ? money(cashOnHand) : '—'}
             </Text>
             <Text style={styles.cashHeroMeta} numberOfLines={1}>
@@ -2201,53 +2515,20 @@ function CashAuditPanel({
             <Text
               style={[
                 styles.cashHeroValue,
-                isMobile && styles.cashHeroValueMobile,
                 varianceTone === 'ok' && styles.cashIn,
                 varianceTone === 'short' && styles.short,
                 varianceTone === 'over' && styles.over,
               ]}
               numberOfLines={1}
             >
-              {!hasCount
-                ? '—'
-                : balanced
-                  ? 'Balanced'
-                  : `${variance > 0 ? 'Over' : 'Short'} ${money(Math.abs(variance))}`}
+              {varianceLabel}
             </Text>
             <Text style={styles.cashHeroMeta} numberOfLines={1}>
               {drawerLabel}
             </Text>
           </View>
         </View>
-        <View style={styles.cashTrail}>
-          <Text style={styles.cashTrailText} numberOfLines={1}>
-            Open {money(openingBalance)}
-          </Text>
-          <Text style={styles.cashTrailDot}>·</Text>
-          <Text
-            style={[
-              styles.cashTrailText,
-              paymentTotals.net >= 0 ? styles.cashIn : styles.cashOut,
-            ]}
-            numberOfLines={1}
-          >
-            Pay {money(paymentTotals.net)}
-          </Text>
-          <Text style={styles.cashTrailDot}>·</Text>
-          <Text
-            style={[
-              styles.cashTrailText,
-              cashTxnTotals.net >= 0 ? styles.cashIn : styles.cashOut,
-            ]}
-            numberOfLines={1}
-          >
-            Till {money(cashTxnTotals.net)}
-          </Text>
-          <Text style={styles.cashTrailDot}>·</Text>
-          <Text style={styles.cashTrailText} numberOfLines={1}>
-            {previousDateLabel} {money(yesterdayClosing)}
-          </Text>
-        </View>
+        {trail}
       </View>
     );
   };
@@ -2303,35 +2584,93 @@ function CashAuditPanel({
       );
     });
 
+  const renderMobileDenomRows = (denoms) =>
+    denoms.map((denom) => {
+      const col = denomColumnTotals.find((c) => c.key === denom.key);
+      const filled =
+        String(activeLooseCounts[denom.key] || '').trim() !== '' ||
+        String(activeStackCounts[denom.key] || '').trim() !== '';
+      return (
+        <View
+          key={denom.key}
+          style={[styles.cashMobileDenom, filled && styles.cashMobileDenomFilled]}
+        >
+          <View style={styles.cashMobileDenomHead}>
+            <View style={styles.cashMobileDenomCopy}>
+              <Text style={styles.cashMobileDenomTitle}>{denomTitle(denom)}</Text>
+              <Text style={styles.cashDenomHint}>{denomHint(denom)}</Text>
+            </View>
+            <Text style={styles.cashMobileDenomTotal}>{money(col?.total || 0)}</Text>
+          </View>
+          <View style={styles.cashMobileInputs}>
+            <View style={styles.cashMobileField}>
+              <Text style={styles.cashMobileFieldLabel}>Loose</Text>
+              <CashCountInput
+                value={activeLooseCounts[denom.key]}
+                onChangeText={(value) =>
+                  setActiveLooseCounts((prev) => ({ ...prev, [denom.key]: value }))
+                }
+                onSubmitEditing={() => focusNextCashInput(`${denom.key}:loose`)}
+                inputRef={registerCashInput(`${denom.key}:loose`)}
+                label={`${denomTitle(denom)} loose`}
+                style={styles.cashCountInputLarge}
+              />
+            </View>
+            <View style={styles.cashMobileField}>
+              <Text style={styles.cashMobileFieldLabel}>Stacks</Text>
+              <CashCountInput
+                value={activeStackCounts[denom.key]}
+                onChangeText={(value) =>
+                  setActiveStackCounts((prev) => ({ ...prev, [denom.key]: value }))
+                }
+                onSubmitEditing={() => focusNextCashInput(`${denom.key}:stacks`)}
+                inputRef={registerCashInput(`${denom.key}:stacks`)}
+                label={`${denomTitle(denom)} stacks`}
+                style={styles.cashCountInputLarge}
+              />
+            </View>
+          </View>
+        </View>
+      );
+    });
+
+  const renderMobileMoneyRow = ({ title, hint, value, onChangeText, inputKey, total, strong }) => (
+    <View style={[styles.cashMobileDenom, strong && styles.cashMobileDenomFooter]}>
+      <View style={styles.cashMobileDenomHead}>
+        <View style={styles.cashMobileDenomCopy}>
+          <Text style={[styles.cashMobileDenomTitle, strong && styles.statLabelStrong]}>{title}</Text>
+          <Text style={styles.cashDenomHint}>{hint}</Text>
+        </View>
+        <Text style={[styles.cashMobileDenomTotal, strong && styles.statLabelStrong]}>{total}</Text>
+      </View>
+      <View style={styles.cashMobileMoneyField}>
+        <Text style={styles.cashMobileMoneyPrefix}>{isUsdDrawer ? 'US$' : '$'}</Text>
+        <CashCountInput
+          value={value}
+          onChangeText={onChangeText}
+          onSubmitEditing={inputKey === 'other' ? () => focusNextCashInput('other') : undefined}
+          inputRef={registerCashInput(inputKey)}
+          label={title}
+          money
+          style={styles.cashCountInputPlainLarge}
+        />
+      </View>
+    </View>
+  );
+
   const renderCashCount = () => {
     const { bills, coins } = splitCashDenoms(activeDenoms);
     const split = !isMobile && coins.length > 0;
-    return (
-      <GroupSection title={`Count ${drawerLabel}`}>
-        <View style={styles.cashCountHintRow}>
-          <Text style={styles.cashCountHint}>
-            Loose = pieces · stacks = {isUsdDrawer ? '50 bills' : '50 bills or coin rolls'}
-          </Text>
-        </View>
-        {split ? (
-          <View style={styles.cashCountSplit}>
-            <View style={styles.cashCountCol}>
-              <Text style={styles.cashCountColTitle}>Bills</Text>
-              {renderCountHeader()}
-              {renderDenomRows(bills)}
-            </View>
-            <View style={styles.cashCountCol}>
-              <Text style={styles.cashCountColTitle}>Coins</Text>
-              {renderCountHeader()}
-              {renderDenomRows(coins)}
-            </View>
-          </View>
-        ) : (
-          <View>
-            {renderCountHeader()}
-            {renderDenomRows(activeDenoms)}
-          </View>
-        )}
+    const otherRow = isMobile
+      ? renderMobileMoneyRow({
+          title: 'Other',
+          hint: 'Cheques, extras',
+          value: activeOtherCashText,
+          onChangeText: setActiveOtherCashText,
+          inputKey: 'other',
+          total: money(otherTotal),
+        })
+      : (
         <View style={styles.cashCountRow}>
           <View style={styles.cashDenomMeta}>
             <Text style={styles.cashDenomTitle}>Other</Text>
@@ -2351,6 +2690,21 @@ function CashAuditPanel({
           </View>
           <Text style={styles.cashCountTotal}>{money(otherTotal)}</Text>
         </View>
+      );
+    const countedRow = isMobile
+      ? renderMobileMoneyRow({
+          title: 'Counted',
+          hint: activeCountedManual ? 'Edited total' : 'Sum of worksheet',
+          value: activeCountedTotalText,
+          onChangeText: (value) => {
+            setActiveCountedManual(true);
+            setActiveCountedTotalText(value);
+          },
+          inputKey: 'counted',
+          total: hasCount ? money(cashOnHand) : '—',
+          strong: true,
+        })
+      : (
         <View style={[styles.cashCountRow, styles.cashCountFooter]}>
           <View style={styles.cashDenomMeta}>
             <Text style={[styles.cashDenomTitle, styles.statLabelStrong]}>Counted</Text>
@@ -2376,6 +2730,45 @@ function CashAuditPanel({
             {hasCount ? money(cashOnHand) : '—'}
           </Text>
         </View>
+      );
+
+    return (
+      <GroupSection title={`Count ${drawerLabel}`}>
+        <View style={styles.cashCountHintRow}>
+          <Text style={styles.cashCountHint}>
+            Loose = pieces · stacks = {isUsdDrawer ? '50 bills' : '50 bills or coin rolls'}
+          </Text>
+        </View>
+        {isMobile ? (
+          <View style={styles.cashMobileCount}>
+            {bills.length ? <Text style={styles.cashMobileGroupTitle}>Bills</Text> : null}
+            {renderMobileDenomRows(bills.length ? bills : activeDenoms)}
+            {coins.length ? <Text style={styles.cashMobileGroupTitle}>Coins</Text> : null}
+            {coins.length ? renderMobileDenomRows(coins) : null}
+            {otherRow}
+            {countedRow}
+          </View>
+        ) : split ? (
+          <View style={styles.cashCountSplit}>
+            <View style={styles.cashCountCol}>
+              <Text style={styles.cashCountColTitle}>Bills</Text>
+              {renderCountHeader()}
+              {renderDenomRows(bills)}
+            </View>
+            <View style={styles.cashCountCol}>
+              <Text style={styles.cashCountColTitle}>Coins</Text>
+              {renderCountHeader()}
+              {renderDenomRows(coins)}
+            </View>
+          </View>
+        ) : (
+          <View>
+            {renderCountHeader()}
+            {renderDenomRows(activeDenoms)}
+          </View>
+        )}
+        {isMobile ? null : otherRow}
+        {isMobile ? null : countedRow}
       </GroupSection>
     );
   };
@@ -2507,7 +2900,7 @@ function CashAuditPanel({
   );
 
   return (
-    <View style={[styles.panelBody, embedded && styles.panelBodyEmbedded]}>
+    <View style={[styles.panelBody, embedded && styles.panelBodyEmbedded, isMobile && styles.panelBodyMobile]}>
       {renderCashToolbar()}
 
       <View style={styles.metaRow}>
@@ -2529,6 +2922,7 @@ function CashAuditPanel({
         contentContainerStyle={styles.appleScrollContent}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        automaticallyAdjustKeyboardInsets
       >
         {renderCashHero()}
         {renderCashCount()}
@@ -2555,16 +2949,18 @@ export default function AuditScreen({
   storeFilter,
   embedded = false,
 }) {
+  const isMobile = useIsMobile();
   const [activeTab, setActiveTab] = useState('bullion');
 
   return (
-    <View style={[styles.body, embedded && styles.bodyEmbedded]}>
-      <View style={styles.tabBar}>
+    <View style={[styles.body, embedded && styles.bodyEmbedded, isMobile && styles.panelBodyMobile]}>
+      <View style={[styles.tabBar, isMobile && styles.tabBarMobile]}>
         <SegmentedControl
           options={AUDIT_TABS}
           value={activeTab}
           onChange={setActiveTab}
-          style={styles.tabSegment}
+          style={[styles.tabSegment, isMobile && styles.tabSegmentMobile]}
+          stretch={isMobile}
         />
       </View>
 
@@ -2605,8 +3001,16 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     alignItems: 'flex-start',
   },
+  tabBarMobile: {
+    alignItems: 'stretch',
+    marginBottom: 12,
+  },
   tabSegment: {
     alignSelf: 'flex-start',
+  },
+  tabSegmentMobile: {
+    alignSelf: 'stretch',
+    width: '100%',
   },
   segment: {
     flexDirection: 'row',
@@ -2616,6 +3020,10 @@ const styles = StyleSheet.create({
     backgroundColor: FILL,
     borderRadius: 10,
     padding: 2,
+  },
+  segmentStretch: {
+    alignSelf: 'stretch',
+    width: '100%',
   },
   segmentButton: {
     paddingHorizontal: 14,
@@ -2627,6 +3035,9 @@ const styles = StyleSheet.create({
       web: { cursor: 'pointer' },
       default: {},
     }),
+  },
+  segmentButtonStretch: {
+    flex: 1,
   },
   segmentButtonActive: {
     backgroundColor: '#fff',
@@ -2690,6 +3101,37 @@ const styles = StyleSheet.create({
   },
   appleSearchGrow: {
     flex: 1,
+  },
+  appleSearchMobile: {
+    maxWidth: '100%',
+    width: '100%',
+    minWidth: 0,
+    flexGrow: 0,
+    flexShrink: 0,
+  },
+  mobileToolbar: {
+    gap: 8,
+    marginTop: 2,
+    marginBottom: 8,
+    width: '100%',
+  },
+  mobileToolbarRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8,
+    width: '100%',
+  },
+  storeSelectMobile: {
+    maxWidth: '100%',
+    width: '100%',
+    minWidth: 0,
+  },
+  storeTitleMobile: {
+    maxWidth: '100%',
+  },
+  fillButtonMobile: {
+    width: '100%',
   },
   appleSearchIcon: {
     marginRight: 8,
@@ -3197,6 +3639,134 @@ const styles = StyleSheet.create({
   cashHeroOver: {
     backgroundColor: '#E8F1FF',
   },
+  cashMobileHeroRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    minHeight: 64,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
+  },
+  cashMobileHeroRowLast: {
+    borderBottomWidth: 0,
+  },
+  cashMobileHeroCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  cashMobileHeroLabel: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: SECONDARY,
+    letterSpacing: -0.08,
+  },
+  cashMobileHeroMeta: {
+    fontFamily,
+    fontSize: 13,
+    color: SECONDARY,
+    letterSpacing: -0.08,
+  },
+  cashMobileHeroValue: {
+    fontFamily,
+    fontSize: 22,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: -0.4,
+    fontVariant: ['tabular-nums'],
+    textAlign: 'right',
+    flexShrink: 1,
+  },
+  cashMobileCount: {
+    paddingHorizontal: 12,
+    paddingBottom: 8,
+    gap: 10,
+  },
+  cashMobileGroupTitle: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: SECONDARY,
+    letterSpacing: -0.08,
+    paddingHorizontal: 4,
+    paddingTop: 4,
+  },
+  cashMobileDenom: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    gap: 10,
+  },
+  cashMobileDenomFilled: {
+    backgroundColor: '#fff',
+  },
+  cashMobileDenomFooter: {
+    backgroundColor: '#ebebf0',
+  },
+  cashMobileDenomHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  cashMobileDenomCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 1,
+  },
+  cashMobileDenomTitle: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: -0.3,
+  },
+  cashMobileDenomTotal: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: -0.3,
+    fontVariant: ['tabular-nums'],
+    flexShrink: 0,
+  },
+  cashMobileInputs: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  cashMobileField: {
+    flex: 1,
+    minWidth: 0,
+    gap: 6,
+  },
+  cashMobileFieldLabel: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: SECONDARY,
+    letterSpacing: -0.08,
+    paddingLeft: 2,
+  },
+  cashMobileMoneyField: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 48,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: FILL,
+  },
+  cashMobileMoneyPrefix: {
+    fontFamily,
+    fontSize: 22,
+    fontWeight: '600',
+    color: SECONDARY,
+    letterSpacing: -0.3,
+  },
   cashTrail: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -3281,6 +3851,21 @@ const styles = StyleSheet.create({
     textAlign: 'left',
     minHeight: 28,
     paddingVertical: 0,
+  },
+  cashCountInputPlainLarge: {
+    backgroundColor: 'transparent',
+    textAlign: 'left',
+    minHeight: 44,
+    fontSize: 22,
+    paddingVertical: 0,
+  },
+  cashCountInputLarge: {
+    minHeight: 48,
+    fontSize: 22,
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    backgroundColor: FILL,
   },
   cashCountInput: {
     width: '100%',
@@ -3441,6 +4026,11 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
     width: '100%',
+  },
+  panelBodyMobile: {
+    width: '100%',
+    maxWidth: '100%',
+    overflow: 'hidden',
   },
   toolbar: {
     flexDirection: 'row',
@@ -4433,6 +5023,176 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 6,
   },
+  bInputLarge: {
+    minHeight: 48,
+    fontSize: 22,
+    fontWeight: '600',
+    textAlign: 'center',
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderWidth: 0,
+  },
+  bMobileStack: {
+    gap: 12,
+    width: '100%',
+  },
+  bMobileSection: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 4,
+    paddingTop: 8,
+  },
+  bMobileSectionTitle: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: SECONDARY,
+    letterSpacing: -0.08,
+    textTransform: 'uppercase',
+  },
+  bMobileCard: {
+    backgroundColor: GROUP_BG,
+    borderRadius: 14,
+    overflow: 'hidden',
+    flexDirection: 'row',
+    width: '100%',
+  },
+  bMobileCardOff: {
+    backgroundColor: '#FDECEA',
+  },
+  bMobileAccent: {
+    width: 4,
+    alignSelf: 'stretch',
+  },
+  bMobileInner: {
+    flex: 1,
+    minWidth: 0,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 12,
+    gap: 12,
+  },
+  bMobileHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  bMobileTitleWrap: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  bMobileName: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: -0.3,
+  },
+  bMobileSku: {
+    fontFamily,
+    fontSize: 13,
+    color: SECONDARY,
+    letterSpacing: -0.08,
+  },
+  bMobileUpdate: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: TEXT,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  bMobileStats: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+  },
+  bMobileStat: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 2,
+    minWidth: 0,
+  },
+  bMobileStatDivider: {
+    width: StyleSheet.hairlineWidth,
+    alignSelf: 'stretch',
+    backgroundColor: HAIRLINE,
+  },
+  bMobileStatLabel: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: SECONDARY,
+    letterSpacing: -0.08,
+  },
+  bMobileStatValue: {
+    fontFamily,
+    fontSize: 22,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: -0.4,
+    fontVariant: ['tabular-nums'],
+  },
+  bMobileHistory: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    width: '100%',
+  },
+  bMobileHistCell: {
+    flex: 1,
+    alignItems: 'center',
+    minWidth: 0,
+    gap: 2,
+  },
+  bMobileHistLabel: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: SECONDARY,
+    letterSpacing: -0.08,
+  },
+  bMobileHistValue: {
+    fontFamily,
+    fontSize: 13,
+    color: TEXT,
+    fontVariant: ['tabular-nums'],
+    letterSpacing: -0.08,
+  },
+  bMobileFields: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginHorizontal: -4,
+  },
+  bMobileField: {
+    width: '50%',
+    paddingHorizontal: 4,
+    paddingBottom: 8,
+    gap: 6,
+    minWidth: 0,
+    ...Platform.select({
+      web: { boxSizing: 'border-box' },
+      default: {},
+    }),
+  },
+  bMobileFieldLabel: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: SECONDARY,
+    letterSpacing: -0.08,
+    paddingLeft: 2,
+  },
   bColDiff: {
     width: 52,
     alignItems: 'center',
@@ -4707,166 +5467,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#1a1a1a',
   },
-  mobileFilterBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 8,
-    flexShrink: 0,
-    width: '100%',
-  },
-  mobileFilterStore: {
-    maxWidth: 110,
-    flexGrow: 0,
-  },
-  mobileFilterSearch: {
-    flex: 1,
-    minWidth: 56,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    minHeight: 34,
-    paddingHorizontal: 8,
-    borderRadius: 8,
-    backgroundColor: '#f3f3f3',
-  },
-  mobileFilterSearchInput: {
-    flex: 1,
-    minWidth: 0,
-    fontFamily,
-    fontSize: 13,
-    color: '#1a1a1a',
-    paddingVertical: 0,
-    ...Platform.select({
-      web: { outlineStyle: 'none' },
-      default: {},
-    }),
-  },
-  mobileFilterSpacer: {
-    flex: 1,
-  },
-  mobileIconChip: {
-    width: 34,
-    height: 34,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#f3f3f3',
-    flexShrink: 0,
-  },
-  mobileIconChipActive: {
-    backgroundColor: '#E8F5EA',
-  },
-  mobileUpdateAllChip: {
-    minHeight: 34,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    backgroundColor: ACCENT,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  mobileUpdateAllChipText: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#fff',
-  },
-  mobileList: {
-    flex: 1,
-    minHeight: 0,
-  },
-  mobileListContent: {
-    paddingBottom: 40,
-    gap: 8,
-  },
-  mobileBullionCard: {
-    borderRadius: 10,
-    backgroundColor: '#f7f7f7',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    gap: 6,
-  },
-  mobileBullionTop: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  mobileBullionTitleBlock: {
-    flex: 1,
-    minWidth: 0,
-    gap: 1,
-  },
-  mobileBullionMetal: {
-    fontFamily,
-    fontSize: 11,
-    fontWeight: '500',
-    color: '#8a8a8a',
-    fontVariant: ['tabular-nums'],
-  },
-  mobileBullionName: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#1a1a1a',
-  },
-  mobileBullionInputs: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: 6,
-  },
-  mobileBullionInputCol: {
-    flex: 1,
-    gap: 2,
-    minWidth: 0,
-  },
-  mobileBullionInputLabel: {
-    fontFamily,
-    fontSize: 10,
-    fontWeight: '600',
-    color: '#8a8a8a',
-  },
-  mobileBullionInput: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#1a1a1a',
-    textAlign: 'center',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e0e0e0',
-    borderRadius: 8,
-    paddingVertical: 8,
-    backgroundColor: '#fff',
-    fontVariant: ['tabular-nums'],
-    ...Platform.select({
-      web: { outlineStyle: 'none' },
-      default: {},
-    }),
-  },
-  mobileUpdateButton: {
-    backgroundColor: ACCENT,
-    borderRadius: 8,
-    minHeight: 36,
-    minWidth: 58,
-    paddingHorizontal: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  mobileUpdateButtonText: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#fff',
-  },
-  bullionAiBlockMobile: {
-    marginTop: 8,
-    paddingTop: 12,
-    maxHeight: undefined,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#e5e5e5',
-  },
   aiRowMobile: {
     flexDirection: 'column',
     alignItems: 'stretch',
@@ -4879,124 +5479,5 @@ const styles = StyleSheet.create({
   findWhyButtonMobile: {
     width: '100%',
     justifyContent: 'center',
-  },
-  summaryCardsMobile: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  summaryCardMobile: {
-    width: '48%',
-    flexGrow: 1,
-    flexBasis: '46%',
-    minWidth: 140,
-  },
-  summaryCardMobileWide: {
-    width: '100%',
-    flexBasis: '100%',
-  },
-  mobileSectionTitle: {
-    marginTop: 8,
-    marginBottom: 2,
-  },
-  mobileCashTxnCard: {
-    borderRadius: 12,
-    backgroundColor: '#f7f7f7',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    gap: 4,
-  },
-  mobileCashTxnTop: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
-  },
-  mobileCashTxnType: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  mobileCashTxnAmount: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '700',
-    fontVariant: ['tabular-nums'],
-  },
-  mobileCashTxnMeta: {
-    fontFamily,
-    fontSize: 13,
-    color: '#4a4a4a',
-  },
-  mobileCashTxnNotes: {
-    fontFamily,
-    fontSize: 12,
-    color: '#8a8a8a',
-  },
-  mobileCashCount: {
-    marginTop: 8,
-    gap: 10,
-  },
-  mobileDenomRow: {
-    backgroundColor: '#f7f7f7',
-    borderRadius: 12,
-    padding: 12,
-    gap: 8,
-  },
-  mobileDenomLabel: {
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#1a1a1a',
-  },
-  mobileDenomInputs: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: 8,
-  },
-  mobileDenomField: {
-    flex: 1,
-    gap: 4,
-  },
-  mobileDenomTotal: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#1a1a1a',
-    fontVariant: ['tabular-nums'],
-    minWidth: 64,
-    textAlign: 'right',
-    paddingBottom: 10,
-  },
-  mobileOtherWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e0e0e0',
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    backgroundColor: '#fff',
-  },
-  mobileOtherInput: {
-    flex: 1,
-    fontFamily,
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1a1a1a',
-    fontVariant: ['tabular-nums'],
-    ...Platform.select({
-      web: { outlineStyle: 'none' },
-      default: {},
-    }),
-  },
-  countedTotalBoxMobile: {
-    minWidth: 0,
-    flexBasis: '46%',
-  },
-  varianceBoxMobile: {
-    minWidth: 0,
-    flexBasis: '46%',
   },
 });
