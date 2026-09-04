@@ -314,7 +314,7 @@ function EmojiPicker({ visible, onPick }) {
   );
 }
 
-export default function MessagesScreen({ session }) {
+export default function MessagesScreen({ session, onUnreadChange }) {
   const isMobile = useIsMobile();
   const myId = session?.supabaseUserId || session?.profile?.id || '';
   const myName =
@@ -345,6 +345,8 @@ export default function MessagesScreen({ session }) {
   const inboxRef = useRef(inbox);
   inboxRef.current = inbox;
   activeIdRef.current = activeId;
+  const onUnreadChangeRef = useRef(onUnreadChange);
+  onUnreadChangeRef.current = onUnreadChange;
 
   const activeThread = inbox.find((row) => row.conversationId === activeId) || null;
 
@@ -354,6 +356,7 @@ export default function MessagesScreen({ session }) {
       setInbox(rows);
       setContacts(people);
       setError('');
+      onUnreadChangeRef.current?.();
       return rows;
     } catch (err) {
       setError(err.message || 'Could not load messages.');
@@ -386,6 +389,7 @@ export default function MessagesScreen({ session }) {
             row.conversationId === conversationId ? { ...row, unreadCount: 0 } : row,
           ),
         );
+        onUnreadChangeRef.current?.();
       } catch (err) {
         setError(err.message || 'Could not open that conversation.');
       } finally {
@@ -408,6 +412,20 @@ export default function MessagesScreen({ session }) {
       setError(err.message || 'Could not start that chat.');
     }
   }, [selectedIds, groupName, openConversation, refreshInbox]);
+
+  const openDirect = useCallback(
+    async (personId) => {
+      if (!personId) return;
+      try {
+        const conversationId = await getOrCreateDm(personId);
+        await refreshInbox();
+        await openConversation(conversationId);
+      } catch (err) {
+        setError(err.message || 'Could not start that chat.');
+      }
+    },
+    [openConversation, refreshInbox],
+  );
 
   useEffect(() => {
     refreshInbox();
@@ -435,7 +453,9 @@ export default function MessagesScreen({ session }) {
                 },
               ];
             });
-            markDmRead(conversationId).catch(() => {});
+            markDmRead(conversationId)
+              .then(() => onUnreadChangeRef.current?.())
+              .catch(() => {});
           }
         }
         if (payload.eventType === 'DELETE' && row?.id && conversationId === activeIdRef.current) {
@@ -549,6 +569,11 @@ export default function MessagesScreen({ session }) {
       return hay.includes(q);
     });
   }, [peopleIndex, query]);
+
+  const onlinePeople = useMemo(
+    () => peopleIndex.filter((person) => person.isOnline && person.id !== myId),
+    [peopleIndex, myId],
+  );
 
   const handleToggleLike = async (message) => {
     if (!message?.id || String(message.id).startsWith('temp-')) return;
@@ -763,7 +788,7 @@ export default function MessagesScreen({ session }) {
     >
       {showInbox ? (
         <View style={[styles.inbox, isMobile && styles.inboxMobile]}>
-          <View style={styles.inboxHeader}>
+          <View style={[styles.inboxHeader, isMobile && styles.inboxHeaderMobile]}>
             <Text style={styles.inboxTitle}>{composeOpen ? 'New message' : 'Messages'}</Text>
             <View style={styles.inboxHeaderActions}>
               {composeOpen && selectedIds.length > 0 ? (
@@ -830,6 +855,29 @@ export default function MessagesScreen({ session }) {
                 maxLength={80}
               />
             </View>
+          ) : null}
+          {isMobile && !composeOpen && onlinePeople.length > 0 ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.storiesRow}
+            >
+              {onlinePeople.map((person) => (
+                <Pressable
+                  key={person.id}
+                  onPress={() => openDirect(person.id)}
+                  style={styles.storyItem}
+                  accessibilityLabel={`Message ${firstNameOf(person)}`}
+                >
+                  <View style={styles.storyRing}>
+                    <PersonAvatar person={person} size={56} showOnline />
+                  </View>
+                  <Text style={styles.storyName} numberOfLines={1}>
+                    {firstNameOf(person)}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
           ) : null}
           <View style={styles.searchWrap}>
             <Ionicons name="search" size={15} color="#8e8e93" />
@@ -1179,6 +1227,39 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 18,
     paddingBottom: 8,
+  },
+  inboxHeaderMobile: {
+    paddingTop: 8,
+  },
+  storiesRow: {
+    paddingHorizontal: 14,
+    paddingBottom: 10,
+    gap: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  storyItem: {
+    width: 68,
+    alignItems: 'center',
+    gap: 6,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  storyRing: {
+    padding: 2,
+    borderRadius: 34,
+    borderWidth: 2,
+    borderColor: '#E8C36A',
+  },
+  storyName: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#1d1d1f',
+    width: '100%',
+    textAlign: 'center',
   },
   inboxTitle: {
     fontFamily,

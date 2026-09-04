@@ -10,6 +10,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useIsMobile } from '../lib/mobileUi';
 import { AI_MODEL_PROVIDERS, loadAiApiKeys, saveAiApiKeys } from '../lib/aiKeys';
 import {
   USER_CATEGORIES,
@@ -41,6 +42,7 @@ const emptyKeys = () =>
 export { AI_MODEL_PROVIDERS, loadAiApiKeys };
 
 function SettingsHome({ onOpenAiModels, onOpenPermissions, onOpenDatabase, onOpenStoreSettings }) {
+  const isMobile = useIsMobile();
   const [dbStatus, setDbStatus] = useState(null);
 
   useEffect(() => {
@@ -67,9 +69,9 @@ function SettingsHome({ onOpenAiModels, onOpenPermissions, onOpenDatabase, onOpe
       : dbStatus.message || 'Not connected';
 
   return (
-    <View style={styles.body}>
+    <View style={[styles.body, isMobile && styles.bodyMobile]}>
       <View style={styles.menuList}>
-        <Pressable style={styles.menuRow} onPress={onOpenDatabase}>
+        <Pressable style={[styles.menuRow, isMobile && styles.menuRowMobile]} onPress={onOpenDatabase}>
           <View style={[styles.menuIcon, { backgroundColor: dbReady ? '#EAF6EE' : '#FFF6E8' }]}>
             <Ionicons
               name={dbReady ? 'server-outline' : 'cloud-offline-outline'}
@@ -84,7 +86,7 @@ function SettingsHome({ onOpenAiModels, onOpenPermissions, onOpenDatabase, onOpe
           <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
         </Pressable>
 
-        <Pressable style={styles.menuRow} onPress={onOpenStoreSettings}>
+        <Pressable style={[styles.menuRow, isMobile && styles.menuRowMobile]} onPress={onOpenStoreSettings}>
           <View style={[styles.menuIcon, { backgroundColor: '#FFF4E5' }]}>
             <Ionicons name="storefront-outline" size={16} color="#C47A12" />
           </View>
@@ -95,7 +97,7 @@ function SettingsHome({ onOpenAiModels, onOpenPermissions, onOpenDatabase, onOpe
           <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
         </Pressable>
 
-        <Pressable style={styles.menuRow} onPress={onOpenAiModels}>
+        <Pressable style={[styles.menuRow, isMobile && styles.menuRowMobile]} onPress={onOpenAiModels}>
           <View style={[styles.menuIcon, { backgroundColor: '#F3EEFF' }]}>
             <Ionicons name="sparkles-outline" size={16} color="#6B4DE6" />
           </View>
@@ -108,7 +110,7 @@ function SettingsHome({ onOpenAiModels, onOpenPermissions, onOpenDatabase, onOpe
           <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
         </Pressable>
 
-        <Pressable style={styles.menuRow} onPress={onOpenPermissions}>
+        <Pressable style={[styles.menuRow, isMobile && styles.menuRowMobile]} onPress={onOpenPermissions}>
           <View style={[styles.menuIcon, { backgroundColor: '#EEF4FF' }]}>
             <Ionicons name="shield-checkmark-outline" size={16} color="#3B6FE0" />
           </View>
@@ -129,7 +131,7 @@ const PERMISSION_ITEMS = [
   {
     key: 'camera',
     label: 'Camera',
-    description: 'Used by Serphint to preview and capture video',
+    description: 'Used for Canada Gold portraits and by Serphint to capture video',
     icon: 'camera-outline',
     tint: '#EEF4FF',
     accent: '#3B6FE0',
@@ -791,8 +793,8 @@ function DevicePermissionsPanel() {
     <View>
       <Text style={[styles.sectionTitle, styles.sectionTitleSpaced]}>Device access</Text>
       <Text style={styles.aiIntro}>
-        Grant camera and microphone access used by Serphint, or update it later in your browser
-        settings if it was blocked.
+        Grant camera and microphone access used for profile portraits and Serphint, or update it
+        later in your browser settings if it was blocked.
       </Text>
 
       {PERMISSION_ITEMS.map((item) => {
@@ -1105,6 +1107,15 @@ const styles = StyleSheet.create({
     minHeight: 0,
     marginTop: 20,
     alignSelf: 'stretch',
+  },
+  bodyMobile: {
+    marginTop: 8,
+    backgroundColor: '#f2f2f7',
+  },
+  menuRowMobile: {
+    borderRadius: 14,
+    borderColor: 'rgba(60,60,67,0.12)',
+    paddingVertical: 14,
   },
   centered: {
     flex: 1,

@@ -2,7 +2,9 @@
 <html lang="%LANG_ISO_CODE%">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <!--
       Content Security Policy. The app only ever talks to Supabase (auth, data,
       Edge Function gateway) and the Aureus POS hosts; every other vendor is
@@ -24,7 +26,7 @@
         img-src 'self' data: blob: https:;
         media-src 'self' blob:;
         worker-src 'self' blob:;
-        connect-src 'self'
+        connect-src 'self' blob: data:
           https://bkvyyddtevzvuanzkobd.supabase.co wss://bkvyyddtevzvuanzkobd.supabase.co
           https://canadagoldeast.aureuspos.com https://gta.aureuspos.com https://canadianpmx.com
           http://localhost:* ws://localhost:* http://127.0.0.1:* ws://127.0.0.1:*;"

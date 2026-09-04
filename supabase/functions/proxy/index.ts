@@ -7,6 +7,7 @@
  *   /proxy/anthropic/v1/messages           POST  → api.anthropic.com
  *   /proxy/openai/v1/chat/completions      POST  → api.openai.com
  *   /proxy/openrouter/v1/chat/completions  POST  → openrouter.ai
+ *   /proxy/avatars/stylize                 POST  → OpenAI images/edits (locked Canada Gold cartoon)
  *   /proxy/fintrac/<path>                  *     → www142.fintrac-canafe.canada.ca
  *   /proxy/rippling/oauth/config           GET   → { clientId, configured }
  *   /proxy/rippling/oauth/token            POST  → app.rippling.com/o/token (client secret held here)
@@ -17,12 +18,14 @@
  * own via `X-Upstream-Api-Key`. FINTRAC and Rippling user tokens are forwarded
  * from `X-Upstream-Authorization` (the caller's own session with that vendor).
  */
-import { corsHeaders, error, preflight, securityHeaders } from '../_shared/http.ts';
+import { corsHeaders, error, json, preflight, securityHeaders } from '../_shared/http.ts';
 import { requireActiveStaff, StaffAuthError } from '../_shared/staff.ts';
 
 const FUNCTION_PREFIX = '/proxy';
 const MAX_BODY_BYTES = 25 * 1024 * 1024;
 const UPSTREAM_TIMEOUT_MS = 120_000;
+const AVATAR_TIMEOUT_MS = 180_000;
+const RATE_LIMIT_AVATAR = 8;
 
 const FINTRAC_ORIGIN = 'https://www142.fintrac-canafe.canada.ca';
 const RIPPLING_API_ORIGIN = 'https://rest.ripplingapis.com';
@@ -79,9 +82,9 @@ function passthroughResponse(req: Request, upstream: Response): Response {
   return new Response(upstream.body, { status: upstream.status, headers });
 }
 
-async function forward(url: string, init: RequestInit): Promise<Response> {
+async function forward(url: string, init: RequestInit, timeoutMs = UPSTREAM_TIMEOUT_MS): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } finally {
@@ -122,6 +125,114 @@ async function handleOpenAI(req: Request, body: ArrayBuffer | null): Promise<Res
     body,
   });
   return passthroughResponse(req, upstream);
+}
+
+const AVATAR_IMAGE_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']);
+const AVATAR_MAX_BYTES = 8 * 1024 * 1024;
+const AVATAR_MODELS = ['gpt-image-1.5', 'gpt-image-1'];
+
+/**
+ * Locked look for every staff portrait. Identity (face, hair, glasses) comes
+ * from the photo; wardrobe, lighting, and proportions stay in Canada Gold land.
+ */
+const AVATAR_STYLE_PROMPT = [
+  'Restyle this photograph as a polished 3D animated character portrait for the Canada Gold staff universe.',
+  'Art direction that every portrait must share: modern Pixar / Disney feature-film CGI, head-and-shoulders bust, centered, facing the camera, soft studio lighting with a gentle rim light, smooth skin with subtle highlights, large expressive eyes with detailed irises, slightly stylized proportions (narrower chin, softly rounded ears), voluminous hair with individual strands, friendly slight smile.',
+  'Background: plain dark charcoal-to-warm-gray studio gradient. No text, logos, watermarks, props, extra people, or scenery.',
+  'Identity lock: keep this exact person — age, face shape, skin tone, eye color, hair color and style, facial hair, freckles, and glasses. Do not invent a different person.',
+  'Wardrobe: a simple solid muted gold-olive crew-neck shirt with no logos, so every staff portrait belongs in the same Canada Gold world.',
+].join(' ');
+
+function parseImageDataUrl(value: string): { mediaType: string; bytes: Uint8Array; filename: string } | null {
+  const match = String(value || '').trim().match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$/);
+  if (!match) return null;
+  const mediaType = match[1].toLowerCase() === 'image/jpg' ? 'image/jpeg' : match[1].toLowerCase();
+  if (!AVATAR_IMAGE_TYPES.has(mediaType)) return null;
+  try {
+    const binary = atob(match[2].replace(/\s/g, ''));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    if (!bytes.byteLength || bytes.byteLength > AVATAR_MAX_BYTES) return null;
+    const ext = mediaType.includes('png') ? 'png' : mediaType.includes('webp') ? 'webp' : 'jpg';
+    return { mediaType, bytes, filename: `photo.${ext}` };
+  } catch {
+    return null;
+  }
+}
+
+function isRetryableImageModelError(payload: unknown): boolean {
+  const error = payload && typeof payload === 'object' ? (payload as { error?: { message?: string; code?: string } }).error : null;
+  const message = String(error?.message || '');
+  const code = String(error?.code || '');
+  return /model|unknown|not found|does not exist|not available/i.test(`${code} ${message}`);
+}
+
+function buildAvatarEditForm(image: { mediaType: string; bytes: Uint8Array; filename: string }, model: string): FormData {
+  const form = new FormData();
+  form.set('model', model);
+  form.set('prompt', AVATAR_STYLE_PROMPT);
+  form.set('size', '1024x1024');
+  form.set('quality', 'medium');
+  form.set('input_fidelity', 'high');
+  form.set('output_format', 'jpeg');
+  form.set('image', new File([image.bytes], image.filename, { type: image.mediaType }));
+  return form;
+}
+
+async function handleAvatarStylize(req: Request, body: ArrayBuffer | null): Promise<Response> {
+  if (req.method !== 'POST') return error(req, 405, 'Use POST.', 'method_not_allowed');
+  const key = upstreamApiKey(req, 'OPENAI_API_KEY');
+  if (!key) return error(req, 400, 'No OpenAI API key is configured. Add one in Settings → AI models.', 'missing_key');
+
+  let payload: { image?: string } = {};
+  try {
+    payload = body ? JSON.parse(new TextDecoder().decode(body)) : {};
+  } catch {
+    return error(req, 400, 'Body must be JSON.', 'bad_request');
+  }
+
+  const image = parseImageDataUrl(String(payload.image || ''));
+  if (!image) {
+    return error(req, 400, 'Send a JPEG, PNG, or WebP photo under 8 MB.', 'bad_request');
+  }
+
+  let lastMessage = 'Could not draw that portrait.';
+  for (const model of AVATAR_MODELS) {
+    const upstream = await forward(
+      'https://api.openai.com/v1/images/edits',
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}` },
+        body: buildAvatarEditForm(image, model),
+      },
+      AVATAR_TIMEOUT_MS,
+    );
+
+    let result: { data?: Array<{ b64_json?: string }>; error?: { message?: string; code?: string } } = {};
+    try {
+      result = await upstream.json();
+    } catch {
+      lastMessage = 'Portrait service returned an invalid response.';
+      continue;
+    }
+
+    if (!upstream.ok) {
+      lastMessage = result?.error?.message || `Portrait service error ${upstream.status}.`;
+      if (isRetryableImageModelError(result) && model !== AVATAR_MODELS[AVATAR_MODELS.length - 1]) {
+        continue;
+      }
+      return error(req, upstream.status >= 500 ? 502 : 400, lastMessage, upstream.status >= 500 ? 'upstream_failed' : 'bad_request');
+    }
+
+    const b64 = result?.data?.[0]?.b64_json;
+    if (!b64) {
+      lastMessage = 'Portrait service did not return an image.';
+      continue;
+    }
+    return json(req, 200, { image: `data:image/jpeg;base64,${b64}` });
+  }
+
+  return error(req, 502, lastMessage, 'upstream_failed');
 }
 
 async function handleOpenRouter(req: Request, body: ArrayBuffer | null): Promise<Response> {
@@ -336,8 +447,11 @@ Deno.serve(async (req) => {
   }
 
   const { path, search, query } = routePath(req);
+  const isAvatar = path === '/avatars/stylize';
   const isAi = path.startsWith('/anthropic/') || path.startsWith('/openai/') || path.startsWith('/openrouter/');
-  if (throttled(`${staff.userId}:${isAi ? 'ai' : 'other'}`, isAi ? RATE_LIMIT_AI : RATE_LIMIT_OTHER)) {
+  const bucket = isAvatar ? 'avatar' : isAi ? 'ai' : 'other';
+  const limit = isAvatar ? RATE_LIMIT_AVATAR : isAi ? RATE_LIMIT_AI : RATE_LIMIT_OTHER;
+  if (throttled(`${staff.userId}:${bucket}`, limit)) {
     return error(req, 429, 'Too many requests. Slow down and try again.', 'throttled');
   }
 
@@ -350,6 +464,9 @@ Deno.serve(async (req) => {
     }
     if (path === '/openrouter/v1/chat/completions' && req.method === 'POST') {
       return await handleOpenRouter(req, await readBody(req));
+    }
+    if (path === '/avatars/stylize') {
+      return await handleAvatarStylize(req, await readBody(req));
     }
     if (path.startsWith('/fintrac/')) {
       return await handleFintrac(req, path.slice('/fintrac'.length), search, await readBody(req));
