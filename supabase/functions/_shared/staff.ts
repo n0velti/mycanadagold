@@ -79,6 +79,19 @@ async function loadProfile(userId: string, aureusUserId: string): Promise<StaffC
 }
 
 /**
+ * The Aureus identity stamped on the auth user by `aureus-login`. Only the
+ * service role can write app_metadata, so its presence proves the account went
+ * through the POS check. Do not rely on `app_metadata.provider`: GoTrue owns
+ * that field and resets it to "email" every time a session is minted through
+ * the magic-link OTP flow.
+ */
+export function aureusUserIdFromAppMetadata(appMetadata: unknown): string {
+  const meta = (appMetadata || {}) as Record<string, unknown>;
+  const value = meta.aureus_user_id;
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/**
  * Verifies the bearer JWT and returns the active staff context, or throws a
  * StaffAuthError with the HTTP status to send back.
  */
@@ -97,11 +110,12 @@ export async function requireActiveStaff(req: Request): Promise<StaffContext> {
 
   const claims = data.claims as Record<string, unknown>;
   const appMetadata = (claims.app_metadata || {}) as Record<string, unknown>;
-  if (appMetadata.provider !== 'aureus' || typeof appMetadata.aureus_user_id !== 'string') {
+  const aureusUserId = aureusUserIdFromAppMetadata(appMetadata);
+  if (!aureusUserId) {
     throw new StaffAuthError('This account was not verified with Aureus.', 403, 'forbidden');
   }
 
-  const context = await loadProfile(String(claims.sub), appMetadata.aureus_user_id);
+  const context = await loadProfile(String(claims.sub), aureusUserId);
   if (!context) {
     throw new StaffAuthError('Your MyCanadaGold access has been disabled.', 403, 'deactivated');
   }

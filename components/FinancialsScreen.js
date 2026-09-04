@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
+import { useAppAccess } from '../lib/permissions';
 import {
   fetchCashPayments,
   formatAmount,
@@ -182,6 +183,8 @@ export default function FinancialsScreen({
   storeFilter,
   embedded = false,
 }) {
+  const { canFilter } = useAppAccess();
+  const allowFilters = canFilter('financials');
   const [date, setDate] = useState(() => parseDateParam(new Date()));
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -245,6 +248,10 @@ export default function FinancialsScreen({
   useEffect(() => {
     if (storeFilter) setSelectedStore(storeFilter);
   }, [storeFilter]);
+
+  useEffect(() => {
+    if (!allowFilters && !storeFilter) setSelectedStore(null);
+  }, [allowFilters, storeFilter]);
 
   const storeNames = useMemo(() => {
     const names = new Set(rows.map((row) => row.storeName || '—'));
@@ -400,7 +407,7 @@ export default function FinancialsScreen({
             </View>
           </View>
 
-          {!singleStore ? (
+          {allowFilters && !singleStore ? (
             <View style={styles.storeFilterRow}>
               <Pressable
                 style={[styles.storeChip, !selectedStore && styles.storeChipActive]}

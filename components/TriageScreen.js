@@ -22,6 +22,7 @@ import {
   formatPickerDate,
   parseDateParam,
   resolvePosAuthForRow,
+  rowMatchesQuery,
   withLineItems,
 } from '../lib/transactions';
 import {
@@ -119,26 +120,6 @@ const ERROR_TYPES = [
   'Missing item',
   'Other',
 ];
-
-function normalizeSearch(value) {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/[#,$]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function compactSearch(value) {
-  return normalizeSearch(value).replace(/\s+/g, '');
-}
-
-function rowMatchesQuery(row, query) {
-  const q = String(query || '').trim().toLowerCase();
-  if (!q) return true;
-  if (row.searchText?.includes(q)) return true;
-  const compactQuery = compactSearch(q);
-  return Boolean(compactQuery && compactSearch(row.searchText).includes(compactQuery));
-}
 
 function lineItemName(item) {
   const product = item?.product;

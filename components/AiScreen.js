@@ -19,6 +19,7 @@ import {
   sendAiChatMessage,
 } from '../lib/aiChat';
 import { peekInventoryMatrix, fetchInventoryMatrix } from '../lib/inventory';
+import { useAppAccess } from '../lib/permissions';
 import {
   formatModelReleased,
   getModelMeta,
@@ -197,6 +198,8 @@ export default function AiScreen({
   const { width } = useWindowDimensions();
   const stacked = width < 900 || embedded;
   const lockedStore = Boolean(storeFilter);
+  const { canFilter } = useAppAccess();
+  const allowFilters = canFilter('ai');
   const chatScrollRef = useRef(null);
   const ingestIdRef = useRef(0);
   const chatAbortRef = useRef(null);
@@ -694,7 +697,7 @@ export default function AiScreen({
 
           <View style={styles.settingsGroup}>
             <Text style={styles.groupTitle}>Location</Text>
-            {lockedStore ? (
+            {lockedStore || !allowFilters ? (
               <View style={styles.lockedLocation}>
                 <Ionicons name="location-outline" size={16} color={ACCENT} />
                 <Text style={styles.lockedLocationLabel}>{locationLabel}</Text>

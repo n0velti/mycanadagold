@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { fetchInventoryMatrix, formatQty, peekInventoryMatrix } from '../lib/inventory';
+import { useAppAccess } from '../lib/permissions';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -51,6 +52,8 @@ export default function InventoryScreen({
 }) {
   const { width: windowWidth } = useWindowDimensions();
   const isMobile = windowWidth < 768;
+  const { canFilter } = useAppAccess();
+  const allowFilters = canFilter('inventory');
   const [stores, setStores] = useState([]);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -192,11 +195,13 @@ export default function InventoryScreen({
           ) : null}
         </View>
 
-        <Pressable onPress={() => setHideZeroRows((v) => !v)} hitSlop={6}>
-          <Text style={[styles.toggle, hideZeroRows && styles.toggleOn]}>
-            {hideZeroRows ? 'Showing stocked' : 'Showing all'}
-          </Text>
-        </Pressable>
+        {allowFilters ? (
+          <Pressable onPress={() => setHideZeroRows((v) => !v)} hitSlop={6}>
+            <Text style={[styles.toggle, hideZeroRows && styles.toggleOn]}>
+              {hideZeroRows ? 'Showing stocked' : 'Showing all'}
+            </Text>
+          </Pressable>
+        ) : null}
 
         <Pressable
           onPress={() => load({ force: true })}
