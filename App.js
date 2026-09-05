@@ -4813,7 +4813,7 @@ export default function App() {
                   </Text>
                 </Pressable>
                 <Text style={styles.profilePortraitHint}>
-                  Photos become an IGA-style 3D cartoon of you — your face, with your own shirt and background.
+                  Photos become a fun Disney cartoon of you — your face, with your own shirt and background.
                 </Text>
                 {avatarError ? (
                   <Text style={[styles.errorText, styles.profileError]}>{avatarError}</Text>
