@@ -22,7 +22,11 @@ import {
   formatWeekColumnLabel,
   saveInventoryLog,
 } from '../lib/bullionAudit';
-import { saveNightCount } from '../lib/bullionNight';
+import {
+  saveAfternoonCount,
+  saveLocalBullionCounts,
+  saveNightCount,
+} from '../lib/bullionNight';
 import {
   analyzeBullionDiscrepancy,
   buildUnbalancedBullionItems,
@@ -36,8 +40,33 @@ import {
   QUEBEC_STORES,
 } from '../lib/cashTill';
 import {
+  CASH_DENOMS,
+  USD_DENOMS,
+  addPieceMaps,
+  bumpCountText,
+  computeCountedFromDenoms,
+  countedPiecesForDenom,
+  denomHint,
+  denomPieceLabel,
+  denomStackLabel,
+  denomTitle,
+  emptyDenomCounts,
+  looseBreakdownLine,
+  pieceBreakdownLine,
+  piecesFromSheet,
+  splitCashDenoms,
+} from '../lib/cashDenoms';
+import { hasSheetValues, loadStoreCashCounts, saveStoreCashCount } from '../lib/cashCounts';
+import {
+  loadStoreDayTxnCashBreakdowns,
+  sumBreakdownPieces,
+  useTxnCashBreakdowns,
+} from '../lib/txnCashBreakdowns';
+import TxnCashBreakdownModal, { TxnCashIcon } from './TxnCashBreakdownModal';
+import {
   formatDateParam,
   formatPickerDate,
+  normalizeHomeStoreName,
   parseDateParam,
 } from '../lib/transactions';
 import {
@@ -83,6 +112,48 @@ function metalAccent(name) {
 function useIsMobile() {
   const { width } = useWindowDimensions();
   return width < MOBILE_BREAKPOINT;
+}
+
+function namesMatch(a, b) {
+  return (
+    String(a || '')
+      .trim()
+      .localeCompare(String(b || '').trim(), undefined, { sensitivity: 'base' }) === 0
+  );
+}
+
+function findBullionStore(stores, name) {
+  if (!name || !stores?.length) return null;
+  const target = String(name).trim();
+  const exact = stores.find((store) => namesMatch(store.name, target));
+  if (exact) return exact;
+
+  const pinned = normalizeHomeStoreName(target);
+  if (pinned) {
+    const match = stores.find((store) => namesMatch(store.name, pinned));
+    if (match) return match;
+  }
+
+  const lower = target.toLowerCase();
+  const fuzzy = stores.filter((store) => {
+    const value = String(store.name || '').trim().toLowerCase();
+    return value.includes(lower) || lower.includes(value);
+  });
+  if (fuzzy.length === 1) return fuzzy[0];
+  if (fuzzy.length > 1) {
+    return (
+      fuzzy.find((store) => store.systemKey === 'gta' || store.systemKey === 'pmx') || fuzzy[0]
+    );
+  }
+  return null;
+}
+
+function resolveCashStoreName(name) {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) return null;
+  const exact = AUDIT_CASH_STORES.find((store) => namesMatch(store, trimmed));
+  if (exact) return exact;
+  return normalizeHomeStoreName(trimmed) || trimmed;
 }
 
 function FilterSelect({
@@ -228,16 +299,27 @@ function qtyInputText(value) {
 }
 
 function emptyQtyDraft() {
-  return { vault: '', night: '', store: '', other: '' };
+  return { vault: '', night: '', afternoon: '', store: '', other: '' };
 }
 
 function countedTotalFromDraft(draft) {
-  return countedPhysicalTotal(parseQtyInput(draft?.vault), parseQtyInput(draft?.night));
+  return countedPhysicalTotal(
+    parseQtyInput(draft?.vault),
+    parseQtyInput(draft?.night),
+    parseQtyInput(draft?.afternoon),
+  );
 }
 
-const QTY_FIELDS = ['vault', 'night', 'store', 'other'];
-const QTY_HEADER_LABELS = { vault: 'Vault', night: 'Night', store: 'Store', other: 'Other' };
-const BULLION_TABLE_BASE_WIDTH = 692;
+const QTY_FIELDS = ['vault', 'night', 'afternoon', 'store', 'other'];
+const SHIFT_FIELDS = ['night', 'afternoon'];
+const QTY_HEADER_LABELS = {
+  vault: 'Vault',
+  night: 'Night',
+  afternoon: 'Afternoon',
+  store: 'Store',
+  other: 'Other',
+};
+const BULLION_TABLE_BASE_WIDTH = 828;
 const BULLION_HIST_COL_WIDTH = 48;
 
 function formatHistoryWeekday(dateKey) {
@@ -353,27 +435,6 @@ function parseMoneyInput(value) {
   return Number.isFinite(n) ? n : null;
 }
 
-/** Cash-count denominations: bills (50 notes/stack) and coin rolls with fixed stack values. */
-const CASH_DENOMS = [
-  { key: 'd100', label: '100', face: 100, stackBills: 50 },
-  { key: 'd50', label: '50', face: 50, stackBills: 50 },
-  { key: 'd20', label: '20', face: 20, stackBills: 50 },
-  { key: 'd10', label: '10', face: 10, stackBills: 50 },
-  { key: 'd5', label: '5', face: 5, stackBills: 50 },
-  { key: 'd2', label: '$2', face: 2, stackValue: 50 },
-  { key: 'd1', label: '$1', face: 1, stackValue: 25 },
-  { key: 'd025', label: '$0.25', face: 0.25, stackValue: 10 },
-];
-
-const USD_DENOMS = [
-  { key: 'd100', label: '100', face: 100, stackBills: 50 },
-  { key: 'd50', label: '50', face: 50, stackBills: 50 },
-  { key: 'd20', label: '20', face: 20, stackBills: 50 },
-  { key: 'd10', label: '10', face: 10, stackBills: 50 },
-  { key: 'd5', label: '5', face: 5, stackBills: 50 },
-  { key: 'd1', label: '1', face: 1, stackBills: 50 },
-];
-
 const CASH_DRAWERS = [
   { key: 'cad', label: 'Till 1 CAD', currency: 'CAD' },
   { key: 'usd', label: 'USD', currency: 'USD' },
@@ -388,66 +449,8 @@ const EMPTY_CASH_TOTALS = {
   outCount: 0,
 };
 
-function emptyDenomCounts(denoms = CASH_DENOMS) {
-  return Object.fromEntries(denoms.map((d) => [d.key, '']));
-}
-
-function denomLooseValue(denom, countText) {
-  const n = parseQtyInput(countText);
-  if (n == null) return 0;
-  return n * denom.face;
-}
-
-function denomStackValue(denom, countText) {
-  const n = parseQtyInput(countText);
-  if (n == null) return 0;
-  if (denom.stackValue != null) return n * denom.stackValue;
-  return n * denom.stackBills * denom.face;
-}
-
-function computeCountedFromDenoms(denoms, looseCounts, stackCounts, otherText) {
-  const otherCash = parseMoneyInput(otherText);
-  const hasDenomCount =
-    Boolean(String(otherText || '').trim()) ||
-    denoms.some(
-      (d) =>
-        String(looseCounts[d.key] || '').trim() !== '' ||
-        String(stackCounts[d.key] || '').trim() !== '',
-    );
-  const columns = denoms.map((denom) => {
-    const loose = denomLooseValue(denom, looseCounts[denom.key]);
-    const stacks = denomStackValue(denom, stackCounts[denom.key]);
-    return {
-      key: denom.key,
-      loose,
-      stacks,
-      total: loose + stacks,
-    };
-  });
-  const otherTotal = otherCash != null ? otherCash : 0;
-  const total = hasDenomCount
-    ? Math.round(
-        (columns.reduce((sum, col) => sum + col.total, 0) + otherTotal) * 100,
-      ) / 100
-    : null;
-  return { hasDenomCount, columns, otherTotal, total };
-}
-
-function denomTitle(denom) {
-  if (denom.face >= 1 && Number.isInteger(denom.face)) return `$${denom.face}`;
-  return `$${denom.face}`;
-}
-
-function denomHint(denom) {
-  if (denom.stackValue != null) return `$${denom.stackValue}/roll`;
-  return `${denom.stackBills} bills`;
-}
-
-function splitCashDenoms(denoms) {
-  return {
-    bills: denoms.filter((d) => d.stackBills != null),
-    coins: denoms.filter((d) => d.stackValue != null),
-  };
+function moneySum(values) {
+  return Math.round(values.reduce((sum, value) => sum + (Number(value) || 0), 0) * 100) / 100;
 }
 
 function modelOptionMetaLine(option) {
@@ -541,10 +544,12 @@ function BullionTableRow({
   dense,
   striped,
   isSaving,
+  savingLocal,
   savingAll,
   showDiff,
   onChangeField,
   onBlurField,
+  onSave,
   onUpdate,
   registerQtyInput,
   onSubmitField,
@@ -590,7 +595,7 @@ function BullionTableRow({
             value={draft[field]}
             onChangeText={(value) => onChangeField(field, value)}
             onSubmitEditing={() => onSubmitField(field)}
-            onBlur={field === 'night' ? () => onBlurField?.(field) : undefined}
+            onBlur={SHIFT_FIELDS.includes(field) ? () => onBlurField?.(field) : undefined}
             inputRef={registerQtyInput(field)}
             label={field}
             dense={dense}
@@ -610,10 +615,28 @@ function BullionTableRow({
       </View>
       <View style={styles.bColAction}>
         <Pressable
-          style={[styles.bUpdateButton, (isSaving || savingAll) && styles.rowActionDisabled]}
+          style={[
+            styles.bSaveButton,
+            (isSaving || savingLocal || savingAll) && styles.rowActionDisabled,
+          ]}
+          onPress={onSave}
+          disabled={isSaving || savingLocal || savingAll}
+          accessibilityLabel="Save to database"
+        >
+          {savingLocal ? (
+            <ActivityIndicator size="small" color={TEXT} />
+          ) : (
+            <Ionicons name="save-outline" size={15} color={TEXT} />
+          )}
+        </Pressable>
+        <Pressable
+          style={[
+            styles.bUpdateButton,
+            (isSaving || savingLocal || savingAll) && styles.rowActionDisabled,
+          ]}
           onPress={onUpdate}
-          disabled={isSaving || savingAll}
-          accessibilityLabel="Update"
+          disabled={isSaving || savingLocal || savingAll}
+          accessibilityLabel="Update Aureus"
         >
           {isSaving ? (
             <ActivityIndicator size="small" color="#fff" />
@@ -631,10 +654,12 @@ function BullionMobileCard({
   draft,
   historyDates,
   isSaving,
+  savingLocal,
   savingAll,
   showDiff,
   onChangeField,
   onBlurField,
+  onSave,
   onUpdate,
   registerQtyInput,
   onSubmitField,
@@ -659,10 +684,28 @@ function BullionMobileCard({
           </View>
           <DiffBadge total={total} systemCount={row.systemCount} confirmed={showDiff} />
           <Pressable
-            style={[styles.bMobileUpdate, (isSaving || savingAll) && styles.rowActionDisabled]}
+            style={[
+              styles.bMobileSave,
+              (isSaving || savingLocal || savingAll) && styles.rowActionDisabled,
+            ]}
+            onPress={onSave}
+            disabled={isSaving || savingLocal || savingAll}
+            accessibilityLabel="Save to database"
+          >
+            {savingLocal ? (
+              <ActivityIndicator size="small" color={TEXT} />
+            ) : (
+              <Ionicons name="save-outline" size={18} color={TEXT} />
+            )}
+          </Pressable>
+          <Pressable
+            style={[
+              styles.bMobileUpdate,
+              (isSaving || savingLocal || savingAll) && styles.rowActionDisabled,
+            ]}
             onPress={onUpdate}
-            disabled={isSaving || savingAll}
-            accessibilityLabel="Update"
+            disabled={isSaving || savingLocal || savingAll}
+            accessibilityLabel="Update Aureus"
           >
             {isSaving ? (
               <ActivityIndicator size="small" color="#fff" />
@@ -708,7 +751,7 @@ function BullionMobileCard({
                 value={draft[field]}
                 onChangeText={(value) => onChangeField(field, value)}
                 onSubmitEditing={() => onSubmitField(field)}
-                onBlur={field === 'night' ? () => onBlurField?.(field) : undefined}
+                onBlur={SHIFT_FIELDS.includes(field) ? () => onBlurField?.(field) : undefined}
                 inputRef={registerQtyInput(field)}
                 label={QTY_HEADER_LABELS[field]}
                 large
@@ -721,7 +764,13 @@ function BullionMobileCard({
   );
 }
 
-function CashTxnRow({ row, last = false, fallbackLabel = '—' }) {
+function CashTxnRow({
+  row,
+  last = false,
+  fallbackLabel = '—',
+  cashSaved = false,
+  onCashPress,
+}) {
   const inbound = row.type === 'In';
   return (
     <View style={[styles.cashTxnRow, last && styles.statRowLast]}>
@@ -738,9 +787,14 @@ function CashTxnRow({ row, last = false, fallbackLabel = '—' }) {
           </Text>
         ) : null}
       </View>
-      <Text style={[styles.cashTxnAmount, inbound ? styles.cashIn : styles.cashOut]} numberOfLines={1}>
-        {row.amountLabel}
-      </Text>
+      <View style={styles.cashTxnAmountWrap}>
+        {onCashPress ? (
+          <TxnCashIcon saved={cashSaved} onPress={() => onCashPress(row)} />
+        ) : null}
+        <Text style={[styles.cashTxnAmount, inbound ? styles.cashIn : styles.cashOut]} numberOfLines={1}>
+          {row.amountLabel}
+        </Text>
+      </View>
     </View>
   );
 }
@@ -781,6 +835,151 @@ function CashCountInput({
   );
 }
 
+function CashStepButton({ onPress, disabled, icon, large = false }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      hitSlop={6}
+      accessibilityRole="button"
+      style={({ pressed }) => [
+        styles.cashStepBtn,
+        large && styles.cashStepBtnLarge,
+        disabled && styles.cashStepBtnDisabled,
+        pressed && !disabled && styles.cashStepBtnPressed,
+      ]}
+    >
+      <Ionicons name={icon} size={large ? 20 : 16} color={disabled ? CHEVRON : TEXT} />
+    </Pressable>
+  );
+}
+
+function LooseDenomTile({
+  denom,
+  countText,
+  amount,
+  money,
+  onChangeText,
+  onBump,
+  onSubmitEditing,
+  inputRef,
+  compact,
+  expected,
+  countedPieces,
+  openingMissing,
+}) {
+  const filled = String(countText || '').trim() !== '';
+  const qty = parseQtyInput(countText) ?? 0;
+  const showExpected = expected != null && (expected !== 0 || !openingMissing);
+  const expectedTone =
+    showExpected && countedPieces != null && (filled || countedPieces > 0)
+      ? countedPieces === expected
+        ? styles.looseTileExpectedOk
+        : styles.looseTileExpectedOff
+      : styles.looseTileExpected;
+  return (
+    <View
+      style={[
+        styles.looseTile,
+        compact && styles.looseTileCompact,
+        filled && styles.looseTileFilled,
+      ]}
+    >
+      <View style={[styles.looseTileStripe, { backgroundColor: denom.color }]} />
+      <Text style={styles.looseTileFace}>{denomTitle(denom)}</Text>
+      {showExpected ? (
+        <Text style={expectedTone}>
+          {openingMissing
+            ? `${expected > 0 ? '+' : ''}${expected} txn`
+            : `exp ${expected}`}
+        </Text>
+      ) : (
+        <Text style={styles.looseTileUnit}>
+          {filled ? `${qty} ${denomPieceLabel(denom, qty)}` : denomPieceLabel(denom, 0)}
+        </Text>
+      )}
+      <View style={styles.looseTileStepper}>
+        <CashStepButton
+          icon="remove"
+          disabled={qty <= 0}
+          onPress={() => onBump(-1)}
+          large={compact}
+        />
+        <CashCountInput
+          value={countText}
+          onChangeText={onChangeText}
+          onSubmitEditing={onSubmitEditing}
+          inputRef={inputRef}
+          label={`${denomTitle(denom)} loose`}
+          style={compact ? styles.looseTileInputLarge : styles.looseTileInput}
+        />
+        <CashStepButton icon="add" onPress={() => onBump(1)} large={compact} />
+      </View>
+      <Text style={[styles.looseTileValue, !filled && styles.looseTileValueMuted]}>
+        {filled ? money(amount) : '—'}
+      </Text>
+    </View>
+  );
+}
+
+function StrapRow({
+  denom,
+  countText,
+  amount,
+  money,
+  onChangeText,
+  onBump,
+  onSubmitEditing,
+  inputRef,
+  last,
+  compact,
+}) {
+  const filled = String(countText || '').trim() !== '';
+  const qty = parseQtyInput(countText) ?? 0;
+  return (
+    <View
+      style={[
+        styles.strapRow,
+        compact && styles.strapRowCompact,
+        last && styles.strapRowLast,
+        filled && styles.strapRowFilled,
+      ]}
+    >
+      <View style={[styles.strapDot, { backgroundColor: denom.color }]} />
+      <View style={[styles.strapCopy, compact && styles.strapCopyCompact]}>
+        <Text style={styles.strapTitle}>{denomTitle(denom)}</Text>
+        {compact ? null : <Text style={styles.strapHint}>{denomHint(denom)}</Text>}
+      </View>
+      <View style={styles.strapStepper}>
+        <CashStepButton
+          icon="remove"
+          disabled={qty <= 0}
+          onPress={() => onBump(-1)}
+          large={compact}
+        />
+        <CashCountInput
+          value={countText}
+          onChangeText={onChangeText}
+          onSubmitEditing={onSubmitEditing}
+          inputRef={inputRef}
+          label={`${denomTitle(denom)} ${denomStackLabel(denom, qty)}`}
+          style={compact ? styles.strapInputLarge : styles.strapInput}
+        />
+        <CashStepButton icon="add" onPress={() => onBump(1)} large={compact} />
+      </View>
+      <Text
+        style={[
+          styles.strapAmount,
+          compact && styles.strapAmountCompact,
+          !filled && styles.looseTileValueMuted,
+        ]}
+      >
+        {filled ? money(amount) : '—'}
+      </Text>
+    </View>
+  );
+}
+
 function CashFold({ title, detail, amount, amountStyle, open, onToggle, empty, children }) {
   return (
     <View style={styles.group}>
@@ -811,12 +1010,13 @@ function BullionAuditPanel({
   session,
   onRequireLogin,
   storeFilter,
+  initialDate,
   embedded = false,
 }) {
   const { canFilter } = useAppAccess();
   const allowFilters = canFilter('audit');
   const isMobile = useIsMobile();
-  const [date, setDate] = useState(() => parseDateParam(new Date()));
+  const [date, setDate] = useState(() => parseDateParam(initialDate || new Date()));
   const [stores, setStores] = useState([]);
   const [selectedStoreName, setSelectedStoreName] = useState(storeFilter || null);
   const [rows, setRows] = useState([]);
@@ -824,6 +1024,7 @@ function BullionAuditPanel({
   const [drafts, setDrafts] = useState({});
   const [confirmed, setConfirmed] = useState({});
   const [savingId, setSavingId] = useState('');
+  const [savingKind, setSavingKind] = useState('');
   const [savingAll, setSavingAll] = useState(false);
   const [saveAllProgress, setSaveAllProgress] = useState('');
   const [query, setQuery] = useState('');
@@ -842,7 +1043,7 @@ function BullionAuditPanel({
   const storesRequestId = useRef(0);
   const aiAbortRef = useRef(null);
   const qtyInputRefs = useRef(new Map());
-  const nightSaveTimers = useRef(new Map());
+  const shiftSaveTimers = useRef(new Map());
   const draftsRef = useRef({});
 
   const lockedStore = Boolean(storeFilter) || !allowFilters;
@@ -864,18 +1065,12 @@ function BullionAuditPanel({
 
   const selectedStore = useMemo(() => {
     if (!stores.length) return null;
-    if (selectedStoreName) {
-      const match = stores.find(
-        (store) =>
-          store.name.localeCompare(selectedStoreName, undefined, { sensitivity: 'base' }) === 0,
-      );
-      if (match) return match;
-      // When opened from Home → store, never fall back to a different store.
-      if (lockedStore) return null;
-    }
+    const match = findBullionStore(stores, selectedStoreName || storeFilter);
+    if (match) return match;
+    // When opened from Home → store, never fall back to a different store.
     if (lockedStore) return null;
     return stores[0];
-  }, [stores, selectedStoreName, lockedStore]);
+  }, [stores, selectedStoreName, storeFilter, lockedStore]);
 
   const txnDrawer = useAuditTxnDrawer(session, {
     token: selectedStore?.token || session?.token,
@@ -889,6 +1084,10 @@ function BullionAuditPanel({
   }, [storeFilter]);
 
   useEffect(() => {
+    if (initialDate) setDate(parseDateParam(initialDate));
+  }, [initialDate]);
+
+  useEffect(() => {
     if (!session?.token) {
       setStores([]);
       return;
@@ -899,23 +1098,13 @@ function BullionAuditPanel({
         if (id !== storesRequestId.current) return;
         setStores(result);
         setSelectedStoreName((prev) => {
-          if (storeFilter) return storeFilter;
-          if (
-            prev &&
-            result.some(
-              (s) => s.name.localeCompare(prev, undefined, { sensitivity: 'base' }) === 0,
-            )
-          ) {
-            return prev;
+          if (storeFilter) {
+            return findBullionStore(result, storeFilter)?.name || storeFilter;
           }
+          if (prev && findBullionStore(result, prev)) return prev;
           return result[0]?.name || null;
         });
-        if (
-          storeFilter &&
-          !result.some(
-            (s) => s.name.localeCompare(storeFilter, undefined, { sensitivity: 'base' }) === 0,
-          )
-        ) {
+        if (storeFilter && !findBullionStore(result, storeFilter)) {
           setError(`No bullion audit location found for ${storeFilter}.`);
         }
       })
@@ -960,10 +1149,13 @@ function BullionAuditPanel({
         nextDrafts[row.id] = {
           vault: qtyInputText(row.vaultCount),
           night: qtyInputText(row.nightCount),
+          afternoon: qtyInputText(row.afternoonCount),
           store: qtyInputText(row.storeCount),
           other: qtyInputText(row.otherCount),
         };
-        if (row.amount != null || row.nightCount != null) nextConfirmed[row.id] = true;
+        if (row.amount != null || row.nightCount != null || row.afternoonCount != null) {
+          nextConfirmed[row.id] = true;
+        }
       }
       draftsRef.current = nextDrafts;
       setDrafts(nextDrafts);
@@ -983,7 +1175,7 @@ function BullionAuditPanel({
   }, [load]);
 
   useEffect(() => {
-    const timers = nightSaveTimers.current;
+    const timers = shiftSaveTimers.current;
     return () => {
       aiAbortRef.current?.abort();
       for (const timer of timers.values()) clearTimeout(timer);
@@ -1000,11 +1192,15 @@ function BullionAuditPanel({
   const visibleRows = useMemo(() => {
     const q = query.trim().toLowerCase();
     return rows.filter((row) => {
-      if (hideZero && !(row.systemCount > 0 || row.amount > 0 || row.nightCount > 0)) {
+      if (
+        hideZero &&
+        !(row.systemCount > 0 || row.amount > 0 || row.nightCount > 0 || row.afternoonCount > 0)
+      ) {
         const draft = drafts[row.id];
         const vault = parseQtyInput(draft?.vault);
         const night = parseQtyInput(draft?.night);
-        if (!(vault > 0) && !(night > 0)) return false;
+        const afternoon = parseQtyInput(draft?.afternoon);
+        if (!(vault > 0) && !(night > 0) && !(afternoon > 0)) return false;
       }
       if (!q) return true;
       return [row.name, row.sku, row.metal, row.description]
@@ -1018,17 +1214,25 @@ function BullionAuditPanel({
     [rows, drafts],
   );
 
-  const clearNightSaveTimer = (productId) => {
-    const timers = nightSaveTimers.current;
-    const timer = timers.get(productId);
-    if (timer) clearTimeout(timer);
-    timers.delete(productId);
+  const shiftTimerKey = (productId, field) => `${productId}:${field}`;
+
+  const clearShiftSaveTimer = (productId, field) => {
+    const timers = shiftSaveTimers.current;
+    const keys = field
+      ? [shiftTimerKey(productId, field)]
+      : SHIFT_FIELDS.map((name) => shiftTimerKey(productId, name));
+    for (const key of keys) {
+      const timer = timers.get(key);
+      if (timer) clearTimeout(timer);
+      timers.delete(key);
+    }
   };
 
-  const persistNightCount = async (productId, value) => {
-    if (!selectedStore?.name) return;
-    clearNightSaveTimer(productId);
-    const saved = await saveNightCount(
+  const persistShiftCount = async (productId, field, value) => {
+    if (!selectedStore?.name || !SHIFT_FIELDS.includes(field)) return;
+    clearShiftSaveTimer(productId, field);
+    const save = field === 'afternoon' ? saveAfternoonCount : saveNightCount;
+    const saved = await save(
       selectedStore.name,
       productId,
       parseQtyInput(value),
@@ -1039,25 +1243,42 @@ function BullionAuditPanel({
         entry.id === productId
           ? {
               ...entry,
-              nightCount: saved,
-              amount: countedPhysicalTotal(entry.vaultCount, saved),
+              nightCount: field === 'night' ? saved : entry.nightCount,
+              afternoonCount: field === 'afternoon' ? saved : entry.afternoonCount,
+              amount: countedPhysicalTotal(
+                entry.vaultCount,
+                field === 'night' ? saved : entry.nightCount,
+                field === 'afternoon' ? saved : entry.afternoonCount,
+              ),
             }
           : entry,
       ),
     );
   };
 
-  const scheduleNightSave = (productId, value) => {
-    if (!selectedStore?.name) return;
-    clearNightSaveTimer(productId);
+  const flushShiftField = (row, field) => {
+    if (!SHIFT_FIELDS.includes(field)) return;
+    const next = parseQtyInput(draftsRef.current[row.id]?.[field]);
+    const current = field === 'afternoon' ? row.afternoonCount : row.nightCount;
+    if (next == null && current == null) return;
+    persistShiftCount(row.id, field, draftsRef.current[row.id]?.[field]).catch((err) => {
+      setError(err?.message || `Failed to save ${field} count.`);
+    });
+  };
+
+  const scheduleShiftSave = (productId, field, value) => {
+    if (!selectedStore?.name || !SHIFT_FIELDS.includes(field)) return;
+    clearShiftSaveTimer(productId, field);
     const storeName = selectedStore.name;
     const userId = session?.supabaseUserId;
-    nightSaveTimers.current.set(
-      productId,
+    const key = shiftTimerKey(productId, field);
+    const save = field === 'afternoon' ? saveAfternoonCount : saveNightCount;
+    shiftSaveTimers.current.set(
+      key,
       setTimeout(() => {
-        nightSaveTimers.current.delete(productId);
-        saveNightCount(storeName, productId, parseQtyInput(value), userId).catch((err) => {
-          setError(err?.message || 'Failed to save night count.');
+        shiftSaveTimers.current.delete(key);
+        save(storeName, productId, parseQtyInput(value), userId).catch((err) => {
+          setError(err?.message || `Failed to save ${field} count.`);
         });
       }, 450),
     );
@@ -1076,9 +1297,9 @@ function BullionAuditPanel({
       draftsRef.current = next;
       return next;
     });
-    if (field === 'night') scheduleNightSave(productId, value);
+    if (SHIFT_FIELDS.includes(field)) scheduleShiftSave(productId, field, value);
     setConfirmed((prev) => {
-      if (field === 'night') {
+      if (SHIFT_FIELDS.includes(field)) {
         return { ...prev, [productId]: true };
       }
       if (!prev[productId]) return prev;
@@ -1092,59 +1313,113 @@ function BullionAuditPanel({
     const draft = drafts[row.id] || {};
     return (
       String(draft.vault || '').trim() !== '' ||
+      String(draft.night || '').trim() !== '' ||
+      String(draft.afternoon || '').trim() !== '' ||
       String(draft.store || '').trim() !== '' ||
       String(draft.other || '').trim() !== ''
     );
   };
 
-  const persistRow = async (row) => {
+  const persistRow = async (row, { aureus = false } = {}) => {
     const draft = draftsRef.current[row.id] || drafts[row.id] || {};
     const vaultCount = parseQtyInput(draft.vault);
     const nightCount = parseQtyInput(draft.night);
+    const afternoonCount = parseQtyInput(draft.afternoon);
     const storeCount = parseQtyInput(draft.store);
     const otherCount = parseQtyInput(draft.other);
-    const token = selectedStore.token || session.token;
-    const baseUrl = selectedStore.baseUrl || session.baseUrl;
-    clearNightSaveTimer(row.id);
-    const shouldSaveNight =
-      String(draft.night || '').trim() !== '' || row.nightCount != null;
-    const [ , savedNight] = await Promise.all([
-      saveInventoryLog(
-        token,
+    clearShiftSaveTimer(row.id);
+    const physicalTotal = countedPhysicalTotal(vaultCount, nightCount, afternoonCount);
+    const writes = [
+      saveLocalBullionCounts(
+        selectedStore.name,
+        row.id,
         {
-          productId: row.id,
-          locationId: selectedStore.id,
-          date: dateKey,
-          vaultCount,
-          storeCount,
-          otherCount,
+          vault: vaultCount,
+          night: nightCount,
+          afternoon: afternoonCount,
+          store: storeCount,
+          other: otherCount,
         },
-        baseUrl,
+        session?.supabaseUserId,
       ),
-      shouldSaveNight
-        ? saveNightCount(
-            selectedStore.name,
-            row.id,
-            nightCount,
-            session?.supabaseUserId,
-          )
-        : Promise.resolve(row.nightCount ?? null),
-    ]);
-    const total = countedPhysicalTotal(vaultCount, savedNight);
+    ];
+    if (aureus) {
+      const token = selectedStore.token || session.token;
+      const baseUrl = selectedStore.baseUrl || session.baseUrl;
+      writes.push(
+        saveInventoryLog(
+          token,
+          {
+            productId: row.id,
+            locationId: selectedStore.id,
+            date: dateKey,
+            vaultCount: physicalTotal,
+            storeCount,
+            otherCount,
+          },
+          baseUrl,
+        ),
+      );
+    }
+    const [saved] = await Promise.all(writes);
     return {
       id: row.id,
-      vaultCount,
-      nightCount: savedNight,
-      storeCount,
-      otherCount,
-      amount: total,
+      vaultCount: saved.vault,
+      nightCount: saved.night,
+      afternoonCount: saved.afternoon,
+      storeCount: saved.store,
+      otherCount: saved.other,
+      amount: physicalTotal,
     };
   };
 
-  const updateRow = async (row) => {
+  const applySavedRow = (saved) => {
+    setRows((prev) =>
+      prev.map((entry) =>
+        entry.id === saved.id
+          ? {
+              ...entry,
+              vaultCount: saved.vaultCount,
+              nightCount: saved.nightCount,
+              afternoonCount: saved.afternoonCount,
+              storeCount: saved.storeCount,
+              otherCount: saved.otherCount,
+              amount: saved.amount,
+            }
+          : entry,
+      ),
+    );
+    setConfirmed((prev) => ({ ...prev, [saved.id]: true }));
+  };
+
+  const applySavedMap = (savedById) => {
+    setRows((prev) =>
+      prev.map((entry) => {
+        const saved = savedById.get(entry.id);
+        if (!saved) return entry;
+        return {
+          ...entry,
+          vaultCount: saved.vaultCount,
+          nightCount: saved.nightCount,
+          afternoonCount: saved.afternoonCount,
+          storeCount: saved.storeCount,
+          otherCount: saved.otherCount,
+          amount: saved.amount,
+        };
+      }),
+    );
+    setConfirmed((prev) => {
+      const nextConfirmed = { ...prev };
+      for (const id of savedById.keys()) nextConfirmed[id] = true;
+      return nextConfirmed;
+    });
+  };
+
+  const writeRow = async (row, { aureus = false } = {}) => {
+    const needsAureus = aureus;
     if (
-      !(selectedStore?.token || session?.token) ||
-      !selectedStore?.id ||
+      !selectedStore?.name ||
+      (needsAureus && (!(selectedStore?.token || session?.token) || !selectedStore?.id)) ||
       savingId === row.id ||
       savingAll
     ) {
@@ -1152,35 +1427,27 @@ function BullionAuditPanel({
     }
 
     setSavingId(row.id);
+    setSavingKind(aureus ? 'aureus' : 'local');
     setError('');
     try {
-      const saved = await persistRow(row);
-      setRows((prev) =>
-        prev.map((entry) =>
-          entry.id === saved.id
-            ? {
-                ...entry,
-                vaultCount: saved.vaultCount,
-                nightCount: saved.nightCount,
-                storeCount: saved.storeCount,
-                otherCount: saved.otherCount,
-                amount: saved.amount,
-              }
-            : entry,
-        ),
-      );
-      setConfirmed((prev) => ({ ...prev, [saved.id]: true }));
+      const saved = await persistRow(row, { aureus });
+      applySavedRow(saved);
     } catch (err) {
-      setError(err?.message || 'Failed to update count.');
+      setError(err?.message || (aureus ? 'Failed to update count.' : 'Failed to save count.'));
     } finally {
       setSavingId('');
+      setSavingKind('');
     }
   };
 
-  const updateAll = async () => {
+  const saveRow = (row) => writeRow(row, { aureus: false });
+  const updateRow = (row) => writeRow(row, { aureus: true });
+
+  const writeAll = async ({ aureus = false } = {}) => {
+    const needsAureus = aureus;
     if (
-      !(selectedStore?.token || session?.token) ||
-      !selectedStore?.id ||
+      !selectedStore?.name ||
+      (needsAureus && (!(selectedStore?.token || session?.token) || !selectedStore?.id)) ||
       savingAll ||
       savingId
     ) {
@@ -1192,9 +1459,12 @@ function BullionAuditPanel({
       return;
     }
 
+    const verb = aureus ? 'Updating' : 'Saving';
+    const doneVerb = aureus ? 'Updated' : 'Saved';
     setSavingAll(true);
+    setSavingKind(aureus ? 'aureus' : 'local');
     setError('');
-    setSaveAllProgress(`Updating 0/${targets.length}…`);
+    setSaveAllProgress(`${verb} 0/${targets.length}…`);
 
     const savedById = new Map();
     const failures = [];
@@ -1208,7 +1478,7 @@ function BullionAuditPanel({
         next += 1;
         const row = targets[index];
         try {
-          const saved = await persistRow(row);
+          const saved = await persistRow(row, { aureus });
           savedById.set(saved.id, saved);
         } catch (err) {
           failures.push({
@@ -1217,7 +1487,7 @@ function BullionAuditPanel({
           });
         } finally {
           done += 1;
-          setSaveAllProgress(`Updating ${done}/${targets.length}…`);
+          setSaveAllProgress(`${verb} ${done}/${targets.length}…`);
         }
       }
     };
@@ -1227,27 +1497,7 @@ function BullionAuditPanel({
         Array.from({ length: Math.min(concurrency, targets.length) }, () => worker()),
       );
 
-      if (savedById.size) {
-        setRows((prev) =>
-          prev.map((entry) => {
-            const saved = savedById.get(entry.id);
-            if (!saved) return entry;
-            return {
-              ...entry,
-              vaultCount: saved.vaultCount,
-              nightCount: saved.nightCount,
-              storeCount: saved.storeCount,
-              otherCount: saved.otherCount,
-              amount: saved.amount,
-            };
-          }),
-        );
-        setConfirmed((prev) => {
-          const nextConfirmed = { ...prev };
-          for (const id of savedById.keys()) nextConfirmed[id] = true;
-          return nextConfirmed;
-        });
-      }
+      if (savedById.size) applySavedMap(savedById);
 
       if (failures.length) {
         const sample = failures
@@ -1255,16 +1505,20 @@ function BullionAuditPanel({
           .map((item) => item.name)
           .join(', ');
         setError(
-          `Updated ${savedById.size}/${targets.length}. Failed: ${sample}${
+          `${doneVerb} ${savedById.size}/${targets.length}. Failed: ${sample}${
             failures.length > 3 ? ` (+${failures.length - 3} more)` : ''
           }.`,
         );
       }
     } finally {
       setSavingAll(false);
+      setSavingKind('');
       setSaveAllProgress('');
     }
   };
+
+  const saveAll = () => writeAll({ aureus: false });
+  const updateAll = () => writeAll({ aureus: true });
 
   const runFindOutWhy = async () => {
     if (
@@ -1637,8 +1891,36 @@ function BullionAuditPanel({
     </Pressable>
   );
 
+  const renderSaveAllButton = (style) => {
+    const canSaveAll = visibleRows.some(rowHasDraftCounts);
+    const localBusy = savingAll && savingKind === 'local';
+    return (
+      <Pressable
+        style={[
+          styles.fillButton,
+          styles.fillButtonSave,
+          style,
+          (savingAll || savingId || !canSaveAll) && styles.fillButtonDisabled,
+        ]}
+        onPress={saveAll}
+        disabled={savingAll || Boolean(savingId) || !canSaveAll}
+      >
+        {localBusy ? (
+          <Text style={styles.fillButtonSaveText} numberOfLines={1}>
+            {saveAllProgress || 'Saving…'}
+          </Text>
+        ) : (
+          <Text style={styles.fillButtonSaveText} numberOfLines={1}>
+            Save
+          </Text>
+        )}
+      </Pressable>
+    );
+  };
+
   const renderUpdateAllButton = (style) => {
     const canUpdateAll = visibleRows.some(rowHasDraftCounts);
+    const aureusBusy = savingAll && savingKind === 'aureus';
     return (
       <Pressable
         style={[
@@ -1649,7 +1931,7 @@ function BullionAuditPanel({
         onPress={updateAll}
         disabled={savingAll || Boolean(savingId) || !canUpdateAll}
       >
-        {savingAll ? (
+        {aureusBusy ? (
           <Text style={styles.fillButtonText} numberOfLines={1}>
             {saveAllProgress || 'Updating…'}
           </Text>
@@ -1678,7 +1960,10 @@ function BullionAuditPanel({
             <DateChip label="Date" value={date} onChange={setDate} maximumDate={new Date()} />
             {renderRefreshButton()}
           </View>
-          {renderUpdateAllButton(styles.fillButtonMobile)}
+          <View style={styles.mobileToolbarRow}>
+            {renderSaveAllButton(styles.fillButtonMobileFlex)}
+            {renderUpdateAllButton(styles.fillButtonMobileFlex)}
+          </View>
         </View>
       );
     }
@@ -1694,6 +1979,7 @@ function BullionAuditPanel({
         />
         <DateChip label="Date" value={date} onChange={setDate} maximumDate={new Date()} />
         {renderRefreshButton()}
+        {renderSaveAllButton()}
         {renderUpdateAllButton()}
       </FilterBar>
     );
@@ -1759,7 +2045,8 @@ function BullionAuditPanel({
           <View style={styles.bMobileStack}>
             {visibleRows.map((row, rowIndex) => {
               const draft = drafts[row.id] || emptyQtyDraft();
-              const isSaving = savingId === row.id;
+              const isSaving = savingId === row.id && savingKind === 'aureus';
+              const savingLocal = savingId === row.id && savingKind === 'local';
               const showDiff = draftShowsDiff(draft, confirmed[row.id]);
               const metal = metalGroupLabel(row);
               const prevMetal =
@@ -1782,28 +2069,16 @@ function BullionAuditPanel({
                     draft={draft}
                     historyDates={historyDates}
                     isSaving={isSaving}
+                    savingLocal={savingLocal}
                     savingAll={savingAll}
                     showDiff={showDiff}
                     onChangeField={(field, value) => setDraftField(row.id, field, value)}
-                    onBlurField={(field) => {
-                      if (field !== 'night') return;
-                      const next = parseQtyInput(draftsRef.current[row.id]?.night);
-                      if (next == null && row.nightCount == null) return;
-                      persistNightCount(row.id, draftsRef.current[row.id]?.night).catch((err) => {
-                        setError(err?.message || 'Failed to save night count.');
-                      });
-                    }}
+                    onBlurField={(field) => flushShiftField(row, field)}
+                    onSave={() => saveRow(row)}
                     onUpdate={() => updateRow(row)}
                     registerQtyInput={(field) => registerQtyInput(row.id, field)}
                     onSubmitField={(field) => {
-                      if (field === 'night') {
-                        const next = parseQtyInput(draftsRef.current[row.id]?.night);
-                        if (next != null || row.nightCount != null) {
-                          persistNightCount(row.id, draftsRef.current[row.id]?.night).catch((err) => {
-                            setError(err?.message || 'Failed to save night count.');
-                          });
-                        }
-                      }
+                      flushShiftField(row, field);
                       focusNextQtyInput(rowIndex, field);
                     }}
                   />
@@ -1854,7 +2129,8 @@ function BullionAuditPanel({
                 </View>
                 {visibleRows.map((row, rowIndex) => {
                   const draft = drafts[row.id] || emptyQtyDraft();
-                  const isSaving = savingId === row.id;
+                  const isSaving = savingId === row.id && savingKind === 'aureus';
+                  const savingLocal = savingId === row.id && savingKind === 'local';
                   const showDiff = draftShowsDiff(draft, confirmed[row.id]);
                   const metal = metalGroupLabel(row);
                   const prevMetal =
@@ -1879,28 +2155,16 @@ function BullionAuditPanel({
                         dense
                         striped={rowIndex % 2 === 1}
                         isSaving={isSaving}
+                        savingLocal={savingLocal}
                         savingAll={savingAll}
                         showDiff={showDiff}
                         onChangeField={(field, value) => setDraftField(row.id, field, value)}
-                        onBlurField={(field) => {
-                          if (field !== 'night') return;
-                          const next = parseQtyInput(draftsRef.current[row.id]?.night);
-                          if (next == null && row.nightCount == null) return;
-                          persistNightCount(row.id, draftsRef.current[row.id]?.night).catch((err) => {
-                            setError(err?.message || 'Failed to save night count.');
-                          });
-                        }}
+                        onBlurField={(field) => flushShiftField(row, field)}
+                        onSave={() => saveRow(row)}
                         onUpdate={() => updateRow(row)}
                         registerQtyInput={(field) => registerQtyInput(row.id, field)}
                         onSubmitField={(field) => {
-                          if (field === 'night') {
-                            const next = parseQtyInput(draftsRef.current[row.id]?.night);
-                            if (next != null || row.nightCount != null) {
-                              persistNightCount(row.id, draftsRef.current[row.id]?.night).catch((err) => {
-                                setError(err?.message || 'Failed to save night count.');
-                              });
-                            }
-                          }
+                          flushShiftField(row, field);
                           focusNextQtyInput(rowIndex, field);
                         }}
                       />
@@ -1931,14 +2195,15 @@ function CashAuditPanel({
   session,
   onRequireLogin,
   storeFilter,
+  initialDate,
   embedded = false,
 }) {
   const { canFilter } = useAppAccess();
   const allowFilters = canFilter('audit');
   const isMobile = useIsMobile();
-  const [date, setDate] = useState(() => parseDateParam(new Date()));
+  const [date, setDate] = useState(() => parseDateParam(initialDate || new Date()));
   const [selectedStore, setSelectedStore] = useState(
-    storeFilter || AUDIT_CASH_STORES[0] || null,
+    resolveCashStoreName(storeFilter) || AUDIT_CASH_STORES[0] || null,
   );
   const [position, setPosition] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -1968,6 +2233,12 @@ function CashAuditPanel({
   const requestId = useRef(0);
   const aiAbortRef = useRef(null);
   const cashInputRefs = useRef(new Map());
+  const cashCountHydrating = useRef(false);
+  const [openingSheets, setOpeningSheets] = useState({ cad: null, usd: null });
+  const [daySlips, setDaySlips] = useState([]);
+  const [cashSaving, setCashSaving] = useState(false);
+  const [cashSavedAt, setCashSavedAt] = useState(null);
+  const [cashSaveError, setCashSaveError] = useState('');
 
   const lockedStore = Boolean(storeFilter) || !allowFilters;
   const dateKey = formatDateParam(date);
@@ -2005,8 +2276,12 @@ function CashAuditPanel({
   }, [storeFilter, position?.storeName]);
 
   useEffect(() => {
-    if (storeFilter) setSelectedStore(storeFilter);
+    if (storeFilter) setSelectedStore(resolveCashStoreName(storeFilter));
   }, [storeFilter]);
+
+  useEffect(() => {
+    if (initialDate) setDate(parseDateParam(initialDate));
+  }, [initialDate]);
 
   const load = useCallback(async () => {
     if (!session?.token) {
@@ -2049,6 +2324,8 @@ function CashAuditPanel({
   }, [load]);
 
   useEffect(() => {
+    let cancelled = false;
+    cashCountHydrating.current = true;
     setLooseCounts(emptyDenomCounts());
     setStackCounts(emptyDenomCounts());
     setOtherCashText('');
@@ -2062,6 +2339,49 @@ function CashAuditPanel({
     setCashDrawer('cad');
     setPaymentsOpen(false);
     setTillOpen(false);
+    setCashSaving(false);
+    setCashSavedAt(null);
+    setCashSaveError('');
+
+    if (!selectedStore) {
+      cashCountHydrating.current = false;
+      return undefined;
+    }
+
+    loadStoreCashCounts(selectedStore, dateKey)
+      .then((saved) => {
+        if (cancelled) return;
+        if (saved.cad) {
+          setLooseCounts(saved.cad.loose);
+          setStackCounts(saved.cad.stacks);
+          setOtherCashText(saved.cad.otherCash);
+          setCountedTotalText(saved.cad.countedTotal);
+          setCountedManual(saved.cad.countedManual);
+        }
+        if (saved.usd) {
+          setUsdLooseCounts(saved.usd.loose);
+          setUsdStackCounts(saved.usd.stacks);
+          setUsdOtherCashText(saved.usd.otherCash);
+          setUsdCountedTotalText(saved.usd.countedTotal);
+          setUsdCountedManual(saved.usd.countedManual);
+        }
+        if (saved.cad || saved.usd) {
+          const stamp = saved.cad?.updatedAt || saved.usd?.updatedAt;
+          setCashSavedAt(stamp ? new Date(stamp) : new Date());
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) {
+          setTimeout(() => {
+            cashCountHydrating.current = false;
+          }, 0);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [dateKey, selectedStore]);
 
   useEffect(() => {
@@ -2120,6 +2440,164 @@ function CashAuditPanel({
   const denomColumnTotals = isUsdDrawer ? usdDenom.columns : cadDenom.columns;
   const otherTotal = isUsdDrawer ? usdDenom.otherTotal : cadDenom.otherTotal;
 
+  const cashSlipRows = useMemo(
+    () => [
+      ...(position?.cad?.paymentRows || []),
+      ...(position?.cad?.cashTransactions || []),
+      ...(position?.usd?.paymentRows || []),
+      ...(position?.usd?.cashTransactions || []),
+    ],
+    [position],
+  );
+  const cashSlips = useTxnCashBreakdowns(cashSlipRows);
+
+  useEffect(() => {
+    if (!selectedStore || !position?.previousDate) {
+      setOpeningSheets({ cad: null, usd: null });
+      return undefined;
+    }
+    let cancelled = false;
+    loadStoreCashCounts(selectedStore, position.previousDate)
+      .then((saved) => {
+        if (!cancelled) setOpeningSheets({ cad: saved.cad, usd: saved.usd });
+      })
+      .catch(() => {
+        if (!cancelled) setOpeningSheets({ cad: null, usd: null });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedStore, position?.previousDate]);
+
+  useEffect(() => {
+    if (!selectedStore || !dateKey) {
+      setDaySlips([]);
+      return undefined;
+    }
+    let cancelled = false;
+    loadStoreDayTxnCashBreakdowns(selectedStore, dateKey)
+      .then((rows) => {
+        if (!cancelled) setDaySlips(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setDaySlips([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedStore, dateKey, cashSlips.savedKey]);
+
+  const openingPieces = useMemo(() => {
+    const sheet = isUsdDrawer ? openingSheets.usd : openingSheets.cad;
+    if (!sheet || !hasSheetValues(sheet)) return null;
+    return piecesFromSheet(activeDenoms, sheet.loose, sheet.stacks);
+  }, [isUsdDrawer, openingSheets, activeDenoms]);
+
+  const mergedSlips = useMemo(() => {
+    const map = {};
+    for (const row of daySlips) {
+      if (row?.transactionId) map[row.transactionId] = row;
+    }
+    for (const [id, sheet] of Object.entries(cashSlips.byId)) {
+      if (sheet?.hasCount) map[id] = sheet;
+      else delete map[id];
+    }
+    return Object.values(map);
+  }, [daySlips, cashSlips.byId]);
+
+  const txnPieces = useMemo(
+    () => sumBreakdownPieces(mergedSlips, currency),
+    [mergedSlips, currency],
+  );
+  const expectedPieces = useMemo(() => {
+    if (!openingPieces && !txnPieces.count) return null;
+    return addPieceMaps(openingPieces || {}, txnPieces.net);
+  }, [openingPieces, txnPieces]);
+  const openingMissing = !openingPieces;
+  const expectedLine = expectedPieces ? pieceBreakdownLine(activeDenoms, expectedPieces) : '';
+
+  const persistCashCounts = useCallback(async () => {
+    if (!selectedStore) {
+      setCashSaveError('Choose a store.');
+      return false;
+    }
+    const hasCad =
+      cadDenom.hasDenomCount || String(countedTotalText || '').trim() !== '';
+    const hasUsd =
+      usdDenom.hasDenomCount || String(usdCountedTotalText || '').trim() !== '';
+    if (!hasCad && !hasUsd) {
+      setCashSaveError('Enter a bill or coin count first.');
+      return false;
+    }
+
+    setCashSaving(true);
+    setCashSaveError('');
+    try {
+      const userId = session?.supabaseUserId;
+      const writes = [];
+      if (hasCad) {
+        writes.push(
+          saveStoreCashCount(
+            selectedStore,
+            dateKey,
+            'CAD',
+            {
+              loose: looseCounts,
+              stacks: stackCounts,
+              otherCash: otherCashText,
+              countedTotal: countedTotalText,
+              countedManual,
+            },
+            userId,
+          ),
+        );
+      }
+      if (hasUsd) {
+        writes.push(
+          saveStoreCashCount(
+            selectedStore,
+            dateKey,
+            'USD',
+            {
+              loose: usdLooseCounts,
+              stacks: usdStackCounts,
+              otherCash: usdOtherCashText,
+              countedTotal: usdCountedTotalText,
+              countedManual: usdCountedManual,
+            },
+            userId,
+          ),
+        );
+      }
+      await Promise.all(writes);
+      setCashSavedAt(new Date());
+      return true;
+    } catch (err) {
+      const message = err?.message || 'Failed to save cash count.';
+      setCashSaveError(message);
+      setError(message);
+      return false;
+    } finally {
+      setCashSaving(false);
+    }
+  }, [
+    selectedStore,
+    dateKey,
+    session?.supabaseUserId,
+    cadDenom.hasDenomCount,
+    usdDenom.hasDenomCount,
+    looseCounts,
+    stackCounts,
+    otherCashText,
+    countedTotalText,
+    countedManual,
+    usdLooseCounts,
+    usdStackCounts,
+    usdOtherCashText,
+    usdCountedTotalText,
+    usdCountedManual,
+  ]);
+
   useEffect(() => {
     if (cadDenom.total == null) return;
     setCountedManual(false);
@@ -2133,6 +2611,32 @@ function CashAuditPanel({
     setUsdCountedTotalText(usdDenom.total.toFixed(2));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-sync when USD worksheet inputs change
   }, [usdLooseCounts, usdStackCounts, usdOtherCashText]);
+
+  useEffect(() => {
+    if (cashCountHydrating.current || !selectedStore) return undefined;
+    const hasCad =
+      cadDenom.hasDenomCount || String(countedTotalText || '').trim() !== '';
+    const hasUsd =
+      usdDenom.hasDenomCount || String(usdCountedTotalText || '').trim() !== '';
+    if (!hasCad && !hasUsd) return undefined;
+    setCashSavedAt(null);
+    return undefined;
+  }, [
+    selectedStore,
+    dateKey,
+    looseCounts,
+    stackCounts,
+    otherCashText,
+    countedTotalText,
+    countedManual,
+    usdLooseCounts,
+    usdStackCounts,
+    usdOtherCashText,
+    usdCountedTotalText,
+    usdCountedManual,
+    cadDenom.hasDenomCount,
+    usdDenom.hasDenomCount,
+  ]);
 
   const cadCashOnHand = parseMoneyInput(countedTotalText);
   const usdCashOnHand = parseMoneyInput(usdCountedTotalText);
@@ -2301,12 +2805,28 @@ function CashAuditPanel({
     else cashInputRefs.current.delete(key);
   };
 
+  const bumpActiveLoose = (key, delta) => {
+    setActiveLooseCounts((prev) => ({
+      ...prev,
+      [key]: bumpCountText(prev[key], delta),
+    }));
+  };
+
+  const bumpActiveStacks = (key, delta) => {
+    setActiveStackCounts((prev) => ({
+      ...prev,
+      [key]: bumpCountText(prev[key], delta),
+    }));
+  };
+
   const focusNextCashInput = (key) => {
-    const order = [];
-    for (const denom of activeDenoms) {
-      order.push(`${denom.key}:loose`, `${denom.key}:stacks`);
-    }
-    order.push('other');
+    const { bills, coins } = splitCashDenoms(activeDenoms);
+    const ordered = [...bills, ...coins];
+    const order = [
+      ...ordered.map((denom) => `${denom.key}:loose`),
+      ...ordered.map((denom) => `${denom.key}:stacks`),
+      'other',
+    ];
     const next = order[order.indexOf(key) + 1];
     if (!next) return;
     const node = cashInputRefs.current.get(next);
@@ -2361,6 +2881,34 @@ function CashAuditPanel({
         </Pressable>
       </>
     );
+    const canSaveCash =
+      cadDenom.hasDenomCount ||
+      usdDenom.hasDenomCount ||
+      String(countedTotalText || '').trim() !== '' ||
+      String(usdCountedTotalText || '').trim() !== '';
+    const saveButton = (
+      <Pressable
+        style={[
+          styles.fillButton,
+          styles.fillButtonSave,
+          isMobile && styles.fillButtonMobile,
+          (cashSaving || !canSaveCash) && styles.fillButtonDisabled,
+        ]}
+        onPress={persistCashCounts}
+        disabled={cashSaving || !canSaveCash}
+        accessibilityLabel="Save cash to database"
+      >
+        {cashSaving ? (
+          <Text style={styles.fillButtonSaveText} numberOfLines={1}>
+            Saving…
+          </Text>
+        ) : (
+          <Text style={styles.fillButtonSaveText} numberOfLines={1}>
+            Save
+          </Text>
+        )}
+      </Pressable>
+    );
 
     if (isMobile) {
       return (
@@ -2368,6 +2916,7 @@ function CashAuditPanel({
           {storeControl}
           {drawerControl}
           <View style={styles.mobileToolbarRow}>{dateRow}</View>
+          {saveButton}
         </View>
       );
     }
@@ -2377,6 +2926,7 @@ function CashAuditPanel({
         {storeControl}
         {drawerControl}
         {dateRow}
+        {saveButton}
       </FilterBar>
     );
   };
@@ -2443,7 +2993,7 @@ function CashAuditPanel({
                     ? activeCountedManual
                       ? 'Manual total'
                       : 'From worksheet'
-                    : 'Enter loose / stacks'}
+                    : 'Count loose cash'}
                 </Text>
               </View>
               <Text style={styles.cashMobileHeroValue}>{hasCount ? money(cashOnHand) : '—'}</Text>
@@ -2500,7 +3050,7 @@ function CashAuditPanel({
                 ? activeCountedManual
                   ? 'Manual total'
                   : 'From worksheet'
-                : 'Enter loose / stacks'}
+                : 'Count loose cash'}
             </Text>
           </View>
           <View
@@ -2533,118 +3083,27 @@ function CashAuditPanel({
     );
   };
 
-  const renderCountHeader = () => (
-    <View style={styles.cashCountHeader}>
-      <Text style={[styles.cashCountH, styles.cashDenomMeta]}>Denom</Text>
-      <Text style={[styles.cashCountH, styles.cashCountInputCol]}>Loose</Text>
-      <Text style={[styles.cashCountH, styles.cashCountInputCol]}>Stacks</Text>
-      <Text style={[styles.cashCountH, styles.cashCountTotalCol]}>Total</Text>
-    </View>
-  );
-
-  const renderDenomRows = (denoms) =>
-    denoms.map((denom) => {
-      const col = denomColumnTotals.find((c) => c.key === denom.key);
-      const filled =
-        String(activeLooseCounts[denom.key] || '').trim() !== '' ||
-        String(activeStackCounts[denom.key] || '').trim() !== '';
-      return (
-        <View
-          key={denom.key}
-          style={[styles.cashCountRow, filled && styles.cashCountRowFilled]}
-        >
-          <View style={styles.cashDenomMeta}>
-            <Text style={styles.cashDenomTitle}>{denomTitle(denom)}</Text>
-            <Text style={styles.cashDenomHint}>{denomHint(denom)}</Text>
-          </View>
-          <View style={styles.cashCountInputCol}>
-            <CashCountInput
-              value={activeLooseCounts[denom.key]}
-              onChangeText={(value) =>
-                setActiveLooseCounts((prev) => ({ ...prev, [denom.key]: value }))
-              }
-              onSubmitEditing={() => focusNextCashInput(`${denom.key}:loose`)}
-              inputRef={registerCashInput(`${denom.key}:loose`)}
-              label={`${denomTitle(denom)} loose`}
-            />
-          </View>
-          <View style={styles.cashCountInputCol}>
-            <CashCountInput
-              value={activeStackCounts[denom.key]}
-              onChangeText={(value) =>
-                setActiveStackCounts((prev) => ({ ...prev, [denom.key]: value }))
-              }
-              onSubmitEditing={() => focusNextCashInput(`${denom.key}:stacks`)}
-              inputRef={registerCashInput(`${denom.key}:stacks`)}
-              label={`${denomTitle(denom)} stacks`}
-            />
-          </View>
-          <Text style={styles.cashCountTotal}>{money(col?.total || 0)}</Text>
+  const renderMoneyFooter = ({ title, hint, value, onChangeText, inputKey, total, strong }) => (
+    <View
+      style={[
+        styles.countFooterRow,
+        isMobile && styles.countFooterRowMobile,
+        strong && styles.countFooterRowStrong,
+      ]}
+    >
+      <View style={[styles.countFooterCopy, isMobile && styles.countFooterCopyMobile]}>
+        <View style={styles.looseHeadCopy}>
+          <Text style={[styles.countFooterTitle, strong && styles.statLabelStrong]}>{title}</Text>
+          <Text style={styles.countFooterHint}>{hint}</Text>
         </View>
-      );
-    });
-
-  const renderMobileDenomRows = (denoms) =>
-    denoms.map((denom) => {
-      const col = denomColumnTotals.find((c) => c.key === denom.key);
-      const filled =
-        String(activeLooseCounts[denom.key] || '').trim() !== '' ||
-        String(activeStackCounts[denom.key] || '').trim() !== '';
-      return (
-        <View
-          key={denom.key}
-          style={[styles.cashMobileDenom, filled && styles.cashMobileDenomFilled]}
-        >
-          <View style={styles.cashMobileDenomHead}>
-            <View style={styles.cashMobileDenomCopy}>
-              <Text style={styles.cashMobileDenomTitle}>{denomTitle(denom)}</Text>
-              <Text style={styles.cashDenomHint}>{denomHint(denom)}</Text>
-            </View>
-            <Text style={styles.cashMobileDenomTotal}>{money(col?.total || 0)}</Text>
-          </View>
-          <View style={styles.cashMobileInputs}>
-            <View style={styles.cashMobileField}>
-              <Text style={styles.cashMobileFieldLabel}>Loose</Text>
-              <CashCountInput
-                value={activeLooseCounts[denom.key]}
-                onChangeText={(value) =>
-                  setActiveLooseCounts((prev) => ({ ...prev, [denom.key]: value }))
-                }
-                onSubmitEditing={() => focusNextCashInput(`${denom.key}:loose`)}
-                inputRef={registerCashInput(`${denom.key}:loose`)}
-                label={`${denomTitle(denom)} loose`}
-                style={styles.cashCountInputLarge}
-              />
-            </View>
-            <View style={styles.cashMobileField}>
-              <Text style={styles.cashMobileFieldLabel}>Stacks</Text>
-              <CashCountInput
-                value={activeStackCounts[denom.key]}
-                onChangeText={(value) =>
-                  setActiveStackCounts((prev) => ({ ...prev, [denom.key]: value }))
-                }
-                onSubmitEditing={() => focusNextCashInput(`${denom.key}:stacks`)}
-                inputRef={registerCashInput(`${denom.key}:stacks`)}
-                label={`${denomTitle(denom)} stacks`}
-                style={styles.cashCountInputLarge}
-              />
-            </View>
-          </View>
-        </View>
-      );
-    });
-
-  const renderMobileMoneyRow = ({ title, hint, value, onChangeText, inputKey, total, strong }) => (
-    <View style={[styles.cashMobileDenom, strong && styles.cashMobileDenomFooter]}>
-      <View style={styles.cashMobileDenomHead}>
-        <View style={styles.cashMobileDenomCopy}>
-          <Text style={[styles.cashMobileDenomTitle, strong && styles.statLabelStrong]}>{title}</Text>
-          <Text style={styles.cashDenomHint}>{hint}</Text>
-        </View>
-        <Text style={[styles.cashMobileDenomTotal, strong && styles.statLabelStrong]}>{total}</Text>
+        {isMobile ? (
+          <Text style={[styles.countFooterTotal, strong && styles.statLabelStrong]}>{total}</Text>
+        ) : null}
       </View>
-      <View style={styles.cashMobileMoneyField}>
-        <Text style={styles.cashMobileMoneyPrefix}>{isUsdDrawer ? 'US$' : '$'}</Text>
+      <View style={[styles.countFooterField, isMobile && styles.countFooterFieldMobile]}>
+        <Text style={[styles.countFooterPrefix, isMobile && styles.countFooterPrefixMobile]}>
+          {isUsdDrawer ? 'US$' : '$'}
+        </Text>
         <CashCountInput
           value={value}
           onChangeText={onChangeText}
@@ -2652,49 +3111,130 @@ function CashAuditPanel({
           inputRef={registerCashInput(inputKey)}
           label={title}
           money
-          style={styles.cashCountInputPlainLarge}
+          style={isMobile ? styles.cashCountInputPlainLarge : styles.cashCountInputPlain}
         />
       </View>
+      {!isMobile ? (
+        <Text style={[styles.countFooterTotal, strong && styles.statLabelStrong]}>{total}</Text>
+      ) : null}
     </View>
   );
 
   const renderCashCount = () => {
     const { bills, coins } = splitCashDenoms(activeDenoms);
-    const split = !isMobile && coins.length > 0;
-    const otherRow = isMobile
-      ? renderMobileMoneyRow({
+    const looseGroups = [
+      bills.length ? { key: 'bills', title: 'Bills', denoms: bills } : null,
+      coins.length ? { key: 'coins', title: 'Coins', denoms: coins } : null,
+    ].filter(Boolean);
+    const looseTotal = moneySum(denomColumnTotals.map((col) => col.loose));
+    const strapsTotal = moneySum(denomColumnTotals.map((col) => col.stacks));
+    const looseLine = looseBreakdownLine(activeDenoms, activeLooseCounts);
+    const hasLoose = Boolean(looseLine);
+    const hasStraps = activeDenoms.some(
+      (denom) => String(activeStackCounts[denom.key] || '').trim() !== '',
+    );
+
+    const renderLooseTiles = (denoms) =>
+      denoms.map((denom) => {
+        const col = denomColumnTotals.find((entry) => entry.key === denom.key);
+        const countedPieces = countedPiecesForDenom(
+          denom,
+          activeLooseCounts[denom.key],
+          activeStackCounts[denom.key],
+        );
+        return (
+          <LooseDenomTile
+            key={denom.key}
+            denom={denom}
+            countText={activeLooseCounts[denom.key]}
+            amount={col?.loose || 0}
+            money={money}
+            compact={isMobile}
+            expected={expectedPieces ? expectedPieces[denom.key] || 0 : null}
+            countedPieces={countedPieces}
+            openingMissing={openingMissing}
+            onChangeText={(value) =>
+              setActiveLooseCounts((prev) => ({ ...prev, [denom.key]: value }))
+            }
+            onBump={(delta) => bumpActiveLoose(denom.key, delta)}
+            onSubmitEditing={() => focusNextCashInput(`${denom.key}:loose`)}
+            inputRef={registerCashInput(`${denom.key}:loose`)}
+          />
+        );
+      });
+
+    return (
+      <GroupSection title={`Count ${drawerLabel}`}>
+        <View style={styles.looseHead}>
+          <View style={styles.looseHeadCopy}>
+            <Text style={styles.looseHeadTitle}>Loose</Text>
+            <Text style={styles.looseHeadHint} numberOfLines={isMobile ? 3 : 1}>
+              {expectedLine
+                ? `${expectedLine} · ${
+                    openingMissing ? 'cash slips only' : 'last night + cash slips'
+                  }`
+                : hasLoose
+                  ? looseLine
+                  : 'Unstrapped bills and coins in the drawer'}
+            </Text>
+          </View>
+          <Text style={styles.looseHeadAmount}>{hasLoose ? money(looseTotal) : '—'}</Text>
+        </View>
+
+        {looseGroups.map((group) => (
+          <View key={group.key} style={styles.looseGroup}>
+            {looseGroups.length > 1 ? (
+              <Text style={styles.looseGroupTitle}>{group.title}</Text>
+            ) : null}
+            <View style={[styles.looseGrid, isMobile && styles.looseGridMobile]}>
+              {renderLooseTiles(group.denoms)}
+            </View>
+          </View>
+        ))}
+
+        <View style={styles.strapHead}>
+          <View style={styles.looseHeadCopy}>
+            <Text style={styles.looseHeadTitle}>
+              {isUsdDrawer || !coins.length ? 'Straps' : 'Straps & rolls'}
+            </Text>
+            <Text style={styles.looseHeadHint}>
+              {isUsdDrawer ? '50 bills each' : '50-bill straps and coin rolls'}
+            </Text>
+          </View>
+          <Text style={styles.looseHeadAmount}>{hasStraps ? money(strapsTotal) : '—'}</Text>
+        </View>
+        {activeDenoms.map((denom, index) => {
+          const col = denomColumnTotals.find((entry) => entry.key === denom.key);
+          return (
+            <StrapRow
+              key={denom.key}
+              denom={denom}
+              countText={activeStackCounts[denom.key]}
+              amount={col?.stacks || 0}
+              money={money}
+              last={index === activeDenoms.length - 1}
+              compact={isMobile}
+              onChangeText={(value) =>
+                setActiveStackCounts((prev) => ({ ...prev, [denom.key]: value }))
+              }
+              onBump={(delta) => bumpActiveStacks(denom.key, delta)}
+              onSubmitEditing={() => focusNextCashInput(`${denom.key}:stacks`)}
+              inputRef={registerCashInput(`${denom.key}:stacks`)}
+            />
+          );
+        })}
+
+        {renderMoneyFooter({
           title: 'Other',
           hint: 'Cheques, extras',
           value: activeOtherCashText,
           onChangeText: setActiveOtherCashText,
           inputKey: 'other',
           total: money(otherTotal),
-        })
-      : (
-        <View style={styles.cashCountRow}>
-          <View style={styles.cashDenomMeta}>
-            <Text style={styles.cashDenomTitle}>Other</Text>
-            <Text style={styles.cashDenomHint}>Cheques, extras</Text>
-          </View>
-          <View style={styles.cashMoneyField}>
-            <Text style={styles.cashMoneyPrefix}>{isUsdDrawer ? 'US$' : '$'}</Text>
-            <CashCountInput
-              value={activeOtherCashText}
-              onChangeText={setActiveOtherCashText}
-              onSubmitEditing={() => focusNextCashInput('other')}
-              inputRef={registerCashInput('other')}
-              label="Other cash"
-              money
-              style={styles.cashCountInputPlain}
-            />
-          </View>
-          <Text style={styles.cashCountTotal}>{money(otherTotal)}</Text>
-        </View>
-      );
-    const countedRow = isMobile
-      ? renderMobileMoneyRow({
+        })}
+        {renderMoneyFooter({
           title: 'Counted',
-          hint: activeCountedManual ? 'Edited total' : 'Sum of worksheet',
+          hint: activeCountedManual ? 'Edited total' : 'Loose + straps + other',
           value: activeCountedTotalText,
           onChangeText: (value) => {
             setActiveCountedManual(true);
@@ -2703,72 +3243,35 @@ function CashAuditPanel({
           inputKey: 'counted',
           total: hasCount ? money(cashOnHand) : '—',
           strong: true,
-        })
-      : (
-        <View style={[styles.cashCountRow, styles.cashCountFooter]}>
-          <View style={styles.cashDenomMeta}>
-            <Text style={[styles.cashDenomTitle, styles.statLabelStrong]}>Counted</Text>
-            <Text style={styles.cashDenomHint}>
-              {activeCountedManual ? 'Edited total' : 'Sum of worksheet'}
-            </Text>
-          </View>
-          <View style={styles.cashMoneyField}>
-            <Text style={styles.cashMoneyPrefix}>{isUsdDrawer ? 'US$' : '$'}</Text>
-            <CashCountInput
-              value={activeCountedTotalText}
-              onChangeText={(value) => {
-                setActiveCountedManual(true);
-                setActiveCountedTotalText(value);
-              }}
-              inputRef={registerCashInput('counted')}
-              label="Counted total"
-              money
-              style={styles.cashCountInputPlain}
-            />
-          </View>
-          <Text style={[styles.cashCountTotal, styles.statLabelStrong]}>
-            {hasCount ? money(cashOnHand) : '—'}
+        })}
+        <View style={styles.cashSaveBar}>
+          {cashSaveError ? <Text style={styles.cashSaveError}>{cashSaveError}</Text> : null}
+          <Pressable
+            onPress={persistCashCounts}
+            disabled={cashSaving}
+            style={({ pressed }) => [
+              styles.cashSaveBtn,
+              pressed && !cashSaving && styles.cashSaveBtnPressed,
+              cashSaving && styles.cashSaveBtnDisabled,
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="Save cash breakdown"
+          >
+            {cashSaving ? (
+              <ActivityIndicator color="#fff" size="small" />
+            ) : (
+              <Text style={styles.cashSaveBtnText}>Save</Text>
+            )}
+          </Pressable>
+          <Text style={styles.cashSaveMeta}>
+            {cashSavedAt
+              ? `Saved ${cashSavedAt.toLocaleTimeString('en-CA', {
+                  hour: 'numeric',
+                  minute: '2-digit',
+                })}`
+              : 'Saves this store’s bill and coin count here, not to Aureus'}
           </Text>
         </View>
-      );
-
-    return (
-      <GroupSection title={`Count ${drawerLabel}`}>
-        <View style={styles.cashCountHintRow}>
-          <Text style={styles.cashCountHint}>
-            Loose = pieces · stacks = {isUsdDrawer ? '50 bills' : '50 bills or coin rolls'}
-          </Text>
-        </View>
-        {isMobile ? (
-          <View style={styles.cashMobileCount}>
-            {bills.length ? <Text style={styles.cashMobileGroupTitle}>Bills</Text> : null}
-            {renderMobileDenomRows(bills.length ? bills : activeDenoms)}
-            {coins.length ? <Text style={styles.cashMobileGroupTitle}>Coins</Text> : null}
-            {coins.length ? renderMobileDenomRows(coins) : null}
-            {otherRow}
-            {countedRow}
-          </View>
-        ) : split ? (
-          <View style={styles.cashCountSplit}>
-            <View style={styles.cashCountCol}>
-              <Text style={styles.cashCountColTitle}>Bills</Text>
-              {renderCountHeader()}
-              {renderDenomRows(bills)}
-            </View>
-            <View style={styles.cashCountCol}>
-              <Text style={styles.cashCountColTitle}>Coins</Text>
-              {renderCountHeader()}
-              {renderDenomRows(coins)}
-            </View>
-          </View>
-        ) : (
-          <View>
-            {renderCountHeader()}
-            {renderDenomRows(activeDenoms)}
-          </View>
-        )}
-        {isMobile ? null : otherRow}
-        {isMobile ? null : countedRow}
       </GroupSection>
     );
   };
@@ -2793,6 +3296,8 @@ function CashAuditPanel({
             key={row.id}
             row={row}
             last={index === paymentRows.length - 1}
+            cashSaved={cashSlips.isSaved(row)}
+            onCashPress={cashSlips.openEditor}
           />
         ))}
       </CashFold>
@@ -2815,6 +3320,8 @@ function CashAuditPanel({
             row={row}
             last={index === cashTxnRows.length - 1}
             fallbackLabel={row.category || 'Till'}
+            cashSaved={cashSlips.isSaved(row)}
+            onCashPress={cashSlips.openEditor}
           />
         ))}
       </CashFold>
@@ -2938,6 +3445,14 @@ function CashAuditPanel({
         error={txnDrawer.error}
         onClose={txnDrawer.close}
       />
+      <TxnCashBreakdownModal
+        visible={Boolean(cashSlips.editorRow)}
+        session={session}
+        row={cashSlips.editorRow}
+        initialSheet={cashSlips.editorSheet}
+        onClose={cashSlips.closeEditor}
+        onSaved={cashSlips.onSaved}
+      />
     </View>
   );
 }
@@ -2947,6 +3462,7 @@ export default function AuditScreen({
   session,
   onRequireLogin,
   storeFilter,
+  initialDate,
   embedded = false,
 }) {
   const isMobile = useIsMobile();
@@ -2969,6 +3485,7 @@ export default function AuditScreen({
           session={session}
           onRequireLogin={onRequireLogin}
           storeFilter={storeFilter}
+          initialDate={initialDate}
           embedded={embedded}
         />
       ) : null}
@@ -2978,6 +3495,7 @@ export default function AuditScreen({
           session={session}
           onRequireLogin={onRequireLogin}
           storeFilter={storeFilter}
+          initialDate={initialDate}
           embedded={embedded}
         />
       ) : null}
@@ -3132,6 +3650,20 @@ const styles = StyleSheet.create({
   },
   fillButtonMobile: {
     width: '100%',
+  },
+  fillButtonMobileFlex: {
+    flex: 1,
+    minWidth: 0,
+  },
+  fillButtonSave: {
+    backgroundColor: ACCENT,
+  },
+  fillButtonSaveText: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#fff',
+    letterSpacing: -0.2,
   },
   appleSearchIcon: {
     marginRight: 8,
@@ -3680,6 +4212,416 @@ const styles = StyleSheet.create({
     textAlign: 'right',
     flexShrink: 1,
   },
+  looseHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 8,
+  },
+  strapHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 6,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: HAIRLINE,
+  },
+  looseHeadCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  looseHeadTitle: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: -0.2,
+  },
+  looseHeadHint: {
+    fontFamily,
+    fontSize: 13,
+    color: SECONDARY,
+    letterSpacing: -0.08,
+  },
+  looseHeadAmount: {
+    fontFamily,
+    fontSize: 20,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: -0.4,
+    fontVariant: ['tabular-nums'],
+    flexShrink: 0,
+  },
+  looseGroup: {
+    paddingBottom: 4,
+  },
+  looseGroupTitle: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: SECONDARY,
+    letterSpacing: -0.08,
+    paddingHorizontal: 16,
+    paddingBottom: 6,
+  },
+  looseGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingBottom: 8,
+  },
+  looseGridMobile: {
+    gap: 8,
+  },
+  looseTile: {
+    flexGrow: 1,
+    flexBasis: 118,
+    maxWidth: 168,
+    minWidth: 110,
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    paddingTop: 12,
+    paddingBottom: 12,
+    paddingHorizontal: 10,
+    alignItems: 'center',
+    gap: 6,
+    overflow: 'hidden',
+  },
+  looseTileCompact: {
+    flexBasis: '47%',
+    maxWidth: '48.5%',
+    minWidth: '46%',
+    paddingTop: 14,
+    paddingBottom: 14,
+  },
+  looseTileFilled: {
+    backgroundColor: '#fff',
+  },
+  looseTileStripe: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 4,
+  },
+  looseTileExpected: {
+    fontFamily,
+    fontSize: 11,
+    color: SECONDARY,
+    letterSpacing: -0.08,
+    marginBottom: 4,
+  },
+  looseTileExpectedOk: {
+    fontFamily,
+    fontSize: 11,
+    color: ACCENT,
+    letterSpacing: -0.08,
+    marginBottom: 4,
+  },
+  looseTileExpectedOff: {
+    fontFamily,
+    fontSize: 11,
+    color: '#C47A12',
+    letterSpacing: -0.08,
+    marginBottom: 4,
+  },
+  cashTxnAmountWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexShrink: 0,
+  },
+  looseTileFace: {
+    fontFamily,
+    fontSize: 22,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: -0.5,
+    marginTop: 4,
+  },
+  looseTileUnit: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '500',
+    color: SECONDARY,
+    letterSpacing: -0.08,
+    marginTop: -4,
+  },
+  looseTileStepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    width: '100%',
+  },
+  looseTileInput: {
+    flexGrow: 1,
+    flexShrink: 1,
+    width: 0,
+    minWidth: 36,
+    minHeight: 36,
+    backgroundColor: FILL,
+    borderRadius: 10,
+    fontSize: 18,
+  },
+  looseTileInputLarge: {
+    flexGrow: 1,
+    flexShrink: 1,
+    width: 0,
+    minWidth: 40,
+    minHeight: 44,
+    backgroundColor: FILL,
+    borderRadius: 12,
+    fontSize: 22,
+  },
+  looseTileValue: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: -0.2,
+    fontVariant: ['tabular-nums'],
+  },
+  looseTileValueMuted: {
+    color: CHEVRON,
+  },
+  cashStepBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: FILL,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  cashStepBtnLarge: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+  },
+  cashStepBtnDisabled: {
+    opacity: 0.45,
+  },
+  cashStepBtnPressed: {
+    opacity: 0.7,
+  },
+  strapRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minHeight: 52,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
+  },
+  strapRowLast: {
+    borderBottomWidth: 0,
+    marginBottom: 4,
+  },
+  strapRowCompact: {
+    minHeight: 56,
+    paddingVertical: 10,
+  },
+  strapCopyCompact: {
+    width: 48,
+  },
+  strapInputLarge: {
+    flexGrow: 1,
+    flexShrink: 1,
+    width: 0,
+    minWidth: 44,
+    minHeight: 44,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    fontSize: 22,
+  },
+  strapAmountCompact: {
+    width: 72,
+    fontSize: 16,
+  },
+  strapRowFilled: {
+    backgroundColor: 'rgba(255,255,255,0.45)',
+  },
+  strapDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    flexShrink: 0,
+  },
+  strapCopy: {
+    width: 72,
+    flexShrink: 0,
+    gap: 1,
+  },
+  strapTitle: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: -0.2,
+  },
+  strapHint: {
+    fontFamily,
+    fontSize: 11,
+    color: SECONDARY,
+    letterSpacing: -0.08,
+  },
+  strapStepper: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minWidth: 0,
+  },
+  strapInput: {
+    flexGrow: 1,
+    flexShrink: 1,
+    width: 0,
+    minWidth: 44,
+    minHeight: 36,
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    fontSize: 17,
+  },
+  strapAmount: {
+    fontFamily,
+    width: 84,
+    fontSize: 15,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: -0.2,
+    fontVariant: ['tabular-nums'],
+    textAlign: 'right',
+    flexShrink: 0,
+  },
+  countFooterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minHeight: 56,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: HAIRLINE,
+  },
+  countFooterRowStrong: {
+    backgroundColor: '#ebebf0',
+  },
+  countFooterRowMobile: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 8,
+    paddingVertical: 12,
+  },
+  countFooterCopy: {
+    width: 88,
+    flexShrink: 0,
+    gap: 1,
+  },
+  countFooterCopyMobile: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  countFooterTitle: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: -0.2,
+  },
+  countFooterHint: {
+    fontFamily,
+    fontSize: 12,
+    color: SECONDARY,
+    letterSpacing: -0.08,
+  },
+  countFooterField: {
+    flex: 1,
+    minWidth: 80,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    minHeight: 36,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    backgroundColor: '#fff',
+  },
+  countFooterFieldMobile: {
+    minHeight: 48,
+    borderRadius: 12,
+    backgroundColor: FILL,
+  },
+  countFooterPrefix: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: SECONDARY,
+    letterSpacing: -0.2,
+  },
+  countFooterPrefixMobile: {
+    fontSize: 22,
+  },
+  cashSaveBar: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 16,
+    gap: 8,
+  },
+  cashSaveBtn: {
+    backgroundColor: ACCENT,
+    borderRadius: 12,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cashSaveBtnPressed: {
+    opacity: 0.88,
+  },
+  cashSaveBtnDisabled: {
+    opacity: 0.7,
+  },
+  cashSaveBtnText: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  cashSaveError: {
+    fontFamily,
+    fontSize: 13,
+    color: '#C47A12',
+    letterSpacing: -0.08,
+  },
+  cashSaveMeta: {
+    fontFamily,
+    fontSize: 12,
+    color: SECONDARY,
+    letterSpacing: -0.08,
+    textAlign: 'center',
+  },
+  countFooterTotal: {
+    fontFamily,
+    width: 84,
+    fontSize: 15,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: -0.2,
+    fontVariant: ['tabular-nums'],
+    textAlign: 'right',
+    flexShrink: 0,
+  },
   cashMobileCount: {
     paddingHorizontal: 12,
     paddingBottom: 8,
@@ -3847,12 +4789,18 @@ const styles = StyleSheet.create({
     minWidth: 56,
   },
   cashCountInputPlain: {
+    flexGrow: 1,
+    flexShrink: 1,
+    width: 0,
     backgroundColor: 'transparent',
     textAlign: 'left',
     minHeight: 28,
     paddingVertical: 0,
   },
   cashCountInputPlainLarge: {
+    flexGrow: 1,
+    flexShrink: 1,
+    width: 0,
     backgroundColor: 'transparent',
     textAlign: 'left',
     minHeight: 44,
@@ -4994,7 +5942,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   bColInput: {
-    width: 64,
+    width: 72,
     flexShrink: 0,
     textAlign: 'center',
   },
@@ -5096,6 +6044,19 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: SECONDARY,
     letterSpacing: -0.08,
+  },
+  bMobileSave: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: FILL,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
   bMobileUpdate: {
     width: 44,
@@ -5200,9 +6161,24 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
   bColAction: {
-    width: 36,
-    alignItems: 'flex-end',
+    width: 64,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 4,
     flexShrink: 0,
+  },
+  bSaveButton: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: FILL,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
   bUpdateButton: {
     width: 28,

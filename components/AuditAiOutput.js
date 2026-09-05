@@ -19,6 +19,8 @@ import {
   fetchTransactionDetail,
   findLookupTransaction,
   formatAmount,
+  formatUnitCost,
+  lineItemMoney,
   parseDocReference,
 } from '../lib/transactions';
 
@@ -550,6 +552,7 @@ export function AuditTxnDrawer({ visible, summary, detail, loading, error, onClo
                   <View style={styles.tableHeader}>
                     <Text style={[styles.colItem, styles.tableHeaderText]}>Item</Text>
                     <Text style={[styles.colQty, styles.tableHeaderText]}>Qty</Text>
+                    <Text style={[styles.colUnit, styles.tableHeaderText]}>Unit</Text>
                     <Text style={[styles.colAmount, styles.tableHeaderText]}>Amount</Text>
                   </View>
                   {items.length === 0 ? (
@@ -558,6 +561,8 @@ export function AuditTxnDrawer({ visible, summary, detail, loading, error, onClo
                     items.map((item, index) => {
                       const name = lineItemName(item);
                       const meta = lineItemMeta(item);
+                      const money = lineItemMoney(item);
+                      const unitType = item?.unit_type || (money.grossQuantity ? 'g' : '');
                       return (
                         <View
                           key={item.id || `${name}-${index}`}
@@ -571,8 +576,11 @@ export function AuditTxnDrawer({ visible, summary, detail, loading, error, onClo
                             {meta ? <Text style={styles.itemMeta}>{meta}</Text> : null}
                           </View>
                           <Text style={[styles.colQty, styles.cell]}>{lineItemQty(item)}</Text>
+                          <Text style={[styles.colUnit, styles.cell]}>
+                            {formatUnitCost(money.displayUnitPrice, unitType)}
+                          </Text>
                           <Text style={[styles.colAmount, styles.cell]}>
-                            {formatAmount(item.price)}
+                            {formatAmount(money.lineTotal)}
                           </Text>
                         </View>
                       );
@@ -1042,8 +1050,12 @@ const styles = StyleSheet.create({
     width: 56,
     textAlign: 'right',
   },
+  colUnit: {
+    width: 88,
+    textAlign: 'right',
+  },
   colAmount: {
-    width: 100,
+    width: 88,
     textAlign: 'right',
   },
   itemName: {

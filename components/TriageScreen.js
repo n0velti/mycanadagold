@@ -18,7 +18,9 @@ import {
   fetchTransactionDetail,
   fetchTransactions,
   formatAmount,
+  formatUnitCost,
   formatDateParam,
+  lineItemMoney,
   formatPickerDate,
   parseDateParam,
   resolvePosAuthForRow,
@@ -48,7 +50,7 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-triage-row-selected,.cgold-triage-row-selected:hover{background-color:#FFF7ED!important;}',
     '.cgold-triage-grid{display:grid!important;grid-template-columns:12% 16% 16% 24% 16% 16%;align-items:center;width:100%;box-sizing:border-box;}',
     '.cgold-triage-grid>*{min-width:0!important;max-width:100%;flex:none!important;width:auto!important;overflow:hidden;}',
-    '.cgold-triage-line-grid{display:grid!important;grid-template-columns:minmax(0,1fr) 88px 120px;align-items:start;width:100%;box-sizing:border-box;}',
+    '.cgold-triage-line-grid{display:grid!important;grid-template-columns:minmax(0,1fr) 88px 100px 120px;align-items:start;width:100%;box-sizing:border-box;}',
     '.cgold-triage-line-grid>*{min-width:0!important;flex:none!important;width:auto!important;padding-right:10px;}',
     '.cgold-triage-line-grid>*:last-child{padding-right:0;}',
   ].join('');
@@ -203,12 +205,19 @@ function buildDraft(row, detail) {
         ...makeField(formatAmount(total)),
       },
     ],
-    items: fallbackItems.map((item, index) => ({
-      id: item.id || `item-${index}`,
-      name: makeField(lineItemName(item)),
-      qty: makeField(lineItemQty(item)),
-      amount: makeField(item.price === '' ? '' : formatAmount(item.price)),
-    })),
+    items: fallbackItems.map((item, index) => {
+      const money = item.price === '' && !item.quantity ? null : lineItemMoney(item);
+      const unitType = item?.unit_type || (money?.grossQuantity ? 'g' : '');
+      const unitLabel = money ? formatUnitCost(money.displayUnitPrice, unitType) : '';
+      const amountLabel = money?.lineTotal == null ? '' : formatAmount(money.lineTotal);
+      return {
+        id: item.id || `item-${index}`,
+        name: makeField(lineItemName(item)),
+        qty: makeField(lineItemQty(item)),
+        unit: makeField(unitLabel),
+        amount: makeField(amountLabel),
+      };
+    }),
     payments: payments.map((entry, index) => {
       const payment = entry.payment || entry;
       return {
@@ -251,6 +260,14 @@ function collectCorrections(draft) {
         label: `${label} qty`,
         original: item.qty.original,
         value: item.qty.value,
+      });
+    }
+    if (item.unit && fieldChanged(item.unit)) {
+      corrections.push({
+        key: `${item.id}-unit`,
+        label: `${label} unit`,
+        original: item.unit.original,
+        value: item.unit.value,
       });
     }
     if (fieldChanged(item.amount)) {
@@ -1431,6 +1448,9 @@ function NewAccuracyModal({
                       <View style={styles.lineColQty}>
                         <Text style={styles.lineTh}>Qty</Text>
                       </View>
+                      <View style={styles.lineColUnit}>
+                        <Text style={[styles.lineTh, styles.colAmountText]}>Unit</Text>
+                      </View>
                       <View style={styles.lineColAmount}>
                         <Text style={[styles.lineTh, styles.colAmountText]}>Amount</Text>
                       </View>
@@ -1458,6 +1478,14 @@ function NewAccuracyModal({
                             compact
                             field={item.qty}
                             onChange={(value) => updateItem(item.id, 'qty', value)}
+                          />
+                        </View>
+                        <View style={styles.lineColUnit}>
+                          <CorrectableField
+                            hideLabel
+                            compact
+                            field={item.unit}
+                            onChange={(value) => updateItem(item.id, 'unit', value)}
                           />
                         </View>
                         <View style={styles.lineColAmount}>
@@ -2164,6 +2192,12 @@ const styles = StyleSheet.create({
   },
   lineColQty: {
     width: 88,
+    flexGrow: 0,
+    flexShrink: 0,
+    paddingRight: 10,
+  },
+  lineColUnit: {
+    width: 100,
     flexGrow: 0,
     flexShrink: 0,
     paddingRight: 10,

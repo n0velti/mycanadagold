@@ -7,12 +7,13 @@
  *   /proxy/anthropic/v1/messages           POST  → api.anthropic.com
  *   /proxy/openai/v1/chat/completions      POST  → api.openai.com
  *   /proxy/openrouter/v1/chat/completions  POST  → openrouter.ai
- *   /proxy/avatars/stylize                 POST  → OpenAI images/edits (locked Canada Gold cartoon)
+ *   /proxy/avatars/stylize                 POST  → OpenAI images/edits (IGA-style 3D cartoon of the person)
  *   /proxy/fintrac/<path>                  *     → www142.fintrac-canafe.canada.ca
  *   /proxy/rippling/oauth/config           GET   → { clientId, configured }
  *   /proxy/rippling/oauth/token            POST  → app.rippling.com/o/token (client secret held here)
  *   /proxy/rippling/<path>                 GET   → rest.ripplingapis.com
  *   /proxy/google/local-boq                GET   → Google local reviews (GetLocalBoqProxy)
+ *   /proxy/canadagold/page                 GET   → canadagold.ca buy/sell price pages
  *
  * AI providers use the company key saved in Settings (System Admin / GM) or,
  * if none is saved, the Edge Function secret. Clients never send vendor keys.
@@ -32,6 +33,10 @@ const FINTRAC_ORIGIN = 'https://www142.fintrac-canafe.canada.ca';
 const RIPPLING_API_ORIGIN = 'https://rest.ripplingapis.com';
 const RIPPLING_OAUTH_TOKEN_URL = 'https://app.rippling.com/o/token';
 const GOOGLE_BOQ_URL = 'https://www.google.com/httpservice/web/PrivateLocalSearchUiDataService/GetLocalBoqProxy';
+const CANADAGOLD_PAGES: Record<string, string> = {
+  buy: 'https://canadagold.ca/sell-to-us/todays-gold-prices/',
+  sell: 'https://canadagold.ca/buy-from-us/bullion/',
+};
 
 // Per-isolate request throttle: cheap protection against a runaway client.
 const RATE_WINDOW_MS = 60_000;
@@ -155,21 +160,69 @@ const AVATAR_DESCRIBE_MODELS = ['gpt-4.1-mini', 'gpt-4o-mini'];
 const AVATAR_DESCRIBE_TIMEOUT_MS = 25_000;
 
 /**
- * Shared Canada Gold look. Identity — sex, face, hair — is read from the photo
- * and restated in the prompt so the model cannot default to a generic (often male) cartoon.
+ * IGA grocery-mascot / modern Pixar 3D cartoon. Face is locked to the photo.
+ * Shirt and background are picked per staff member so portraits do not clone.
  */
 const AVATAR_STYLE_PROMPT = [
-  'Edit this photograph into a polished 3D animated Canada Gold staff portrait of the SAME person.',
-  'This is a likeness of the photographed person, not a new character and not a generic cartoon.',
-  'Hard identity rules — violating any of these fails the request:',
-  '1. The cartoon must be immediately recognizable as the person in the photo.',
-  '2. Keep their sex and gender presentation exactly as photographed. If the photo is a woman or girl, the cartoon MUST be a woman or girl with feminine facial structure, hair length, and features — never a man. If the photo is a man or boy, the cartoon MUST be a man or boy — never a woman. Never default to a male character. Never swap or guess a different gender.',
-  '3. Keep age, face shape, bone structure, skin tone, eye color, hair color, hair length, how the hair is parted, facial hair or a clean-shaven face, freckles, moles, and glasses.',
-  '4. Do not give them a different haircut, an invented narrower chin, oversized generic cartoon eyes, or other stock Pixar features that erase who they are.',
-  'Shared look (style only — do not change identity): modern 3D feature-film CGI, head-and-shoulders bust, centered, facing the camera, soft studio lighting with a gentle rim light, smooth skin with subtle highlights, friendly slight smile.',
-  'Background: plain dark charcoal-to-warm-gray studio gradient. No text, logos, watermarks, props, extra people, or scenery.',
-  'Wardrobe: the same simple solid muted gold-olive crew-neck shirt with no logos, worn by every staff member whether woman or man.',
+  'Restyle this photograph as a polished 3D CGI character portrait in the IGA grocery-mascot cartoon style — the friendly vinyl-toy look of a modern Pixar or DreamWorks feature, not a photoreal human.',
+  'This must look like high-end 3D animation: soft studio-quality lighting, gentle rim light, subsurface-scattering skin with a matte glow, no pores, no live-action photography, no flat 2D cartoon, no anime.',
+  'Art direction every portrait shares: head-and-shoulders bust, the person clearly recognizable, large soulful expressive eyes with detailed irises and bright catchlights, slightly stylized proportions (a touch larger head and eyes, rounded features, clean facial lines), sculpted voluminous hair in stylized clumps with visible texture and a slight sheen, richly textured fabrics, a friendly approachable expression.',
+  'Identity lock: this is the SAME person as in the photo. Keep their exact likeness — sex and gender presentation, age, face shape, bone structure, nose, jaw, eyebrows, skin tone, eye color, hair color, hair length and style, facial hair or a clean-shaven face, freckles, moles, glasses, and any distinctive marks. If the photo is a woman or girl, the cartoon MUST be a woman or girl. If the photo is a man or boy, the cartoon MUST be a man or boy. Never default to a generic or male character. Do not invent a different person.',
 ].join(' ');
+
+const AVATAR_SHIRTS = [
+  'a navy crew-neck knit sweater',
+  'a plain white cotton t-shirt',
+  'a light blue oxford button-down shirt',
+  'a forest green cardigan over a cream tee',
+  'a burgundy henley',
+  'a camel knit polo',
+  'a charcoal quarter-zip sweater',
+  'a mustard yellow crew sweater',
+  'a soft denim overshirt',
+  'an olive utility shirt',
+  'a rust flannel shirt',
+  'a teal henley',
+  'a cream cable-knit sweater',
+  'a deep plum button-up shirt',
+  'a warm brown corduroy shirt',
+  'a sky blue linen shirt',
+  'a terracotta knit sweater',
+  'a heather grey crew-neck sweatshirt',
+];
+
+const AVATAR_BACKGROUNDS = [
+  'a softly blurred grocery produce aisle with warm store lighting',
+  'a cozy kitchen with shallow depth of field',
+  'a warm office with window light and blurred shelves',
+  'a gold and jewelry showroom with soft display lights out of focus',
+  'a neighborhood cafe patio in soft daylight',
+  'a living room with houseplants and window light',
+  'bookstore shelves softly out of focus',
+  'a bakery counter with warm bokeh',
+  'a quiet workshop with tools softly blurred',
+  'a garden patio with leafy bokeh',
+  'a brick indoor market with produce in the blur',
+  'a holiday home interior with soft string-light bokeh',
+  'a sunlit hallway with framed photos blurred',
+  'a waterfront boardwalk in soft daylight',
+  'a cream-to-taupe studio gradient with gentle vignette',
+  'a coffee shop interior with warm bokeh lights',
+];
+
+function hashSeed(value: string): number {
+  let hash = 2166136261;
+  const text = String(value || '');
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function pickForPerson<T>(items: readonly T[], seed: string, salt: string): T {
+  return items[hashSeed(`${salt}:${seed}`) % items.length];
+}
 
 function parseImageDataUrl(value: string): { mediaType: string; bytes: Uint8Array; filename: string } | null {
   const match = String(value || '').trim().match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$/);
@@ -201,9 +254,14 @@ function sanitizeSubjectDescription(value: string): string {
   return text.slice(0, 400);
 }
 
-function buildAvatarPrompt(subject: string): string {
-  if (!subject) return AVATAR_STYLE_PROMPT;
-  return `${AVATAR_STYLE_PROMPT} The person in the photo: ${subject}`;
+function buildAvatarPrompt(subject: string, shirt: string, background: string): string {
+  const parts = [
+    AVATAR_STYLE_PROMPT,
+    `Wardrobe for this person only: ${shirt}. Fit it to this person's body. Do not put every staff member in the same uniform. No logos, name tags, or text on clothing.`,
+    `Background for this person only: ${background}. Keep shallow depth of field so the face stays sharp. No text, logos, watermarks, or extra people.`,
+  ];
+  if (subject) parts.push(`The person in the photo: ${subject}`);
+  return parts.join(' ');
 }
 
 function buildAvatarEditForm(
@@ -230,11 +288,11 @@ async function describePortraitSubject(key: string, dataUrl: string): Promise<st
         {
           type: 'text',
           text: [
-            'Describe the single person in this photo in one factual sentence for a portrait artist.',
+            'Describe the single person in this photo in one factual sentence so a 3D cartoon artist can keep their likeness.',
             'Include apparent sex or gender presentation (woman, man, girl, boy, or as photographed), approximate age,',
-            'face shape, skin tone, eye color, hair color, hair length, hair style, facial hair or clean-shaven,',
-            'glasses, and any distinctive marks.',
-            'Do not guess a name. Do not invent features that are not visible.',
+            'face shape, bone structure, nose and jaw, eyebrow shape, skin tone, eye color, hair color, hair length, hair style,',
+            'facial hair or clean-shaven, glasses, earrings or other visible accessories, and any distinctive marks.',
+            'Do not guess a name. Do not invent features that are not visible. Do not describe lighting, clothing, or camera style.',
           ].join(' '),
         },
         { type: 'image_url', image_url: { url: dataUrl } },
@@ -266,7 +324,7 @@ async function describePortraitSubject(key: string, dataUrl: string): Promise<st
   return '';
 }
 
-async function handleAvatarStylize(req: Request, body: ArrayBuffer | null): Promise<Response> {
+async function handleAvatarStylize(req: Request, body: ArrayBuffer | null, staffId = ''): Promise<Response> {
   if (req.method !== 'POST') return error(req, 405, 'Use POST.', 'method_not_allowed');
   const key = await resolveAiApiKey('openai', 'OPENAI_API_KEY');
   if (!key) return error(req, 400, MISSING_AI_KEY, 'missing_key');
@@ -285,7 +343,10 @@ async function handleAvatarStylize(req: Request, body: ArrayBuffer | null): Prom
   }
 
   const subject = await describePortraitSubject(key, dataUrl);
-  const prompt = buildAvatarPrompt(subject);
+  const seed = staffId || subject || String(image.bytes.byteLength);
+  const shirt = pickForPerson(AVATAR_SHIRTS, seed, 'shirt');
+  const background = pickForPerson(AVATAR_BACKGROUNDS, seed, 'background');
+  const prompt = buildAvatarPrompt(subject, shirt, background);
 
   let lastMessage = 'Could not draw that portrait.';
   for (const model of AVATAR_MODELS) {
@@ -512,6 +573,39 @@ async function handleGoogleBoq(req: Request, query: URLSearchParams): Promise<Re
   }
 }
 
+async function handleCanadaGoldPage(req: Request, query: URLSearchParams): Promise<Response> {
+  const page = String(query.get('page') || '').trim();
+  const url = CANADAGOLD_PAGES[page];
+  if (!url) return error(req, 400, 'Unknown Canada Gold price page.', 'bad_request');
+
+  const upstream = await forward(
+    url,
+    {
+      method: 'GET',
+      headers: {
+        Accept: 'text/html,application/xhtml+xml',
+        'Accept-Language': 'en-CA,en;q=0.9',
+        'User-Agent': 'CanadaGoldStaff/1.0 (+https://mycanadagold.app)',
+      },
+    },
+    30_000,
+  );
+  if (!upstream.ok) {
+    return error(req, 502, `Canada Gold prices failed (${upstream.status}).`, 'upstream_failed');
+  }
+
+  const html = await upstream.text();
+  return new Response(html, {
+    status: 200,
+    headers: {
+      ...corsHeaders(req),
+      ...securityHeaders(),
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'private, max-age=30',
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -557,7 +651,7 @@ Deno.serve(async (req) => {
       return await handleOpenRouter(req, await readBody(req));
     }
     if (path === '/avatars/stylize') {
-      return await handleAvatarStylize(req, await readBody(req));
+      return await handleAvatarStylize(req, await readBody(req), staff.userId);
     }
     if (path.startsWith('/fintrac/')) {
       return await handleFintrac(req, path.slice('/fintrac'.length), search, await readBody(req));
@@ -573,6 +667,9 @@ Deno.serve(async (req) => {
     }
     if (path === '/google/local-boq') {
       return await handleGoogleBoq(req, query);
+    }
+    if (path === '/canadagold/page' && req.method === 'GET') {
+      return await handleCanadaGoldPage(req, query);
     }
     return error(req, 404, 'Unknown proxy route.', 'not_found');
   } catch (err) {

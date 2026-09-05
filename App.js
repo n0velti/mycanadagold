@@ -58,13 +58,17 @@ import {
   fetchTransactions,
   FINTRAC_CASH_THRESHOLD,
   formatAmount,
+  formatUnitCost,
   formatDateParam,
+  lineItemMoney,
   formatPickerDate,
+  isCashTransaction,
   isFintracCash,
   needsLineItemEnrichment,
   needsPaymentEnrichment,
   parseDateParam,
   queryLooksLikeItem,
+  resolvePosAuthForRow,
   rowMatchesQuery,
   withLineItems,
   withPaymentBreakdown,
@@ -83,7 +87,12 @@ import InventoryScreen from './components/InventoryScreen';
 import SerphintScreen from './components/SerphintScreen';
 import SettingsScreen from './components/SettingsScreen';
 import StoreSettingsPanel from './components/StoreSettingsPanel';
+import StoreSnapshotPanel from './components/StoreSnapshotPanel';
+import TxnCashBreakdownModal, { TxnCashIcon } from './components/TxnCashBreakdownModal';
+import { AUREUS_TX_LIVE_MS, useLiveRefresh } from './lib/liveRefresh';
+import { useTxnCashBreakdowns } from './lib/txnCashBreakdowns';
 import TransferScreen from './components/TransferScreen';
+import PricingScreen from './components/PricingScreen';
 import TrendsScreen from './components/TrendsScreen';
 import TriageScreen, { clearTriageCache } from './components/TriageScreen';
 import LoginScreen from './components/LoginScreen';
@@ -439,6 +448,7 @@ const TOOL_CARDS = [
   { key: 'financials', label: 'Financials', icon: 'wallet-outline', tint: '#F0F8EE', accent: '#3D8B4F' },
   { key: 'accounting', label: 'Accounting', icon: 'calculator-outline', tint: '#EEF2FF', accent: '#3730A3' },
   { key: 'trends', label: 'Trends', icon: 'trending-up-outline', tint: '#F4F0FF', accent: '#5A4FC7' },
+  { key: 'pricing', label: 'Pricing', icon: 'pricetag-outline', tint: '#F8F1E3', accent: '#A67C2D' },
   { key: 'bonuses', label: 'Bonuses', icon: 'gift-outline', tint: '#FEF9C3', accent: '#A16207' },
   { key: 'leaderboards', label: 'Leaderboards', icon: 'trophy-outline', tint: '#FFF8E8', accent: '#B8860B' },
   { key: 'tasks', label: 'Tasks', icon: 'checkbox-outline', tint: '#EEF6FF', accent: '#2B6CB0' },
@@ -890,12 +900,15 @@ const TransactionListRow = memo(function TransactionListRow({
   employeeCount,
   onAmountHover,
   hideStore = false,
+  cashSaved = false,
+  onCashPress,
 }) {
   const [amountTip, setAmountTip] = useState('');
   const [amountAnchor, setAmountAnchor] = useState(null);
   const [employeeAnchor, setEmployeeAnchor] = useState(null);
   const fintrac = isFintracCash(item);
   const isBuy = item.type === 'purchase';
+  const showCash = typeof onCashPress === 'function' && isCashTransaction(item);
 
   const handleAmountEnter = async (event) => {
     setAmountAnchor(event?.currentTarget || null);
@@ -959,6 +972,9 @@ const TransactionListRow = memo(function TransactionListRow({
             }
           : null)}
       >
+        {showCash ? (
+          <TxnCashIcon saved={cashSaved} onPress={() => onCashPress(item)} />
+        ) : null}
         {fintrac ? <View style={styles.fintracDot} /> : null}
         <Text
           style={[styles.txTableAmountText, fintrac && styles.amountCellFintrac]}
@@ -1794,6 +1810,9 @@ function TransactionDetailDrawer({ visible, summary, detail, loading, error, onC
                           <Text style={[styles.txColDelivered, styles.txTableHeaderText]}>
                             Delivered
                           </Text>
+                          <Text style={[styles.txColUnit, styles.txTableHeaderText]}>
+                            Unit
+                          </Text>
                           <Text style={[styles.txColAmount, styles.txTableHeaderText]}>
                             Amount
                           </Text>
@@ -1807,6 +1826,8 @@ function TransactionDetailDrawer({ visible, summary, detail, loading, error, onC
                             const meta = lineItemMeta(item);
                             const images = lineItemImages(item);
                             const lineDelivery = lineDeliveryState(item);
+                            const money = lineItemMoney(item);
+                            const unitType = item?.unit_type || (money.grossQuantity ? 'g' : '');
                             return (
                               <View
                                 key={item.id || `${name}-${index}`}
@@ -1855,8 +1876,11 @@ function TransactionDetailDrawer({ visible, summary, detail, loading, error, onC
                                     {lineDelivery.label}
                                   </Text>
                                 </View>
+                                <Text style={[styles.txColUnit, styles.txLineCell]}>
+                                  {formatUnitCost(money.displayUnitPrice, unitType)}
+                                </Text>
                                 <Text style={[styles.txColAmount, styles.txLineCell]}>
-                                  {formatAmount(item.price)}
+                                  {formatAmount(money.lineTotal)}
                                 </Text>
                               </View>
                             );
@@ -1940,7 +1964,27 @@ function TransactionDetailDrawer({ visible, summary, detail, loading, error, onC
   );
 }
 
-function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', onClose }) {
+function mergeLiveTxRows(current, incoming) {
+  const next = incoming || [];
+  if (!next.length) return next;
+  const prevById = new Map((current || []).map((row) => [row.id, row]));
+  return next.map((row) => {
+    const prev = prevById.get(row.id);
+    if (!prev) return row;
+    return {
+      ...row,
+      itemNames: prev.itemNames?.length ? prev.itemNames : row.itemNames,
+      itemSearchText: prev.itemSearchText || row.itemSearchText,
+      pricedLines: prev.pricedLines?.length ? prev.pricedLines : row.pricedLines,
+      imageUrls: prev.imageUrls?.length ? prev.imageUrls : row.imageUrls,
+      lineItemsLoaded: prev.lineItemsLoaded || row.lineItemsLoaded,
+      paymentBreakdown: prev.paymentBreakdown || row.paymentBreakdown,
+      paymentBreakdownLabel: prev.paymentBreakdownLabel || row.paymentBreakdownLabel,
+    };
+  });
+}
+
+function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date, onClose }) {
   const { width: windowWidth } = useWindowDimensions();
   const isMobile = windowWidth < MOBILE_BREAKPOINT;
   const { hasApp } = useAppAccess();
@@ -1955,14 +1999,15 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', onClo
     solid: true,
   };
   const railTabs = [overviewTab, ...drawerTabs];
-  const maxPanelWidth = Math.max(280, windowWidth - STORE_DRAWER_RAIL_WIDTH - (isMobile ? 0 : 24));
+  const railWidth = isMobile ? 0 : STORE_DRAWER_RAIL_WIDTH;
+  const maxPanelWidth = Math.max(280, windowWidth - railWidth - (isMobile ? 0 : 24));
   const panelWidth = isMobile
-    ? maxPanelWidth
+    ? windowWidth
     : Math.min(
         Math.max(Math.round(windowWidth * 0.72), Math.min(560, maxPanelWidth)),
         maxPanelWidth,
       );
-  const slideDistance = panelWidth + STORE_DRAWER_RAIL_WIDTH;
+  const slideDistance = panelWidth + railWidth;
   const { mounted, slide, backdrop } = useRightDrawerAnimation(visible, slideDistance);
   const heldStore = useHeldValue(store);
   const [activeTab, setActiveTab] = useState('overview');
@@ -1974,10 +2019,31 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', onClo
   const detailRequestId = useRef(0);
   const paymentCache = useRef({});
 
+  const lastStoreNameRef = useRef(store?.store);
+  const incomingTxKey = (store?.transactions || []).map((row) => row.id).join('\n');
+
   useEffect(() => {
+    const storeChanged = lastStoreNameRef.current !== store?.store;
+    lastStoreNameRef.current = store?.store;
+    if (storeChanged) paymentCache.current = {};
     const next = store?.transactions || [];
-    setTxRows(next);
-    paymentCache.current = {};
+    setTxRows((current) => {
+      const merged = storeChanged ? next : mergeLiveTxRows(current, next);
+      return merged.map((row) => {
+        const cached = paymentCache.current[row.id];
+        if (!cached) return row;
+        return {
+          ...row,
+          itemNames: cached.itemNames?.length ? cached.itemNames : row.itemNames,
+          itemSearchText: cached.itemSearchText || row.itemSearchText,
+          pricedLines: cached.pricedLines?.length ? cached.pricedLines : row.pricedLines,
+          imageUrls: cached.imageUrls?.length ? cached.imageUrls : row.imageUrls,
+          lineItemsLoaded: cached.lineItemsLoaded || row.lineItemsLoaded,
+          paymentBreakdown: cached.paymentBreakdown || row.paymentBreakdown,
+          paymentBreakdownLabel: cached.paymentBreakdownLabel || row.paymentBreakdownLabel,
+        };
+      });
+    });
     setSelectedRow((current) => {
       if (!current) return null;
       return next.find((row) => row.id === current.id) || null;
@@ -2006,6 +2072,53 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', onClo
     }
     return counts;
   }, [txRows]);
+
+  useEffect(() => {
+    if (!visible || !session) return undefined;
+    const queue = (store?.transactions || []).filter(needsLineItemEnrichment);
+    if (!queue.length) return undefined;
+    let cancelled = false;
+
+    (async () => {
+      const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
+        while (queue.length && !cancelled) {
+          const row = queue.shift();
+          if (!row || paymentCache.current[row.id]?.lineItemsLoaded) continue;
+          try {
+            const auth = resolvePosAuthForRow(session, row);
+            const detailPayload = await fetchTransactionDetail(auth.token, {
+              type: row.type,
+              sourceId: row.sourceId,
+              baseUrl: auth.baseUrl,
+            });
+            if (cancelled) return;
+            const enriched = withLineItems(row, detailPayload);
+            paymentCache.current[row.id] = { ...enriched, lineItemsLoaded: true };
+            setTxRows((current) =>
+              current.map((entry) => (entry.id === row.id ? enriched : entry)),
+            );
+          } catch {
+            paymentCache.current[row.id] = {
+              ...(paymentCache.current[row.id] || row),
+              lineItemsLoaded: true,
+            };
+            setTxRows((current) =>
+              current.map((entry) =>
+                entry.id === row.id ? { ...entry, lineItemsLoaded: true } : entry,
+              ),
+            );
+          }
+        }
+      });
+      await Promise.all(workers);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, session, store?.store, incomingTxKey]);
+
+  const cashSlips = useTxnCashBreakdowns(txRows);
 
   const closeDetail = useCallback(() => {
     setSelectedRow(null);
@@ -2092,59 +2205,98 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', onClo
           <Animated.View
             style={[
               styles.storeDrawerShell,
+              isMobile && styles.storeDrawerShellMobile,
               { transform: [{ translateX: slide }] },
             ]}
           >
-            <View style={styles.storeDrawerAppsRail}>
-              {railTabs.map((tab, index) => (
-                <Fragment key={tab.key}>
-                  {index === 1 || (tab.key === 'settings' && index > 1) ? (
-                    <View style={styles.storeDrawerRailSep} />
-                  ) : null}
-                  <StoreDrawerAppButton
-                    tab={tab}
-                    selected={tab.key === activeTab}
-                    onPress={() => setActiveTab(tab.key)}
-                  />
-                </Fragment>
-              ))}
-            </View>
+            {isMobile ? null : (
+              <View style={styles.storeDrawerAppsRail}>
+                {railTabs.map((tab, index) => (
+                  <Fragment key={tab.key}>
+                    {index === 1 || (tab.key === 'settings' && index > 1) ? (
+                      <View style={styles.storeDrawerRailSep} />
+                    ) : null}
+                    <StoreDrawerAppButton
+                      tab={tab}
+                      selected={tab.key === activeTab}
+                      onPress={() => setActiveTab(tab.key)}
+                    />
+                  </Fragment>
+                ))}
+              </View>
+            )}
 
             <View
               style={[
                 styles.drawerPanel,
                 styles.storeDrawerPanel,
+                isMobile && styles.storeDrawerPanelMobile,
                 { width: panelWidth, maxWidth: panelWidth },
               ]}
             >
               <View
-                style={[styles.invoiceTopBar, isMobile && styles.invoiceTopBarMobile]}
+                style={[
+                  styles.invoiceTopBar,
+                  isMobile && styles.invoiceTopBarMobile,
+                  isMobile && styles.storeDrawerTopBarMobile,
+                ]}
                 {...(Platform.OS === 'web' && isMobile ? { className: 'cgold-mobile-sheet-top' } : null)}
               >
-                <Text style={styles.appleSheetTitle} numberOfLines={1}>
+                {isMobile ? (
+                  activeTab !== 'overview' ? (
+                    <Pressable
+                      onPress={() => setActiveTab('overview')}
+                      hitSlop={8}
+                      style={styles.storeDrawerNavSide}
+                      accessibilityLabel="Back"
+                    >
+                      <Ionicons name="chevron-back" size={28} color="#007AFF" />
+                    </Pressable>
+                  ) : (
+                    <View style={styles.storeDrawerNavSide} />
+                  )
+                ) : null}
+                <Text
+                  style={[styles.appleSheetTitle, isMobile && styles.storeDrawerTitleMobile]}
+                  numberOfLines={1}
+                >
                   {activeTab === 'overview'
-                    ? 'Overview'
+                    ? heldStore.store
                     : activeTab === 'settings'
                       ? 'Store settings'
-                      : heldStore.store}
+                      : activeTool?.label || heldStore.store}
                 </Text>
-                <Pressable
-                  onPress={onClose}
-                  hitSlop={8}
-                  style={styles.appleCloseButton}
-                  accessibilityLabel="Close"
-                >
-                  <Ionicons name="close" size={18} color="#1d1d1f" />
-                </Pressable>
+                <View style={isMobile ? styles.storeDrawerNavSide : null}>
+                  <Pressable
+                    onPress={onClose}
+                    hitSlop={8}
+                    style={styles.appleCloseButton}
+                    accessibilityLabel="Close"
+                  >
+                    <Ionicons name="close" size={18} color="#1d1d1f" />
+                  </Pressable>
+                </View>
               </View>
 
-              {activeTab === 'inventory' ||
+              {activeTab === 'overview' ||
+              activeTab === 'inventory' ||
               activeTab === 'financials' ||
               activeTab === 'audit' ||
               activeTab === 'ai' ||
               activeTab === 'triage' ||
               activeTab === 'settings' ? (
                 <View style={[styles.drawerBody, styles.drawerBodyFill]}>
+                  {activeTab === 'overview' ? (
+                    <StoreSnapshotPanel
+                      session={session}
+                      store={heldStore}
+                      periodLabel={periodLabel}
+                      txRows={txRows}
+                      onOpenTransaction={openDetail}
+                      apps={drawerTabs}
+                      onOpenApp={setActiveTab}
+                    />
+                  ) : (
                   <View
                     style={[
                       styles.drawerBodyContentInventory,
@@ -2165,8 +2317,10 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', onClo
                       />
                     ) : activeTab === 'audit' ? (
                       <AuditScreen
+                        key={heldStore.store}
                         session={session}
                         storeFilter={heldStore.store}
+                        initialDate={date}
                         embedded
                       />
                     ) : activeTab === 'ai' ? (
@@ -2189,6 +2343,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', onClo
                       />
                     )}
                   </View>
+                  )}
                 </View>
               ) : (
               <ScrollView
@@ -2199,12 +2354,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', onClo
                 ]}
                 showsVerticalScrollIndicator={false}
               >
-                {activeTab === 'overview' ? (
-                  <StoreOverviewPanel
-                    store={heldStore}
-                    periodLabel={periodLabel}
-                  />
-                ) : activeTab === 'transactions' ? (
+                {activeTab === 'transactions' ? (
                   <>
                     <View style={[styles.invoiceHeaderRow, isMobile && styles.invoiceHeaderRowMobile]}>
                       <View style={styles.invoiceHeaderLeft}>
@@ -2256,6 +2406,8 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', onClo
                                 employeeCount={employeeCounts[item.employeeName] || 0}
                                 onAmountHover={ensurePaymentBreakdown}
                                 hideStore
+                                cashSaved={cashSlips.isSaved(item)}
+                                onCashPress={cashSlips.openEditor}
                               />
                             ))}
                           </>
@@ -2300,6 +2452,14 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', onClo
         error={detailError}
         onClose={closeDetail}
       />
+      <TxnCashBreakdownModal
+        visible={Boolean(cashSlips.editorRow)}
+        session={session}
+        row={cashSlips.editorRow}
+        initialSheet={cashSlips.editorSheet}
+        onClose={cashSlips.closeEditor}
+        onSaved={cashSlips.onSaved}
+      />
     </>
   );
 }
@@ -2330,62 +2490,6 @@ function storeAccent(name) {
     hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
   }
   return STORE_ACCENT_FALLBACKS[hash % STORE_ACCENT_FALLBACKS.length];
-}
-
-function StoreCountMoneyRows({ store }) {
-  return (
-    <>
-      <View style={styles.storeOverviewStatRow}>
-        <Text style={[styles.toolListLabel, styles.storeOverviewStatPrimary]}>Tx</Text>
-        <Text style={[styles.homeListMeta, styles.storeOverviewStatPrimary]}>{store.txCount}</Text>
-        <Text style={[styles.homeListAmount, styles.storeOverviewStatPrimary]}>
-          {formatAmount(store.totalAmount)}
-        </Text>
-      </View>
-      <View style={styles.storeOverviewStatRow}>
-        <Text style={styles.toolListLabel}>SO</Text>
-        <Text style={styles.homeListMeta}>{store.saleCount}</Text>
-        <Text style={styles.homeListAmount}>{formatAmount(store.soAmount)}</Text>
-      </View>
-      <View style={[styles.storeOverviewStatRow, styles.toolListRowLast]}>
-        <Text style={styles.toolListLabel}>PO</Text>
-        <Text style={styles.homeListMeta}>{store.purchaseCount}</Text>
-        <Text style={styles.homeListAmount}>{formatAmount(store.poAmount)}</Text>
-      </View>
-    </>
-  );
-}
-
-function StoreOverviewPanel({ store, periodLabel }) {
-  const accent = storeAccent(store.store);
-  const iconSize = 72;
-  const radius = Math.round(iconSize * 0.223);
-
-  return (
-    <View>
-      <View style={styles.storeOverviewHero}>
-        <View
-          style={[
-            styles.toolIconTile,
-            {
-              width: iconSize,
-              height: iconSize,
-              borderRadius: radius,
-              backgroundColor: accent,
-            },
-          ]}
-        >
-          <Ionicons name="storefront" size={32} color="#fff" />
-        </View>
-        <Text style={styles.storeOverviewName}>{store.store}</Text>
-        <Text style={styles.storeOverviewPeriod}>{periodLabel}</Text>
-      </View>
-
-      <View style={styles.toolsList}>
-        <StoreCountMoneyRows store={store} />
-      </View>
-    </View>
-  );
 }
 
 function HomeStoreCard({ row, selected, last, onOpenStore }) {
@@ -2643,13 +2747,10 @@ function HomeScreen({ session, onRequireLogin }) {
 
   useEffect(() => {
     load();
-
-    const intervalId = setInterval(() => {
-      load({ silent: true });
-    }, 15 * 60 * 1000);
-
-    return () => clearInterval(intervalId);
   }, [load]);
+
+  const watchLive = Boolean(session?.token) && startKey <= todayKey && todayKey <= endKey;
+  useLiveRefresh(load, AUREUS_TX_LIVE_MS, watchLive);
 
   const scopedRows = useMemo(() => {
     if (!storeRestricted) return storeRows;
@@ -2936,6 +3037,7 @@ function HomeScreen({ session, onRequireLogin }) {
         store={selectedStore}
         session={session}
         periodLabel={periodLabel}
+        date={startDate}
         onClose={closeStore}
       />
     </View>
@@ -3568,6 +3670,8 @@ function TransactionsScreen({ session, onRequireLogin }) {
     setFintracCashOnly(false);
   }, [allowFilters]);
 
+  const cashSlips = useTxnCashBreakdowns(rows);
+
   const closeDetail = useCallback(() => {
     setSelectedRow(null);
     setDetail(null);
@@ -3643,9 +3747,19 @@ function TransactionsScreen({ session, onRequireLogin }) {
         onPress={openDetail}
         employeeCount={employeeCounts[item.employeeName] || 0}
         onAmountHover={ensurePaymentBreakdown}
+        cashSaved={cashSlips.isSaved(item)}
+        onCashPress={cashSlips.openEditor}
       />
     ),
-    [selectedRow?.id, openDetail, employeeCounts, ensurePaymentBreakdown],
+    [
+      selectedRow?.id,
+      openDetail,
+      employeeCounts,
+      ensurePaymentBreakdown,
+      cashSlips.savedKey,
+      cashSlips.isSaved,
+      cashSlips.openEditor,
+    ],
   );
   const keyExtractor = useCallback((item) => item.id, []);
 
@@ -3842,7 +3956,7 @@ function TransactionsScreen({ session, onRequireLogin }) {
             data={filteredRows}
             keyExtractor={keyExtractor}
             renderItem={renderTransaction}
-            extraData={selectedRow?.id}
+            extraData={`${selectedRow?.id}:${cashSlips.savedKey}`}
             style={styles.tableList}
             contentContainerStyle={styles.txListContent}
             showsVerticalScrollIndicator={false}
@@ -3890,6 +4004,14 @@ function TransactionsScreen({ session, onRequireLogin }) {
             loading={detailLoading}
             error={detailError}
             onClose={closeDetail}
+          />
+          <TxnCashBreakdownModal
+            visible={Boolean(cashSlips.editorRow)}
+            session={session}
+            row={cashSlips.editorRow}
+            initialSheet={cashSlips.editorSheet}
+            onClose={cashSlips.closeEditor}
+            onSaved={cashSlips.onSaved}
           />
         </View>
       )}
@@ -4691,7 +4813,7 @@ export default function App() {
                   </Text>
                 </Pressable>
                 <Text style={styles.profilePortraitHint}>
-                  Photos become a shared 3D cartoon style — your face, in Canada Gold.
+                  Photos become an IGA-style 3D cartoon of you — your face, with your own shirt and background.
                 </Text>
                 {avatarError ? (
                   <Text style={[styles.errorText, styles.profileError]}>{avatarError}</Text>
@@ -4848,6 +4970,8 @@ export default function App() {
                 session={session}
                 onRequireLogin={() => selectTab('profile')}
               />
+            ) : activeTool.key === 'pricing' ? (
+              <PricingScreen />
             ) : activeTool.key === 'bonuses' ? (
               <BonusesScreen
                 session={session}
@@ -5090,6 +5214,7 @@ export default function App() {
       activeTool?.key === 'financials' ||
       activeTool?.key === 'transfer' ||
       activeTool?.key === 'fintrac' ||
+      activeTool?.key === 'pricing' ||
       activeTool?.key === 'bonuses' ||
       activeTool?.key === 'employees' ||
       activeTool?.key === 'triage'));
@@ -6254,12 +6379,56 @@ const styles = StyleSheet.create({
     alignItems: 'stretch',
     overflow: 'visible',
   },
+  storeDrawerShellMobile: {
+    width: '100%',
+    overflow: 'hidden',
+  },
   storeDrawerPanel: {
     flexShrink: 0,
     minWidth: 0,
     minHeight: 0,
     overflow: 'hidden',
     flexDirection: 'column',
+  },
+  storeDrawerPanelMobile: {
+    backgroundColor: '#f2f2f7',
+    flex: 1,
+  },
+  storeDrawerTopBarMobile: {
+    paddingHorizontal: 12,
+  },
+  storeDrawerNavSide: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  storeDrawerTitleMobile: {
+    textAlign: 'center',
+  },
+  storeDrawerAppsSection: {
+    marginTop: 28,
+  },
+  storeDrawerGroupedList: {
+    backgroundColor: '#fff',
+  },
+  storeDrawerAppRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 56,
+    paddingLeft: 12,
+    paddingRight: 14,
+    gap: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e5e5ea',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
   storeDrawerAppsRail: {
     width: STORE_DRAWER_RAIL_WIDTH,
@@ -6386,6 +6555,10 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 28,
     gap: 6,
+  },
+  storeOverviewHeroMobile: {
+    paddingTop: 4,
+    paddingBottom: 20,
   },
   storeOverviewName: {
     fontFamily,
@@ -6825,11 +6998,15 @@ const styles = StyleSheet.create({
     textAlign: 'right',
   },
   txColDelivered: {
-    width: 92,
+    width: 84,
     alignItems: 'flex-end',
   },
+  txColUnit: {
+    width: 88,
+    textAlign: 'right',
+  },
   txColAmount: {
-    width: 96,
+    width: 88,
     textAlign: 'right',
   },
   txLineDeliveredQty: {
@@ -7722,7 +7899,7 @@ const styles = StyleSheet.create({
   },
   drawerBodyContentMobile: {
     paddingHorizontal: 16,
-    paddingBottom: 32,
+    paddingBottom: 48,
   },
   drawerBodyContentInventoryMobile: {
     paddingHorizontal: 12,
@@ -8376,8 +8553,8 @@ const styles = StyleSheet.create({
     paddingRight: 16,
   },
   colAmount: {
-    flex: 1.1,
-    minWidth: 92,
+    flex: 1.2,
+    minWidth: 118,
     paddingRight: 16,
     justifyContent: 'flex-end',
     textAlign: 'right',
