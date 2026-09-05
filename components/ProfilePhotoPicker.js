@@ -221,8 +221,8 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
             <>
               <Text style={styles.title}>Canada Gold portrait</Text>
               <Text style={styles.body}>
-                Take a photo or choose one. We redraw everyone in the same 3D cartoon style — it
-                should still look like you, including if you are a woman or a man.
+                Take a photo or choose one. We redraw you as an IGA-style 3D cartoon that still
+                looks like you — your face, with a unique shirt and background.
               </Text>
               <Pressable style={styles.choice} onPress={handleTakePhoto}>
                 <View style={[styles.choiceIcon, { backgroundColor: '#EEF4FF' }]}>
@@ -256,7 +256,7 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
           {step === 'camera' ? (
             <>
               <Text style={styles.title}>Take a photo</Text>
-              <Text style={styles.body}>Center your face, then capture. The portrait is drawn next.</Text>
+              <Text style={styles.body}>Center your face, then capture. We draw an IGA-style cartoon that still looks like you.</Text>
               <View style={styles.previewShell}>
                 {Platform.OS === 'web'
                   ? createElement('video', {
@@ -322,7 +322,7 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
             <>
               <Text style={styles.title}>Drawing your portrait</Text>
               <Text style={styles.body}>
-                Same Canada Gold cartoon style as everyone else. This usually takes about 20 seconds.
+                Drawing you in the IGA 3D cartoon style. This usually takes about 20 seconds.
               </Text>
               <View style={styles.previewShell}>
                 {sourceUri ? (
@@ -344,7 +344,7 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
               <Text style={styles.title}>{cartoonUri ? 'Your Canada Gold portrait' : 'Could not draw it'}</Text>
               <Text style={styles.body}>
                 {cartoonUri
-                  ? 'This is the cartoon version that will show next to your name.'
+                  ? 'This is the cartoon version of you that will show next to your name.'
                   : 'Try another photo, or take one with the webcam.'}
               </Text>
               <View style={styles.previewShell}>
