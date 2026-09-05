@@ -7,7 +7,7 @@
  *   /proxy/anthropic/v1/messages           POST  → api.anthropic.com
  *   /proxy/openai/v1/chat/completions      POST  → api.openai.com
  *   /proxy/openrouter/v1/chat/completions  POST  → openrouter.ai
- *   /proxy/avatars/stylize                 POST  → OpenAI images/edits (IGA-style 3D cartoon of the person)
+ *   /proxy/avatars/stylize                 POST  → OpenAI images/edits (Disney cartoon of the person in the photo)
  *   /proxy/fintrac/<path>                  *     → www142.fintrac-canafe.canada.ca
  *   /proxy/rippling/oauth/config           GET   → { clientId, configured }
  *   /proxy/rippling/oauth/token            POST  → app.rippling.com/o/token (client secret held here)
@@ -155,19 +155,27 @@ async function handleOpenAI(req: Request, body: ArrayBuffer | null): Promise<Res
 
 const AVATAR_IMAGE_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']);
 const AVATAR_MAX_BYTES = 8 * 1024 * 1024;
-const AVATAR_MODELS = ['gpt-image-1.5', 'gpt-image-1'];
+const AVATAR_MODELS = ['gpt-image-2', 'gpt-image-1.5', 'gpt-image-1'];
 const AVATAR_DESCRIBE_MODELS = ['gpt-4.1-mini', 'gpt-4o-mini'];
 const AVATAR_DESCRIBE_TIMEOUT_MS = 25_000;
 
 /**
- * IGA grocery-mascot / modern Pixar 3D cartoon. Face is locked to the photo.
- * Shirt and background are picked per staff member so portraits do not clone.
+ * Fun Disney 3D cartoon restyle. The attached photo is the identity source —
+ * style, shirt, and background change; the face must stay that person.
  */
+const AVATAR_IDENTITY_PROMPT = [
+  'Edit the attached photograph. This is an image-to-image restyle of that exact person, not a new character and not a generated extra.',
+  'The photo is the only identity source. Anyone who knows this person must recognize them immediately.',
+  'Keep from the photo: the same person, same face, same identity, sex and gender presentation, apparent age, ethnicity, face shape, bone structure, nose, mouth, lips, jaw, chin, eyebrows, eye shape, eye color, skin tone, hair color, hairline, hair length and style, facial hair or a clean-shaven face, glasses, earrings, freckles, moles, and any distinctive marks.',
+  'If the photo is a woman or girl, the cartoon MUST be that woman or girl. If the photo is a man or boy, the cartoon MUST be that man or boy.',
+  'Do not invent a different person. Do not default to a generic Disney hero or heroine. Do not swap gender, age, or ethnicity. Do not enlarge the head or redesign the face into generic cartoon proportions.',
+].join(' ');
+
 const AVATAR_STYLE_PROMPT = [
-  'Restyle this photograph as a polished 3D CGI character portrait in the IGA grocery-mascot cartoon style — the friendly vinyl-toy look of a modern Pixar or DreamWorks feature, not a photoreal human.',
-  'This must look like high-end 3D animation: soft studio-quality lighting, gentle rim light, subsurface-scattering skin with a matte glow, no pores, no live-action photography, no flat 2D cartoon, no anime.',
-  'Art direction every portrait shares: head-and-shoulders bust, the person clearly recognizable, large soulful expressive eyes with detailed irises and bright catchlights, slightly stylized proportions (a touch larger head and eyes, rounded features, clean facial lines), sculpted voluminous hair in stylized clumps with visible texture and a slight sheen, richly textured fabrics, a friendly approachable expression.',
-  'Identity lock: this is the SAME person as in the photo. Keep their exact likeness — sex and gender presentation, age, face shape, bone structure, nose, jaw, eyebrows, skin tone, eye color, hair color, hair length and style, facial hair or a clean-shaven face, freckles, moles, glasses, and any distinctive marks. If the photo is a woman or girl, the cartoon MUST be a woman or girl. If the photo is a man or boy, the cartoon MUST be a man or boy. Never default to a generic or male character. Do not invent a different person.',
+  'Change only the rendering style, wardrobe, and background.',
+  'Render them as a fun Disney 3D cartoon portrait in the look of a modern Disney feature film — warm studio lighting, painted cartoon skin without pores, stylized voluminous hair, richly textured clothes, a friendly expression, head-and-shoulders bust.',
+  'Keep their real facial proportions and features; only the materials and lighting become cartoon.',
+  'Not photoreal. Not live-action. Not 2D. Not anime. Not a grocery mascot. Not a vinyl toy.',
 ].join(' ');
 
 const AVATAR_SHIRTS = [
@@ -192,7 +200,7 @@ const AVATAR_SHIRTS = [
 ];
 
 const AVATAR_BACKGROUNDS = [
-  'a softly blurred grocery produce aisle with warm store lighting',
+  'a sunlit meadow with soft leafy bokeh',
   'a cozy kitchen with shallow depth of field',
   'a warm office with window light and blurred shelves',
   'a gold and jewelry showroom with soft display lights out of focus',
@@ -202,11 +210,11 @@ const AVATAR_BACKGROUNDS = [
   'a bakery counter with warm bokeh',
   'a quiet workshop with tools softly blurred',
   'a garden patio with leafy bokeh',
-  'a brick indoor market with produce in the blur',
+  'a castle courtyard with warm daylight bokeh',
   'a holiday home interior with soft string-light bokeh',
   'a sunlit hallway with framed photos blurred',
   'a waterfront boardwalk in soft daylight',
-  'a cream-to-taupe studio gradient with gentle vignette',
+  'a cream-to-gold studio gradient with gentle vignette',
   'a coffee shop interior with warm bokeh lights',
 ];
 
@@ -256,11 +264,16 @@ function sanitizeSubjectDescription(value: string): string {
 
 function buildAvatarPrompt(subject: string, shirt: string, background: string): string {
   const parts = [
+    AVATAR_IDENTITY_PROMPT,
     AVATAR_STYLE_PROMPT,
     `Wardrobe for this person only: ${shirt}. Fit it to this person's body. Do not put every staff member in the same uniform. No logos, name tags, or text on clothing.`,
     `Background for this person only: ${background}. Keep shallow depth of field so the face stays sharp. No text, logos, watermarks, or extra people.`,
   ];
-  if (subject) parts.push(`The person in the photo: ${subject}`);
+  if (subject) {
+    parts.push(
+      `Visible facts from the photo, for matching only — do not invent anyone else: ${subject}`,
+    );
+  }
   return parts.join(' ');
 }
 
@@ -273,9 +286,12 @@ function buildAvatarEditForm(
   form.set('model', model);
   form.set('prompt', prompt);
   form.set('size', '1024x1024');
-  form.set('quality', 'medium');
-  form.set('input_fidelity', 'high');
+  form.set('quality', 'high');
   form.set('output_format', 'jpeg');
+  // gpt-image-2 always uses high input fidelity and rejects this field.
+  if (!model.startsWith('gpt-image-2')) {
+    form.set('input_fidelity', 'high');
+  }
   form.set('image', new File([image.bytes], image.filename, { type: image.mediaType }));
   return form;
 }
@@ -288,11 +304,12 @@ async function describePortraitSubject(key: string, dataUrl: string): Promise<st
         {
           type: 'text',
           text: [
-            'Describe the single person in this photo in one factual sentence so a 3D cartoon artist can keep their likeness.',
+            'Describe the single person visible in this photo in one factual sentence so an artist can keep their exact likeness.',
             'Include apparent sex or gender presentation (woman, man, girl, boy, or as photographed), approximate age,',
-            'face shape, bone structure, nose and jaw, eyebrow shape, skin tone, eye color, hair color, hair length, hair style,',
-            'facial hair or clean-shaven, glasses, earrings or other visible accessories, and any distinctive marks.',
-            'Do not guess a name. Do not invent features that are not visible. Do not describe lighting, clothing, or camera style.',
+            'ethnicity or skin tone, face shape, bone structure, nose, mouth, jaw, eyebrow shape, eye color and eye shape,',
+            'hair color, hair length, hair style, facial hair or clean-shaven, glasses, earrings or other visible accessories,',
+            'and any distinctive marks. Do not guess a name. Do not invent features that are not visible.',
+            'Do not describe lighting, clothing, or camera style. If no clear face is visible, say that.'
           ].join(' '),
         },
         { type: 'image_url', image_url: { url: dataUrl } },

@@ -221,7 +221,7 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
             <>
               <Text style={styles.title}>Canada Gold portrait</Text>
               <Text style={styles.body}>
-                Take a photo or choose one. We redraw you as an IGA-style 3D cartoon that still
+                Take a photo or choose one. We redraw you as a fun Disney cartoon that still
                 looks like you — your face, with a unique shirt and background.
               </Text>
               <Pressable style={styles.choice} onPress={handleTakePhoto}>
@@ -256,7 +256,7 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
           {step === 'camera' ? (
             <>
               <Text style={styles.title}>Take a photo</Text>
-              <Text style={styles.body}>Center your face, then capture. We draw an IGA-style cartoon that still looks like you.</Text>
+              <Text style={styles.body}>Center your face, then capture. We draw a Disney cartoon that still looks like you.</Text>
               <View style={styles.previewShell}>
                 {Platform.OS === 'web'
                   ? createElement('video', {
@@ -322,7 +322,7 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
             <>
               <Text style={styles.title}>Drawing your portrait</Text>
               <Text style={styles.body}>
-                Drawing you in the IGA 3D cartoon style. This usually takes about 20 seconds.
+                Drawing you as a Disney cartoon from this photo. This usually takes about 30 seconds.
               </Text>
               <View style={styles.previewShell}>
                 {sourceUri ? (
