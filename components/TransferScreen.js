@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
@@ -13,10 +13,24 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
-import { rowMatchesQuery } from '../lib/itemSearch';
+import { persistOwnLocation } from '../lib/auth';
 import { fetchTransferStores } from '../lib/locations';
-import { fetchTransferDetail, fetchDashboardTransfers, mergeTransferDetail } from '../lib/transfers';
+import { formatDateParam, formatPickerDate, parseDateParam } from '../lib/transactions';
+import { fetchTransferDetail, fetchDashboardTransfers, mergeTransferDetail, createPosTransfersFromGroups, receivePlannedPosItems } from '../lib/transfers';
+import {
+  RECEIVE_STATUS,
+  RECEIVE_STATUS_LABELS,
+  applyPlannedReceive,
+  createPlannedTransfer,
+  fillPlannedItemReceivedQty,
+  itemsFromPlan,
+  posTransferGroupsFromPlan,
+  setPlannedItemReceivedQty,
+  triageDatesForStore,
+  useTransferWorkflow,
+} from '../lib/transferWorkflow';
 import {
   TERRITORY_KEYS,
   TERRITORY_LABELS,
@@ -246,6 +260,176 @@ function QtyEditField({ value, onChange, max, compact }) {
       keyboardType="number-pad"
       selectTextOnFocus
     />
+  );
+}
+
+function ReceivedQtyField({ value, onChange }) {
+  return (
+    <TextInput
+      style={[styles.qtyInput, styles.recvQtyInput]}
+      value={value == null || value === '' ? '' : String(value)}
+      onChangeText={(text) => {
+        const cleaned = text.replace(/[^0-9]/g, '');
+        if (cleaned === '') {
+          onChange(null);
+          return;
+        }
+        const n = Number(cleaned);
+        if (Number.isFinite(n)) onChange(n);
+      }}
+      onBlur={() => {
+        if (value === '' || value == null) return;
+        let n = Math.round(Number(value));
+        if (!Number.isFinite(n) || n < 0) n = 0;
+        onChange(n);
+      }}
+      keyboardType="number-pad"
+      selectTextOnFocus
+      placeholder="0"
+      placeholderTextColor="#c0c0c0"
+    />
+  );
+}
+
+function DateField({ value, onChange, minimumDate, maximumDate }) {
+  const [open, setOpen] = useState(false);
+  const dateValue = parseDateParam(value);
+
+  const commit = (next) => {
+    if (!next) return;
+    let date = parseDateParam(next);
+    if (minimumDate && date < parseDateParam(minimumDate)) date = parseDateParam(minimumDate);
+    if (maximumDate && date > parseDateParam(maximumDate)) date = parseDateParam(maximumDate);
+    onChange(date);
+  };
+
+  if (Platform.OS === 'web') {
+    return (
+      <View style={styles.dateField}>
+        <Ionicons name="calendar-outline" size={16} color="#8a8a8a" />
+        {createElement('input', {
+          type: 'date',
+          value: formatDateParam(dateValue),
+          min: minimumDate ? formatDateParam(minimumDate) : undefined,
+          max: maximumDate ? formatDateParam(maximumDate) : undefined,
+          onChange: (event) => {
+            if (event.target.value) commit(event.target.value);
+          },
+          style: {
+            border: 'none',
+            background: 'transparent',
+            fontFamily,
+            fontSize: 15,
+            color: '#1a1a1a',
+            padding: 0,
+            margin: 0,
+            outline: 'none',
+            cursor: 'pointer',
+            flex: 1,
+            minWidth: 140,
+          },
+        })}
+      </View>
+    );
+  }
+
+  return (
+    <>
+      <Pressable style={styles.dateField} onPress={() => setOpen(true)}>
+        <Ionicons name="calendar-outline" size={16} color="#8a8a8a" />
+        <Text style={styles.dateFieldValue}>{formatPickerDate(dateValue)}</Text>
+      </Pressable>
+
+      {Platform.OS === 'android' && open ? (
+        <DateTimePicker
+          value={dateValue}
+          mode="date"
+          display="default"
+          minimumDate={minimumDate ? parseDateParam(minimumDate) : undefined}
+          maximumDate={maximumDate ? parseDateParam(maximumDate) : undefined}
+          onChange={(event, selected) => {
+            setOpen(false);
+            if (event.type !== 'dismissed' && selected) commit(selected);
+          }}
+        />
+      ) : null}
+
+      {Platform.OS === 'ios' ? (
+        <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+          <View style={styles.finishBackdrop}>
+            <Pressable style={StyleSheet.absoluteFill} onPress={() => setOpen(false)} />
+            <View style={styles.dateModalCard}>
+              <View style={styles.dateModalHeader}>
+                <Text style={styles.finishTitle}>Date</Text>
+                <Pressable onPress={() => setOpen(false)} hitSlop={8}>
+                  <Text style={styles.dateModalDone}>Done</Text>
+                </Pressable>
+              </View>
+              <DateTimePicker
+                value={dateValue}
+                mode="date"
+                display="spinner"
+                minimumDate={minimumDate ? parseDateParam(minimumDate) : undefined}
+                maximumDate={maximumDate ? parseDateParam(maximumDate) : undefined}
+                onChange={(_, selected) => {
+                  if (selected) commit(selected);
+                }}
+              />
+            </View>
+          </View>
+        </Modal>
+      ) : null}
+    </>
+  );
+}
+
+function receiveStatusStyle(status) {
+  if (status === RECEIVE_STATUS.all_received) {
+    return {
+      wrap: styles.statusAll,
+      text: styles.statusAllText,
+      icon: 'checkmark-circle',
+      color: '#2F8A4E',
+    };
+  }
+  if (status === RECEIVE_STATUS.partially_received) {
+    return {
+      wrap: styles.statusPartial,
+      text: styles.statusPartialText,
+      icon: 'checkmark-circle-outline',
+      color: '#9A6B00',
+    };
+  }
+  return {
+    wrap: styles.statusNone,
+    text: styles.statusNoneText,
+    icon: 'ellipse-outline',
+    color: '#8a8a8a',
+  };
+}
+
+function ReceiveStatusButton({ status, onPress }) {
+  const look = receiveStatusStyle(status);
+  const content = (
+    <>
+      <Ionicons name={look.icon} size={14} color={look.color} />
+      <Text style={[styles.receiveStatusText, look.text]} numberOfLines={1}>
+        {RECEIVE_STATUS_LABELS[status] || 'Not Received'}
+      </Text>
+    </>
+  );
+  if (!onPress) {
+    return <View style={[styles.receiveStatusButton, look.wrap]}>{content}</View>;
+  }
+  return (
+    <Pressable
+      onPress={onPress}
+      style={[styles.receiveStatusButton, look.wrap]}
+      accessibilityRole="button"
+      accessibilityLabel={RECEIVE_STATUS_LABELS[status] || 'Not Received'}
+    >
+      {content}
+    </Pressable>
   );
 }
 
@@ -1305,7 +1489,571 @@ async function downloadTransferPdf(html, filename) {
   }
 }
 
-export default function TransferScreen({ session, onRequireLogin }) {
+function FinishSetupModal({ visible, fromStore, itemCount, onClose, onFinish }) {
+  const { triage } = useTransferWorkflow();
+  const savedDates = useMemo(
+    () =>
+      (triage || [])
+        .filter((row) =>
+          (row.stores || []).some((store) => store.storeKey === fromStore?.id),
+        )
+        .slice()
+        .sort((a, b) => b.dateKey.localeCompare(a.dateKey)),
+    [fromStore?.id, triage],
+  );
+  const [note, setNote] = useState('');
+  const [forTriage, setForTriage] = useState(false);
+  const [dateMode, setDateMode] = useState('saved');
+  const [savedDateKey, setSavedDateKey] = useState('');
+  const [newDate, setNewDate] = useState(() => parseDateParam(new Date()));
+  const [error, setError] = useState('');
+  const [sending, setSending] = useState(false);
+
+  useEffect(() => {
+    if (!visible) return;
+    setNote('');
+    setForTriage(false);
+    setError('');
+    setSending(false);
+    setNewDate(parseDateParam(new Date()));
+    const dates = triageDatesForStore(fromStore?.id);
+    const first = dates[0]?.dateKey || '';
+    setSavedDateKey(first);
+    setDateMode(first ? 'saved' : 'new');
+  }, [visible, fromStore?.id]);
+
+  const finish = async () => {
+    if (sending) return;
+    let payload = { note, forTriage: false };
+    if (forTriage) {
+      if (dateMode === 'saved') {
+        const picked = savedDates.find((row) => row.dateKey === savedDateKey);
+        if (!picked) {
+          setError('Select a saved triage date, or create a new one.');
+          return;
+        }
+        payload = {
+          note,
+          forTriage: true,
+          triageDateKey: picked.dateKey,
+          triageDateLabel: picked.dateLabel,
+        };
+      } else {
+        payload = {
+          note,
+          forTriage: true,
+          triageDateKey: formatDateParam(newDate),
+          triageDateLabel: formatPickerDate(newDate),
+        };
+      }
+    }
+    setSending(true);
+    setError('');
+    try {
+      await onFinish(payload);
+    } catch (err) {
+      setError(err?.message || 'Failed to create transfer.');
+      setSending(false);
+    }
+  };
+
+  if (!visible) return null;
+
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={sending ? undefined : onClose}>
+      <View style={styles.finishBackdrop} pointerEvents="box-none">
+        <Pressable style={StyleSheet.absoluteFill} onPress={sending ? undefined : onClose} />
+        <View style={styles.finishCard} pointerEvents="auto">
+          <View style={styles.finishHeader}>
+            <View style={styles.finishTitleBlock}>
+              <Text style={styles.finishTitle}>Finish setup</Text>
+              <Text style={styles.finishSub}>
+                {itemCount} item{itemCount === 1 ? '' : 's'}
+                {fromStore?.name ? ` · from ${fromStore.name}` : ''}
+              </Text>
+            </View>
+            <Pressable
+              onPress={sending ? undefined : onClose}
+              hitSlop={8}
+              accessibilityLabel="Close"
+              disabled={sending}
+            >
+              <Ionicons name="close" size={22} color="#8a8a8a" />
+            </Pressable>
+          </View>
+
+          <Text style={styles.finishHint}>
+            POS only posts a transfer when you are currently at the sending store. We’ll switch you there if needed.
+          </Text>
+
+          <Text style={styles.finishLabel}>Note</Text>
+          <TextInput
+            style={styles.noteInput}
+            value={note}
+            onChangeText={setNote}
+            placeholder="Add a note"
+            placeholderTextColor="#8e8e93"
+            multiline
+            textAlignVertical="top"
+          />
+
+          <Pressable
+            style={styles.checkboxRow}
+            onPress={() => {
+              setForTriage((current) => {
+                const next = !current;
+                if (next && savedDates.length === 0) setDateMode('new');
+                return next;
+              });
+            }}
+            accessibilityRole="checkbox"
+            accessibilityState={{ checked: forTriage }}
+          >
+            <Ionicons
+              name={forTriage ? 'checkbox' : 'square-outline'}
+              size={22}
+              color={forTriage ? ACCENT : '#c7c7cc'}
+            />
+            <Text style={styles.checkboxLabel}>for Triage</Text>
+          </Pressable>
+
+          {forTriage ? (
+            <View style={styles.triageBox}>
+              <Text style={styles.finishLabel}>
+                Triage date{fromStore?.name ? ` · ${fromStore.name}` : ''}
+              </Text>
+              <View style={styles.dateModeRow}>
+                <Pressable
+                  style={[
+                    styles.dateModeChip,
+                    dateMode === 'saved' && styles.dateModeChipActive,
+                    savedDates.length === 0 && styles.dateModeChipDisabled,
+                  ]}
+                  onPress={() => {
+                    if (savedDates.length === 0) return;
+                    setDateMode('saved');
+                    setError('');
+                  }}
+                  disabled={savedDates.length === 0}
+                >
+                  <Text
+                    style={[
+                      styles.dateModeChipText,
+                      dateMode === 'saved' && styles.dateModeChipTextActive,
+                    ]}
+                  >
+                    Saved date
+                  </Text>
+                </Pressable>
+                <Pressable
+                  style={[
+                    styles.dateModeChip,
+                    dateMode === 'new' && styles.dateModeChipActive,
+                  ]}
+                  onPress={() => {
+                    setDateMode('new');
+                    setError('');
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.dateModeChipText,
+                      dateMode === 'new' && styles.dateModeChipTextActive,
+                    ]}
+                  >
+                    New date
+                  </Text>
+                </Pressable>
+              </View>
+
+              {dateMode === 'saved' ? (
+                savedDates.length === 0 ? (
+                  <Text style={styles.finishHint}>
+                    No saved triage dates for this store yet. Create a new one.
+                  </Text>
+                ) : (
+                  <ScrollView style={styles.savedDateList} nestedScrollEnabled>
+                    {savedDates.map((row) => {
+                      const active = row.dateKey === savedDateKey;
+                      return (
+                        <Pressable
+                          key={row.id}
+                          style={[styles.savedDateRow, active && styles.savedDateRowActive]}
+                          onPress={() => {
+                            setSavedDateKey(row.dateKey);
+                            setError('');
+                          }}
+                        >
+                          <Text style={styles.savedDateLabel}>{row.dateLabel}</Text>
+                          {active ? (
+                            <Ionicons name="checkmark" size={16} color={ACCENT} />
+                          ) : null}
+                        </Pressable>
+                      );
+                    })}
+                  </ScrollView>
+                )
+              ) : (
+                <DateField value={newDate} onChange={setNewDate} />
+              )}
+            </View>
+          ) : null}
+
+          {error ? <Text style={styles.errorText}>{error}</Text> : null}
+
+          <View style={styles.finishActions}>
+            <Pressable
+              style={[styles.finishCancel, sending && styles.transferButtonDisabled]}
+              onPress={onClose}
+              disabled={sending}
+            >
+              <Text style={styles.finishCancelText}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.finishSubmit, sending && styles.transferButtonDisabled]}
+              onPress={finish}
+              disabled={sending}
+            >
+              {sending ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Text style={styles.finishSubmitText}>Finish</Text>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function PlannedTransferDrawer({ visible, transfer, session, onClose, onLocationChanged }) {
+  const { width: windowWidth } = useWindowDimensions();
+  const isMobile = windowWidth < MOBILE_BREAKPOINT;
+  const panelWidth = isMobile
+    ? Math.max(windowWidth, 240)
+    : Math.min(Math.max(Math.round(windowWidth * 0.5), 440), 620);
+  const { mounted, slide, backdrop } = useRightDrawerAnimation(visible, panelWidth);
+  const held = useHeldValue(transfer);
+  const live = useMemo(() => transfer || held, [held, transfer]);
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    setError('');
+    setBusy(null);
+  }, [visible, transfer?.id]);
+
+  const receiveInPos = async (itemIds) => {
+    if (!live) return;
+    if (!session?.token) throw new Error('Sign in required.');
+    const employeeId = session?.profile?.aureusUserId || session?.user?.id;
+    if (!employeeId) {
+      throw new Error('Your POS user is missing, so the transfer cannot be received.');
+    }
+    const updates = await receivePlannedPosItems(session.token, live, {
+      itemIds,
+      employeeId,
+      baseUrl: session.baseUrl,
+      onLocationEnsured: async ({ locationId, locationName }) => {
+        try {
+          await persistOwnLocation(session, { locationId, locationName });
+        } catch {
+          // POS already has the receiving store; profile sync can catch up later.
+        }
+        onLocationChanged?.({ locationId, locationName });
+      },
+    });
+    applyPlannedReceive(live.id, updates);
+  };
+
+  if (!mounted || !live) return null;
+
+  const items = Array.isArray(live.items) ? live.items : [];
+  const allReceived = live.receiveStatus === RECEIVE_STATUS.all_received;
+  const receiving = Boolean(busy);
+  const path = (live.pathLabels || []).filter(Boolean).join(' → ')
+    || `${live.fromName || '—'} → ${live.toName || '—'}`;
+
+  return (
+    <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose}>
+      <View style={styles.drawerRoot}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose}>
+          <Animated.View style={[styles.drawerBackdrop, { opacity: backdrop }]} />
+        </Pressable>
+        <Animated.View
+          style={[
+            styles.drawerPanel,
+            { width: panelWidth, transform: [{ translateX: slide }] },
+          ]}
+        >
+          <View
+            style={[styles.drawerTopBar, isMobile && styles.drawerTopBarMobile]}
+            {...(Platform.OS === 'web' && isMobile ? { className: 'cgold-mobile-sheet-top' } : null)}
+          >
+            <Text style={styles.drawerTitle} numberOfLines={1}>
+              Transfer details
+            </Text>
+            <Pressable
+              onPress={onClose}
+              hitSlop={8}
+              style={styles.drawerClose}
+              accessibilityLabel="Close"
+            >
+              <Ionicons name="close" size={18} color="#1a1a1a" />
+            </Pressable>
+          </View>
+
+          <ScrollView
+            style={styles.drawerBody}
+            contentContainerStyle={[
+              styles.drawerBodyContent,
+              isMobile && styles.drawerBodyContentMobile,
+            ]}
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={styles.drawerHero}>
+              <Text style={styles.drawerHeroRoute}>{path}</Text>
+              <Text style={styles.drawerHeroMeta}>
+                {live.reference}
+                {live.dateLabel ? ` · ${live.dateLabel}` : ''}
+              </Text>
+              <ReceiveStatusButton status={live.receiveStatus} />
+            </View>
+
+            <Text style={styles.drawerSectionLabel}>Details</Text>
+            <View style={styles.drawerGroup}>
+              <DetailRow label="Transfer" value={live.reference} />
+              <DetailRow label="Date" value={live.dateLabel} />
+              <DetailRow label="From" value={live.fromName} />
+              <DetailRow label="To" value={live.toName} />
+              {live.forTriage ? <DetailRow label="Triage" value="Yes" /> : null}
+              {(live.aureusTransfers || []).length > 1
+                ? live.aureusTransfers.map((row, index) => (
+                    <DetailRow
+                      key={row.id || `${row.transferCode}-${index}`}
+                      label={`POS ${index + 1}`}
+                      value={
+                        [row.transferCode || row.id, row.fromName && row.toName ? `${row.fromName} → ${row.toName}` : '']
+                          .filter(Boolean)
+                          .join(' · ')
+                      }
+                    />
+                  ))
+                : null}
+              <DetailRow label="Note" value={live.note || '—'} last />
+            </View>
+
+            <View style={styles.receiveAllRow}>
+              <Text style={styles.drawerSectionLabel}>
+                Items{items.length ? ` · ${items.length}` : ''}
+              </Text>
+              <Pressable
+                style={[
+                  styles.receiveAllButton,
+                  allReceived && styles.receiveAllButtonDone,
+                  receiving && styles.transferButtonDisabled,
+                ]}
+                onPress={async () => {
+                  if (receiving || allReceived || items.length === 0) return;
+                  setError('');
+                  setBusy('all');
+                  try {
+                    await receiveInPos(null);
+                  } catch (err) {
+                    setError(err?.message || 'Failed to receive transfer in POS.');
+                  } finally {
+                    setBusy(null);
+                  }
+                }}
+                disabled={allReceived || items.length === 0 || receiving}
+              >
+                {busy === 'all' ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons
+                      name="checkmark-done-outline"
+                      size={16}
+                      color={allReceived ? '#2F8A4E' : '#fff'}
+                    />
+                    <Text
+                      style={[
+                        styles.receiveAllButtonText,
+                        allReceived && styles.receiveAllButtonTextDone,
+                      ]}
+                    >
+                      {allReceived ? 'All received' : 'Receive all'}
+                    </Text>
+                  </>
+                )}
+              </Pressable>
+            </View>
+
+            <Text style={styles.finishHint}>
+              POS only receives a transfer when you are currently at the destination store. We’ll
+              switch you there if needed.
+            </Text>
+            {error ? <Text style={styles.receiveError}>{error}</Text> : null}
+
+            <View style={styles.drawerGroup}>
+              <View style={styles.itemHead}>
+                <Text style={[styles.itemTh, styles.itemColName]}>Item</Text>
+                <Text style={[styles.itemTh, styles.itemColQty]}>Sent</Text>
+                <Text style={[styles.itemTh, styles.itemColRecv]}>Received</Text>
+              </View>
+              {items.length === 0 ? (
+                <Text style={styles.itemEmpty}>No line items on this transfer.</Text>
+              ) : (
+                items.map((item, index) => (
+                  <View
+                    key={item.id}
+                    style={[styles.plannedItem, index === items.length - 1 && styles.itemRowLast]}
+                  >
+                    <View style={styles.plannedItemTop}>
+                      <View style={styles.itemColName}>
+                        <Text style={styles.itemName} numberOfLines={2}>
+                          {item.productName || 'Untitled item'}
+                        </Text>
+                        <Text style={styles.itemSku} numberOfLines={1}>
+                          {item.fromName} → {item.toName}
+                        </Text>
+                      </View>
+                      <Text style={[styles.itemQty, styles.itemColQty]}>
+                        {formatQty(item.sentQty)}
+                      </Text>
+                    </View>
+                    <View style={styles.recvRow}>
+                      <ReceivedQtyField
+                        value={item.receivedQty}
+                        onChange={(next) =>
+                          setPlannedItemReceivedQty(live.id, item.id, next)
+                        }
+                      />
+                      <Pressable
+                        style={styles.fillButton}
+                        onPress={() => fillPlannedItemReceivedQty(live.id, item.id)}
+                        accessibilityLabel="Fill with sent quantity"
+                        disabled={receiving || item.received}
+                      >
+                        <Ionicons name="copy-outline" size={15} color={ACCENT} />
+                        <Text style={styles.fillButtonText}>Fill</Text>
+                      </Pressable>
+                      <Pressable
+                        style={[
+                          styles.itemReceivedButton,
+                          item.received && styles.itemReceivedButtonDone,
+                          receiving && styles.transferButtonDisabled,
+                        ]}
+                        onPress={async () => {
+                          if (receiving || item.received) return;
+                          setError('');
+                          setBusy(item.id);
+                          try {
+                            await receiveInPos([item.id]);
+                          } catch (err) {
+                            setError(err?.message || 'Failed to receive this item in POS.');
+                          } finally {
+                            setBusy(null);
+                          }
+                        }}
+                        disabled={item.received || receiving}
+                      >
+                        {busy === item.id ? (
+                          <ActivityIndicator color="#fff" />
+                        ) : (
+                          <Text
+                            style={[
+                              styles.itemReceivedButtonText,
+                              item.received && styles.itemReceivedButtonTextDone,
+                            ]}
+                          >
+                            {item.received ? 'Received' : 'Received'}
+                          </Text>
+                        )}
+                      </Pressable>
+                    </View>
+                  </View>
+                ))
+              )}
+            </View>
+          </ScrollView>
+        </Animated.View>
+      </View>
+    </Modal>
+  );
+}
+
+function ActivePanel({ onRequireLogin, session, onLocationChanged }) {
+  const { planned } = useTransferWorkflow();
+  const [selectedId, setSelectedId] = useState(null);
+  const selected = planned.find((row) => row.id === selectedId) || null;
+
+  if (!session?.token) {
+    return (
+      <SignInPrompt
+        onRequireLogin={onRequireLogin}
+        title="Sign in required"
+        body="Log in from Profile to see active transfers."
+      />
+    );
+  }
+
+  return (
+    <View style={[styles.dashboard, { paddingTop: 8 }]}>
+      {planned.length === 0 ? (
+        <EmptyTab tab={TRANSFER_TABS.find((tab) => tab.key === 'active')} />
+      ) : (
+        <ScrollView
+          style={styles.listScroll}
+          contentContainerStyle={styles.listScrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          {planned.map((row) => {
+            const selectedRow = selectedId === row.id;
+            return (
+              <Pressable
+                key={row.id}
+                onPress={() => setSelectedId(row.id)}
+                style={({ hovered, pressed }) => [
+                  styles.activeRow,
+                  !selectedRow && (hovered || pressed) && styles.listRowHover,
+                  selectedRow && styles.listRowSelected,
+                ]}
+                {...(Platform.OS === 'web'
+                  ? {
+                      className: selectedRow
+                        ? 'cgold-tx-row cgold-tx-row-selected'
+                        : 'cgold-tx-row',
+                    }
+                  : null)}
+              >
+                <View style={styles.activeRowMain}>
+                  <Text style={styles.activeDate}>{row.dateLabel}</Text>
+                  <Text style={styles.activeRef}>{row.reference}</Text>
+                  <Text style={styles.activePath} numberOfLines={1}>
+                    {row.fromName} → {row.toName}
+                  </Text>
+                </View>
+                <ReceiveStatusButton status={row.receiveStatus} />
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      )}
+
+      <PlannedTransferDrawer
+        visible={Boolean(selected)}
+        transfer={selected}
+        session={session}
+        onClose={() => setSelectedId(null)}
+        onLocationChanged={onLocationChanged}
+      />
+    </View>
+  );
+}
+
+export default function TransferScreen({ session, onRequireLogin, onLocationChanged }) {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [stores, setStores] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -1327,6 +2075,7 @@ export default function TransferScreen({ session, onRequireLogin }) {
   const [expandedStops, setExpandedStops] = useState(() => new Set());
   const [pdfBusy, setPdfBusy] = useState(false);
   const [showPlan, setShowPlan] = useState(false);
+  const [finishOpen, setFinishOpen] = useState(false);
 
   const requestId = useRef(0);
   const planRequestId = useRef(0);
@@ -1556,6 +2305,55 @@ export default function TransferScreen({ session, onRequireLogin }) {
     });
   };
 
+  const planItemCount = useMemo(
+    () => (plan ? itemsFromPlan(plan).length : 0),
+    [plan],
+  );
+
+  const handleFinishSetup = async ({ note, forTriage, triageDateKey, triageDateLabel }) => {
+    if (!plan) return;
+    if (!session?.token) {
+      throw new Error('Sign in required.');
+    }
+    const employeeId = session?.profile?.aureusUserId || session?.user?.id;
+    if (!employeeId) {
+      throw new Error('Your POS user is missing, so the transfer cannot be created.');
+    }
+    const groups = posTransferGroupsFromPlan(plan);
+    if (groups.length === 0) {
+      throw new Error('Nothing to transfer. Adjust send quantities first.');
+    }
+    const posted = await createPosTransfersFromGroups(session.token, groups, {
+      comments: note,
+      baseUrl: session.baseUrl,
+      employeeId,
+      onLocationEnsured: async ({ locationId, locationName }) => {
+        try {
+          await persistOwnLocation(session, { locationId, locationName });
+        } catch {
+          // POS already has the sending store; profile sync can catch up later.
+        }
+        onLocationChanged?.({ locationId, locationName });
+      },
+    });
+    const created = createPlannedTransfer({
+      plan,
+      note,
+      forTriage,
+      triageDateKey,
+      triageDateLabel,
+      fromStore: selectedStores[0] || null,
+      aureusTransfers: posted,
+    });
+    setFinishOpen(false);
+    setStatus(
+      forTriage
+        ? `${created.reference} created in POS and saved to Active and Triage.`
+        : `${created.reference} created in POS and saved to Active.`,
+    );
+    setActiveTab('active');
+  };
+
   const handleDownloadPdf = async () => {
     if (!plan) return;
     setPdfBusy(true);
@@ -1575,8 +2373,6 @@ export default function TransferScreen({ session, onRequireLogin }) {
       setPdfBusy(false);
     }
   };
-
-  const currentTab = TRANSFER_TABS.find((tab) => tab.key === activeTab) || TRANSFER_TABS[1];
 
   let createBody;
   if (!session?.token) {
@@ -1698,6 +2494,25 @@ export default function TransferScreen({ session, onRequireLogin }) {
             <Text style={styles.pdfButtonText}>Download PDF</Text>
           </Pressable>
         ) : null}
+
+        {showPlan && plan ? (
+          <Pressable
+            style={[
+              styles.finishButton,
+              planItemCount === 0 && styles.transferButtonDisabled,
+            ]}
+            onPress={() => {
+              if (planItemCount === 0) {
+                setStatus('Nothing to transfer. Adjust send quantities first.');
+                return;
+              }
+              setFinishOpen(true);
+            }}
+          >
+            <Ionicons name="checkmark-circle-outline" size={18} color="#fff" />
+            <Text style={styles.finishButtonText}>Finish setup</Text>
+          </Pressable>
+        ) : null}
       </View>
 
       {status ? <Text style={styles.statusText}>{status}</Text> : null}
@@ -1773,6 +2588,7 @@ export default function TransferScreen({ session, onRequireLogin }) {
                           <Text style={[styles.th, styles.thQty]}>Have</Text>
                           <Text style={[styles.th, styles.thQty]}>Send</Text>
                           <Text style={[styles.th, styles.thPartner]}>To</Text>
+                          <Text style={[styles.th, styles.thQty]}>To has</Text>
                         </View>
                         {sheet.outs.map((row, index) => (
                           <View
@@ -1830,6 +2646,9 @@ export default function TransferScreen({ session, onRequireLogin }) {
                               numberOfLines={1}
                             >
                               → {row.partnerName}
+                            </Text>
+                            <Text style={[styles.td, styles.thQty, styles.haveText]}>
+                              {formatQty(row.partnerQty ?? 0)}
                             </Text>
                           </View>
                         ))}
@@ -2031,6 +2850,24 @@ export default function TransferScreen({ session, onRequireLogin }) {
               one-way route.
             </Text>
           )}
+
+          <Pressable
+            style={[
+              styles.finishButton,
+              styles.finishButtonBlock,
+              planItemCount === 0 && styles.transferButtonDisabled,
+            ]}
+            onPress={() => {
+              if (planItemCount === 0) {
+                setStatus('Nothing to transfer. Adjust send quantities first.');
+                return;
+              }
+              setFinishOpen(true);
+            }}
+          >
+            <Ionicons name="checkmark-circle-outline" size={18} color="#fff" />
+            <Text style={styles.finishButtonText}>Finish setup</Text>
+          </Pressable>
         </View>
       ) : null}
     </ScrollView>
@@ -2049,8 +2886,19 @@ export default function TransferScreen({ session, onRequireLogin }) {
           onRequireLogin={onRequireLogin}
         />
       ) : (
-        <EmptyTab tab={currentTab} />
+        <ActivePanel
+          session={session}
+          onRequireLogin={onRequireLogin}
+          onLocationChanged={onLocationChanged}
+        />
       )}
+      <FinishSetupModal
+        visible={finishOpen}
+        fromStore={selectedStores[0] || null}
+        itemCount={planItemCount}
+        onClose={() => setFinishOpen(false)}
+        onFinish={handleFinishSetup}
+      />
     </View>
   );
 }
@@ -2601,6 +3449,10 @@ const styles = StyleSheet.create({
     width: 52,
     textAlign: 'right',
   },
+  itemColRecv: {
+    width: 72,
+    textAlign: 'right',
+  },
   itemName: {
     fontFamily,
     fontSize: 14,
@@ -2990,6 +3842,28 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: ACCENT,
   },
+  finishButton: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#2F8A4E',
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    minHeight: 44,
+  },
+  finishButtonBlock: {
+    alignSelf: 'stretch',
+    justifyContent: 'center',
+    marginTop: 8,
+  },
+  finishButtonText: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#fff',
+  },
   statusText: {
     fontFamily,
     fontSize: 13,
@@ -3331,5 +4205,360 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: '#fff',
+  },
+  recvQtyInput: {
+    width: 64,
+    minWidth: 64,
+  },
+  dateField: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#f4f4f5',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    minHeight: 44,
+  },
+  dateFieldValue: {
+    fontFamily,
+    fontSize: 15,
+    color: '#1a1a1a',
+  },
+  dateModalCard: {
+    width: '100%',
+    maxWidth: 360,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 16,
+  },
+  dateModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  dateModalDone: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '600',
+    color: ACCENT,
+  },
+  finishBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  finishCard: {
+    width: '100%',
+    maxWidth: 460,
+    maxHeight: '88%',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 18,
+    gap: 12,
+  },
+  finishHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  finishTitleBlock: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
+  },
+  finishTitle: {
+    fontFamily,
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1a1a1a',
+  },
+  finishSub: {
+    fontFamily,
+    fontSize: 13,
+    color: '#8a8a8a',
+  },
+  finishLabel: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#8a8a8a',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  noteInput: {
+    fontFamily,
+    minHeight: 72,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#d8d8d8',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: '#1a1a1a',
+    backgroundColor: '#fafafa',
+  },
+  checkboxRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 4,
+  },
+  checkboxLabel: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1a1a1a',
+  },
+  triageBox: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e6e6e6',
+    borderRadius: 10,
+    padding: 12,
+    gap: 10,
+    backgroundColor: '#f8fafb',
+  },
+  dateModeRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  dateModeChip: {
+    flex: 1,
+    minHeight: 36,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#d8d8d8',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#fff',
+  },
+  dateModeChipActive: {
+    borderColor: ACCENT,
+    backgroundColor: '#EEF7FB',
+  },
+  dateModeChipDisabled: {
+    opacity: 0.45,
+  },
+  dateModeChipText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#6b6b6b',
+  },
+  dateModeChipTextActive: {
+    color: ACCENT,
+  },
+  finishHint: {
+    fontFamily,
+    fontSize: 13,
+    color: '#8a8a8a',
+  },
+  receiveError: {
+    fontFamily,
+    fontSize: 13,
+    color: '#c0392b',
+  },
+  savedDateList: {
+    maxHeight: 160,
+  },
+  savedDateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 40,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: '#fff',
+    marginBottom: 4,
+  },
+  savedDateRowActive: {
+    backgroundColor: '#EEF7FB',
+  },
+  savedDateLabel: {
+    fontFamily,
+    fontSize: 14,
+    color: '#1a1a1a',
+  },
+  finishActions: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 4,
+  },
+  finishCancel: {
+    flex: 1,
+    height: 44,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#e8e8ed',
+  },
+  finishCancelText: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1a1a1a',
+  },
+  finishSubmit: {
+    flex: 1,
+    height: 44,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#2F8A4E',
+  },
+  finishSubmitText: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  receiveStatusButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    maxWidth: 168,
+  },
+  receiveStatusText: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '700',
+    flexShrink: 1,
+  },
+  statusAll: {
+    backgroundColor: '#E8F5EE',
+  },
+  statusAllText: {
+    color: '#2F8A4E',
+  },
+  statusPartial: {
+    backgroundColor: '#F4F0E0',
+  },
+  statusPartialText: {
+    color: '#9A6B00',
+  },
+  statusNone: {
+    backgroundColor: '#f0f0f0',
+  },
+  statusNoneText: {
+    color: '#6b6b6b',
+  },
+  receiveAllRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    marginTop: 8,
+    marginBottom: 6,
+  },
+  receiveAllButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#2F8A4E',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  receiveAllButtonDone: {
+    backgroundColor: '#E8F5EE',
+  },
+  receiveAllButtonText: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  receiveAllButtonTextDone: {
+    color: '#2F8A4E',
+  },
+  plannedItem: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#f0f0f0',
+    gap: 8,
+  },
+  plannedItemTop: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  recvRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  fillButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: ACCENT,
+    paddingHorizontal: 8,
+    paddingVertical: 7,
+    backgroundColor: '#EEF7FB',
+  },
+  fillButtonText: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '700',
+    color: ACCENT,
+  },
+  itemReceivedButton: {
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: ACCENT,
+  },
+  itemReceivedButtonDone: {
+    backgroundColor: '#E8F5EE',
+  },
+  itemReceivedButtonText: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  itemReceivedButtonTextDone: {
+    color: '#2F8A4E',
+  },
+  activeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#f0f0f0',
+    minHeight: 56,
+  },
+  activeRowMain: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  activeDate: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#1a1a1a',
+  },
+  activeRef: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: ACCENT,
+  },
+  activePath: {
+    fontFamily,
+    fontSize: 12,
+    color: '#8a8a8a',
   },
 });

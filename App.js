@@ -79,6 +79,7 @@ import AccountingScreen from './components/AccountingScreen';
 import AuditScreen from './components/AuditScreen';
 import BonusesScreen from './components/BonusesScreen';
 import EmployeesScreen from './components/EmployeesScreen';
+import DebitScreen from './components/DebitScreen';
 import FinancialsScreen from './components/FinancialsScreen';
 import PreordersScreen from './components/PreordersScreen';
 import FintracScreen from './components/FintracScreen';
@@ -104,6 +105,9 @@ import {
   MobileTabBar,
 } from './components/MobileChrome';
 import ProfilePhotoPicker from './components/ProfilePhotoPicker';
+import ProfilePhotoModal from './components/ProfilePhotoModal';
+import ProfileLocationPicker from './components/ProfileLocationPicker';
+import { fetchAureusEmployee } from './lib/aureusEmployees';
 import { useDirectMessages } from './lib/messages';
 
 if (Platform.OS === 'web' && typeof document !== 'undefined') {
@@ -446,6 +450,7 @@ const TOOL_CARDS = [
   { key: 'transfer', label: 'Transfer', icon: 'arrow-forward-outline', tint: '#EEF7FB', accent: '#1F7A9A' },
   { key: 'fintrac', label: 'FINTRAC', icon: 'document-text-outline', tint: '#F7F0EA', accent: '#8A5A3A' },
   { key: 'financials', label: 'Financials', icon: 'wallet-outline', tint: '#F0F8EE', accent: '#3D8B4F' },
+  { key: 'debit', label: 'Debit', icon: 'card-outline', tint: '#EEF4FF', accent: '#1D4ED8' },
   { key: 'accounting', label: 'Accounting', icon: 'calculator-outline', tint: '#EEF2FF', accent: '#3730A3' },
   { key: 'trends', label: 'Trends', icon: 'trending-up-outline', tint: '#F4F0FF', accent: '#5A4FC7' },
   { key: 'pricing', label: 'Pricing', icon: 'pricetag-outline', tint: '#F8F1E3', accent: '#A67C2D' },
@@ -479,6 +484,7 @@ const STORE_DRAWER_TAB_KEYS = [
   'transactions',
   'inventory',
   'financials',
+  'debit',
   'audit',
   'supplies',
   'leaderboards',
@@ -1130,15 +1136,9 @@ function StoreDrawerAppButton({ tab, selected, onPress }) {
   );
 }
 
-function AppleDetailRow({ label, value, sub, last, dense }) {
-  return (
-    <View
-      style={[
-        styles.appleDetailRow,
-        dense && styles.txDetailRow,
-        last && styles.toolListRowLast,
-      ]}
-    >
+function AppleDetailRow({ label, value, sub, last, dense, onPress, accessibilityLabel }) {
+  const content = (
+    <>
       <Text style={[styles.appleDetailLabel, dense && styles.txDetailLabel]}>{label}</Text>
       <View style={styles.appleDetailValueWrap}>
         <Text style={[styles.appleDetailValue, dense && styles.txDetailValue]} numberOfLines={2}>
@@ -1150,8 +1150,34 @@ function AppleDetailRow({ label, value, sub, last, dense }) {
           </Text>
         ) : null}
       </View>
-    </View>
+      {onPress ? <Ionicons name="chevron-forward" size={16} color="#c7c7cc" /> : null}
+    </>
   );
+
+  const rowStyle = [
+    styles.appleDetailRow,
+    onPress && styles.appleDetailRowTappable,
+    dense && styles.txDetailRow,
+    last && styles.toolListRowLast,
+  ];
+
+  if (onPress) {
+    return (
+      <Pressable
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityLabel={accessibilityLabel || `${label}, ${value || 'Not set'}`}
+        style={({ pressed, hovered }) => [
+          rowStyle,
+          (hovered || pressed) && styles.toolListRowHovered,
+        ]}
+      >
+        {content}
+      </Pressable>
+    );
+  }
+
+  return <View style={rowStyle}>{content}</View>;
 }
 
 function lineItemName(item) {
@@ -2281,6 +2307,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
               {activeTab === 'overview' ||
               activeTab === 'inventory' ||
               activeTab === 'financials' ||
+              activeTab === 'debit' ||
               activeTab === 'audit' ||
               activeTab === 'ai' ||
               activeTab === 'triage' ||
@@ -2311,6 +2338,12 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                       />
                     ) : activeTab === 'financials' ? (
                       <FinancialsScreen
+                        session={session}
+                        storeFilter={heldStore.store}
+                        embedded
+                      />
+                    ) : activeTab === 'debit' ? (
+                      <DebitScreen
                         session={session}
                         storeFilter={heldStore.store}
                         embedded
@@ -4054,6 +4087,7 @@ function MessagesUnreadBadge({ count }) {
 
 function SidebarNavItem({
   label,
+  subtitle,
   icon,
   active,
   collapsed,
@@ -4071,6 +4105,7 @@ function SidebarNavItem({
   onLayout,
 }) {
   const [hovered, setHovered] = useState(false);
+  const spoken = accessibilityLabel || (subtitle ? `${label}, ${subtitle}` : label);
 
   return (
     <Pressable
@@ -4084,7 +4119,7 @@ function SidebarNavItem({
         onHoverOut?.();
       }}
       onLayout={onLayout}
-      accessibilityLabel={accessibilityLabel || label}
+      accessibilityLabel={spoken}
       accessibilityRole="button"
       accessibilityState={{ selected: active }}
       accessibilityHint={accessibilityHint}
@@ -4092,6 +4127,7 @@ function SidebarNavItem({
       style={({ pressed, hovered: pressHovered }) => [
         styles.tab,
         collapsed && styles.tabCollapsed,
+        subtitle && !collapsed && styles.tabWithSubtitle,
         extraStyle,
         paintChrome && (pressHovered || pressed) && !active && !grouped && styles.tabHover,
         paintChrome && active && styles.tabActive,
@@ -4106,16 +4142,26 @@ function SidebarNavItem({
         />
       )}
       {!collapsed ? (
-        <Text
-          style={[
-            styles.tabLabel,
-            hovered && !active && styles.tabLabelHover,
-            active && styles.tabLabelActive,
-          ]}
-          numberOfLines={1}
-        >
-          {label}
-        </Text>
+        <View style={styles.tabLabelColumn}>
+          <Text
+            style={[
+              styles.tabLabel,
+              hovered && !active && styles.tabLabelHover,
+              active && styles.tabLabelActive,
+            ]}
+            numberOfLines={1}
+          >
+            {label}
+          </Text>
+          {subtitle ? (
+            <Text
+              style={[styles.tabSubtitle, active && styles.tabSubtitleActive]}
+              numberOfLines={1}
+            >
+              {subtitle}
+            </Text>
+          ) : null}
+        </View>
       ) : null}
       {!collapsed ? trailing : null}
     </Pressable>
@@ -4133,6 +4179,7 @@ function SidebarNavGroup({
   onSelectMessages,
   onSelectProfile,
   profileLabel,
+  profileLocation,
   profileAvatarUrl,
   showMessages = true,
   messagesUnread = 0,
@@ -4166,6 +4213,7 @@ function SidebarNavGroup({
     {
       key: 'profile',
       label: profileLabel || PROFILE_TAB.label,
+      subtitle: profileLocation || '',
       icon: PROFILE_TAB.icon,
       active: profileActive,
       onPress: onSelectProfile,
@@ -4186,6 +4234,7 @@ function SidebarNavGroup({
         <SidebarNavItem
           key={item.key}
           label={item.label}
+          subtitle={item.subtitle}
           icon={item.icon}
           leading={item.leading}
           trailing={item.trailing}
@@ -4389,6 +4438,8 @@ export default function App() {
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [avatarError, setAvatarError] = useState('');
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
+  const [avatarViewerOpen, setAvatarViewerOpen] = useState(false);
+  const [locationPickerOpen, setLocationPickerOpen] = useState(false);
   const emailsFocusSeq = useRef(0);
 
   const [fontsLoaded, fontsError] = useFonts(
@@ -4471,6 +4522,8 @@ export default function App() {
     setAvatarError('');
     setAvatarBusy(false);
     setAvatarPickerOpen(false);
+    setAvatarViewerOpen(false);
+    setLocationPickerOpen(false);
   }, []);
 
   useEffect(() => {
@@ -4525,6 +4578,44 @@ export default function App() {
     });
     return unsubscribe;
   }, [resetToSignedOut]);
+
+  useEffect(() => {
+    const token = session?.token;
+    const employeeId = session?.profile?.aureusUserId;
+    const baseUrl = session?.baseUrl;
+    if (!token || !employeeId) return undefined;
+
+    let cancelled = false;
+    fetchAureusEmployee(token, employeeId, baseUrl)
+      .then(({ mapped }) => {
+        if (cancelled || !mapped) return;
+        const locationId = mapped.locationId || '';
+        const locationName = mapped.locationName || '';
+        if (!locationId && !locationName) return;
+        setSession((current) => {
+          if (!current?.profile) return current;
+          if (
+            String(current.profile.locationId || '') === String(locationId) &&
+            (current.profile.locationName || '') === locationName
+          ) {
+            return current;
+          }
+          return {
+            ...current,
+            profile: {
+              ...current.profile,
+              locationId: locationId || current.profile.locationId,
+              locationName: locationName || current.profile.locationName,
+            },
+          };
+        });
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.token, session?.profile?.aureusUserId, session?.baseUrl]);
 
   useEffect(() => {
     if (bootstrapping || !session?.token) return;
@@ -4659,7 +4750,13 @@ export default function App() {
   const handlePickAvatar = () => {
     if (avatarBusy) return;
     setAvatarError('');
+    setAvatarViewerOpen(false);
     setAvatarPickerOpen(true);
+  };
+
+  const handleViewAvatar = () => {
+    if (avatarBusy) return;
+    setAvatarViewerOpen(true);
   };
 
   const handleAvatarConfirm = async (asset) => {
@@ -4741,8 +4838,9 @@ export default function App() {
       const accountRows = [
         {
           key: 'store',
-          label: 'Store',
+          label: 'Location',
           value: storeName || 'Not set in Aureus',
+          onPress: () => setLocationPickerOpen(true),
         },
         accessLabel
           ? { key: 'category', label: 'Category', value: accessLabel }
@@ -4774,35 +4872,51 @@ export default function App() {
               ]}
             >
               <View style={[styles.profileHero, isMobile && styles.igProfileHero]}>
-                <Pressable
-                  onPress={handlePickAvatar}
-                  disabled={avatarBusy}
-                  style={styles.profileAvatarButton}
-                  accessibilityRole="button"
-                  accessibilityLabel={
-                    profile?.avatarUrl ? 'Change Canada Gold portrait' : 'Add a Canada Gold portrait'
-                  }
-                >
-                  <View style={isMobile ? styles.igAvatarRing : null}>
-                    <ProfileAvatar
-                      uri={profile?.avatarUrl || ''}
-                      name={name}
-                      size={isMobile ? 96 : 88}
-                      style={styles.profileAvatar}
-                    />
-                  </View>
-                  <View style={styles.profileAvatarCamera}>
+                <View style={styles.profileAvatarButton}>
+                  <Pressable
+                    onPress={handleViewAvatar}
+                    disabled={avatarBusy}
+                    style={styles.profileAvatarTap}
+                    accessibilityRole="button"
+                    accessibilityLabel={
+                      profile?.avatarUrl ? `View ${name || 'your'} portrait` : 'View portrait'
+                    }
+                  >
+                    <View style={isMobile ? styles.igAvatarRing : null}>
+                      <ProfileAvatar
+                        uri={profile?.avatarUrl || ''}
+                        name={name}
+                        size={isMobile ? 96 : 88}
+                        style={styles.profileAvatar}
+                      />
+                    </View>
+                  </Pressable>
+                  <Pressable
+                    onPress={handlePickAvatar}
+                    disabled={avatarBusy}
+                    style={[styles.profileAvatarEdit, isMobile && styles.igAvatarEdit]}
+                    accessibilityRole="button"
+                    accessibilityLabel={
+                      profile?.avatarUrl ? 'Edit Canada Gold portrait' : 'Add a Canada Gold portrait'
+                    }
+                    hitSlop={4}
+                  >
                     {avatarBusy ? (
                       <ActivityIndicator size="small" color="#fff" />
                     ) : (
-                      <Ionicons name="camera" size={14} color="#fff" />
+                      <Ionicons name="pencil" size={13} color="#fff" />
                     )}
-                  </View>
-                </Pressable>
+                  </Pressable>
+                </View>
                 <Text style={[styles.profileName, isMobile && styles.igProfileName]}>
                   {name || 'Profile'}
                 </Text>
                 {email ? <Text style={styles.profileEmail}>{email}</Text> : null}
+                {storeName ? (
+                  <Pressable onPress={() => setLocationPickerOpen(true)} hitSlop={6}>
+                    <Text style={styles.profileLocation}>{storeName}</Text>
+                  </Pressable>
+                ) : null}
                 <Pressable onPress={handlePickAvatar} disabled={avatarBusy} hitSlop={6}>
                   <Text style={styles.profilePhotoAction}>
                     {avatarBusy
@@ -4829,12 +4943,13 @@ export default function App() {
                         key={row.key}
                         label={row.label}
                         value={row.value}
+                        onPress={row.onPress}
                         last={index === accountRows.length - 1}
                       />
                     ))}
                   </View>
                   <Text style={styles.profileGroupFooter}>
-                    Current store from Aureus POS. Change it there to update this profile.
+                    Assigned store in Aureus POS. Changing it updates your location here and in POS.
                   </Text>
                 </>
               ) : null}
@@ -4855,10 +4970,43 @@ export default function App() {
                 </View>
               ) : null}
 
+              <ProfilePhotoModal
+                visible={avatarViewerOpen}
+                onClose={() => setAvatarViewerOpen(false)}
+                profileId={session?.supabaseUserId || profile?.id || ''}
+                name={name}
+                avatarUrl={profile?.avatarUrl || ''}
+                locationName={storeName}
+                myId={session?.supabaseUserId || profile?.id || ''}
+                myName={name}
+                myAvatarUrl={profile?.avatarUrl || ''}
+                canEdit
+                onEdit={handlePickAvatar}
+              />
               <ProfilePhotoPicker
                 visible={avatarPickerOpen}
                 onClose={() => setAvatarPickerOpen(false)}
                 onConfirm={handleAvatarConfirm}
+              />
+              <ProfileLocationPicker
+                visible={locationPickerOpen}
+                session={session}
+                selectedId={profile?.locationId}
+                selectedName={storeName}
+                onClose={() => setLocationPickerOpen(false)}
+                onChanged={({ locationId, locationName }) => {
+                  setSession((current) => {
+                    if (!current?.profile) return current;
+                    return {
+                      ...current,
+                      profile: {
+                        ...current.profile,
+                        locationId: locationId || current.profile.locationId,
+                        locationName: locationName || current.profile.locationName,
+                      },
+                    };
+                  });
+                }}
               />
 
               <View style={[styles.toolsList, styles.profileLogoutGroup]}>
@@ -4904,6 +5052,11 @@ export default function App() {
               />
             ) : activeTool.key === 'financials' ? (
               <FinancialsScreen
+                session={session}
+                onRequireLogin={() => selectTab('profile')}
+              />
+            ) : activeTool.key === 'debit' ? (
+              <DebitScreen
                 session={session}
                 onRequireLogin={() => selectTab('profile')}
               />
@@ -4959,6 +5112,22 @@ export default function App() {
               <TransferScreen
                 session={session}
                 onRequireLogin={() => selectTab('profile')}
+                onLocationChanged={({ locationId, locationName }) => {
+                  setSession((current) => {
+                    if (!current?.profile) return current;
+                    return {
+                      ...current,
+                      user: current.user
+                        ? { ...current.user, location_id: locationId || current.user.location_id }
+                        : current.user,
+                      profile: {
+                        ...current.profile,
+                        locationId: locationId || current.profile.locationId,
+                        locationName: locationName || current.profile.locationName,
+                      },
+                    };
+                  });
+                }}
               />
             ) : activeTool.key === 'fintrac' ? (
               <FintracScreen
@@ -5212,6 +5381,7 @@ export default function App() {
       activeTool?.key === 'audit' ||
       activeTool?.key === 'serphint' ||
       activeTool?.key === 'financials' ||
+      activeTool?.key === 'debit' ||
       activeTool?.key === 'transfer' ||
       activeTool?.key === 'fintrac' ||
       activeTool?.key === 'pricing' ||
@@ -5365,6 +5535,7 @@ export default function App() {
             onSelectMessages={() => selectTab('messages')}
             onSelectProfile={() => selectTab(PROFILE_TAB.key)}
             profileLabel={userLabel}
+            profileLocation={storeLocationFromSession(session)}
             profileAvatarUrl={session?.profile?.avatarUrl || ''}
             showMessages={hasApp('messages')}
             messagesUnread={messagesUnread}
@@ -5764,6 +5935,14 @@ const styles = StyleSheet.create({
   tabIcon: {
     marginRight: 10,
   },
+  tabWithSubtitle: {
+    minHeight: 52,
+    alignItems: 'center',
+  },
+  tabLabelColumn: {
+    flex: 1,
+    minWidth: 0,
+  },
   tabLabel: {
     fontFamily,
     fontSize: 15,
@@ -5771,6 +5950,17 @@ const styles = StyleSheet.create({
     color: '#6e6e73',
     letterSpacing: -0.2,
     flexShrink: 1,
+  },
+  tabSubtitle: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '400',
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+    marginTop: 1,
+  },
+  tabSubtitleActive: {
+    color: '#6e6e73',
   },
   tabLabelHover: {
     color: '#1d1d1f',
@@ -6648,6 +6838,13 @@ const styles = StyleSheet.create({
     gap: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#e5e5ea',
+  },
+  appleDetailRowTappable: {
+    alignItems: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
   appleDetailLabel: {
     fontFamily,
@@ -8644,20 +8841,20 @@ const styles = StyleSheet.create({
   profileAvatarButton: {
     marginBottom: 14,
     position: 'relative',
+    overflow: 'visible',
+  },
+  profileAvatarTap: {
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
   profileAvatar: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#e8e8ed',
   },
-  profileAvatarCamera: {
+  profileAvatarEdit: {
     position: 'absolute',
     right: 0,
     bottom: 0,
@@ -8669,6 +8866,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderWidth: 2,
     borderColor: '#fff',
+    zIndex: 2,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
   profilePhotoAction: {
     fontFamily,
@@ -8702,6 +8904,15 @@ const styles = StyleSheet.create({
     color: '#8e8e93',
     letterSpacing: -0.2,
     marginTop: 4,
+    textAlign: 'center',
+  },
+  profileLocation: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#2F6FED',
+    letterSpacing: -0.2,
+    marginTop: 6,
     textAlign: 'center',
   },
   profileGroupFooter: {
@@ -8927,6 +9138,10 @@ const styles = StyleSheet.create({
     borderRadius: 54,
     borderWidth: 2,
     borderColor: '#E8C36A',
+  },
+  igAvatarEdit: {
+    right: 2,
+    bottom: 2,
   },
   igToolPad: {
     paddingHorizontal: 16,

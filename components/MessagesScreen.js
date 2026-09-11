@@ -38,6 +38,7 @@ import {
   subscribeDmTyping,
   toggleDmLike,
 } from '../lib/messages';
+import ProfilePhotoModal from './ProfilePhotoModal';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -339,6 +340,7 @@ export default function MessagesScreen({ session, onUnreadChange }) {
   const [loadingThread, setLoadingThread] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
+  const [photoPerson, setPhotoPerson] = useState(null);
   const threadRef = useRef(null);
   const typingRef = useRef(null);
   const activeIdRef = useRef(null);
@@ -928,17 +930,34 @@ export default function MessagesScreen({ session, onUnreadChange }) {
                     <Ionicons name="chevron-back" size={22} color={BLUE} />
                   </Pressable>
                 ) : null}
-                <Pressable
-                  onPress={() => {
-                    if (!activeThread.isGroup) return;
-                    setTitleDraft(activeThread.title || '');
-                    setDetailsOpen(true);
-                    setAddingMembers(false);
-                  }}
-                  style={styles.threadHeaderMain}
-                >
-                  <ConversationAvatar conversation={activeThread} size={36} />
-                  <View style={styles.threadHeaderCopy}>
+                <View style={styles.threadHeaderMain}>
+                  <Pressable
+                    onPress={() => {
+                      if (activeThread.isGroup) {
+                        setTitleDraft(activeThread.title || '');
+                        setDetailsOpen(true);
+                        setAddingMembers(false);
+                        return;
+                      }
+                      if (activeThread.other) setPhotoPerson(activeThread.other);
+                    }}
+                    accessibilityLabel={
+                      activeThread.isGroup
+                        ? 'Group details'
+                        : `View ${conversationTitle(activeThread)}'s portrait`
+                    }
+                  >
+                    <ConversationAvatar conversation={activeThread} size={36} />
+                  </Pressable>
+                  <Pressable
+                    onPress={() => {
+                      if (!activeThread.isGroup) return;
+                      setTitleDraft(activeThread.title || '');
+                      setDetailsOpen(true);
+                      setAddingMembers(false);
+                    }}
+                    style={styles.threadHeaderCopy}
+                  >
                     <Text style={styles.threadName} numberOfLines={1}>
                       {conversationTitle(activeThread)}
                     </Text>
@@ -950,8 +969,8 @@ export default function MessagesScreen({ session, onUnreadChange }) {
                     >
                       {conversationSubtitle(activeThread, { typingLabel })}
                     </Text>
-                  </View>
-                </Pressable>
+                  </Pressable>
+                </View>
                 {activeThread.isGroup ? (
                   <Pressable
                     onPress={() => {
@@ -1009,7 +1028,12 @@ export default function MessagesScreen({ session, onUnreadChange }) {
                     {activeThread.members.length + 1} people
                   </Text>
                   {activeThread.members.map((person) => (
-                    <View key={person.id} style={styles.detailsMember}>
+                    <Pressable
+                      key={person.id}
+                      onPress={() => setPhotoPerson(person)}
+                      style={styles.detailsMember}
+                      accessibilityLabel={`View ${contactName(person)}'s portrait`}
+                    >
                       <PersonAvatar person={person} size={36} showOnline />
                       <View style={styles.personCopy}>
                         <Text style={styles.personName} numberOfLines={1}>
@@ -1019,7 +1043,7 @@ export default function MessagesScreen({ session, onUnreadChange }) {
                           {formatLastSeen(person.isOnline, person.lastSeenAt)}
                         </Text>
                       </View>
-                    </View>
+                    </Pressable>
                   ))}
                   <Pressable
                     onPress={() => setAddingMembers((current) => !current)}
@@ -1078,7 +1102,16 @@ export default function MessagesScreen({ session, onUnreadChange }) {
                       <ActivityIndicator color="#1d1d1f" style={styles.threadSpinner} />
                     ) : messages.length === 0 ? (
                       <View style={styles.threadEmpty}>
-                        <ConversationAvatar conversation={activeThread} size={72} />
+                        <Pressable
+                          onPress={() => {
+                            if (!activeThread.isGroup && activeThread.other) {
+                              setPhotoPerson(activeThread.other);
+                            }
+                          }}
+                          accessibilityLabel={`View ${conversationTitle(activeThread)}'s portrait`}
+                        >
+                          <ConversationAvatar conversation={activeThread} size={72} />
+                        </Pressable>
                         <Text style={styles.threadEmptyName}>{conversationTitle(activeThread)}</Text>
                         <Text style={styles.emptyHint}>
                           {conversationSubtitle(activeThread)}
@@ -1194,6 +1227,17 @@ export default function MessagesScreen({ session, onUnreadChange }) {
           )}
         </View>
       ) : null}
+      <ProfilePhotoModal
+        visible={Boolean(photoPerson)}
+        onClose={() => setPhotoPerson(null)}
+        profileId={photoPerson?.id || ''}
+        name={contactName(photoPerson)}
+        avatarUrl={photoPerson?.avatarUrl || ''}
+        locationName={photoPerson?.locationName || ''}
+        myId={myId}
+        myName={myName}
+        myAvatarUrl={session?.profile?.avatarUrl || ''}
+      />
     </KeyboardAvoidingView>
   );
 }

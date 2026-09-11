@@ -75,6 +75,7 @@ import {
   OPENROUTER_MODELS,
 } from '../lib/openrouter';
 import { AuditAiChat, AuditTxnDrawer, useAuditTxnDrawer } from './AuditAiOutput';
+import ItemAuditPanel from './ItemAuditPanel';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -93,6 +94,7 @@ const MOBILE_BREAKPOINT = 768;
 const AUDIT_TABS = [
   { key: 'bullion', label: 'Bullion' },
   { key: 'cash', label: 'Cash' },
+  { key: 'item', label: 'Audit by Item' },
 ];
 const METAL_ACCENTS = {
   Gold: '#D4A017',
@@ -3492,6 +3494,16 @@ export default function AuditScreen({
 
       {activeTab === 'cash' ? (
         <CashAuditPanel
+          session={session}
+          onRequireLogin={onRequireLogin}
+          storeFilter={storeFilter}
+          initialDate={initialDate}
+          embedded={embedded}
+        />
+      ) : null}
+
+      {activeTab === 'item' ? (
+        <ItemAuditPanel
           session={session}
           onRequireLogin={onRequireLogin}
           storeFilter={storeFilter}
