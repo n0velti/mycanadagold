@@ -14,13 +14,15 @@
  *   /proxy/rippling/<path>                 GET   → rest.ripplingapis.com
  *   /proxy/google/local-boq                GET   → Google local reviews (GetLocalBoqProxy)
  *   /proxy/canadagold/page                 GET   → canadagold.ca buy/sell price pages
+ *   /proxy/moneris/cloud                   POST  → Moneris Cloud (Move 5000 / Go)
+ *   /proxy/moneris/poll                    POST  → poll a Moneris receipt URL
  *
  * AI providers use the company key saved in Settings (System Admin / GM) or,
  * if none is saved, the Edge Function secret. Clients never send vendor keys.
  * FINTRAC and Rippling user tokens are forwarded from
  * `X-Upstream-Authorization` (the caller's own session with that vendor).
  */
-import { corsHeaders, error, json, preflight, securityHeaders } from '../_shared/http.ts';
+import { corsHeaders, error, json, preflight, readJson, securityHeaders } from '../_shared/http.ts';
 import { adminClient, requireActiveStaff, StaffAuthError } from '../_shared/staff.ts';
 
 const FUNCTION_PREFIX = '/proxy';
@@ -624,6 +626,360 @@ async function handleCanadaGoldPage(req: Request, query: URLSearchParams): Promi
 }
 
 // ---------------------------------------------------------------------------
+// Moneris Cloud (Move 5000 / Go)
+// ---------------------------------------------------------------------------
+
+const MONERIS_HOSTS: Record<string, string> = {
+  core: 'https://patpos.moneris.com/',
+  production: 'https://ippos.moneris.com/v3/Terminal/',
+  qa: 'https://ippostest.moneris.com/v3/Terminal/',
+};
+
+const MONERIS_RECEIPT_HOSTS = [
+  'patpos.moneris.com',
+  'ippos.moneris.com',
+  'ippostest.moneris.com',
+  'cloudreceipt.moneris.com',
+  'cloudreceiptct.moneris.com',
+  'ipterm2.moneris.io',
+  'ipterm2ct.moneris.io',
+];
+
+type MonerisTerminalRow = {
+  id: string;
+  store_key: string;
+  store_name: string;
+  terminal_id: string;
+  store_id: string;
+  api_token: string;
+  environment: string;
+  ist_config_code: string;
+};
+
+function torontoStamp(date = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Toronto',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(date);
+  const pick = (type: string) => parts.find((part) => part.type === type)?.value || '00';
+  return `${pick('year')}-${pick('month')}-${pick('day')} ${pick('hour')}:${pick('minute')}:${pick('second')}`;
+}
+
+function torontoDate(date = new Date()): string {
+  return torontoStamp(date).slice(0, 10);
+}
+
+function asTrimmed(value: unknown): string {
+  return String(value ?? '').trim();
+}
+
+function firstResponse(payload: unknown): Record<string, unknown> {
+  const root = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
+  const receipt = root.receipt && typeof root.receipt === 'object'
+    ? (root.receipt as Record<string, unknown>)
+    : root;
+  const data = receipt.data && typeof receipt.data === 'object'
+    ? (receipt.data as Record<string, unknown>)
+    : {};
+  const list = Array.isArray(data.response) ? data.response : [];
+  const item = list[0] && typeof list[0] === 'object' ? (list[0] as Record<string, unknown>) : {};
+  return { ...receipt, ...item };
+}
+
+function isCompleted(entry: Record<string, unknown>): boolean {
+  const value = asTrimmed(entry.completed ?? entry.Completed).toLowerCase();
+  return value === 'true' || value === '1';
+}
+
+function isApproved(entry: Record<string, unknown>): boolean {
+  if (asTrimmed(entry.approved ?? entry.Approved).toLowerCase() === 'true') return true;
+  if (asTrimmed(entry.Error ?? entry.error).toLowerCase() === 'true') return false;
+  const code = Number(asTrimmed(entry.responseCode ?? entry.ResponseCode));
+  return Number.isFinite(code) && code >= 0 && code < 50;
+}
+
+function amountFromEntry(entry: Record<string, unknown>, fallbackCents?: number): number {
+  const raw = asTrimmed(entry.amount ?? entry.totalAmount ?? entry.Amount);
+  if (raw.includes('.')) {
+    const dollars = Number(raw);
+    return Number.isFinite(dollars) ? dollars : 0;
+  }
+  const cents = raw ? Number(raw) : fallbackCents;
+  if (!Number.isFinite(cents)) return 0;
+  return Number(cents) / 100;
+}
+
+function receiptUrlFrom(entry: Record<string, unknown>, payload: unknown): string {
+  const direct = asTrimmed(entry.receiptUrl ?? entry.ReceiptUrl);
+  if (direct) return direct;
+  const root = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
+  return asTrimmed(root.receiptUrl);
+}
+
+function allowedReceiptUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:') return false;
+    return MONERIS_RECEIPT_HOSTS.includes(parsed.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+async function loadMonerisTerminal(terminalRowId: string): Promise<MonerisTerminalRow | null> {
+  const { data, error: queryError } = await adminClient()
+    .from('moneris_terminals')
+    .select('id, store_key, store_name, terminal_id, store_id, api_token, environment, ist_config_code')
+    .eq('id', terminalRowId)
+    .maybeSingle();
+  if (queryError || !data) return null;
+  return data as MonerisTerminalRow;
+}
+
+async function markTerminalStatus(id: string, status: string, errorText = '') {
+  await adminClient()
+    .from('moneris_terminals')
+    .update({
+      last_seen_at: new Date().toISOString(),
+      last_status: status,
+      last_error: errorText,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', id);
+}
+
+function normalizeCloudResult(
+  payload: unknown,
+  terminal: MonerisTerminalRow,
+  action: string,
+  amountCents?: number,
+) {
+  const entry = firstResponse(payload);
+  const completed = isCompleted(entry);
+  const approved = completed && isApproved(entry);
+  return {
+    completed,
+    approved,
+    action: asTrimmed(entry.action) || action,
+    orderId: asTrimmed(entry.orderId ?? entry.order_id),
+    cloudTicket: asTrimmed(entry.cloudTicket ?? entry.CloudTicket),
+    receiptUrl: receiptUrlFrom(entry, payload),
+    responseCode: asTrimmed(entry.responseCode ?? entry.ResponseCode),
+    status: asTrimmed(entry.status ?? entry.Status),
+    statusCode: asTrimmed(entry.statusCode ?? entry.StatusCode),
+    authCode: asTrimmed(entry.authCode ?? entry.AuthCode),
+    cardType: asTrimmed(entry.cardType ?? entry.CardType),
+    cardLast4: asTrimmed(entry.lastFour ?? entry.panLast4 ?? entry.LastFourDigits),
+    amount: amountFromEntry(entry, amountCents),
+    storeName: terminal.store_name,
+    terminalId: terminal.terminal_id,
+    receipt: payload,
+  };
+}
+
+async function persistMonerisTransaction(
+  staffUserId: string,
+  terminal: MonerisTerminalRow,
+  result: ReturnType<typeof normalizeCloudResult>,
+) {
+  if (!result.completed || !result.orderId) return;
+  if (result.action === 'initialization') return;
+
+  const { error: upsertError } = await adminClient().from('moneris_transactions').upsert(
+    {
+      terminal_id_ref: terminal.id,
+      store_key: terminal.store_key,
+      store_name: terminal.store_name,
+      terminal_id: terminal.terminal_id,
+      order_id: result.orderId,
+      cloud_ticket: result.cloudTicket,
+      action: result.action || 'purchase',
+      amount: result.amount,
+      currency: 'CAD',
+      card_type: result.cardType,
+      card_last4: result.cardLast4,
+      auth_code: result.authCode,
+      response_code: result.responseCode,
+      approved: result.approved,
+      transacted_on: torontoDate(),
+      transacted_at: new Date().toISOString(),
+      receipt: result.receipt ?? {},
+      created_by: staffUserId,
+    },
+    { onConflict: 'order_id' },
+  );
+  if (upsertError) console.error('moneris persist failed', upsertError.message);
+}
+
+function dollarsToCents(value: unknown): number | null {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.round(n * 100);
+}
+
+async function postMonerisCloud(terminal: MonerisTerminalRow, body: Record<string, unknown>) {
+  const host = MONERIS_HOSTS[terminal.environment] || MONERIS_HOSTS.core;
+  const upstream = await forward(host, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await upstream.text();
+  let payload: unknown = null;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    payload = { raw: text };
+  }
+  if (!upstream.ok) {
+    const message =
+      (payload && typeof payload === 'object' && 'error' in payload
+        ? asTrimmed((payload as { error?: { message?: string } }).error?.message)
+        : '') || `Moneris Cloud returned ${upstream.status}.`;
+    throw new Error(message);
+  }
+  return payload;
+}
+
+async function handleMonerisCloud(req: Request, staffUserId: string): Promise<Response> {
+  if (req.method !== 'POST') return error(req, 405, 'Use POST.', 'method_not_allowed');
+
+  let body: Record<string, unknown>;
+  try {
+    body = await readJson<Record<string, unknown>>(req);
+  } catch (err) {
+    return error(req, 400, err instanceof Error ? err.message : 'Invalid JSON.', 'bad_request');
+  }
+
+  const terminalRowId = asTrimmed(body.terminalId);
+  const action = asTrimmed(body.action) || 'purchase';
+  const allowed = new Set(['initialization', 'purchase', 'refund', 'purchase_correction']);
+  if (!terminalRowId) return error(req, 400, 'Choose a terminal.', 'bad_request');
+  if (!allowed.has(action)) return error(req, 400, 'Unsupported Moneris action.', 'bad_request');
+
+  const terminal = await loadMonerisTerminal(terminalRowId);
+  if (!terminal) return error(req, 404, 'That terminal is not configured.', 'moneris_unconfigured');
+  if (!asTrimmed(terminal.api_token) || !asTrimmed(terminal.store_id)) {
+    return error(req, 400, 'This terminal is missing its Store ID or API token.', 'moneris_unconfigured');
+  }
+
+  let amountCents: number | undefined;
+  if (action !== 'initialization') {
+    const cents = dollarsToCents(body.amount);
+    if (cents == null || cents <= 0) {
+      return error(req, 400, 'Enter an amount greater than zero.', 'bad_request');
+    }
+    amountCents = cents;
+  }
+
+  const request: Record<string, string> = {
+    action,
+    terminalId: terminal.terminal_id,
+    orderId: asTrimmed(body.orderId) || `cgold-${Date.now()}`,
+    idempotencyKey: crypto.randomUUID(),
+  };
+  if (amountCents != null) request.totalAmount = String(amountCents);
+  const txnNumber = asTrimmed(body.txnNumber);
+  if (txnNumber) request.txnNumber = txnNumber;
+
+  const envelope: Record<string, unknown> = {
+    apiVersion: '3.0',
+    apiToken: terminal.api_token,
+    storeId: terminal.store_id,
+    polling: 'true',
+    dataId: `${Date.now()}-001`,
+    dataTimestamp: torontoStamp(),
+    data: { request: [request] },
+  };
+  if (asTrimmed(terminal.ist_config_code)) {
+    envelope.istConfigCode = asTrimmed(terminal.ist_config_code);
+  }
+
+  try {
+    const payload = await postMonerisCloud(terminal, envelope);
+    const result = normalizeCloudResult(payload, terminal, action, amountCents);
+    await persistMonerisTransaction(staffUserId, terminal, result);
+    await markTerminalStatus(
+      terminal.id,
+      result.completed ? (result.approved ? 'Approved' : result.status || 'Complete') : 'Waiting on terminal',
+      result.completed && !result.approved ? result.status : '',
+    );
+    return json(req, 200, result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Moneris Cloud request failed.';
+    await markTerminalStatus(terminal.id, 'Error', message);
+    return error(req, 502, message, 'upstream_failed');
+  }
+}
+
+async function handleMonerisPoll(req: Request, staffUserId: string): Promise<Response> {
+  if (req.method !== 'POST') return error(req, 405, 'Use POST.', 'method_not_allowed');
+
+  let body: Record<string, unknown>;
+  try {
+    body = await readJson<Record<string, unknown>>(req);
+  } catch (err) {
+    return error(req, 400, err instanceof Error ? err.message : 'Invalid JSON.', 'bad_request');
+  }
+
+  const receiptUrl = asTrimmed(body.receiptUrl);
+  const terminalRowId = asTrimmed(body.terminalId);
+  if (!allowedReceiptUrl(receiptUrl)) {
+    return error(req, 400, 'That receipt URL is not a Moneris Cloud host.', 'bad_request');
+  }
+
+  const terminal = terminalRowId ? await loadMonerisTerminal(terminalRowId) : null;
+  const upstream = await forward(receiptUrl, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+  });
+  const text = await upstream.text();
+  let payload: unknown = null;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    return error(req, 502, 'Moneris receipt was not valid JSON.', 'upstream_invalid');
+  }
+  if (!upstream.ok) {
+    return error(req, 502, `Moneris receipt poll failed (${upstream.status}).`, 'upstream_failed');
+  }
+
+  if (!terminal) {
+    return json(req, 200, normalizeCloudResult(payload, {
+      id: '',
+      store_key: '',
+      store_name: '',
+      terminal_id: '',
+      store_id: '',
+      api_token: '',
+      environment: 'core',
+      ist_config_code: '',
+    }, asTrimmed(body.action) || 'purchase'));
+  }
+
+  const result = normalizeCloudResult(payload, terminal, asTrimmed(body.action) || 'purchase');
+  await persistMonerisTransaction(staffUserId, terminal, result);
+  if (result.completed) {
+    await markTerminalStatus(
+      terminal.id,
+      result.approved ? 'Approved' : result.status || 'Complete',
+      result.approved ? '' : result.status,
+    );
+  }
+  return json(req, 200, result);
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -687,6 +1043,12 @@ Deno.serve(async (req) => {
     }
     if (path === '/canadagold/page' && req.method === 'GET') {
       return await handleCanadaGoldPage(req, query);
+    }
+    if (path === '/moneris/cloud') {
+      return await handleMonerisCloud(req, staff.userId);
+    }
+    if (path === '/moneris/poll') {
+      return await handleMonerisPoll(req, staff.userId);
     }
     return error(req, 404, 'Unknown proxy route.', 'not_found');
   } catch (err) {

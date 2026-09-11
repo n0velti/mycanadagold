@@ -37,6 +37,7 @@ import {
 import { syncStaffRoles } from '../lib/auth';
 import { fetchAureusEmployees, mergeEmployeesWithProfiles } from '../lib/aureusEmployees';
 import { categoryLabel, listStaffProfiles, useAppAccess } from '../lib/permissions';
+import ProfilePhotoModal from './ProfilePhotoModal';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -192,7 +193,7 @@ function StaffEmployeeRow({ person, compact, selected, onPress }) {
   );
 }
 
-function StaffEmployeeDetail({ person, onClose, compact }) {
+function StaffEmployeeDetail({ person, onClose, compact, onOpenPhoto }) {
   if (!person) {
     return (
       <View style={styles.detailEmpty}>
@@ -203,6 +204,8 @@ function StaffEmployeeDetail({ person, onClose, compact }) {
   }
 
   const name = staffDisplayName(person);
+  const photoUri = person.avatarUrl || person.photoUrl || '';
+
   return (
     <ScrollView
       style={styles.detailScroll}
@@ -219,7 +222,13 @@ function StaffEmployeeDetail({ person, onClose, compact }) {
       ) : null}
 
       <View style={styles.detailHero}>
-        <Avatar employee={{ photoUrl: person.avatarUrl || person.photoUrl, initials: initialsFor(name) }} size={64} />
+        <Pressable
+          onPress={onOpenPhoto}
+          accessibilityRole="button"
+          accessibilityLabel={`View ${name}'s portrait`}
+        >
+          <Avatar employee={{ photoUrl: photoUri, initials: initialsFor(name) }} size={64} />
+        </Pressable>
         <View style={styles.detailHeroText}>
           <Text style={styles.detailName}>{name}</Text>
           <Text style={styles.detailTitle}>{employeeTypeLabel(person)}</Text>
@@ -251,6 +260,7 @@ function AppEmployeesPanel({ session, onProfileUpdated }) {
   const [query, setQuery] = useState('');
   const [location, setLocation] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
+  const [photoPerson, setPhotoPerson] = useState(null);
   const onProfileUpdatedRef = useRef(onProfileUpdated);
   onProfileUpdatedRef.current = onProfileUpdated;
 
@@ -430,7 +440,10 @@ function AppEmployeesPanel({ session, onProfileUpdated }) {
 
           {!isMobile ? (
             <View style={styles.detailPane}>
-              <StaffEmployeeDetail person={selected} />
+              <StaffEmployeeDetail
+                person={selected}
+                onOpenPhoto={() => selected && setPhotoPerson(selected)}
+              />
             </View>
           ) : null}
         </View>
@@ -446,10 +459,30 @@ function AppEmployeesPanel({ session, onProfileUpdated }) {
             style={styles.mobileDetail}
             {...(Platform.OS === 'web' ? { className: 'cgold-mobile-sheet-top' } : null)}
           >
-            <StaffEmployeeDetail person={selected} compact onClose={() => setSelectedId(null)} />
+            <StaffEmployeeDetail
+              person={selected}
+              compact
+              onClose={() => setSelectedId(null)}
+              onOpenPhoto={() => selected && setPhotoPerson(selected)}
+            />
           </View>
         </Modal>
       ) : null}
+      <ProfilePhotoModal
+        visible={Boolean(photoPerson)}
+        onClose={() => setPhotoPerson(null)}
+        profileId={photoPerson?.profileId || ''}
+        name={photoPerson ? staffDisplayName(photoPerson) : ''}
+        avatarUrl={(photoPerson?.avatarUrl || photoPerson?.photoUrl) || ''}
+        locationName={photoPerson?.locationName || ''}
+        myId={session?.supabaseUserId || session?.profile?.id || ''}
+        myName={
+          session?.profile?.fullName ||
+          [session?.profile?.firstName, session?.profile?.lastName].filter(Boolean).join(' ') ||
+          'You'
+        }
+        myAvatarUrl={session?.profile?.avatarUrl || ''}
+      />
     </View>
   );
 }

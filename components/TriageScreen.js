@@ -8,6 +8,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -18,9 +19,7 @@ import {
   fetchTransactionDetail,
   fetchTransactions,
   formatAmount,
-  formatUnitCost,
   formatDateParam,
-  lineItemMoney,
   formatPickerDate,
   parseDateParam,
   resolvePosAuthForRow,
@@ -35,6 +34,15 @@ import {
   searchClients,
   searchProducts,
 } from '../lib/triageLookups';
+import {
+  buildDraft,
+  collectCorrections,
+  ERROR_TYPES,
+  fieldChanged,
+  normalizeReviewImages,
+} from '../lib/triageDraft';
+import TriageCorrectionImages from './TriageCorrectionImages';
+import TriageTransfersPanel from './TriageTransfersPanel';
 
 if (Platform.OS === 'web' && typeof document !== 'undefined') {
   const styleId = 'cgold-triage-row-hover';
@@ -53,6 +61,10 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-triage-line-grid{display:grid!important;grid-template-columns:minmax(0,1fr) 88px 100px 120px;align-items:start;width:100%;box-sizing:border-box;}',
     '.cgold-triage-line-grid>*{min-width:0!important;flex:none!important;width:auto!important;padding-right:10px;}',
     '.cgold-triage-line-grid>*:last-child{padding-right:0;}',
+    '@media (max-width:767px){',
+    '.cgold-triage-line-grid{grid-template-columns:1fr!important;}',
+    '.cgold-triage-line-grid>*{width:100%!important;padding-right:0!important;padding-bottom:8px;}',
+    '}',
   ].join('');
 }
 
@@ -68,6 +80,7 @@ const SECONDARY = '#8e8e93';
 const FILL = '#e8e8ed';
 const HAIRLINE = '#e5e5ea';
 const STRUCK = '#8e8e93';
+const MOBILE_BREAKPOINT = 768;
 const PICK_RANGE_DAYS = 14;
 const PICK_ROW_HEIGHT = 40;
 const PICK_OVERSCAN = 12;
@@ -107,201 +120,10 @@ function sortTxRows(rows) {
 }
 
 const TRIAGE_TABS = [
-  { key: 'dashboard', label: 'Dashboard', icon: 'grid-outline' },
-  { key: 'transfers', label: 'Transfers', icon: 'swap-horizontal-outline' },
+  { key: 'transfers', label: 'Dashboard', icon: 'grid-outline' },
   { key: 'accuracy', label: 'Accuracy', icon: 'checkmark-done-outline' },
   { key: 'allocation', label: 'Allocation', icon: 'git-branch-outline' },
 ];
-
-const ERROR_TYPES = [
-  'Wrong item',
-  'Wrong quantity',
-  'Wrong price',
-  'Wrong customer',
-  'Wrong payment',
-  'Missing item',
-  'Other',
-];
-
-function lineItemName(item) {
-  const product = item?.product;
-  const candidates = [
-    item?.description,
-    product?.name,
-    product?.description,
-    item?.quality_mark_description,
-    product?.sku,
-    product?.code,
-  ]
-    .map((value) => (value == null ? '' : String(value).trim()))
-    .filter(Boolean);
-
-  if (candidates.length) return candidates[0];
-  if (product?.metal?.name) {
-    return product?.type === 'scrap' ? `Scrap ${product.metal.name}` : product.metal.name;
-  }
-  return 'Untitled item';
-}
-
-function lineItemQty(item) {
-  const qty = item?.quantity ?? item?.gross_quantity ?? 1;
-  return String(qty);
-}
-
-function makeField(original) {
-  const text = original == null ? '' : String(original);
-  return { original: text, value: text };
-}
-
-function fieldChanged(field) {
-  return String(field?.value ?? '') !== String(field?.original ?? '');
-}
-
-function clientDisplayName(detail, fallback) {
-  const client = detail?.client;
-  if (!client) return fallback || '';
-  const name = [client.first_name, client.last_name].filter(Boolean).join(' ').trim();
-  return name || client.nickname || fallback || '';
-}
-
-function buildDraft(row, detail) {
-  const items = Array.isArray(detail?.items) ? detail.items : [];
-  const payments = Array.isArray(detail?.payments) ? detail.payments : [];
-  const total = detail?.total_amount ?? row.amount;
-  const fallbackItems =
-    items.length > 0
-      ? items
-      : (row.itemNames || []).map((name, index) => ({
-          id: `named-${index}`,
-          description: name,
-          price: '',
-        }));
-
-  return {
-    header: [
-      {
-        key: 'customer',
-        label: row.type === 'purchase' ? 'Vendor / customer' : 'Customer',
-        ...makeField(clientDisplayName(detail, row.customerName)),
-      },
-      {
-        key: 'store',
-        label: 'Store',
-        ...makeField(detail?.location?.name || row.storeName || ''),
-      },
-      {
-        key: 'employee',
-        label: 'Employee',
-        ...makeField(row.employeeName || ''),
-      },
-      {
-        key: 'date',
-        label: 'Date',
-        ...makeField(row.dateLabel || ''),
-      },
-      {
-        key: 'total',
-        label: 'Total',
-        ...makeField(formatAmount(total)),
-      },
-    ],
-    items: fallbackItems.map((item, index) => {
-      const money = item.price === '' && !item.quantity ? null : lineItemMoney(item);
-      const unitType = item?.unit_type || (money?.grossQuantity ? 'g' : '');
-      const unitLabel = money ? formatUnitCost(money.displayUnitPrice, unitType) : '';
-      const amountLabel = money?.lineTotal == null ? '' : formatAmount(money.lineTotal);
-      return {
-        id: item.id || `item-${index}`,
-        name: makeField(lineItemName(item)),
-        qty: makeField(lineItemQty(item)),
-        unit: makeField(unitLabel),
-        amount: makeField(amountLabel),
-      };
-    }),
-    payments: payments.map((entry, index) => {
-      const payment = entry.payment || entry;
-      return {
-        id: entry.id || payment.id || `pay-${index}`,
-        method: makeField(payment.payment_type?.name || 'Payment'),
-        amount: makeField(formatAmount(entry.amount ?? payment.amount)),
-      };
-    }),
-  };
-}
-
-function collectCorrections(draft) {
-  const corrections = [];
-  if (!draft) return corrections;
-
-  for (const field of draft.header || []) {
-    if (fieldChanged(field)) {
-      corrections.push({
-        key: field.key,
-        label: field.label,
-        original: field.original,
-        value: field.value,
-      });
-    }
-  }
-
-  (draft.items || []).forEach((item, index) => {
-    const label = `Item ${index + 1}`;
-    if (fieldChanged(item.name)) {
-      corrections.push({
-        key: `${item.id}-name`,
-        label: `${label} name`,
-        original: item.name.original,
-        value: item.name.value,
-      });
-    }
-    if (fieldChanged(item.qty)) {
-      corrections.push({
-        key: `${item.id}-qty`,
-        label: `${label} qty`,
-        original: item.qty.original,
-        value: item.qty.value,
-      });
-    }
-    if (item.unit && fieldChanged(item.unit)) {
-      corrections.push({
-        key: `${item.id}-unit`,
-        label: `${label} unit`,
-        original: item.unit.original,
-        value: item.unit.value,
-      });
-    }
-    if (fieldChanged(item.amount)) {
-      corrections.push({
-        key: `${item.id}-amount`,
-        label: `${label} amount`,
-        original: item.amount.original,
-        value: item.amount.value,
-      });
-    }
-  });
-
-  (draft.payments || []).forEach((payment, index) => {
-    const label = `Payment ${index + 1}`;
-    if (fieldChanged(payment.method)) {
-      corrections.push({
-        key: `${payment.id}-method`,
-        label: `${label} method`,
-        original: payment.method.original,
-        value: payment.method.value,
-      });
-    }
-    if (fieldChanged(payment.amount)) {
-      corrections.push({
-        key: `${payment.id}-amount`,
-        label: `${label} amount`,
-        original: payment.amount.original,
-        value: payment.amount.value,
-      });
-    }
-  });
-
-  return corrections;
-}
 
 function DateChip({ label, value, onChange, maximumDate, minimumDate }) {
   const [open, setOpen] = useState(false);
@@ -404,26 +226,29 @@ function DateChip({ label, value, onChange, maximumDate, minimumDate }) {
   );
 }
 
-function TabBar({ options, value, onChange }) {
+function TabBar({ options, value, onChange, trailing }) {
   return (
     <View style={styles.tabBar} accessibilityRole="tablist">
-      {options.map((option) => {
-        const active = option.key === value;
-        return (
-          <Pressable
-            key={option.key}
-            style={[styles.tab, active && styles.tabActive]}
-            onPress={() => onChange(option.key)}
-            accessibilityRole="tab"
-            accessibilityState={{ selected: active }}
-            accessibilityLabel={option.label}
-          >
-            <Text style={[styles.tabLabel, active && styles.tabLabelActive]} numberOfLines={1}>
-              {option.label}
-            </Text>
-          </Pressable>
-        );
-      })}
+      <View style={styles.tabBarTabs}>
+        {options.map((option) => {
+          const active = option.key === value;
+          return (
+            <Pressable
+              key={option.key}
+              style={[styles.tab, active && styles.tabActive]}
+              onPress={() => onChange(option.key)}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: active }}
+              accessibilityLabel={option.label}
+            >
+              <Text style={[styles.tabLabel, active && styles.tabLabelActive]} numberOfLines={1}>
+                {option.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      {trailing ? <View style={styles.tabBarTrailing}>{trailing}</View> : null}
     </View>
   );
 }
@@ -932,6 +757,12 @@ function AccuracyReviewLine({ entry, onRemove }) {
           <Text style={styles.savedAmount}>{entry.errorAmount}</Text>
         </View>
       ) : null}
+
+      {normalizeReviewImages(entry.images).length > 0 ? (
+        <View style={styles.savedBlock}>
+          <TriageCorrectionImages images={entry.images} readOnly />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -944,6 +775,8 @@ function NewAccuracyModal({
   onClose,
   onFinish,
 }) {
+  const { width: windowWidth } = useWindowDimensions();
+  const isMobile = windowWidth < MOBILE_BREAKPOINT;
   const initialRange = useMemo(() => defaultDateRange(PICK_RANGE_DAYS), []);
   const [step, setStep] = useState('pick');
   const [startDate, setStartDate] = useState(initialRange.start);
@@ -961,6 +794,7 @@ function NewAccuracyModal({
   const [note, setNote] = useState('');
   const [errorType, setErrorType] = useState('');
   const [errorAmount, setErrorAmount] = useState('');
+  const [images, setImages] = useState([]);
   const [locations, setLocations] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [addingCustomer, setAddingCustomer] = useState(false);
@@ -981,6 +815,7 @@ function NewAccuracyModal({
     setNote('');
     setErrorType('');
     setErrorAmount('');
+    setImages([]);
     setAddingCustomer(false);
   }, []);
 
@@ -1225,6 +1060,7 @@ function NewAccuracyModal({
       note: note.trim(),
       errorType: errorType.trim(),
       errorAmount: amountLabel,
+      images: normalizeReviewImages(images),
     });
     resetWizard();
   };
@@ -1241,8 +1077,11 @@ function NewAccuracyModal({
     <Modal visible={visible} transparent animationType="fade" onRequestClose={handleClose}>
       <View style={styles.modalBackdrop}>
         <Pressable style={StyleSheet.absoluteFill} onPress={handleClose} />
-        <View style={styles.modalCard}>
-          <View style={styles.modalHeader}>
+        <View style={[styles.modalCard, isMobile && styles.modalCardMobile]}>
+          <View
+            style={styles.modalHeader}
+            {...(Platform.OS === 'web' && isMobile ? { className: 'cgold-mobile-sheet-top' } : null)}
+          >
             <View style={styles.modalTitleBlock}>
               {step !== 'pick' ? (
                 <Pressable
@@ -1266,7 +1105,7 @@ function NewAccuracyModal({
                 </Text>
               ) : (
                 <Text style={styles.modalSubtitle}>
-                  Add a note, the type of error, and the dollar amount, then finish.
+                  Add a note, photos, the type of error, and the dollar amount, then finish.
                 </Text>
               )}
             </View>
@@ -1436,6 +1275,43 @@ function NewAccuracyModal({
                 <Text style={styles.sectionLabel}>Line items</Text>
                 {(draft?.items || []).length === 0 ? (
                   <Text style={styles.modalEmpty}>No line items</Text>
+                ) : isMobile ? (
+                  <View style={styles.mobileItemList}>
+                    {draft.items.map((item, index) => (
+                      <View key={item.id} style={styles.itemCard}>
+                        <Text style={styles.itemIndex}>Item {index + 1}</Text>
+                        <LookupField
+                          label="Product"
+                          field={item.name}
+                          onSearch={searchProductOptions}
+                          allowCustom
+                          onChange={(value) => updateItem(item.id, 'name', value)}
+                          placeholder="Search product or type custom"
+                        />
+                        <View style={styles.mobileItemRow}>
+                          <View style={styles.mobileItemField}>
+                            <CorrectableField
+                              label="Qty"
+                              field={item.qty}
+                              onChange={(value) => updateItem(item.id, 'qty', value)}
+                            />
+                          </View>
+                          <View style={styles.mobileItemField}>
+                            <CorrectableField
+                              label="Unit"
+                              field={item.unit}
+                              onChange={(value) => updateItem(item.id, 'unit', value)}
+                            />
+                          </View>
+                        </View>
+                        <CorrectableField
+                          label="Amount"
+                          field={item.amount}
+                          onChange={(value) => updateItem(item.id, 'amount', value)}
+                        />
+                      </View>
+                    ))}
+                  </View>
                 ) : (
                   <View style={styles.lineTable}>
                     <View
@@ -1547,6 +1423,8 @@ function NewAccuracyModal({
                 textAlignVertical="top"
               />
 
+              <TriageCorrectionImages images={images} onChange={setImages} compact={isMobile} />
+
               <Text style={styles.fieldLabel}>Type of error</Text>
               <TextInput
                 style={styles.fieldInput}
@@ -1657,9 +1535,12 @@ export default function TriageScreen({
   storeFilter,
   embedded = false,
 }) {
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [activeTab, setActiveTab] = useState('transfers');
   const [modalOpen, setModalOpen] = useState(false);
   const [entries, setEntries] = useState([]);
+  const [createTransferOpen, setCreateTransferOpen] = useState(false);
+  const [addStoreOpen, setAddStoreOpen] = useState(false);
+  const [transferView, setTransferView] = useState('list');
   const currentTab = TRIAGE_TABS.find((tab) => tab.key === activeTab) || TRIAGE_TABS[0];
   const selectedIds = useMemo(() => new Set(entries.map((entry) => entry.row.id)), [entries]);
 
@@ -1672,13 +1553,55 @@ export default function TriageScreen({
     setEntries((current) => current.filter((entry) => entry.id !== id));
   }, []);
 
+  const changeTab = useCallback((key) => {
+    setActiveTab(key);
+    setCreateTransferOpen(false);
+    setAddStoreOpen(false);
+  }, []);
+
+  const transferTrailing =
+    session?.token && activeTab === 'transfers' && transferView === 'list' ? (
+      <Pressable
+        style={styles.newButton}
+        onPress={() => setCreateTransferOpen(true)}
+        accessibilityRole="button"
+        accessibilityLabel="New"
+      >
+        <Ionicons name="add" size={18} color="#fff" />
+        <Text style={styles.newButtonText}>New</Text>
+      </Pressable>
+    ) : session?.token && activeTab === 'transfers' && transferView === 'date' ? (
+      <Pressable
+        style={styles.newButton}
+        onPress={() => setAddStoreOpen(true)}
+        accessibilityRole="button"
+        accessibilityLabel="Add Store"
+      >
+        <Ionicons name="add" size={18} color="#fff" />
+        <Text style={styles.newButtonText}>Add Store</Text>
+      </Pressable>
+    ) : null;
+
   return (
     <View style={[styles.body, embedded && styles.bodyEmbedded]}>
       <TabBar
         options={TRIAGE_TABS}
         value={activeTab}
-        onChange={setActiveTab}
+        onChange={changeTab}
+        trailing={transferTrailing}
       />
+
+      <View style={activeTab === 'transfers' ? styles.pageVisible : styles.pageHidden}>
+        <TriageTransfersPanel
+          session={session}
+          onRequireLogin={onRequireLogin}
+          createOpen={createTransferOpen}
+          onCreateOpenChange={setCreateTransferOpen}
+          addStoreOpen={addStoreOpen}
+          onAddStoreOpenChange={setAddStoreOpen}
+          onViewChange={setTransferView}
+        />
+      </View>
 
       {activeTab === 'accuracy' ? (
         <AccuracyPanel
@@ -1688,9 +1611,9 @@ export default function TriageScreen({
           onRemove={removeEntry}
           onNew={() => setModalOpen(true)}
         />
-      ) : (
+      ) : activeTab !== 'transfers' ? (
         <TabPanel tab={currentTab} />
-      )}
+      ) : null}
 
       <NewAccuracyModal
         visible={modalOpen}
@@ -1715,15 +1638,34 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: '100%',
   },
+  pageVisible: {
+    flex: 1,
+    minHeight: 0,
+  },
+  pageHidden: {
+    display: 'none',
+  },
   tabBar: {
     flexShrink: 0,
     marginTop: 22,
     marginBottom: 14,
     flexDirection: 'row',
-    alignItems: 'stretch',
-    gap: 2,
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    gap: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: HAIRLINE,
+  },
+  tabBarTabs: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 2,
+  },
+  tabBarTrailing: {
+    flexShrink: 0,
+    paddingBottom: 6,
   },
   tab: {
     paddingHorizontal: 14,
@@ -1891,6 +1833,14 @@ const styles = StyleSheet.create({
     padding: 18,
     gap: 10,
     flexDirection: 'column',
+  },
+  modalCardMobile: {
+    width: '100%',
+    height: '100%',
+    maxHeight: '100%',
+    borderRadius: 0,
+    paddingHorizontal: 14,
+    paddingBottom: Platform.OS === 'ios' ? 28 : 14,
   },
   modalHeader: {
     flexDirection: 'row',
@@ -2388,6 +2338,17 @@ const styles = StyleSheet.create({
   },
   correctionPair: {
     gap: 2,
+  },
+  mobileItemList: {
+    gap: 10,
+  },
+  mobileItemRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  mobileItemField: {
+    flex: 1,
+    minWidth: 0,
   },
   itemCard: {
     backgroundColor: '#f5f5f7',

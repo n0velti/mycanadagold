@@ -15,6 +15,9 @@
  *   POST { action: "refresh-linked" }   Authorization: Bearer <user JWT>
  *     Re-issues linked POS tokens for an already signed-in, active staff member.
  *
+ *   POST { action: "set-location", aureusToken, locationId, locationName }
+ *     Writes the caller's assigned store onto their profile after POS updated it.
+ *
  * verify_jwt is off for this function (the caller is not signed in yet), so
  * every check happens here.
  */
@@ -58,6 +61,8 @@ interface LoginBody {
   login?: string;
   password?: string;
   aureusToken?: string;
+  locationId?: string;
+  locationName?: string;
 }
 
 interface ProfileRow {
@@ -580,6 +585,44 @@ async function handleSyncStaff(req: Request, body: LoginBody): Promise<Response>
   }
 }
 
+async function handleSetLocation(req: Request, body: LoginBody): Promise<Response> {
+  let staff;
+  try {
+    staff = await requireAureusStaff(req);
+  } catch (err) {
+    const detail = err as { status?: number; code?: string; message?: string };
+    return error(req, detail.status || 401, detail.message || 'Sign in first.', detail.code || 'unauthenticated');
+  }
+
+  const locationId = String(body.locationId || '').trim();
+  if (!locationId || locationId.length > 32) {
+    return error(req, 400, 'Choose a location.', 'bad_request');
+  }
+
+  let locationName = String(body.locationName || '').trim().slice(0, 200);
+  const aureusToken = String(body.aureusToken || '').trim();
+  if (!locationName && aureusToken) {
+    locationName = await lookupLocationName(AUREUS_BASE_URL, aureusToken, locationId);
+  }
+
+  const { data: profile, error: updateError } = await staff.admin
+    .from('profiles')
+    .update({
+      location_id: locationId,
+      location_name: locationName || null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', staff.userId)
+    .select(PROFILE_COLUMNS)
+    .single();
+  if (updateError || !profile) {
+    console.error('set-location update failed', updateError?.message || updateError);
+    return error(req, 500, 'Could not save that location.', 'sync_failed');
+  }
+
+  return json(req, 200, { profile: publicProfile(profile as ProfileRow) });
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return preflight(req);
   if (req.method !== 'POST') return error(req, 405, 'Use POST.', 'method_not_allowed');
@@ -606,6 +649,8 @@ Deno.serve(async (req) => {
         return await handleRefreshLinked(req);
       case 'sync-staff':
         return await handleSyncStaff(req, body);
+      case 'set-location':
+        return await handleSetLocation(req, body);
       default:
         return error(req, 400, 'Unknown action.', 'bad_request');
     }
