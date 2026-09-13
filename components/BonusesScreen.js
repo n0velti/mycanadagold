@@ -299,7 +299,7 @@ function ReviewList({ reviews }) {
   );
 }
 
-export default function BonusesScreen({ session, onRequireLogin, onOpenEmails }) {
+export default function BonusesScreen({ session, onRequireLogin, onOpenEmails, storeFilter }) {
   const { canFilter } = useAppAccess();
   const allowFilters = canFilter('bonuses');
   const initial = useMemo(() => currentBonusMonth(), []);
@@ -311,7 +311,7 @@ export default function BonusesScreen({ session, onRequireLogin, onOpenEmails })
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [selectedStore, setSelectedStore] = useState(
-    () => GOOGLE_STORE_PLACES[0]?.storeName || null,
+    () => storeFilter || GOOGLE_STORE_PLACES[0]?.storeName || null,
   );
   const requestId = useRef(0);
 
@@ -342,6 +342,7 @@ export default function BonusesScreen({ session, onRequireLogin, onOpenEmails })
         transactionRows: tx.rows || [],
         year,
         monthIndex,
+        storeFilter: storeFilter || null,
       });
       if (id !== requestId.current) return;
 
@@ -360,15 +361,19 @@ export default function BonusesScreen({ session, onRequireLogin, onOpenEmails })
     } finally {
       if (id === requestId.current) setLoading(false);
     }
-  }, [session, range.startDate, range.endDate, year, monthIndex]);
+  }, [session, range.startDate, range.endDate, year, monthIndex, storeFilter]);
 
   useEffect(() => {
     load();
   }, [load]);
 
   useEffect(() => {
+    if (storeFilter) {
+      setSelectedStore(storeFilter);
+      return;
+    }
     if (!allowFilters) setSelectedStore(null);
-  }, [allowFilters]);
+  }, [allowFilters, storeFilter]);
 
   const storeNames = useMemo(
     () => (board?.stores || []).map((store) => store.storeName),
@@ -458,7 +463,7 @@ export default function BonusesScreen({ session, onRequireLogin, onOpenEmails })
           × negative reviews — and how payouts split across employees.
         </Text>
 
-        {allowFilters ? (
+        {allowFilters && !storeFilter ? (
         <View style={styles.storeFilterRow}>
           <Pressable
             style={[styles.storeChip, !selectedStore && styles.storeChipActive]}

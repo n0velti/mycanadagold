@@ -661,7 +661,7 @@ function FintracRow({
   );
 }
 
-export default function FintracScreen({ session, onRequireLogin }) {
+export default function FintracScreen({ session, onRequireLogin, storeFilter }) {
   const { canFilter } = useAppAccess();
   const allowFilters = canFilter('fintrac');
   const initialRange = useMemo(() => defaultDateRange(31), []);
@@ -671,7 +671,7 @@ export default function FintracScreen({ session, onRequireLogin }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
-  const [selectedStore, setSelectedStore] = useState(null);
+  const [selectedStore, setSelectedStore] = useState(storeFilter || null);
   const [cashOnly, setCashOnly] = useState(true);
   const [fintracSession, setFintracSession] = useState(null);
   const [connectOpen, setConnectOpen] = useState(false);
@@ -708,9 +708,13 @@ export default function FintracScreen({ session, onRequireLogin }) {
   }, []);
 
   useEffect(() => {
+    if (storeFilter) {
+      setSelectedStore(storeFilter);
+      return;
+    }
     if (allowFilters) return;
     setSelectedStore(null);
-  }, [allowFilters]);
+  }, [allowFilters, storeFilter]);
 
   const applyIrsOverlay = useCallback((txRows, irsMap) => {
     if (!irsMap || irsMap.size === 0) return txRows;
@@ -1340,7 +1344,7 @@ export default function FintracScreen({ session, onRequireLogin }) {
       </View>
       ) : null}
 
-      {allowFilters ? (
+      {allowFilters && !storeFilter ? (
       <View style={styles.storeFilterRow}>
         <Pressable
           style={[styles.storeChip, !selectedStore && styles.storeChipActive]}
