@@ -28,6 +28,7 @@ import {
   normalizeReviewImages,
 } from '../lib/triageDraft';
 import TriageCorrectionImages from './TriageCorrectionImages';
+import { MOBILE, mobileSafeBottom } from '../lib/mobileUi';
 import {
   createClient,
   fetchLookupLocations,
@@ -36,6 +37,7 @@ import {
   searchClients,
   searchProducts,
 } from '../lib/triageLookups';
+import { catalogProductOptions, fetchWebsitePrices, filterCatalogProductOptions } from '../lib/websitePrices';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -145,12 +147,40 @@ function CorrectionPair({ original, value }) {
   );
 }
 
+function ReverseButton({ onPress, compact }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={8}
+      style={[styles.reverseButton, compact && styles.reverseButtonCompact]}
+      accessibilityRole="button"
+      accessibilityLabel="Reverse change"
+    >
+      <Ionicons name="arrow-undo" size={compact ? 13 : 14} color={ACCENT} />
+      <Text style={[styles.reverseButtonText, compact && styles.reverseButtonTextCompact]}>Reverse</Text>
+    </Pressable>
+  );
+}
+
+function ChangedOriginal({ field, onReverse, compact }) {
+  if (!fieldChanged(field)) return null;
+  return (
+    <View style={styles.changedRow}>
+      <Text style={[styles.struckText, styles.changedOriginal]} numberOfLines={1}>
+        {field.original || '—'}
+      </Text>
+      <ReverseButton onPress={onReverse} compact={compact} />
+    </View>
+  );
+}
+
 function CorrectableField({ label, field, onChange, compact, keyboardType, hideLabel }) {
   const changed = fieldChanged(field);
+  const reverse = () => onChange(field.original ?? '');
   return (
     <View style={[styles.fieldBlock, compact && styles.fieldBlockCompact]}>
       {label && !hideLabel ? <Text style={styles.fieldLabel}>{label}</Text> : null}
-      {changed ? <Text style={styles.struckText}>{field.original || '—'}</Text> : null}
+      <ChangedOriginal field={field} onReverse={reverse} compact={compact} />
       <TextInput
         style={[styles.fieldInput, changed && styles.fieldInputCorrected, compact && styles.fieldInputCompact]}
         value={field.value}
@@ -170,6 +200,7 @@ function LookupField({
   field,
   onChange,
   options,
+  filterOptions,
   onSearch,
   allowCustom = false,
   pickOnly = false,
@@ -190,6 +221,7 @@ function LookupField({
 
   const localResults = useMemo(() => {
     const list = options || [];
+    if (filterOptions) return filterOptions(list, query);
     const q = query.trim().toLowerCase();
     if (!q) return list.slice(0, 40);
     return list
@@ -199,7 +231,7 @@ function LookupField({
           String(option.sub || '').toLowerCase().includes(q),
       )
       .slice(0, 40);
-  }, [options, query]);
+  }, [filterOptions, options, query]);
 
   useEffect(() => {
     if (!onSearch || !open) return;
@@ -227,7 +259,19 @@ function LookupField({
     };
   }, [onSearch, query, open]);
 
-  const results = onSearch ? remote : localResults;
+  const results = useMemo(() => {
+    const seen = new Set();
+    const merged = [];
+    for (const option of [...localResults, ...(onSearch ? remote : [])]) {
+      const key = String(option?.label || '')
+        .trim()
+        .toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      merged.push(option);
+    }
+    return merged.slice(0, 40);
+  }, [localResults, onSearch, remote]);
   const showCustom =
     allowCustom &&
     query.trim() &&
@@ -253,10 +297,17 @@ function LookupField({
     }
   };
 
+  const reverse = () => {
+    const original = field.original ?? '';
+    onChange(original);
+    setQuery(original);
+    setOpen(false);
+  };
+
   return (
     <View style={[styles.fieldBlock, styles.lookupBlock, compact && styles.fieldBlockCompact]}>
       {label && !hideLabel ? <Text style={styles.fieldLabel}>{label}</Text> : null}
-      {changed ? <Text style={styles.struckText}>{field.original || '—'}</Text> : null}
+      <ChangedOriginal field={field} onReverse={reverse} compact={compact} />
       <View style={styles.lookupRow}>
         <View style={styles.lookupInputWrap}>
           <TextInput
@@ -296,7 +347,7 @@ function LookupField({
           ) : null}
           {results.length === 0 && !busy ? (
             <Text style={styles.lookupEmpty}>
-              {onSearch && query.trim().length < 2
+              {onSearch && query.trim().length < 2 && localResults.length === 0
                 ? 'Type at least 2 characters'
                 : pickOnly
                   ? 'No matching value'
@@ -428,6 +479,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
   const [images, setImages] = useState([]);
   const [locations, setLocations] = useState([]);
   const [employees, setEmployees] = useState([]);
+  const [pricingOptions, setPricingOptions] = useState([]);
   const [addingCustomer, setAddingCustomer] = useState(false);
   const detailRequestId = useRef(0);
 
@@ -493,6 +545,21 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
         if (id === detailRequestId.current) setDetailLoading(false);
       });
   }, [reset, review, row, session, visible]);
+
+  useEffect(() => {
+    if (!visible) return undefined;
+    let cancelled = false;
+    fetchWebsitePrices()
+      .then((catalog) => {
+        if (!cancelled) setPricingOptions(catalogProductOptions(catalog));
+      })
+      .catch(() => {
+        if (!cancelled) setPricingOptions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [visible]);
 
   useEffect(() => {
     if (!visible || !session || !activeRow) return;
@@ -594,9 +661,9 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
           >
             <View style={styles.titleBlock}>
               {step === 'note' ? (
-                <Pressable onPress={() => setStep('edit')} style={styles.backRow} hitSlop={8}>
-                  <Ionicons name="chevron-back" size={18} color={ACCENT} />
-                  <Text style={styles.backText}>Back</Text>
+                <Pressable onPress={() => setStep('edit')} style={[styles.backRow, isMobile && styles.iosBackRow]} hitSlop={8}>
+                  <Ionicons name="chevron-back" size={isMobile ? 28 : 18} color={isMobile ? MOBILE.blue : ACCENT} />
+                  <Text style={[styles.backText, isMobile && styles.iosBackText]}>Back</Text>
                 </Pressable>
               ) : null}
               <Text style={styles.drawerTitle} numberOfLines={1}>
@@ -605,11 +672,16 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
               <Text style={styles.drawerSub}>
                 {step === 'note'
                   ? 'Add a note, photos, the type of error, and the dollar amount, then finish.'
-                  : 'Edit any field. The original stays struck through with the correction under it.'}
+                  : 'Edit any field. Capture a photo to attach it to this PO/SO and show the error.'}
               </Text>
             </View>
-            <Pressable onPress={onClose} hitSlop={8} style={styles.closeButton} accessibilityLabel="Close">
-              <Ionicons name="close" size={18} color={TEXT} />
+            <Pressable
+              onPress={onClose}
+              hitSlop={8}
+              style={[styles.closeButton, isMobile && styles.iosClose]}
+              accessibilityLabel="Close"
+            >
+              <Ionicons name="close" size={isMobile ? 28 : 18} color={isMobile ? MOBILE.secondary : TEXT} />
             </Pressable>
           </View>
 
@@ -710,10 +782,14 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
                         <LookupField
                           label="Product"
                           field={item.name}
+                          options={pricingOptions}
+                          filterOptions={(list, query) =>
+                            filterCatalogProductOptions(list, query, item.name.original)
+                          }
                           onSearch={searchProductOptions}
                           allowCustom
                           onChange={(value) => updateItem(item.id, 'name', value)}
-                          placeholder="Search product or type custom"
+                          placeholder="Search pricing or type custom"
                         />
                         <View style={styles.mobileItemRow}>
                           <View style={styles.mobileItemField}>
@@ -769,10 +845,14 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
                             hideLabel
                             compact
                             field={item.name}
+                            options={pricingOptions}
+                            filterOptions={(list, query) =>
+                              filterCatalogProductOptions(list, query, item.name.original)
+                            }
                             onSearch={searchProductOptions}
                             allowCustom
                             onChange={(value) => updateItem(item.id, 'name', value)}
-                            placeholder="Search product or type custom"
+                            placeholder="Search pricing or type custom"
                           />
                         </View>
                         <View style={styles.lineColQty}>
@@ -824,6 +904,8 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
                     ))}
                   </>
                 ) : null}
+
+                <TriageCorrectionImages images={images} onChange={setImages} compact={isMobile} />
               </ScrollView>
 
               <Pressable style={styles.primaryButton} onPress={() => setStep('note')}>
@@ -935,8 +1017,9 @@ const styles = StyleSheet.create({
     }),
   },
   drawerPanelMobile: {
-    paddingHorizontal: 14,
-    paddingBottom: Platform.OS === 'ios' ? 28 : 14,
+    paddingHorizontal: 16,
+    paddingBottom: Platform.OS === 'ios' ? Math.max(28, mobileSafeBottom() + 8) : 16,
+    backgroundColor: MOBILE.bg,
   },
   drawerTopBar: {
     flexDirection: 'row',
@@ -966,6 +1049,20 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: ACCENT,
+  },
+  iosBackRow: {
+    minHeight: 44,
+    marginBottom: 0,
+  },
+  iosBackText: {
+    fontSize: 17,
+    fontWeight: '400',
+    color: MOBILE.blue,
+  },
+  iosClose: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
   },
   drawerTitle: {
     fontFamily,
@@ -1048,6 +1145,43 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: SECONDARY,
+  },
+  changedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  changedOriginal: {
+    flex: 1,
+    minWidth: 0,
+  },
+  reverseButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    flexShrink: 0,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: '#FFF7ED',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  reverseButtonCompact: {
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+  },
+  reverseButtonText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: ACCENT,
+  },
+  reverseButtonTextCompact: {
+    fontSize: 12,
   },
   fieldInput: {
     fontFamily,
@@ -1324,9 +1458,10 @@ const styles = StyleSheet.create({
   },
   typeChip: {
     backgroundColor: FILL,
-    borderRadius: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    minHeight: 36,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},

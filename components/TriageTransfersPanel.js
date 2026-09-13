@@ -1,6 +1,9 @@
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
+  Easing,
+  FlatList,
   Image,
   Modal,
   Platform,
@@ -9,8 +12,10 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
+import { MOBILE, mobileSafeBottom, useIsMobile } from '../lib/mobileUi';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
 import { fetchTransferStores } from '../lib/locations';
@@ -21,15 +26,20 @@ import {
   fetchTransactions,
   formatDateParam,
   formatPickerDate,
+  formatTransactionDate,
   parseDateParam,
   parseDocReference,
   resolvePosAuthForRow,
   rowFromDocument,
 } from '../lib/transactions';
+import { textMatchesQuery } from '../lib/itemSearch';
 import {
+  RECEIVE_STATUS,
   RECEIVE_STATUS_LABELS,
   persistTransferWorkflowNow,
   plannedForTriageStore,
+  plannedWorkshopTransfersForStore,
+  transferGoesToWorkshop,
   updateTriageTransfers,
   useTransferWorkflow,
 } from '../lib/transferWorkflow';
@@ -54,6 +64,136 @@ const STORE_TABS = [
   { key: 'melt', label: 'Melt', icon: 'flame-outline' },
   { key: 'bullion', label: 'Bullion', icon: 'diamond-outline' },
 ];
+
+if (Platform.OS === 'web' && typeof document !== 'undefined') {
+  const styleId = 'cgold-triage-feed-snap';
+  let style = document.getElementById(styleId);
+  if (!style) {
+    style = document.createElement('style');
+    style.id = styleId;
+    document.head.appendChild(style);
+  }
+  style.textContent = [
+    '.cgold-triage-feed{height:100%;overflow-y:auto;scroll-snap-type:y mandatory;-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain;}',
+    '.cgold-triage-feed-page{scroll-snap-align:start;scroll-snap-stop:always;}',
+  ].join('');
+}
+
+const DRAWER_OPEN_MS = 280;
+const DRAWER_CLOSE_MS = 220;
+
+function useHeldValue(value) {
+  const held = useRef(value);
+  if (value != null) held.current = value;
+  return value ?? held.current;
+}
+
+function useRightDrawerAnimation(visible, slideDistance) {
+  const [mounted, setMounted] = useState(visible);
+  const slide = useRef(new Animated.Value(slideDistance)).current;
+  const backdrop = useRef(new Animated.Value(0)).current;
+  const slideDistanceRef = useRef(slideDistance);
+  const activeAnim = useRef(null);
+  slideDistanceRef.current = slideDistance;
+
+  useEffect(() => {
+    if (!mounted) slide.setValue(slideDistance);
+  }, [slideDistance, mounted, slide]);
+
+  useEffect(() => {
+    if (visible) {
+      setMounted(true);
+      return undefined;
+    }
+    if (!mounted) return undefined;
+
+    const anim = Animated.parallel([
+      Animated.timing(slide, {
+        toValue: slideDistanceRef.current,
+        duration: DRAWER_CLOSE_MS,
+        easing: Easing.bezier(0.4, 0, 0.2, 1),
+        useNativeDriver: true,
+      }),
+      Animated.timing(backdrop, {
+        toValue: 0,
+        duration: DRAWER_CLOSE_MS,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }),
+    ]);
+    activeAnim.current = anim;
+    anim.start(({ finished }) => {
+      if (activeAnim.current === anim) activeAnim.current = null;
+      if (finished) setMounted(false);
+    });
+    return () => {
+      if (activeAnim.current === anim) {
+        anim.stop();
+        activeAnim.current = null;
+      }
+    };
+  }, [visible, mounted, slide, backdrop]);
+
+  useEffect(() => {
+    if (!visible || !mounted) return undefined;
+    slide.setValue(slideDistanceRef.current);
+    backdrop.setValue(0);
+    let cancelled = false;
+    const raf = requestAnimationFrame(() => {
+      if (cancelled) return;
+      Animated.parallel([
+        Animated.timing(slide, {
+          toValue: 0,
+          duration: DRAWER_OPEN_MS,
+          easing: Easing.bezier(0.22, 1, 0.36, 1),
+          useNativeDriver: true,
+        }),
+        Animated.timing(backdrop, {
+          toValue: 1,
+          duration: DRAWER_OPEN_MS,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]).start();
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+    };
+  }, [visible, mounted, slide, backdrop]);
+
+  return { mounted, slide, backdrop };
+}
+
+function posTransferToRow(transfer) {
+  const received = String(transfer.status || '').toLowerCase() === 'received';
+  const partial = !received && Number(transfer.receivedQty) > 0;
+  return {
+    id: `pos-${transfer.id}`,
+    reference: transfer.reference || (transfer.id ? `TR# ${transfer.id}` : 'Transfer'),
+    dateKey: transfer.date || '',
+    dateLabel: transfer.date ? formatPickerDate(transfer.date) : '',
+    note: transfer.comments || '',
+    fromName: transfer.from?.name || '',
+    toName: transfer.to?.name || '',
+    pathLabels: [transfer.from?.name, transfer.to?.name].filter(Boolean),
+    items: (transfer.items || []).map((item, index) => ({
+      id: item.id || `pos-item-${transfer.id}-${index}`,
+      productName: item.name || 'Item',
+      sku: item.sku || '',
+      fromName: transfer.from?.name || '',
+      toName: transfer.to?.name || '',
+      sentQty: item.quantity || 0,
+      receivedQty: item.receivedQuantity,
+    })),
+    receiveStatus: received
+      ? RECEIVE_STATUS.all_received
+      : partial
+        ? RECEIVE_STATUS.partially_received
+        : RECEIVE_STATUS.not_received,
+    aureusId: transfer.id != null ? String(transfer.id) : null,
+  };
+}
 
 function newId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -110,11 +250,152 @@ function matchesDocQuery(row, query) {
     return true;
   }
   if (digits && String(row.sourceId || '').includes(digits)) return true;
-  const hay = [row.reference, row.sourceId, row.customerName, row.dateLabel]
+  const hay = [row.reference, row.sourceId, row.customerName, row.employeeName, row.storeName, row.dateLabel]
     .filter(Boolean)
     .join(' ')
     .toLowerCase();
   return hay.includes(q.toLowerCase());
+}
+
+function uniqueLabels(values) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of values) {
+    const label = String(raw || '').trim();
+    if (!label || label === '—') continue;
+    const key = label.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(label);
+  }
+  return out.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
+function rowTime(row) {
+  const raw = row?.date;
+  if (!raw) return 0;
+  const time = Date.parse(String(raw).replace(' ', 'T'));
+  return Number.isFinite(time) ? time : 0;
+}
+
+function listedDateRange(rows) {
+  const times = (rows || []).map(rowTime).filter(Boolean).sort((a, b) => a - b);
+  if (!times.length) return '';
+  const start = formatTransactionDate(new Date(times[0]).toISOString());
+  const end = formatTransactionDate(new Date(times[times.length - 1]).toISOString());
+  return start === end ? start : `${start} – ${end}`;
+}
+
+function rowPersonLabels(row) {
+  return uniqueLabels([row?.customerName, row?.employeeName]);
+}
+
+function rowProductHay(row) {
+  const reviewItems = row?.review?.draft?.items || [];
+  return [
+    ...(row?.itemNames || []),
+    ...(row?.pricedLines || []).map((line) => line?.name),
+    row?.itemSearchText,
+    ...reviewItems.map((item) => item?.name?.value || item?.name?.original),
+  ]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .join(' ');
+}
+
+function matchesLabelFilter(value, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return true;
+  return String(value || '').toLowerCase().includes(q);
+}
+
+function matchesPersonFilter(row, query) {
+  const q = String(query || '').trim();
+  if (!q) return true;
+  return rowPersonLabels(row).some((label) => matchesLabelFilter(label, q));
+}
+
+function matchesProductFilter(row, query) {
+  const q = String(query || '').trim();
+  if (!q) return true;
+  return textMatchesQuery(rowProductHay(row), q);
+}
+
+function FilterPicker({ label, value, onChange, options, placeholder, compact }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState(value || '');
+
+  useEffect(() => {
+    setQuery(value || '');
+  }, [value]);
+
+  const results = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const list = options || [];
+    if (!q) return list.slice(0, 20);
+    return list.filter((option) => option.toLowerCase().includes(q)).slice(0, 20);
+  }, [options, query]);
+
+  const commit = (next) => {
+    const text = String(next || '').trim();
+    onChange(text);
+    setQuery(text);
+    setOpen(false);
+  };
+
+  return (
+    <View style={[styles.filterField, compact && styles.filterFieldCompact]}>
+      {compact ? null : <Text style={styles.filterLabel}>{label}</Text>}
+      <View style={[styles.filterInputWrap, compact && styles.filterInputWrapCompact]}>
+        <TextInput
+          style={styles.filterInput}
+          value={query}
+          onChangeText={(next) => {
+            setQuery(next);
+            onChange(next);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => {
+            setTimeout(() => setOpen(false), 160);
+          }}
+          placeholder={placeholder}
+          placeholderTextColor={SECONDARY}
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        {query ? (
+          <Pressable
+            onPress={() => commit('')}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={`Clear ${label} filter`}
+          >
+            <Ionicons name="close-circle" size={16} color="#c7c7cc" />
+          </Pressable>
+        ) : null}
+      </View>
+      {open && results.length > 0 ? (
+        <ScrollView
+          style={[styles.filterMenu, compact && styles.filterMenuCompact]}
+          keyboardShouldPersistTaps="handled"
+          nestedScrollEnabled
+        >
+          {results.map((option) => (
+            <Pressable
+              key={option}
+              style={styles.filterOption}
+              onPress={() => commit(option)}
+            >
+              <Text style={styles.filterOptionText} numberOfLines={1}>
+                {option}
+              </Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+      ) : null}
+    </View>
+  );
 }
 
 function DateField({ value, onChange, minimumDate, maximumDate }) {
@@ -221,10 +502,10 @@ function EmptyState({ icon, title, body }) {
   );
 }
 
-function ListRow({ title, meta, subtitle, subtitleLines = 1, onPress, accessibilityLabel }) {
+function ListRow({ title, meta, subtitle, subtitleLines = 1, onPress, accessibilityLabel, mobile, last }) {
   return (
     <Pressable
-      style={styles.listRow}
+      style={[styles.listRow, mobile && styles.listRowMobile, mobile && last && styles.listRowMobileLast]}
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel || title}
@@ -341,10 +622,18 @@ async function lastPosTransferDate(session, store) {
   return matches[0]?.date || null;
 }
 
+const ADD_MODES = [
+  { key: 'range', label: 'Date range' },
+  { key: 'doc', label: 'PO / SO' },
+];
+
 function DateRangeModal({
   visible,
   onClose,
   onConfirm,
+  onAddDoc,
+  auth,
+  existingIds,
   busy,
   error,
   session,
@@ -352,6 +641,8 @@ function DateRangeModal({
   transfers,
   currentDateKey,
 }) {
+  const isMobile = useIsMobile();
+  const [mode, setMode] = useState('range');
   const [start, setStart] = useState(() => defaultDateRange(7).start);
   const [end, setEnd] = useState(() => defaultDateRange(7).end);
   const [lastBusy, setLastBusy] = useState(false);
@@ -361,6 +652,7 @@ function DateRangeModal({
   useEffect(() => {
     if (!visible) return;
     const next = defaultDateRange(7);
+    setMode('range');
     setStart(next.start);
     setEnd(next.end);
     setLastHint('');
@@ -407,71 +699,118 @@ function DateRangeModal({
   const waiting = busy || lastBusy;
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.modalBackdrop}>
+    <Modal visible={visible} transparent animationType={isMobile ? 'slide' : 'fade'} onRequestClose={onClose}>
+      <View style={[styles.modalBackdrop, isMobile && styles.sheetBackdropBottom]}>
         <Pressable style={StyleSheet.absoluteFill} onPress={waiting ? undefined : onClose} />
-        <View style={styles.smallCard}>
-          <Text style={styles.modalTitle}>Add purchases</Text>
-          <Text style={styles.modalSub}>Choose the date range to load POs from this store.</Text>
-          <View style={styles.rangeRow}>
-            <View style={styles.rangeField}>
-              <Text style={styles.rangeLabel}>Start</Text>
-              <DateField value={start} onChange={setStart} maximumDate={end} />
-            </View>
-            <View style={styles.rangeField}>
-              <Text style={styles.rangeLabel}>End</Text>
-              <DateField value={end} onChange={setEnd} minimumDate={start} />
-            </View>
+        <View style={[styles.smallCard, isMobile && styles.sheetCardBottom]}>
+          {isMobile ? <View style={styles.sheetGrabber} /> : null}
+          <Text style={styles.modalTitle}>Add</Text>
+          <View style={styles.addModeRow} accessibilityRole="tablist">
+            {ADD_MODES.map((option) => {
+              const active = mode === option.key;
+              return (
+                <Pressable
+                  key={option.key}
+                  style={[styles.kindChip, active && styles.kindChipActive]}
+                  onPress={() => {
+                    if (!waiting) setMode(option.key);
+                  }}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: active }}
+                  accessibilityLabel={option.label}
+                >
+                  <Text style={[styles.kindChipText, active && styles.kindChipTextActive]}>{option.label}</Text>
+                </Pressable>
+              );
+            })}
           </View>
-          {lastHint ? <Text style={styles.lastTransferHint}>{lastHint}</Text> : null}
-          {localError || error ? <Text style={styles.errorText}>{localError || error}</Text> : null}
-          <Pressable
-            style={styles.lastTransferButton}
-            onPress={fromLastTransfer}
-            disabled={waiting}
-            accessibilityRole="button"
-            accessibilityLabel="From last transfer"
-          >
-            {lastBusy ? (
-              <ActivityIndicator color={ACCENT} />
-            ) : (
-              <Text style={styles.lastTransferButtonText}>From last transfer</Text>
-            )}
-          </Pressable>
-          <View style={styles.modalActions}>
-            <Pressable style={styles.secondaryButton} onPress={onClose} disabled={waiting}>
-              <Text style={styles.secondaryButtonText}>Cancel</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.primaryButton, styles.primaryButtonInline, waiting && styles.primaryButtonDisabled]}
-              onPress={() => confirm()}
-              disabled={waiting}
-            >
-              {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Add</Text>}
-            </Pressable>
-          </View>
+          {mode === 'doc' ? (
+            <SpecificDocSearch
+              store={store}
+              auth={auth}
+              existingIds={existingIds}
+              onAdd={onAddDoc}
+              onClose={onClose}
+            />
+          ) : (
+            <>
+              <Text style={styles.modalSub}>Choose the date range to load POs from this store.</Text>
+              <View style={styles.rangeRow}>
+                <View style={styles.rangeField}>
+                  <Text style={styles.rangeLabel}>Start</Text>
+                  <DateField value={start} onChange={setStart} maximumDate={end} />
+                </View>
+                <View style={styles.rangeField}>
+                  <Text style={styles.rangeLabel}>End</Text>
+                  <DateField value={end} onChange={setEnd} minimumDate={start} />
+                </View>
+              </View>
+              {lastHint ? <Text style={styles.lastTransferHint}>{lastHint}</Text> : null}
+              {localError || error ? <Text style={styles.errorText}>{localError || error}</Text> : null}
+              <Pressable
+                style={styles.lastTransferButton}
+                onPress={fromLastTransfer}
+                disabled={waiting}
+                accessibilityRole="button"
+                accessibilityLabel="From last transfer"
+              >
+                {lastBusy ? (
+                  <ActivityIndicator color={ACCENT} />
+                ) : (
+                  <Text style={styles.lastTransferButtonText}>From last transfer</Text>
+                )}
+              </Pressable>
+              <View style={styles.modalActions}>
+                <Pressable style={styles.secondaryButton} onPress={onClose} disabled={waiting}>
+                  <Text style={styles.secondaryButtonText}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.primaryButton, styles.primaryButtonInline, waiting && styles.primaryButtonDisabled]}
+                  onPress={() => confirm()}
+                  disabled={waiting}
+                >
+                  {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Add</Text>}
+                </Pressable>
+              </View>
+            </>
+          )}
         </View>
       </View>
     </Modal>
   );
 }
 
-function MeltPoRow({ row, onOpen, onToggleReceived, onRemove }) {
+function poKindLabel(row) {
+  return row?.type === 'order' ? 'SO' : 'PO';
+}
+
+function poListTitle(row) {
+  return [row?.reference, row?.dateLabel].filter(Boolean).join(' · ');
+}
+
+function poListSubtitle(row) {
+  const items = Array.isArray(row?.itemNames) ? row.itemNames.filter(Boolean) : [];
+  const itemBit =
+    items.length === 0 ? '' : items.length === 1 ? items[0] : `${items[0]} +${items.length - 1}`;
+  return [
+    row?.customerName,
+    row?.storeName,
+    itemBit,
+    row?.review ? 'Reviewed' : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+function MeltPoRow({ row, onOpen, onToggleReceived, onRemove, mobile }) {
   const received = Boolean(row.received);
   const reviewed = Boolean(row.review);
-  const reviewBits = [
-    row.review?.corrections?.length
-      ? `${row.review.corrections.length} correction${row.review.corrections.length === 1 ? '' : 's'}`
-      : '',
-    row.review?.note ? 'Note' : '',
-    row.review?.images?.length
-      ? `${row.review.images.length} photo${row.review.images.length === 1 ? '' : 's'}`
-      : '',
-  ].filter(Boolean);
+  const title = poListTitle(row);
+  const subtitle = poListSubtitle(row);
 
   return (
     <Pressable
-      style={styles.poRow}
+      style={[styles.poRow, mobile && styles.poRowMobile]}
       onPress={() => onOpen(row)}
       accessibilityRole="button"
       accessibilityLabel={`Open ${row.reference}`}
@@ -480,53 +819,348 @@ function MeltPoRow({ row, onOpen, onToggleReceived, onRemove }) {
       <PoThumb urls={row.imageUrls} label={row.reference} />
       <View style={styles.poRowText}>
         <Text style={styles.poRef} numberOfLines={1}>
-          {row.reference}
+          {title}
         </Text>
-        <Text style={styles.poSub} numberOfLines={1}>
-          {[row.dateLabel, row.customerName].filter(Boolean).join(' · ')}
+        <Text style={[styles.poSub, reviewed && styles.poReview]} numberOfLines={1}>
+          {subtitle || '—'}
         </Text>
-        {reviewed ? (
-          <Text style={styles.poReview} numberOfLines={1}>
-            {reviewBits.join(' · ') || 'Reviewed'}
-          </Text>
-        ) : null}
       </View>
-      <Pressable
-        style={styles.receivedGroup}
-        onPress={(event) => {
-          event?.stopPropagation?.();
-          onToggleReceived(row.id);
-        }}
-        accessibilityRole="button"
-        accessibilityLabel={received ? `${row.reference} received` : `Mark ${row.reference} received`}
-        accessibilityState={{ selected: received }}
-      >
-        <Ionicons
-          name={received ? 'checkmark-circle' : 'checkmark-circle-outline'}
-          size={22}
-          color={received ? GREEN : '#c7c7cc'}
-        />
-        <View style={[styles.receivedButton, received && styles.receivedButtonOn]}>
-          <Text style={[styles.receivedButtonText, received && styles.receivedButtonTextOn]}>Received</Text>
-        </View>
-      </Pressable>
-      <Pressable
-        style={styles.removePoButton}
-        onPress={(event) => {
-          event?.stopPropagation?.();
-          onRemove(row.id);
-        }}
-        hitSlop={8}
-        accessibilityRole="button"
-        accessibilityLabel={`Remove ${row.reference}`}
-      >
-        <Ionicons name="close-circle" size={22} color={SECONDARY} />
-      </Pressable>
+      <View style={styles.poRowActionsInline}>
+        <Pressable
+          style={[styles.receivedButton, received && styles.receivedButtonOn]}
+          onPress={(event) => {
+            event?.stopPropagation?.();
+            onToggleReceived(row.id);
+          }}
+          accessibilityRole="button"
+          accessibilityLabel={received ? `${row.reference} received` : `Receive ${row.reference}`}
+          accessibilityState={{ selected: received }}
+        >
+          <Text style={[styles.receivedButtonText, received && styles.receivedButtonTextOn]}>
+            {received ? 'Received' : 'Receive'}
+          </Text>
+        </Pressable>
+        <Pressable
+          style={styles.removePoButton}
+          onPress={(event) => {
+            event?.stopPropagation?.();
+            onRemove(row.id);
+          }}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={`Remove ${row.reference}`}
+        >
+          <Ionicons name="close-circle" size={22} color={SECONDARY} />
+        </Pressable>
+      </View>
     </Pressable>
   );
 }
 
-function SpecificDocModal({ visible, store, auth, existingIds, onClose, onAdd }) {
+function FeedHero({ urls, label }) {
+  const photos = Array.isArray(urls) ? urls.filter(Boolean) : [];
+  const [index, setIndex] = useState(0);
+  const [failed, setFailed] = useState(false);
+  const photo = photos[index] || photos[0] || '';
+
+  useEffect(() => {
+    setIndex(0);
+    setFailed(false);
+  }, [photos[0], photos.length]);
+
+  const cycle = () => {
+    if (photos.length < 2) return;
+    setFailed(false);
+    setIndex((current) => (current + 1) % photos.length);
+  };
+
+  return (
+    <Pressable
+      style={styles.feedHero}
+      onPress={cycle}
+      disabled={photos.length < 2}
+      accessibilityRole={photos.length > 1 ? 'button' : 'image'}
+      accessibilityLabel={
+        photos.length > 1 ? `${label} photo ${index + 1} of ${photos.length}` : `${label} photo`
+      }
+    >
+      {!photo || failed ? (
+        <View style={styles.feedHeroPlaceholder}>
+          <Ionicons name="image-outline" size={42} color="rgba(255,255,255,0.42)" />
+          <Text style={styles.feedHeroPlaceholderText}>No purchase photo</Text>
+        </View>
+      ) : (
+        <Image
+          source={{ uri: photo }}
+          style={styles.feedHeroImage}
+          resizeMode="contain"
+          onError={() => setFailed(true)}
+        />
+      )}
+      {photos.length > 1 ? (
+        <View style={styles.feedHeroDots}>
+          {photos.slice(0, 6).map((url, dot) => (
+            <View
+              key={`${url}-${dot}`}
+              style={[styles.feedHeroDot, dot === index && styles.feedHeroDotOn]}
+            />
+          ))}
+        </View>
+      ) : null}
+    </Pressable>
+  );
+}
+
+function MeltPoFeedCard({ row, index, total, mobile, onOpen, onToggleReceived, onRemove }) {
+  const received = Boolean(row.received);
+  const reviewed = Boolean(row.review);
+  const isBuy = row.type !== 'order';
+  const lines = Array.isArray(row.pricedLines) ? row.pricedLines.filter((line) => line?.name) : [];
+  const extraLines = Math.max(0, lines.length - 3);
+
+  return (
+    <View style={[styles.feedCard, mobile && styles.feedCardMobile]}>
+      <View style={styles.feedTop}>
+        <View style={styles.feedTopText}>
+          <View style={styles.feedTitleRow}>
+            <Text style={[styles.feedKind, isBuy && styles.feedKindBuy]}>{poKindLabel(row)}</Text>
+            <Text style={styles.feedRef} numberOfLines={1}>
+              {row.reference}
+            </Text>
+          </View>
+          <Text style={styles.feedMeta} numberOfLines={1}>
+            {[row.dateLabel, row.timeLabel, row.storeName].filter(Boolean).join(' · ')}
+          </Text>
+        </View>
+        <Text style={styles.feedCount}>
+          {index + 1} / {total}
+        </Text>
+        <Pressable
+          style={styles.feedIconButton}
+          onPress={() => onRemove(row.id)}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={`Remove ${row.reference}`}
+        >
+          <Ionicons name="close" size={18} color="rgba(255,255,255,0.72)" />
+        </Pressable>
+      </View>
+
+      <FeedHero urls={row.imageUrls} label={row.reference} />
+
+      <View style={styles.feedDetails}>
+        <Text style={styles.feedBuyer} numberOfLines={1}>
+          {[row.customerName || '—', row.amountLabel].filter(Boolean).join(' · ')}
+        </Text>
+        <Text style={styles.feedMeta} numberOfLines={1}>
+          {[
+            row.employeeName ? `Staff ${row.employeeName}` : '',
+            row.paymentMethodLabel,
+            reviewed ? 'Reviewed' : '',
+          ]
+            .filter(Boolean)
+            .join(' · ') || 'Purchase details'}
+        </Text>
+        {lines.length > 0 ? (
+          <View style={styles.feedLines}>
+            {lines.slice(0, 3).map((line, lineIndex) => (
+              <Text
+                key={`${row.id}-line-${lineIndex}`}
+                style={styles.feedLine}
+                numberOfLines={1}
+              >
+                {line.name}
+                {Number(line.quantity) > 1 ? ` · ×${line.quantity}` : ''}
+              </Text>
+            ))}
+            {extraLines > 0 ? (
+              <Text style={styles.feedLineMuted}>+{extraLines} more</Text>
+            ) : null}
+          </View>
+        ) : row.itemNames?.length ? (
+          <Text style={styles.feedLine} numberOfLines={2}>
+            {row.itemNames.filter(Boolean).join(' · ')}
+          </Text>
+        ) : null}
+      </View>
+
+      <View style={styles.feedActions}>
+        <Pressable
+          style={styles.feedEditButton}
+          onPress={() => onOpen(row)}
+          accessibilityRole="button"
+          accessibilityLabel={`Edit or correct ${row.reference}`}
+        >
+          <Ionicons name="create-outline" size={18} color="#fff" />
+          <Text style={styles.feedEditButtonText}>Edit / Correct</Text>
+        </Pressable>
+        <Pressable
+          style={[styles.feedReceiveButton, received && styles.feedReceiveButtonOn]}
+          onPress={() => onToggleReceived(row.id)}
+          accessibilityRole="button"
+          accessibilityLabel={received ? `${row.reference} received` : `Receive ${row.reference}`}
+          accessibilityState={{ selected: received }}
+        >
+          <Text style={[styles.feedReceiveButtonText, received && styles.feedReceiveButtonTextOn]}>
+            {received ? 'Received' : 'Receive'}
+          </Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+function MeltPoFeed({ rows, mobile, onOpen, onToggleReceived, onRemove }) {
+  const [pageH, setPageH] = useState(0);
+
+  return (
+    <View
+      style={styles.feedShell}
+      onLayout={(event) => {
+        const next = Math.round(event.nativeEvent.layout.height);
+        if (next > 0 && next !== pageH) setPageH(next);
+      }}
+    >
+      {pageH > 0 ? (
+        <FlatList
+          data={rows}
+          keyExtractor={(row) => row.id}
+          pagingEnabled
+          decelerationRate="fast"
+          snapToInterval={pageH}
+          snapToAlignment="start"
+          disableIntervalMomentum
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+          getItemLayout={(_, index) => ({ length: pageH, offset: pageH * index, index })}
+          style={[styles.feedList, { height: pageH }]}
+          {...(Platform.OS === 'web' ? { className: 'cgold-triage-feed' } : null)}
+          renderItem={({ item, index }) => (
+            <View
+              style={[styles.feedPage, { height: pageH }, mobile && styles.feedPageMobile]}
+              {...(Platform.OS === 'web' ? { className: 'cgold-triage-feed-page' } : null)}
+            >
+              <MeltPoFeedCard
+                row={item}
+                index={index}
+                total={rows.length}
+                mobile={mobile}
+                onOpen={onOpen}
+                onToggleReceived={onToggleReceived}
+                onRemove={onRemove}
+              />
+            </View>
+          )}
+        />
+      ) : null}
+    </View>
+  );
+}
+
+function MeltViewToggle({ value, onChange }) {
+  return (
+    <View style={styles.viewToggle} accessibilityRole="tablist">
+      {[
+        { key: 'classic', icon: 'list-outline', label: 'Classic list' },
+        { key: 'feed', icon: 'phone-portrait-outline', label: 'Feed view' },
+      ].map((option) => {
+        const active = value === option.key;
+        return (
+          <Pressable
+            key={option.key}
+            style={[styles.viewToggleButton, active && styles.viewToggleButtonOn]}
+            onPress={() => onChange(option.key)}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: active }}
+            accessibilityLabel={option.label}
+          >
+            <Ionicons name={option.icon} size={16} color={active ? '#fff' : TEXT} />
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+function MeltToolbarFields({
+  mobile,
+  docQuery,
+  setDocQuery,
+  listedRange,
+  filtersActive,
+  visibleCount,
+  totalCount,
+  showFilters,
+  storeFilter,
+  setStoreFilter,
+  storeOptions,
+  personFilter,
+  setPersonFilter,
+  personOptions,
+  productFilter,
+  setProductFilter,
+  productOptions,
+}) {
+  return (
+    <>
+      <View style={[styles.searchField, styles.meltSearchInline, mobile && styles.searchFieldMobile]}>
+        <Ionicons name="search" size={16} color={SECONDARY} style={styles.searchIcon} />
+        <TextInput
+          style={styles.searchInput}
+          value={docQuery}
+          onChangeText={setDocQuery}
+          placeholder="Search PO# or SO#"
+          placeholderTextColor={SECONDARY}
+          autoCapitalize="characters"
+          autoCorrect={false}
+          clearButtonMode="while-editing"
+          accessibilityLabel={
+            listedRange
+              ? `Search PO or SO. ${listedRange}. ${
+                  filtersActive ? `${visibleCount} of ${totalCount}` : visibleCount
+                } documents`
+              : 'Search PO or SO'
+          }
+        />
+        {docQuery ? (
+          <Pressable onPress={() => setDocQuery('')} hitSlop={8} accessibilityRole="button">
+            <Ionicons name="close-circle" size={18} color="#c7c7cc" />
+          </Pressable>
+        ) : null}
+      </View>
+      {showFilters ? (
+        <>
+          <FilterPicker
+            compact
+            label="Store"
+            value={storeFilter}
+            onChange={setStoreFilter}
+            options={storeOptions}
+            placeholder="Store"
+          />
+          <FilterPicker
+            compact
+            label="Person"
+            value={personFilter}
+            onChange={setPersonFilter}
+            options={personOptions}
+            placeholder="Person"
+          />
+          <FilterPicker
+            compact
+            label="Product"
+            value={productFilter}
+            onChange={setProductFilter}
+            options={productOptions}
+            placeholder="Product"
+          />
+        </>
+      ) : null}
+    </>
+  );
+}
+
+function SpecificDocSearch({ store, auth, existingIds, onClose, onAdd }) {
   const [kind, setKind] = useState('PO');
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
@@ -535,13 +1169,12 @@ function SpecificDocModal({ visible, store, auth, existingIds, onClose, onAdd })
   const searchGen = useRef(0);
 
   useEffect(() => {
-    if (!visible) return;
     setKind('PO');
     setValue('');
     setBusy(false);
     setError('');
     setResults([]);
-  }, [visible]);
+  }, [store?.id]);
 
   const runSearch = useCallback(
     async (raw, selectedKind) => {
@@ -621,7 +1254,6 @@ function SpecificDocModal({ visible, store, auth, existingIds, onClose, onAdd })
   );
 
   useEffect(() => {
-    if (!visible) return;
     const query = value.trim();
     if (!query) {
       setResults([]);
@@ -632,9 +1264,7 @@ function SpecificDocModal({ visible, store, auth, existingIds, onClose, onAdd })
       runSearch(query, kind);
     }, 350);
     return () => clearTimeout(timer);
-  }, [kind, runSearch, value, visible]);
-
-  if (!visible) return null;
+  }, [kind, runSearch, value]);
 
   const pick = (row) => {
     if ((existingIds || []).includes(row.id)) {
@@ -645,11 +1275,7 @@ function SpecificDocModal({ visible, store, auth, existingIds, onClose, onAdd })
   };
 
   return (
-    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.modalBackdrop}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={busy ? undefined : onClose} />
-        <View style={styles.smallCard}>
-          <Text style={styles.modalTitle}>Search PO / SO</Text>
+    <View style={styles.docSearchBlock}>
           <Text style={styles.modalSub}>
             Search a document number from {store?.name || 'this store'}.
           </Text>
@@ -748,9 +1374,7 @@ function SpecificDocModal({ visible, store, auth, existingIds, onClose, onAdd })
               {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Search</Text>}
             </Pressable>
           </View>
-        </View>
-      </View>
-    </Modal>
+    </View>
   );
 }
 
@@ -761,26 +1385,58 @@ function MeltTab({
   pos,
   addOpen,
   onAddOpenChange,
-  specificOpen,
-  onSpecificOpenChange,
   onMergePos,
   onRemovePos,
   onToggleReceived,
   onSaveReview,
 }) {
   const { triage } = useTransferWorkflow();
+  const isMobile = useIsMobile();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [openRow, setOpenRow] = useState(null);
   const [docQuery, setDocQuery] = useState('');
+  const [storeFilter, setStoreFilter] = useState('');
+  const [personFilter, setPersonFilter] = useState('');
+  const [productFilter, setProductFilter] = useState('');
+  const [listView, setListView] = useState('classic');
   const auth = useMemo(
     () => resolvePosAuthForRow(session, { systemKey: store.systemKey }),
     [session, store.systemKey],
   );
   const existingIds = useMemo(() => (pos || []).map((row) => row.id), [pos]);
+  const storeOptions = useMemo(
+    () => uniqueLabels((pos || []).map((row) => row.storeName)),
+    [pos],
+  );
+  const personOptions = useMemo(
+    () => uniqueLabels((pos || []).flatMap((row) => rowPersonLabels(row))),
+    [pos],
+  );
+  const productOptions = useMemo(
+    () =>
+      uniqueLabels(
+        (pos || []).flatMap((row) => [
+          ...(row.itemNames || []),
+          ...(row.pricedLines || []).map((line) => line?.name),
+        ]),
+      ),
+    [pos],
+  );
   const visiblePos = useMemo(
-    () => (pos || []).filter((row) => matchesDocQuery(row, docQuery)),
-    [docQuery, pos],
+    () =>
+      (pos || []).filter(
+        (row) =>
+          matchesDocQuery(row, docQuery) &&
+          matchesLabelFilter(row.storeName, storeFilter) &&
+          matchesPersonFilter(row, personFilter) &&
+          matchesProductFilter(row, productFilter),
+      ),
+    [docQuery, personFilter, pos, productFilter, storeFilter],
+  );
+  const listedRange = useMemo(() => listedDateRange(pos), [pos]);
+  const filtersActive = Boolean(
+    storeFilter.trim() || personFilter.trim() || productFilter.trim() || docQuery.trim(),
   );
 
   const loadRange = useCallback(
@@ -831,72 +1487,105 @@ function MeltTab({
 
   return (
     <View style={styles.body}>
-      <View style={[styles.searchField, styles.meltSearchField]}>
-        <Ionicons name="search" size={16} color={SECONDARY} style={styles.searchIcon} />
-        <TextInput
-          style={styles.searchInput}
-          value={docQuery}
-          onChangeText={setDocQuery}
-          placeholder="Search PO# or SO#"
-          placeholderTextColor={SECONDARY}
-          autoCapitalize="characters"
-          autoCorrect={false}
-          clearButtonMode="while-editing"
-        />
-        {docQuery ? (
-          <Pressable onPress={() => setDocQuery('')} hitSlop={8} accessibilityRole="button">
-            <Ionicons name="close-circle" size={18} color="#c7c7cc" />
-          </Pressable>
-        ) : null}
+      <View style={[styles.meltToolbar, styles.meltToolbarRow, isMobile && styles.meltToolbarMobile]}>
+        {isMobile ? (
+          <ScrollView
+            horizontal
+            style={styles.meltToolbarScroll}
+            contentContainerStyle={styles.meltToolbarScrollContent}
+            showsHorizontalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            <MeltToolbarFields
+              mobile
+              docQuery={docQuery}
+              setDocQuery={setDocQuery}
+              listedRange={listedRange}
+              filtersActive={filtersActive}
+              visibleCount={visiblePos.length}
+              totalCount={pos.length}
+              showFilters={pos.length > 0}
+              storeFilter={storeFilter}
+              setStoreFilter={setStoreFilter}
+              storeOptions={storeOptions}
+              personFilter={personFilter}
+              setPersonFilter={setPersonFilter}
+              personOptions={personOptions}
+              productFilter={productFilter}
+              setProductFilter={setProductFilter}
+              productOptions={productOptions}
+            />
+          </ScrollView>
+        ) : (
+          <View style={[styles.meltToolbarScroll, styles.meltToolbarScrollContent]}>
+            <MeltToolbarFields
+              docQuery={docQuery}
+              setDocQuery={setDocQuery}
+              listedRange={listedRange}
+              filtersActive={filtersActive}
+              visibleCount={visiblePos.length}
+              totalCount={pos.length}
+              showFilters={pos.length > 0}
+              storeFilter={storeFilter}
+              setStoreFilter={setStoreFilter}
+              storeOptions={storeOptions}
+              personFilter={personFilter}
+              setPersonFilter={setPersonFilter}
+              personOptions={personOptions}
+              productFilter={productFilter}
+              setProductFilter={setProductFilter}
+              productOptions={productOptions}
+            />
+          </View>
+        )}
+        {pos.length > 0 ? <MeltViewToggle value={listView} onChange={setListView} /> : null}
       </View>
 
       {pos.length === 0 ? (
         <EmptyState
           icon="flame-outline"
           title="Melt"
-          body="Tap Add for a date range, or PO / SO to search and add a document from this store."
+          body="Tap Add to load a date range or search a single PO/SO from this store."
         />
       ) : visiblePos.length === 0 ? (
         <EmptyState
           icon="search-outline"
           title="No matches"
-          body={`No PO or SO on this list matches “${docQuery.trim()}”.`}
+          body="No PO or SO matches that search or filter."
+        />
+      ) : listView === 'feed' ? (
+        <MeltPoFeed
+          rows={visiblePos}
+          mobile={isMobile}
+          onOpen={setOpenRow}
+          onToggleReceived={onToggleReceived}
+          onRemove={(id) => {
+            if (openRow?.id === id) setOpenRow(null);
+            onRemovePos(id);
+          }}
         />
       ) : (
-        <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
-          {visiblePos.map((row) => (
-            <MeltPoRow
-              key={row.id}
-              row={row}
-              onOpen={setOpenRow}
-              onToggleReceived={onToggleReceived}
-              onRemove={(id) => {
-                if (openRow?.id === id) setOpenRow(null);
-                onRemovePos(id);
-              }}
-            />
-          ))}
+        <ScrollView
+          style={styles.list}
+          contentContainerStyle={[styles.listContent, isMobile && styles.listContentMobile]}
+        >
+          <View style={isMobile ? styles.listGroup : null}>
+            {visiblePos.map((row) => (
+              <MeltPoRow
+                key={row.id}
+                row={row}
+                mobile={isMobile}
+                onOpen={setOpenRow}
+                onToggleReceived={onToggleReceived}
+                onRemove={(id) => {
+                  if (openRow?.id === id) setOpenRow(null);
+                  onRemovePos(id);
+                }}
+              />
+            ))}
+          </View>
         </ScrollView>
       )}
-
-      <SpecificDocModal
-        visible={specificOpen}
-        store={store}
-        auth={auth}
-        existingIds={existingIds}
-        onClose={() => onSpecificOpenChange(false)}
-        onAdd={(row) => {
-          onMergePos([row]);
-          onSpecificOpenChange(false);
-          if (row.type === 'purchase' && auth.token) {
-            fillMissingPoImages(auth.token, auth.baseUrl, [row])
-              .then((enriched) => {
-                if (enriched[0] && enriched[0] !== row) onMergePos(enriched);
-              })
-              .catch(() => {});
-          }
-        }}
-      />
 
       <DateRangeModal
         visible={addOpen}
@@ -904,6 +1593,8 @@ function MeltTab({
         error={error}
         session={session}
         store={store}
+        auth={auth}
+        existingIds={existingIds}
         transfers={triage}
         currentDateKey={dateKey}
         onClose={() => {
@@ -913,6 +1604,17 @@ function MeltTab({
           }
         }}
         onConfirm={loadRange}
+        onAddDoc={(row) => {
+          onMergePos([row]);
+          onAddOpenChange(false);
+          if (row.type === 'purchase' && auth.token) {
+            fillMissingPoImages(auth.token, auth.baseUrl, [row])
+              .then((enriched) => {
+                if (enriched[0] && enriched[0] !== row) onMergePos(enriched);
+              })
+              .catch(() => {});
+          }
+        }}
       />
 
       <TriageReviewDrawer
@@ -928,88 +1630,220 @@ function MeltTab({
   );
 }
 
-function BullionTab({ dateKey, store }) {
-  const { planned } = useTransferWorkflow();
-  const rows = useMemo(
-    () =>
-      (planned || []).filter(
-        (row) =>
-          row.forTriage &&
-          row.dateKey === dateKey &&
-          row.fromStoreKey === store?.storeKey,
-      ),
-    [dateKey, planned, store?.storeKey],
-  );
-  const [openId, setOpenId] = useState(null);
+function BullionTransferDrawer({ visible, transfer, onClose }) {
+  const { width: windowWidth } = useWindowDimensions();
+  const isMobile = windowWidth < 768;
+  const panelWidth = isMobile
+    ? Math.max(windowWidth, 240)
+    : Math.min(Math.max(Math.round(windowWidth * 0.52), 420), Math.round(windowWidth - 64));
+  const { mounted, slide, backdrop } = useRightDrawerAnimation(visible, panelWidth);
+  const held = useHeldValue(transfer);
+  const live = transfer || held;
 
-  if (rows.length === 0) {
-    return (
-      <EmptyState
-        icon="diamond-outline"
-        title="Bullion"
-        body={`Bullion transfers from ${store?.name || 'this store'} created in Transfer setup will appear here.`}
-      />
-    );
-  }
+  if (!mounted || !live) return null;
+
+  const items = Array.isArray(live.items) ? live.items : [];
+  const path =
+    (live.pathLabels || []).filter(Boolean).join(' → ') ||
+    `${live.fromName || '—'} → ${live.toName || '—'}`;
+  const statusLabel = RECEIVE_STATUS_LABELS[live.receiveStatus] || 'Not Received';
 
   return (
-    <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
-      {rows.map((row) => {
-        const open = openId === row.id;
-        return (
-          <View key={row.id} style={styles.bullionCard}>
-            <Pressable
-              style={styles.bullionHeader}
-              onPress={() => setOpenId(open ? null : row.id)}
-              accessibilityRole="button"
-              accessibilityLabel={`${row.reference} ${row.dateLabel}`}
-            >
-              <View style={styles.listRowText}>
-                <Text style={styles.listRowTitle} numberOfLines={1}>
-                  {row.reference}
-                </Text>
-                <Text style={styles.listRowSub} numberOfLines={1}>
-                  {row.dateLabel}
-                  {row.pathLabels?.length ? ` · ${row.pathLabels.join(' → ')}` : ''}
-                </Text>
-              </View>
-              <View style={styles.bullionStatus}>
-                <Text style={styles.bullionStatusText}>
-                  {RECEIVE_STATUS_LABELS[row.receiveStatus] || 'Not Received'}
-                </Text>
-                <Ionicons
-                  name={open ? 'chevron-up' : 'chevron-down'}
-                  size={16}
-                  color={SECONDARY}
-                />
-              </View>
+    <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose}>
+      <View style={styles.drawerRoot}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose}>
+          <Animated.View style={[styles.drawerBackdrop, { opacity: backdrop }]} />
+        </Pressable>
+        <Animated.View
+          style={[
+            styles.drawerPanel,
+            isMobile && styles.drawerPanelMobile,
+            { width: panelWidth, transform: [{ translateX: slide }] },
+          ]}
+        >
+          <View
+            style={[styles.drawerTopBar, isMobile && styles.drawerTopBarMobile]}
+            {...(Platform.OS === 'web' && isMobile ? { className: 'cgold-mobile-sheet-top' } : null)}
+          >
+            <Pressable onPress={onClose} hitSlop={8} style={styles.drawerDone} accessibilityLabel="Done">
+              <Text style={styles.drawerDoneText}>Done</Text>
             </Pressable>
-            {row.note ? (
-              <Text style={styles.bullionNote} numberOfLines={open ? 0 : 1}>
-                {row.note}
+            <Text style={styles.drawerTitle} numberOfLines={1}>
+              Transfer
+            </Text>
+            <View style={styles.drawerDone} />
+          </View>
+
+          <ScrollView
+            style={styles.drawerBody}
+            contentContainerStyle={styles.drawerBodyContent}
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={styles.drawerHero}>
+              <Text style={styles.drawerHeroRoute}>{path}</Text>
+              <Text style={styles.drawerHeroMeta}>
+                {[live.reference, live.dateLabel].filter(Boolean).join(' · ')}
               </Text>
-            ) : null}
-            {open ? (
-              <View style={styles.bullionItems}>
-                {(row.items || []).map((item) => (
-                  <View key={item.id} style={styles.bullionItemRow}>
+              <View style={styles.drawerStatusPill}>
+                <Text style={styles.drawerStatusText}>{statusLabel}</Text>
+              </View>
+            </View>
+
+            <Text style={styles.drawerSectionLabel}>Details</Text>
+            <View style={styles.drawerGroup}>
+              <DrawerRow label="Transfer" value={live.reference} />
+              <DrawerRow label="Date" value={live.dateLabel || '—'} />
+              <DrawerRow label="From" value={live.fromName || '—'} />
+              <DrawerRow label="To" value={live.toName || '—'} />
+              <DrawerRow label="Note" value={live.note || '—'} last />
+            </View>
+
+            <Text style={styles.drawerSectionLabel}>
+              Items{items.length ? ` · ${items.length}` : ''}
+            </Text>
+            <View style={styles.drawerGroup}>
+              {items.length === 0 ? (
+                <Text style={styles.drawerEmpty}>No line items on this transfer.</Text>
+              ) : (
+                items.map((item, index) => (
+                  <View
+                    key={item.id}
+                    style={[styles.drawerItem, index === items.length - 1 && styles.drawerItemLast]}
+                  >
                     <View style={styles.listRowText}>
-                      <Text style={styles.bullionItemName} numberOfLines={2}>
+                      <Text style={styles.drawerItemName} numberOfLines={2}>
                         {item.productName}
                       </Text>
                       <Text style={styles.listRowSub} numberOfLines={1}>
-                        {item.fromName} → {item.toName}
+                        {[item.fromName, item.toName].filter(Boolean).join(' → ') || path}
                       </Text>
                     </View>
-                    <Text style={styles.bullionItemQty}>{formatQty(item.sentQty)}</Text>
+                    <Text style={styles.drawerItemQty}>{formatQty(item.sentQty)}</Text>
                   </View>
-                ))}
-              </View>
-            ) : null}
+                ))
+              )}
+            </View>
+          </ScrollView>
+        </Animated.View>
+      </View>
+    </Modal>
+  );
+}
+
+function DrawerRow({ label, value, last }) {
+  return (
+    <View style={[styles.drawerRow, last && styles.drawerRowLast]}>
+      <Text style={styles.drawerRowLabel}>{label}</Text>
+      <Text style={styles.drawerRowValue}>{value}</Text>
+    </View>
+  );
+}
+
+function BullionTab({ dateKey, store, session }) {
+  const { planned } = useTransferWorkflow();
+  const isMobile = useIsMobile();
+  const [openId, setOpenId] = useState(null);
+  const [posRows, setPosRows] = useState([]);
+  const [posBusy, setPosBusy] = useState(false);
+
+  useEffect(() => {
+    if (!session?.token || !store?.name) {
+      setPosRows([]);
+      return undefined;
+    }
+    let cancelled = false;
+    const auth = resolvePosAuthForRow(session, { systemKey: store.systemKey });
+    if (!auth.token) return undefined;
+    setPosBusy(true);
+    const since = new Date();
+    since.setFullYear(since.getFullYear() - 2);
+    const sinceKey = formatDateParam(since);
+    Promise.all([
+      fetchTransfers(auth.token, { status: 'pending', since: sinceKey, baseUrl: auth.baseUrl }).catch(
+        () => [],
+      ),
+      fetchTransfers(auth.token, { status: 'received', since: sinceKey, baseUrl: auth.baseUrl }).catch(
+        () => [],
+      ),
+    ])
+      .then(([pending, received]) => {
+        if (cancelled) return;
+        const next = [...pending, ...received]
+          .filter(
+            (row) =>
+              transferGoesToWorkshop(row) && namesMatch(row.from?.name, store.name),
+          )
+          .map(posTransferToRow);
+        setPosRows(next);
+      })
+      .finally(() => {
+        if (!cancelled) setPosBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session, store?.name, store?.systemKey]);
+
+  const rows = useMemo(() => {
+    const local = plannedWorkshopTransfersForStore(store?.storeKey, store?.name);
+    const seen = new Set(
+      local
+        .map((row) => row.aureusId)
+        .filter(Boolean)
+        .map(String),
+    );
+    const extras = posRows.filter((row) => !row.aureusId || !seen.has(String(row.aureusId)));
+    return [...local, ...extras].sort((a, b) =>
+      String(b.dateKey || '').localeCompare(String(a.dateKey || '')),
+    );
+  }, [planned, posRows, store?.name, store?.storeKey]);
+
+  const openRow = rows.find((row) => row.id === openId) || null;
+
+  return (
+    <View style={styles.body}>
+      {rows.length === 0 ? (
+        <EmptyState
+          icon="diamond-outline"
+          title="Bullion"
+          body={
+            posBusy
+              ? 'Loading transfers to the workshop…'
+              : `All transfers from ${store?.name || 'this store'} to the workshop appear here.`
+          }
+        />
+      ) : (
+        <ScrollView
+          style={styles.list}
+          contentContainerStyle={[styles.listContent, isMobile && styles.listContentMobile]}
+        >
+          <View style={isMobile ? styles.listGroup : null}>
+            {rows.map((row, index) => (
+              <ListRow
+                key={row.id}
+                title={row.reference}
+                meta={RECEIVE_STATUS_LABELS[row.receiveStatus] || 'Not Received'}
+                subtitle={
+                  [row.dateLabel, (row.pathLabels || []).join(' → ') || `${row.fromName} → ${row.toName}`]
+                    .filter(Boolean)
+                    .join('\n')
+                }
+                subtitleLines={2}
+                mobile={isMobile}
+                last={index === rows.length - 1}
+                onPress={() => setOpenId(row.id)}
+                accessibilityLabel={`Open ${row.reference}`}
+              />
+            ))}
           </View>
-        );
-      })}
-    </ScrollView>
+        </ScrollView>
+      )}
+      <BullionTransferDrawer
+        visible={Boolean(openRow)}
+        transfer={openRow}
+        onClose={() => setOpenId(null)}
+      />
+    </View>
   );
 }
 
@@ -1027,6 +1861,7 @@ function mapPickedStore(store) {
 }
 
 function StoreMultiPicker({ session, addedKeys, selectedIds, onChangeSelected }) {
+  const isMobile = useIsMobile();
   const [query, setQuery] = useState('');
   const [stores, setStores] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -1099,7 +1934,7 @@ function StoreMultiPicker({ session, addedKeys, selectedIds, onChangeSelected })
 
   return (
     <View style={styles.storePicker}>
-      <View style={styles.searchField}>
+      <View style={[styles.searchField, isMobile && styles.searchFieldMobile]}>
         <Ionicons name="search" size={16} color={SECONDARY} style={styles.searchIcon} />
         <TextInput
           style={styles.searchInput}
@@ -1180,6 +2015,7 @@ function StoreMultiPicker({ session, addedKeys, selectedIds, onChangeSelected })
 }
 
 function LocationPicker({ session, selectedId, onSelect }) {
+  const isMobile = useIsMobile();
   const [query, setQuery] = useState('');
   const [stores, setStores] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -1223,7 +2059,7 @@ function LocationPicker({ session, selectedId, onSelect }) {
 
   return (
     <View style={styles.storePicker}>
-      <View style={styles.searchField}>
+      <View style={[styles.searchField, isMobile && styles.searchFieldMobile]}>
         <Ionicons name="search" size={16} color={SECONDARY} style={styles.searchIcon} />
         <TextInput
           style={styles.searchInput}
@@ -1289,6 +2125,7 @@ function LocationPicker({ session, selectedId, onSelect }) {
 }
 
 function CreateTransferModal({ visible, session, existingKeys, onClose, onCreate }) {
+  const isMobile = useIsMobile();
   const [step, setStep] = useState('stores');
   const [date, setDate] = useState(() => parseDateParam(new Date()));
   const [selectedIds, setSelectedIds] = useState(() => new Set());
@@ -1347,16 +2184,17 @@ function CreateTransferModal({ visible, session, existingKeys, onClose, onCreate
   const onStores = step === 'stores';
 
   return (
-    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.modalBackdrop} pointerEvents="box-none">
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        <View style={styles.storeCard} pointerEvents="auto">
+    <Modal visible transparent animationType={isMobile ? 'slide' : 'fade'} onRequestClose={onClose}>
+      <View style={[styles.modalBackdrop, isMobile && styles.sheetBackdrop]} pointerEvents="box-none">
+        {isMobile ? null : <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />}
+        <View style={[styles.storeCard, isMobile && styles.sheetCard]} pointerEvents="auto">
+          {isMobile ? <View style={styles.sheetGrabber} /> : null}
           <View style={styles.storeHeader}>
             <View style={styles.storeTitleBlock}>
               {onStores ? null : (
                 <Pressable onPress={() => setStep('stores')} style={styles.backButton} hitSlop={8}>
-                  <Ionicons name="chevron-back" size={18} color={ACCENT} />
-                  <Text style={styles.backText}>Stores</Text>
+                  <Ionicons name="chevron-back" size={isMobile ? 28 : 18} color={isMobile ? MOBILE.blue : ACCENT} />
+                  <Text style={[styles.backText, isMobile && styles.iosBackText]}>Stores</Text>
                 </Pressable>
               )}
               <Text style={styles.modalTitle}>{onStores ? 'New transfer' : 'Triage location'}</Text>
@@ -1412,6 +2250,7 @@ function CreateTransferModal({ visible, session, existingKeys, onClose, onCreate
 }
 
 function AddStoreModal({ visible, session, addedKeys, onClose, onAdd }) {
+  const isMobile = useIsMobile();
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [pickedStores, setPickedStores] = useState([]);
 
@@ -1429,10 +2268,11 @@ function AddStoreModal({ visible, session, addedKeys, onClose, onAdd }) {
   if (!visible) return null;
 
   return (
-    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.modalBackdrop} pointerEvents="box-none">
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        <View style={styles.storeCard} pointerEvents="auto">
+    <Modal visible transparent animationType={isMobile ? 'slide' : 'fade'} onRequestClose={onClose}>
+      <View style={[styles.modalBackdrop, isMobile && styles.sheetBackdrop]} pointerEvents="box-none">
+        {isMobile ? null : <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />}
+        <View style={[styles.storeCard, isMobile && styles.sheetCard]} pointerEvents="auto">
+          {isMobile ? <View style={styles.sheetGrabber} /> : null}
           <View style={styles.storeHeader}>
             <View style={styles.storeTitleBlock}>
               <Text style={styles.modalTitle}>Add stores</Text>
@@ -1480,17 +2320,15 @@ export default function TriageTransfersPanel({
   onRequireLogin,
   createOpen,
   onCreateOpenChange,
-  addStoreOpen,
-  onAddStoreOpenChange,
   onViewChange,
+  onBackChange,
 }) {
   const { triage: transfers } = useTransferWorkflow();
+  const isMobile = useIsMobile();
   const [selectedId, setSelectedId] = useState(null);
   const [selectedStoreId, setSelectedStoreId] = useState(null);
   const [storeTab, setStoreTab] = useState('melt');
   const [addMeltOpen, setAddMeltOpen] = useState(false);
-  const [specificOpen, setSpecificOpen] = useState(false);
-  const [meltSaved, setMeltSaved] = useState(false);
 
   const selected = useMemo(
     () => transfers.find((row) => row.id === selectedId) || null,
@@ -1503,21 +2341,40 @@ export default function TriageTransfersPanel({
 
   const view = selectedStore ? 'store' : selected ? 'date' : 'list';
 
+  const goBackToList = useCallback(() => {
+    setAddMeltOpen(false);
+    setSelectedStoreId(null);
+    setSelectedId(null);
+  }, []);
+
   useEffect(() => {
     onViewChange?.(view);
   }, [onViewChange, view]);
 
-  const existingKeys = useMemo(() => new Set(transfers.map((row) => row.dateKey)), [transfers]);
-  const addedKeys = useMemo(
-    () => new Set((selected?.stores || []).map((row) => row.storeKey)),
-    [selected],
-  );
+  useEffect(() => {
+    onBackChange?.(selectedStore && selected ? goBackToList : null);
+    return () => onBackChange?.(null);
+  }, [goBackToList, onBackChange, selected, selectedStore]);
 
-  const openTransfer = useCallback((row) => {
+  const existingKeys = useMemo(() => new Set(transfers.map((row) => row.dateKey)), [transfers]);
+
+  const enterStore = useCallback((row, store) => {
+    if (!row || !store) return;
     setSelectedId(row.id);
-    setSelectedStoreId(null);
-    setStoreTab('melt');
+    setSelectedStoreId(store.id);
+    const hasBullion = plannedForTriageStore(row.dateKey, store.storeKey).length > 0;
+    const hasMelt = (store.meltPos || []).length > 0;
+    setStoreTab(hasBullion && !hasMelt ? 'bullion' : 'melt');
   }, []);
+
+  const openTransfer = useCallback(
+    (row) => {
+      const firstStore = row?.stores?.[0] || null;
+      if (!firstStore) return;
+      enterStore(row, firstStore);
+    },
+    [enterStore],
+  );
 
   const createTransfer = useCallback(
     (row) => {
@@ -1525,33 +2382,24 @@ export default function TriageTransfersPanel({
         [row, ...current].sort((a, b) => b.dateKey.localeCompare(a.dateKey)),
       );
       onCreateOpenChange(false);
+      const firstStore = row.stores?.[0] || null;
+      if (firstStore) {
+        enterStore(row, firstStore);
+        setAddMeltOpen(true);
+      } else {
+        setSelectedId(row.id);
+        setSelectedStoreId(null);
+      }
     },
-    [onCreateOpenChange],
+    [enterStore, onCreateOpenChange],
   );
 
-  const addStores = useCallback(
-    (nextStores) => {
-      if (!selectedId || !nextStores?.length) return;
-      updateTriageTransfers((current) =>
-        current.map((row) => {
-          if (row.id !== selectedId) return row;
-          const existing = new Set(row.stores.map((entry) => entry.storeKey));
-          const added = nextStores
-            .filter((store) => !existing.has(store.storeKey))
-            .map((store) => ({ ...store, meltPos: store.meltPos || [] }));
-          if (added.length === 0) return row;
-          return {
-            ...row,
-            stores: [...row.stores, ...added].sort((a, b) =>
-              a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
-            ),
-          };
-        }),
-      );
-      onAddStoreOpenChange(false);
-    },
-    [onAddStoreOpenChange, selectedId],
-  );
+  useEffect(() => {
+    if (!selected || selectedStore) return;
+    const firstStore = selected.stores?.[0];
+    if (firstStore) enterStore(selected, firstStore);
+    else setSelectedId(null);
+  }, [enterStore, selected, selectedStore]);
 
   const mergeMeltPos = useCallback(
     (nextRows) => {
@@ -1584,6 +2432,7 @@ export default function TriageTransfersPanel({
           };
         }),
       );
+      persistTransferWorkflowNow().catch(() => {});
     },
     [selectedId, selectedStoreId],
   );
@@ -1591,7 +2440,6 @@ export default function TriageTransfersPanel({
   const saveMeltReview = useCallback(
     (poId, review) => {
       if (!selectedId || !selectedStoreId) return;
-      setMeltSaved(false);
       updateTriageTransfers((current) =>
         current.map((row) => {
           if (row.id !== selectedId) return row;
@@ -1609,6 +2457,7 @@ export default function TriageTransfersPanel({
           };
         }),
       );
+      persistTransferWorkflowNow().catch(() => {});
     },
     [selectedId, selectedStoreId],
   );
@@ -1616,7 +2465,6 @@ export default function TriageTransfersPanel({
   const removeMeltPo = useCallback(
     (poId) => {
       if (!selectedId || !selectedStoreId) return;
-      setMeltSaved(false);
       updateTriageTransfers((current) =>
         current.map((row) => {
           if (row.id !== selectedId) return row;
@@ -1632,23 +2480,14 @@ export default function TriageTransfersPanel({
           };
         }),
       );
+      persistTransferWorkflowNow().catch(() => {});
     },
     [selectedId, selectedStoreId],
   );
 
-  const saveMeltList = useCallback(async () => {
-    try {
-      await persistTransferWorkflowNow();
-      setMeltSaved(true);
-    } catch {
-      setMeltSaved(false);
-    }
-  }, []);
-
   const toggleMeltReceived = useCallback(
     (poId) => {
       if (!selectedId || !selectedStoreId) return;
-      setMeltSaved(false);
       updateTriageTransfers((current) =>
         current.map((row) => {
           if (row.id !== selectedId) return row;
@@ -1666,6 +2505,7 @@ export default function TriageTransfersPanel({
           };
         }),
       );
+      persistTransferWorkflowNow().catch(() => {});
     },
     [selectedId, selectedStoreId],
   );
@@ -1687,84 +2527,55 @@ export default function TriageTransfersPanel({
     );
   }
 
+  const meltActions = storeTab === 'melt' ? (
+    <View style={isMobile ? styles.mobileActionBar : styles.tabBarTrailing}>
+      <Pressable
+        style={isMobile ? styles.mobileActionPrimary : styles.newButton}
+        onPress={() => setAddMeltOpen(true)}
+        accessibilityRole="button"
+        accessibilityLabel="Add"
+      >
+        <Ionicons name="add" size={18} color="#fff" />
+        <Text style={isMobile ? styles.mobileActionPrimaryText : styles.newButtonText}>Add</Text>
+      </Pressable>
+    </View>
+  ) : null;
+
   if (selectedStore && selected) {
     return (
-      <View style={styles.body}>
-        <View style={styles.subHeader}>
-          <Pressable
-            style={styles.backButton}
-            onPress={() => {
-              setAddMeltOpen(false);
-              setSpecificOpen(false);
-              setMeltSaved(false);
-              setSelectedStoreId(null);
-            }}
-            accessibilityRole="button"
-            accessibilityLabel="Back to stores"
-          >
-            <Ionicons name="chevron-back" size={18} color={ACCENT} />
-            <Text style={styles.backText}>{selected.dateLabel}</Text>
-          </Pressable>
-          <Text style={styles.pageTitle} numberOfLines={1}>
-            {selectedStore.name}
-          </Text>
-        </View>
-
-        <View style={styles.tabBar} accessibilityRole="tablist">
-          <View style={styles.tabBarTabs}>
+      <View style={[styles.body, isMobile && styles.bodyMobile]}>
+        <View style={[styles.tabBar, isMobile && styles.tabBarMobile]} accessibilityRole="tablist">
+          <View style={[styles.tabBarTabs, isMobile && styles.segment]}>
             {STORE_TABS.map((tab) => {
               const active = tab.key === storeTab;
               return (
                 <Pressable
                   key={tab.key}
-                  style={[styles.tab, active && styles.tabActive]}
+                  style={[
+                    isMobile ? styles.segmentButton : styles.tab,
+                    active && (isMobile ? styles.segmentButtonActive : styles.tabActive),
+                  ]}
                   onPress={() => {
                     setStoreTab(tab.key);
-                    if (tab.key !== 'melt') {
-                      setAddMeltOpen(false);
-                      setSpecificOpen(false);
-                    }
+                    if (tab.key !== 'melt') setAddMeltOpen(false);
                   }}
                   accessibilityRole="tab"
                   accessibilityState={{ selected: active }}
                   accessibilityLabel={tab.label}
                 >
-                  <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>{tab.label}</Text>
+                  <Text
+                    style={[
+                      isMobile ? styles.segmentText : styles.tabLabel,
+                      active && (isMobile ? styles.segmentTextActive : styles.tabLabelActive),
+                    ]}
+                  >
+                    {tab.label}
+                  </Text>
                 </Pressable>
               );
             })}
           </View>
-          {storeTab === 'melt' ? (
-            <View style={styles.tabBarTrailing}>
-              <Pressable
-                style={[styles.saveButton, meltSaved && styles.saveButtonOn]}
-                onPress={saveMeltList}
-                accessibilityRole="button"
-                accessibilityLabel="Save"
-              >
-                <Text style={[styles.saveButtonText, meltSaved && styles.saveButtonTextOn]}>
-                  {meltSaved ? 'Saved' : 'Save'}
-                </Text>
-              </Pressable>
-              <Pressable
-                style={styles.ghostButton}
-                onPress={() => setSpecificOpen(true)}
-                accessibilityRole="button"
-                accessibilityLabel="Add PO or SO"
-              >
-                <Text style={styles.ghostButtonText}>PO / SO</Text>
-              </Pressable>
-              <Pressable
-                style={styles.newButton}
-                onPress={() => setAddMeltOpen(true)}
-                accessibilityRole="button"
-                accessibilityLabel="Add"
-              >
-                <Ionicons name="add" size={18} color="#fff" />
-                <Text style={styles.newButtonText}>Add</Text>
-              </Pressable>
-            </View>
-          ) : null}
+          {isMobile ? null : meltActions}
         </View>
 
         {storeTab === 'melt' ? (
@@ -1775,85 +2586,21 @@ export default function TriageTransfersPanel({
             pos={selectedStore.meltPos || []}
             addOpen={addMeltOpen}
             onAddOpenChange={setAddMeltOpen}
-            specificOpen={specificOpen}
-            onSpecificOpenChange={setSpecificOpen}
-            onMergePos={(rows) => {
-              setMeltSaved(false);
-              mergeMeltPos(rows);
-            }}
+            onMergePos={mergeMeltPos}
             onRemovePos={removeMeltPo}
             onToggleReceived={toggleMeltReceived}
             onSaveReview={saveMeltReview}
           />
         ) : (
-          <BullionTab dateKey={selected.dateKey} store={selectedStore} />
+          <BullionTab dateKey={selected.dateKey} store={selectedStore} session={session} />
         )}
-      </View>
-    );
-  }
-
-  if (selected) {
-    return (
-      <View style={styles.body}>
-        <View style={styles.subHeader}>
-          <Pressable
-            style={styles.backButton}
-            onPress={() => setSelectedId(null)}
-            accessibilityRole="button"
-            accessibilityLabel="Back to transfers"
-          >
-            <Ionicons name="chevron-back" size={18} color={ACCENT} />
-            <Text style={styles.backText}>Transfers</Text>
-          </Pressable>
-          <Text style={styles.pageTitle} numberOfLines={1}>
-            {selected.dateLabel}
-          </Text>
-          {selected.triageLocation?.name ? (
-            <Text style={styles.pageMeta} numberOfLines={1}>
-              Triage at {selected.triageLocation.name}
-            </Text>
-          ) : null}
-        </View>
-
-        {selected.stores.length === 0 ? (
-          <EmptyState
-            icon="storefront-outline"
-            title={selected.dateLabel}
-            body="Tap Add Store to include a store on this transfer."
-          />
-        ) : (
-          <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
-            {selected.stores.map((store) => (
-              <ListRow
-                key={store.id}
-                title={store.name}
-                subtitle={[store.city, store.systemLabel].filter(Boolean).join(' · ')}
-                onPress={() => {
-                  setSelectedStoreId(store.id);
-                  const hasBullion =
-                    plannedForTriageStore(selected.dateKey, store.storeKey).length > 0;
-                  const hasMelt = (store.meltPos || []).length > 0;
-                  setStoreTab(hasBullion && !hasMelt ? 'bullion' : 'melt');
-                }}
-                accessibilityLabel={`Open ${store.name}`}
-              />
-            ))}
-          </ScrollView>
-        )}
-
-        <AddStoreModal
-          visible={addStoreOpen}
-          session={session}
-          addedKeys={addedKeys}
-          onClose={() => onAddStoreOpenChange(false)}
-          onAdd={addStores}
-        />
+        {isMobile ? meltActions : null}
       </View>
     );
   }
 
   return (
-    <View style={styles.body}>
+    <View style={[styles.body, isMobile && styles.bodyMobile]}>
       {transfers.length === 0 ? (
         <EmptyState
           icon="swap-horizontal-outline"
@@ -1861,22 +2608,29 @@ export default function TriageTransfersPanel({
           body="Tap New to create a transfer for a date."
         />
       ) : (
-        <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
-          {transfers.map((row) => (
-            <ListRow
-              key={row.id}
-              title={row.dateLabel}
-              meta={row.triageLocation?.name ? `Triage at ${row.triageLocation.name}` : ''}
-              subtitle={
-                row.stores.length
-                  ? row.stores.map((store) => store.name).join('\n')
-                  : 'No stores yet'
-              }
-              subtitleLines={row.stores.length || 1}
-              onPress={() => openTransfer(row)}
-              accessibilityLabel={`Open transfer ${row.dateLabel}`}
-            />
-          ))}
+        <ScrollView
+          style={styles.list}
+          contentContainerStyle={[styles.listContent, isMobile && styles.listContentMobile]}
+        >
+          <View style={isMobile ? styles.listGroup : null}>
+            {transfers.map((row, index) => (
+              <ListRow
+                key={row.id}
+                title={row.dateLabel}
+                meta={row.triageLocation?.name ? `Triage at ${row.triageLocation.name}` : ''}
+                subtitle={
+                  row.stores.length
+                    ? row.stores.map((store) => store.name).join('\n')
+                    : 'No stores yet'
+                }
+                subtitleLines={row.stores.length || 1}
+                mobile={isMobile}
+                last={index === transfers.length - 1}
+                onPress={() => openTransfer(row)}
+                accessibilityLabel={`Open transfer ${row.dateLabel}`}
+              />
+            ))}
+          </View>
         </ScrollView>
       )}
 
@@ -1895,6 +2649,240 @@ const styles = StyleSheet.create({
   body: {
     flex: 1,
     minHeight: 0,
+  },
+  bodyMobile: {
+    backgroundColor: MOBILE.bg,
+  },
+  listContentMobile: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 32,
+  },
+  listGroup: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  listRowMobile: {
+    minHeight: 56,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: '#fff',
+    borderBottomColor: MOBILE.separator,
+  },
+  listRowMobileLast: {
+    borderBottomWidth: 0,
+  },
+  iosNavHeader: {
+    paddingHorizontal: 4,
+    paddingBottom: 8,
+    marginBottom: 4,
+    backgroundColor: MOBILE.bg,
+  },
+  iosBackButton: {
+    minHeight: 44,
+    marginLeft: 0,
+  },
+  iosBackText: {
+    fontSize: 17,
+    fontWeight: '400',
+    color: MOBILE.blue,
+  },
+  iosNavTitle: {
+    fontSize: 17,
+    fontWeight: '600',
+    textAlign: 'center',
+    letterSpacing: -0.3,
+  },
+  iosNavMeta: {
+    fontSize: 13,
+    fontWeight: '400',
+    color: MOBILE.secondary,
+    textAlign: 'center',
+  },
+  tabBarMobile: {
+    borderBottomWidth: 0,
+    marginBottom: 10,
+    paddingHorizontal: 16,
+    alignItems: 'stretch',
+  },
+  segment: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 36,
+    backgroundColor: 'rgba(118,118,128,0.12)',
+    borderRadius: 9,
+    padding: 2,
+    gap: 0,
+  },
+  segmentButton: {
+    flex: 1,
+    height: 32,
+    borderRadius: 7,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  segmentButtonActive: {
+    backgroundColor: '#fff',
+    ...Platform.select({
+      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.16)' },
+      default: { elevation: 1 },
+    }),
+  },
+  segmentText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '500',
+    color: MOBILE.label,
+  },
+  segmentTextActive: {
+    fontWeight: '600',
+  },
+  mobileActionBar: {
+    flexShrink: 0,
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: Math.max(12, mobileSafeBottom()),
+    backgroundColor: 'rgba(255,255,255,0.92)',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: MOBILE.separator,
+  },
+  mobileAction: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 12,
+    backgroundColor: FILL,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  mobileActionSaved: {
+    backgroundColor: GREEN,
+  },
+  mobileActionText: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '600',
+    color: TEXT,
+  },
+  mobileActionTextSaved: {
+    color: '#fff',
+  },
+  mobileActionPrimary: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 12,
+    backgroundColor: ACCENT,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  mobileActionPrimaryText: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  sheetBackdrop: {
+    padding: 0,
+    alignItems: 'stretch',
+    justifyContent: 'flex-end',
+  },
+  sheetBackdropBottom: {
+    padding: 0,
+    alignItems: 'stretch',
+    justifyContent: 'flex-end',
+  },
+  sheetCard: {
+    width: '100%',
+    maxWidth: '100%',
+    height: '100%',
+    maxHeight: '100%',
+    borderRadius: 0,
+    paddingTop: 10,
+    paddingBottom: Math.max(18, mobileSafeBottom()),
+  },
+  sheetCardBottom: {
+    width: '100%',
+    maxWidth: '100%',
+    height: 'auto',
+    maxHeight: '92%',
+    borderRadius: 0,
+    borderTopLeftRadius: 14,
+    borderTopRightRadius: 14,
+    paddingTop: 10,
+    paddingBottom: Math.max(20, mobileSafeBottom()),
+  },
+  sheetGrabber: {
+    alignSelf: 'center',
+    width: 36,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: 'rgba(60,60,67,0.28)',
+    marginBottom: 8,
+  },
+  searchFieldMobile: {
+    borderRadius: 10,
+    minHeight: 36,
+    backgroundColor: 'rgba(118,118,128,0.12)',
+  },
+  meltSearchMobile: {
+    marginHorizontal: 16,
+  },
+  poRowMobile: {
+    minHeight: 56,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    gap: 8,
+    borderBottomColor: MOBILE.separator,
+  },
+  poRowMain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    minWidth: 0,
+    gap: 10,
+  },
+  poRowMainMobile: {
+    flex: 0,
+  },
+  poRowActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  poRowActionsInline: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  receivedGroupMobile: {
+    flex: 1,
+    minHeight: 44,
+  },
+  receivedButtonMobile: {
+    flex: 1,
+    height: 44,
+    borderRadius: 12,
+  },
+  removePoButtonMobile: {
+    width: 44,
+    height: 44,
   },
   empty: {
     flex: 1,
@@ -2221,6 +3209,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
   },
+  addModeRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  docSearchBlock: {
+    gap: 10,
+  },
   kindChip: {
     flex: 1,
     height: 36,
@@ -2322,8 +3317,8 @@ const styles = StyleSheet.create({
   },
   secondaryButton: {
     flex: 1,
-    height: 44,
-    borderRadius: 6,
+    height: 50,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: FILL,
@@ -2340,8 +3335,8 @@ const styles = StyleSheet.create({
   },
   primaryButton: {
     backgroundColor: ACCENT,
-    borderRadius: 6,
-    height: 44,
+    borderRadius: 12,
+    height: 50,
     alignItems: 'center',
     justifyContent: 'center',
     ...Platform.select({
@@ -2373,9 +3368,9 @@ const styles = StyleSheet.create({
   poRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 64,
+    minHeight: 56,
     paddingHorizontal: 4,
-    paddingVertical: 10,
+    paddingVertical: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: HAIRLINE,
     gap: 10,
@@ -2400,6 +3395,363 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 13,
     color: SECONDARY,
+  },
+  poMeta: {
+    fontFamily,
+    fontSize: 13,
+    color: TEXT,
+  },
+  meltToolbar: {
+    gap: 8,
+    marginBottom: 10,
+    zIndex: 3,
+    overflow: 'visible',
+  },
+  meltToolbarRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'nowrap',
+    overflow: 'visible',
+  },
+  meltToolbarMobile: {
+    marginHorizontal: 16,
+  },
+  meltSearchInline: {
+    flexGrow: 1.4,
+    flexShrink: 1,
+    flexBasis: 140,
+    minWidth: 108,
+    minHeight: 36,
+    marginBottom: 0,
+  },
+  meltToolbarScroll: {
+    flexGrow: 1,
+    minWidth: 0,
+  },
+  meltToolbarScrollContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexGrow: 1,
+    paddingRight: 4,
+  },
+  filterFieldCompact: {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: 88,
+    minWidth: 78,
+    marginBottom: 0,
+    position: 'relative',
+  },
+  filterMenuCompact: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 38,
+    zIndex: 20,
+  },
+  filterInputWrapCompact: {
+    minHeight: 36,
+    paddingHorizontal: 8,
+  },
+  viewToggle: {
+    flexDirection: 'row',
+    flexShrink: 0,
+    alignItems: 'center',
+    backgroundColor: FILL,
+    borderRadius: 8,
+    padding: 2,
+    gap: 2,
+  },
+  viewToggleButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  viewToggleButtonOn: {
+    backgroundColor: TEXT,
+  },
+  feedShell: {
+    flex: 1,
+    minHeight: 0,
+  },
+  feedList: {
+    flexGrow: 0,
+  },
+  feedPage: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: '#111113',
+  },
+  feedPageMobile: {
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+  },
+  feedCard: {
+    width: '100%',
+    maxWidth: 460,
+    flex: 1,
+    minHeight: 0,
+    borderRadius: 18,
+    backgroundColor: '#1c1c1e',
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 14,
+    gap: 10,
+  },
+  feedCardMobile: {
+    maxWidth: '100%',
+    borderRadius: 0,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: Math.max(16, mobileSafeBottom() + 8),
+  },
+  feedTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  feedTopText: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  feedTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  feedKind: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '700',
+    color: ACCENT,
+  },
+  feedKindBuy: {
+    color: '#93C5FD',
+  },
+  feedRef: {
+    fontFamily,
+    flex: 1,
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#fff',
+    letterSpacing: -0.3,
+  },
+  feedMeta: {
+    fontFamily,
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.62)',
+  },
+  feedCount: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: 'rgba(255,255,255,0.52)',
+  },
+  feedIconButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  feedHero: {
+    flex: 1,
+    minHeight: 180,
+    borderRadius: 14,
+    overflow: 'hidden',
+    backgroundColor: '#0b0b0c',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  feedHeroImage: {
+    width: '100%',
+    height: '100%',
+  },
+  feedHeroPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    padding: 16,
+  },
+  feedHeroPlaceholderText: {
+    fontFamily,
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.42)',
+  },
+  feedHeroDots: {
+    position: 'absolute',
+    bottom: 10,
+    flexDirection: 'row',
+    gap: 5,
+  },
+  feedHeroDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255,255,255,0.28)',
+  },
+  feedHeroDotOn: {
+    backgroundColor: '#fff',
+  },
+  feedDetails: {
+    gap: 4,
+  },
+  feedBuyer: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
+    letterSpacing: -0.2,
+  },
+  feedLines: {
+    gap: 2,
+    paddingTop: 2,
+  },
+  feedLine: {
+    fontFamily,
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.86)',
+  },
+  feedLineMuted: {
+    fontFamily,
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.5)',
+  },
+  feedActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  feedEditButton: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 12,
+    backgroundColor: ACCENT,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  feedEditButtonText: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  feedReceiveButton: {
+    minHeight: 44,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  feedReceiveButtonOn: {
+    backgroundColor: GREEN,
+  },
+  feedReceiveButtonText: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  feedReceiveButtonTextOn: {
+    color: '#fff',
+  },
+  listRange: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: SECONDARY,
+  },
+  filterRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    zIndex: 3,
+  },
+  filterField: {
+    flexGrow: 1,
+    flexBasis: 140,
+    minWidth: 140,
+    zIndex: 3,
+  },
+  filterLabel: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: SECONDARY,
+    marginBottom: 4,
+  },
+  filterInputWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: FILL,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    minHeight: 36,
+  },
+  filterInput: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily,
+    fontSize: 14,
+    color: TEXT,
+    paddingVertical: 8,
+    outlineStyle: 'none',
+  },
+  filterMenu: {
+    marginTop: 4,
+    maxHeight: 180,
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: HAIRLINE,
+    overflow: 'hidden',
+    zIndex: 8,
+    ...Platform.select({
+      web: { boxShadow: '0 8px 20px rgba(0,0,0,0.08)' },
+      default: { elevation: 3 },
+    }),
+  },
+  filterOption: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  filterOptionText: {
+    fontFamily,
+    fontSize: 14,
+    color: TEXT,
   },
   poReview: {
     fontFamily,
@@ -2511,7 +3863,7 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
   meltSearchField: {
-    marginBottom: 10,
+    marginBottom: 0,
   },
   docResultList: {
     maxHeight: 240,
@@ -2594,61 +3946,171 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     paddingVertical: 28,
   },
-  bullionCard: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
-    paddingVertical: 8,
-  },
-  bullionHeader: {
+  drawerRoot: {
+    flex: 1,
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    minHeight: 56,
-    paddingHorizontal: 4,
+    justifyContent: 'flex-end',
+  },
+  drawerBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.28)',
+  },
+  drawerPanel: {
+    height: '100%',
+    backgroundColor: MOBILE.bg,
     ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
+      web: { boxShadow: '-12px 0 32px rgba(0,0,0,0.18)' },
+      default: { elevation: 12 },
     }),
   },
-  bullionStatus: {
+  drawerPanelMobile: {
+    backgroundColor: MOBILE.bg,
+  },
+  drawerTopBar: {
     flexDirection: 'row',
     alignItems: 'center',
+    minHeight: 52,
+    paddingHorizontal: 8,
+    backgroundColor: '#fff',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: MOBILE.separator,
+  },
+  drawerTopBarMobile: {
+    paddingTop: Platform.OS === 'ios' ? 12 : 2,
+  },
+  drawerDone: {
+    width: 72,
+    minHeight: 44,
+    justifyContent: 'center',
+  },
+  drawerDoneText: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '400',
+    color: MOBILE.blue,
+  },
+  drawerTitle: {
+    fontFamily,
+    flex: 1,
+    fontSize: 17,
+    fontWeight: '600',
+    color: MOBILE.label,
+    textAlign: 'center',
+    letterSpacing: -0.3,
+  },
+  drawerBody: {
+    flex: 1,
+    minHeight: 0,
+  },
+  drawerBodyContent: {
+    paddingHorizontal: 16,
+    paddingTop: 20,
+    paddingBottom: Math.max(32, mobileSafeBottom() + 16),
+    gap: 8,
+  },
+  drawerHero: {
+    alignItems: 'center',
+    paddingVertical: 8,
     gap: 6,
   },
-  bullionStatusText: {
+  drawerHeroRoute: {
     fontFamily,
-    fontSize: 12,
+    fontSize: 20,
     fontWeight: '600',
-    color: SECONDARY,
+    color: MOBILE.label,
+    letterSpacing: -0.4,
+    textAlign: 'center',
   },
-  bullionNote: {
+  drawerHeroMeta: {
+    fontFamily,
+    fontSize: 15,
+    color: MOBILE.secondary,
+    textAlign: 'center',
+  },
+  drawerStatusPill: {
+    marginTop: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: '#fff',
+  },
+  drawerStatusText: {
     fontFamily,
     fontSize: 13,
-    color: SECONDARY,
-    paddingHorizontal: 4,
-    paddingBottom: 8,
+    fontWeight: '600',
+    color: MOBILE.label,
   },
-  bullionItems: {
-    paddingHorizontal: 4,
-    paddingBottom: 10,
-    gap: 6,
+  drawerSectionLabel: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: MOBILE.secondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginTop: 16,
+    marginBottom: 6,
+    marginLeft: 4,
   },
-  bullionItemRow: {
+  drawerGroup: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  drawerRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: MOBILE.separator,
+  },
+  drawerRowLast: {
+    borderBottomWidth: 0,
+  },
+  drawerRowLabel: {
+    fontFamily,
+    fontSize: 16,
+    color: MOBILE.secondary,
+  },
+  drawerRowValue: {
+    fontFamily,
+    flex: 1,
+    fontSize: 16,
+    color: MOBILE.label,
+    textAlign: 'right',
+  },
+  drawerEmpty: {
+    fontFamily,
+    fontSize: 15,
+    color: MOBILE.secondary,
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+  },
+  drawerItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    paddingVertical: 6,
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: MOBILE.separator,
   },
-  bullionItemName: {
+  drawerItemLast: {
+    borderBottomWidth: 0,
+  },
+  drawerItemName: {
     fontFamily,
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: '600',
-    color: TEXT,
+    color: MOBILE.label,
   },
-  bullionItemQty: {
+  drawerItemQty: {
     fontFamily,
-    fontSize: 14,
-    fontWeight: '700',
-    color: TEXT,
+    fontSize: 16,
+    fontWeight: '600',
+    color: MOBILE.label,
+    fontVariant: ['tabular-nums'],
   },
 });

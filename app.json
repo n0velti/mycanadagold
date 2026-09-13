@@ -44,8 +44,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow MyCanadaGold to use a photo for your profile picture.",
-          "cameraPermission": false,
+          "photosPermission": "Allow MyCanadaGold to attach photos to profile pictures and document corrections.",
+          "cameraPermission": "Allow MyCanadaGold to capture photos for document corrections and your profile picture.",
           "microphonePermission": false
         }
       ]

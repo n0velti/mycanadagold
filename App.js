@@ -24,8 +24,10 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import {
   login as loginRequest,
   logout as logoutRequest,
+  onAureusSessionExpired,
   onSessionRevoked,
   restoreSession,
+  watchAureusToken,
 } from './lib/auth';
 import {
   DEFAULT_APPS_VIEW,
@@ -35,7 +37,9 @@ import {
   persistPinnedTools,
   storeLocationFromSession,
   isRestrictedHomeEmployee,
+  isStoreScopedProfile,
   allocatedStoreName,
+  scopedStoreName,
   filterRowsToAllocatedStore,
   uploadOwnAvatar,
 } from './lib/profiles';
@@ -541,6 +545,16 @@ function emptyHomeStoreRow(store) {
     totalAmount: 0,
     transactions: [],
   };
+}
+
+function rowMatchesAllocatedStore(row, storeName) {
+  const store = String(row?.storeName || row?.store || '').trim();
+  const location = String(storeName || '').trim();
+  if (!store || !location) return false;
+  if (store.localeCompare(location, undefined, { sensitivity: 'base' }) === 0) return true;
+  const a = store.toLowerCase();
+  const b = location.toLowerCase();
+  return a.includes(b) || b.includes(a);
 }
 
 function ProfileAvatar({ uri, name, size = 24, style }) {
@@ -2703,7 +2717,8 @@ function HomeStoresTable({ rows, selectedStore, totals, onOpenStore, compact = f
 function HomeScreen({ session, onRequireLogin }) {
   const isMobile = useIsMobile();
   const appGrid = useAppGridLayout();
-  const storeRestricted = isRestrictedHomeEmployee(session?.profile);
+  const storeRestricted = isStoreScopedProfile(session?.profile);
+  const dateRestricted = isRestrictedHomeEmployee(session?.profile);
   const assignedStore = allocatedStoreName(session?.profile);
   const initialRange = useMemo(() => defaultDateRange(7), []);
   const [dateMode, setDateMode] = useState('day');
@@ -2717,8 +2732,8 @@ function HomeScreen({ session, onRequireLogin }) {
   const requestId = useRef(0);
 
   const todayKey = formatDateParam(parseDateParam(new Date()));
-  const startKey = storeRestricted ? todayKey : formatDateParam(startDate);
-  const endKey = storeRestricted ? todayKey : dateMode === 'day' ? startKey : formatDateParam(endDate);
+  const startKey = dateRestricted ? todayKey : formatDateParam(startDate);
+  const endKey = dateRestricted ? todayKey : dateMode === 'day' ? startKey : formatDateParam(endDate);
   const isToday = dateMode === 'day' && startKey === todayKey;
   const periodLabel =
     dateMode === 'day'
@@ -2770,11 +2785,15 @@ function HomeScreen({ session, onRequireLogin }) {
   );
 
   useEffect(() => {
-    if (!storeRestricted) return;
+    if (!dateRestricted) return;
     const day = parseDateParam(new Date());
     setDateMode('day');
     setStartDate(day);
     setEndDate(day);
+  }, [dateRestricted]);
+
+  useEffect(() => {
+    if (!storeRestricted) return;
     setQuery('');
   }, [storeRestricted]);
 
@@ -2830,7 +2849,7 @@ function HomeScreen({ session, onRequireLogin }) {
   };
 
   const selectRange = () => {
-    if (storeRestricted) return;
+    if (dateRestricted) return;
     setDateMode('range');
     if (formatDateParam(startDate) === formatDateParam(endDate)) {
       setStartDate(initialRange.start);
@@ -2911,7 +2930,7 @@ function HomeScreen({ session, onRequireLogin }) {
         </View>
       )}
 
-      {storeRestricted ? (
+      {dateRestricted ? (
         <View style={[styles.homeControls, isMobile && styles.igHomeControls, homeWidth]}>
           <View style={styles.homeSegment}>
             <View style={[styles.homeSegmentButton, styles.homeSegmentButtonActive]}>
@@ -3497,7 +3516,7 @@ function EmailsScreen({ session, onRequireLogin, focus = null, onFocusConsumed }
   );
 }
 
-function TransactionsScreen({ session, onRequireLogin }) {
+function TransactionsScreen({ session, onRequireLogin, storeFilter }) {
   const isMobile = useIsMobile();
   const { canFilter } = useAppAccess();
   const allowFilters = canFilter('transactions');
@@ -3641,20 +3660,25 @@ function TransactionsScreen({ session, onRequireLogin }) {
     };
   }, [session?.token, rows.length, startKey, endKey, lookupQuery]);
 
-  const columnOptions = useMemo(() => buildColumnOptions(rows), [rows]);
+  const scopedRows = useMemo(() => {
+    if (!storeFilter) return rows;
+    return rows.filter((row) => rowMatchesAllocatedStore(row, storeFilter));
+  }, [rows, storeFilter]);
+
+  const columnOptions = useMemo(() => buildColumnOptions(scopedRows), [scopedRows]);
 
   const employeeCounts = useMemo(() => {
     const counts = {};
-    for (const row of rows) {
+    for (const row of scopedRows) {
       const key = row.employeeName || '—';
       counts[key] = (counts[key] || 0) + 1;
     }
     return counts;
-  }, [rows]);
+  }, [scopedRows]);
 
   const fintracCount = useMemo(
-    () => rows.reduce((count, row) => count + (isFintracCash(row) ? 1 : 0), 0),
-    [rows],
+    () => scopedRows.reduce((count, row) => count + (isFintracCash(row) ? 1 : 0), 0),
+    [scopedRows],
   );
 
   const activeFilterCount = useMemo(
@@ -3665,7 +3689,7 @@ function TransactionsScreen({ session, onRequireLogin }) {
   );
 
   const filteredRows = useMemo(() => {
-    let result = rows;
+    let result = scopedRows;
 
     if (fintracCashOnly) {
       result = result.filter((row) => isFintracCash(row));
@@ -3684,7 +3708,7 @@ function TransactionsScreen({ session, onRequireLogin }) {
     }
 
     return result;
-  }, [rows, query, columnFilters, fintracCashOnly]);
+  }, [scopedRows, query, columnFilters, fintracCashOnly]);
 
   const openFilterColumn = openFilter
     ? FILTER_COLUMNS.find((col) => col.key === openFilter)
@@ -3703,7 +3727,7 @@ function TransactionsScreen({ session, onRequireLogin }) {
     setFintracCashOnly(false);
   }, [allowFilters]);
 
-  const cashSlips = useTxnCashBreakdowns(rows);
+  const cashSlips = useTxnCashBreakdowns(scopedRows);
 
   const closeDetail = useCallback(() => {
     setSelectedRow(null);
@@ -3941,8 +3965,8 @@ function TransactionsScreen({ session, onRequireLogin }) {
           {loading && rows.length === 0
             ? 'Loading…'
             : `${filteredRows.length}${
-                filteredRows.length !== rows.length || query.trim() || fintracCashOnly
-                  ? ` of ${rows.length}`
+                filteredRows.length !== scopedRows.length || query.trim() || fintracCashOnly
+                  ? ` of ${scopedRows.length}`
                   : ''
               } transaction${filteredRows.length === 1 ? '' : 's'}`}
           {summary && !query.trim() && activeFilterCount === 0
@@ -4420,6 +4444,7 @@ export default function App() {
   const appGrid = useAppGridLayout();
   const [activeTab, setActiveTab] = useState('home');
   const [activeTool, setActiveTool] = useState(null);
+  const [triageStoreBack, setTriageStoreBack] = useState(null);
   const [settingsPanel, setSettingsPanel] = useState(null);
   const [toolsQuery, setToolsQuery] = useState('');
   const [pinnedKeys, setPinnedKeys] = useState([]);
@@ -4461,6 +4486,7 @@ export default function App() {
   );
 
   const isLoggedIn = Boolean(session?.token && session?.supabaseUserId);
+  const scopedStore = scopedStoreName(session?.profile);
   const userLabel = displayName(session) || PROFILE_TAB.label;
   const activeLabel =
     activeTab === 'profile'
@@ -4569,15 +4595,46 @@ export default function App() {
   }, []);
 
   // If Supabase revokes the session (another tab signed out, refresh token
-  // rejected), drop straight to the login screen.
+  // rejected) or Aureus rejects the POS token, drop straight to the login screen.
   const hasSessionRef = useRef(false);
-  hasSessionRef.current = Boolean(session?.token);
+  const sessionLoginRef = useRef('');
+  useEffect(() => {
+    hasSessionRef.current = Boolean(session?.token);
+  }, [session?.token]);
+  useEffect(() => {
+    sessionLoginRef.current = session?.login || '';
+  }, [session?.login]);
+
+  const expireToLogin = useCallback(
+    async (message) => {
+      if (!hasSessionRef.current) return;
+      const rememberedLogin = sessionLoginRef.current;
+      hasSessionRef.current = false;
+      await logoutRequest().catch(() => {});
+      resetToSignedOut();
+      if (rememberedLogin) setLoginId(rememberedLogin);
+      if (message) setLoginError(message);
+    },
+    [resetToSignedOut],
+  );
+
   useEffect(() => {
     const unsubscribe = onSessionRevoked(() => {
       if (hasSessionRef.current) resetToSignedOut();
     });
     return unsubscribe;
   }, [resetToSignedOut]);
+
+  useEffect(() => {
+    return onAureusSessionExpired(() => {
+      expireToLogin('Your Aureus session expired. Please log in again.');
+    });
+  }, [expireToLogin]);
+
+  useEffect(() => {
+    if (!session?.token) return undefined;
+    return watchAureusToken({ token: session.token, baseUrl: session.baseUrl });
+  }, [session?.token, session?.baseUrl]);
 
   useEffect(() => {
     const token = session?.token;
@@ -4822,6 +4879,17 @@ export default function App() {
         ) : (
           <Text style={styles.breadcrumbCurrent}>{activeTool.label}</Text>
         )}
+        {activeTool.key === 'triage' && triageStoreBack ? (
+          <Pressable
+            onPress={triageStoreBack}
+            style={styles.breadcrumbBack}
+            accessibilityRole="button"
+            accessibilityLabel="Back to transfers"
+          >
+            <Ionicons name="chevron-back" size={18} color="#C2410C" />
+            <Text style={styles.breadcrumbBackText}>Transfers</Text>
+          </Pressable>
+        ) : null}
       </View>
     );
   };
@@ -5037,11 +5105,13 @@ export default function App() {
               <TransactionsScreen
                 session={session}
                 onRequireLogin={() => selectTab('profile')}
+                storeFilter={scopedStore || undefined}
               />
             ) : activeTool.key === 'inventory' ? (
               <InventoryScreen
                 session={session}
                 onRequireLogin={() => selectTab('profile')}
+                storeFilter={scopedStore || undefined}
               />
             ) : activeTool.key === 'preorders' ? (
               <PreordersScreen />
@@ -5049,16 +5119,19 @@ export default function App() {
               <AiScreen
                 session={session}
                 onRequireLogin={() => selectTab('profile')}
+                storeFilter={scopedStore || undefined}
               />
             ) : activeTool.key === 'financials' ? (
               <FinancialsScreen
                 session={session}
                 onRequireLogin={() => selectTab('profile')}
+                storeFilter={scopedStore || undefined}
               />
             ) : activeTool.key === 'debit' ? (
               <DebitScreen
                 session={session}
                 onRequireLogin={() => selectTab('profile')}
+                storeFilter={scopedStore || undefined}
               />
             ) : activeTool.key === 'accounting' ? (
               <AccountingScreen />
@@ -5066,6 +5139,7 @@ export default function App() {
               <AuditScreen
                 session={session}
                 onRequireLogin={() => selectTab('profile')}
+                storeFilter={scopedStore || undefined}
               />
             ) : activeTool.key === 'emails' ? (
               <EmailsScreen
@@ -5133,11 +5207,13 @@ export default function App() {
               <FintracScreen
                 session={session}
                 onRequireLogin={() => selectTab('profile')}
+                storeFilter={scopedStore || undefined}
               />
             ) : activeTool.key === 'trends' ? (
               <TrendsScreen
                 session={session}
                 onRequireLogin={() => selectTab('profile')}
+                storeFilter={scopedStore || undefined}
               />
             ) : activeTool.key === 'pricing' ? (
               <PricingScreen />
@@ -5146,6 +5222,7 @@ export default function App() {
                 session={session}
                 onRequireLogin={() => selectTab('profile')}
                 onOpenEmails={openEmailsFromBonuses}
+                storeFilter={scopedStore || undefined}
               />
             ) : activeTool.key === 'employees' ? (
               <EmployeesScreen
@@ -5180,6 +5257,8 @@ export default function App() {
               <TriageScreen
                 session={session}
                 onRequireLogin={() => selectTab('profile')}
+                storeFilter={scopedStore || undefined}
+                onStoreBackChange={(fn) => setTriageStoreBack(() => fn)}
               />
             ) : activeTool.key === 'messages' ? (
               <View style={styles.messagesHost}>
@@ -5471,6 +5550,20 @@ export default function App() {
                 setActiveTool(null);
                 setSettingsPanel(null);
               }}
+              trailing={
+                activeTool.key === 'triage' && triageStoreBack ? (
+                  <Pressable
+                    onPress={triageStoreBack}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Back to transfers"
+                    style={styles.mobileTitleBack}
+                  >
+                    <Ionicons name="chevron-back" size={18} color="#C2410C" />
+                    <Text style={styles.mobileTitleBackText}>Transfers</Text>
+                  </Pressable>
+                ) : null
+              }
             />
           ) : null}
           <View style={contentStyle}>{renderContent()}</View>
@@ -7348,6 +7441,35 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '600',
     color: '#1a1a1a',
+  },
+  breadcrumbBack: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginLeft: 8,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  breadcrumbBackText: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#C2410C',
+  },
+  mobileTitleBack: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  mobileTitleBackText: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#C2410C',
   },
   toolsScreen: {
     flex: 1,

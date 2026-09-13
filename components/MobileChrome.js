@@ -31,7 +31,7 @@ export function MobileHomeHeader() {
   );
 }
 
-export function MobileNavHeader({ title, onBack }) {
+export function MobileNavHeader({ title, onBack, trailing }) {
   return (
     <View style={styles.navHeader}>
       <Pressable
@@ -45,7 +45,7 @@ export function MobileNavHeader({ title, onBack }) {
       <Text style={styles.navTitle} numberOfLines={1}>
         {title}
       </Text>
-      <View style={styles.navSide} />
+      <View style={[styles.navSide, trailing && styles.navTrailing]}>{trailing}</View>
     </View>
   );
 }
@@ -133,6 +133,11 @@ const styles = StyleSheet.create({
     backgroundColor: MOBILE.feed,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: MOBILE.separator,
+  },
+  navTrailing: {
+    width: 'auto',
+    minWidth: 44,
+    paddingRight: 8,
   },
   navSide: {
     width: 44,
