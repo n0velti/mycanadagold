@@ -54,7 +54,7 @@ const MAX_FAILURES_PER_IP = 40;
 const THROTTLE_WINDOW = '15 minutes';
 
 const PROFILE_COLUMNS =
-  'id, aureus_user_id, aureus_login, email, first_name, last_name, full_name, role, employee_type, location_id, location_name, app_role, is_system_admin, is_active, pinned_tools, apps_view, avatar_url, last_login_at, created_at';
+  'id, aureus_user_id, aureus_login, email, first_name, last_name, full_name, role, employee_type, location_id, location_name, app_role, is_system_admin, is_active, pinned_tools, apps_view, avatar_url, team_id, is_team_intake, last_login_at, created_at';
 
 interface LoginBody {
   action?: string;
@@ -78,6 +78,8 @@ interface ProfileRow {
   location_id: string | null;
   location_name: string | null;
   avatar_url: string | null;
+  team_id: string | null;
+  is_team_intake: boolean;
   app_role: string;
   is_system_admin: boolean;
   is_active: boolean;
@@ -85,6 +87,7 @@ interface ProfileRow {
   apps_view: string | null;
   last_login_at: string;
   created_at: string;
+  team_name?: string;
 }
 
 function requireEnv(): void {
@@ -306,6 +309,13 @@ async function mintSession(admin: SupabaseClient, email: string) {
   };
 }
 
+async function withTeamName(admin: SupabaseClient, row: ProfileRow): Promise<ProfileRow> {
+  if (!row?.team_id) return { ...row, team_name: '' };
+  const { data, error } = await admin.from('teams').select('name').eq('id', row.team_id).maybeSingle();
+  if (error) return { ...row, team_name: '' };
+  return { ...row, team_name: String(data?.name || '') };
+}
+
 function publicProfile(row: ProfileRow) {
   return {
     id: row.id,
@@ -320,6 +330,9 @@ function publicProfile(row: ProfileRow) {
     locationId: row.location_id || '',
     locationName: row.location_name || '',
     avatarUrl: row.avatar_url || '',
+    teamId: row.team_id || '',
+    teamName: row.team_name || '',
+    isTeamIntake: Boolean(row.is_team_intake),
     appRole: row.app_role || '',
     isSystemAdmin: Boolean(row.is_system_admin),
     isActive: Boolean(row.is_active),
@@ -507,7 +520,7 @@ async function handleLogin(req: Request, body: LoginBody): Promise<Response> {
       baseUrl: aureus.baseUrl,
     },
     linked,
-    profile: publicProfile(profile),
+    profile: publicProfile(await withTeamName(admin, profile)),
     firstLogin,
   });
 }
@@ -578,7 +591,10 @@ async function handleSyncStaff(req: Request, body: LoginBody): Promise<Response>
     if (profileError || !profile) {
       return json(req, 200, { updated, profile: null });
     }
-    return json(req, 200, { updated, profile: publicProfile(profile as ProfileRow) });
+    return json(req, 200, {
+      updated,
+      profile: publicProfile(await withTeamName(staff.admin, profile as ProfileRow)),
+    });
   } catch (err) {
     console.error('sync-staff update failed', err instanceof Error ? err.message : err);
     return error(req, 500, 'Could not update staff roles.', 'sync_failed');
@@ -620,7 +636,9 @@ async function handleSetLocation(req: Request, body: LoginBody): Promise<Respons
     return error(req, 500, 'Could not save that location.', 'sync_failed');
   }
 
-  return json(req, 200, { profile: publicProfile(profile as ProfileRow) });
+  return json(req, 200, {
+    profile: publicProfile(await withTeamName(staff.admin, profile as ProfileRow)),
+  });
 }
 
 Deno.serve(async (req) => {

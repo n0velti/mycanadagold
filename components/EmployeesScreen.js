@@ -35,7 +35,7 @@ import {
   saveRipplingSession,
 } from '../lib/rippling';
 import { syncStaffRoles } from '../lib/auth';
-import { fetchAureusEmployees, mergeEmployeesWithProfiles } from '../lib/aureusEmployees';
+import { mergeEmployeesWithProfiles } from '../lib/aureusEmployees';
 import { categoryLabel, listStaffProfiles, useAppAccess } from '../lib/permissions';
 import ProfilePhotoModal from './ProfilePhotoModal';
 
@@ -198,7 +198,7 @@ function StaffEmployeeDetail({ person, onClose, compact, onOpenPhoto }) {
     return (
       <View style={styles.detailEmpty}>
         <Ionicons name="people-outline" size={28} color="#c4c4c4" />
-        <Text style={styles.detailEmptyText}>Select an employee to see their Aureus profile.</Text>
+        <Text style={styles.detailEmptyText}>Select an employee to see their profile.</Text>
       </View>
     );
   }
@@ -265,43 +265,31 @@ function AppEmployeesPanel({ session, onProfileUpdated }) {
   onProfileUpdatedRef.current = onProfileUpdated;
 
   const load = useCallback(async () => {
-    if (!session?.token) {
-      setPeople([]);
-      setError('Sign in to load employees from Aureus.');
-      setLoading(false);
-      return;
-    }
-
     setLoading(true);
     setError('');
     try {
-      const employees = await fetchAureusEmployees(session.token, session.baseUrl);
-      try {
-        const synced = await syncStaffRoles(session);
-        if (synced?.profile?.id) onProfileUpdatedRef.current?.(synced.profile);
-      } catch {
-        // Directory still loads if role sync is unavailable.
+      if (session?.token) {
+        try {
+          const synced = await syncStaffRoles(session);
+          if (synced?.profile?.id) onProfileUpdatedRef.current?.(synced.profile);
+        } catch {
+          // Directory still loads if role sync is unavailable.
+        }
       }
-      const profiles = await listStaffProfiles().catch(() => []);
-      const rows = mergeEmployeesWithProfiles(employees, profiles);
+      const profiles = await listStaffProfiles();
+      const rows = mergeEmployeesWithProfiles([], profiles);
       setPeople(rows);
       setSelectedId((current) => {
         if (current && rows.some((row) => row.id === current)) return current;
         return null;
       });
     } catch (err) {
-      try {
-        const profiles = await listStaffProfiles();
-        setPeople(mergeEmployeesWithProfiles([], profiles));
-        setError(err?.message || 'Could not load employees from Aureus.');
-      } catch {
-        setPeople([]);
-        setError(err?.message || 'Could not load employees from Aureus.');
-      }
+      setPeople([]);
+      setError(err?.message || 'Could not load employees.');
     } finally {
       setLoading(false);
     }
-  }, [session?.token, session?.baseUrl]);
+  }, [session?.token]);
 
   useEffect(() => {
     load();
@@ -394,7 +382,7 @@ function AppEmployeesPanel({ session, onProfileUpdated }) {
       ) : null}
 
       <Text style={styles.directoryHint}>
-        Aureus POS employees
+        Employees who have signed in
         {people.length ? ` · ${people.length}` : ''}
       </Text>
 
@@ -421,7 +409,7 @@ function AppEmployeesPanel({ session, onProfileUpdated }) {
                   <Text style={styles.emptyText}>
                     {query.trim() || location
                       ? 'No employees match the current filters.'
-                      : 'No employees returned from Aureus.'}
+                      : 'No employees have signed in yet.'}
                   </Text>
                 </View>
               ) : (

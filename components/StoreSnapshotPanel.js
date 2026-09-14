@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -69,6 +69,26 @@ const PRIORITY_COLORS = {
   yellow: '#FF9F0A',
   red: RED,
 };
+
+// Stores can carry hundreds of stocked SKUs; render a page at a time so the
+// drawer opens quickly and scrolls smoothly.
+const INVENTORY_PAGE = 60;
+
+function sameJson(a, b) {
+  if (a === b) return true;
+  if (a == null || b == null) return false;
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
+}
+
+// Functional setState helper: keep the previous value (and skip the re-render)
+// when a live refresh returns identical data.
+function keepIfSame(next) {
+  return (current) => (sameJson(current, next) ? current : next);
+}
 
 function namesMatch(a, b) {
   return (
@@ -322,7 +342,7 @@ function CashDrawerCard({ drawer, compare }) {
   );
 }
 
-function MovementRow({ row, last, cashSaved, onCashPress }) {
+const MovementRow = memo(function MovementRow({ row, last, cashSaved, onCashPress }) {
   const inbound = row.type === 'In';
   return (
     <View style={[styles.row, styles.rowStatic, last && styles.rowLast]}>
@@ -346,7 +366,7 @@ function MovementRow({ row, last, cashSaved, onCashPress }) {
       </View>
     </View>
   );
-}
+});
 
 function itemSnapshotLabel(row) {
   const names = (row?.itemNames || [])
@@ -577,7 +597,15 @@ function TxnPhotoThumb({ urls, label }) {
   );
 }
 
-function TransactionRow({ item, last, onPress, cashSaved, onCashPress, priceCheck, onPricePress }) {
+const TransactionRow = memo(function TransactionRow({
+  item,
+  last,
+  onPress,
+  cashSaved,
+  onCashPress,
+  priceCheck,
+  onPricePress,
+}) {
   const isBuy = item.type === 'purchase';
   const items = itemSnapshotLabel(item);
   const employee = String(item.employeeName || '').trim();
@@ -619,9 +647,9 @@ function TransactionRow({ item, last, onPress, cashSaved, onCashPress, priceChec
       </View>
     </Pressable>
   );
-}
+});
 
-function InventoryRow({ row, qty, last }) {
+const InventoryRow = memo(function InventoryRow({ row, qty, last }) {
   return (
     <View style={[styles.row, styles.rowStatic, last && styles.rowLast]}>
       {row.priority ? (
@@ -644,6 +672,25 @@ function InventoryRow({ row, qty, last }) {
       </Text>
     </View>
   );
+});
+
+function ShowMoreRow({ remaining, onPress }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ hovered, pressed }) => [
+        styles.row,
+        styles.rowLast,
+        styles.showMoreRow,
+        (hovered || pressed) && styles.rowHovered,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={`Show ${remaining} more items`}
+    >
+      <Text style={styles.showMoreText}>Show {remaining} more</Text>
+      <Ionicons name="chevron-down" size={14} color={BLUE} />
+    </Pressable>
+  );
 }
 
 function EmptyRow({ text }) {
@@ -662,19 +709,20 @@ function LoadingRow() {
   );
 }
 
-export default function StoreSnapshotPanel({
+function StoreSnapshotPanel({
   session,
   store,
   periodLabel = 'Today',
   txRows = [],
   onOpenTransaction,
-  apps,
-  onOpenApp,
+  topInset = 0,
+  ready = true,
 }) {
   const storeName = store?.store || '';
   const { width: windowWidth } = useWindowDimensions();
   const isMobile = windowWidth < 768;
   const [query, setQuery] = useState('');
+  const [inventoryLimit, setInventoryLimit] = useState(INVENTORY_PAGE);
   const [cash, setCash] = useState(null);
   const [cashLoading, setCashLoading] = useState(false);
   const [cashError, setCashError] = useState('');
@@ -730,16 +778,20 @@ export default function StoreSnapshotPanel({
         loadStoreDayTxnCashBreakdowns(storeName, dateKey).catch(() => []),
       ]);
       if (id !== cashRequestId.current) return;
-      setCash(result);
-      setOpeningCounts({
-        cad: opening.cad || null,
-        usd: opening.usd || null,
-      });
-      setTodayCounts({
-        cad: today.cad || null,
-        usd: today.usd || null,
-      });
-      setDaySlips(slips);
+      setCash(keepIfSame(result));
+      setOpeningCounts(
+        keepIfSame({
+          cad: opening.cad || null,
+          usd: opening.usd || null,
+        }),
+      );
+      setTodayCounts(
+        keepIfSame({
+          cad: today.cad || null,
+          usd: today.usd || null,
+        }),
+      );
+      setDaySlips(keepIfSame(slips));
       setCashError('');
     } catch (err) {
       if (id !== cashRequestId.current) return;
@@ -765,8 +817,8 @@ export default function StoreSnapshotPanel({
     const id = ++inventoryRequestId.current;
     const cached = !force ? peekInventoryMatrix(session) : null;
     if (cached) {
-      setInventoryStores(cached.stores);
-      setInventoryRows(cached.rows);
+      setInventoryStores(keepIfSame(cached.stores));
+      setInventoryRows(keepIfSame(cached.rows));
       setInventoryError('');
       hasInventoryRef.current = true;
       setInventoryLoading(false);
@@ -777,8 +829,8 @@ export default function StoreSnapshotPanel({
     try {
       const result = await fetchInventoryMatrix(session, { force });
       if (id !== inventoryRequestId.current) return;
-      setInventoryStores(result.stores);
-      setInventoryRows(result.rows);
+      setInventoryStores(keepIfSame(result.stores));
+      setInventoryRows(keepIfSame(result.rows));
       setInventoryError('');
       hasInventoryRef.current = true;
     } catch (err) {
@@ -796,6 +848,7 @@ export default function StoreSnapshotPanel({
 
   useEffect(() => {
     setQuery('');
+    setInventoryLimit(INVENTORY_PAGE);
     setCash(null);
     setOpeningCounts({ cad: null, usd: null });
     setTodayCounts({ cad: null, usd: null });
@@ -851,22 +904,43 @@ export default function StoreSnapshotPanel({
     };
   }, []);
 
+  // Reuse a row's price check while the row object and catalog are unchanged,
+  // so unchanged rows keep the same `priceCheck` prop and stay memoized.
+  const priceCheckCache = useRef({ catalog: null, byRow: new WeakMap() });
   const priceChecks = useMemo(() => {
+    const cache = priceCheckCache.current;
+    if (cache.catalog !== priceCatalog) {
+      cache.catalog = priceCatalog;
+      cache.byRow = new WeakMap();
+    }
     const map = new Map();
     for (const row of txRows) {
-      map.set(row.id, checkTransactionPrices(row, priceCatalog));
+      let check = cache.byRow.get(row);
+      if (!check) {
+        check = checkTransactionPrices(row, priceCatalog);
+        cache.byRow.set(row, check);
+      }
+      map.set(row.id, check);
     }
     return map;
   }, [priceCatalog, txRows]);
 
   const visibleTx = useMemo(() => txRows.filter((row) => txMatches(row, query)), [txRows, query]);
 
-  const visibleItems = useMemo(() => {
+  const allItems = useMemo(() => {
     if (!storeId) return [];
     return inventoryRows
       .map((row) => ({ row, qty: row.quantities[storeId] || 0 }))
       .filter(({ row, qty }) => (searching ? itemMatches(row, query) : qty !== 0));
   }, [inventoryRows, storeId, query, searching]);
+  const visibleItems = useMemo(
+    () => (allItems.length > inventoryLimit ? allItems.slice(0, inventoryLimit) : allItems),
+    [allItems, inventoryLimit],
+  );
+  const hiddenItemCount = allItems.length - visibleItems.length;
+  const showMoreItems = useCallback(() => {
+    setInventoryLimit((current) => current + INVENTORY_PAGE);
+  }, []);
 
   const tillMoves = useMemo(() => {
     const rows = [
@@ -901,27 +975,26 @@ export default function StoreSnapshotPanel({
   );
   const showUsd =
     hasDrawerActivity(cash?.usd) || usdCompare.hasExpected || usdCompare.hasActual;
-  const showApps = Array.isArray(apps) && typeof onOpenApp === 'function' && apps.length > 0;
   const txMeta = searching
     ? `${visibleTx.length} match${visibleTx.length === 1 ? '' : 'es'}`
     : `${periodLabel} · ${txRows.length}`;
   const itemMeta = searching
-    ? `${visibleItems.length} match${visibleItems.length === 1 ? '' : 'es'}`
+    ? `${allItems.length} match${allItems.length === 1 ? '' : 'es'}`
     : storeId
-      ? `${visibleItems.length} in stock`
+      ? `${allItems.length} in stock`
       : '';
 
   return (
     <View style={[styles.body, isMobile && styles.bodyMobile]}>
-      <SearchField value={query} onChangeText={setQuery} />
-
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { paddingTop: topInset + 10 }]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
       >
+        <SearchField value={query} onChangeText={setQuery} />
+
         <SectionHeader title="Cash" meta="Today" />
         {cashError ? (
           <Pressable onPress={loadCash}>
@@ -994,7 +1067,7 @@ export default function StoreSnapshotPanel({
               <EmptyRow text={`${inventoryError} · Tap to retry`} />
             </Group>
           </Pressable>
-        ) : inventoryLoading && inventoryRows.length === 0 ? (
+        ) : (inventoryLoading && inventoryRows.length === 0) || !ready ? (
           <Group>
             <LoadingRow />
           </Group>
@@ -1007,57 +1080,22 @@ export default function StoreSnapshotPanel({
             {visibleItems.length === 0 ? (
               <EmptyRow text={searching ? 'No matching items.' : 'No stocked items.'} />
             ) : (
-              visibleItems.map(({ row, qty }, index) => (
-                <InventoryRow
-                  key={row.id}
-                  row={row}
-                  qty={qty}
-                  last={index === visibleItems.length - 1}
-                />
-              ))
+              <>
+                {visibleItems.map(({ row, qty }, index) => (
+                  <InventoryRow
+                    key={row.id}
+                    row={row}
+                    qty={qty}
+                    last={hiddenItemCount === 0 && index === visibleItems.length - 1}
+                  />
+                ))}
+                {hiddenItemCount > 0 ? (
+                  <ShowMoreRow remaining={hiddenItemCount} onPress={showMoreItems} />
+                ) : null}
+              </>
             )}
           </Group>
         )}
-
-        {showApps ? (
-          <View style={styles.appsSection}>
-            <SectionHeader title="Apps" />
-            <Group>
-              {apps.map((tab, index) => (
-                <Pressable
-                  key={tab.key}
-                  onPress={() => onOpenApp(tab.key)}
-                  style={({ hovered, pressed }) => [
-                    styles.row,
-                    index === apps.length - 1 && styles.rowLast,
-                    (hovered || pressed) && styles.rowHovered,
-                  ]}
-                  accessibilityRole="button"
-                  accessibilityLabel={tab.label}
-                >
-                  <View
-                    style={[
-                      styles.appIcon,
-                      { backgroundColor: tab.accent },
-                    ]}
-                  >
-                    <Ionicons
-                      name={
-                        typeof tab.icon === 'string' && tab.icon.endsWith('-outline')
-                          ? tab.icon.slice(0, -8)
-                          : tab.icon
-                      }
-                      size={18}
-                      color="#fff"
-                    />
-                  </View>
-                  <Text style={styles.rowTitle}>{tab.label}</Text>
-                  <Ionicons name="chevron-forward" size={16} color="#c7c7cc" />
-                </Pressable>
-              ))}
-            </Group>
-          </View>
-        ) : null}
       </ScrollView>
       <TxnCashBreakdownModal
         visible={Boolean(cashSlips.editorRow)}
@@ -1072,34 +1110,47 @@ export default function StoreSnapshotPanel({
   );
 }
 
+// The home screen hands us a fresh `store` object on every live refresh; only
+// its name matters here, so compare that instead of the object identity.
+export default memo(
+  StoreSnapshotPanel,
+  (prev, next) =>
+    prev.session === next.session &&
+    (prev.store?.store || '') === (next.store?.store || '') &&
+    prev.periodLabel === next.periodLabel &&
+    prev.txRows === next.txRows &&
+    prev.onOpenTransaction === next.onOpenTransaction &&
+    prev.topInset === next.topInset &&
+    prev.ready === next.ready,
+);
+
 const styles = StyleSheet.create({
   body: {
     flex: 1,
     minHeight: 0,
     backgroundColor: '#f2f2f7',
-    paddingHorizontal: 20,
-    paddingTop: 8,
+    paddingHorizontal: 16,
   },
   bodyMobile: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
   },
   searchField: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    minHeight: 36,
-    marginBottom: 18,
-    paddingHorizontal: 12,
-    borderRadius: 10,
+    gap: 6,
+    minHeight: 32,
+    marginBottom: 14,
+    paddingHorizontal: 10,
+    borderRadius: 9,
     backgroundColor: FILL,
   },
   searchInput: {
     flex: 1,
     fontFamily,
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: '400',
     color: LABEL,
-    paddingVertical: 8,
+    paddingVertical: 6,
     ...Platform.select({
       web: { outlineStyle: 'none' },
       default: {},
@@ -1110,50 +1161,50 @@ const styles = StyleSheet.create({
     minHeight: 0,
   },
   scrollContent: {
-    paddingBottom: 40,
+    paddingBottom: 32,
   },
   sectionHeader: {
     flexDirection: 'row',
     alignItems: 'baseline',
     justifyContent: 'space-between',
     gap: 12,
-    marginBottom: 8,
+    marginBottom: 6,
     paddingHorizontal: 4,
   },
   sectionTitle: {
     fontFamily,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
     color: SECONDARY,
-    letterSpacing: -0.08,
+    letterSpacing: -0.04,
     textTransform: 'uppercase',
   },
   sectionMeta: {
     fontFamily,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '500',
     color: SECONDARY,
-    letterSpacing: -0.08,
+    letterSpacing: -0.04,
   },
   group: {
     backgroundColor: '#fff',
-    borderRadius: 14,
+    borderRadius: 12,
     overflow: 'hidden',
-    marginBottom: 22,
+    marginBottom: 16,
   },
   groupFlush: {
     marginBottom: 0,
   },
   cashStack: {
-    gap: 10,
-    marginBottom: 22,
+    gap: 8,
+    marginBottom: 16,
   },
   compareStack: {
     flexDirection: 'column',
   },
   compareBand: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
   compareBandHead: {
     flexDirection: 'row',
@@ -1168,14 +1219,14 @@ const styles = StyleSheet.create({
   },
   compareColTitle: {
     fontFamily,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
     color: SECONDARY,
-    letterSpacing: -0.08,
+    letterSpacing: -0.04,
   },
   compareColTotal: {
     fontFamily,
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: '700',
     color: LABEL,
     letterSpacing: -0.3,
@@ -1183,17 +1234,17 @@ const styles = StyleSheet.create({
   },
   compareEmpty: {
     fontFamily,
-    fontSize: 13,
+    fontSize: 12,
     color: SECONDARY,
-    letterSpacing: -0.08,
-    marginTop: 4,
+    letterSpacing: -0.04,
+    marginTop: 3,
   },
   compareChips: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     alignItems: 'center',
-    gap: 8,
-    marginTop: 6,
+    gap: 7,
+    marginTop: 5,
   },
   compareChip: {
     flexDirection: 'row',
@@ -1202,39 +1253,39 @@ const styles = StyleSheet.create({
   },
   compareChipTitle: {
     fontFamily,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
     color: LABEL,
-    letterSpacing: -0.08,
+    letterSpacing: -0.04,
   },
   compareChipCount: {
     fontFamily,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '400',
     color: SECONDARY,
-    letterSpacing: -0.08,
+    letterSpacing: -0.04,
   },
   compareChipAmount: {
     fontFamily,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '500',
     color: LABEL,
-    letterSpacing: -0.08,
+    letterSpacing: -0.04,
     fontVariant: ['tabular-nums'],
   },
   cashDot: {
-    width: 8,
-    height: 8,
+    width: 7,
+    height: 7,
     borderRadius: 4,
     flexShrink: 0,
   },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 64,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    gap: 10,
+    minHeight: 52,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    gap: 9,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: SEPARATOR,
     ...Platform.select({
@@ -1260,7 +1311,7 @@ const styles = StyleSheet.create({
   },
   rowTitle: {
     fontFamily,
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: '400',
     color: LABEL,
     letterSpacing: -0.2,
@@ -1270,14 +1321,14 @@ const styles = StyleSheet.create({
   },
   rowSubtitle: {
     fontFamily,
-    fontSize: 13,
+    fontSize: 12,
     color: SECONDARY,
-    letterSpacing: -0.08,
-    marginTop: 2,
+    letterSpacing: -0.04,
+    marginTop: 1,
   },
   rowAmountCol: {
     alignItems: 'flex-end',
-    gap: 5,
+    gap: 4,
     flexShrink: 0,
     maxWidth: 200,
   },
@@ -1291,9 +1342,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 3,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 8,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 7,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -1310,9 +1361,9 @@ const styles = StyleSheet.create({
   },
   priceBadgeText: {
     fontFamily,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
-    letterSpacing: -0.08,
+    letterSpacing: -0.04,
   },
   priceBadgeTextOk: {
     color: '#166534',
@@ -1408,7 +1459,7 @@ const styles = StyleSheet.create({
   },
   rowValue: {
     fontFamily,
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: '400',
     color: LABEL,
     letterSpacing: -0.2,
@@ -1419,8 +1470,8 @@ const styles = StyleSheet.create({
     color: SECONDARY,
   },
   txThumbPress: {
-    width: 36,
-    height: 36,
+    width: 32,
+    height: 32,
     flexShrink: 0,
     position: 'relative',
     ...Platform.select({
@@ -1429,9 +1480,9 @@ const styles = StyleSheet.create({
     }),
   },
   txThumb: {
-    width: 36,
-    height: 36,
-    borderRadius: 8,
+    width: 32,
+    height: 32,
+    borderRadius: 7,
     backgroundColor: '#ececf0',
   },
   txThumbBadge: {
@@ -1504,45 +1555,47 @@ const styles = StyleSheet.create({
   },
   kind: {
     fontFamily,
-    width: 22,
+    width: 20,
     flexShrink: 0,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
     color: SO_BLUE,
-    letterSpacing: -0.08,
+    letterSpacing: -0.04,
   },
   kindBuy: {
     color: PO_AMBER,
   },
   priorityDot: {
-    width: 8,
-    height: 8,
+    width: 7,
+    height: 7,
     borderRadius: 4,
     flexShrink: 0,
   },
   priorityDotSpacer: {
-    width: 8,
+    width: 7,
     flexShrink: 0,
   },
   emptyText: {
     fontFamily,
     flex: 1,
-    fontSize: 15,
+    fontSize: 14,
     color: SECONDARY,
+    letterSpacing: -0.2,
+  },
+  showMoreRow: {
+    minHeight: 44,
+    justifyContent: 'center',
+    gap: 4,
+  },
+  showMoreText: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '500',
+    color: BLUE,
     letterSpacing: -0.2,
   },
   loadingRow: {
     justifyContent: 'center',
-    minHeight: 64,
-  },
-  appsSection: {
-    marginTop: 6,
-  },
-  appIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
+    minHeight: 52,
   },
 });

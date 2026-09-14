@@ -1,4 +1,4 @@
-import { createElement, Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createElement, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { BlurView } from 'expo-blur';
 import { useFonts } from 'expo-font';
@@ -111,6 +111,10 @@ import {
 import ProfilePhotoPicker from './components/ProfilePhotoPicker';
 import ProfilePhotoModal from './components/ProfilePhotoModal';
 import ProfileLocationPicker from './components/ProfileLocationPicker';
+import ProfileTeamPicker from './components/ProfileTeamPicker';
+import MarketingScreen from './components/MarketingScreen';
+import SharedServicesScreen from './components/SharedServicesScreen';
+import TeamsScreen from './components/TeamsScreen';
 import { fetchAureusEmployee } from './lib/aureusEmployees';
 import { useDirectMessages } from './lib/messages';
 
@@ -129,12 +133,18 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-tx-row:hover{background-color:#e8e8ed!important;}',
     '.cgold-tx-row:active{background-color:#e5e5ea!important;}',
     '.cgold-tx-row-selected,.cgold-tx-row-selected:hover{background-color:#e8e8ed!important;}',
+    '.cgold-home-row{cursor:pointer;background-color:transparent;transition:background-color 160ms ease;}',
+    '.cgold-home-row:hover{background-color:#f2f2f7!important;}',
+    '.cgold-home-row:active{background-color:#e5e5ea!important;}',
+    '.cgold-home-row-selected,.cgold-home-row-selected:hover{background-color:#ebebed!important;}',
     '.cgold-filter-option{cursor:pointer;transition:none!important;}',
     '.cgold-filter-option:hover{background-color:#f5f5f5!important;}',
     '.cgold-floating-tip{position:fixed;z-index:100000;pointer-events:none;max-width:280px;min-width:160px;padding:8px 10px;border-radius:6px;background:#1a1a1a;box-shadow:0 4px 16px rgba(0,0,0,0.18);font:12px/16px Sohne,sans-serif;color:#fff;white-space:pre-wrap;}',
     '.cgold-sidebar-item .cgold-sidebar-unpin{opacity:0;transition:opacity 120ms;}',
     '.cgold-sidebar-item:hover .cgold-sidebar-unpin,.cgold-sidebar-item:focus-within .cgold-sidebar-unpin{opacity:1;}',
-    '.cgold-apps-toolbar-blur{-webkit-backdrop-filter:saturate(180%) blur(16px);backdrop-filter:saturate(180%) blur(16px);}',
+    '.cgold-apps-toolbar-blur{-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);background-color:rgba(255,255,255,0.62)!important;}',
+    '.cgold-home-toolbar-blur{-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);background-color:rgba(255,255,255,0.62)!important;}',
+    '.cgold-store-header-blur{-webkit-backdrop-filter:saturate(160%) blur(12px);backdrop-filter:saturate(160%) blur(12px);background-color:rgba(255,255,255,0.72)!important;transform:translateZ(0);}',
     '.cgold-dm-row{cursor:pointer;}',
     '.cgold-dm-row:hover{background-color:#f5f5f7!important;}',
     '.cgold-dm-row-active,.cgold-dm-row-active:hover{background-color:#ececef!important;}',
@@ -403,9 +413,9 @@ function TxTableHeader({
 
 const APP_COLUMNS = 6;
 const APP_COLUMNS_MOBILE = 4;
-const APP_GAP = 24;
-const APP_ICON_SIZE = 76;
-const APP_ICON_SIZE_MOBILE = 64;
+const APP_GAP = 16;
+const APP_ICON_SIZE = 56;
+const APP_ICON_SIZE_MOBILE = 48;
 const APP_GRID_MAX_WIDTH = 880;
 const MOBILE_BREAKPOINT = 768;
 
@@ -417,12 +427,12 @@ function useIsMobile() {
 function useAppGridLayout() {
   const { width } = useWindowDimensions();
   if (width < MOBILE_BREAKPOINT) {
-    return { columns: APP_COLUMNS_MOBILE, iconSize: APP_ICON_SIZE_MOBILE, maxWidth: undefined, gap: 12, rowGap: 18 };
+    return { columns: APP_COLUMNS_MOBILE, iconSize: APP_ICON_SIZE_MOBILE, maxWidth: undefined, gap: 10, rowGap: 14 };
   }
   if (width < 1240) {
-    return { columns: 5, iconSize: 70, maxWidth: 740, gap: 22, rowGap: 24 };
+    return { columns: 5, iconSize: 52, maxWidth: 740, gap: 14, rowGap: 16 };
   }
-  return { columns: APP_COLUMNS, iconSize: APP_ICON_SIZE, maxWidth: APP_GRID_MAX_WIDTH, gap: APP_GAP, rowGap: 28 };
+  return { columns: APP_COLUMNS, iconSize: APP_ICON_SIZE, maxWidth: APP_GRID_MAX_WIDTH, gap: APP_GAP, rowGap: 18 };
 }
 
 function filledIonicon(name) {
@@ -466,6 +476,9 @@ const TOOL_CARDS = [
   { key: 'serphint', label: 'Serphint', icon: 'eye-outline', tint: '#ECFDF5', accent: '#047857' },
   { key: 'supplies', label: 'Supplies', icon: 'bag-handle-outline', tint: '#FFF1F2', accent: '#BE123C' },
   { key: 'employees', label: 'Employees', icon: 'people-outline', tint: '#EFF6FF', accent: '#1D4ED8' },
+  { key: 'teams', label: 'Teams', icon: 'people-circle-outline', tint: '#EEF4FF', accent: '#2563EB' },
+  { key: 'marketing', label: 'Marketing', icon: 'megaphone-outline', tint: '#FDF2F8', accent: '#DB2777' },
+  { key: 'shared-services', label: 'Shared Services', icon: 'briefcase-outline', tint: '#F0FDFA', accent: '#0F766E' },
   { key: 'customers', label: 'Customers', icon: 'person-circle-outline', tint: '#F0FDFA', accent: '#0F766E' },
   { key: 'calendar', label: 'Calendar', icon: 'calendar-outline', tint: '#FEF3C7', accent: '#B45309' },
   { key: 'notifications', label: 'Notifications', icon: 'notifications-outline', tint: '#FEE2E2', accent: '#B91C1C' },
@@ -606,10 +619,19 @@ function ProfileAvatar({ uri, name, size = 24, style }) {
   );
 }
 
-function ToolCard({ tool, pinned, onPress, onTogglePin, wrapStyle, iconSize = APP_ICON_SIZE }) {
+function ToolCard({
+  tool,
+  pinned,
+  onPress,
+  onTogglePin,
+  wrapStyle,
+  iconSize = APP_ICON_SIZE,
+  selected = false,
+}) {
   const scale = useRef(new Animated.Value(1)).current;
   const hovered = useRef(false);
   const [isHovered, setIsHovered] = useState(false);
+  const showPin = typeof onTogglePin === 'function';
   const radius = Math.round(iconSize * 0.223);
   const glyphSize = Math.round(iconSize * 0.44);
 
@@ -663,6 +685,7 @@ function ToolCard({ tool, pinned, onPress, onTogglePin, wrapStyle, iconSize = AP
             <View
               style={[
                 styles.toolIconTile,
+                selected && styles.toolIconTileSelected,
                 {
                   width: iconSize,
                   height: iconSize,
@@ -674,27 +697,33 @@ function ToolCard({ tool, pinned, onPress, onTogglePin, wrapStyle, iconSize = AP
               <Ionicons name={filledIonicon(tool.icon)} size={glyphSize} color="#fff" />
             </View>
           </Pressable>
-          <Pressable
-            style={[
-              styles.pinButton,
-              (isHovered || pinned) && styles.pinButtonVisible,
-              pinned && styles.pinButtonActive,
-            ]}
-            {...(Platform.OS === 'web' ? { className: 'cgold-pin-button' } : null)}
-            onPress={onTogglePin}
-            pointerEvents={isHovered || pinned ? 'auto' : 'none'}
-            hitSlop={8}
-            accessibilityLabel={pinned ? `Unpin ${tool.label}` : `Pin ${tool.label}`}
-          >
-            <Ionicons
-              name={pinned ? 'pin' : 'pin-outline'}
-              size={11}
-              color={pinned ? '#1a1a1a' : '#6b6b6b'}
-            />
-          </Pressable>
+          {showPin ? (
+            <Pressable
+              style={[
+                styles.pinButton,
+                (isHovered || pinned) && styles.pinButtonVisible,
+                pinned && styles.pinButtonActive,
+              ]}
+              {...(Platform.OS === 'web' ? { className: 'cgold-pin-button' } : null)}
+              onPress={onTogglePin}
+              pointerEvents={isHovered || pinned ? 'auto' : 'none'}
+              hitSlop={8}
+              accessibilityLabel={pinned ? `Unpin ${tool.label}` : `Pin ${tool.label}`}
+            >
+              <Ionicons
+                name={pinned ? 'pin' : 'pin-outline'}
+                size={11}
+                color={pinned ? '#1a1a1a' : '#6b6b6b'}
+              />
+            </Pressable>
+          ) : null}
         </View>
         <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={tool.label}>
-          <Text style={styles.toolCardLabel} numberOfLines={2} selectable={false}>
+          <Text
+            style={[styles.toolCardLabel, selected && styles.toolCardLabelSelected]}
+            numberOfLines={2}
+            selectable={false}
+          >
             {tool.label}
           </Text>
         </Pressable>
@@ -712,12 +741,15 @@ function ToolsGrid({
   iconSize = APP_ICON_SIZE,
   gap = APP_GAP,
   rowGap = 22,
+  selectedKey,
 }) {
   const itemStyle = {
     width: `${100 / columns}%`,
     maxWidth: `${100 / columns}%`,
     paddingHorizontal: gap / 2,
   };
+  const canPin = typeof onTogglePin === 'function';
+  const pins = pinnedKeys || [];
 
   return (
     <View style={[styles.toolsGrid, { marginHorizontal: -(gap / 2), rowGap }]}>
@@ -725,9 +757,10 @@ function ToolsGrid({
         <ToolCard
           key={tool.key}
           tool={tool}
-          pinned={pinnedKeys.includes(tool.key)}
+          pinned={pins.includes(tool.key)}
+          selected={Boolean(selectedKey) && tool.key === selectedKey}
           onPress={() => onOpen(tool)}
-          onTogglePin={() => onTogglePin(tool.key)}
+          onTogglePin={canPin ? () => onTogglePin(tool.key) : undefined}
           wrapStyle={itemStyle}
           iconSize={iconSize}
         />
@@ -738,7 +771,7 @@ function ToolsGrid({
 
 function ToolListRow({ tool, pinned, onPress, onTogglePin, last }) {
   const [isHovered, setIsHovered] = useState(false);
-  const iconSize = 40;
+  const iconSize = 32;
   const radius = Math.round(iconSize * 0.223);
 
   return (
@@ -768,7 +801,7 @@ function ToolListRow({ tool, pinned, onPress, onTogglePin, last }) {
             },
           ]}
         >
-          <Ionicons name={filledIonicon(tool.icon)} size={20} color="#fff" />
+          <Ionicons name={filledIonicon(tool.icon)} size={16} color="#fff" />
         </View>
         <Text style={styles.toolListLabel} numberOfLines={1} selectable={false}>
           {tool.label}
@@ -807,12 +840,18 @@ function ToolsList({ tools, pinnedKeys, onOpen, onTogglePin }) {
   );
 }
 
-function DatePickerField({ label, value, onChange, minimumDate, maximumDate, plain = false }) {
+function DatePickerField({ label, value, onChange, minimumDate, maximumDate, plain = false, compact = false }) {
   const [open, setOpen] = useState(false);
   const dateValue = parseDateParam(value);
-  const chipStyle = plain ? styles.homeDateField : styles.dateChip;
-  const iconColor = plain ? '#8e8e93' : '#6b6b6b';
-  const valueSize = plain ? 16 : 13;
+  const chipStyle = compact
+    ? styles.homeDateFieldCompact
+    : plain
+      ? styles.homeDateField
+      : styles.dateChip;
+  const iconColor = plain || compact ? '#8e8e93' : '#6b6b6b';
+  const valueSize = compact ? 13 : plain ? 16 : 13;
+  const calendarSize = compact ? 13 : plain ? 16 : 14;
+  const hideLabel = plain || compact;
 
   const commit = (next) => {
     if (!next) return;
@@ -829,9 +868,9 @@ function DatePickerField({ label, value, onChange, minimumDate, maximumDate, pla
   if (Platform.OS === 'web') {
     return (
       <View style={chipStyle}>
-        {plain ? null : <Text style={styles.dateChipLabel}>{label}</Text>}
+        {hideLabel ? null : <Text style={styles.dateChipLabel}>{label}</Text>}
         <View style={styles.dateChipControl}>
-          <Ionicons name="calendar-outline" size={plain ? 16 : 14} color={iconColor} />
+          <Ionicons name="calendar-outline" size={calendarSize} color={iconColor} />
           {createElement('input', {
             type: 'date',
             value: formatDateParam(dateValue),
@@ -850,7 +889,7 @@ function DatePickerField({ label, value, onChange, minimumDate, maximumDate, pla
               margin: 0,
               outline: 'none',
               cursor: 'pointer',
-              minWidth: plain ? 108 : 118,
+              minWidth: compact ? 92 : plain ? 108 : 118,
             },
           })}
         </View>
@@ -861,10 +900,16 @@ function DatePickerField({ label, value, onChange, minimumDate, maximumDate, pla
   return (
     <>
       <Pressable style={chipStyle} onPress={() => setOpen(true)}>
-        {plain ? null : <Text style={styles.dateChipLabel}>{label}</Text>}
+        {hideLabel ? null : <Text style={styles.dateChipLabel}>{label}</Text>}
         <View style={styles.dateChipControl}>
-          <Ionicons name="calendar-outline" size={plain ? 16 : 14} color={iconColor} />
-          <Text style={[styles.dateChipValue, plain && styles.homeDateFieldValue]}>
+          <Ionicons name="calendar-outline" size={calendarSize} color={iconColor} />
+          <Text
+            style={[
+              styles.dateChipValue,
+              plain && styles.homeDateFieldValue,
+              compact && styles.homeDateFieldValueCompact,
+            ]}
+          >
             {formatPickerDate(dateValue)}
           </Text>
         </View>
@@ -1497,6 +1542,9 @@ const DRAWER_CLOSE_MS = 220;
 
 function useRightDrawerAnimation(visible, slideDistance) {
   const [mounted, setMounted] = useState(visible);
+  // True once the open animation has finished; lets callers defer heavy
+  // work (large lists, backdrop blur) until the panel has stopped moving.
+  const [settled, setSettled] = useState(false);
   const slide = useRef(new Animated.Value(slideDistance)).current;
   const backdrop = useRef(new Animated.Value(0)).current;
   const slideDistanceRef = useRef(slideDistance);
@@ -1525,6 +1573,7 @@ function useRightDrawerAnimation(visible, slideDistance) {
     if (!mounted) return undefined;
 
     stopActiveAnim();
+    setSettled(false);
     const anim = Animated.parallel([
       Animated.timing(slide, {
         toValue: slideDistanceRef.current,
@@ -1560,6 +1609,7 @@ function useRightDrawerAnimation(visible, slideDistance) {
     stopActiveAnim();
     slide.setValue(slideDistanceRef.current);
     backdrop.setValue(0);
+    setSettled(false);
 
     let cancelled = false;
     let raf2 = 0;
@@ -1583,6 +1633,7 @@ function useRightDrawerAnimation(visible, slideDistance) {
         activeAnim.current = anim;
         anim.start(({ finished }) => {
           if (finished && activeAnim.current === anim) activeAnim.current = null;
+          if (finished) setSettled(true);
         });
       });
     });
@@ -1594,7 +1645,7 @@ function useRightDrawerAnimation(visible, slideDistance) {
     };
   }, [visible, mounted, slide, backdrop]);
 
-  return { mounted, slide, backdrop };
+  return { mounted, slide, backdrop, settled };
 }
 
 function useHeldValue(value) {
@@ -2004,6 +2055,16 @@ function TransactionDetailDrawer({ visible, summary, detail, loading, error, onC
   );
 }
 
+function sameJson(a, b) {
+  if (a === b) return true;
+  if (a == null || b == null) return false;
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
+}
+
 function mergeLiveTxRows(current, incoming) {
   const next = incoming || [];
   if (!next.length) return next;
@@ -2032,23 +2093,34 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
   const storeName = store?.store || '';
   const overviewTab = {
     key: 'overview',
-    label: storeName || 'Overview',
-    icon: 'storefront',
+    label: 'Overview',
+    icon: 'storefront-outline',
     accent: storeAccent(storeName),
     tint: storeAccent(storeName),
     solid: true,
   };
-  const railTabs = [overviewTab, ...drawerTabs];
-  const railWidth = isMobile ? 0 : STORE_DRAWER_RAIL_WIDTH;
-  const maxPanelWidth = Math.max(280, windowWidth - railWidth - (isMobile ? 0 : 24));
+  const tabStrip = [overviewTab, ...drawerTabs];
+  const appIconSize = isMobile ? 48 : 54;
+  const appItemWidth = appIconSize + (isMobile ? 24 : 30);
+  const [headerHeight, setHeaderHeight] = useState(null);
+  const topInset = headerHeight ?? (isMobile ? 150 : 140);
+  const onHeaderLayout = useCallback((event) => {
+    const next = Math.round(event?.nativeEvent?.layout?.height || 0);
+    if (next > 0) setHeaderHeight((current) => (current === next ? current : next));
+  }, []);
+  const maxPanelWidth = Math.max(280, windowWidth - (isMobile ? 0 : 28));
   const panelWidth = isMobile
     ? windowWidth
     : Math.min(
-        Math.max(Math.round(windowWidth * 0.72), Math.min(560, maxPanelWidth)),
+        Math.max(Math.round(windowWidth * 0.88), Math.min(760, maxPanelWidth)),
         maxPanelWidth,
       );
-  const slideDistance = panelWidth + railWidth;
-  const { mounted, slide, backdrop } = useRightDrawerAnimation(visible, slideDistance);
+  const slideDistance = panelWidth;
+  const { mounted, slide, backdrop, settled } = useRightDrawerAnimation(visible, slideDistance);
+  // backdrop-filter inside a translating layer forces a full re-composite every
+  // frame on web, so keep the header opaque until the slide has finished.
+  const blurHeader = Platform.OS !== 'web' || settled;
+  const HeaderShell = blurHeader ? BlurView : View;
   const heldStore = useHeldValue(store);
   const [activeTab, setActiveTab] = useState('overview');
   const [txRows, setTxRows] = useState([]);
@@ -2069,24 +2141,38 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
     const next = store?.transactions || [];
     setTxRows((current) => {
       const merged = storeChanged ? next : mergeLiveTxRows(current, next);
-      return merged.map((row) => {
+      const prevById = storeChanged ? null : new Map((current || []).map((row) => [row.id, row]));
+      let changed = storeChanged || merged.length !== (current || []).length;
+      const result = merged.map((row, index) => {
         const cached = paymentCache.current[row.id];
-        if (!cached) return row;
-        return {
-          ...row,
-          itemNames: cached.itemNames?.length ? cached.itemNames : row.itemNames,
-          itemSearchText: cached.itemSearchText || row.itemSearchText,
-          pricedLines: cached.pricedLines?.length ? cached.pricedLines : row.pricedLines,
-          imageUrls: cached.imageUrls?.length ? cached.imageUrls : row.imageUrls,
-          lineItemsLoaded: cached.lineItemsLoaded || row.lineItemsLoaded,
-          paymentBreakdown: cached.paymentBreakdown || row.paymentBreakdown,
-          paymentBreakdownLabel: cached.paymentBreakdownLabel || row.paymentBreakdownLabel,
-        };
+        const enriched = cached
+          ? {
+              ...row,
+              itemNames: cached.itemNames?.length ? cached.itemNames : row.itemNames,
+              itemSearchText: cached.itemSearchText || row.itemSearchText,
+              pricedLines: cached.pricedLines?.length ? cached.pricedLines : row.pricedLines,
+              imageUrls: cached.imageUrls?.length ? cached.imageUrls : row.imageUrls,
+              lineItemsLoaded: cached.lineItemsLoaded || row.lineItemsLoaded,
+              paymentBreakdown: cached.paymentBreakdown || row.paymentBreakdown,
+              paymentBreakdownLabel: cached.paymentBreakdownLabel || row.paymentBreakdownLabel,
+            }
+          : row;
+        // The home screen refreshes every couple of seconds; keep the previous
+        // row object when nothing changed so memoized rows below don't re-render.
+        const prev = prevById?.get(row.id);
+        if (prev && sameJson(prev, enriched)) {
+          if (current[index] !== prev) changed = true;
+          return prev;
+        }
+        changed = true;
+        return enriched;
       });
+      return changed ? result : current;
     });
     setSelectedRow((current) => {
       if (!current) return null;
-      return next.find((row) => row.id === current.id) || null;
+      const match = next.find((row) => row.id === current.id) || null;
+      return match && sameJson(match, current) ? current : match;
     });
   }, [store]);
 
@@ -2249,23 +2335,6 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
               { transform: [{ translateX: slide }] },
             ]}
           >
-            {isMobile ? null : (
-              <View style={styles.storeDrawerAppsRail}>
-                {railTabs.map((tab, index) => (
-                  <Fragment key={tab.key}>
-                    {index === 1 || (tab.key === 'settings' && index > 1) ? (
-                      <View style={styles.storeDrawerRailSep} />
-                    ) : null}
-                    <StoreDrawerAppButton
-                      tab={tab}
-                      selected={tab.key === activeTab}
-                      onPress={() => setActiveTab(tab.key)}
-                    />
-                  </Fragment>
-                ))}
-              </View>
-            )}
-
             <View
               style={[
                 styles.drawerPanel,
@@ -2274,50 +2343,6 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                 { width: panelWidth, maxWidth: panelWidth },
               ]}
             >
-              <View
-                style={[
-                  styles.invoiceTopBar,
-                  isMobile && styles.invoiceTopBarMobile,
-                  isMobile && styles.storeDrawerTopBarMobile,
-                ]}
-                {...(Platform.OS === 'web' && isMobile ? { className: 'cgold-mobile-sheet-top' } : null)}
-              >
-                {isMobile ? (
-                  activeTab !== 'overview' ? (
-                    <Pressable
-                      onPress={() => setActiveTab('overview')}
-                      hitSlop={8}
-                      style={styles.storeDrawerNavSide}
-                      accessibilityLabel="Back"
-                    >
-                      <Ionicons name="chevron-back" size={28} color="#007AFF" />
-                    </Pressable>
-                  ) : (
-                    <View style={styles.storeDrawerNavSide} />
-                  )
-                ) : null}
-                <Text
-                  style={[styles.appleSheetTitle, isMobile && styles.storeDrawerTitleMobile]}
-                  numberOfLines={1}
-                >
-                  {activeTab === 'overview'
-                    ? heldStore.store
-                    : activeTab === 'settings'
-                      ? 'Store settings'
-                      : activeTool?.label || heldStore.store}
-                </Text>
-                <View style={isMobile ? styles.storeDrawerNavSide : null}>
-                  <Pressable
-                    onPress={onClose}
-                    hitSlop={8}
-                    style={styles.appleCloseButton}
-                    accessibilityLabel="Close"
-                  >
-                    <Ionicons name="close" size={18} color="#1d1d1f" />
-                  </Pressable>
-                </View>
-              </View>
-
               {activeTab === 'overview' ||
               activeTab === 'inventory' ||
               activeTab === 'financials' ||
@@ -2334,14 +2359,15 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                       periodLabel={periodLabel}
                       txRows={txRows}
                       onOpenTransaction={openDetail}
-                      apps={drawerTabs}
-                      onOpenApp={setActiveTab}
+                      topInset={topInset}
+                      ready={settled}
                     />
                   ) : (
                   <View
                     style={[
                       styles.drawerBodyContentInventory,
                       isMobile && styles.drawerBodyContentInventoryMobile,
+                      { paddingTop: topInset + 8 },
                     ]}
                   >
                     {activeTab === 'inventory' ? (
@@ -2398,6 +2424,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                 contentContainerStyle={[
                   styles.drawerBodyContent,
                   isMobile && styles.drawerBodyContentMobile,
+                  { paddingTop: topInset + 8 },
                 ]}
                 showsVerticalScrollIndicator={false}
               >
@@ -2486,6 +2513,85 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                 )}
               </ScrollView>
               )}
+
+              <HeaderShell
+                intensity={58}
+                tint="light"
+                style={[styles.storeDrawerHeader, !blurHeader && styles.storeDrawerHeaderSolid]}
+                onLayout={onHeaderLayout}
+                {...(blurHeader && Platform.OS === 'web'
+                  ? { className: 'cgold-store-header-blur' }
+                  : null)}
+              >
+                <View
+                  style={[
+                    styles.invoiceTopBar,
+                    isMobile && styles.invoiceTopBarMobile,
+                    isMobile && styles.storeDrawerTopBarMobile,
+                    styles.storeDrawerTitleRow,
+                  ]}
+                  {...(Platform.OS === 'web' && isMobile ? { className: 'cgold-mobile-sheet-top' } : null)}
+                >
+                  {isMobile ? (
+                    activeTab !== 'overview' ? (
+                      <Pressable
+                        onPress={() => setActiveTab('overview')}
+                        hitSlop={8}
+                        style={styles.storeDrawerNavSide}
+                        accessibilityLabel="Back"
+                      >
+                        <Ionicons name="chevron-back" size={28} color="#007AFF" />
+                      </Pressable>
+                    ) : (
+                      <View style={styles.storeDrawerNavSide} />
+                    )
+                  ) : null}
+                  <Pressable
+                    onPress={() => setActiveTab('overview')}
+                    style={styles.storeDrawerTitleHit}
+                    accessibilityRole="button"
+                    accessibilityLabel={heldStore.store}
+                  >
+                    <Text
+                      style={[styles.appleSheetTitle, isMobile && styles.storeDrawerTitleMobile]}
+                      numberOfLines={1}
+                    >
+                      {heldStore.store}
+                    </Text>
+                  </Pressable>
+                  <View style={isMobile ? styles.storeDrawerNavSide : null}>
+                    <Pressable
+                      onPress={onClose}
+                      hitSlop={8}
+                      style={styles.appleCloseButton}
+                      accessibilityLabel="Close"
+                    >
+                      <Ionicons name="close" size={18} color="#1d1d1f" />
+                    </Pressable>
+                  </View>
+                </View>
+
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={styles.storeDrawerTabsScroll}
+                  contentContainerStyle={[
+                    styles.storeDrawerAppsRow,
+                    isMobile && styles.storeDrawerAppsRowMobile,
+                  ]}
+                >
+                  {tabStrip.map((tool) => (
+                    <ToolCard
+                      key={tool.key}
+                      tool={tool}
+                      selected={tool.key === activeTab}
+                      onPress={() => setActiveTab(tool.key)}
+                      iconSize={appIconSize}
+                      wrapStyle={{ width: appItemWidth }}
+                    />
+                  ))}
+                </ScrollView>
+              </HeaderShell>
             </View>
           </Animated.View>
         </View>
@@ -2573,52 +2679,63 @@ function HomeStoreCard({ row, selected, last, onOpenStore }) {
   );
 }
 
+function homeStoreMeta(row) {
+  return `${row.txCount} tx · ${row.saleCount} SO · ${row.purchaseCount} PO`;
+}
+
+function HomeStoreAmount({ amount, count, strong = false }) {
+  const empty = !Number(amount) && !Number(count);
+  return (
+    <Text
+      style={[
+        styles.homeStoreMoney,
+        styles.homeStoreColMoney,
+        strong && styles.homeStoreMoneyStrong,
+        empty && styles.homeStoreMoneyEmpty,
+      ]}
+      numberOfLines={1}
+    >
+      {empty ? '—' : formatAmount(amount)}
+    </Text>
+  );
+}
+
 function HomeStoreTableRow({ row, selected, last, onOpenStore }) {
   const accent = storeAccent(row.store);
 
   return (
     <Pressable
       onPress={() => onOpenStore(row)}
-      style={[
-        styles.homeStoreRow,
-        last && styles.homeStoreRowLast,
-        selected && styles.homeStoreRowSelected,
-      ]}
+      style={[styles.homeStoreRow, selected && styles.homeStoreRowSelected]}
       {...(Platform.OS === 'web'
         ? {
             className: selected
-              ? 'cgold-tx-row cgold-tx-row-selected'
-              : 'cgold-tx-row',
+              ? 'cgold-home-row cgold-home-row-selected'
+              : 'cgold-home-row',
           }
         : null)}
       accessibilityRole="button"
       accessibilityLabel={row.store}
     >
       <View style={[styles.homeStoreIconTile, { backgroundColor: accent }]}>
-        <Ionicons name="storefront" size={13} color="#fff" />
+        <Ionicons name="storefront" size={12} color="#fff" />
       </View>
-      <Text style={[styles.homeStoreName, styles.homeStoreColStore]} numberOfLines={1}>
-        {row.store}
-      </Text>
-      <Text style={[styles.homeStoreNum, styles.homeStoreColCount]} numberOfLines={1}>
-        {row.txCount}
-      </Text>
-      <Text style={[styles.homeStoreMoney, styles.homeStoreColMoney]} numberOfLines={1}>
-        {formatAmount(row.totalAmount)}
-      </Text>
-      <Text style={[styles.homeStoreNum, styles.homeStoreColCount, styles.homeStoreSecondary]} numberOfLines={1}>
-        {row.saleCount}
-      </Text>
-      <Text style={[styles.homeStoreMoney, styles.homeStoreColMoney, styles.homeStoreSecondary]} numberOfLines={1}>
-        {formatAmount(row.soAmount)}
-      </Text>
-      <Text style={[styles.homeStoreNum, styles.homeStoreColCount, styles.homeStoreSecondary]} numberOfLines={1}>
-        {row.purchaseCount}
-      </Text>
-      <Text style={[styles.homeStoreMoney, styles.homeStoreColMoney, styles.homeStoreSecondary]} numberOfLines={1}>
-        {formatAmount(row.poAmount)}
-      </Text>
-      <Ionicons name="chevron-forward" size={14} color="#c7c7cc" />
+      <View style={[styles.homeStoreRowBody, !last && styles.homeStoreRowDivider]}>
+        <View style={styles.homeStoreColStore}>
+          <Text style={styles.homeStoreName} numberOfLines={1}>
+            {row.store}
+          </Text>
+          <Text style={styles.homeStoreMeta} numberOfLines={1}>
+            {homeStoreMeta(row)}
+          </Text>
+        </View>
+        <HomeStoreAmount amount={row.soAmount} count={row.saleCount} />
+        <HomeStoreAmount amount={row.poAmount} count={row.purchaseCount} />
+        <HomeStoreAmount amount={row.totalAmount} count={row.txCount} strong />
+        <View style={styles.homeStoreChevron}>
+          <Ionicons name="chevron-forward" size={13} color="#c7c7cc" />
+        </View>
+      </View>
     </Pressable>
   );
 }
@@ -2663,49 +2780,40 @@ function HomeStoresTable({ rows, selectedStore, totals, onOpenStore, compact = f
         <View style={styles.homeStoreTable}>
           <View style={[styles.homeStoreRow, styles.homeStoreHeaderRow]}>
             <View style={styles.homeStoreIconSpacer} />
-            <Text style={[styles.homeStoreHeader, styles.homeStoreColStore]}>Store</Text>
-            <Text style={[styles.homeStoreHeader, styles.homeStoreColCount]}>Tx</Text>
-            <Text style={[styles.homeStoreHeader, styles.homeStoreColMoney]}>Amount</Text>
-            <Text style={[styles.homeStoreHeader, styles.homeStoreColCount]}>SO</Text>
-            <Text style={[styles.homeStoreHeader, styles.homeStoreColMoney]}>SO $</Text>
-            <Text style={[styles.homeStoreHeader, styles.homeStoreColCount]}>PO</Text>
-            <Text style={[styles.homeStoreHeader, styles.homeStoreColMoney]}>PO $</Text>
-            <View style={styles.homeStoreChevronSpacer} />
+            <View style={styles.homeStoreRowBody}>
+              <Text style={[styles.homeStoreHeader, styles.homeStoreColStore]}>Store</Text>
+              <Text style={[styles.homeStoreHeader, styles.homeStoreColMoney]}>Sales</Text>
+              <Text style={[styles.homeStoreHeader, styles.homeStoreColMoney]}>Purchases</Text>
+              <Text style={[styles.homeStoreHeader, styles.homeStoreColMoney]}>Total</Text>
+              <View style={styles.homeStoreChevron} />
+            </View>
           </View>
           {rows.map((row, index) => (
             <HomeStoreTableRow
               key={row.store}
               row={row}
               selected={selectedStore?.store === row.store}
-              last={index === rows.length - 1 && !totals}
+              last={index === rows.length - 1}
               onOpenStore={onOpenStore}
             />
           ))}
           {totals ? (
             <View style={[styles.homeStoreRow, styles.homeStoreTotalRow]}>
               <View style={styles.homeStoreIconSpacer} />
-              <Text style={[styles.homeStoreTotalLabel, styles.homeStoreColStore]} numberOfLines={1}>
-                Total
-              </Text>
-              <Text style={[styles.homeStoreNum, styles.homeStoreColCount, styles.homeStoreTotalValue]} numberOfLines={1}>
-                {totals.txCount}
-              </Text>
-              <Text style={[styles.homeStoreMoney, styles.homeStoreColMoney, styles.homeStoreTotalValue]} numberOfLines={1}>
-                {formatAmount(totals.totalAmount)}
-              </Text>
-              <Text style={[styles.homeStoreNum, styles.homeStoreColCount, styles.homeStoreTotalValue]} numberOfLines={1}>
-                {totals.saleCount}
-              </Text>
-              <Text style={[styles.homeStoreMoney, styles.homeStoreColMoney, styles.homeStoreTotalValue]} numberOfLines={1}>
-                {formatAmount(totals.soAmount)}
-              </Text>
-              <Text style={[styles.homeStoreNum, styles.homeStoreColCount, styles.homeStoreTotalValue]} numberOfLines={1}>
-                {totals.purchaseCount}
-              </Text>
-              <Text style={[styles.homeStoreMoney, styles.homeStoreColMoney, styles.homeStoreTotalValue]} numberOfLines={1}>
-                {formatAmount(totals.poAmount)}
-              </Text>
-              <View style={styles.homeStoreChevronSpacer} />
+              <View style={styles.homeStoreRowBody}>
+                <View style={styles.homeStoreColStore}>
+                  <Text style={styles.homeStoreTotalLabel} numberOfLines={1}>
+                    Total
+                  </Text>
+                  <Text style={styles.homeStoreMeta} numberOfLines={1}>
+                    {homeStoreMeta(totals)}
+                  </Text>
+                </View>
+                <HomeStoreAmount amount={totals.soAmount} count={totals.saleCount} strong />
+                <HomeStoreAmount amount={totals.poAmount} count={totals.purchaseCount} strong />
+                <HomeStoreAmount amount={totals.totalAmount} count={totals.txCount} strong />
+                <View style={styles.homeStoreChevron} />
+              </View>
             </View>
           ) : null}
         </View>
@@ -2729,6 +2837,7 @@ function HomeScreen({ session, onRequireLogin }) {
   const [selectedStore, setSelectedStore] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [toolbarHeight, setToolbarHeight] = useState(0);
   const requestId = useRef(0);
 
   const todayKey = formatDateParam(parseDateParam(new Date()));
@@ -2898,148 +3007,159 @@ function HomeScreen({ session, onRequireLogin }) {
   }
 
   const homeWidth = isMobile ? styles.igHomePad : sectionWidth;
+  const compactControls = !isMobile;
 
-  return (
-    <View style={styles.toolsScreen}>
-      {storeRestricted ? null : (
-        <View
+  const dateFilters = dateRestricted ? (
+    <View style={[styles.homeSegment, compactControls && styles.homeSegmentCompact]}>
+      <View
+        style={[
+          styles.homeSegmentButton,
+          styles.homeSegmentButtonActive,
+          compactControls && styles.homeSegmentButtonCompact,
+        ]}
+      >
+        <Text
           style={[
-            styles.toolsToolbar,
-            isMobile && styles.toolsToolbarMobile,
-            homeWidth,
+            styles.homeSegmentText,
+            styles.homeSegmentTextActive,
+            compactControls && styles.homeSegmentTextCompact,
           ]}
         >
-          <View style={[styles.toolsSearch, isMobile && styles.igSearchField]}>
-            <Ionicons name="search" size={16} color="#8e8e93" style={styles.toolsSearchIcon} />
-            <TextInput
-              style={styles.toolsSearchInput}
-              value={query}
-              onChangeText={setQuery}
-              placeholder={isMobile ? 'Search stores' : 'Search'}
-              placeholderTextColor="#8e8e93"
-              autoCapitalize="none"
-              autoCorrect={false}
-              clearButtonMode="while-editing"
-            />
-            {query ? (
-              <Pressable onPress={() => setQuery('')} hitSlop={8}>
-                <Ionicons name="close-circle" size={18} color="#c7c7cc" />
-              </Pressable>
-            ) : null}
-          </View>
-        </View>
-      )}
-
-      {dateRestricted ? (
-        <View style={[styles.homeControls, isMobile && styles.igHomeControls, homeWidth]}>
-          <View style={styles.homeSegment}>
-            <View style={[styles.homeSegmentButton, styles.homeSegmentButtonActive]}>
-              <Text style={[styles.homeSegmentText, styles.homeSegmentTextActive]}>Today</Text>
-            </View>
-          </View>
-        </View>
-      ) : (
-      <View style={[styles.homeControls, isMobile && styles.igHomeControls, homeWidth]}>
-        <View style={styles.homeSegment} accessibilityRole="tablist">
-          <Pressable
-            style={[
-              styles.homeSegmentButton,
-              dateMode === 'day' && isToday && styles.homeSegmentButtonActive,
-            ]}
-            onPress={selectToday}
-            accessibilityRole="tab"
-            accessibilityState={{ selected: dateMode === 'day' && isToday }}
-          >
-            <Text
-              style={[
-                styles.homeSegmentText,
-                dateMode === 'day' && isToday && styles.homeSegmentTextActive,
-              ]}
-            >
-              Today
-            </Text>
-          </Pressable>
-          <Pressable
-            style={[
-              styles.homeSegmentButton,
-              dateMode === 'range' && styles.homeSegmentButtonActive,
-            ]}
-            onPress={selectRange}
-            accessibilityRole="tab"
-            accessibilityState={{ selected: dateMode === 'range' }}
-          >
-            <Text
-              style={[
-                styles.homeSegmentText,
-                dateMode === 'range' && styles.homeSegmentTextActive,
-              ]}
-            >
-              Range
-            </Text>
-          </Pressable>
-        </View>
-
-        {dateMode === 'day' ? (
-          <DatePickerField
-            label="Date"
-            value={startDate}
-            onChange={handleDayChange}
-            maximumDate={new Date()}
-            plain
-          />
-        ) : (
-          <>
-            <DatePickerField
-              label="From"
-              value={startDate}
-              onChange={handleStartChange}
-              maximumDate={endDate}
-              plain
-            />
-            <Text style={styles.homeDateSep}>–</Text>
-            <DatePickerField
-              label="To"
-              value={endDate}
-              onChange={handleEndChange}
-              minimumDate={startDate}
-              maximumDate={new Date()}
-              plain
-            />
-          </>
-        )}
+          Today
+        </Text>
       </View>
-      )}
-
-      {isMobile ? null : (
-        <View style={[styles.homeMetaRow, sectionWidth]}>
-          <Text style={styles.homeMeta} numberOfLines={1}>
-            {loading && storeRows.length === 0
-              ? 'Loading…'
-              : `${visibleRows.length}${
-                  !storeRestricted && visibleRows.length !== storeRows.length
-                    ? ` of ${storeRows.length}`
-                    : ''
-                } store${visibleRows.length === 1 ? '' : 's'} · ${totals.txCount} tx · ${formatAmount(
-                  totals.totalAmount,
-                )} · ${periodLabel}`}
+    </View>
+  ) : (
+    <>
+      <View
+        style={[styles.homeSegment, compactControls && styles.homeSegmentCompact]}
+        accessibilityRole="tablist"
+      >
+        <Pressable
+          style={[
+            styles.homeSegmentButton,
+            compactControls && styles.homeSegmentButtonCompact,
+            dateMode === 'day' && isToday && styles.homeSegmentButtonActive,
+          ]}
+          onPress={selectToday}
+          accessibilityRole="tab"
+          accessibilityState={{ selected: dateMode === 'day' && isToday }}
+        >
+          <Text
+            style={[
+              styles.homeSegmentText,
+              compactControls && styles.homeSegmentTextCompact,
+              dateMode === 'day' && isToday && styles.homeSegmentTextActive,
+            ]}
+          >
+            Today
           </Text>
-          {loading && storeRows.length > 0 ? (
-            <ActivityIndicator size="small" color="#8e8e93" />
+        </Pressable>
+        <Pressable
+          style={[
+            styles.homeSegmentButton,
+            compactControls && styles.homeSegmentButtonCompact,
+            dateMode === 'range' && styles.homeSegmentButtonActive,
+          ]}
+          onPress={selectRange}
+          accessibilityRole="tab"
+          accessibilityState={{ selected: dateMode === 'range' }}
+        >
+          <Text
+            style={[
+              styles.homeSegmentText,
+              compactControls && styles.homeSegmentTextCompact,
+              dateMode === 'range' && styles.homeSegmentTextActive,
+            ]}
+          >
+            Range
+          </Text>
+        </Pressable>
+      </View>
+      {dateMode === 'day' ? (
+        <DatePickerField
+          label="Date"
+          value={startDate}
+          onChange={handleDayChange}
+          maximumDate={new Date()}
+          compact={compactControls}
+          plain={!compactControls}
+        />
+      ) : (
+        <>
+          <DatePickerField
+            label="From"
+            value={startDate}
+            onChange={handleStartChange}
+            maximumDate={endDate}
+            compact={compactControls}
+            plain={!compactControls}
+          />
+          <Text style={[styles.homeDateSep, compactControls && styles.homeDateSepCompact]}>–</Text>
+          <DatePickerField
+            label="To"
+            value={endDate}
+            onChange={handleEndChange}
+            minimumDate={startDate}
+            maximumDate={new Date()}
+            compact={compactControls}
+            plain={!compactControls}
+          />
+        </>
+      )}
+    </>
+  );
+
+  const homeToolbar = (
+    <View style={[styles.homeToolbar, isMobile && styles.igHomeToolbar, !isMobile && sectionWidth]}>
+      {storeRestricted ? null : (
+        <View style={[styles.homeSearch, isMobile && styles.igSearchField]}>
+          <Ionicons
+            name="search"
+            size={compactControls ? 14 : 16}
+            color="#8e8e93"
+            style={styles.homeSearchIcon}
+          />
+          <TextInput
+            style={[styles.toolsSearchInput, compactControls && styles.homeSearchInput]}
+            value={query}
+            onChangeText={setQuery}
+            placeholder={isMobile ? 'Search stores' : 'Search'}
+            placeholderTextColor="#8e8e93"
+            autoCapitalize="none"
+            autoCorrect={false}
+            clearButtonMode="while-editing"
+          />
+          {query ? (
+            <Pressable onPress={() => setQuery('')} hitSlop={8}>
+              <Ionicons name="close-circle" size={compactControls ? 16 : 18} color="#c7c7cc" />
+            </Pressable>
           ) : null}
         </View>
       )}
+      <View style={styles.homeToolbarFilters}>{dateFilters}</View>
+      {compactControls && loading && storeRows.length > 0 ? (
+        <ActivityIndicator size="small" color="#8e8e93" />
+      ) : null}
+    </View>
+  );
 
-      {error ? <Text style={[styles.errorText, styles.homeError, homeWidth]}>{error}</Text> : null}
+  return (
+    <View style={styles.toolsScreen}>
+      {isMobile ? homeToolbar : null}
 
       <ScrollView
         style={styles.toolsScroll}
         contentContainerStyle={[
           styles.toolsScrollContent,
           isMobile && styles.igHomeScroll,
+          !isMobile && styles.homeScrollContent,
+          !isMobile && { paddingTop: (toolbarHeight || 64) + 4 },
         ]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
+        {error ? <Text style={[styles.errorText, styles.homeError, homeWidth]}>{error}</Text> : null}
         {isMobile && !(loading && storeRows.length === 0) && visibleRows.length > 0 ? (
           <View style={styles.igHomeHero}>
             <Text style={styles.igHomeHeroLabel}>{periodLabel}</Text>
@@ -3070,6 +3190,7 @@ function HomeScreen({ session, onRequireLogin }) {
               styles.toolsSection,
               isMobile && styles.toolsSectionMobile,
               isMobile && styles.igHomeSection,
+              !isMobile && styles.homeTableSection,
               !isMobile && sectionWidth,
             ]}
           >
@@ -3083,6 +3204,21 @@ function HomeScreen({ session, onRequireLogin }) {
           </View>
         )}
       </ScrollView>
+
+      {isMobile ? null : (
+        <BlurView
+          intensity={58}
+          tint="light"
+          style={styles.homeToolbarBlur}
+          onLayout={(event) => {
+            const next = Math.ceil(event.nativeEvent.layout.height);
+            if (next > 0 && next !== toolbarHeight) setToolbarHeight(next);
+          }}
+          {...(Platform.OS === 'web' ? { className: 'cgold-home-toolbar-blur' } : null)}
+        >
+          {homeToolbar}
+        </BlurView>
+      )}
 
       <HomeStoreDrawer
         visible={Boolean(selectedStore)}
@@ -4466,6 +4602,7 @@ export default function App() {
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
   const [avatarViewerOpen, setAvatarViewerOpen] = useState(false);
   const [locationPickerOpen, setLocationPickerOpen] = useState(false);
+  const [teamPickerOpen, setTeamPickerOpen] = useState(false);
   const emailsFocusSeq = useRef(0);
 
   const [fontsLoaded, fontsError] = useFonts(
@@ -4922,6 +5059,20 @@ export default function App() {
           value: storeName || 'Not set in Aureus',
           onPress: () => setLocationPickerOpen(true),
         },
+        {
+          key: 'team',
+          label: 'Team',
+          value: profile?.teamName
+            ? profile.isTeamIntake
+              ? `${profile.teamName} · Intake`
+              : profile.teamName
+            : profile?.teamId
+              ? profile.isTeamIntake
+                ? 'Assigned · Intake'
+                : 'Assigned'
+              : 'Not set',
+          onPress: () => setTeamPickerOpen(true),
+        },
         accessLabel
           ? { key: 'category', label: 'Category', value: accessLabel }
           : null,
@@ -5030,6 +5181,7 @@ export default function App() {
                   </View>
                   <Text style={styles.profileGroupFooter}>
                     Assigned store in Aureus POS. Changing it updates your location here and in POS.
+                    Your team is chosen here — intake contacts receive team messages first.
                   </Text>
                 </>
               ) : null}
@@ -5083,6 +5235,27 @@ export default function App() {
                         ...current.profile,
                         locationId: locationId || current.profile.locationId,
                         locationName: locationName || current.profile.locationName,
+                      },
+                    };
+                  });
+                }}
+              />
+              <ProfileTeamPicker
+                visible={teamPickerOpen}
+                selectedId={profile?.teamId}
+                selectedName={profile?.teamName}
+                isIntake={profile?.isTeamIntake}
+                onClose={() => setTeamPickerOpen(false)}
+                onChanged={({ teamId, teamName, isTeamIntake }) => {
+                  setSession((current) => {
+                    if (!current?.profile) return current;
+                    return {
+                      ...current,
+                      profile: {
+                        ...current.profile,
+                        teamId: teamId || '',
+                        teamName: teamName || '',
+                        isTeamIntake: Boolean(isTeamIntake),
                       },
                     };
                   });
@@ -5265,6 +5438,12 @@ export default function App() {
                   });
                 }}
               />
+            ) : activeTool.key === 'teams' ? (
+              <TeamsScreen />
+            ) : activeTool.key === 'marketing' ? (
+              <MarketingScreen />
+            ) : activeTool.key === 'shared-services' ? (
+              <SharedServicesScreen />
             ) : activeTool.key === 'triage' ? (
               <TriageScreen
                 session={session}
@@ -5291,14 +5470,20 @@ export default function App() {
           style={[
             styles.toolsToolbar,
             styles.toolsToolbarOverlay,
+            !isMobile && styles.appsToolbarCompact,
             isMobile && styles.igAppsToolbar,
             appGrid.maxWidth ? { maxWidth: appGrid.maxWidth } : null,
           ]}
         >
-          <View style={[styles.toolsSearch, isMobile && styles.igSearchField]}>
-            <Ionicons name="search" size={16} color="#8e8e93" style={styles.toolsSearchIcon} />
+          <View style={[styles.toolsSearch, isMobile && styles.igSearchField, !isMobile && styles.homeSearch]}>
+            <Ionicons
+              name="search"
+              size={isMobile ? 16 : 14}
+              color="#8e8e93"
+              style={isMobile ? styles.toolsSearchIcon : styles.homeSearchIcon}
+            />
             <TextInput
-              style={styles.toolsSearchInput}
+              style={[styles.toolsSearchInput, !isMobile && styles.homeSearchInput]}
               value={toolsQuery}
               onChangeText={setToolsQuery}
               placeholder="Search"
@@ -5309,14 +5494,18 @@ export default function App() {
             />
             {toolsQuery ? (
               <Pressable onPress={() => setToolsQuery('')} hitSlop={8}>
-                <Ionicons name="close-circle" size={18} color="#c7c7cc" />
+                <Ionicons name="close-circle" size={isMobile ? 18 : 16} color="#c7c7cc" />
               </Pressable>
             ) : null}
           </View>
-          <View style={styles.appsViewToggle} accessibilityRole="tablist">
+          <View
+            style={[styles.appsViewToggle, !isMobile && styles.appsViewToggleCompact]}
+            accessibilityRole="tablist"
+          >
             <Pressable
               style={[
                 styles.appsViewToggleButton,
+                !isMobile && styles.appsViewToggleButtonCompact,
                 appsView === 'grid' && styles.appsViewToggleButtonActive,
               ]}
               onPress={() => selectAppsView('grid')}
@@ -5326,13 +5515,14 @@ export default function App() {
             >
               <Ionicons
                 name={appsView === 'grid' ? 'grid' : 'grid-outline'}
-                size={16}
+                size={isMobile ? 16 : 14}
                 color={appsView === 'grid' ? '#1d1d1f' : '#8e8e93'}
               />
             </Pressable>
             <Pressable
               style={[
                 styles.appsViewToggleButton,
+                !isMobile && styles.appsViewToggleButtonCompact,
                 appsView === 'list' && styles.appsViewToggleButtonActive,
               ]}
               onPress={() => selectAppsView('list')}
@@ -5342,7 +5532,7 @@ export default function App() {
             >
               <Ionicons
                 name={appsView === 'list' ? 'list' : 'list-outline'}
-                size={18}
+                size={isMobile ? 18 : 15}
                 color={appsView === 'list' ? '#1d1d1f' : '#8e8e93'}
               />
             </Pressable>
@@ -5502,6 +5692,7 @@ export default function App() {
     isMobile && ((activeTab === 'tools' && activeTool) || showingMessages) && styles.contentMobileApp,
     styles.contentScrollFix,
     isAppsLibrary && styles.contentAppsLibrary,
+    !isMobile && activeTab === 'home' && styles.contentAppsLibrary,
     groupedMobileTab && styles.contentMobileGrouped,
     isMobile &&
       !isFullBleedTool &&
@@ -6162,6 +6353,90 @@ const styles = StyleSheet.create({
     width: '100%',
     alignSelf: 'center',
   },
+  homeToolbarBlur: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 3,
+    overflow: 'hidden',
+    paddingTop: 20,
+    paddingHorizontal: 32,
+    paddingBottom: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(0,0,0,0.06)',
+  },
+  homeToolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    width: '100%',
+    alignSelf: 'center',
+  },
+  homeToolbarFilters: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 0,
+    gap: 8,
+  },
+  homeSearch: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    minWidth: 140,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    backgroundColor: '#e8e8ed',
+    minHeight: 32,
+  },
+  homeSearchIcon: {
+    marginRight: 6,
+  },
+  homeSearchInput: {
+    fontSize: 14,
+    paddingVertical: 4,
+  },
+  homeScrollContent: {
+    paddingHorizontal: 32,
+    paddingBottom: 32,
+  },
+  homeTableSection: {
+    marginTop: 0,
+  },
+  homeSegmentCompact: {
+    borderRadius: 8,
+    padding: 1,
+  },
+  homeSegmentButtonCompact: {
+    paddingHorizontal: 10,
+    height: 28,
+    borderRadius: 6,
+  },
+  homeSegmentTextCompact: {
+    fontSize: 13,
+    letterSpacing: -0.08,
+  },
+  homeDateFieldCompact: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#e8e8ed',
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    minHeight: 32,
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  homeDateFieldValueCompact: {
+    fontSize: 13,
+    color: '#1d1d1f',
+    letterSpacing: -0.08,
+  },
+  homeDateSepCompact: {
+    fontSize: 13,
+  },
   homeControls: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -6259,8 +6534,10 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
   homeStoreTableCard: {
-    backgroundColor: '#f2f2f7',
-    borderRadius: 14,
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e5e5ea',
     overflow: 'hidden',
     width: '100%',
   },
@@ -6272,31 +6549,44 @@ const styles = StyleSheet.create({
   },
   homeStoreTable: {
     flexGrow: 1,
-    minWidth: 860,
+    minWidth: 560,
   },
   homeStoreRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 40,
-    paddingRight: 10,
-    gap: 4,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e5e5ea',
+    minHeight: 38,
+    paddingLeft: 12,
     ...Platform.select({
-      web: { cursor: 'pointer' },
+      web: {
+        cursor: 'pointer',
+        transitionProperty: 'background-color',
+        transitionDuration: '160ms',
+        transitionTimingFunction: 'ease',
+      },
       default: {},
     }),
-  },
-  homeStoreRowLast: {
-    borderBottomWidth: 0,
   },
   homeStoreRowSelected: {
     backgroundColor: '#e8e8ed',
   },
+  homeStoreRowBody: {
+    flex: 1,
+    minWidth: 0,
+    alignSelf: 'stretch',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginLeft: 10,
+    paddingRight: 12,
+  },
+  homeStoreRowDivider: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e5e5ea',
+  },
   homeStoreHeaderRow: {
-    backgroundColor: '#ebebf0',
-    minHeight: 30,
-    paddingVertical: 4,
+    backgroundColor: '#fff',
+    minHeight: 32,
+    borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#e5e5ea',
     ...Platform.select({
       web: {
@@ -6309,9 +6599,9 @@ const styles = StyleSheet.create({
     }),
   },
   homeStoreTotalRow: {
-    backgroundColor: '#ebebf0',
     minHeight: 38,
-    borderBottomWidth: 0,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#d1d1d6',
     ...Platform.select({
       web: { cursor: 'default' },
       default: {},
@@ -6323,80 +6613,73 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     alignItems: 'center',
     justifyContent: 'center',
-    marginLeft: 8,
     flexShrink: 0,
   },
   homeStoreIconSpacer: {
     width: 22,
     height: 22,
-    marginLeft: 8,
     flexShrink: 0,
   },
   homeStoreHeader: {
     fontFamily,
     fontSize: 11,
-    fontWeight: '600',
+    fontWeight: '500',
     color: '#8e8e93',
-    letterSpacing: -0.08,
+    letterSpacing: -0.04,
   },
   homeStoreName: {
     fontFamily,
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '600',
     color: '#1d1d1f',
-    letterSpacing: -0.24,
+    letterSpacing: -0.16,
+    flexShrink: 1,
+    minWidth: 0,
   },
-  homeStoreNum: {
+  homeStoreMeta: {
     fontFamily,
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#1d1d1f',
-    letterSpacing: -0.08,
+    fontSize: 12,
+    color: '#8e8e93',
+    letterSpacing: -0.04,
     fontVariant: ['tabular-nums'],
+    flexShrink: 0,
   },
   homeStoreMoney: {
     fontFamily,
     fontSize: 14,
-    fontWeight: '500',
+    fontWeight: '400',
     color: '#1d1d1f',
     letterSpacing: -0.16,
     fontVariant: ['tabular-nums'],
   },
-  homeStoreSecondary: {
-    fontWeight: '400',
-    color: '#6e6e73',
+  homeStoreMoneyStrong: {
+    fontWeight: '600',
+  },
+  homeStoreMoneyEmpty: {
+    color: '#c7c7cc',
   },
   homeStoreTotalLabel: {
     fontFamily,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '600',
     color: '#1d1d1f',
-    letterSpacing: -0.08,
-  },
-  homeStoreTotalValue: {
-    fontWeight: '600',
-    color: '#1d1d1f',
+    letterSpacing: -0.16,
+    flexShrink: 1,
+    minWidth: 0,
   },
   homeStoreColStore: {
-    flex: 1.4,
+    flex: 1,
     minWidth: 168,
-    paddingRight: 10,
-    ...Platform.select({
-      web: { whiteSpace: 'nowrap' },
-      default: {},
-    }),
-  },
-  homeStoreColCount: {
-    width: 52,
-    flexShrink: 0,
-    textAlign: 'right',
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 8,
     ...Platform.select({
       web: { whiteSpace: 'nowrap' },
       default: {},
     }),
   },
   homeStoreColMoney: {
-    width: 124,
+    width: 112,
     flexShrink: 0,
     textAlign: 'right',
     ...Platform.select({
@@ -6404,8 +6687,9 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  homeStoreChevronSpacer: {
+  homeStoreChevron: {
     width: 14,
+    alignItems: 'center',
     flexShrink: 0,
   },
   homeMetaRow: {
@@ -6675,6 +6959,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'stretch',
     overflow: 'visible',
+    ...Platform.select({
+      web: { willChange: 'transform' },
+      default: {},
+    }),
   },
   storeDrawerShellMobile: {
     width: '100%',
@@ -6690,6 +6978,47 @@ const styles = StyleSheet.create({
   storeDrawerPanelMobile: {
     backgroundColor: '#f2f2f7',
     flex: 1,
+  },
+  storeDrawerHeader: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 3,
+    overflow: 'hidden',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(0,0,0,0.08)',
+  },
+  storeDrawerHeaderSolid: {
+    backgroundColor: 'rgba(255,255,255,0.97)',
+  },
+  storeDrawerTitleRow: {
+    paddingBottom: 2,
+  },
+  storeDrawerTitleHit: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  storeDrawerTabsScroll: {
+    flexGrow: 0,
+    flexShrink: 0,
+  },
+  storeDrawerAppsRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingHorizontal: 14,
+    paddingTop: 6,
+    paddingBottom: 12,
+  },
+  storeDrawerAppsRowMobile: {
+    paddingHorizontal: 8,
+    paddingTop: 4,
+    paddingBottom: 10,
   },
   storeDrawerTopBarMobile: {
     paddingHorizontal: 12,
@@ -7528,9 +7857,9 @@ const styles = StyleSheet.create({
     right: 0,
     zIndex: 3,
     overflow: 'hidden',
-    paddingTop: 32,
+    paddingTop: 20,
     paddingHorizontal: 32,
-    paddingBottom: 14,
+    paddingBottom: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: 'rgba(0,0,0,0.06)',
   },
@@ -7592,6 +7921,18 @@ const styles = StyleSheet.create({
         elevation: 1,
       },
     }),
+  },
+  appsToolbarCompact: {
+    gap: 8,
+  },
+  appsViewToggleCompact: {
+    borderRadius: 8,
+    padding: 1,
+  },
+  appsViewToggleButtonCompact: {
+    width: 28,
+    height: 28,
+    borderRadius: 6,
   },
   toolsScroll: {
     flex: 1,
@@ -7660,7 +8001,7 @@ const styles = StyleSheet.create({
   toolCard: {
     width: '100%',
     alignItems: 'center',
-    gap: 7,
+    gap: 6,
     ...Platform.select({
       web: {
         cursor: 'pointer',
@@ -7687,14 +8028,28 @@ const styles = StyleSheet.create({
   },
   toolCardLabel: {
     fontFamily,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '500',
     color: '#1d1d1f',
     textAlign: 'center',
-    lineHeight: 16,
+    lineHeight: 15,
     letterSpacing: -0.08,
     width: '100%',
     paddingHorizontal: 2,
+  },
+  toolCardLabelSelected: {
+    fontWeight: '600',
+  },
+  toolIconTileSelected: {
+    ...Platform.select({
+      web: {
+        boxShadow: '0 0 0 3px rgba(29,29,31,0.16), 0 1px 1px rgba(0,0,0,0.06), 0 8px 18px rgba(0,0,0,0.12)',
+      },
+      default: {
+        borderWidth: 3,
+        borderColor: 'rgba(29,29,31,0.18)',
+      },
+    }),
   },
   pinButton: {
     position: 'absolute',
@@ -7731,13 +8086,13 @@ const styles = StyleSheet.create({
   },
   toolsList: {
     backgroundColor: '#f2f2f7',
-    borderRadius: 14,
+    borderRadius: 10,
     overflow: 'hidden',
   },
   toolListRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 56,
+    minHeight: 36,
     paddingRight: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#e5e5ea',
@@ -7753,10 +8108,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     minWidth: 0,
-    paddingVertical: 8,
-    paddingLeft: 12,
+    paddingVertical: 6,
+    paddingLeft: 10,
     paddingRight: 8,
-    gap: 12,
+    gap: 10,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -7769,14 +8124,14 @@ const styles = StyleSheet.create({
   toolListLabel: {
     fontFamily,
     flex: 1,
-    fontSize: 17,
+    fontSize: 14,
     fontWeight: '400',
     color: '#1d1d1f',
-    letterSpacing: -0.2,
+    letterSpacing: -0.08,
   },
   toolListPin: {
-    width: 36,
-    height: 36,
+    width: 28,
+    height: 28,
     alignItems: 'center',
     justifyContent: 'center',
     ...Platform.select({
@@ -9122,6 +9477,12 @@ const styles = StyleSheet.create({
     maxWidth: '100%',
     paddingHorizontal: 16,
     alignSelf: 'stretch',
+  },
+  igHomeToolbar: {
+    maxWidth: '100%',
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 8,
   },
   igHomeControls: {
     maxWidth: '100%',

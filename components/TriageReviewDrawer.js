@@ -1,9 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Animated,
-  Easing,
-  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -30,7 +27,7 @@ import {
   normalizeReviewImages,
 } from '../lib/triageDraft';
 import TriageCorrectionImages from './TriageCorrectionImages';
-import { MOBILE, mobileSafeBottom, mobileSafeTop } from '../lib/mobileUi';
+import { FONT, T, TextAction, TriageDrawer, useHeldValue } from './TriageKit';
 import {
   createClient,
   fetchLookupLocations,
@@ -41,85 +38,13 @@ import {
 } from '../lib/triageLookups';
 import { catalogProductOptions, fetchWebsitePrices, filterCatalogProductOptions } from '../lib/websitePrices';
 
-const fontFamily = Platform.select({
-  ios: 'Sohne',
-  android: 'Sohne',
-  default: 'Sohne',
-});
-
-const BLUE = MOBILE.blue;
-const TEXT = '#1d1d1f';
-const SECONDARY = '#8e8e93';
-const HAIRLINE = 'rgba(60, 60, 67, 0.18)';
-const STRUCK = '#8e8e93';
+const fontFamily = FONT;
+const BLUE = T.blue;
+const TEXT = T.text;
+const SECONDARY = T.secondary;
+const HAIRLINE = T.hairline;
+const STRUCK = T.secondary;
 const MOBILE_BREAKPOINT = 768;
-const DRAWER_OPEN_MS = 280;
-const DRAWER_CLOSE_MS = 220;
-
-function useHeldValue(value) {
-  const held = useRef(value);
-  if (value != null) held.current = value;
-  return value ?? held.current;
-}
-
-function useRightDrawerAnimation(visible, slideDistance) {
-  const [mounted, setMounted] = useState(visible);
-  const slide = useRef(new Animated.Value(slideDistance)).current;
-  const backdrop = useRef(new Animated.Value(0)).current;
-  const slideDistanceRef = useRef(slideDistance);
-  const opened = useRef(visible);
-  slideDistanceRef.current = slideDistance;
-
-  useEffect(() => {
-    if (visible) {
-      opened.current = true;
-      setMounted(true);
-      slide.setValue(slideDistanceRef.current);
-      backdrop.setValue(0);
-      const anim = Animated.parallel([
-        Animated.timing(slide, {
-          toValue: 0,
-          duration: DRAWER_OPEN_MS,
-          easing: Easing.bezier(0.22, 1, 0.36, 1),
-          useNativeDriver: true,
-        }),
-        Animated.timing(backdrop, {
-          toValue: 1,
-          duration: DRAWER_OPEN_MS,
-          easing: Easing.out(Easing.quad),
-          useNativeDriver: true,
-        }),
-      ]);
-      anim.start();
-      return () => anim.stop();
-    }
-
-    if (!opened.current) return undefined;
-
-    const anim = Animated.parallel([
-      Animated.timing(slide, {
-        toValue: slideDistanceRef.current,
-        duration: DRAWER_CLOSE_MS,
-        easing: Easing.bezier(0.4, 0, 0.2, 1),
-        useNativeDriver: true,
-      }),
-      Animated.timing(backdrop, {
-        toValue: 0,
-        duration: DRAWER_CLOSE_MS,
-        easing: Easing.out(Easing.quad),
-        useNativeDriver: true,
-      }),
-    ]);
-    const timeout = setTimeout(() => setMounted(false), DRAWER_CLOSE_MS + 32);
-    anim.start(() => setMounted(false));
-    return () => {
-      anim.stop();
-      clearTimeout(timeout);
-    };
-  }, [visible, slide, backdrop]);
-
-  return { mounted, slide, backdrop };
-}
 
 function CorrectionPair({ original, value }) {
   return (
@@ -479,25 +404,18 @@ function NewCustomerPanel({ onCancel, onCreated, token, baseUrl }) {
       </View>
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
       <View style={styles.newCustomerActions}>
-        <Pressable onPress={onCancel} hitSlop={8} accessibilityRole="button">
-          <Text style={styles.navAction}>Cancel</Text>
-        </Pressable>
-        <Pressable onPress={save} disabled={busy} hitSlop={8} accessibilityRole="button">
-          {busy ? <ActivityIndicator color={BLUE} /> : <Text style={[styles.navAction, styles.navActionEmph]}>Add</Text>}
-        </Pressable>
+        <TextAction label="Cancel" onPress={onCancel} accessibilityLabel="Cancel new customer" />
+        {busy ? <ActivityIndicator color={BLUE} /> : <TextAction label="Add" strong onPress={save} accessibilityLabel="Add customer" />}
       </View>
     </View>
   );
 }
 
-export default function TriageReviewDrawer({ visible, session, row, review, extraRows = [], onClose, onSave }) {
+export default function TriageReviewDrawer({ visible, session, row, review, extraRows = [], onClose, onSave, onHydrate }) {
   const { width: windowWidth } = useWindowDimensions();
   const isMobile = windowWidth < MOBILE_BREAKPOINT;
-  const panelWidth = isMobile
-    ? Math.max(windowWidth, 240)
-    : Math.min(Math.max(Math.round(windowWidth * 0.56), 520), Math.round(windowWidth - 64));
-  const { mounted, slide, backdrop } = useRightDrawerAnimation(visible, panelWidth);
   const heldRow = useHeldValue(row);
+  const [mounted, setMounted] = useState(visible);
 
   const [step, setStep] = useState('edit');
   const [activeRow, setActiveRow] = useState(null);
@@ -513,6 +431,8 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
   const [pricingOptions, setPricingOptions] = useState([]);
   const [addingCustomer, setAddingCustomer] = useState(false);
   const detailRequestId = useRef(0);
+  const onHydrateRef = useRef(onHydrate);
+  onHydrateRef.current = onHydrate;
 
   const reset = useCallback(() => {
     setStep('edit');
@@ -528,8 +448,16 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
   }, []);
 
   useEffect(() => {
-    if (!visible && !mounted) reset();
-  }, [mounted, reset, visible]);
+    if (visible) {
+      setMounted(true);
+      return undefined;
+    }
+    const timer = setTimeout(() => {
+      setMounted(false);
+      reset();
+    }, 320);
+    return () => clearTimeout(timer);
+  }, [reset, visible]);
 
   useEffect(() => {
     if (!visible || !row) return;
@@ -568,6 +496,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
         const enriched = withLineItems(row, detail);
         setActiveRow(enriched);
         setDraft(buildDraft(enriched, detail));
+        onHydrateRef.current?.(enriched);
       })
       .catch((err) => {
         if (id !== detailRequestId.current) return;
@@ -681,52 +610,28 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
   if (!mounted || !heldRow) return null;
 
   const title = step === 'note' ? 'Error' : heldRow.reference || 'Edit';
+  const changedCount = corrections.length;
 
   return (
-    <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose}>
-      <View style={styles.drawerRoot} pointerEvents="box-none">
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose}>
-          <Animated.View style={[styles.drawerBackdrop, { opacity: backdrop }]} />
-        </Pressable>
-
-        <Animated.View
-          pointerEvents="auto"
-          style={[
-            styles.drawerPanel,
-            isMobile && styles.drawerPanelMobile,
-            { width: panelWidth, transform: [{ translateX: slide }] },
-          ]}
-        >
-          <View
-            style={[styles.navBar, isMobile && styles.navBarMobile]}
-            {...(Platform.OS === 'web' && isMobile ? { className: 'cgold-mobile-sheet-top' } : null)}
-          >
-            <Pressable
-              onPress={step === 'note' ? () => setStep('edit') : onClose}
-              hitSlop={8}
-              style={styles.navSide}
-              accessibilityRole="button"
-              accessibilityLabel={step === 'note' ? 'Back' : 'Cancel'}
-            >
-              <Text style={styles.navAction}>{step === 'note' ? 'Back' : 'Cancel'}</Text>
-            </Pressable>
-            <Text style={styles.navTitle} numberOfLines={1}>
-              {title}
-            </Text>
-            <Pressable
-              onPress={step === 'edit' ? () => setStep('note') : finish}
-              hitSlop={8}
-              style={styles.navSide}
-              disabled={step === 'edit' && detailLoading}
-              accessibilityRole="button"
-              accessibilityLabel={step === 'edit' ? 'Next' : 'Done'}
-            >
-              <Text style={[styles.navAction, styles.navActionEmph, styles.navSideRight]}>
-                {step === 'edit' ? 'Next' : 'Done'}
-              </Text>
-            </Pressable>
-          </View>
-
+    <TriageDrawer
+      visible={visible}
+      onClose={onClose}
+      title={title}
+      subtitle={
+        step === 'edit'
+          ? changedCount
+            ? `${changedCount} ${changedCount === 1 ? 'change' : 'changes'}`
+            : [heldRow.storeName, heldRow.dateLabel].filter(Boolean).join(' · ')
+          : heldRow.reference
+      }
+      leftLabel={step === 'note' ? 'Back' : 'Cancel'}
+      onLeft={step === 'note' ? () => setStep('edit') : onClose}
+      rightLabel={step === 'edit' ? 'Next' : 'Done'}
+      onRight={step === 'edit' ? () => setStep('note') : finish}
+      rightDisabled={step === 'edit' && detailLoading}
+      widthRatio={0.56}
+      minWidth={520}
+    >
           {detailLoading && step === 'edit' ? (
             <View style={styles.inlineBusy}>
               <ActivityIndicator color={BLUE} />
@@ -973,76 +878,11 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
               </View>
             </ScrollView>
           )}
-        </Animated.View>
-      </View>
-    </Modal>
+    </TriageDrawer>
   );
 }
 
 const styles = StyleSheet.create({
-  drawerRoot: {
-    flex: 1,
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-  },
-  drawerBackdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.28)',
-  },
-  drawerPanel: {
-    height: '100%',
-    backgroundColor: MOBILE.bg,
-    ...Platform.select({
-      web: { boxShadow: '-12px 0 32px rgba(0,0,0,0.18)' },
-      default: { elevation: 12 },
-    }),
-  },
-  drawerPanelMobile: {
-    paddingBottom: Platform.OS === 'ios' ? Math.max(20, mobileSafeBottom()) : 12,
-    backgroundColor: MOBILE.bg,
-  },
-  navBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 52,
-    paddingHorizontal: 8,
-    backgroundColor: 'rgba(242,242,247,0.94)',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
-  },
-  navBarMobile: {
-    paddingTop: Platform.OS === 'ios' ? mobileSafeTop() - 12 : 6,
-  },
-  navSide: {
-    width: 88,
-    minHeight: 44,
-    justifyContent: 'center',
-  },
-  navSideRight: {
-    textAlign: 'right',
-  },
-  navAction: {
-    fontFamily,
-    fontSize: 17,
-    fontWeight: '400',
-    color: BLUE,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  navActionEmph: {
-    fontWeight: '600',
-  },
-  navTitle: {
-    fontFamily,
-    flex: 1,
-    fontSize: 17,
-    fontWeight: '600',
-    color: TEXT,
-    textAlign: 'center',
-    letterSpacing: -0.3,
-  },
   body: {
     flex: 1,
     minHeight: 0,

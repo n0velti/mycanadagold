@@ -1,18 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Animated,
-  Easing,
-  Modal,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  useWindowDimensions,
-  View,
-} from 'react-native';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { MOBILE, mobileSafeBottom, mobileSafeTop, useIsMobile } from '../lib/mobileUi';
+import { useIsMobile } from '../lib/mobileUi';
 import {
   collectAccuracyTriagePos,
   saveTriagePoReview,
@@ -23,6 +12,7 @@ import {
 } from '../lib/transferWorkflow';
 import {
   ColumnFilter,
+  docNoun,
   matchesSelectedLabel,
   PoThumb,
   selectedLabels,
@@ -41,22 +31,16 @@ import {
   uniqueLabels,
 } from './TriageTable';
 import TriageReviewDrawer from './TriageReviewDrawer';
+import { EmptyState, FONT, T, TextAction, TextTabs, TriageDrawer, useHeldValue } from './TriageKit';
 
-const fontFamily = Platform.select({
-  ios: 'Sohne',
-  android: 'Sohne',
-  default: 'Sohne',
-});
-
-const TEXT = '#1d1d1f';
-const SECONDARY = '#8e8e93';
-const GREEN = '#34C759';
-const RED = '#FF3B30';
-const ORANGE = '#FF9500';
-const BLUE = MOBILE.blue;
-const HAIRLINE = 'rgba(60, 60, 67, 0.18)';
-const DRAWER_OPEN_MS = 280;
-const DRAWER_CLOSE_MS = 220;
+const fontFamily = FONT;
+const TEXT = T.text;
+const SECONDARY = T.secondary;
+const GREEN = T.green;
+const RED = T.red;
+const ORANGE = T.orange;
+const BLUE = T.blue;
+const HAIRLINE = T.hairline;
 
 const ACCURACY_TABS = [
   { key: 'correct', label: 'Correct' },
@@ -119,6 +103,267 @@ function countRanks(rows, getLabel) {
     .map((row) => ({ ...row, pct: Math.round((row.count / total) * 100) }));
 }
 
+function karatFromText(text) {
+  const match = String(text || '').match(/\b(24|22|21|18|14|10|9)\s*[-]?\s*k(?:t|arat)?s?\b/i);
+  return match ? `${match[1]}K` : '';
+}
+
+function karatFromPurity(purity) {
+  if (purity == null || purity === '') return '';
+  let n = Number(purity);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  if (n > 0 && n <= 1) n *= 100;
+  if ([24, 22, 21, 18, 14, 10, 9].includes(n)) return `${n}K`;
+  const table = [
+    [99.9, 24],
+    [91.6, 22],
+    [87.5, 21],
+    [75, 18],
+    [58.5, 14],
+    [41.7, 10],
+    [37.5, 9],
+  ];
+  let best = null;
+  for (const [mark, karat] of table) {
+    const delta = Math.abs(n - mark);
+    if (delta <= 2 && (!best || delta < best.delta)) best = { karat, delta };
+  }
+  return best ? `${best.karat}K` : '';
+}
+
+function prettyMetal(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  if (/\bpalladium\b/i.test(text)) return 'Palladium';
+  if (/\bplatinum\b/i.test(text)) return 'Platinum';
+  if (/\bsilver|sterling\b/i.test(text)) return 'Silver';
+  if (/\bgold\b/i.test(text)) return 'Gold';
+  return '';
+}
+
+function familyFromText(text) {
+  const value = String(text || '');
+  if (/\bscrap\b/i.test(value)) return 'Scrap';
+  if (/\bcoin|maple|eagle|krugerrand|britannia|philharmonic|panda\b/i.test(value)) return 'Coins';
+  if (/\bbar|wafer|ingot\b/i.test(value)) return 'Bars';
+  if (/\bjewell?ery|ring|chain|bracelet|necklace|earring\b/i.test(value)) return 'Jewellery';
+  return '';
+}
+
+function itemNamesOf(row) {
+  const names = [];
+  for (const name of Array.isArray(row?.itemNames) ? row.itemNames : []) {
+    const text = String(name || '').trim();
+    if (text) names.push(text);
+  }
+  for (const line of Array.isArray(row?.pricedLines) ? row.pricedLines : []) {
+    const text = String(line?.name || '').trim();
+    if (text) names.push(text);
+  }
+  for (const item of row?.review?.draft?.items || []) {
+    const text = String(item?.name?.value || item?.name?.original || '').trim();
+    if (text) names.push(text);
+  }
+  return names;
+}
+
+function collectItemBlobs(row) {
+  const blobs = [];
+  for (const line of Array.isArray(row?.pricedLines) ? row.pricedLines : []) {
+    const text = [line?.name, line?.label, line?.searchText, line?.quality, line?.metal, line?.productType]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+      .join(' ');
+    if (!text && line?.purity == null) continue;
+    blobs.push({
+      text,
+      metal: prettyMetal(line?.metal),
+      purity: line?.purity,
+      productType: String(line?.productType || ''),
+    });
+  }
+  if (blobs.length) return blobs;
+  for (const name of itemNamesOf(row)) {
+    blobs.push({ text: name, metal: '', purity: null, productType: '' });
+  }
+  const search = String(row?.itemSearchText || '').trim();
+  if (search) blobs.push({ text: search, metal: '', purity: null, productType: '' });
+  return blobs;
+}
+
+function itemTagsOf(row) {
+  const tags = new Set();
+  for (const blob of collectItemBlobs(row)) {
+    const karat = karatFromText(blob.text) || karatFromPurity(blob.purity);
+    const metal = blob.metal || prettyMetal(blob.text);
+    const family = familyFromText(blob.text) || familyFromText(blob.productType);
+    if (karat && metal) tags.add(`${karat} ${metal}`);
+    else if (karat) tags.add(karat);
+    else if (metal) tags.add(metal);
+    if (family) tags.add(family);
+  }
+  return [...tags];
+}
+
+function countDocTags(rows) {
+  const counts = new Map();
+  for (const row of rows) {
+    const seen = new Set();
+    for (const tag of itemTagsOf(row)) {
+      const key = tag.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const current = counts.get(key);
+      if (current) current.count += 1;
+      else counts.set(key, { label: tag, count: 1 });
+    }
+  }
+  const total = rows.length || 1;
+  return [...counts.values()]
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }))
+    .map((row) => ({ ...row, pct: Math.round((row.count / total) * 100) }));
+}
+
+function findErrorPatterns(rows) {
+  const total = rows.length;
+  if (total < 2) return [];
+
+  const overallTags = countDocTags(rows);
+  const overallStores = countRanks(rows, (row) => String(row.storeName || '').trim());
+  const overallPeople = countRanks(rows, (row) => staffName(row) || 'Unknown');
+  const grouped = new Map();
+  for (const row of rows) {
+    const type = errorPlace(row);
+    if (!grouped.has(type)) grouped.set(type, []);
+    grouped.get(type).push(row);
+  }
+
+  const patterns = [];
+  const consider = ({ type, kind, label, count, subsetSize, overallPct }) => {
+    const pct = Math.round((count / subsetSize) * 100);
+    const lift = pct - overallPct;
+    if (count < 2 || pct < 50 || overallPct >= 85) return;
+    if (lift < 15 && pct < 80) return;
+    const share = `${count} of ${subsetSize} (${pct}%) vs ${overallPct}% of all errors`;
+    const headline =
+      kind === 'tag'
+        ? `${type} is concentrated on ${label}`
+        : kind === 'store'
+          ? `${type} shows up more at ${label}`
+          : `${label} accounts for most ${type} errors`;
+    patterns.push({
+      key: `${type}|${kind}|${label}`,
+      score: count * (1 + Math.max(lift, 0) / 50),
+      headline,
+      detail: share,
+      type,
+      kind,
+      label,
+    });
+  };
+
+  for (const [type, subset] of grouped) {
+    if (subset.length < 2) continue;
+    const subsetSize = subset.length;
+    for (const tag of countDocTags(subset)) {
+      const overall = overallTags.find((row) => namesMatch(row.label, tag.label));
+      consider({
+        type,
+        kind: 'tag',
+        label: tag.label,
+        count: tag.count,
+        subsetSize,
+        overallPct: overall ? Math.round((overall.count / total) * 100) : 0,
+      });
+    }
+    if (overallStores.length >= 2) {
+      for (const store of countRanks(subset, (row) => String(row.storeName || '').trim())) {
+        const overall = overallStores.find((row) => namesMatch(row.label, store.label));
+        consider({
+          type,
+          kind: 'store',
+          label: store.label,
+          count: store.count,
+          subsetSize,
+          overallPct: overall ? Math.round((overall.count / total) * 100) : 0,
+        });
+      }
+    }
+    if (overallPeople.length >= 2) {
+      for (const person of countRanks(subset, (row) => staffName(row) || 'Unknown')) {
+        const overall = overallPeople.find((row) => namesMatch(row.label, person.label));
+        consider({
+          type,
+          kind: 'person',
+          label: person.label,
+          count: person.count,
+          subsetSize,
+          overallPct: overall ? Math.round((overall.count / total) * 100) : 0,
+        });
+      }
+    }
+  }
+
+  return patterns
+    .sort((a, b) => b.score - a.score || a.headline.localeCompare(b.headline, undefined, { sensitivity: 'base' }))
+    .slice(0, 6);
+}
+
+function rowMatchesErrorFocus(row, focus) {
+  if (!focus) return true;
+  if (focus.type && !namesMatch(errorPlace(row), focus.type)) return false;
+  if (focus.kind === 'type') return namesMatch(errorPlace(row), focus.label);
+  if (focus.kind === 'store') return namesMatch(row.storeName, focus.label);
+  if (focus.kind === 'person') return namesMatch(staffName(row) || 'Unknown', focus.label);
+  if (focus.kind === 'tag') return itemTagsOf(row).some((tag) => namesMatch(tag, focus.label));
+  return true;
+}
+
+function RankGroup({ title, kind, ranks, focus, onPress }) {
+  return (
+    <>
+      <Text style={styles.groupHeader}>{title}</Text>
+      <View style={styles.group}>
+        {ranks.length === 0 ? (
+          <Text style={styles.emptyText}>None in this set</Text>
+        ) : (
+          ranks.map((rank, index) => {
+            const active = Boolean(
+              focus && focus.kind === kind && namesMatch(focus.label, rank.label),
+            );
+            const Row = onPress ? Pressable : View;
+            return (
+              <Row
+                key={rank.label}
+                style={[
+                  styles.historyRow,
+                  onPress && styles.rankPress,
+                  index === ranks.length - 1 && styles.historyRowLast,
+                ]}
+                onPress={onPress ? () => onPress(rank) : undefined}
+                accessibilityRole={onPress ? 'button' : undefined}
+                accessibilityState={onPress ? { selected: active } : undefined}
+              >
+                <Text style={styles.personRank}>{index + 1}</Text>
+                <Text
+                  style={[styles.historyTitle, active && styles.historyTitleActive]}
+                  numberOfLines={1}
+                >
+                  {rank.label}
+                </Text>
+                <Text style={styles.personMeta}>
+                  {rank.count} · {rank.pct}%
+                </Text>
+                {onPress ? <Ionicons name="chevron-forward" size={14} color="#c7c7cc" /> : null}
+              </Row>
+            );
+          })
+        )}
+      </View>
+    </>
+  );
+}
+
 function formatPct(value) {
   if (!Number.isFinite(value)) return '—';
   return `${Math.round(value)}%`;
@@ -167,109 +412,6 @@ function scopeCaption(filters, storeFilter) {
   return parts.slice(0, 3).join(' · ') || 'All purchases';
 }
 
-function useHeldValue(value) {
-  const held = useRef(value);
-  if (value != null) held.current = value;
-  return value ?? held.current;
-}
-
-function useRightDrawerAnimation(visible, slideDistance) {
-  const [mounted, setMounted] = useState(visible);
-  const slide = useRef(new Animated.Value(slideDistance)).current;
-  const backdrop = useRef(new Animated.Value(0)).current;
-  const slideDistanceRef = useRef(slideDistance);
-  const opened = useRef(visible);
-  slideDistanceRef.current = slideDistance;
-
-  useEffect(() => {
-    if (visible) {
-      opened.current = true;
-      setMounted(true);
-      slide.setValue(slideDistanceRef.current);
-      backdrop.setValue(0);
-      const anim = Animated.parallel([
-        Animated.timing(slide, {
-          toValue: 0,
-          duration: DRAWER_OPEN_MS,
-          easing: Easing.bezier(0.22, 1, 0.36, 1),
-          useNativeDriver: true,
-        }),
-        Animated.timing(backdrop, {
-          toValue: 1,
-          duration: DRAWER_OPEN_MS,
-          easing: Easing.out(Easing.quad),
-          useNativeDriver: true,
-        }),
-      ]);
-      anim.start();
-      return () => anim.stop();
-    }
-
-    if (!opened.current) return undefined;
-
-    const anim = Animated.parallel([
-      Animated.timing(slide, {
-        toValue: slideDistanceRef.current,
-        duration: DRAWER_CLOSE_MS,
-        easing: Easing.bezier(0.4, 0, 0.2, 1),
-        useNativeDriver: true,
-      }),
-      Animated.timing(backdrop, {
-        toValue: 0,
-        duration: DRAWER_CLOSE_MS,
-        easing: Easing.out(Easing.quad),
-        useNativeDriver: true,
-      }),
-    ]);
-    const timeout = setTimeout(() => setMounted(false), DRAWER_CLOSE_MS + 32);
-    anim.start(() => setMounted(false));
-    return () => {
-      anim.stop();
-      clearTimeout(timeout);
-    };
-  }, [visible, slide, backdrop]);
-
-  return { mounted, slide, backdrop };
-}
-
-function EmptyState({ icon, title, body }) {
-  return (
-    <View style={styles.empty}>
-      <Ionicons name={icon} size={40} color={SECONDARY} />
-      <Text style={styles.emptyTitle}>{title}</Text>
-      <Text style={styles.emptyBody}>{body}</Text>
-    </View>
-  );
-}
-
-function AccuracyTabs({ value, onChange, trailing }) {
-  return (
-    <View style={styles.listChrome} accessibilityRole="tablist">
-      <View style={styles.textTabs}>
-        {ACCURACY_TABS.map((tab) => {
-          const active = tab.key === value;
-          return (
-            <Pressable
-              key={tab.key}
-              style={styles.textTab}
-              onPress={() => onChange(tab.key)}
-              accessibilityRole="tab"
-              accessibilityState={{ selected: active }}
-              accessibilityLabel={tab.label}
-            >
-              <Text style={[styles.textTabLabel, active && styles.textTabLabelActive]} numberOfLines={1}>
-                {tab.label}
-              </Text>
-              <View style={[styles.textTabLine, active && styles.textTabLineActive]} />
-            </Pressable>
-          );
-        })}
-      </View>
-      {trailing ? <View style={styles.listChromeTrailing}>{trailing}</View> : null}
-    </View>
-  );
-}
-
 function InsightSplit({ correctCount, incorrectCount }) {
   const total = correctCount + incorrectCount;
   return (
@@ -290,7 +432,7 @@ function InsightSplit({ correctCount, incorrectCount }) {
   );
 }
 
-function AccuracyInsights({ scoped, activeTab, caption, mobile, onPersonPress }) {
+function AccuracyInsights({ scoped, activeTab, caption, mobile, onPersonPress, onErrorsPress }) {
   const total = scoped.length;
   const incorrectRows = useMemo(
     () => scoped.filter((row) => triagePoNeedsCorrection(row)),
@@ -313,7 +455,7 @@ function AccuracyInsights({ scoped, activeTab, caption, mobile, onPersonPress })
   return (
     <View style={styles.insightsWrap}>
       <View style={[styles.insightsCard, mobile && styles.insightsCardMobile]}>
-        <View style={styles.insightsCol}>
+        <View style={[styles.insightsCol, mobile && styles.insightsColMobile]}>
           <Text style={styles.insightsKicker}>Accuracy</Text>
           <Text style={[styles.insightsHero, { color: accuracyPct == null ? TEXT : accuracyTint(accuracyPct) }]}>
             {formatPct(accuracyPct)}
@@ -329,14 +471,22 @@ function AccuracyInsights({ scoped, activeTab, caption, mobile, onPersonPress })
           </Text>
         </View>
 
-        <View
+        <Pressable
           style={[
             styles.insightsCol,
             styles.insightsColSplit,
+            mobile && styles.insightsColMobile,
             mobile && styles.insightsColSplitMobile,
+            styles.errorsHit,
           ]}
+          onPress={() => onErrorsPress?.()}
+          accessibilityRole="button"
+          accessibilityLabel="Error breakdown"
         >
-          <Text style={styles.insightsKicker}>Errors</Text>
+          <View style={styles.insightsKickerRow}>
+            <Text style={styles.insightsKicker}>Errors</Text>
+            <Ionicons name="chevron-forward" size={14} color="#c7c7cc" />
+          </View>
           {topError ? (
             <>
               <Text style={styles.insightsTitle} numberOfLines={1}>
@@ -359,12 +509,13 @@ function AccuracyInsights({ scoped, activeTab, caption, mobile, onPersonPress })
               <Text style={styles.insightsSub}>Nothing to break down yet</Text>
             </>
           )}
-        </View>
+        </Pressable>
 
         <View
           style={[
             styles.insightsCol,
             styles.insightsColSplit,
+            mobile && styles.insightsColMobile,
             mobile && styles.insightsColSplitMobile,
           ]}
         >
@@ -406,12 +557,6 @@ function AccuracyInsights({ scoped, activeTab, caption, mobile, onPersonPress })
 }
 
 function EmployeeErrorDrawer({ visible, name, rows, onClose, onOpenPo }) {
-  const { width: windowWidth } = useWindowDimensions();
-  const isMobile = windowWidth < 768;
-  const panelWidth = isMobile
-    ? Math.max(windowWidth, 240)
-    : Math.min(Math.max(Math.round(windowWidth * 0.42), 380), Math.round(windowWidth - 64));
-  const { mounted, slide, backdrop } = useRightDrawerAnimation(visible, panelWidth);
   const heldName = useHeldValue(name);
 
   const docs = useMemo(() => {
@@ -422,93 +567,279 @@ function EmployeeErrorDrawer({ visible, name, rows, onClose, onOpenPo }) {
   const categories = useMemo(() => countRanks(docs, errorPlace), [docs]);
   const top = categories[0] || null;
 
-  if (!mounted || !heldName) return null;
+  if (!heldName) return null;
 
   return (
-    <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose}>
-      <View style={styles.drawerRoot} pointerEvents="box-none">
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose}>
-          <Animated.View style={[styles.drawerBackdrop, { opacity: backdrop }]} />
-        </Pressable>
-        <Animated.View
-          pointerEvents="auto"
-          style={[
-            styles.drawerPanel,
-            isMobile && styles.drawerPanelMobile,
-            { width: panelWidth, transform: [{ translateX: slide }] },
-          ]}
-        >
-          <View
-            style={[styles.drawerNav, isMobile && styles.drawerNavMobile]}
-            {...(Platform.OS === 'web' && isMobile ? { className: 'cgold-mobile-sheet-top' } : null)}
-          >
-            <Pressable
-              onPress={onClose}
-              hitSlop={8}
-              style={styles.drawerNavSide}
-              accessibilityRole="button"
-              accessibilityLabel="Done"
-            >
-              <Text style={styles.drawerNavAction}>Done</Text>
-            </Pressable>
-            <Text style={styles.drawerNavTitle} numberOfLines={1}>
-              {heldName}
+    <TriageDrawer visible={visible} onClose={onClose} title={heldName} widthRatio={0.42} minWidth={380}>
+      <ScrollView
+        style={styles.drawerBody}
+        contentContainerStyle={styles.drawerContent}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.historyHero}>
+          <Text style={styles.historyHeroCount}>{docs.length}</Text>
+          <Text style={styles.historyHeroLabel}>
+            {`incorrect ${docNoun(docs)}`}
+          </Text>
+          {top ? (
+            <Text style={styles.historyHeroSub} numberOfLines={2}>
+              Mostly {top.label} · {top.pct}% of their errors
             </Text>
-            <View style={styles.drawerNavSide} />
-          </View>
+          ) : (
+            <Text style={styles.historyHeroSub}>No errors in this set</Text>
+          )}
+        </View>
 
+        <Text style={styles.groupHeader}>Categories</Text>
+        <View style={styles.group}>
+          {categories.length === 0 ? (
+            <Text style={styles.emptyText}>No error categories</Text>
+          ) : (
+            categories.map((category, index) => (
+              <View
+                key={category.label}
+                style={[styles.historyRow, index === categories.length - 1 && styles.historyRowLast]}
+              >
+                <Text style={styles.personRank}>{index + 1}</Text>
+                <Text style={styles.historyTitle} numberOfLines={1}>
+                  {category.label}
+                </Text>
+                <Text style={styles.personMeta}>
+                  {category.count} · {category.pct}%
+                </Text>
+              </View>
+            ))
+          )}
+        </View>
+
+        <Text style={styles.groupHeader}>PO / SO</Text>
+        <View style={styles.group}>
+          {docs.length === 0 ? (
+            <Text style={styles.emptyText}>No PO / SO</Text>
+          ) : (
+            docs.map((row, index) => {
+              const subtitle = [
+                errorPlace(row),
+                row.storeName,
+                row.dateLabel,
+                row.received ? null : 'Not received',
+              ]
+                .filter(Boolean)
+                .join(' · ');
+              return (
+                <Pressable
+                  key={`${row.triageId}-${row.id}`}
+                  style={[styles.historyDoc, index === docs.length - 1 && styles.historyRowLast]}
+                  onPress={() => onOpenPo?.(row)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open ${row.reference}`}
+                >
+                  <View style={styles.historyDocText}>
+                    <Text style={styles.historyTitle} numberOfLines={1}>
+                      {row.reference}
+                    </Text>
+                    {subtitle ? (
+                      <Text style={styles.historySub} numberOfLines={2}>
+                        {subtitle}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <Ionicons name="chevron-forward" size={16} color="#c7c7cc" />
+                </Pressable>
+              );
+            })
+          )}
+        </View>
+      </ScrollView>
+    </TriageDrawer>
+  );
+}
+
+function ErrorBreakdownDrawer({ visible, rows, total, onClose, onOpenPo }) {
+  const heldRowsRaw = useHeldValue(visible ? rows : null);
+  const heldRows = useMemo(() => heldRowsRaw || [], [heldRowsRaw]);
+  const heldTotal = useHeldValue(visible ? total : null) ?? 0;
+  const [focus, setFocus] = useState(null);
+
+  useEffect(() => {
+    if (!visible) setFocus(null);
+  }, [visible]);
+
+  const categories = useMemo(() => countRanks(heldRows, errorPlace), [heldRows]);
+  const stores = useMemo(() => countRanks(heldRows, (row) => String(row.storeName || '').trim()), [heldRows]);
+  const people = useMemo(
+    () => countRanks(heldRows, (row) => staffName(row) || 'Unknown'),
+    [heldRows],
+  );
+  const items = useMemo(() => countDocTags(heldRows), [heldRows]);
+  const patterns = useMemo(() => findErrorPatterns(heldRows), [heldRows]);
+  const top = categories[0] || null;
+  const incorrectPct = heldTotal ? Math.round((heldRows.length / heldTotal) * 100) : 0;
+
+  const docs = useMemo(
+    () => heldRows.filter((row) => rowMatchesErrorFocus(row, focus)),
+    [heldRows, focus],
+  );
+
+  const toggleFocus = useCallback((next) => {
+    setFocus((current) => {
+      if (
+        current &&
+        current.kind === next.kind &&
+        namesMatch(current.label, next.label) &&
+        namesMatch(current.type || '', next.type || '')
+      ) {
+        return null;
+      }
+      return next;
+    });
+  }, []);
+
+  return (
+    <TriageDrawer visible={visible} onClose={onClose} title="Errors" widthRatio={0.46} minWidth={400}>
           <ScrollView
             style={styles.drawerBody}
             contentContainerStyle={styles.drawerContent}
             showsVerticalScrollIndicator={false}
           >
             <View style={styles.historyHero}>
-              <Text style={styles.historyHeroCount}>{docs.length}</Text>
+              <Text style={styles.historyHeroCount}>{heldRows.length}</Text>
               <Text style={styles.historyHeroLabel}>
-                {docs.length === 1 ? 'incorrect document' : 'incorrect documents'}
+                {`incorrect ${docNoun(heldRows)}`}
               </Text>
-              {top ? (
+              {heldRows.length ? (
                 <Text style={styles.historyHeroSub} numberOfLines={2}>
-                  Mostly {top.label} · {top.pct}% of their errors
+                  {heldTotal
+                    ? `${incorrectPct}% of this set`
+                    : 'This set'}
+                  {top ? ` · mostly ${top.label} (${top.pct}%)` : ''}
                 </Text>
               ) : (
                 <Text style={styles.historyHeroSub}>No errors in this set</Text>
               )}
             </View>
 
-            <Text style={styles.groupHeader}>Categories</Text>
-            <View style={styles.group}>
-              {categories.length === 0 ? (
-                <Text style={styles.emptyText}>No error categories</Text>
-              ) : (
-                categories.map((category, index) => (
-                  <View
-                    key={category.label}
-                    style={[styles.historyRow, index === categories.length - 1 && styles.historyRowLast]}
-                  >
-                    <Text style={styles.personRank}>{index + 1}</Text>
-                    <Text style={styles.historyTitle} numberOfLines={1}>
-                      {category.label}
-                    </Text>
-                    <Text style={styles.personMeta}>
-                      {category.count} · {category.pct}%
-                    </Text>
-                  </View>
-                ))
-              )}
-            </View>
+            <Text style={styles.groupHeader}>Patterns</Text>
+            {patterns.length === 0 ? (
+              <View style={styles.group}>
+                <Text style={styles.emptyText}>
+                  {heldRows.length < 2
+                    ? 'Need more errors before patterns show up.'
+                    : 'No strong item, store, or people patterns yet.'}
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.patternList}>
+                {patterns.map((pattern) => {
+                  const active =
+                    focus &&
+                    focus.kind === pattern.kind &&
+                    namesMatch(focus.label, pattern.label) &&
+                    namesMatch(focus.type || '', pattern.type || '');
+                  return (
+                    <Pressable
+                      key={pattern.key}
+                      style={[styles.patternCard, active && styles.patternCardActive]}
+                      onPress={() =>
+                        toggleFocus({
+                          kind: pattern.kind,
+                          label: pattern.label,
+                          type: pattern.type,
+                          caption: pattern.headline,
+                        })
+                      }
+                      accessibilityRole="button"
+                      accessibilityLabel={pattern.headline}
+                    >
+                      <Text style={styles.patternKicker}>Pattern</Text>
+                      <Text style={styles.patternHeadline}>{pattern.headline}</Text>
+                      <Text style={styles.patternDetail}>{pattern.detail}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            )}
 
-            <Text style={styles.groupHeader}>PO / SO</Text>
+            <RankGroup
+              title="What"
+              kind="type"
+              ranks={categories}
+              focus={focus}
+              onPress={(rank) =>
+                toggleFocus({
+                  kind: 'type',
+                  label: rank.label,
+                  caption: rank.label,
+                })
+              }
+            />
+            <RankGroup
+              title="Items"
+              kind="tag"
+              ranks={items}
+              focus={focus}
+              onPress={(rank) =>
+                toggleFocus({
+                  kind: 'tag',
+                  label: rank.label,
+                  caption: rank.label,
+                })
+              }
+            />
+            <RankGroup
+              title="Where"
+              kind="store"
+              ranks={stores}
+              focus={focus}
+              onPress={(rank) =>
+                toggleFocus({
+                  kind: 'store',
+                  label: rank.label,
+                  caption: rank.label,
+                })
+              }
+            />
+            <RankGroup
+              title="Who"
+              kind="person"
+              ranks={people}
+              focus={focus}
+              onPress={(rank) =>
+                toggleFocus({
+                  kind: 'person',
+                  label: rank.label,
+                  caption: rank.label,
+                })
+              }
+            />
+
+            <View style={styles.poHeaderRow}>
+              <Text style={styles.groupHeaderInline}>
+                PO / SO
+                {focus ? ` · ${docs.length}` : ''}
+              </Text>
+              {focus ? (
+                <TextAction label="Clear" onPress={() => setFocus(null)} accessibilityLabel="Clear error filter" />
+              ) : null}
+            </View>
+            {focus ? (
+              <Text style={styles.focusCaption} numberOfLines={2}>
+                {focus.caption || focus.label}
+                {focus.type && focus.kind !== 'type' ? ` · ${focus.type}` : ''}
+              </Text>
+            ) : null}
             <View style={styles.group}>
               {docs.length === 0 ? (
-                <Text style={styles.emptyText}>No documents</Text>
+                <Text style={styles.emptyText}>No PO / SO</Text>
               ) : (
                 docs.map((row, index) => {
+                  const tags = itemTagsOf(row).slice(0, 2).join(' · ');
                   const subtitle = [
                     errorPlace(row),
+                    staffName(row) || 'Unknown',
                     row.storeName,
+                    tags,
                     row.dateLabel,
-                    row.received ? null : 'Not received',
                   ]
                     .filter(Boolean)
                     .join(' · ');
@@ -537,13 +868,11 @@ function EmployeeErrorDrawer({ visible, name, rows, onClose, onOpenPo }) {
               )}
             </View>
           </ScrollView>
-        </Animated.View>
-      </View>
-    </Modal>
+    </TriageDrawer>
   );
 }
 
-function AccuracyTableRow({ row, last, showError, onOpen, onDelete }) {
+const AccuracyTableRow = memo(function AccuracyTableRow({ row, last, showError, onOpen, onDelete }) {
   const review = row.review || {};
   const cells = (
     <>
@@ -605,6 +934,10 @@ function AccuracyTableRow({ row, last, showError, onOpen, onDelete }) {
       </TableActions>
     </TableRow>
   );
+});
+
+function accuracyKey(row) {
+  return `${row.triageId}-${row.id}`;
 }
 
 export default function TriageAccuracyPanel({ session, storeFilter }) {
@@ -613,6 +946,7 @@ export default function TriageAccuracyPanel({ session, storeFilter }) {
   const [activeTab, setActiveTab] = useState('correct');
   const [openRow, setOpenRow] = useState(null);
   const [openPerson, setOpenPerson] = useState(null);
+  const [openErrors, setOpenErrors] = useState(false);
   const [openFilter, setOpenFilter] = useState(null);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
 
@@ -661,6 +995,14 @@ export default function TriageAccuracyPanel({ session, storeFilter }) {
     () => (showError ? source.filter((row) => rowMatchesErrorFilters(row, filters)) : source),
     [filters, showError, source],
   );
+
+  const tabOptions = useMemo(() => {
+    const correct = scoped.filter((row) => Boolean(row.received) && !triagePoNeedsCorrection(row)).length;
+    return ACCURACY_TABS.map((tab) => ({
+      ...tab,
+      count: tab.key === 'incorrect' ? incorrectScoped.length : correct,
+    }));
+  }, [incorrectScoped.length, scoped]);
 
   const optionsFor = useCallback(
     (key, getValue, rows = accuracyRows) => {
@@ -711,9 +1053,26 @@ export default function TriageAccuracyPanel({ session, storeFilter }) {
     setOpenRow((current) => (current?.id === row.id ? null : current));
   }, []);
 
+  const openFromTable = useCallback((item) => {
+    setOpenFilter(null);
+    setOpenRow(item);
+  }, []);
+  const renderAccuracyRow = useCallback(
+    ({ item, index }) => (
+      <AccuracyTableRow
+        row={item}
+        last={index === visible.length - 1}
+        showError={showError}
+        onDelete={showError ? deleteReview : undefined}
+        onOpen={openFromTable}
+      />
+    ),
+    [deleteReview, openFromTable, showError, visible.length],
+  );
+
   if (accuracyRows.length === 0) {
     return (
-      <View style={[styles.body, styles.bodyTinted]}>
+      <View style={[styles.body]}>
         <EmptyState
           icon="checkmark-done-outline"
           title="Accuracy"
@@ -724,41 +1083,48 @@ export default function TriageAccuracyPanel({ session, storeFilter }) {
   }
 
   return (
-    <View style={[styles.body, styles.bodyTinted]}>
+    <View style={[styles.body]}>
       <AccuracyInsights
         scoped={scoped}
         activeTab={activeTab}
         caption={scopeCaption(filters, storeFilter)}
         mobile={isMobile}
         onPersonPress={setOpenPerson}
+        onErrorsPress={() => setOpenErrors(true)}
       />
-      <AccuracyTabs
+      <TextTabs
+        options={tabOptions}
         value={activeTab}
         onChange={changeTab}
+        style={styles.listChrome}
         trailing={
           <>
             <Text style={styles.listMeta}>
               {visible.length}
               {visible.length !== source.length ? ` of ${source.length}` : ''}
               {' '}
-              {source.length === 1 ? 'document' : 'documents'}
+              {docNoun(source)}
             </Text>
-            {filtersActive ? (
-              <Pressable
-                onPress={clearFilters}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel="Clear filters"
-              >
-                <Text style={styles.clearFilters}>Clear Filters</Text>
-              </Pressable>
-            ) : null}
+            {filtersActive ? <TextAction label="Clear" onPress={clearFilters} accessibilityLabel="Clear filters" /> : null}
           </>
         }
       />
 
           <TableFrame
             minWidth={showError ? 900 : 720}
+            data={visible}
+            renderItem={renderAccuracyRow}
+            keyExtractor={accuracyKey}
+            extraData={showError}
+            ListEmptyComponent={
+              <TableEmpty>
+                {source.length === 0
+                  ? showError
+                    ? 'No incorrect purchases in this set.'
+                    : 'No correct purchases in this set.'
+                  : 'No PO or SO matches that column filter.'}
+              </TableEmpty>
+            }
             header={
               <>
                 <TablePhotoCell />
@@ -842,32 +1208,15 @@ export default function TriageAccuracyPanel({ session, storeFilter }) {
                 )}
               </>
             }
-          >
-            {visible.length === 0 ? (
-              <TableEmpty>
-                {source.length === 0
-                  ? showError
-                    ? 'No incorrect purchases in this set.'
-                    : 'No correct purchases in this set.'
-                  : 'No PO or SO matches that column filter.'}
-              </TableEmpty>
-            ) : (
-              visible.map((row, index) => (
-                <AccuracyTableRow
-                  key={`${row.triageId}-${row.id}`}
-                  row={row}
-                  last={index === visible.length - 1}
-                  showError={showError}
-                  onDelete={showError ? deleteReview : undefined}
-                  onOpen={(item) => {
-                    setOpenFilter(null);
-                    setOpenRow(item);
-                  }}
-                />
-              ))
-            )}
-          </TableFrame>
+          />
 
+          <ErrorBreakdownDrawer
+            visible={openErrors}
+            rows={incorrectScoped}
+            total={scoped.length}
+            onClose={() => setOpenErrors(false)}
+            onOpenPo={(row) => setOpenRow(row)}
+          />
           <EmployeeErrorDrawer
             visible={Boolean(openPerson)}
             name={openPerson}
@@ -892,14 +1241,12 @@ const styles = StyleSheet.create({
   body: {
     flex: 1,
     minHeight: 0,
-  },
-  bodyTinted: {
-    backgroundColor: MOBILE.bg,
+    backgroundColor: T.bg,
   },
   insightsWrap: {
     flexShrink: 0,
     paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingTop: 10,
     paddingBottom: 4,
     gap: 10,
   },
@@ -919,9 +1266,14 @@ const styles = StyleSheet.create({
   insightsCol: {
     flex: 1,
     minWidth: 0,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    gap: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    gap: 3,
+  },
+  insightsColMobile: {
+    flex: 0,
+    flexBasis: 'auto',
+    flexShrink: 0,
   },
   insightsColSplit: {
     borderLeftWidth: StyleSheet.hairlineWidth,
@@ -931,6 +1283,18 @@ const styles = StyleSheet.create({
     borderLeftWidth: 0,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: HAIRLINE,
+  },
+  errorsHit: {
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  insightsKickerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
   },
   insightsKicker: {
     fontFamily,
@@ -942,26 +1306,26 @@ const styles = StyleSheet.create({
   },
   insightsHero: {
     fontFamily,
-    fontSize: 28,
+    fontSize: 24,
     fontWeight: '700',
-    letterSpacing: -0.8,
+    letterSpacing: -0.6,
   },
   insightsTitle: {
     fontFamily,
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: '600',
     color: TEXT,
     letterSpacing: -0.3,
   },
   insightsSub: {
     fontFamily,
-    fontSize: 13,
+    fontSize: 12.5,
     color: TEXT,
     letterSpacing: -0.08,
   },
   insightsCaption: {
     fontFamily,
-    fontSize: 12,
+    fontSize: 11.5,
     color: SECONDARY,
   },
   splitTrack: {
@@ -980,7 +1344,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    minHeight: 26,
+    minHeight: 24,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -1016,148 +1380,14 @@ const styles = StyleSheet.create({
     paddingTop: 2,
   },
   listChrome: {
-    flexShrink: 0,
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    backgroundColor: MOBILE.bg,
-  },
-  listChromeTrailing: {
-    flexShrink: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingBottom: 8,
+    borderBottomWidth: 0,
+    paddingTop: 4,
   },
   listMeta: {
     fontFamily,
     fontSize: 13,
     fontWeight: '400',
     color: SECONDARY,
-  },
-  textTabs: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: 16,
-  },
-  textTab: {
-    paddingTop: 4,
-    alignItems: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  textTabLabel: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '400',
-    color: MOBILE.secondary,
-    letterSpacing: -0.2,
-  },
-  textTabLabelActive: {
-    fontWeight: '600',
-    color: MOBILE.blue,
-  },
-  textTabLine: {
-    marginTop: 6,
-    height: 2,
-    alignSelf: 'stretch',
-    borderRadius: 1,
-    backgroundColor: 'transparent',
-  },
-  textTabLineActive: {
-    backgroundColor: MOBILE.blue,
-  },
-  clearFilters: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '400',
-    color: BLUE,
-  },
-  empty: {
-    flex: 1,
-    minHeight: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingHorizontal: 24,
-    paddingBottom: 48,
-  },
-  emptyTitle: {
-    fontFamily,
-    fontSize: 22,
-    fontWeight: '600',
-    color: TEXT,
-    letterSpacing: -0.4,
-  },
-  emptyBody: {
-    fontFamily,
-    fontSize: 15,
-    lineHeight: 21,
-    color: SECONDARY,
-    textAlign: 'center',
-    maxWidth: 320,
-  },
-  drawerRoot: {
-    flex: 1,
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-  },
-  drawerBackdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.28)',
-  },
-  drawerPanel: {
-    height: '100%',
-    backgroundColor: MOBILE.bg,
-    ...Platform.select({
-      web: { boxShadow: '-12px 0 32px rgba(0,0,0,0.18)' },
-      default: { elevation: 12 },
-    }),
-  },
-  drawerPanelMobile: {
-    paddingBottom: Platform.OS === 'ios' ? Math.max(20, mobileSafeBottom()) : 12,
-  },
-  drawerNav: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 52,
-    paddingHorizontal: 8,
-    backgroundColor: 'rgba(242,242,247,0.94)',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
-  },
-  drawerNavMobile: {
-    paddingTop: Platform.OS === 'ios' ? mobileSafeTop() - 12 : 6,
-  },
-  drawerNavSide: {
-    width: 72,
-    minHeight: 44,
-    justifyContent: 'center',
-  },
-  drawerNavAction: {
-    fontFamily,
-    fontSize: 17,
-    fontWeight: '600',
-    color: BLUE,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  drawerNavTitle: {
-    fontFamily,
-    flex: 1,
-    fontSize: 17,
-    fontWeight: '600',
-    color: TEXT,
-    textAlign: 'center',
-    letterSpacing: -0.3,
   },
   drawerBody: {
     flex: 1,
@@ -1224,6 +1454,12 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: HAIRLINE,
   },
+  rankPress: {
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
   historyRowLast: {
     borderBottomWidth: 0,
   },
@@ -1253,6 +1489,75 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '400',
     color: TEXT,
+  },
+  historyTitleActive: {
+    color: BLUE,
+    fontWeight: '600',
+  },
+  poHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginTop: 18,
+    marginBottom: 6,
+    marginLeft: 4,
+  },
+  groupHeaderInline: {
+    fontFamily,
+    flex: 1,
+    minWidth: 0,
+    fontSize: 13,
+    fontWeight: '400',
+    color: SECONDARY,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  focusCaption: {
+    fontFamily,
+    fontSize: 13,
+    color: BLUE,
+    marginTop: -2,
+    marginBottom: 8,
+    marginLeft: 4,
+  },
+  patternList: {
+    gap: 8,
+  },
+  patternCard: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 4,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  patternCardActive: {
+    backgroundColor: 'rgba(0, 122, 255, 0.08)',
+  },
+  patternKicker: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: ORANGE,
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+  },
+  patternHeadline: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: -0.3,
+  },
+  patternDetail: {
+    fontFamily,
+    fontSize: 13,
+    lineHeight: 18,
+    color: SECONDARY,
   },
   historySub: {
     fontFamily,
