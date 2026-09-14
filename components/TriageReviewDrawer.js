@@ -25,6 +25,8 @@ import {
   collectCorrections,
   ERROR_TYPES,
   fieldChanged,
+  isWeightUnit,
+  normalizeDraft,
   normalizeReviewImages,
 } from '../lib/triageDraft';
 import TriageCorrectionImages from './TriageCorrectionImages';
@@ -50,7 +52,6 @@ const TEXT = '#1d1d1f';
 const SECONDARY = '#8e8e93';
 const HAIRLINE = 'rgba(60, 60, 67, 0.18)';
 const STRUCK = '#8e8e93';
-const CHANGED = '#FF9500';
 const MOBILE_BREAKPOINT = 768;
 const DRAWER_OPEN_MS = 280;
 const DRAWER_CLOSE_MS = 220;
@@ -66,19 +67,34 @@ function useRightDrawerAnimation(visible, slideDistance) {
   const slide = useRef(new Animated.Value(slideDistance)).current;
   const backdrop = useRef(new Animated.Value(0)).current;
   const slideDistanceRef = useRef(slideDistance);
-  const activeAnim = useRef(null);
+  const opened = useRef(visible);
   slideDistanceRef.current = slideDistance;
 
   useEffect(() => {
-    if (!mounted) slide.setValue(slideDistance);
-  }, [slideDistance, mounted, slide]);
-
-  useEffect(() => {
     if (visible) {
+      opened.current = true;
       setMounted(true);
-      return undefined;
+      slide.setValue(slideDistanceRef.current);
+      backdrop.setValue(0);
+      const anim = Animated.parallel([
+        Animated.timing(slide, {
+          toValue: 0,
+          duration: DRAWER_OPEN_MS,
+          easing: Easing.bezier(0.22, 1, 0.36, 1),
+          useNativeDriver: true,
+        }),
+        Animated.timing(backdrop, {
+          toValue: 1,
+          duration: DRAWER_OPEN_MS,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]);
+      anim.start();
+      return () => anim.stop();
     }
-    if (!mounted) return undefined;
+
+    if (!opened.current) return undefined;
 
     const anim = Animated.parallel([
       Animated.timing(slide, {
@@ -94,46 +110,13 @@ function useRightDrawerAnimation(visible, slideDistance) {
         useNativeDriver: true,
       }),
     ]);
-    activeAnim.current = anim;
-    anim.start(({ finished }) => {
-      if (activeAnim.current === anim) activeAnim.current = null;
-      if (finished) setMounted(false);
-    });
+    const timeout = setTimeout(() => setMounted(false), DRAWER_CLOSE_MS + 32);
+    anim.start(() => setMounted(false));
     return () => {
-      if (activeAnim.current === anim) {
-        anim.stop();
-        activeAnim.current = null;
-      }
+      anim.stop();
+      clearTimeout(timeout);
     };
-  }, [visible, mounted, slide, backdrop]);
-
-  useEffect(() => {
-    if (!visible || !mounted) return undefined;
-    slide.setValue(slideDistanceRef.current);
-    backdrop.setValue(0);
-    let cancelled = false;
-    const raf = requestAnimationFrame(() => {
-      if (cancelled) return;
-      Animated.parallel([
-        Animated.timing(slide, {
-          toValue: 0,
-          duration: DRAWER_OPEN_MS,
-          easing: Easing.bezier(0.22, 1, 0.36, 1),
-          useNativeDriver: true,
-        }),
-        Animated.timing(backdrop, {
-          toValue: 1,
-          duration: DRAWER_OPEN_MS,
-          easing: Easing.out(Easing.quad),
-          useNativeDriver: true,
-        }),
-      ]).start();
-    });
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(raf);
-    };
-  }, [visible, mounted, slide, backdrop]);
+  }, [visible, slide, backdrop]);
 
   return { mounted, slide, backdrop };
 }
@@ -173,7 +156,7 @@ function ChangedOriginal({ field, onReverse }) {
   );
 }
 
-function CorrectableField({ label, field, onChange, keyboardType, last }) {
+function CorrectableField({ label, field, onChange, keyboardType, last, suffix }) {
   const changed = fieldChanged(field);
   const reverse = () => onChange(field.original ?? '');
   return (
@@ -182,16 +165,19 @@ function CorrectableField({ label, field, onChange, keyboardType, last }) {
         {label ? <Text style={styles.iosRowLabel}>{label}</Text> : null}
         <View style={styles.iosRowControl}>
           <ChangedOriginal field={field} onReverse={reverse} />
-          <TextInput
-            style={[styles.iosRowInput, changed && styles.iosRowInputChanged]}
-            value={field.value}
-            onChangeText={onChange}
-            placeholder={field.original || '—'}
-            placeholderTextColor="#c7c7cc"
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType={keyboardType || 'default'}
-          />
+          <View style={styles.valueRow}>
+            <TextInput
+              style={[styles.iosRowInput, changed && styles.iosRowInputChanged]}
+              value={field.value}
+              onChangeText={onChange}
+              placeholder="Edit"
+              placeholderTextColor="#c7c7cc"
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType={keyboardType || 'default'}
+            />
+            {suffix ? <Text style={styles.unitLock}>{suffix}</Text> : null}
+          </View>
         </View>
       </View>
     </View>
@@ -279,23 +265,45 @@ function LookupField({
     query.trim() &&
     !results.some((option) => String(option.label || '').toLowerCase() === query.trim().toLowerCase());
 
+  const picking = useRef(false);
+
   const select = (option) => {
-    onChange(option.label, option);
-    setQuery(option.label);
+    const label = String(option?.label || '').trim();
+    if (!label) return;
+    picking.current = true;
+    onChange(label, option);
+    setQuery(label);
     setOpen(false);
+    setTimeout(() => {
+      picking.current = false;
+    }, 400);
   };
 
   const commitTyped = () => {
+    if (picking.current) return;
+    const q = query.trim();
+    const pool = [...(results || []), ...(options || [])];
+    const exact = pool.find(
+      (option) => String(option.label || '').toLowerCase() === q.toLowerCase(),
+    );
     if (pickOnly) {
-      const match = (options || []).find(
-        (option) => option.label.toLowerCase() === query.trim().toLowerCase(),
-      );
-      if (match) select(match);
-      else setQuery(field.value || '');
+      if (exact) {
+        select(exact);
+        return;
+      }
+      if (q && results.length === 1) {
+        select(results[0]);
+        return;
+      }
+      setQuery(field.value || '');
       return;
     }
-    if (allowCustom && query.trim()) {
-      onChange(query.trim(), { id: 'custom', label: query.trim(), custom: true });
+    if (exact) {
+      select(exact);
+      return;
+    }
+    if (q && (allowCustom || onSearch)) {
+      onChange(q, { id: 'custom', label: q, custom: true });
     }
   };
 
@@ -325,17 +333,18 @@ function LookupField({
                 onFocus={() => setOpen(true)}
                 onBlur={() => {
                   setTimeout(() => {
-                    setOpen(false);
                     commitTyped();
-                  }, 160);
+                    if (!picking.current) setOpen(false);
+                  }, 180);
                 }}
-                placeholder={placeholder || field.original || 'Search'}
+                placeholder={placeholder || 'Edit'}
                 placeholderTextColor="#c7c7cc"
                 autoCapitalize="none"
                 autoCorrect={false}
               />
               {busy ? <ActivityIndicator size="small" color={SECONDARY} style={styles.lookupSpinner} /> : null}
             </View>
+            <Ionicons name="chevron-forward" size={16} color="#c7c7cc" />
             {rightAction}
           </View>
         </View>
@@ -346,6 +355,14 @@ function LookupField({
             <Pressable
               style={styles.lookupOption}
               onPress={() => select({ id: 'custom', label: query.trim(), custom: true })}
+              onPressIn={() => select({ id: 'custom', label: query.trim(), custom: true })}
+              {...(Platform.OS === 'web'
+                ? {
+                    onMouseDown: (event) => {
+                      event?.preventDefault?.();
+                    },
+                  }
+                : null)}
             >
               <Text style={styles.lookupOptionLabel}>Use “{query.trim()}”</Text>
               <Text style={styles.lookupOptionSub}>Custom product</Text>
@@ -365,6 +382,14 @@ function LookupField({
                 key={`${option.id}-${option.label}`}
                 style={styles.lookupOption}
                 onPress={() => select(option)}
+                onPressIn={() => select(option)}
+                {...(Platform.OS === 'web'
+                  ? {
+                      onMouseDown: (event) => {
+                        event?.preventDefault?.();
+                      },
+                    }
+                  : null)}
               >
                 <Text style={styles.lookupOptionLabel} numberOfLines={1}>
                   {option.label}
@@ -503,17 +528,18 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
   }, []);
 
   useEffect(() => {
-    if (!visible || !row) {
-      reset();
-      return;
-    }
+    if (!visible && !mounted) reset();
+  }, [mounted, reset, visible]);
+
+  useEffect(() => {
+    if (!visible || !row) return;
 
     setActiveRow(row);
     setAddingCustomer(false);
     setStep('edit');
     const id = ++detailRequestId.current;
     if (review?.draft) {
-      setDraft(review.draft);
+      setDraft(normalizeDraft(review.draft));
       setNote(review.note || '');
       setErrorType(review.errorType || '');
       setErrorAmount(String(review.errorAmount || '').replace(/^\$/, ''));
@@ -550,7 +576,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
       .finally(() => {
         if (id === detailRequestId.current) setDetailLoading(false);
       });
-  }, [reset, review, row, session, visible]);
+  }, [review, row, session, visible]);
 
   useEffect(() => {
     if (!visible) return undefined;
@@ -613,28 +639,37 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
   const auth = activeRow ? resolvePosAuthForRow(session, activeRow) : {};
 
   const updateHeader = (key, value) => {
-    setDraft((current) => ({
-      ...current,
-      header: current.header.map((field) => (field.key === key ? { ...field, value } : field)),
-    }));
+    setDraft((current) => {
+      if (!current?.header) return current;
+      return {
+        ...current,
+        header: current.header.map((field) => (field.key === key ? { ...field, value } : field)),
+      };
+    });
   };
 
   const updateItem = (id, part, value) => {
-    setDraft((current) => ({
-      ...current,
-      items: current.items.map((item) =>
-        item.id === id ? { ...item, [part]: { ...item[part], value } } : item,
-      ),
-    }));
+    setDraft((current) => {
+      if (!current?.items) return current;
+      return {
+        ...current,
+        items: current.items.map((item) =>
+          item.id === id ? { ...item, [part]: { ...item[part], value } } : item,
+        ),
+      };
+    });
   };
 
   const updatePayment = (id, part, value) => {
-    setDraft((current) => ({
-      ...current,
-      payments: current.payments.map((payment) =>
-        payment.id === id ? { ...payment, [part]: { ...payment[part], value } } : payment,
-      ),
-    }));
+    setDraft((current) => {
+      if (!current?.payments) return current;
+      return {
+        ...current,
+        payments: current.payments.map((payment) =>
+          payment.id === id ? { ...payment, [part]: { ...payment[part], value } } : payment,
+        ),
+      };
+    });
   };
 
   const finish = () => {
@@ -649,12 +684,13 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
 
   return (
     <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose}>
-      <View style={styles.drawerRoot}>
+      <View style={styles.drawerRoot} pointerEvents="box-none">
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose}>
           <Animated.View style={[styles.drawerBackdrop, { opacity: backdrop }]} />
         </Pressable>
 
         <Animated.View
+          pointerEvents="auto"
           style={[
             styles.drawerPanel,
             isMobile && styles.drawerPanelMobile,
@@ -707,6 +743,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
               showsVerticalScrollIndicator={false}
             >
               <Text style={styles.groupHeader}>Details</Text>
+              <Text style={styles.editHint}>Tap a value to edit</Text>
               {addingCustomer ? (
                 <NewCustomerPanel
                   token={auth.token}
@@ -800,14 +837,18 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
                         placeholder="Search pricing or type custom"
                       />
                       <CorrectableField
-                        label="Qty"
+                        label={isWeightUnit(item.unitType) ? 'Weight' : 'Qty'}
                         field={item.qty}
+                        suffix={item.unitType || 'ea'}
                         onChange={(value) => updateItem(item.id, 'qty', value)}
+                        keyboardType="decimal-pad"
                       />
                       <CorrectableField
-                        label="Unit"
+                        label="Unit cost"
                         field={item.unit}
+                        suffix={item.unitType && item.unitType !== 'ea' ? `/${item.unitType}` : null}
                         onChange={(value) => updateItem(item.id, 'unit', value)}
+                        keyboardType="decimal-pad"
                       />
                       <CorrectableField
                         label="Amount"
@@ -1061,15 +1102,36 @@ const styles = StyleSheet.create({
   },
   iosRowInput: {
     fontFamily,
+    flex: 1,
+    minWidth: 0,
     fontSize: 17,
-    color: TEXT,
+    color: BLUE,
     paddingVertical: 4,
     outlineStyle: 'none',
     textAlign: 'right',
   },
   iosRowInputChanged: {
-    color: CHANGED,
     fontWeight: '600',
+  },
+  editHint: {
+    fontFamily,
+    fontSize: 13,
+    color: SECONDARY,
+    marginTop: -2,
+    marginBottom: 8,
+    marginLeft: 4,
+  },
+  valueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 6,
+  },
+  unitLock: {
+    fontFamily,
+    flexShrink: 0,
+    fontSize: 15,
+    color: SECONDARY,
   },
   inlineBusy: {
     flexDirection: 'row',
@@ -1086,7 +1148,7 @@ const styles = StyleSheet.create({
   warnText: {
     fontFamily,
     fontSize: 13,
-    color: CHANGED,
+    color: SECONDARY,
     paddingHorizontal: 16,
     paddingTop: 8,
   },
@@ -1218,7 +1280,7 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 17,
     fontWeight: '600',
-    color: CHANGED,
+    color: TEXT,
   },
   correctionPair: {
     flex: 1,
@@ -1261,7 +1323,7 @@ const styles = StyleSheet.create({
     }),
   },
   typeChipActive: {
-    backgroundColor: '#EAF2FF',
+    backgroundColor: '#E5E5EA',
   },
   typeChipText: {
     fontFamily,
@@ -1269,7 +1331,6 @@ const styles = StyleSheet.create({
     color: TEXT,
   },
   typeChipTextActive: {
-    color: BLUE,
     fontWeight: '600',
   },
   amountBox: {

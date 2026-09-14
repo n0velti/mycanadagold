@@ -1,9 +1,10 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import TriageAccuracyPanel from './TriageAccuracyPanel';
 import TriageTransfersPanel from './TriageTransfersPanel';
 import { MOBILE } from '../lib/mobileUi';
+import { syncTransferWorkflowRemote } from '../lib/transferWorkflow';
 
 if (Platform.OS === 'web' && typeof document !== 'undefined') {
   const styleId = 'cgold-triage-row-hover';
@@ -28,7 +29,6 @@ const fontFamily = Platform.select({
 
 const TEXT = '#1d1d1f';
 const SECONDARY = '#8e8e93';
-const BLUE = MOBILE.blue;
 
 /** Drop cached transaction rows so nothing outlives the session that loaded them. */
 export function clearTriageCache() {}
@@ -47,7 +47,7 @@ function IosTextAction({ label, onPress, accessibilityLabel }) {
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel || label}
     >
-      <Ionicons name="add" size={22} color={MOBILE.blue} />
+      <Ionicons name="add" size={18} color={MOBILE.blue} />
       <Text style={styles.iosTextActionLabel}>{label}</Text>
     </Pressable>
   );
@@ -56,21 +56,22 @@ function IosTextAction({ label, onPress, accessibilityLabel }) {
 function TabBar({ options, value, onChange, trailing }) {
   return (
     <View style={styles.tabBar} accessibilityRole="tablist">
-      <View style={styles.segment}>
+      <View style={styles.textTabs}>
         {options.map((option) => {
           const active = option.key === value;
           return (
             <Pressable
               key={option.key}
-              style={[styles.segmentButton, active && styles.segmentButtonActive]}
+              style={styles.textTab}
               onPress={() => onChange(option.key)}
               accessibilityRole="tab"
               accessibilityState={{ selected: active }}
               accessibilityLabel={option.label}
             >
-              <Text style={[styles.segmentText, active && styles.segmentTextActive]} numberOfLines={1}>
+              <Text style={[styles.textTabLabel, active && styles.textTabLabelActive]} numberOfLines={1}>
                 {option.label}
               </Text>
+              <View style={[styles.textTabLine, active && styles.textTabLineActive]} />
             </Pressable>
           );
         })}
@@ -101,33 +102,49 @@ export default function TriageScreen({
   const [createTransferOpen, setCreateTransferOpen] = useState(false);
   const [transferView, setTransferView] = useState('list');
   const [canLeaveStore, setCanLeaveStore] = useState(false);
+  const [batchContext, setBatchContext] = useState(null);
   const leaveStoreRef = useRef(null);
+  const onStoreBackChangeRef = useRef(onStoreBackChange);
+  onStoreBackChangeRef.current = onStoreBackChange;
   const currentTab = TRIAGE_TABS.find((tab) => tab.key === activeTab) || TRIAGE_TABS[0];
 
+  useEffect(() => {
+    if (!session?.supabaseUserId && !session?.token) return undefined;
+    syncTransferWorkflowRemote().catch(() => {});
+    return undefined;
+  }, [session?.supabaseUserId, session?.token]);
+
   const changeTab = useCallback((key) => {
+    if (key === 'transfers' && leaveStoreRef.current) {
+      leaveStoreRef.current();
+    } else if (key !== 'transfers') {
+      leaveStoreRef.current?.();
+    }
     setActiveTab(key);
     setCreateTransferOpen(false);
   }, []);
 
-  const handleBackChange = useCallback((fn) => {
+  const handleBackChange = useCallback((fn, context) => {
     leaveStoreRef.current = fn;
     setCanLeaveStore(Boolean(fn));
-    onStoreBackChange?.(fn);
-  }, [onStoreBackChange]);
+    setBatchContext(context || null);
+    onStoreBackChangeRef.current?.(fn, context || null);
+  }, []);
 
   const transferTrailing =
     session?.token && activeTab === 'transfers' && transferView === 'list' ? (
       <IosTextAction label="New" onPress={() => setCreateTransferOpen(true)} />
-    ) : session?.token && activeTab === 'transfers' && canLeaveStore && !onStoreBackChange ? (
-      <Pressable
-        style={styles.titleBack}
-        onPress={() => leaveStoreRef.current?.()}
-        accessibilityRole="button"
-        accessibilityLabel="Back to transfers"
-      >
-        <Ionicons name="chevron-back" size={22} color={BLUE} />
-        <Text style={styles.titleBackText}>Transfers</Text>
-      </Pressable>
+    ) : session?.token && activeTab === 'transfers' && canLeaveStore && !onStoreBackChange && batchContext ? (
+      <View style={styles.batchTitle} pointerEvents="none">
+        <Text style={styles.batchTitleDate} numberOfLines={1}>
+          {batchContext.dateLabel}
+        </Text>
+        {batchContext.storeNames ? (
+          <Text style={styles.batchTitleStores} numberOfLines={1}>
+            {batchContext.storeNames}
+          </Text>
+        ) : null}
+      </View>
     ) : null;
 
   return (
@@ -179,55 +196,56 @@ const styles = StyleSheet.create({
   tabBar: {
     flexShrink: 0,
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-end',
     gap: 12,
     paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 8,
+    paddingTop: 4,
     backgroundColor: MOBILE.bg,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: MOBILE.separator,
   },
   tabBarTrailing: {
     flexShrink: 0,
+    paddingBottom: 6,
   },
-  segment: {
+  textTabs: {
     flex: 1,
+    minWidth: 0,
     flexDirection: 'row',
-    alignItems: 'center',
-    height: 36,
-    backgroundColor: 'rgba(118,118,128,0.12)',
-    borderRadius: 9,
-    padding: 2,
+    alignItems: 'flex-end',
+    gap: 16,
   },
-  segmentButton: {
-    flex: 1,
-    height: 32,
-    borderRadius: 7,
+  textTab: {
+    paddingTop: 6,
     alignItems: 'center',
-    justifyContent: 'center',
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
-  segmentButtonActive: {
-    backgroundColor: '#fff',
-    ...Platform.select({
-      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.16)' },
-      default: { elevation: 1 },
-    }),
-  },
-  segmentText: {
+  textTabLabel: {
     fontFamily,
     fontSize: 13,
-    fontWeight: '500',
-    color: MOBILE.label,
+    fontWeight: '400',
+    color: MOBILE.secondary,
     letterSpacing: -0.2,
   },
-  segmentTextActive: {
+  textTabLabelActive: {
     fontWeight: '600',
+    color: MOBILE.blue,
+  },
+  textTabLine: {
+    marginTop: 6,
+    height: 2,
+    alignSelf: 'stretch',
+    borderRadius: 1,
+    backgroundColor: 'transparent',
+  },
+  textTabLineActive: {
+    backgroundColor: MOBILE.blue,
   },
   iosTextAction: {
-    minHeight: 44,
+    minHeight: 28,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 2,
@@ -239,25 +257,28 @@ const styles = StyleSheet.create({
   },
   iosTextActionLabel: {
     fontFamily,
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: '400',
     color: MOBILE.blue,
   },
-  titleBack: {
-    minHeight: 44,
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 2,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
+  batchTitle: {
+    maxWidth: 220,
+    alignItems: 'flex-end',
   },
-  titleBackText: {
+  batchTitleDate: {
     fontFamily,
-    fontSize: 17,
+    fontSize: 13,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: -0.2,
+    textAlign: 'right',
+  },
+  batchTitleStores: {
+    fontFamily,
+    fontSize: 11,
     fontWeight: '400',
-    color: BLUE,
+    color: SECONDARY,
+    textAlign: 'right',
   },
   pageVisible: {
     flex: 1,

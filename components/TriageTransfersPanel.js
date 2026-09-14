@@ -37,6 +37,7 @@ import {
   RECEIVE_STATUS,
   RECEIVE_STATUS_LABELS,
   persistTransferWorkflowNow,
+  saveTriagePoReview,
   plannedForTriageStore,
   plannedWorkshopTransfersForStore,
   transferGoesToWorkshop,
@@ -262,6 +263,57 @@ function namesMatch(a, b) {
       .trim()
       .localeCompare(String(b || '').trim(), undefined, { sensitivity: 'base' }) === 0
   );
+}
+
+function storeNamesLabel(stores) {
+  const names = (stores || []).map((store) => store?.name).filter(Boolean);
+  if (names.length === 0) return '';
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return names.join(', ');
+}
+
+function storeInList(stores, name) {
+  return (stores || []).some((store) => namesMatch(store?.name, name));
+}
+
+function storeOnBatch(stores, next) {
+  return (stores || []).some(
+    (store) =>
+      (next?.storeKey && store?.storeKey && String(store.storeKey) === String(next.storeKey)) ||
+      (next?.sourceId && store?.sourceId && String(store.sourceId) === String(next.sourceId)) ||
+      namesMatch(store?.name, next?.name),
+  );
+}
+
+function sortBatchStores(stores) {
+  return [...(stores || [])].sort((a, b) =>
+    String(a?.name || '').localeCompare(String(b?.name || ''), undefined, { sensitivity: 'base' }),
+  );
+}
+
+function flattenMeltPos(stores) {
+  const rows = [];
+  for (const store of stores || []) {
+    for (const item of store.meltPos || []) rows.push(item);
+  }
+  return rows.sort((a, b) => (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0));
+}
+
+function uniqueSystemGroups(stores) {
+  const groups = new Map();
+  for (const store of stores || []) {
+    const key = store?.systemKey || 'east';
+    if (!groups.has(key)) {
+      groups.set(key, {
+        systemKey: key,
+        systemLabel: store?.systemLabel || 'Canada Gold East',
+        stores: [],
+      });
+    }
+    groups.get(key).stores.push(store);
+  }
+  return [...groups.values()];
 }
 
 function matchesDocQuery(row, query) {
@@ -685,6 +737,14 @@ function lastTriageTransferDate(transfers, store, currentDateKey) {
   return prior[0]?.dateKey || null;
 }
 
+function lastTriageTransferDateForStores(transfers, stores, currentDateKey) {
+  const dates = (stores || [])
+    .map((store) => lastTriageTransferDate(transfers, store, currentDateKey))
+    .filter(Boolean)
+    .sort();
+  return dates[0] || null;
+}
+
 async function lastPosTransferDate(session, store) {
   const auth = resolvePosAuthForRow(session, { systemKey: store.systemKey });
   if (!auth.token) return null;
@@ -716,12 +776,11 @@ function DateRangeModal({
   onClose,
   onConfirm,
   onAddDoc,
-  auth,
   existingIds,
   busy,
   error,
   session,
-  store,
+  stores,
   transfers,
   currentDateKey,
 }) {
@@ -759,13 +818,20 @@ function DateRangeModal({
     setLastBusy(true);
     setLocalError('');
     try {
-      let startKey = lastTriageTransferDate(transfers, store, currentDateKey);
+      let startKey = lastTriageTransferDateForStores(transfers, stores, currentDateKey);
       if (!startKey) {
-        startKey = await lastPosTransferDate(session, store);
+        const dates = (
+          await Promise.all((stores || []).map((store) => lastPosTransferDate(session, store)))
+        )
+          .filter(Boolean)
+          .sort();
+        startKey = dates[0] || null;
       }
       if (!startKey) {
         setLastHint('');
-        setLocalError('No previous transfer found for this store.');
+        setLocalError(
+          `No previous transfer found for ${storeNamesLabel(stores) || 'these stores'}.`,
+        );
         return;
       }
       const today = formatDateParam(new Date());
@@ -774,7 +840,10 @@ function DateRangeModal({
       setLastHint(`Last transfer: ${formatPickerDate(startKey)}`);
       confirm(startKey, today);
     } catch (err) {
-      setLocalError(err?.message || 'Could not find the last transfer for this store.');
+      setLocalError(
+        err?.message ||
+          `Could not find the last transfer for ${storeNamesLabel(stores) || 'these stores'}.`,
+      );
     } finally {
       setLastBusy(false);
     }
@@ -810,15 +879,17 @@ function DateRangeModal({
           </View>
           {mode === 'doc' ? (
             <SpecificDocSearch
-              store={store}
-              auth={auth}
+              stores={stores}
+              session={session}
               existingIds={existingIds}
               onAdd={onAddDoc}
               onClose={onClose}
             />
           ) : (
             <>
-              <Text style={styles.modalSub}>Choose the date range to load POs from this store.</Text>
+              <Text style={styles.modalSub}>
+                Choose the date range to load POs from {storeNamesLabel(stores) || 'the selected stores'}.
+              </Text>
               <View style={styles.rangeRow}>
                 <View style={styles.rangeField}>
                   <Text style={styles.rangeLabel}>Start</Text>
@@ -1267,18 +1338,20 @@ function MeltFeedButton({ onPress }) {
       accessibilityRole="button"
       accessibilityLabel="Open feed view"
     >
-      <Ionicons name="phone-portrait-outline" size={18} color={TEXT} />
+      <Ionicons name="phone-portrait-outline" size={18} color={BLUE} />
     </Pressable>
   );
 }
 
-function SpecificDocSearch({ store, auth, existingIds, onClose, onAdd }) {
+function SpecificDocSearch({ stores, session, existingIds, onClose, onAdd }) {
   const [kind, setKind] = useState('PO');
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [results, setResults] = useState([]);
   const searchGen = useRef(0);
+  const storeKey = (stores || []).map((store) => store.id || store.name).join('|');
+  const batchLabel = storeNamesLabel(stores) || 'the selected stores';
 
   useEffect(() => {
     setKind('PO');
@@ -1286,7 +1359,7 @@ function SpecificDocSearch({ store, auth, existingIds, onClose, onAdd }) {
     setBusy(false);
     setError('');
     setResults([]);
-  }, [store?.id]);
+  }, [storeKey]);
 
   const runSearch = useCallback(
     async (raw, selectedKind) => {
@@ -1296,21 +1369,20 @@ function SpecificDocSearch({ store, auth, existingIds, onClose, onAdd }) {
         setError('');
         return;
       }
-      if (!auth?.token) {
-        setError('Sign in to search documents.');
-        setResults([]);
-        return;
+
+      const groups = uniqueSystemGroups(stores);
+      if (groups.some((group) => !resolvePosAuthForRow(session, { systemKey: group.systemKey }).token)) {
+        if (groups.every((group) => !resolvePosAuthForRow(session, { systemKey: group.systemKey }).token)) {
+          setError('Sign in to search documents.');
+          setResults([]);
+          return;
+        }
       }
 
       const gen = (searchGen.current += 1);
       setBusy(true);
       setError('');
       try {
-        const system = {
-          key: store.systemKey || 'east',
-          label: store.systemLabel || 'Canada Gold East',
-          baseUrl: auth.baseUrl,
-        };
         const digits = query.replace(/[^\d]/g, '');
         const typed = parseDocReference(query);
         const candidates = [];
@@ -1326,22 +1398,31 @@ function SpecificDocSearch({ store, auth, existingIds, onClose, onAdd }) {
         let otherStore = '';
 
         for (const doc of candidates.filter(Boolean)) {
-          try {
-            const detail = await fetchTransactionDetail(auth.token, {
-              type: doc.type,
-              sourceId: doc.sourceId,
-              baseUrl: auth.baseUrl,
-            });
-            const row = rowFromDocument(detail, doc.type, system);
-            if (!row?.id || seen.has(row.id)) continue;
-            if (!namesMatch(row.storeName, store.name)) {
-              otherStore = row.storeName || 'another store';
-              continue;
+          for (const group of groups) {
+            const auth = resolvePosAuthForRow(session, { systemKey: group.systemKey });
+            if (!auth.token) continue;
+            try {
+              const system = {
+                key: group.systemKey,
+                label: group.systemLabel,
+                baseUrl: auth.baseUrl,
+              };
+              const detail = await fetchTransactionDetail(auth.token, {
+                type: doc.type,
+                sourceId: doc.sourceId,
+                baseUrl: auth.baseUrl,
+              });
+              const row = rowFromDocument(detail, doc.type, system);
+              if (!row?.id || seen.has(row.id)) continue;
+              if (!storeInList(stores, row.storeName)) {
+                otherStore = row.storeName || 'another store';
+                continue;
+              }
+              seen.add(row.id);
+              found.push(row);
+            } catch {
+              // Try the next POS system or PO/SO candidate.
             }
-            seen.add(row.id);
-            found.push(row);
-          } catch {
-            // Try the next PO/SO candidate.
           }
         }
 
@@ -1350,8 +1431,8 @@ function SpecificDocSearch({ store, auth, existingIds, onClose, onAdd }) {
         if (found.length === 0) {
           setError(
             otherStore
-              ? `That document is for ${otherStore}, not ${store?.name || 'this store'}.`
-              : `No matching PO or SO at ${store?.name || 'this store'}.`,
+              ? `That document is for ${otherStore}, not ${batchLabel}.`
+              : `No matching PO or SO at ${batchLabel}.`,
           );
         }
       } catch (err) {
@@ -1362,7 +1443,7 @@ function SpecificDocSearch({ store, auth, existingIds, onClose, onAdd }) {
         if (gen === searchGen.current) setBusy(false);
       }
     },
-    [auth, store.name, store.systemKey, store.systemLabel],
+    [batchLabel, session, stores],
   );
 
   useEffect(() => {
@@ -1389,7 +1470,7 @@ function SpecificDocSearch({ store, auth, existingIds, onClose, onAdd }) {
   return (
     <View style={styles.docSearchBlock}>
           <Text style={styles.modalSub}>
-            Search a document number from {store?.name || 'this store'}.
+            Search a document number from {batchLabel}.
           </Text>
           <View style={styles.kindRow}>
             {['PO', 'SO'].map((option) => {
@@ -1492,7 +1573,7 @@ function SpecificDocSearch({ store, auth, existingIds, onClose, onAdd }) {
 
 function MeltTab({
   session,
-  store,
+  stores,
   dateKey,
   pos,
   addOpen,
@@ -1500,9 +1581,12 @@ function MeltTab({
   onMergePos,
   onRemovePos,
   onToggleReceived,
+  onReceiveAll,
   onSaveReview,
 }) {
   const { triage } = useTransferWorkflow();
+  const storeList = stores || [];
+  const batchLabel = storeNamesLabel(storeList) || 'the selected stores';
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [openRow, setOpenRow] = useState(null);
@@ -1515,10 +1599,6 @@ function MeltTab({
     store: '',
     status: '',
   });
-  const auth = useMemo(
-    () => resolvePosAuthForRow(session, { systemKey: store.systemKey }),
-    [session, store.systemKey],
-  );
   const existingIds = useMemo(() => (pos || []).map((row) => row.id), [pos]);
   const setFilter = useCallback((key, value) => {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -1555,43 +1635,76 @@ function MeltTab({
       ),
     [filters, pos],
   );
+  const allReceived = (pos || []).length > 0 && (pos || []).every((row) => row.received);
   const filtersActive = Object.values(filters).some((value) => String(value || '').trim());
 
   const loadRange = useCallback(
     async ({ startDate, endDate }) => {
       if (!startDate || !endDate) return;
-      if (!auth.token) {
-        setError('Sign in to load purchases.');
+      const groups = uniqueSystemGroups(storeList);
+      if (groups.length === 0) {
+        setError('Select at least one store.');
         return;
       }
       setBusy(true);
       setError('');
       try {
-        const system = {
-          key: store.systemKey || 'east',
-          label: store.systemLabel || 'Canada Gold East',
-          baseUrl: auth.baseUrl,
-        };
-        const result = await fetchTransactions(auth.token, {
-          startDate,
-          endDate,
-          baseUrl: auth.baseUrl,
-          includePurchases: true,
-          includeOrders: false,
-          system,
-        });
-        const next = result.rows.filter(
-          (row) => row.type === 'purchase' && namesMatch(row.storeName, store.name),
-        );
-        if (next.length === 0) {
-          setError('No purchases in that range for this store.');
+        const collected = [];
+        const errors = [];
+        for (const group of groups) {
+          const auth = resolvePosAuthForRow(session, { systemKey: group.systemKey });
+          if (!auth.token) {
+            errors.push(`Sign in to load purchases for ${group.systemLabel}.`);
+            continue;
+          }
+          try {
+            const result = await fetchTransactions(auth.token, {
+              startDate,
+              endDate,
+              baseUrl: auth.baseUrl,
+              includePurchases: true,
+              includeOrders: false,
+              system: {
+                key: group.systemKey,
+                label: group.systemLabel,
+                baseUrl: auth.baseUrl,
+              },
+            });
+            collected.push(
+              ...result.rows.filter(
+                (row) => row.type === 'purchase' && storeInList(group.stores, row.storeName),
+              ),
+            );
+          } catch (err) {
+            errors.push(err?.message || `Failed to load ${group.systemLabel}.`);
+          }
+        }
+        if (collected.length === 0) {
+          setError(errors[0] || `No purchases in that range for ${batchLabel}.`);
           return;
         }
-        onMergePos(next);
+        onMergePos(collected);
         onAddOpenChange(false);
-        fillMissingPoImages(auth.token, auth.baseUrl, next)
-          .then((enriched) => {
-            if (enriched !== next) onMergePos(enriched);
+        const bySystem = new Map();
+        for (const row of collected) {
+          const key = row.systemKey || 'east';
+          if (!bySystem.has(key)) bySystem.set(key, []);
+          bySystem.get(key).push(row);
+        }
+        Promise.all(
+          [...bySystem.entries()].map(async ([key, groupRows]) => {
+            const auth = resolvePosAuthForRow(session, { systemKey: key });
+            if (!auth.token) return groupRows;
+            return fillMissingPoImages(auth.token, auth.baseUrl, groupRows);
+          }),
+        )
+          .then((groupsEnriched) => {
+            const map = new Map();
+            for (const groupRows of groupsEnriched) {
+              for (const row of groupRows) map.set(row.id, row);
+            }
+            const enriched = collected.map((row) => map.get(row.id) || row);
+            if (enriched.some((row, index) => row !== collected[index])) onMergePos(enriched);
           })
           .catch(() => {});
       } catch (err) {
@@ -1600,12 +1713,12 @@ function MeltTab({
         setBusy(false);
       }
     },
-    [auth, onAddOpenChange, onMergePos, store.name, store.systemKey, store.systemLabel],
+    [batchLabel, onAddOpenChange, onMergePos, session, storeList],
   );
 
   return (
     <View style={styles.body}>
-      {pos.length > 0 ? (
+      {pos?.length > 0 ? (
         <View style={styles.tableToolbar}>
           <Text style={styles.tableMeta}>
             {filtersActive ? `${visiblePos.length} of ${pos.length}` : pos.length}
@@ -1616,11 +1729,11 @@ function MeltTab({
         </View>
       ) : null}
 
-      {pos.length === 0 ? (
+      {!(pos || []).length ? (
         <EmptyState
           icon="flame-outline"
           title="Melt"
-          body="Tap Add to load a date range or search a single PO/SO from this store."
+          body={`Tap Add to load a date range or search a single PO/SO from ${batchLabel}.`}
         />
       ) : (
         <TableFrame
@@ -1678,7 +1791,19 @@ function MeltTab({
                 onOpenKey={setOpenFilter}
                 style={{ flex: 0.85, minWidth: 88 }}
               />
-              <View style={styles.tableActionsHead} />
+              <View style={styles.tableActionsHead}>
+                <Pressable
+                  style={[styles.tableAction, allReceived && styles.tableActionOn]}
+                  onPress={onReceiveAll}
+                  accessibilityRole="button"
+                  accessibilityLabel={allReceived ? 'All received' : 'Receive all'}
+                >
+                  <Text style={[styles.tableActionText, allReceived && styles.tableActionTextOn]}>
+                    {allReceived ? 'Received' : 'Receive all'}
+                  </Text>
+                </Pressable>
+                <View style={styles.tableRemove} />
+              </View>
             </>
           }
         >
@@ -1710,8 +1835,7 @@ function MeltTab({
         busy={busy}
         error={error}
         session={session}
-        store={store}
-        auth={auth}
+        stores={storeList}
         existingIds={existingIds}
         transfers={triage}
         currentDateKey={dateKey}
@@ -1725,7 +1849,9 @@ function MeltTab({
         onAddDoc={(row) => {
           onMergePos([row]);
           onAddOpenChange(false);
-          if (row.type === 'purchase' && auth.token) {
+          if (row.type === 'purchase') {
+            const auth = resolvePosAuthForRow(session, { systemKey: row.systemKey });
+            if (!auth.token) return;
             fillMissingPoImages(auth.token, auth.baseUrl, [row])
               .then((enriched) => {
                 if (enriched[0] && enriched[0] !== row) onMergePos(enriched);
@@ -1865,8 +1991,10 @@ function DrawerRow({ label, value, last }) {
   );
 }
 
-function BullionTab({ dateKey, store, session }) {
+function BullionTab({ dateKey, stores, session }) {
   const { planned } = useTransferWorkflow();
+  const storeList = stores || [];
+  const storeKey = storeList.map((store) => store.id || store.storeKey || store.name).join('|');
   const [openId, setOpenId] = useState(null);
   const [posRows, setPosRows] = useState([]);
   const [posBusy, setPosBusy] = useState(false);
@@ -1880,33 +2008,44 @@ function BullionTab({ dateKey, store, session }) {
   });
 
   useEffect(() => {
-    if (!session?.token || !store?.name) {
+    if (!session?.token || storeList.length === 0) {
       setPosRows([]);
       return undefined;
     }
     let cancelled = false;
-    const auth = resolvePosAuthForRow(session, { systemKey: store.systemKey });
-    if (!auth.token) return undefined;
     setPosBusy(true);
     const since = new Date();
     since.setFullYear(since.getFullYear() - 2);
     const sinceKey = formatDateParam(since);
-    Promise.all([
-      fetchTransfers(auth.token, { status: 'pending', since: sinceKey, baseUrl: auth.baseUrl }).catch(
-        () => [],
-      ),
-      fetchTransfers(auth.token, { status: 'received', since: sinceKey, baseUrl: auth.baseUrl }).catch(
-        () => [],
-      ),
-    ])
-      .then(([pending, received]) => {
-        if (cancelled) return;
-        const next = [...pending, ...received]
+    Promise.all(
+      uniqueSystemGroups(storeList).map(async (group) => {
+        const auth = resolvePosAuthForRow(session, { systemKey: group.systemKey });
+        if (!auth.token) return [];
+        const [pending, received] = await Promise.all([
+          fetchTransfers(auth.token, { status: 'pending', since: sinceKey, baseUrl: auth.baseUrl }).catch(
+            () => [],
+          ),
+          fetchTransfers(auth.token, { status: 'received', since: sinceKey, baseUrl: auth.baseUrl }).catch(
+            () => [],
+          ),
+        ]);
+        return [...pending, ...received]
           .filter(
             (row) =>
-              transferGoesToWorkshop(row) && namesMatch(row.from?.name, store.name),
+              transferGoesToWorkshop(row) && storeInList(group.stores, row.from?.name),
           )
           .map(posTransferToRow);
+      }),
+    )
+      .then((groups) => {
+        if (cancelled) return;
+        const seen = new Set();
+        const next = [];
+        for (const row of groups.flat()) {
+          if (!row?.id || seen.has(row.id)) continue;
+          seen.add(row.id);
+          next.push(row);
+        }
         setPosRows(next);
       })
       .finally(() => {
@@ -1915,10 +2054,12 @@ function BullionTab({ dateKey, store, session }) {
     return () => {
       cancelled = true;
     };
-  }, [session, store?.name, store?.systemKey]);
+  }, [session, storeKey]);
 
   const rows = useMemo(() => {
-    const local = plannedWorkshopTransfersForStore(store?.storeKey, store?.name);
+    const local = storeList.flatMap((store) =>
+      plannedWorkshopTransfersForStore(store?.storeKey, store?.name),
+    );
     const seen = new Set(
       local
         .map((row) => row.aureusId)
@@ -1929,7 +2070,7 @@ function BullionTab({ dateKey, store, session }) {
     return [...local, ...extras].sort((a, b) =>
       String(b.dateKey || '').localeCompare(String(a.dateKey || '')),
     );
-  }, [planned, posRows, store?.name, store?.storeKey]);
+  }, [planned, posRows, storeKey]);
 
   const setFilter = useCallback((key, value) => {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -1978,7 +2119,7 @@ function BullionTab({ dateKey, store, session }) {
           body={
             posBusy
               ? 'Loading transfers to the workshop…'
-              : `All transfers from ${store?.name || 'this store'} to the workshop appear here.`
+              : `All transfers from ${storeNamesLabel(storeList) || 'the selected stores'} to the workshop appear here.`
           }
         />
       ) : (
@@ -2238,7 +2379,7 @@ function StoreMultiPicker({ session, addedKeys, selectedIds, onChangeSelected })
   );
 }
 
-function CreateTransferModal({ visible, session, existingKeys, onClose, onCreate }) {
+function CreateTransferModal({ visible, session, transfers, onClose, onCreate }) {
   const isMobile = useIsMobile();
   const [date, setDate] = useState(() => parseDateParam(new Date()));
   const [selectedIds, setSelectedIds] = useState(() => new Set());
@@ -2253,24 +2394,40 @@ function CreateTransferModal({ visible, session, existingKeys, onClose, onCreate
     setError('');
   }, [visible]);
 
+  const dateKey = formatDateParam(date);
+  const existing = useMemo(
+    () => (transfers || []).find((row) => row.dateKey === dateKey) || null,
+    [dateKey, transfers],
+  );
+  const addedKeys = useMemo(
+    () => new Set((existing?.stores || []).map((store) => store.storeKey).filter(Boolean)),
+    [existing],
+  );
+
+  useEffect(() => {
+    setSelectedIds(new Set());
+    setPickedStores([]);
+    setError('');
+  }, [dateKey]);
+
   const create = () => {
-    const key = formatDateParam(date);
-    if (existingKeys.has(key)) {
-      setError('A transfer for this date already exists.');
-      return;
-    }
     if (pickedStores.length === 0) {
       setError('Select at least one store.');
       return;
     }
+    const mapped = pickedStores.map(mapPickedStore);
+    const incoming = existing ? mapped.filter((store) => !storeOnBatch(existing.stores, store)) : mapped;
+    if (incoming.length === 0) {
+      setError('Those stores are already on this date.');
+      return;
+    }
     onCreate({
-      id: newId('xfer'),
-      dateKey: key,
-      dateLabel: formatPickerDate(date),
-      triageLocation: { ...WORKSHOP_LOCATION },
-      stores: pickedStores
-        .map(mapPickedStore)
-        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })),
+      id: existing?.id || newId('xfer'),
+      dateKey,
+      dateLabel: existing?.dateLabel || formatPickerDate(date),
+      triageLocation: existing?.triageLocation || { ...WORKSHOP_LOCATION },
+      stores: incoming,
+      mergeIntoId: existing?.id || null,
     });
   };
 
@@ -2287,18 +2444,22 @@ function CreateTransferModal({ visible, session, existingKeys, onClose, onCreate
               <Text style={styles.iosNavAction}>Cancel</Text>
             </Pressable>
             <View style={styles.storeTitleBlock}>
-              <Text style={styles.modalTitle}>New Transfer</Text>
-              <Text style={styles.modalSub}>Stores sending to Workshop</Text>
+              <Text style={styles.modalTitle}>{existing ? 'Add Stores' : 'New Transfer'}</Text>
+              <Text style={styles.modalSub}>
+                {existing
+                  ? `Adding to ${existing.dateLabel || dateKey}`
+                  : 'Stores sending to Workshop'}
+              </Text>
             </View>
             <Pressable
               onPress={create}
               disabled={pickedStores.length === 0}
               hitSlop={8}
               accessibilityRole="button"
-              accessibilityLabel="Create"
+              accessibilityLabel={existing ? 'Add' : 'Create'}
             >
               <Text style={[styles.iosNavAction, styles.iosNavActionStrong, pickedStores.length === 0 && styles.iosNavActionDisabled]}>
-                Create
+                {existing ? 'Add' : 'Create'}
               </Text>
             </Pressable>
           </View>
@@ -2306,7 +2467,7 @@ function CreateTransferModal({ visible, session, existingKeys, onClose, onCreate
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
           <StoreMultiPicker
             session={session}
-            addedKeys={new Set()}
+            addedKeys={addedKeys}
             selectedIds={selectedIds}
             onChangeSelected={(ids, picked) => {
               setSelectedIds(ids);
@@ -2395,7 +2556,6 @@ export default function TriageTransfersPanel({
   const { triage: transfers } = useTransferWorkflow();
   const isMobile = useIsMobile();
   const [selectedId, setSelectedId] = useState(null);
-  const [selectedStoreId, setSelectedStoreId] = useState(null);
   const [storeTab, setStoreTab] = useState('melt');
   const [addMeltOpen, setAddMeltOpen] = useState(false);
 
@@ -2403,16 +2563,20 @@ export default function TriageTransfersPanel({
     () => transfers.find((row) => row.id === selectedId) || null,
     [selectedId, transfers],
   );
-  const selectedStore = useMemo(
-    () => selected?.stores.find((row) => row.id === selectedStoreId) || null,
-    [selected, selectedStoreId],
-  );
+  const batchStores = selected?.stores || [];
+  const meltPos = useMemo(() => flattenMeltPos(batchStores), [selected]);
+  const batchContext = useMemo(() => {
+    if (!selected) return null;
+    return {
+      dateLabel: selected.dateLabel || selected.dateKey || '',
+      storeNames: storeNamesLabel(batchStores),
+    };
+  }, [batchStores, selected]);
 
-  const view = selectedStore ? 'store' : selected ? 'date' : 'list';
+  const view = selected ? 'store' : 'list';
 
   const goBackToList = useCallback(() => {
     setAddMeltOpen(false);
-    setSelectedStoreId(null);
     setSelectedId(null);
   }, []);
 
@@ -2421,46 +2585,63 @@ export default function TriageTransfersPanel({
   }, [onViewChange, view]);
 
   useEffect(() => {
-    onBackChange?.(selectedStore && selected ? goBackToList : null);
-    return () => onBackChange?.(null);
-  }, [goBackToList, onBackChange, selected, selectedStore]);
+    onBackChange?.(selected ? goBackToList : null, batchContext);
+    return () => onBackChange?.(null, null);
+  }, [batchContext, goBackToList, onBackChange, selected]);
 
-  const existingKeys = useMemo(() => new Set(transfers.map((row) => row.dateKey)), [transfers]);
-
-  const enterStore = useCallback((row, store) => {
-    if (!row || !store) return;
+  const openBatch = useCallback((row) => {
+    if (!row?.stores?.length) return;
     setSelectedId(row.id);
-    setSelectedStoreId(store.id);
-    const hasBullion = plannedForTriageStore(row.dateKey, store.storeKey).length > 0;
-    const hasMelt = (store.meltPos || []).length > 0;
+    const hasBullion = row.stores.some(
+      (store) => plannedForTriageStore(row.dateKey, store.storeKey).length > 0,
+    );
+    const hasMelt = row.stores.some((store) => (store.meltPos || []).length > 0);
     setStoreTab(hasBullion && !hasMelt ? 'bullion' : 'melt');
   }, []);
 
   const openTransfer = useCallback(
     (row) => {
-      const firstStore = row?.stores?.[0] || null;
-      if (!firstStore) return;
-      enterStore(row, firstStore);
+      openBatch(row);
     },
-    [enterStore],
+    [openBatch],
   );
 
   const createTransfer = useCallback(
     (row) => {
-      updateTriageTransfers((current) =>
-        [row, ...current].sort((a, b) => b.dateKey.localeCompare(a.dateKey)),
-      );
-      onCreateOpenChange(false);
-      const firstStore = row.stores?.[0] || null;
-      if (firstStore) {
-        enterStore(row, firstStore);
-        setAddMeltOpen(true);
+      const mergeId = row.mergeIntoId;
+      const incoming = row.stores || [];
+      let nextRow = row;
+      if (mergeId) {
+        const existing = transfers.find((item) => item.id === mergeId);
+        if (existing) {
+          const fresh = incoming.filter((store) => !storeOnBatch(existing.stores, store));
+          nextRow = {
+            ...existing,
+            stores: sortBatchStores([...(existing.stores || []), ...fresh]),
+          };
+          updateTriageTransfers((current) =>
+            current.map((item) => (item.id === mergeId ? nextRow : item)),
+          );
+        } else {
+          updateTriageTransfers((current) =>
+            [{ ...row, stores: sortBatchStores(incoming) }, ...current].sort((a, b) =>
+              b.dateKey.localeCompare(a.dateKey),
+            ),
+          );
+        }
       } else {
-        setSelectedId(row.id);
-        setSelectedStoreId(null);
+        nextRow = { ...row, stores: sortBatchStores(incoming) };
+        delete nextRow.mergeIntoId;
+        updateTriageTransfers((current) =>
+          [nextRow, ...current].sort((a, b) => b.dateKey.localeCompare(a.dateKey)),
+        );
       }
+      persistTransferWorkflowNow().catch(() => {});
+      onCreateOpenChange(false);
+      openBatch(nextRow);
+      if (incoming.length) setAddMeltOpen(true);
     },
-    [enterStore, onCreateOpenChange],
+    [onCreateOpenChange, openBatch, transfers],
   );
 
   const removeTransfer = useCallback((row) => {
@@ -2474,120 +2655,109 @@ export default function TriageTransfersPanel({
     );
   }, []);
 
-  useEffect(() => {
-    if (!selected || selectedStore) return;
-    const firstStore = selected.stores?.[0];
-    if (firstStore) enterStore(selected, firstStore);
-    else setSelectedId(null);
-  }, [enterStore, selected, selectedStore]);
-
   const mergeMeltPos = useCallback(
     (nextRows) => {
-      if (!selectedId || !selectedStoreId) return;
+      if (!selectedId) return;
       updateTriageTransfers((current) =>
         current.map((row) => {
           if (row.id !== selectedId) return row;
-          return {
-            ...row,
-            stores: row.stores.map((store) => {
-              if (store.id !== selectedStoreId) return store;
-              const existing = new Map((store.meltPos || []).map((item) => [item.id, item]));
-              const merged = [...(store.meltPos || [])];
-              for (const item of nextRows) {
-                const prev = existing.get(item.id);
-                if (prev) {
-                  const imageUrls =
-                    (prev.imageUrls || []).length > 0 ? prev.imageUrls : item.imageUrls || [];
-                  if (imageUrls !== prev.imageUrls) {
-                    const index = merged.findIndex((entry) => entry.id === item.id);
-                    if (index >= 0) merged[index] = { ...prev, imageUrls };
-                  }
-                  continue;
-                }
-                merged.push({ ...item, received: false });
+          const stores = (row.stores || []).map((store) => ({
+            ...store,
+            meltPos: [...(store.meltPos || [])],
+          }));
+          for (const item of nextRows || []) {
+            const dest =
+              stores.find((store) => namesMatch(store.name, item.storeName)) || stores[0];
+            if (!dest) continue;
+            const index = dest.meltPos.findIndex((entry) => entry.id === item.id);
+            if (index >= 0) {
+              const prev = dest.meltPos[index];
+              const imageUrls =
+                (prev.imageUrls || []).length > 0 ? prev.imageUrls : item.imageUrls || [];
+              if (imageUrls !== prev.imageUrls) {
+                dest.meltPos[index] = { ...prev, imageUrls };
               }
-              merged.sort((a, b) => (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0));
-              return { ...store, meltPos: merged };
-            }),
-          };
+              continue;
+            }
+            dest.meltPos.push({ ...item, received: false });
+          }
+          for (const store of stores) {
+            store.meltPos.sort((a, b) => (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0));
+          }
+          return { ...row, stores };
         }),
       );
       persistTransferWorkflowNow().catch(() => {});
     },
-    [selectedId, selectedStoreId],
+    [selectedId],
   );
 
-  const saveMeltReview = useCallback(
-    (poId, review) => {
-      if (!selectedId || !selectedStoreId) return;
-      updateTriageTransfers((current) =>
-        current.map((row) => {
-          if (row.id !== selectedId) return row;
-          return {
-            ...row,
-            stores: row.stores.map((store) => {
-              if (store.id !== selectedStoreId) return store;
-              return {
-                ...store,
-                meltPos: (store.meltPos || []).map((item) =>
-                  item.id === poId ? { ...item, review } : item,
-                ),
-              };
-            }),
-          };
-        }),
-      );
-      persistTransferWorkflowNow().catch(() => {});
-    },
-    [selectedId, selectedStoreId],
-  );
+  const saveMeltReview = useCallback((poId, review) => {
+    saveTriagePoReview(poId, review);
+    persistTransferWorkflowNow().catch(() => {});
+  }, []);
 
   const removeMeltPo = useCallback(
     (poId) => {
-      if (!selectedId || !selectedStoreId) return;
+      if (!selectedId) return;
       updateTriageTransfers((current) =>
         current.map((row) => {
           if (row.id !== selectedId) return row;
           return {
             ...row,
-            stores: row.stores.map((store) => {
-              if (store.id !== selectedStoreId) return store;
-              return {
-                ...store,
-                meltPos: (store.meltPos || []).filter((item) => item.id !== poId),
-              };
-            }),
+            stores: row.stores.map((store) => ({
+              ...store,
+              meltPos: (store.meltPos || []).filter((item) => item.id !== poId),
+            })),
           };
         }),
       );
       persistTransferWorkflowNow().catch(() => {});
     },
-    [selectedId, selectedStoreId],
+    [selectedId],
   );
+
+  const receiveAllMelt = useCallback(() => {
+    if (!selectedId) return;
+    updateTriageTransfers((current) =>
+      current.map((row) => {
+        if (row.id !== selectedId) return row;
+        return {
+          ...row,
+          stores: row.stores.map((store) => {
+            const melt = store.meltPos || [];
+            if (melt.length === 0 || melt.every((item) => item.received)) return store;
+            return {
+              ...store,
+              meltPos: melt.map((item) => (item.received ? item : { ...item, received: true })),
+            };
+          }),
+        };
+      }),
+    );
+    persistTransferWorkflowNow().catch(() => {});
+  }, [selectedId]);
 
   const toggleMeltReceived = useCallback(
     (poId) => {
-      if (!selectedId || !selectedStoreId) return;
+      if (!selectedId) return;
       updateTriageTransfers((current) =>
         current.map((row) => {
           if (row.id !== selectedId) return row;
           return {
             ...row,
-            stores: row.stores.map((store) => {
-              if (store.id !== selectedStoreId) return store;
-              return {
-                ...store,
-                meltPos: (store.meltPos || []).map((item) =>
-                  item.id === poId ? { ...item, received: !item.received } : item,
-                ),
-              };
-            }),
+            stores: row.stores.map((store) => ({
+              ...store,
+              meltPos: (store.meltPos || []).map((item) =>
+                item.id === poId ? { ...item, received: !item.received } : item,
+              ),
+            })),
           };
         }),
       );
       persistTransferWorkflowNow().catch(() => {});
     },
-    [selectedId, selectedStoreId],
+    [selectedId],
   );
 
   if (!session?.token) {
@@ -2610,27 +2780,27 @@ export default function TriageTransfersPanel({
   const meltActions =
     storeTab === 'melt' ? (
       <Pressable
-        style={styles.iosTextAction}
+        style={styles.compactAdd}
         onPress={() => setAddMeltOpen(true)}
         accessibilityRole="button"
         accessibilityLabel="Add"
       >
-        <Ionicons name="add" size={22} color={BLUE} />
-        <Text style={styles.iosNavAction}>Add</Text>
+        <Ionicons name="add" size={18} color={BLUE} />
+        <Text style={styles.compactAddText}>Add</Text>
       </Pressable>
     ) : null;
 
-  if (selectedStore && selected) {
+  if (selected) {
     return (
       <View style={[styles.body, styles.bodyTinted]}>
-        <View style={[styles.tabBar, styles.tabBarCompact]} accessibilityRole="tablist">
-          <View style={styles.segment}>
+        <View style={styles.viewTabs} accessibilityRole="tablist">
+          <View style={styles.textTabs}>
             {STORE_TABS.map((tab) => {
               const active = tab.key === storeTab;
               return (
                 <Pressable
                   key={tab.key}
-                  style={[styles.segmentButton, active && styles.segmentButtonActive]}
+                  style={styles.textTab}
                   onPress={() => {
                     setStoreTab(tab.key);
                     if (tab.key !== 'melt') setAddMeltOpen(false);
@@ -2639,7 +2809,7 @@ export default function TriageTransfersPanel({
                   accessibilityState={{ selected: active }}
                   accessibilityLabel={tab.label}
                 >
-                  <Text style={[styles.segmentText, active && styles.segmentTextActive]}>
+                  <Text style={[styles.textTabLabel, active && styles.textTabLabelActive]}>
                     {tab.label}
                   </Text>
                 </Pressable>
@@ -2652,18 +2822,19 @@ export default function TriageTransfersPanel({
         {storeTab === 'melt' ? (
           <MeltTab
             session={session}
-            store={selectedStore}
+            stores={batchStores}
             dateKey={selected.dateKey}
-            pos={selectedStore.meltPos || []}
+            pos={meltPos}
             addOpen={addMeltOpen}
             onAddOpenChange={setAddMeltOpen}
             onMergePos={mergeMeltPos}
             onRemovePos={removeMeltPo}
             onToggleReceived={toggleMeltReceived}
+            onReceiveAll={receiveAllMelt}
             onSaveReview={saveMeltReview}
           />
         ) : (
-          <BullionTab dateKey={selected.dateKey} store={selectedStore} session={session} />
+          <BullionTab dateKey={selected.dateKey} stores={batchStores} session={session} />
         )}
       </View>
     );
@@ -2708,7 +2879,7 @@ export default function TriageTransfersPanel({
       <CreateTransferModal
         visible={createOpen}
         session={session}
-        existingKeys={existingKeys}
+        transfers={transfers}
         onClose={() => onCreateOpenChange(false)}
         onCreate={createTransfer}
       />
@@ -2865,7 +3036,7 @@ const styles = StyleSheet.create({
     paddingLeft: 8,
   },
   tableActions: {
-    width: 118,
+    width: 132,
     flexGrow: 0,
     flexShrink: 0,
     flexDirection: 'row',
@@ -2875,9 +3046,14 @@ const styles = StyleSheet.create({
     paddingRight: 8,
   },
   tableActionsHead: {
-    width: 118,
+    width: 132,
     flexGrow: 0,
     flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 4,
+    paddingRight: 8,
   },
   tableAction: {
     height: 28,
@@ -3049,12 +3225,55 @@ const styles = StyleSheet.create({
     fontWeight: '400',
     color: RED,
   },
-  tabBarCompact: {
-    borderBottomWidth: 0,
-    marginTop: 8,
-    marginBottom: 10,
-    paddingHorizontal: 16,
+  viewTabs: {
+    flexShrink: 0,
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingTop: 2,
+    paddingBottom: 2,
+  },
+  textTabs: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  textTab: {
+    paddingVertical: 6,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  textTabLabel: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: MOBILE.secondary,
+    letterSpacing: -0.2,
+  },
+  textTabLabelActive: {
+    fontWeight: '600',
+    color: MOBILE.blue,
+  },
+  compactAdd: {
+    minHeight: 28,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    marginLeft: 'auto',
+    paddingHorizontal: 4,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  compactAddText: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '400',
+    color: BLUE,
   },
   iosTextAction: {
     minHeight: 44,
@@ -3867,12 +4086,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
   feedOpenButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
+    width: 28,
+    height: 28,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: FILL,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
