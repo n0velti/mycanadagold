@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { MAX_REVIEW_IMAGES, normalizeReviewImages } from '../lib/triageDraft';
+import { MOBILE } from '../lib/mobileUi';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -18,7 +19,7 @@ const fontFamily = Platform.select({
   default: 'Sohne',
 });
 
-const ACCENT = '#C2410C';
+const ACCENT = MOBILE.blue;
 const TEXT = '#1d1d1f';
 const SECONDARY = '#8e8e93';
 const FILL = '#e8e8ed';
@@ -63,6 +64,7 @@ export default function TriageCorrectionImages({
   onChange,
   readOnly = false,
   compact = false,
+  hideHeading = false,
 }) {
   const list = normalizeReviewImages(images);
   const videoRef = useRef(null);
@@ -214,10 +216,12 @@ export default function TriageCorrectionImages({
 
   return (
     <View style={styles.wrap}>
-      <Text style={styles.label}>Photos</Text>
-      <Text style={styles.hint}>
-        Capture the item, tag, or receipt so the error is easy to review.
-      </Text>
+      {hideHeading ? null : <Text style={styles.label}>Photos</Text>}
+      {hideHeading ? null : (
+        <Text style={styles.hint}>
+          Capture the item, tag, or receipt so the error is easy to review.
+        </Text>
+      )}
       {list.length === 0 && readOnly ? (
         <Text style={styles.empty}>No photos attached</Text>
       ) : (
@@ -424,15 +428,13 @@ const styles = StyleSheet.create({
   actionButton: {
     flex: 1,
     minWidth: 140,
-    minHeight: 48,
+    minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
     borderRadius: 10,
-    borderWidth: 1.5,
-    borderColor: ACCENT,
-    backgroundColor: '#fff',
+    backgroundColor: FILL,
     paddingHorizontal: 12,
     ...Platform.select({
       web: { cursor: 'pointer' },
@@ -442,12 +444,12 @@ const styles = StyleSheet.create({
   captureButton: {
     flex: 1,
     minWidth: 140,
-    minHeight: 48,
+    minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    borderRadius: 12,
+    borderRadius: 10,
     backgroundColor: ACCENT,
     paddingHorizontal: 12,
     ...Platform.select({
@@ -456,8 +458,8 @@ const styles = StyleSheet.create({
     }),
   },
   actionDisabled: {
-    borderColor: '#d1d1d6',
     backgroundColor: FILL,
+    opacity: 0.55,
   },
   actionText: {
     fontFamily,

@@ -28,7 +28,7 @@ import {
   normalizeReviewImages,
 } from '../lib/triageDraft';
 import TriageCorrectionImages from './TriageCorrectionImages';
-import { MOBILE, mobileSafeBottom } from '../lib/mobileUi';
+import { MOBILE, mobileSafeBottom, mobileSafeTop } from '../lib/mobileUi';
 import {
   createClient,
   fetchLookupLocations,
@@ -45,12 +45,12 @@ const fontFamily = Platform.select({
   default: 'Sohne',
 });
 
-const ACCENT = '#C2410C';
+const BLUE = MOBILE.blue;
 const TEXT = '#1d1d1f';
 const SECONDARY = '#8e8e93';
-const FILL = '#e8e8ed';
-const HAIRLINE = '#e5e5ea';
+const HAIRLINE = 'rgba(60, 60, 67, 0.18)';
 const STRUCK = '#8e8e93';
+const CHANGED = '#FF9500';
 const MOBILE_BREAKPOINT = 768;
 const DRAWER_OPEN_MS = 280;
 const DRAWER_CLOSE_MS = 220;
@@ -147,50 +147,53 @@ function CorrectionPair({ original, value }) {
   );
 }
 
-function ReverseButton({ onPress, compact }) {
+function ReverseButton({ onPress }) {
   return (
     <Pressable
       onPress={onPress}
       hitSlop={8}
-      style={[styles.reverseButton, compact && styles.reverseButtonCompact]}
+      style={styles.reverseButton}
       accessibilityRole="button"
-      accessibilityLabel="Reverse change"
+      accessibilityLabel="Revert change"
     >
-      <Ionicons name="arrow-undo" size={compact ? 13 : 14} color={ACCENT} />
-      <Text style={[styles.reverseButtonText, compact && styles.reverseButtonTextCompact]}>Reverse</Text>
+      <Text style={styles.reverseButtonText}>Revert</Text>
     </Pressable>
   );
 }
 
-function ChangedOriginal({ field, onReverse, compact }) {
+function ChangedOriginal({ field, onReverse }) {
   if (!fieldChanged(field)) return null;
   return (
     <View style={styles.changedRow}>
       <Text style={[styles.struckText, styles.changedOriginal]} numberOfLines={1}>
         {field.original || '—'}
       </Text>
-      <ReverseButton onPress={onReverse} compact={compact} />
+      <ReverseButton onPress={onReverse} />
     </View>
   );
 }
 
-function CorrectableField({ label, field, onChange, compact, keyboardType, hideLabel }) {
+function CorrectableField({ label, field, onChange, keyboardType, last }) {
   const changed = fieldChanged(field);
   const reverse = () => onChange(field.original ?? '');
   return (
-    <View style={[styles.fieldBlock, compact && styles.fieldBlockCompact]}>
-      {label && !hideLabel ? <Text style={styles.fieldLabel}>{label}</Text> : null}
-      <ChangedOriginal field={field} onReverse={reverse} compact={compact} />
-      <TextInput
-        style={[styles.fieldInput, changed && styles.fieldInputCorrected, compact && styles.fieldInputCompact]}
-        value={field.value}
-        onChangeText={onChange}
-        placeholder={field.original || '—'}
-        placeholderTextColor="#c7c7cc"
-        autoCapitalize="none"
-        autoCorrect={false}
-        keyboardType={keyboardType || 'default'}
-      />
+    <View style={[styles.iosRowWrap, last && styles.iosRowLast]}>
+      <View style={styles.iosRow}>
+        {label ? <Text style={styles.iosRowLabel}>{label}</Text> : null}
+        <View style={styles.iosRowControl}>
+          <ChangedOriginal field={field} onReverse={reverse} />
+          <TextInput
+            style={[styles.iosRowInput, changed && styles.iosRowInputChanged]}
+            value={field.value}
+            onChangeText={onChange}
+            placeholder={field.original || '—'}
+            placeholderTextColor="#c7c7cc"
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType={keyboardType || 'default'}
+          />
+        </View>
+      </View>
     </View>
   );
 }
@@ -206,8 +209,7 @@ function LookupField({
   pickOnly = false,
   placeholder,
   rightAction,
-  hideLabel,
-  compact,
+  last,
 }) {
   const changed = fieldChanged(field);
   const [open, setOpen] = useState(false);
@@ -305,34 +307,38 @@ function LookupField({
   };
 
   return (
-    <View style={[styles.fieldBlock, styles.lookupBlock, compact && styles.fieldBlockCompact]}>
-      {label && !hideLabel ? <Text style={styles.fieldLabel}>{label}</Text> : null}
-      <ChangedOriginal field={field} onReverse={reverse} compact={compact} />
-      <View style={styles.lookupRow}>
-        <View style={styles.lookupInputWrap}>
-          <TextInput
-            style={[styles.fieldInput, changed && styles.fieldInputCorrected, compact && styles.fieldInputCompact]}
-            value={query}
-            onChangeText={(value) => {
-              setQuery(value);
-              setOpen(true);
-              if (!pickOnly && !onSearch) onChange(value);
-            }}
-            onFocus={() => setOpen(true)}
-            onBlur={() => {
-              setTimeout(() => {
-                setOpen(false);
-                commitTyped();
-              }, 160);
-            }}
-            placeholder={placeholder || field.original || 'Search'}
-            placeholderTextColor="#c7c7cc"
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-          {busy ? <ActivityIndicator size="small" color={SECONDARY} style={styles.lookupSpinner} /> : null}
+    <View style={[styles.iosRowWrap, last && styles.iosRowLast, styles.lookupBlock]}>
+      <View style={styles.iosRow}>
+        {label ? <Text style={styles.iosRowLabel}>{label}</Text> : null}
+        <View style={styles.iosRowControl}>
+          <ChangedOriginal field={field} onReverse={reverse} />
+          <View style={styles.lookupRow}>
+            <View style={styles.lookupInputWrap}>
+              <TextInput
+                style={[styles.iosRowInput, changed && styles.iosRowInputChanged]}
+                value={query}
+                onChangeText={(value) => {
+                  setQuery(value);
+                  setOpen(true);
+                  if (!pickOnly && !onSearch) onChange(value);
+                }}
+                onFocus={() => setOpen(true)}
+                onBlur={() => {
+                  setTimeout(() => {
+                    setOpen(false);
+                    commitTyped();
+                  }, 160);
+                }}
+                placeholder={placeholder || field.original || 'Search'}
+                placeholderTextColor="#c7c7cc"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              {busy ? <ActivityIndicator size="small" color={SECONDARY} style={styles.lookupSpinner} /> : null}
+            </View>
+            {rightAction}
+          </View>
         </View>
-        {rightAction}
       </View>
       {open ? (
         <ScrollView style={styles.lookupMenu} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
@@ -400,59 +406,59 @@ function NewCustomerPanel({ onCancel, onCreated, token, baseUrl }) {
 
   return (
     <View style={styles.newCustomerCard}>
-      <Text style={styles.sectionLabel}>New customer</Text>
-      <View style={styles.itemRow}>
-        <View style={styles.fieldBlockCompact}>
-          <Text style={styles.fieldLabel}>First name</Text>
+      <Text style={styles.groupHeader}>New customer</Text>
+      <View style={styles.group}>
+        <View style={styles.iosRow}>
+          <Text style={styles.iosRowLabel}>First</Text>
           <TextInput
-            style={styles.fieldInput}
+            style={styles.iosRowInput}
             value={firstName}
             onChangeText={setFirstName}
-            placeholder="First"
+            placeholder="First name"
             placeholderTextColor="#c7c7cc"
           />
         </View>
-        <View style={styles.fieldBlockCompact}>
-          <Text style={styles.fieldLabel}>Last name</Text>
+        <View style={styles.iosRow}>
+          <Text style={styles.iosRowLabel}>Last</Text>
           <TextInput
-            style={styles.fieldInput}
+            style={styles.iosRowInput}
             value={lastName}
             onChangeText={setLastName}
-            placeholder="Last"
+            placeholder="Last name"
             placeholderTextColor="#c7c7cc"
+          />
+        </View>
+        <View style={styles.iosRow}>
+          <Text style={styles.iosRowLabel}>Email</Text>
+          <TextInput
+            style={styles.iosRowInput}
+            value={email}
+            onChangeText={setEmail}
+            placeholder="name@email.com"
+            placeholderTextColor="#c7c7cc"
+            autoCapitalize="none"
+            keyboardType="email-address"
+          />
+        </View>
+        <View style={[styles.iosRow, styles.iosRowLast]}>
+          <Text style={styles.iosRowLabel}>Phone</Text>
+          <TextInput
+            style={styles.iosRowInput}
+            value={phone}
+            onChangeText={setPhone}
+            placeholder="Optional"
+            placeholderTextColor="#c7c7cc"
+            keyboardType="phone-pad"
           />
         </View>
       </View>
-      <Text style={styles.fieldLabel}>Email</Text>
-      <TextInput
-        style={styles.fieldInput}
-        value={email}
-        onChangeText={setEmail}
-        placeholder="name@email.com"
-        placeholderTextColor="#c7c7cc"
-        autoCapitalize="none"
-        keyboardType="email-address"
-      />
-      <Text style={styles.fieldLabel}>Phone</Text>
-      <TextInput
-        style={styles.fieldInput}
-        value={phone}
-        onChangeText={setPhone}
-        placeholder="Optional"
-        placeholderTextColor="#c7c7cc"
-        keyboardType="phone-pad"
-      />
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
       <View style={styles.newCustomerActions}>
-        <Pressable style={styles.secondaryButton} onPress={onCancel}>
-          <Text style={styles.secondaryButtonText}>Cancel</Text>
+        <Pressable onPress={onCancel} hitSlop={8} accessibilityRole="button">
+          <Text style={styles.navAction}>Cancel</Text>
         </Pressable>
-        <Pressable
-          style={[styles.primaryButton, styles.primaryButtonInline, busy && styles.primaryButtonDisabled]}
-          onPress={save}
-          disabled={busy}
-        >
-          {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Add customer</Text>}
+        <Pressable onPress={save} disabled={busy} hitSlop={8} accessibilityRole="button">
+          {busy ? <ActivityIndicator color={BLUE} /> : <Text style={[styles.navAction, styles.navActionEmph]}>Add</Text>}
         </Pressable>
       </View>
     </View>
@@ -639,7 +645,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
 
   if (!mounted || !heldRow) return null;
 
-  const title = step === 'note' ? 'Describe the error' : heldRow.reference || 'Purchase order';
+  const title = step === 'note' ? 'Error' : heldRow.reference || 'Edit';
 
   return (
     <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose}>
@@ -656,63 +662,64 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
           ]}
         >
           <View
-            style={[styles.drawerTopBar, isMobile && styles.drawerTopBarMobile]}
+            style={[styles.navBar, isMobile && styles.navBarMobile]}
             {...(Platform.OS === 'web' && isMobile ? { className: 'cgold-mobile-sheet-top' } : null)}
           >
-            <View style={styles.titleBlock}>
-              {step === 'note' ? (
-                <Pressable onPress={() => setStep('edit')} style={[styles.backRow, isMobile && styles.iosBackRow]} hitSlop={8}>
-                  <Ionicons name="chevron-back" size={isMobile ? 28 : 18} color={MOBILE.blue} />
-                  <Text style={[styles.backText, isMobile && styles.iosBackText]}>Back</Text>
-                </Pressable>
-              ) : null}
-              <Text style={styles.drawerTitle} numberOfLines={1}>
-                {title}
-              </Text>
-              <Text style={styles.drawerSub}>
-                {step === 'note'
-                  ? 'Add a note, photos, the type of error, and the dollar amount, then finish.'
-                  : 'Edit any field. Capture a photo to attach it to this PO/SO and show the error.'}
-              </Text>
-            </View>
             <Pressable
-              onPress={onClose}
+              onPress={step === 'note' ? () => setStep('edit') : onClose}
               hitSlop={8}
-              style={[styles.closeButton, isMobile && styles.iosClose]}
-              accessibilityLabel="Close"
+              style={styles.navSide}
+              accessibilityRole="button"
+              accessibilityLabel={step === 'note' ? 'Back' : 'Cancel'}
             >
-              <Ionicons name="close" size={isMobile ? 28 : 18} color={isMobile ? MOBILE.secondary : TEXT} />
+              <Text style={styles.navAction}>{step === 'note' ? 'Back' : 'Cancel'}</Text>
+            </Pressable>
+            <Text style={styles.navTitle} numberOfLines={1}>
+              {title}
+            </Text>
+            <Pressable
+              onPress={step === 'edit' ? () => setStep('note') : finish}
+              hitSlop={8}
+              style={styles.navSide}
+              disabled={step === 'edit' && detailLoading}
+              accessibilityRole="button"
+              accessibilityLabel={step === 'edit' ? 'Next' : 'Done'}
+            >
+              <Text style={[styles.navAction, styles.navActionEmph, styles.navSideRight]}>
+                {step === 'edit' ? 'Next' : 'Done'}
+              </Text>
             </Pressable>
           </View>
 
-          {step === 'edit' ? (
-            <>
-              {detailLoading ? (
-                <View style={styles.inlineBusy}>
-                  <ActivityIndicator color={MOBILE.blue} />
-                  <Text style={styles.metaText}>Loading document…</Text>
-                </View>
-              ) : null}
-              {detailError ? <Text style={styles.warnText}>{detailError}</Text> : null}
+          {detailLoading && step === 'edit' ? (
+            <View style={styles.inlineBusy}>
+              <ActivityIndicator color={BLUE} />
+              <Text style={styles.metaText}>Loading document…</Text>
+            </View>
+          ) : null}
+          {detailError && step === 'edit' ? <Text style={styles.warnText}>{detailError}</Text> : null}
 
-              <ScrollView
-                style={styles.body}
-                contentContainerStyle={styles.editContent}
-                keyboardShouldPersistTaps="handled"
-                showsVerticalScrollIndicator={false}
-              >
-                {headerField('customer') ? (
-                  addingCustomer ? (
-                    <NewCustomerPanel
-                      token={auth.token}
-                      baseUrl={auth.baseUrl}
-                      onCancel={() => setAddingCustomer(false)}
-                      onCreated={(created) => {
-                        updateHeader('customer', created.label);
-                        setAddingCustomer(false);
-                      }}
-                    />
-                  ) : (
+          {step === 'edit' ? (
+            <ScrollView
+              style={styles.body}
+              contentContainerStyle={styles.editContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              <Text style={styles.groupHeader}>Details</Text>
+              {addingCustomer ? (
+                <NewCustomerPanel
+                  token={auth.token}
+                  baseUrl={auth.baseUrl}
+                  onCancel={() => setAddingCustomer(false)}
+                  onCreated={(created) => {
+                    updateHeader('customer', created.label);
+                    setAddingCustomer(false);
+                  }}
+                />
+              ) : (
+                <View style={styles.group}>
+                  {headerField('customer') ? (
                     <LookupField
                       label={headerField('customer').label}
                       field={headerField('customer')}
@@ -721,175 +728,103 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
                       placeholder="Search customers"
                       rightAction={
                         <Pressable
-                          style={styles.newSideButton}
+                          style={styles.addIconButton}
                           onPress={() => setAddingCustomer(true)}
                           accessibilityLabel="New customer"
                         >
-                          <Ionicons name="add" size={16} color="#fff" />
-                          <Text style={styles.newSideButtonText}>New</Text>
+                          <Ionicons name="add-circle-outline" size={22} color={BLUE} />
                         </Pressable>
                       }
                     />
-                  )
-                ) : null}
+                  ) : null}
+                  {headerField('store') ? (
+                    <LookupField
+                      label="Store"
+                      field={headerField('store')}
+                      options={locations}
+                      pickOnly
+                      onChange={(value) => updateHeader('store', value)}
+                      placeholder="Select a store"
+                    />
+                  ) : null}
+                  {headerField('employee') ? (
+                    <LookupField
+                      label="Employee"
+                      field={headerField('employee')}
+                      options={employees}
+                      pickOnly
+                      onChange={(value) => updateHeader('employee', value)}
+                      placeholder="Select an employee"
+                    />
+                  ) : null}
+                  {headerField('date') ? (
+                    <CorrectableField
+                      label="Date"
+                      field={headerField('date')}
+                      onChange={(value) => updateHeader('date', value)}
+                    />
+                  ) : null}
+                  {headerField('total') ? (
+                    <CorrectableField
+                      label="Total"
+                      field={headerField('total')}
+                      onChange={(value) => updateHeader('total', value)}
+                      last
+                    />
+                  ) : null}
+                </View>
+              )}
 
-                {headerField('store') ? (
-                  <LookupField
-                    label="Store"
-                    field={headerField('store')}
-                    options={locations}
-                    pickOnly
-                    onChange={(value) => updateHeader('store', value)}
-                    placeholder="Select a store"
-                  />
-                ) : null}
-
-                {headerField('employee') ? (
-                  <LookupField
-                    label="Employee"
-                    field={headerField('employee')}
-                    options={employees}
-                    pickOnly
-                    onChange={(value) => updateHeader('employee', value)}
-                    placeholder="Select an employee"
-                  />
-                ) : null}
-
-                {headerField('date') ? (
-                  <CorrectableField
-                    label="Date"
-                    field={headerField('date')}
-                    onChange={(value) => updateHeader('date', value)}
-                  />
-                ) : null}
-
-                {headerField('total') ? (
-                  <CorrectableField
-                    label="Total"
-                    field={headerField('total')}
-                    onChange={(value) => updateHeader('total', value)}
-                  />
-                ) : null}
-
-                <Text style={styles.sectionLabel}>Line items</Text>
-                {(draft?.items || []).length === 0 ? (
-                  <Text style={styles.emptyText}>No line items</Text>
-                ) : isMobile ? (
-                  <View style={styles.mobileItemList}>
-                    {draft.items.map((item, index) => (
-                      <View key={item.id} style={styles.itemCard}>
-                        <Text style={styles.itemIndex}>Item {index + 1}</Text>
-                        <LookupField
-                          label="Product"
-                          field={item.name}
-                          options={pricingOptions}
-                          filterOptions={(list, query) =>
-                            filterCatalogProductOptions(list, query, item.name.original)
-                          }
-                          onSearch={searchProductOptions}
-                          allowCustom
-                          onChange={(value) => updateItem(item.id, 'name', value)}
-                          placeholder="Search pricing or type custom"
-                        />
-                        <View style={styles.mobileItemRow}>
-                          <View style={styles.mobileItemField}>
-                            <CorrectableField
-                              label="Qty"
-                              field={item.qty}
-                              onChange={(value) => updateItem(item.id, 'qty', value)}
-                            />
-                          </View>
-                          <View style={styles.mobileItemField}>
-                            <CorrectableField
-                              label="Unit"
-                              field={item.unit}
-                              onChange={(value) => updateItem(item.id, 'unit', value)}
-                            />
-                          </View>
-                        </View>
-                        <CorrectableField
-                          label="Amount"
-                          field={item.amount}
-                          onChange={(value) => updateItem(item.id, 'amount', value)}
-                        />
-                      </View>
-                    ))}
+              {(draft?.items || []).length === 0 ? (
+                <>
+                  <Text style={styles.groupHeader}>Line items</Text>
+                  <View style={styles.group}>
+                    <Text style={styles.emptyText}>No line items</Text>
                   </View>
-                ) : (
-                  <View style={styles.lineTable}>
-                    <View
-                      style={styles.lineTableHeader}
-                      {...(Platform.OS === 'web' ? { className: 'cgold-triage-line-grid' } : null)}
-                    >
-                      <View style={styles.lineColProduct}>
-                        <Text style={styles.lineTh}>Product</Text>
-                      </View>
-                      <View style={styles.lineColQty}>
-                        <Text style={styles.lineTh}>Qty</Text>
-                      </View>
-                      <View style={styles.lineColUnit}>
-                        <Text style={[styles.lineTh, styles.colAmountText]}>Unit</Text>
-                      </View>
-                      <View style={styles.lineColAmount}>
-                        <Text style={[styles.lineTh, styles.colAmountText]}>Amount</Text>
-                      </View>
+                </>
+              ) : (
+                draft.items.map((item, index) => (
+                  <View key={item.id}>
+                    <Text style={styles.groupHeader}>Item {index + 1}</Text>
+                    <View style={styles.group}>
+                      <LookupField
+                        label="Product"
+                        field={item.name}
+                        options={pricingOptions}
+                        filterOptions={(list, query) =>
+                          filterCatalogProductOptions(list, query, item.name.original)
+                        }
+                        onSearch={searchProductOptions}
+                        allowCustom
+                        onChange={(value) => updateItem(item.id, 'name', value)}
+                        placeholder="Search pricing or type custom"
+                      />
+                      <CorrectableField
+                        label="Qty"
+                        field={item.qty}
+                        onChange={(value) => updateItem(item.id, 'qty', value)}
+                      />
+                      <CorrectableField
+                        label="Unit"
+                        field={item.unit}
+                        onChange={(value) => updateItem(item.id, 'unit', value)}
+                      />
+                      <CorrectableField
+                        label="Amount"
+                        field={item.amount}
+                        onChange={(value) => updateItem(item.id, 'amount', value)}
+                        last
+                      />
                     </View>
-                    {draft.items.map((item) => (
-                      <View
-                        key={item.id}
-                        style={styles.lineTableRow}
-                        {...(Platform.OS === 'web' ? { className: 'cgold-triage-line-grid' } : null)}
-                      >
-                        <View style={styles.lineColProduct}>
-                          <LookupField
-                            hideLabel
-                            compact
-                            field={item.name}
-                            options={pricingOptions}
-                            filterOptions={(list, query) =>
-                              filterCatalogProductOptions(list, query, item.name.original)
-                            }
-                            onSearch={searchProductOptions}
-                            allowCustom
-                            onChange={(value) => updateItem(item.id, 'name', value)}
-                            placeholder="Search pricing or type custom"
-                          />
-                        </View>
-                        <View style={styles.lineColQty}>
-                          <CorrectableField
-                            hideLabel
-                            compact
-                            field={item.qty}
-                            onChange={(value) => updateItem(item.id, 'qty', value)}
-                          />
-                        </View>
-                        <View style={styles.lineColUnit}>
-                          <CorrectableField
-                            hideLabel
-                            compact
-                            field={item.unit}
-                            onChange={(value) => updateItem(item.id, 'unit', value)}
-                          />
-                        </View>
-                        <View style={styles.lineColAmount}>
-                          <CorrectableField
-                            hideLabel
-                            compact
-                            field={item.amount}
-                            onChange={(value) => updateItem(item.id, 'amount', value)}
-                          />
-                        </View>
-                      </View>
-                    ))}
                   </View>
-                )}
+                ))
+              )}
 
-                {(draft?.payments || []).length > 0 ? (
-                  <>
-                    <Text style={styles.sectionLabel}>Payments</Text>
-                    {draft.payments.map((payment, index) => (
-                      <View key={payment.id} style={styles.itemCard}>
-                        <Text style={styles.itemIndex}>Payment {index + 1}</Text>
+              {(draft?.payments || []).length > 0
+                ? draft.payments.map((payment, index) => (
+                    <View key={payment.id}>
+                      <Text style={styles.groupHeader}>Payment {index + 1}</Text>
+                      <View style={styles.group}>
                         <CorrectableField
                           label="Method"
                           field={payment.method}
@@ -899,19 +834,18 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
                           label="Amount"
                           field={payment.amount}
                           onChange={(value) => updatePayment(payment.id, 'amount', value)}
+                          last
                         />
                       </View>
-                    ))}
-                  </>
-                ) : null}
+                    </View>
+                  ))
+                : null}
 
-                <TriageCorrectionImages images={images} onChange={setImages} compact={isMobile} />
-              </ScrollView>
-
-              <Pressable style={styles.primaryButton} onPress={() => setStep('note')}>
-                <Text style={styles.primaryButtonText}>Next</Text>
-              </Pressable>
-            </>
+              <Text style={styles.groupHeader}>Photos</Text>
+              <View style={styles.groupPadded}>
+                <TriageCorrectionImages images={images} onChange={setImages} compact={isMobile} hideHeading />
+              </View>
+            </ScrollView>
           ) : (
             <ScrollView
               style={styles.body}
@@ -919,42 +853,54 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
             >
-              <Text style={styles.sectionLabel}>Corrections</Text>
-              {corrections.length === 0 ? (
-                <Text style={styles.emptyText}>No field corrections</Text>
-              ) : (
-                <View style={styles.correctionList}>
-                  {corrections.map((correction) => (
-                    <View key={correction.key} style={styles.correctionItem}>
-                      <Text style={styles.fieldLabel}>{correction.label}</Text>
+              <Text style={styles.groupHeader}>Corrections</Text>
+              <View style={styles.group}>
+                {corrections.length === 0 ? (
+                  <Text style={styles.emptyText}>No field corrections</Text>
+                ) : (
+                  corrections.map((correction, index) => (
+                    <View
+                      key={correction.key}
+                      style={[styles.correctionItem, index === corrections.length - 1 && styles.iosRowLast]}
+                    >
+                      <Text style={styles.iosRowLabel}>{correction.label}</Text>
                       <CorrectionPair original={correction.original} value={correction.value} />
                     </View>
-                  ))}
+                  ))
+                )}
+              </View>
+
+              <Text style={styles.groupHeader}>Note</Text>
+              <View style={styles.group}>
+                <TextInput
+                  style={styles.noteInput}
+                  value={note}
+                  onChangeText={setNote}
+                  placeholder="Describe the error"
+                  placeholderTextColor="#c7c7cc"
+                  multiline
+                  textAlignVertical="top"
+                />
+              </View>
+
+              <Text style={styles.groupHeader}>Photos</Text>
+              <View style={styles.groupPadded}>
+                <TriageCorrectionImages images={images} onChange={setImages} compact={isMobile} hideHeading />
+              </View>
+
+              <Text style={styles.groupHeader}>Type of error</Text>
+              <View style={styles.group}>
+                <View style={[styles.iosRow, styles.iosRowLast]}>
+                  <TextInput
+                    style={styles.iosRowInput}
+                    value={errorType}
+                    onChangeText={setErrorType}
+                    placeholder="Describe the type of error"
+                    placeholderTextColor="#c7c7cc"
+                    autoCapitalize="sentences"
+                  />
                 </View>
-              )}
-
-              <Text style={styles.fieldLabel}>Note</Text>
-              <TextInput
-                style={[styles.fieldInput, styles.noteInput]}
-                value={note}
-                onChangeText={setNote}
-                placeholder="Describe the error"
-                placeholderTextColor="#c7c7cc"
-                multiline
-                textAlignVertical="top"
-              />
-
-              <TriageCorrectionImages images={images} onChange={setImages} compact={isMobile} />
-
-              <Text style={styles.fieldLabel}>Type of error</Text>
-              <TextInput
-                style={styles.fieldInput}
-                value={errorType}
-                onChangeText={setErrorType}
-                placeholder="Describe the type of error"
-                placeholderTextColor="#c7c7cc"
-                autoCapitalize="sentences"
-              />
+              </View>
               <View style={styles.typeChips}>
                 {ERROR_TYPES.map((type) => {
                   const active = errorType === type;
@@ -970,22 +916,20 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
                 })}
               </View>
 
-              <Text style={styles.fieldLabel}>Amount</Text>
-              <View style={styles.amountBox}>
-                <Text style={styles.amountPrefix}>$</Text>
-                <TextInput
-                  style={styles.amountInput}
-                  value={errorAmount.replace(/^\$/, '')}
-                  onChangeText={(value) => setErrorAmount(value.replace(/[^0-9.]/g, ''))}
-                  placeholder="0.00"
-                  placeholderTextColor="#c7c7cc"
-                  keyboardType="decimal-pad"
-                />
+              <Text style={styles.groupHeader}>Amount</Text>
+              <View style={styles.group}>
+                <View style={[styles.amountBox, styles.iosRowLast]}>
+                  <Text style={styles.amountPrefix}>$</Text>
+                  <TextInput
+                    style={styles.amountInput}
+                    value={errorAmount.replace(/^\$/, '')}
+                    onChangeText={(value) => setErrorAmount(value.replace(/[^0-9.]/g, ''))}
+                    placeholder="0.00"
+                    placeholderTextColor="#c7c7cc"
+                    keyboardType="decimal-pad"
+                  />
+                </View>
               </View>
-
-              <Pressable style={styles.primaryButton} onPress={finish}>
-                <Text style={styles.primaryButtonText}>Finish</Text>
-              </Pressable>
             </ScrollView>
           )}
         </Animated.View>
@@ -1006,102 +950,133 @@ const styles = StyleSheet.create({
   },
   drawerPanel: {
     height: '100%',
-    backgroundColor: '#fff',
-    paddingHorizontal: 18,
-    paddingTop: 16,
-    paddingBottom: 16,
-    gap: 10,
+    backgroundColor: MOBILE.bg,
     ...Platform.select({
       web: { boxShadow: '-12px 0 32px rgba(0,0,0,0.18)' },
       default: { elevation: 12 },
     }),
   },
   drawerPanelMobile: {
-    paddingHorizontal: 16,
-    paddingBottom: Platform.OS === 'ios' ? Math.max(28, mobileSafeBottom() + 8) : 16,
+    paddingBottom: Platform.OS === 'ios' ? Math.max(20, mobileSafeBottom()) : 12,
     backgroundColor: MOBILE.bg,
   },
-  drawerTopBar: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  drawerTopBarMobile: {
-    paddingTop: Platform.OS === 'ios' ? 38 : 2,
-  },
-  titleBlock: {
-    flex: 1,
-    minWidth: 0,
-  },
-  backRow: {
+  navBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    alignSelf: 'flex-start',
-    marginBottom: 4,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
+    minHeight: 52,
+    paddingHorizontal: 8,
+    backgroundColor: 'rgba(242,242,247,0.94)',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
   },
-  backText: {
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '600',
-    color: ACCENT,
+  navBarMobile: {
+    paddingTop: Platform.OS === 'ios' ? mobileSafeTop() - 12 : 6,
   },
-  iosBackRow: {
+  navSide: {
+    width: 88,
     minHeight: 44,
-    marginBottom: 0,
+    justifyContent: 'center',
   },
-  iosBackText: {
+  navSideRight: {
+    textAlign: 'right',
+  },
+  navAction: {
+    fontFamily,
     fontSize: 17,
     fontWeight: '400',
-    color: MOBILE.blue,
-  },
-  iosClose: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-  },
-  drawerTitle: {
-    fontFamily,
-    fontSize: 18,
-    fontWeight: '600',
-    color: TEXT,
-    letterSpacing: -0.3,
-  },
-  drawerSub: {
-    fontFamily,
-    fontSize: 13,
-    lineHeight: 18,
-    color: SECONDARY,
-    marginTop: 4,
-  },
-  closeButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: FILL,
+    color: BLUE,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
+  },
+  navActionEmph: {
+    fontWeight: '600',
+  },
+  navTitle: {
+    fontFamily,
+    flex: 1,
+    fontSize: 17,
+    fontWeight: '600',
+    color: TEXT,
+    textAlign: 'center',
+    letterSpacing: -0.3,
   },
   body: {
     flex: 1,
     minHeight: 0,
   },
   editContent: {
-    gap: 10,
-    paddingBottom: 16,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 32,
+  },
+  groupHeader: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: SECONDARY,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginTop: 18,
+    marginBottom: 6,
+    marginLeft: 4,
+  },
+  group: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    overflow: 'visible',
+  },
+  groupPadded: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 16,
+  },
+  iosRowWrap: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
+  },
+  iosRowLast: {
+    borderBottomWidth: 0,
+  },
+  iosRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 44,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    gap: 12,
+  },
+  iosRowLabel: {
+    fontFamily,
+    width: 92,
+    flexShrink: 0,
+    fontSize: 17,
+    color: TEXT,
+  },
+  iosRowControl: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
+  },
+  iosRowInput: {
+    fontFamily,
+    fontSize: 17,
+    color: TEXT,
+    paddingVertical: 4,
+    outlineStyle: 'none',
+    textAlign: 'right',
+  },
+  iosRowInputChanged: {
+    color: CHANGED,
+    fontWeight: '600',
   },
   inlineBusy: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 10,
   },
   metaText: {
     fontFamily,
@@ -1111,106 +1086,54 @@ const styles = StyleSheet.create({
   warnText: {
     fontFamily,
     fontSize: 13,
-    color: ACCENT,
+    color: CHANGED,
+    paddingHorizontal: 16,
+    paddingTop: 8,
   },
   errorText: {
     fontFamily,
     fontSize: 13,
-    color: ACCENT,
+    color: '#FF3B30',
+    paddingHorizontal: 4,
+    paddingTop: 8,
   },
   emptyText: {
     fontFamily,
-    fontSize: 14,
+    fontSize: 16,
     color: SECONDARY,
-    paddingVertical: 8,
-  },
-  sectionLabel: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: SECONDARY,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    marginTop: 6,
-  },
-  fieldBlock: {
-    gap: 4,
-  },
-  fieldBlockCompact: {
-    flex: 1,
-    minWidth: 0,
-  },
-  fieldLabel: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: SECONDARY,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
   },
   changedRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-end',
     gap: 8,
   },
   changedOriginal: {
     flex: 1,
     minWidth: 0,
+    textAlign: 'right',
   },
   reverseButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
     flexShrink: 0,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    backgroundColor: '#FFF7ED',
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
-  reverseButtonCompact: {
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-  },
   reverseButtonText: {
     fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: ACCENT,
-  },
-  reverseButtonTextCompact: {
-    fontSize: 12,
-  },
-  fieldInput: {
-    fontFamily,
-    fontSize: 16,
-    color: TEXT,
-    backgroundColor: FILL,
-    borderRadius: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    outlineStyle: 'none',
-  },
-  fieldInputCorrected: {
-    backgroundColor: '#FFF7ED',
-    color: ACCENT,
-    fontWeight: '600',
-  },
-  fieldInputCompact: {
-    minWidth: 0,
-    width: '100%',
-    paddingVertical: 8,
-    paddingHorizontal: 10,
     fontSize: 15,
+    fontWeight: '400',
+    color: BLUE,
   },
   lookupBlock: {
     zIndex: 4,
   },
   lookupRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     gap: 8,
   },
   lookupInputWrap: {
@@ -1220,13 +1143,14 @@ const styles = StyleSheet.create({
   },
   lookupSpinner: {
     position: 'absolute',
-    right: 10,
-    top: 12,
+    right: 0,
+    top: 6,
   },
   lookupMenu: {
-    marginTop: 4,
+    marginHorizontal: 12,
+    marginBottom: 8,
     backgroundColor: '#fff',
-    borderRadius: 6,
+    borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: HAIRLINE,
     maxHeight: 220,
@@ -1238,8 +1162,8 @@ const styles = StyleSheet.create({
     }),
   },
   lookupOption: {
-    paddingHorizontal: 12,
-    paddingVertical: 9,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: HAIRLINE,
     ...Platform.select({
@@ -1249,216 +1173,85 @@ const styles = StyleSheet.create({
   },
   lookupOptionLabel: {
     fontFamily,
-    fontSize: 15,
+    fontSize: 17,
     color: TEXT,
   },
   lookupOptionSub: {
     fontFamily,
-    fontSize: 12,
+    fontSize: 13,
     color: SECONDARY,
     marginTop: 1,
   },
   lookupEmpty: {
     fontFamily,
-    fontSize: 13,
+    fontSize: 15,
     color: SECONDARY,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
   },
-  newSideButton: {
-    flexDirection: 'row',
+  addIconButton: {
+    width: 32,
+    height: 32,
     alignItems: 'center',
-    gap: 4,
-    backgroundColor: ACCENT,
-    borderRadius: 6,
-    paddingHorizontal: 10,
-    height: 42,
+    justifyContent: 'center',
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
-  newSideButtonText: {
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#fff',
-  },
   newCustomerCard: {
-    backgroundColor: '#f5f5f7',
-    borderRadius: 6,
-    padding: 12,
-    gap: 8,
+    gap: 0,
   },
   newCustomerActions: {
     flexDirection: 'row',
-    gap: 8,
-    marginTop: 4,
-  },
-  secondaryButton: {
-    flex: 1,
-    height: 44,
-    borderRadius: 6,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: FILL,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  secondaryButtonText: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: TEXT,
-  },
-  primaryButton: {
-    backgroundColor: ACCENT,
-    borderRadius: 6,
-    height: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  primaryButtonInline: {
-    flex: 1,
-  },
-  primaryButtonDisabled: {
-    opacity: 0.6,
-  },
-  primaryButtonText: {
-    fontFamily,
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#fff',
+    justifyContent: 'space-between',
+    paddingHorizontal: 4,
+    paddingTop: 10,
   },
   struckText: {
     fontFamily,
-    fontSize: 14,
+    fontSize: 13,
     color: STRUCK,
     textDecorationLine: 'line-through',
   },
   correctedText: {
     fontFamily,
-    fontSize: 15,
+    fontSize: 17,
     fontWeight: '600',
-    color: ACCENT,
+    color: CHANGED,
   },
   correctionPair: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'flex-end',
     gap: 2,
-  },
-  correctionList: {
-    gap: 8,
   },
   correctionItem: {
-    gap: 2,
-  },
-  lineTable: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: HAIRLINE,
-    borderRadius: 6,
-    overflow: 'visible',
-    backgroundColor: '#fff',
-  },
-  lineTableHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    width: '100%',
-    minHeight: 36,
-    paddingHorizontal: 10,
-    backgroundColor: '#ebebf0',
-    borderTopLeftRadius: 6,
-    borderTopRightRadius: 6,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#d1d1d6',
-  },
-  lineTh: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: SECONDARY,
-    letterSpacing: -0.08,
-  },
-  lineTableRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    width: '100%',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: HAIRLINE,
-  },
-  lineColProduct: {
-    flex: 1,
-    minWidth: 0,
-    paddingRight: 10,
-  },
-  lineColQty: {
-    width: 72,
-    flexGrow: 0,
-    flexShrink: 0,
-    paddingRight: 8,
-  },
-  lineColUnit: {
-    width: 88,
-    flexGrow: 0,
-    flexShrink: 0,
-    paddingRight: 8,
-  },
-  lineColAmount: {
-    width: 100,
-    flexGrow: 0,
-    flexShrink: 0,
-  },
-  colAmountText: {
-    textAlign: 'right',
-    fontVariant: ['tabular-nums'],
-  },
-  mobileItemList: {
-    gap: 10,
-  },
-  mobileItemRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  mobileItemField: {
-    flex: 1,
-    minWidth: 0,
-  },
-  itemCard: {
-    backgroundColor: '#f5f5f7',
-    borderRadius: 6,
-    padding: 10,
-    gap: 8,
-    overflow: 'visible',
-    zIndex: 2,
-  },
-  itemIndex: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: SECONDARY,
-  },
-  itemRow: {
-    flexDirection: 'row',
-    gap: 8,
+    gap: 6,
   },
   noteInput: {
-    minHeight: 110,
-    paddingTop: 10,
+    fontFamily,
+    fontSize: 17,
+    color: TEXT,
+    minHeight: 120,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    outlineStyle: 'none',
   },
   typeChips: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 6,
+    gap: 8,
+    paddingHorizontal: 4,
+    paddingTop: 10,
   },
   typeChip: {
-    backgroundColor: FILL,
-    borderRadius: 16,
+    backgroundColor: '#fff',
+    borderRadius: 999,
     paddingHorizontal: 14,
     paddingVertical: 8,
     minHeight: 36,
@@ -1468,28 +1261,26 @@ const styles = StyleSheet.create({
     }),
   },
   typeChipActive: {
-    backgroundColor: '#FFEDD5',
+    backgroundColor: '#EAF2FF',
   },
   typeChipText: {
     fontFamily,
-    fontSize: 13,
-    color: '#6b6b6b',
+    fontSize: 15,
+    color: TEXT,
   },
   typeChipTextActive: {
-    color: ACCENT,
+    color: BLUE,
     fontWeight: '600',
   },
   amountBox: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: FILL,
-    borderRadius: 6,
-    paddingHorizontal: 12,
-    minHeight: 46,
+    paddingHorizontal: 16,
+    minHeight: 44,
   },
   amountPrefix: {
     fontFamily,
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '600',
     color: TEXT,
     marginRight: 6,
@@ -1497,7 +1288,7 @@ const styles = StyleSheet.create({
   amountInput: {
     flex: 1,
     fontFamily,
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '600',
     color: TEXT,
     paddingVertical: 10,

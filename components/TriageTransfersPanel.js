@@ -33,7 +33,6 @@ import {
   resolvePosAuthForRow,
   rowFromDocument,
 } from '../lib/transactions';
-import { textMatchesQuery } from '../lib/itemSearch';
 import {
   RECEIVE_STATUS,
   RECEIVE_STATUS_LABELS,
@@ -102,6 +101,7 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
   style.textContent = [
     '.cgold-triage-feed{height:100%;overflow-y:auto;scroll-snap-type:y mandatory;-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain;}',
     '.cgold-triage-feed-page{scroll-snap-align:start;scroll-snap-stop:always;}',
+    '.cgold-triage-feed-hero{height:100%;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;}',
   ].join('');
 }
 
@@ -316,19 +316,6 @@ function rowPersonLabels(row) {
   return uniqueLabels([row?.customerName, row?.employeeName]);
 }
 
-function rowProductHay(row) {
-  const reviewItems = row?.review?.draft?.items || [];
-  return [
-    ...(row?.itemNames || []),
-    ...(row?.pricedLines || []).map((line) => line?.name),
-    row?.itemSearchText,
-    ...reviewItems.map((item) => item?.name?.value || item?.name?.original),
-  ]
-    .map((value) => String(value || '').trim())
-    .filter(Boolean)
-    .join(' ');
-}
-
 function matchesLabelFilter(value, query) {
   const q = String(query || '').trim().toLowerCase();
   if (!q) return true;
@@ -339,12 +326,6 @@ function matchesPersonFilter(row, query) {
   const q = String(query || '').trim();
   if (!q) return true;
   return rowPersonLabels(row).some((label) => matchesLabelFilter(label, q));
-}
-
-function matchesProductFilter(row, query) {
-  const q = String(query || '').trim();
-  if (!q) return true;
-  return textMatchesQuery(rowProductHay(row), q);
 }
 
 function ColumnFilter({
@@ -887,12 +868,6 @@ function poKindLabel(row) {
   return row?.type === 'order' ? 'SO' : 'PO';
 }
 
-function meltProductLabel(row) {
-  const items = Array.isArray(row?.itemNames) ? row.itemNames.filter(Boolean) : [];
-  if (!items.length) return '';
-  return items.length === 1 ? items[0] : `${items[0]} +${items.length - 1}`;
-}
-
 function meltStatusLabel(row) {
   if (row?.received) return 'Received';
   if (row?.review) return 'Reviewed';
@@ -956,9 +931,6 @@ function MeltTableRow({ row, onOpen, onToggleReceived, onRemove, last }) {
         </TableCell>
         <TableCell flex={1.1} minWidth={110}>
           {row.storeName}
-        </TableCell>
-        <TableCell flex={1.35} minWidth={120}>
-          {meltProductLabel(row)}
         </TableCell>
         <TableCell flex={0.85} minWidth={88}>
           <Text
@@ -1028,16 +1000,38 @@ function BullionTableRow({ row, onOpen, last }) {
   );
 }
 
-function FeedHero({ urls, label }) {
+function FeedHero({ urls, label, width }) {
   const photos = Array.isArray(urls) ? urls.filter(Boolean) : [];
   const [index, setIndex] = useState(0);
   const [failed, setFailed] = useState(false);
+  const [natural, setNatural] = useState(null);
   const photo = photos[index] || photos[0] || '';
+  const imageWidth = Math.max(1, Math.round(width || 0));
 
   useEffect(() => {
     setIndex(0);
     setFailed(false);
   }, [photos[0], photos.length]);
+
+  useEffect(() => {
+    if (!photo || failed) {
+      setNatural(null);
+      return undefined;
+    }
+    let cancelled = false;
+    Image.getSize(
+      photo,
+      (w, h) => {
+        if (!cancelled && w > 0 && h > 0) setNatural({ w, h });
+      },
+      () => {
+        if (!cancelled) setNatural(null);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [failed, photo]);
 
   const cycle = () => {
     if (photos.length < 2) return;
@@ -1045,9 +1039,23 @@ function FeedHero({ urls, label }) {
     setIndex((current) => (current + 1) % photos.length);
   };
 
+  const imageHeight =
+    natural?.w > 0
+      ? Math.max(1, Math.round((imageWidth * natural.h) / natural.w))
+      : Math.round(imageWidth * (4 / 3));
+
+  if (!photo || failed) {
+    return (
+      <View style={[styles.feedHeroPlaceholder, { width: imageWidth, minHeight: Math.round(imageWidth * 0.75) }]}>
+        <Ionicons name="image-outline" size={42} color="rgba(255,255,255,0.42)" />
+        <Text style={styles.feedHeroPlaceholderText}>No purchase photo</Text>
+      </View>
+    );
+  }
+
   return (
     <Pressable
-      style={styles.feedHero}
+      style={[styles.feedHeroFrame, { width: imageWidth }]}
       onPress={cycle}
       disabled={photos.length < 2}
       accessibilityRole={photos.length > 1 ? 'button' : 'image'}
@@ -1055,21 +1063,14 @@ function FeedHero({ urls, label }) {
         photos.length > 1 ? `${label} photo ${index + 1} of ${photos.length}` : `${label} photo`
       }
     >
-      {!photo || failed ? (
-        <View style={styles.feedHeroPlaceholder}>
-          <Ionicons name="image-outline" size={42} color="rgba(255,255,255,0.42)" />
-          <Text style={styles.feedHeroPlaceholderText}>No purchase photo</Text>
-        </View>
-      ) : (
-        <Image
-          source={{ uri: photo }}
-          style={styles.feedHeroImage}
-          resizeMode="cover"
-          onError={() => setFailed(true)}
-        />
-      )}
+      <Image
+        source={{ uri: photo }}
+        style={{ width: imageWidth, height: imageHeight }}
+        resizeMode="contain"
+        onError={() => setFailed(true)}
+      />
       {photos.length > 1 ? (
-        <View style={styles.feedHeroDots}>
+        <View style={styles.feedHeroDots} pointerEvents="none">
           {photos.slice(0, 6).map((url, dot) => (
             <View
               key={`${url}-${dot}`}
@@ -1082,47 +1083,62 @@ function FeedHero({ urls, label }) {
   );
 }
 
-function MeltPoFeedCard({ row, index, total, onOpen, onToggleReceived }) {
+function MeltPoFeedCard({ row, index, total, width, onOpen, onToggleReceived }) {
   const received = Boolean(row.received);
   const reviewed = Boolean(row.review);
   const isBuy = row.type !== 'order';
   const lines = Array.isArray(row.pricedLines) ? row.pricedLines.filter((line) => line?.name) : [];
   const extraLines = Math.max(0, lines.length - 2);
+  const [cardW, setCardW] = useState(Math.round(width || 0));
 
   return (
-    <View style={styles.feedCard}>
-      <FeedHero urls={row.imageUrls} label={row.reference} />
-      <View style={styles.feedScrim} pointerEvents="none" />
-
-      <View style={styles.feedCaption} pointerEvents="box-none">
-        <Text style={[styles.feedKind, isBuy && styles.feedKindBuy]}>{poKindLabel(row)}</Text>
-        <Text style={styles.feedHandle} numberOfLines={1}>
-          @{String(row.customerName || 'walk-in').replace(/\s+/g, '').toLowerCase() || 'walkin'}
-        </Text>
-        <Text style={styles.feedBuyer} numberOfLines={2}>
-          {[row.reference, row.amountLabel].filter(Boolean).join(' · ')}
-        </Text>
-        <Text style={styles.feedMeta} numberOfLines={2}>
-          {[row.storeName, row.dateLabel, row.timeLabel, row.employeeName, reviewed ? 'Reviewed' : '']
-            .filter(Boolean)
-            .join(' · ')}
-        </Text>
-        {lines.length > 0 ? (
-          <Text style={styles.feedLine} numberOfLines={2}>
-            {lines
-              .slice(0, 2)
-              .map((line) => line.name)
+    <View
+      style={styles.feedCard}
+      onLayout={(event) => {
+        const next = Math.round(event.nativeEvent.layout.width);
+        if (next > 0 && next !== cardW) setCardW(next);
+      }}
+    >
+      <ScrollView
+        style={styles.feedHeroScroll}
+        contentContainerStyle={styles.feedHeroScrollContent}
+        nestedScrollEnabled
+        showsVerticalScrollIndicator={false}
+        bounces={false}
+        keyboardShouldPersistTaps="handled"
+        {...(Platform.OS === 'web' ? { className: 'cgold-triage-feed-hero' } : null)}
+      >
+        <FeedHero urls={row.imageUrls} label={row.reference} width={cardW || width} />
+        <View style={styles.feedCaption}>
+          <Text style={[styles.feedKind, isBuy && styles.feedKindBuy]}>{poKindLabel(row)}</Text>
+          <Text style={styles.feedHandle} numberOfLines={1}>
+            @{String(row.customerName || 'walk-in').replace(/\s+/g, '').toLowerCase() || 'walkin'}
+          </Text>
+          <Text style={styles.feedBuyer} numberOfLines={2}>
+            {[row.reference, row.amountLabel].filter(Boolean).join(' · ')}
+          </Text>
+          <Text style={styles.feedMeta} numberOfLines={2}>
+            {[row.storeName, row.dateLabel, row.timeLabel, row.employeeName, reviewed ? 'Reviewed' : '']
+              .filter(Boolean)
               .join(' · ')}
-            {extraLines > 0 ? ` +${extraLines}` : ''}
           </Text>
-        ) : row.itemNames?.length ? (
-          <Text style={styles.feedLine} numberOfLines={2}>
-            {row.itemNames.filter(Boolean).join(' · ')}
-          </Text>
-        ) : null}
-      </View>
+          {lines.length > 0 ? (
+            <Text style={styles.feedLine} numberOfLines={2}>
+              {lines
+                .slice(0, 2)
+                .map((line) => line.name)
+                .join(' · ')}
+              {extraLines > 0 ? ` +${extraLines}` : ''}
+            </Text>
+          ) : row.itemNames?.length ? (
+            <Text style={styles.feedLine} numberOfLines={2}>
+              {row.itemNames.filter(Boolean).join(' · ')}
+            </Text>
+          ) : null}
+        </View>
+      </ScrollView>
 
-      <View style={styles.feedRail}>
+      <View style={styles.feedRail} pointerEvents="box-none">
         <Text style={styles.feedCount}>
           {index + 1}/{total}
         </Text>
@@ -1229,6 +1245,7 @@ function MeltPoFeedModal({ visible, rows, onClose, onOpen, onToggleReceived }) {
                     row={item}
                     index={index}
                     total={rows.length}
+                    width={stageWidth}
                     onOpen={onOpen}
                     onToggleReceived={onToggleReceived}
                   />
@@ -1496,7 +1513,6 @@ function MeltTab({
     dateLabel: '',
     person: '',
     store: '',
-    product: '',
     status: '',
   });
   const auth = useMemo(
@@ -1513,16 +1529,6 @@ function MeltTab({
   );
   const personOptions = useMemo(
     () => uniqueLabels((pos || []).flatMap((row) => rowPersonLabels(row))),
-    [pos],
-  );
-  const productOptions = useMemo(
-    () =>
-      uniqueLabels(
-        (pos || []).flatMap((row) => [
-          ...(row.itemNames || []),
-          ...(row.pricedLines || []).map((line) => line?.name),
-        ]),
-      ),
     [pos],
   );
   const referenceOptions = useMemo(
@@ -1545,7 +1551,6 @@ function MeltTab({
           matchesLabelFilter(row.dateLabel, filters.dateLabel) &&
           matchesPersonFilter(row, filters.person) &&
           matchesLabelFilter(row.storeName, filters.store) &&
-          matchesProductFilter(row, filters.product) &&
           matchesLabelFilter(meltStatusLabel(row), filters.status),
       ),
     [filters, pos],
@@ -1619,7 +1624,7 @@ function MeltTab({
         />
       ) : (
         <TableFrame
-          minWidth={920}
+          minWidth={780}
           header={
             <>
               <View style={styles.tablePhotoCell} />
@@ -1662,16 +1667,6 @@ function MeltTab({
                 openKey={openFilter}
                 onOpenKey={setOpenFilter}
                 style={{ flex: 1.1, minWidth: 110 }}
-              />
-              <ColumnFilter
-                columnKey="product"
-                label="Product"
-                value={filters.product}
-                onChange={(value) => setFilter('product', value)}
-                options={productOptions}
-                openKey={openFilter}
-                onOpenKey={setOpenFilter}
-                style={{ flex: 1.35, minWidth: 120 }}
               />
               <ColumnFilter
                 columnKey="status"
@@ -3973,21 +3968,23 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.7)',
     marginBottom: 8,
   },
-  feedHero: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#0b0b0c',
-    alignItems: 'center',
-    justifyContent: 'center',
+  feedHeroScroll: {
+    flex: 1,
+    minHeight: 0,
   },
-  feedHeroImage: {
-    width: '100%',
-    height: '100%',
+  feedHeroScrollContent: {
+    paddingBottom: Math.max(28, mobileSafeBottom() + 16),
+  },
+  feedHeroFrame: {
+    position: 'relative',
+    backgroundColor: '#0b0b0c',
   },
   feedHeroPlaceholder: {
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
     padding: 16,
+    backgroundColor: '#0b0b0c',
   },
   feedHeroPlaceholderText: {
     fontFamily,
@@ -3996,9 +3993,11 @@ const styles = StyleSheet.create({
   },
   feedHeroDots: {
     position: 'absolute',
-    top: 16,
-    alignSelf: 'center',
+    bottom: 12,
+    left: 0,
+    right: 0,
     flexDirection: 'row',
+    justifyContent: 'center',
     gap: 5,
   },
   feedHeroDot: {
@@ -4010,19 +4009,10 @@ const styles = StyleSheet.create({
   feedHeroDotOn: {
     backgroundColor: '#fff',
   },
-  feedScrim: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    height: 240,
-    backgroundColor: 'rgba(0,0,0,0.38)',
-  },
   feedCaption: {
-    position: 'absolute',
-    left: 16,
-    right: 88,
-    bottom: Math.max(20, mobileSafeBottom() + 12),
+    paddingTop: 16,
+    paddingHorizontal: 16,
+    paddingRight: 88,
     gap: 2,
   },
   feedBuyer: {
