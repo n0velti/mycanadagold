@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { MOBILE } from '../lib/mobileUi';
 import {
   bumpCountText,
   denomsForCurrency,
@@ -44,10 +45,12 @@ const fontFamily = Platform.select({
 
 const TEXT = '#1d1d1f';
 const SECONDARY = '#8e8e93';
-const GREEN = '#2F8A4E';
+const BLUE = MOBILE.blue;
+const GREEN = '#34C759';
 const RED = '#FF3B30';
 const FILL = 'rgba(118, 118, 128, 0.12)';
-const HAIRLINE = '#e5e5ea';
+const PAGE = MOBILE.bg;
+const HAIRLINE = MOBILE.separator;
 
 function moneyClose(a, b) {
   if (a == null || b == null) return false;
@@ -278,19 +281,33 @@ export default function TxnCashBreakdownModal({
       <View style={styles.root}>
         <Pressable style={styles.backdrop} onPress={onClose} />
         <View style={styles.sheet}>
-          <View style={styles.header}>
-            <View style={styles.headerCopy}>
-              <Text style={styles.title}>{title}</Text>
-              {subtitle ? (
-                <Text style={styles.subtitle} numberOfLines={2}>
-                  {subtitle}
-                </Text>
-              ) : null}
-            </View>
-            <Pressable onPress={onClose} hitSlop={8} accessibilityLabel="Close">
-              <Ionicons name="close" size={20} color={SECONDARY} />
+          <View style={styles.navBar}>
+            <Pressable onPress={onClose} hitSlop={8} style={styles.navSide} accessibilityLabel="Cancel">
+              <Text style={styles.navCancel}>Cancel</Text>
+            </Pressable>
+            <Text style={styles.navTitle} numberOfLines={1}>
+              {title}
+            </Text>
+            <Pressable
+              onPress={handleSave}
+              disabled={saving}
+              hitSlop={8}
+              style={styles.navSideRight}
+              accessibilityLabel="Save"
+            >
+              {saving ? (
+                <ActivityIndicator color={BLUE} size="small" />
+              ) : (
+                <Text style={styles.navSave}>Save</Text>
+              )}
             </Pressable>
           </View>
+
+          {subtitle ? (
+            <Text style={styles.subtitle} numberOfLines={2}>
+              {subtitle}
+            </Text>
+          ) : null}
 
           <Text style={styles.hint}>
             {hasSplit && cashAmount != null
@@ -317,30 +334,38 @@ export default function TxnCashBreakdownModal({
               keyboardShouldPersistTaps="handled"
             >
               {groups.map((group) => (
-                <View key={group.key}>
+                <View key={group.key} style={styles.denomGroup}>
                   {groups.length > 1 ? <Text style={styles.groupTitle}>{group.title}</Text> : null}
-                  {group.denoms.map((denom) => (
-                    <View key={denom.key} style={styles.denomRow}>
-                      <View style={styles.denomLabel}>
-                        <View style={[styles.denomDot, { backgroundColor: denom.color }]} />
-                        <Text style={styles.denomFace}>{denomTitle(denom)}</Text>
+                  <View style={styles.denomCard}>
+                    {group.denoms.map((denom, index) => (
+                      <View
+                        key={denom.key}
+                        style={[
+                          styles.denomRow,
+                          index === group.denoms.length - 1 && styles.denomRowLast,
+                        ]}
+                      >
+                        <View style={styles.denomLabel}>
+                          <View style={[styles.denomDot, { backgroundColor: denom.color }]} />
+                          <Text style={styles.denomFace}>{denomTitle(denom)}</Text>
+                        </View>
+                        <Stepper
+                          value={received[denom.key]}
+                          onChange={(value) =>
+                            setReceived((current) => ({ ...current, [denom.key]: value }))
+                          }
+                          label={`${denomTitle(denom)} received`}
+                        />
+                        <Stepper
+                          value={given[denom.key]}
+                          onChange={(value) =>
+                            setGiven((current) => ({ ...current, [denom.key]: value }))
+                          }
+                          label={`${denomTitle(denom)} given`}
+                        />
                       </View>
-                      <Stepper
-                        value={received[denom.key]}
-                        onChange={(value) =>
-                          setReceived((current) => ({ ...current, [denom.key]: value }))
-                        }
-                        label={`${denomTitle(denom)} received`}
-                      />
-                      <Stepper
-                        value={given[denom.key]}
-                        onChange={(value) =>
-                          setGiven((current) => ({ ...current, [denom.key]: value }))
-                        }
-                        label={`${denomTitle(denom)} given`}
-                      />
-                    </View>
-                  ))}
+                    ))}
+                  </View>
                 </View>
               ))}
             </ScrollView>
@@ -375,17 +400,6 @@ export default function TxnCashBreakdownModal({
                   <Text style={styles.clearText}>Clear</Text>
                 </Pressable>
               ) : null}
-              <Pressable
-                onPress={handleSave}
-                disabled={saving}
-                style={({ pressed }) => [styles.saveBtn, pressed && styles.saveBtnPressed]}
-              >
-                {saving ? (
-                  <ActivityIndicator color="#fff" size="small" />
-                ) : (
-                  <Text style={styles.saveText}>Save</Text>
-                )}
-              </Pressable>
             </View>
           </View>
         </View>
@@ -419,8 +433,8 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 420,
     maxHeight: '88%',
-    backgroundColor: '#fff',
-    borderRadius: 16,
+    backgroundColor: PAGE,
+    borderRadius: 14,
     overflow: 'hidden',
     ...Platform.select({
       web: { boxShadow: '0 16px 48px rgba(0,0,0,0.18)' },
@@ -433,31 +447,65 @@ const styles = StyleSheet.create({
       },
     }),
   },
-  header: {
+  navBar: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 6,
+    alignItems: 'center',
+    minHeight: 52,
+    paddingHorizontal: 8,
+    backgroundColor: 'rgba(242,242,247,0.94)',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
   },
-  headerCopy: {
-    flex: 1,
-    minWidth: 0,
+  navSide: {
+    minWidth: 72,
+    minHeight: 44,
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
-  title: {
+  navSideRight: {
+    minWidth: 72,
+    minHeight: 44,
+    justifyContent: 'center',
+    alignItems: 'flex-end',
+    paddingRight: 8,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  navCancel: {
     fontFamily,
+    fontSize: 17,
+    fontWeight: '400',
+    color: BLUE,
+    paddingLeft: 8,
+  },
+  navTitle: {
+    fontFamily,
+    flex: 1,
     fontSize: 17,
     fontWeight: '600',
     color: TEXT,
+    textAlign: 'center',
     letterSpacing: -0.3,
+  },
+  navSave: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: BLUE,
   },
   subtitle: {
     fontFamily,
     fontSize: 13,
     color: SECONDARY,
     letterSpacing: -0.08,
-    marginTop: 2,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 2,
   },
   hint: {
     fontFamily,
@@ -496,26 +544,41 @@ const styles = StyleSheet.create({
     maxHeight: 360,
   },
   listContent: {
-    paddingHorizontal: 12,
+    paddingHorizontal: 16,
     paddingBottom: 8,
   },
   groupTitle: {
     fontFamily,
-    fontSize: 11,
-    fontWeight: '600',
+    fontSize: 13,
+    fontWeight: '400',
     color: SECONDARY,
-    letterSpacing: 0.2,
+    letterSpacing: 0.4,
     textTransform: 'uppercase',
     paddingHorizontal: 4,
-    paddingTop: 8,
-    paddingBottom: 4,
+    paddingTop: 12,
+    paddingBottom: 6,
+  },
+  denomGroup: {
+    marginBottom: 8,
+  },
+  denomCard: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    overflow: 'hidden',
   },
   denomRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingVertical: 4,
-    paddingHorizontal: 4,
+    minHeight: 44,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    backgroundColor: '#fff',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
+  },
+  denomRowLast: {
+    borderBottomWidth: 0,
   },
   denomLabel: {
     width: 64,
@@ -530,16 +593,16 @@ const styles = StyleSheet.create({
   },
   denomFace: {
     fontFamily,
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 17,
+    fontWeight: '400',
     color: TEXT,
-    letterSpacing: -0.2,
+    letterSpacing: -0.3,
   },
   stepper: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#f2f2f7',
+    backgroundColor: FILL,
     borderRadius: 10,
     overflow: 'hidden',
   },
@@ -576,6 +639,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     gap: 10,
+    backgroundColor: PAGE,
   },
   footerCopy: {
     gap: 2,
@@ -609,30 +673,12 @@ const styles = StyleSheet.create({
   footerActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'flex-end',
+    justifyContent: 'flex-start',
     gap: 14,
   },
   clearText: {
     fontFamily,
-    fontSize: 15,
-    color: SECONDARY,
-  },
-  saveBtn: {
-    backgroundColor: GREEN,
-    borderRadius: 10,
-    paddingHorizontal: 16,
-    minWidth: 72,
-    height: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  saveBtnPressed: {
-    opacity: 0.88,
-  },
-  saveText: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#fff',
+    fontSize: 17,
+    color: RED,
   },
 });

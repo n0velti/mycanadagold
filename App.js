@@ -4445,6 +4445,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('home');
   const [activeTool, setActiveTool] = useState(null);
   const [triageStoreBack, setTriageStoreBack] = useState(null);
+  const [triageBatch, setTriageBatch] = useState(null);
   const [settingsPanel, setSettingsPanel] = useState(null);
   const [toolsQuery, setToolsQuery] = useState('');
   const [pinnedKeys, setPinnedKeys] = useState([]);
@@ -4876,20 +4877,31 @@ export default function App() {
             <Text style={styles.breadcrumbSep}>›</Text>
             <Text style={styles.breadcrumbCurrent}>{settingsSubPanelLabel}</Text>
           </>
+        ) : activeTool.key === 'triage' && triageStoreBack && triageBatch ? (
+          <>
+            <Pressable
+              onPress={triageStoreBack}
+              style={styles.breadcrumbLink}
+              accessibilityRole="button"
+              accessibilityLabel="Back to triage dashboard"
+            >
+              <Text style={styles.breadcrumbLinkText}>{activeTool.label}</Text>
+            </Pressable>
+            <Text style={styles.breadcrumbSep}>›</Text>
+            <View style={styles.breadcrumbBatch}>
+              <Text style={styles.breadcrumbCurrent} numberOfLines={1}>
+                {triageBatch.dateLabel}
+              </Text>
+              {triageBatch.storeNames ? (
+                <Text style={styles.breadcrumbSub} numberOfLines={1}>
+                  {triageBatch.storeNames}
+                </Text>
+              ) : null}
+            </View>
+          </>
         ) : (
           <Text style={styles.breadcrumbCurrent}>{activeTool.label}</Text>
         )}
-        {activeTool.key === 'triage' && triageStoreBack ? (
-          <Pressable
-            onPress={triageStoreBack}
-            style={styles.breadcrumbBack}
-            accessibilityRole="button"
-            accessibilityLabel="Back to transfers"
-          >
-            <Ionicons name="chevron-back" size={18} color="#C2410C" />
-            <Text style={styles.breadcrumbBackText}>Transfers</Text>
-          </Pressable>
-        ) : null}
       </View>
     );
   };
@@ -5258,7 +5270,10 @@ export default function App() {
                 session={session}
                 onRequireLogin={() => selectTab('profile')}
                 storeFilter={scopedStore || undefined}
-                onStoreBackChange={(fn) => setTriageStoreBack(() => fn)}
+                onStoreBackChange={(fn, context) => {
+                  setTriageStoreBack(() => fn || null);
+                  setTriageBatch(context || null);
+                }}
               />
             ) : activeTool.key === 'messages' ? (
               <View style={styles.messagesHost}>
@@ -5541,29 +5556,28 @@ export default function App() {
           {activeTab === 'home' ? <MobileHomeHeader /> : null}
           {activeTab === 'tools' && activeTool ? (
             <MobileNavHeader
-              title={mobileToolTitle}
+              title={
+                activeTool.key === 'triage' && triageBatch?.dateLabel
+                  ? triageBatch.dateLabel
+                  : mobileToolTitle
+              }
+              subtitle={
+                activeTool.key === 'triage' && triageBatch?.storeNames
+                  ? triageBatch.storeNames
+                  : undefined
+              }
               onBack={() => {
                 if (activeTool.key === 'settings' && settingsPanel) {
                   setSettingsPanel(null);
                   return;
                 }
+                if (activeTool.key === 'triage' && triageStoreBack) {
+                  triageStoreBack();
+                  return;
+                }
                 setActiveTool(null);
                 setSettingsPanel(null);
               }}
-              trailing={
-                activeTool.key === 'triage' && triageStoreBack ? (
-                  <Pressable
-                    onPress={triageStoreBack}
-                    hitSlop={8}
-                    accessibilityRole="button"
-                    accessibilityLabel="Back to transfers"
-                    style={styles.mobileTitleBack}
-                  >
-                    <Ionicons name="chevron-back" size={18} color="#C2410C" />
-                    <Text style={styles.mobileTitleBackText}>Transfers</Text>
-                  </Pressable>
-                ) : null
-              }
             />
           ) : null}
           <View style={contentStyle}>{renderContent()}</View>
@@ -7441,6 +7455,18 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '600',
     color: '#1a1a1a',
+  },
+  breadcrumbBatch: {
+    minWidth: 0,
+    flexShrink: 1,
+    justifyContent: 'center',
+  },
+  breadcrumbSub: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#8e8e93',
+    marginTop: -1,
   },
   breadcrumbBack: {
     flexDirection: 'row',

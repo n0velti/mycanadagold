@@ -28,6 +28,7 @@ import {
   formatPickerDate,
   parseDateParam,
 } from '../lib/transactions';
+import { MOBILE, mobileSafeBottom } from '../lib/mobileUi';
 import { AuditTxnDrawer, useAuditTxnDrawer } from './AuditAiOutput';
 
 const fontFamily = Platform.select({
@@ -36,16 +37,18 @@ const fontFamily = Platform.select({
   default: 'Sohne',
 });
 
-const ACCENT = '#2F8A4E';
+const BLUE = MOBILE.blue;
+const GREEN = '#34C759';
+const ACCENT = GREEN;
 const TEXT = '#1d1d1f';
 const SECONDARY = '#8e8e93';
-const FILL = '#e8e8ed';
-const GROUP_BG = '#f2f2f7';
-const HAIRLINE = '#e5e5ea';
+const FILL = 'rgba(118, 118, 128, 0.12)';
+const PAGE = MOBILE.bg;
+const CARD = '#fff';
+const HAIRLINE = MOBILE.separator;
 const MOBILE_BREAKPOINT = 768;
-const AMBER = '#B45309';
-const BLUE = '#1D4ED8';
-const RED = '#B91C1C';
+const AMBER = '#FF9500';
+const RED = '#FF3B30';
 
 function useIsMobile() {
   const { width } = useWindowDimensions();
@@ -657,7 +660,7 @@ export default function ItemAuditPanel({
                         {[item.metal, item.sku].filter(Boolean).join(' · ')}
                       </Text>
                     </View>
-                    {active ? <Ionicons name="checkmark" size={16} color={ACCENT} /> : null}
+                    {active ? <Ionicons name="checkmark" size={20} color={BLUE} /> : null}
                   </Pressable>
                 );
               })}
@@ -705,7 +708,7 @@ export default function ItemAuditPanel({
                     disabled={lockedStore}
                   >
                     <Text style={styles.modalOptionTitle}>{store.name}</Text>
-                    {active ? <Ionicons name="checkmark" size={16} color={ACCENT} /> : null}
+                    {active ? <Ionicons name="checkmark" size={20} color={BLUE} /> : null}
                   </Pressable>
                 );
               })}
@@ -730,6 +733,7 @@ const styles = StyleSheet.create({
   body: {
     flex: 1,
     minHeight: 0,
+    backgroundColor: PAGE,
   },
   bodyEmbedded: {
     width: '100%',
@@ -757,9 +761,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     backgroundColor: FILL,
-    borderRadius: 12,
+    borderRadius: 10,
     paddingHorizontal: 12,
-    height: 42,
+    height: 36,
     minWidth: 120,
     maxWidth: 220,
     ...Platform.select({
@@ -801,9 +805,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     backgroundColor: FILL,
-    borderRadius: 12,
+    borderRadius: 10,
     paddingHorizontal: 12,
-    height: 42,
+    height: 36,
     justifyContent: 'center',
     flexShrink: 0,
     ...Platform.select({
@@ -823,10 +827,10 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   dateModalCard: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingBottom: 16,
+    backgroundColor: PAGE,
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+    paddingBottom: Platform.OS === 'ios' ? Math.max(20, mobileSafeBottom()) : 16,
   },
   dateModalHeader: {
     flexDirection: 'row',
@@ -844,9 +848,9 @@ const styles = StyleSheet.create({
   },
   doneText: {
     fontFamily,
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '600',
-    color: ACCENT,
+    color: BLUE,
   },
   metaRow: {
     flexDirection: 'row',
@@ -877,12 +881,12 @@ const styles = StyleSheet.create({
   },
   hint: {
     fontFamily,
-    fontSize: 14,
-    color: '#6b6b6b',
+    fontSize: 17,
+    color: SECONDARY,
   },
   link: {
-    color: ACCENT,
-    fontWeight: '600',
+    color: BLUE,
+    fontWeight: '400',
   },
   scroll: {
     flex: 1,
@@ -916,12 +920,13 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 13,
     color: SECONDARY,
-    letterSpacing: -0.08,
-    paddingHorizontal: 16,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    paddingHorizontal: 4,
   },
   group: {
-    backgroundColor: GROUP_BG,
-    borderRadius: 14,
+    backgroundColor: CARD,
+    borderRadius: 12,
     overflow: 'hidden',
   },
   storeHeader: {
@@ -1075,18 +1080,19 @@ const styles = StyleSheet.create({
   },
   modalRoot: {
     flex: 1,
-    justifyContent: 'center',
-    padding: 20,
+    justifyContent: 'flex-end',
   },
   modalBackdrop: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.28)',
   },
   modalSheet: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
+    backgroundColor: PAGE,
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
     maxHeight: '80%',
     overflow: 'hidden',
+    paddingBottom: Platform.OS === 'ios' ? Math.max(20, mobileSafeBottom()) : 12,
   },
   modalHeader: {
     flexDirection: 'row',
@@ -1094,13 +1100,17 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingTop: 14,
-    paddingBottom: 8,
+    paddingBottom: 10,
+    backgroundColor: 'rgba(242,242,247,0.94)',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
   },
   modalTitle: {
     fontFamily,
     fontSize: 17,
     fontWeight: '600',
     color: TEXT,
+    letterSpacing: -0.3,
   },
   modalActions: {
     paddingHorizontal: 16,
@@ -1111,11 +1121,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     marginHorizontal: 16,
+    marginTop: 12,
     marginBottom: 8,
     backgroundColor: FILL,
-    borderRadius: 12,
+    borderRadius: 10,
     paddingHorizontal: 12,
-    height: 40,
+    height: 36,
   },
   searchInput: {
     flex: 1,
@@ -1130,16 +1141,23 @@ const styles = StyleSheet.create({
   },
   modalList: {
     maxHeight: 420,
+    backgroundColor: CARD,
+    marginHorizontal: 16,
+    marginBottom: 12,
+    borderRadius: 12,
+    overflow: 'hidden',
   },
   modalOption: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 48,
+    minHeight: 44,
     paddingHorizontal: 16,
     gap: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
   },
   modalOptionActive: {
-    backgroundColor: '#F3F8F4',
+    backgroundColor: CARD,
   },
   modalOptionCopy: {
     flex: 1,
@@ -1147,9 +1165,9 @@ const styles = StyleSheet.create({
   },
   modalOptionTitle: {
     fontFamily,
-    fontSize: 16,
+    fontSize: 17,
     color: TEXT,
-    letterSpacing: -0.2,
+    letterSpacing: -0.3,
   },
   modalOptionMeta: {
     fontFamily,

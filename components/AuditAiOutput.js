@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { API_BASE_URL } from '../lib/auth';
+import { MOBILE, mobileSafeBottom, mobileSafeTop } from '../lib/mobileUi';
 import {
   fetchTransactionDetail,
   findLookupTransaction,
@@ -30,10 +31,13 @@ const fontFamily = Platform.select({
   default: 'Sohne',
 });
 
+const BLUE = MOBILE.blue;
 const TEXT = '#1d1d1f';
 const SECONDARY = '#8e8e93';
-const HAIRLINE = '#e5e5ea';
-const LINK = '#0B57D0';
+const FILL = 'rgba(118, 118, 128, 0.12)';
+const PAGE = MOBILE.bg;
+const HAIRLINE = MOBILE.separator;
+const LINK = BLUE;
 const MOBILE_BREAKPOINT = 768;
 const DRAWER_OPEN_MS = 280;
 const DRAWER_CLOSE_MS = 220;
@@ -306,9 +310,8 @@ export function AuditAiChat({
             key={`${turn.role}-${index}`}
             style={[styles.bubble, isUser ? styles.bubbleUser : styles.bubbleAssistant]}
           >
-            <Text style={[styles.role, isUser && styles.roleUser]}>{isUser ? 'You' : 'AI'}</Text>
             {isUser ? (
-              <Text style={styles.bodyText}>{turn.content || ''}</Text>
+              <Text style={styles.bodyTextUser}>{turn.content || ''}</Text>
             ) : (
               <AuditAiMessage
                 content={turn.content || ''}
@@ -327,7 +330,7 @@ export function AuditAiChat({
             value={draft}
             onChangeText={onChangeDraft}
             placeholder={placeholder}
-            placeholderTextColor="#ccc"
+            placeholderTextColor={SECONDARY}
             editable={!busy}
             multiline
             blurOnSubmit={false}
@@ -344,7 +347,7 @@ export function AuditAiChat({
             {busy ? (
               <ActivityIndicator size="small" color="#fff" />
             ) : (
-              <Ionicons name="send" size={16} color="#fff" />
+              <Ionicons name="arrow-up" size={18} color="#fff" />
             )}
           </Pressable>
         </View>
@@ -474,22 +477,23 @@ export function AuditTxnDrawer({ visible, summary, detail, loading, error, onClo
           <Animated.View style={[styles.drawerBackdrop, { opacity: backdrop }]} />
         </Pressable>
 
-        <Animated.View style={[styles.drawerPanel, { width: panelWidth, transform: [{ translateX: slide }] }]}>
+        <Animated.View style={[styles.drawerPanel, isMobile && styles.drawerPanelMobile, { width: panelWidth, transform: [{ translateX: slide }] }]}>
           <View
-            style={[styles.drawerTopBar, isMobile && styles.drawerTopBarMobile]}
+            style={[styles.navBar, isMobile && styles.navBarMobile]}
             {...(Platform.OS === 'web' && isMobile ? { className: 'cgold-mobile-sheet-top' } : null)}
           >
-            <Text style={styles.drawerTitle} numberOfLines={1}>
-              {docLabel}
-            </Text>
             <Pressable
               onPress={onClose}
               hitSlop={8}
-              style={styles.closeButton}
+              style={styles.navSide}
               accessibilityLabel="Close"
             >
-              <Ionicons name="close" size={18} color={TEXT} />
+              <Text style={styles.navAction}>Close</Text>
             </Pressable>
+            <Text style={styles.navTitle} numberOfLines={1}>
+              {docLabel}
+            </Text>
+            <View style={styles.navSide} />
           </View>
 
           <ScrollView
@@ -750,61 +754,56 @@ export function useAuditTxnDrawer(session, fallbackAuth) {
 
 const styles = StyleSheet.create({
   chat: {
-    gap: 10,
-  },
-  bubble: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 12,
-    padding: 12,
     gap: 8,
   },
+  bubble: {
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    maxWidth: '84%',
+  },
   bubbleAssistant: {
-    borderColor: HAIRLINE,
-    backgroundColor: '#fff',
+    alignSelf: 'flex-start',
+    backgroundColor: '#E9E9EB',
   },
   bubbleUser: {
-    borderColor: HAIRLINE,
-    backgroundColor: '#fff',
     alignSelf: 'flex-end',
-    maxWidth: '92%',
-  },
-  role: {
-    fontFamily,
-    fontSize: 11,
-    fontWeight: '600',
-    color: SECONDARY,
-    letterSpacing: -0.08,
-  },
-  roleUser: {
-    color: TEXT,
+    backgroundColor: BLUE,
   },
   layout: {
-    gap: 14,
+    gap: 12,
   },
   block: {
     gap: 4,
   },
   blockLabel: {
     fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
+    fontSize: 13,
+    fontWeight: '400',
     color: SECONDARY,
-    letterSpacing: -0.08,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
   },
   reasonList: {
     gap: 8,
   },
   bodyText: {
     fontFamily,
-    fontSize: 15,
+    fontSize: 17,
     lineHeight: 22,
     color: TEXT,
-    letterSpacing: -0.2,
+    letterSpacing: -0.3,
+  },
+  bodyTextUser: {
+    fontFamily,
+    fontSize: 17,
+    lineHeight: 22,
+    color: '#fff',
+    letterSpacing: -0.3,
   },
   docLink: {
     color: LINK,
-    textDecorationLine: 'underline',
-    fontWeight: '600',
+    fontWeight: '500',
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -814,33 +813,39 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-end',
     gap: 8,
+    paddingTop: 4,
   },
   input: {
     flex: 1,
-    minHeight: 44,
+    minHeight: 36,
     maxHeight: 120,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     fontFamily,
-    fontSize: 16,
+    fontSize: 17,
     color: TEXT,
-    backgroundColor: '#fff',
+    backgroundColor: FILL,
+    ...Platform.select({
+      web: { outlineStyle: 'none' },
+      default: {},
+    }),
   },
   send: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: TEXT,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: BLUE,
     alignItems: 'center',
     justifyContent: 'center',
+    marginBottom: 2,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
   sendDisabled: {
-    opacity: 0.5,
+    opacity: 0.35,
   },
   drawerRoot: {
     flex: 1,
@@ -854,7 +859,7 @@ const styles = StyleSheet.create({
   },
   drawerPanel: {
     height: '100%',
-    backgroundColor: '#f2f2f7',
+    backgroundColor: PAGE,
     ...Platform.select({
       web: {
         boxShadow: '-12px 0 32px rgba(0,0,0,0.18)',
@@ -864,46 +869,51 @@ const styles = StyleSheet.create({
       },
     }),
   },
-  drawerTopBar: {
+  drawerPanelMobile: {
+    paddingBottom: Platform.OS === 'ios' ? Math.max(20, mobileSafeBottom()) : 12,
+  },
+  navBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 8,
-    gap: 12,
+    minHeight: 52,
+    paddingHorizontal: 8,
+    backgroundColor: 'rgba(242,242,247,0.94)',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
   },
-  drawerTopBarMobile: {
-    paddingHorizontal: 16,
-    paddingTop: Platform.OS === 'ios' ? 54 : 18,
-    paddingBottom: 10,
+  navBarMobile: {
+    paddingTop: Platform.OS === 'ios' ? mobileSafeTop() - 12 : 6,
   },
-  drawerTitle: {
+  navSide: {
+    width: 72,
+    minHeight: 44,
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  navAction: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '400',
+    color: BLUE,
+  },
+  navTitle: {
     fontFamily,
     flex: 1,
     fontSize: 17,
     fontWeight: '600',
     color: TEXT,
-    letterSpacing: -0.4,
-  },
-  closeButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#e8e8ed',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
+    textAlign: 'center',
+    letterSpacing: -0.3,
   },
   drawerBody: {
     flex: 1,
     minHeight: 0,
   },
   drawerBodyContent: {
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
     paddingTop: 8,
     paddingBottom: 48,
   },
@@ -913,6 +923,7 @@ const styles = StyleSheet.create({
   },
   hero: {
     paddingBottom: 24,
+    paddingHorizontal: 4,
   },
   heroName: {
     fontFamily,
@@ -944,7 +955,7 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   statusChip: {
-    backgroundColor: '#e8e8ed',
+    backgroundColor: FILL,
     borderRadius: 8,
     paddingHorizontal: 10,
     paddingVertical: 5,
@@ -958,7 +969,7 @@ const styles = StyleSheet.create({
   },
   group: {
     backgroundColor: '#fff',
-    borderRadius: 14,
+    borderRadius: 12,
     overflow: 'hidden',
   },
   detailRow: {
@@ -978,9 +989,9 @@ const styles = StyleSheet.create({
     fontFamily,
     width: 108,
     flexShrink: 0,
-    fontSize: 15,
-    color: SECONDARY,
-    letterSpacing: -0.2,
+    fontSize: 17,
+    color: TEXT,
+    letterSpacing: -0.3,
     paddingTop: 1,
   },
   detailValueWrap: {
@@ -990,9 +1001,9 @@ const styles = StyleSheet.create({
   },
   detailValue: {
     fontFamily,
-    fontSize: 15,
+    fontSize: 17,
     color: TEXT,
-    letterSpacing: -0.2,
+    letterSpacing: -0.3,
     textAlign: 'right',
   },
   detailSub: {
@@ -1009,16 +1020,17 @@ const styles = StyleSheet.create({
   sectionLabel: {
     fontFamily,
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '400',
     color: SECONDARY,
-    letterSpacing: -0.08,
-    marginBottom: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginBottom: 6,
     paddingHorizontal: 4,
   },
   tableHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 36,
+    minHeight: 32,
     paddingHorizontal: 16,
     backgroundColor: '#fff',
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -1027,7 +1039,7 @@ const styles = StyleSheet.create({
   tableHeaderText: {
     fontFamily,
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '400',
     color: SECONDARY,
     letterSpacing: -0.08,
   },
@@ -1060,10 +1072,10 @@ const styles = StyleSheet.create({
   },
   itemName: {
     fontFamily,
-    fontSize: 15,
+    fontSize: 17,
     color: TEXT,
-    letterSpacing: -0.2,
-    lineHeight: 20,
+    letterSpacing: -0.3,
+    lineHeight: 22,
   },
   itemMeta: {
     fontFamily,
@@ -1074,33 +1086,33 @@ const styles = StyleSheet.create({
   },
   cell: {
     fontFamily,
-    fontSize: 15,
+    fontSize: 17,
     color: TEXT,
-    letterSpacing: -0.2,
+    letterSpacing: -0.3,
     fontVariant: ['tabular-nums'],
   },
   muted: {
     fontFamily,
     flex: 1,
-    fontSize: 15,
+    fontSize: 17,
     color: SECONDARY,
-    letterSpacing: -0.2,
+    letterSpacing: -0.3,
     fontVariant: ['tabular-nums'],
   },
   totalLabel: {
     fontFamily,
     flex: 1,
-    fontSize: 15,
+    fontSize: 17,
     fontWeight: '600',
     color: TEXT,
-    letterSpacing: -0.2,
+    letterSpacing: -0.3,
   },
   totalValue: {
     fontFamily,
-    fontSize: 15,
+    fontSize: 17,
     fontWeight: '600',
     color: TEXT,
-    letterSpacing: -0.2,
+    letterSpacing: -0.3,
     fontVariant: ['tabular-nums'],
   },
   paymentRow: {
@@ -1115,16 +1127,16 @@ const styles = StyleSheet.create({
   },
   notes: {
     fontFamily,
-    fontSize: 15,
+    fontSize: 17,
     lineHeight: 22,
     color: TEXT,
-    letterSpacing: -0.2,
+    letterSpacing: -0.3,
     paddingHorizontal: 16,
     paddingVertical: 14,
   },
   emptyLine: {
     fontFamily,
-    fontSize: 15,
+    fontSize: 17,
     color: SECONDARY,
     paddingHorizontal: 16,
     paddingVertical: 14,
@@ -1135,8 +1147,9 @@ const styles = StyleSheet.create({
   },
   errorText: {
     fontFamily,
-    fontSize: 14,
-    color: '#c0392b',
+    fontSize: 15,
+    color: '#FF3B30',
     marginTop: 16,
+    paddingHorizontal: 4,
   },
 });

@@ -31,7 +31,7 @@ export function MobileHomeHeader() {
   );
 }
 
-export function MobileNavHeader({ title, onBack, trailing }) {
+export function MobileNavHeader({ title, subtitle, onBack, trailing }) {
   return (
     <View style={styles.navHeader}>
       <Pressable
@@ -42,9 +42,16 @@ export function MobileNavHeader({ title, onBack, trailing }) {
       >
         <Ionicons name="chevron-back" size={28} color={MOBILE.blue} />
       </Pressable>
-      <Text style={styles.navTitle} numberOfLines={1}>
-        {title}
-      </Text>
+      <View style={styles.navTitleBlock}>
+        <Text style={styles.navTitle} numberOfLines={1}>
+          {title}
+        </Text>
+        {subtitle ? (
+          <Text style={styles.navSubtitle} numberOfLines={1}>
+            {subtitle}
+          </Text>
+        ) : null}
+      </View>
       <View style={[styles.navSide, trailing && styles.navTrailing]}>{trailing}</View>
     </View>
   );
@@ -149,14 +156,27 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
+  navTitleBlock: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   navTitle: {
     fontFamily,
-    flex: 1,
     fontSize: 17,
     fontWeight: '600',
     color: MOBILE.label,
     textAlign: 'center',
     letterSpacing: -0.3,
+  },
+  navSubtitle: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '400',
+    color: MOBILE.secondary,
+    textAlign: 'center',
+    marginTop: -1,
   },
   tabBar: {
     flexDirection: 'row',

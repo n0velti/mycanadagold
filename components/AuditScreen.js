@@ -74,6 +74,7 @@ import {
   getModelMeta,
   OPENROUTER_MODELS,
 } from '../lib/openrouter';
+import { MOBILE, mobileSafeBottom } from '../lib/mobileUi';
 import { AuditAiChat, AuditTxnDrawer, useAuditTxnDrawer } from './AuditAiOutput';
 import ItemAuditPanel from './ItemAuditPanel';
 
@@ -83,13 +84,17 @@ const fontFamily = Platform.select({
   default: 'Sohne',
 });
 
-const ACCENT = '#2F8A4E';
+const BLUE = MOBILE.blue;
+const GREEN = '#34C759';
 const TEXT = '#1d1d1f';
 const SECONDARY = '#8e8e93';
-const FILL = '#e8e8ed';
-const GROUP_BG = '#f2f2f7';
-const HAIRLINE = '#e5e5ea';
+const FILL = 'rgba(118, 118, 128, 0.12)';
+const PAGE = MOBILE.bg;
+const CARD = '#fff';
+const HAIRLINE = MOBILE.separator;
 const CHEVRON = '#c7c7cc';
+const RED = '#FF3B30';
+const ORANGE = '#FF9500';
 const MOBILE_BREAKPOINT = 768;
 const AUDIT_TABS = [
   { key: 'bullion', label: 'Bullion' },
@@ -219,7 +224,7 @@ function FilterSelect({
                     >
                       {option.label}
                     </Text>
-                    {active ? <Ionicons name="checkmark" size={16} color={ACCENT} /> : null}
+                    {active ? <Ionicons name="checkmark" size={20} color={BLUE} /> : null}
                   </Pressable>
                 );
               })}
@@ -1758,7 +1763,7 @@ function BullionAuditPanel({
                           <Text style={styles.modelOptionBlurb}>{option.blurb}</Text>
                         ) : null}
                       </View>
-                      {active ? <Ionicons name="checkmark" size={16} color={ACCENT} /> : null}
+                      {active ? <Ionicons name="checkmark" size={20} color={BLUE} /> : null}
                     </Pressable>
                   );
                 })}
@@ -3378,7 +3383,7 @@ function CashAuditPanel({
                         {modelOptionMetaLine(option)}
                       </Text>
                     </View>
-                    {active ? <Ionicons name="checkmark" size={16} color={ACCENT} /> : null}
+                    {active ? <Ionicons name="checkmark" size={20} color={BLUE} /> : null}
                   </Pressable>
                 );
               })}
@@ -3519,12 +3524,14 @@ const styles = StyleSheet.create({
   body: {
     flex: 1,
     minHeight: 0,
+    backgroundColor: PAGE,
   },
   bodyEmbedded: {
     flex: 1,
     minHeight: 0,
     width: '100%',
     maxWidth: '100%',
+    backgroundColor: PAGE,
   },
   tabBar: {
     flexShrink: 0,
@@ -3546,9 +3553,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     flexShrink: 0,
-    height: 42,
+    height: 36,
     backgroundColor: FILL,
-    borderRadius: 10,
+    borderRadius: 9,
     padding: 2,
   },
   segmentStretch: {
@@ -3557,8 +3564,8 @@ const styles = StyleSheet.create({
   },
   segmentButton: {
     paddingHorizontal: 14,
-    height: 38,
-    borderRadius: 8,
+    height: 32,
+    borderRadius: 7,
     alignItems: 'center',
     justifyContent: 'center',
     ...Platform.select({
@@ -3578,9 +3585,9 @@ const styles = StyleSheet.create({
   },
   segmentText: {
     fontFamily,
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: '500',
-    color: SECONDARY,
+    color: TEXT,
     letterSpacing: -0.2,
   },
   segmentTextActive: {
@@ -3601,8 +3608,8 @@ const styles = StyleSheet.create({
   filterBar: {
     flexGrow: 0,
     flexShrink: 0,
-    height: 42,
-    maxHeight: 42,
+    height: 36,
+    maxHeight: 36,
     marginTop: 2,
     marginBottom: 8,
     width: '100%',
@@ -3615,7 +3622,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    minHeight: 42,
+    minHeight: 36,
     flexGrow: 1,
   },
   appleSearch: {
@@ -3624,10 +3631,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     minWidth: 140,
     maxWidth: 280,
-    borderRadius: 12,
-    paddingHorizontal: 12,
+    borderRadius: 10,
+    paddingHorizontal: 10,
     backgroundColor: FILL,
-    height: 42,
+    height: 36,
   },
   appleSearchGrow: {
     flex: 1,
@@ -3668,7 +3675,7 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   fillButtonSave: {
-    backgroundColor: ACCENT,
+    backgroundColor: BLUE,
   },
   fillButtonSaveText: {
     fontFamily,
@@ -3683,7 +3690,7 @@ const styles = StyleSheet.create({
   appleSearchInput: {
     flex: 1,
     fontFamily,
-    fontSize: 16,
+    fontSize: 17,
     color: TEXT,
     paddingVertical: 0,
     ...Platform.select({
@@ -3708,9 +3715,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     backgroundColor: FILL,
-    borderRadius: 12,
+    borderRadius: 10,
     paddingHorizontal: 12,
-    height: 42,
+    height: 36,
     justifyContent: 'center',
     flexShrink: 0,
     ...Platform.select({
@@ -3735,9 +3742,9 @@ const styles = StyleSheet.create({
     gap: 20,
   },
   iconToggle: {
-    width: 42,
-    height: 42,
-    borderRadius: 12,
+    width: 36,
+    height: 36,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: FILL,
@@ -3754,10 +3761,10 @@ const styles = StyleSheet.create({
     }),
   },
   fillButton: {
-    height: 42,
-    minHeight: 42,
+    height: 36,
+    minHeight: 36,
     paddingHorizontal: 14,
-    borderRadius: 12,
+    borderRadius: 10,
     backgroundColor: TEXT,
     alignItems: 'center',
     justifyContent: 'center',
@@ -3790,7 +3797,7 @@ const styles = StyleSheet.create({
   storeSelect: {
     maxWidth: 160,
     minWidth: 104,
-    height: 42,
+    height: 36,
   },
   drawerSegment: {
     flexShrink: 1,
@@ -3845,12 +3852,13 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '400',
     color: SECONDARY,
-    letterSpacing: -0.08,
-    paddingHorizontal: 16,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    paddingHorizontal: 4,
   },
   group: {
-    backgroundColor: GROUP_BG,
-    borderRadius: 14,
+    backgroundColor: CARD,
+    borderRadius: 12,
     overflow: 'hidden',
   },
   groupHeaderRow: {
@@ -4054,7 +4062,7 @@ const styles = StyleSheet.create({
   },
   countHeaderRow: {
     minHeight: 32,
-    backgroundColor: '#ebebf0',
+    backgroundColor: FILL,
   },
   countHeaderLabel: {
     fontFamily,
@@ -4143,8 +4151,8 @@ const styles = StyleSheet.create({
   cashHeroCard: {
     flex: 1,
     minWidth: 110,
-    backgroundColor: GROUP_BG,
-    borderRadius: 14,
+    backgroundColor: CARD,
+    borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 12,
     gap: 2,
@@ -4175,13 +4183,13 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   cashHeroOk: {
-    backgroundColor: '#E8F5EA',
+    backgroundColor: 'rgba(52, 199, 89, 0.12)',
   },
   cashHeroShort: {
-    backgroundColor: '#FDECEA',
+    backgroundColor: 'rgba(255, 59, 48, 0.12)',
   },
   cashHeroOver: {
-    backgroundColor: '#E8F1FF',
+    backgroundColor: 'rgba(0, 122, 255, 0.12)',
   },
   cashMobileHeroRow: {
     flexDirection: 'row',
@@ -4332,7 +4340,7 @@ const styles = StyleSheet.create({
   looseTileExpectedOk: {
     fontFamily,
     fontSize: 11,
-    color: ACCENT,
+    color: GREEN,
     letterSpacing: -0.08,
     marginBottom: 4,
   },
@@ -4527,7 +4535,7 @@ const styles = StyleSheet.create({
     borderTopColor: HAIRLINE,
   },
   countFooterRowStrong: {
-    backgroundColor: '#ebebf0',
+    backgroundColor: FILL,
   },
   countFooterRowMobile: {
     flexDirection: 'column',
@@ -4592,7 +4600,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   cashSaveBtn: {
-    backgroundColor: ACCENT,
+    backgroundColor: BLUE,
     borderRadius: 12,
     minHeight: 44,
     alignItems: 'center',
@@ -4659,7 +4667,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   cashMobileDenomFooter: {
-    backgroundColor: '#ebebf0',
+    backgroundColor: FILL,
   },
   cashMobileDenomHead: {
     flexDirection: 'row',
@@ -4770,14 +4778,14 @@ const styles = StyleSheet.create({
     paddingLeft: 16,
     paddingRight: 14,
     gap: 8,
-    backgroundColor: '#ebebf0',
+    backgroundColor: FILL,
   },
   cashCountRowFilled: {
     backgroundColor: 'rgba(255,255,255,0.55)',
   },
   cashCountFooter: {
     borderBottomWidth: 0,
-    backgroundColor: '#ebebf0',
+    backgroundColor: FILL,
   },
   cashDenomMeta: {
     width: 78,
@@ -4981,11 +4989,13 @@ const styles = StyleSheet.create({
   panelBody: {
     flex: 1,
     minHeight: 0,
+    backgroundColor: PAGE,
   },
   panelBodyEmbedded: {
     flex: 1,
     minHeight: 0,
     width: '100%',
+    backgroundColor: PAGE,
   },
   panelBodyMobile: {
     width: '100%',
@@ -5020,19 +5030,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 8,
-    backgroundColor: '#f3f3f3',
+    backgroundColor: FILL,
   },
   storeChipActive: {
-    backgroundColor: '#E8F5EA',
+    backgroundColor: '#EAF2FF',
   },
   storeChipText: {
     fontFamily,
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#6b6b6b',
+    fontSize: 13,
+    fontWeight: '400',
+    color: SECONDARY,
   },
   storeChipTextActive: {
-    color: ACCENT,
+    color: BLUE,
     fontWeight: '600',
   },
   dateFilters: {
@@ -5044,21 +5054,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 8,
-    backgroundColor: '#f3f3f3',
+    backgroundColor: FILL,
     minHeight: 34,
     justifyContent: 'center',
   },
   todayChipActive: {
-    backgroundColor: '#E8F5EA',
+    backgroundColor: '#EAF2FF',
   },
   todayChipText: {
     fontFamily,
     fontSize: 13,
     fontWeight: '500',
-    color: '#6b6b6b',
+    color: SECONDARY,
   },
   todayChipTextActive: {
-    color: ACCENT,
+    color: BLUE,
     fontWeight: '600',
   },
   dateChip: {
@@ -5097,30 +5107,33 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   dateModalCard: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingBottom: 24,
+    backgroundColor: PAGE,
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+    paddingBottom: Platform.OS === 'ios' ? Math.max(20, mobileSafeBottom()) : 16,
   },
   dateModalHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 4,
+    paddingTop: 14,
+    paddingBottom: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
   },
   dateModalTitle: {
     fontFamily,
-    fontSize: 15,
+    fontSize: 17,
     fontWeight: '600',
-    color: '#1a1a1a',
+    color: TEXT,
+    letterSpacing: -0.3,
   },
   dateModalDone: {
     fontFamily,
     fontSize: 17,
     fontWeight: '600',
-    color: '#007AFF',
+    color: BLUE,
   },
   refresh: {
     width: 28,
@@ -5135,7 +5148,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 8,
-    backgroundColor: '#E8F5EA',
+    backgroundColor: '#EAF2FF',
     minHeight: 34,
     flexShrink: 0,
   },
@@ -5145,8 +5158,8 @@ const styles = StyleSheet.create({
   refreshButtonText: {
     fontFamily,
     fontSize: 13,
-    fontWeight: '700',
-    color: ACCENT,
+    fontWeight: '600',
+    color: BLUE,
   },
   storeToolbarTitle: {
     fontFamily,
@@ -5162,23 +5175,23 @@ const styles = StyleSheet.create({
   errorText: {
     fontFamily,
     fontSize: 13,
-    color: '#B91C1C',
+    color: RED,
     letterSpacing: -0.08,
   },
   warningText: {
     fontFamily,
     fontSize: 12,
-    color: '#9a6b2f',
+    color: ORANGE,
     marginBottom: 8,
   },
   hint: {
     fontFamily,
-    fontSize: 14,
-    color: '#6b6b6b',
+    fontSize: 17,
+    color: SECONDARY,
   },
   link: {
-    color: ACCENT,
-    fontWeight: '600',
+    color: BLUE,
+    fontWeight: '400',
   },
   list: {
     flex: 1,
@@ -5221,9 +5234,9 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 14,
     borderRadius: 12,
-    backgroundColor: '#F7FAF7',
+    backgroundColor: CARD,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#E3EDE4',
+    borderColor: HAIRLINE,
   },
   summaryLabel: {
     fontFamily,
@@ -5248,16 +5261,16 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   cashIn: {
-    color: '#2F8A4E',
+    color: GREEN,
   },
   cashOut: {
-    color: '#B45309',
+    color: ORANGE,
   },
   over: {
-    color: '#1D4ED8',
+    color: BLUE,
   },
   short: {
-    color: '#B91C1C',
+    color: RED,
   },
   tableBlock: {
     marginTop: 4,
@@ -5382,7 +5395,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
   },
   cashCountHeaderRow: {
-    backgroundColor: '#F7FAF7',
+    backgroundColor: FILL,
     minHeight: 32,
     borderBottomColor: '#e5e5e5',
   },
@@ -5552,9 +5565,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderRadius: 10,
-    backgroundColor: '#F7FAF7',
+    backgroundColor: CARD,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#E3EDE4',
+    borderColor: HAIRLINE,
     justifyContent: 'center',
   },
   varianceLabel: {
@@ -5648,7 +5661,7 @@ const styles = StyleSheet.create({
     borderBottomColor: '#f0f0f0',
   },
   modelOptionActive: {
-    backgroundColor: '#F0F8EE',
+    backgroundColor: '#EAF2FF',
   },
   modelOptionCopy: {
     flex: 1,
@@ -5662,7 +5675,7 @@ const styles = StyleSheet.create({
     color: '#1a1a1a',
   },
   modelOptionTextActive: {
-    color: ACCENT,
+    color: BLUE,
   },
   modelOptionStats: {
     fontFamily,
@@ -5679,11 +5692,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    backgroundColor: TEXT,
+    backgroundColor: BLUE,
     borderRadius: 12,
     paddingHorizontal: 16,
     paddingVertical: 12,
-    minHeight: 48,
+    minHeight: 44,
     minWidth: 140,
     ...Platform.select({
       web: { cursor: 'pointer' },
@@ -5709,9 +5722,9 @@ const styles = StyleSheet.create({
   },
   aiResult: {
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#E3EDE4',
+    borderColor: HAIRLINE,
     borderRadius: 12,
-    backgroundColor: '#F7FAF7',
+    backgroundColor: CARD,
     padding: 14,
   },
   aiResultText: {
@@ -5814,8 +5827,8 @@ const styles = StyleSheet.create({
     }),
   },
   bullionTableCard: {
-    backgroundColor: GROUP_BG,
-    borderRadius: 14,
+    backgroundColor: CARD,
+    borderRadius: 12,
     overflow: 'hidden',
     width: '100%',
   },
@@ -5848,7 +5861,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,59,48,0.08)',
   },
   bullionHeaderRow: {
-    backgroundColor: '#ebebf0',
+    backgroundColor: FILL,
     borderBottomColor: HAIRLINE,
     minHeight: 30,
     paddingVertical: 4,
@@ -5875,7 +5888,7 @@ const styles = StyleSheet.create({
     minHeight: 26,
     paddingLeft: 10,
     paddingRight: 8,
-    backgroundColor: '#ebebf0',
+    backgroundColor: FILL,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: HAIRLINE,
   },
@@ -5959,8 +5972,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   bInput: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#d8d8de',
+    borderWidth: 0,
     borderRadius: 8,
     paddingHorizontal: 6,
     paddingVertical: 4,
@@ -5968,7 +5980,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     color: TEXT,
-    backgroundColor: '#fff',
+    backgroundColor: FILL,
     fontVariant: ['tabular-nums'],
     textAlign: 'right',
     minHeight: 34,
@@ -6013,14 +6025,14 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   bMobileCard: {
-    backgroundColor: GROUP_BG,
-    borderRadius: 14,
+    backgroundColor: CARD,
+    borderRadius: 12,
     overflow: 'hidden',
     flexDirection: 'row',
     width: '100%',
   },
   bMobileCardOff: {
-    backgroundColor: '#FDECEA',
+    backgroundColor: 'rgba(255, 59, 48, 0.08)',
   },
   bMobileAccent: {
     width: 4,
@@ -6058,9 +6070,9 @@ const styles = StyleSheet.create({
     letterSpacing: -0.08,
   },
   bMobileSave: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: FILL,
     alignItems: 'center',
     justifyContent: 'center',
@@ -6071,10 +6083,10 @@ const styles = StyleSheet.create({
     }),
   },
   bMobileUpdate: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: TEXT,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: BLUE,
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
@@ -6195,8 +6207,8 @@ const styles = StyleSheet.create({
   bUpdateButton: {
     width: 28,
     height: 28,
-    borderRadius: 8,
-    backgroundColor: TEXT,
+    borderRadius: 14,
+    backgroundColor: BLUE,
     alignItems: 'center',
     justifyContent: 'center',
     ...Platform.select({
@@ -6256,8 +6268,8 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
   updateButton: {
-    backgroundColor: '#4A90D9',
-    borderRadius: 5,
+    backgroundColor: BLUE,
+    borderRadius: 8,
     paddingHorizontal: 10,
     paddingVertical: 5,
     minWidth: 64,
@@ -6278,7 +6290,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: '#4A90D9',
+    backgroundColor: BLUE,
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 8,
@@ -6345,10 +6357,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    height: 42,
-    minHeight: 42,
+    height: 36,
+    minHeight: 36,
     paddingHorizontal: 12,
-    borderRadius: 12,
+    borderRadius: 10,
     backgroundColor: FILL,
     maxWidth: 160,
     flexShrink: 1,
@@ -6392,41 +6404,52 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.28)',
   },
   filterModalSheet: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    backgroundColor: PAGE,
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
     maxHeight: '70%',
-    paddingBottom: Platform.OS === 'ios' ? 28 : 16,
+    paddingBottom: Platform.OS === 'ios' ? Math.max(20, mobileSafeBottom()) : 16,
   },
   filterModalHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 8,
+    paddingTop: 14,
+    paddingBottom: 10,
+    backgroundColor: 'rgba(242,242,247,0.94)',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
   },
   filterModalTitle: {
     fontFamily,
-    fontSize: 15,
+    fontSize: 17,
     fontWeight: '600',
-    color: '#1a1a1a',
+    color: TEXT,
+    letterSpacing: -0.3,
   },
   filterModalList: {
     maxHeight: 360,
+    backgroundColor: CARD,
+    marginHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 8,
+    borderRadius: 12,
+    overflow: 'hidden',
   },
   filterModalOption: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 10,
+    minHeight: 44,
     paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#f0f0f0',
+    paddingVertical: 11,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
   },
   filterModalOptionActive: {
-    backgroundColor: FILL,
+    backgroundColor: CARD,
   },
   filterModalOptionText: {
     fontFamily,
@@ -6446,7 +6469,7 @@ const styles = StyleSheet.create({
     minHeight: 34,
     paddingHorizontal: 8,
     borderRadius: 8,
-    backgroundColor: '#f3f3f3',
+    backgroundColor: FILL,
     flexShrink: 0,
   },
   compactDateValue: {
