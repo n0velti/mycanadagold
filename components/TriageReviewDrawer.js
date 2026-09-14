@@ -662,7 +662,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
             <View style={styles.titleBlock}>
               {step === 'note' ? (
                 <Pressable onPress={() => setStep('edit')} style={[styles.backRow, isMobile && styles.iosBackRow]} hitSlop={8}>
-                  <Ionicons name="chevron-back" size={isMobile ? 28 : 18} color={isMobile ? MOBILE.blue : ACCENT} />
+                  <Ionicons name="chevron-back" size={isMobile ? 28 : 18} color={MOBILE.blue} />
                   <Text style={[styles.backText, isMobile && styles.iosBackText]}>Back</Text>
                 </Pressable>
               ) : null}
@@ -689,7 +689,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
             <>
               {detailLoading ? (
                 <View style={styles.inlineBusy}>
-                  <ActivityIndicator color={ACCENT} />
+                  <ActivityIndicator color={MOBILE.blue} />
                   <Text style={styles.metaText}>Loading document…</Text>
                 </View>
               ) : null}

@@ -3,7 +3,7 @@ import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import TriageAccuracyPanel from './TriageAccuracyPanel';
 import TriageTransfersPanel from './TriageTransfersPanel';
-import { MOBILE, useIsMobile } from '../lib/mobileUi';
+import { MOBILE } from '../lib/mobileUi';
 
 if (Platform.OS === 'web' && typeof document !== 'undefined') {
   const styleId = 'cgold-triage-row-hover';
@@ -16,7 +16,7 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
   style.textContent = [
     '.cgold-triage-row{cursor:pointer;background-color:transparent;}',
     '.cgold-triage-row:hover{background-color:#f5f5f7!important;}',
-    '.cgold-triage-row-selected,.cgold-triage-row-selected:hover{background-color:#FFF7ED!important;}',
+    '.cgold-triage-row-selected,.cgold-triage-row-selected:hover{background-color:#EAF2FF!important;}',
   ].join('');
 }
 
@@ -26,10 +26,9 @@ const fontFamily = Platform.select({
   default: 'Sohne',
 });
 
-const ACCENT = '#C2410C';
 const TEXT = '#1d1d1f';
 const SECONDARY = '#8e8e93';
-const HAIRLINE = '#e5e5ea';
+const BLUE = MOBILE.blue;
 
 /** Drop cached transaction rows so nothing outlives the session that loaded them. */
 export function clearTriageCache() {}
@@ -54,49 +53,22 @@ function IosTextAction({ label, onPress, accessibilityLabel }) {
   );
 }
 
-function TabBar({ options, value, onChange, trailing, mobile }) {
-  if (mobile) {
-    return (
-      <View style={styles.tabBarMobile}>
-        <View style={styles.segment} accessibilityRole="tablist">
-          {options.map((option) => {
-            const active = option.key === value;
-            return (
-              <Pressable
-                key={option.key}
-                style={[styles.segmentButton, active && styles.segmentButtonActive]}
-                onPress={() => onChange(option.key)}
-                accessibilityRole="tab"
-                accessibilityState={{ selected: active }}
-                accessibilityLabel={option.label}
-              >
-                <Text style={[styles.segmentText, active && styles.segmentTextActive]} numberOfLines={1}>
-                  {option.label}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-        {trailing ? <View style={styles.tabBarMobileTrailing}>{trailing}</View> : null}
-      </View>
-    );
-  }
-
+function TabBar({ options, value, onChange, trailing }) {
   return (
     <View style={styles.tabBar} accessibilityRole="tablist">
-      <View style={styles.tabBarTabs}>
+      <View style={styles.segment}>
         {options.map((option) => {
           const active = option.key === value;
           return (
             <Pressable
               key={option.key}
-              style={[styles.tab, active && styles.tabActive]}
+              style={[styles.segmentButton, active && styles.segmentButtonActive]}
               onPress={() => onChange(option.key)}
               accessibilityRole="tab"
               accessibilityState={{ selected: active }}
               accessibilityLabel={option.label}
             >
-              <Text style={[styles.tabLabel, active && styles.tabLabelActive]} numberOfLines={1}>
+              <Text style={[styles.segmentText, active && styles.segmentTextActive]} numberOfLines={1}>
                 {option.label}
               </Text>
             </Pressable>
@@ -111,9 +83,7 @@ function TabBar({ options, value, onChange, trailing, mobile }) {
 function TabPanel({ tab }) {
   return (
     <View style={styles.panel}>
-      <View style={styles.emptyIcon}>
-        <Ionicons name={tab.icon} size={22} color={ACCENT} />
-      </View>
+      <Ionicons name={tab.icon} size={40} color={SECONDARY} />
       <Text style={styles.emptyTitle}>{tab.label}</Text>
       <Text style={styles.emptyBody}>Nothing to review in {tab.label.toLowerCase()} yet.</Text>
     </View>
@@ -127,7 +97,6 @@ export default function TriageScreen({
   embedded = false,
   onStoreBackChange,
 }) {
-  const isMobile = useIsMobile();
   const [activeTab, setActiveTab] = useState('transfers');
   const [createTransferOpen, setCreateTransferOpen] = useState(false);
   const [transferView, setTransferView] = useState('list');
@@ -148,19 +117,7 @@ export default function TriageScreen({
 
   const transferTrailing =
     session?.token && activeTab === 'transfers' && transferView === 'list' ? (
-      isMobile ? (
-        <IosTextAction label="New" onPress={() => setCreateTransferOpen(true)} />
-      ) : (
-        <Pressable
-          style={styles.newButton}
-          onPress={() => setCreateTransferOpen(true)}
-          accessibilityRole="button"
-          accessibilityLabel="New"
-        >
-          <Ionicons name="add" size={18} color="#fff" />
-          <Text style={styles.newButtonText}>New</Text>
-        </Pressable>
-      )
+      <IosTextAction label="New" onPress={() => setCreateTransferOpen(true)} />
     ) : session?.token && activeTab === 'transfers' && canLeaveStore && !onStoreBackChange ? (
       <Pressable
         style={styles.titleBack}
@@ -168,19 +125,18 @@ export default function TriageScreen({
         accessibilityRole="button"
         accessibilityLabel="Back to transfers"
       >
-        <Ionicons name="chevron-back" size={isMobile ? 22 : 18} color={ACCENT} />
+        <Ionicons name="chevron-back" size={22} color={BLUE} />
         <Text style={styles.titleBackText}>Transfers</Text>
       </Pressable>
     ) : null;
 
   return (
-    <View style={[styles.body, embedded && styles.bodyEmbedded, isMobile && styles.bodyMobile]}>
+    <View style={[styles.body, embedded && styles.bodyEmbedded, styles.bodyTinted]}>
       <TabBar
         options={TRIAGE_TABS}
         value={activeTab}
         onChange={changeTab}
         trailing={transferTrailing}
-        mobile={isMobile}
       />
 
       <View style={activeTab === 'transfers' ? styles.pageVisible : styles.pageHidden}>
@@ -214,21 +170,27 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: '100%',
   },
+  bodyTinted: {
+    backgroundColor: MOBILE.bg,
+  },
   bodyMobile: {
     backgroundColor: MOBILE.bg,
   },
-  tabBarMobile: {
+  tabBar: {
     flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
     paddingHorizontal: 16,
     paddingTop: 8,
     paddingBottom: 8,
-    gap: 8,
     backgroundColor: MOBILE.bg,
   },
-  tabBarMobileTrailing: {
-    alignItems: 'flex-end',
+  tabBarTrailing: {
+    flexShrink: 0,
   },
   segment: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     height: 36,
@@ -293,9 +255,9 @@ const styles = StyleSheet.create({
   },
   titleBackText: {
     fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: ACCENT,
+    fontSize: 17,
+    fontWeight: '400',
+    color: BLUE,
   },
   pageVisible: {
     flex: 1,
@@ -304,80 +266,21 @@ const styles = StyleSheet.create({
   pageHidden: {
     display: 'none',
   },
-  tabBar: {
-    flexShrink: 0,
-    marginTop: 22,
-    marginBottom: 14,
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    justifyContent: 'space-between',
-    gap: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
-  },
-  tabBarTabs: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'stretch',
-    gap: 2,
-  },
-  tabBarTrailing: {
-    flexShrink: 0,
-    paddingBottom: 6,
-  },
-  tab: {
-    paddingHorizontal: 14,
-    paddingTop: 6,
-    paddingBottom: 11,
-    borderBottomWidth: 2,
-    borderBottomColor: 'transparent',
-    marginBottom: -StyleSheet.hairlineWidth,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  tabActive: {
-    borderBottomColor: ACCENT,
-  },
-  tabLabel: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '500',
-    color: SECONDARY,
-    letterSpacing: -0.2,
-  },
-  tabLabelActive: {
-    color: TEXT,
-    fontWeight: '600',
-  },
   panel: {
     flex: 1,
     minHeight: 0,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 8,
     paddingHorizontal: 24,
     paddingBottom: 48,
   },
-  emptyIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 14,
-    backgroundColor: '#FFEDD5',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
-  },
   emptyTitle: {
     fontFamily,
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: '600',
     color: TEXT,
-    letterSpacing: -0.3,
-    marginBottom: 6,
+    letterSpacing: -0.4,
   },
   emptyBody: {
     fontFamily,
@@ -386,24 +289,5 @@ const styles = StyleSheet.create({
     color: SECONDARY,
     textAlign: 'center',
     maxWidth: 320,
-  },
-  newButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: ACCENT,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    height: 32,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  newButtonText: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#fff',
   },
 });
