@@ -1,6 +1,7 @@
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   Easing,
   FlatList,
@@ -15,7 +16,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { MOBILE, mobileSafeBottom, useIsMobile } from '../lib/mobileUi';
+import { MOBILE, mobileSafeBottom, mobileSafeTop, useIsMobile } from '../lib/mobileUi';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
 import { fetchTransferStores } from '../lib/locations';
@@ -59,6 +60,31 @@ const SECONDARY = '#8e8e93';
 const FILL = '#e8e8ed';
 const HAIRLINE = '#e5e5ea';
 const GREEN = '#2F8A4E';
+const BLUE = MOBILE.blue;
+const RED = '#FF3B30';
+const WORKSHOP_LOCATION = {
+  storeKey: 'workshop',
+  name: 'Workshop',
+  systemKey: 'east',
+  systemLabel: 'Canada Gold East',
+  city: '',
+};
+
+function isWorkshopStore(store) {
+  return Boolean(store?.isWorkshop) || String(store?.name || '').toLowerCase().includes('workshop');
+}
+
+function confirmDestructive(title, message, onConfirm) {
+  if (Platform.OS === 'web') {
+    const ok = typeof window !== 'undefined' && window.confirm([title, message].filter(Boolean).join('\n\n'));
+    if (ok) onConfirm();
+    return;
+  }
+  Alert.alert(title, message, [
+    { text: 'Cancel', style: 'cancel' },
+    { text: 'Delete', style: 'destructive', onPress: onConfirm },
+  ]);
+}
 
 const STORE_TABS = [
   { key: 'melt', label: 'Melt', icon: 'flame-outline' },
@@ -321,81 +347,147 @@ function matchesProductFilter(row, query) {
   return textMatchesQuery(rowProductHay(row), q);
 }
 
-function FilterPicker({ label, value, onChange, options, placeholder, compact }) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState(value || '');
+function ColumnFilter({
+  columnKey,
+  label,
+  value,
+  onChange,
+  options,
+  openKey,
+  onOpenKey,
+  style,
+}) {
+  const open = openKey === columnKey;
+  const [query, setQuery] = useState('');
+  const active = Boolean(String(value || '').trim());
 
   useEffect(() => {
-    setQuery(value || '');
-  }, [value]);
+    if (!open) setQuery('');
+  }, [open]);
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
     const list = options || [];
-    if (!q) return list.slice(0, 20);
-    return list.filter((option) => option.toLowerCase().includes(q)).slice(0, 20);
+    if (!q) return list.slice(0, 40);
+    return list.filter((option) => option.toLowerCase().includes(q)).slice(0, 40);
   }, [options, query]);
 
   const commit = (next) => {
-    const text = String(next || '').trim();
-    onChange(text);
-    setQuery(text);
-    setOpen(false);
+    onChange(String(next || '').trim());
+    onOpenKey(null);
   };
 
   return (
-    <View style={[styles.filterField, compact && styles.filterFieldCompact]}>
-      {compact ? null : <Text style={styles.filterLabel}>{label}</Text>}
-      <View style={[styles.filterInputWrap, compact && styles.filterInputWrapCompact]}>
-        <TextInput
-          style={styles.filterInput}
-          value={query}
-          onChangeText={(next) => {
-            setQuery(next);
-            onChange(next);
-            setOpen(true);
-          }}
-          onFocus={() => setOpen(true)}
-          onBlur={() => {
-            setTimeout(() => setOpen(false), 160);
-          }}
-          placeholder={placeholder}
-          placeholderTextColor={SECONDARY}
-          autoCapitalize="none"
-          autoCorrect={false}
+    <View style={[styles.colFilter, style]}>
+      <Pressable
+        style={styles.colFilterHit}
+        onPress={() => onOpenKey(open ? null : columnKey)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        accessibilityLabel={active ? `${label} filter ${value}` : `Filter ${label}`}
+      >
+        <Text style={[styles.colFilterLabel, active && styles.colFilterLabelOn]} numberOfLines={1}>
+          {active ? value : label}
+        </Text>
+        <Ionicons
+          name={active ? 'funnel' : open ? 'chevron-up' : 'chevron-down'}
+          size={11}
+          color={active ? TEXT : SECONDARY}
         />
-        {query ? (
-          <Pressable
-            onPress={() => commit('')}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel={`Clear ${label} filter`}
-          >
-            <Ionicons name="close-circle" size={16} color="#c7c7cc" />
-          </Pressable>
-        ) : null}
-      </View>
-      {open && results.length > 0 ? (
-        <ScrollView
-          style={[styles.filterMenu, compact && styles.filterMenuCompact]}
-          keyboardShouldPersistTaps="handled"
-          nestedScrollEnabled
-        >
-          {results.map((option) => (
+      </Pressable>
+      {open ? (
+        <View style={styles.colFilterMenu}>
+          <View style={styles.colFilterSearch}>
+            <Ionicons name="search" size={14} color={SECONDARY} />
+            <TextInput
+              style={styles.colFilterInput}
+              value={query}
+              onChangeText={setQuery}
+              placeholder={`Filter ${label.toLowerCase()}`}
+              placeholderTextColor={SECONDARY}
+              autoCapitalize="none"
+              autoCorrect={false}
+              onSubmitEditing={() => commit(query)}
+            />
+          </View>
+          {active ? (
             <Pressable
-              key={option}
-              style={styles.filterOption}
-              onPress={() => commit(option)}
+              style={styles.colFilterOption}
+              onPress={() => commit('')}
+              accessibilityRole="button"
+              accessibilityLabel={`Clear ${label} filter`}
             >
-              <Text style={styles.filterOptionText} numberOfLines={1}>
-                {option}
-              </Text>
+              <Text style={styles.colFilterClear}>Clear filter</Text>
             </Pressable>
-          ))}
-        </ScrollView>
+          ) : null}
+          <ScrollView
+            style={styles.colFilterList}
+            keyboardShouldPersistTaps="handled"
+            nestedScrollEnabled
+          >
+            {results.length === 0 ? (
+              <Text style={styles.colFilterEmpty}>
+                {query.trim() ? 'No matching values' : 'No values'}
+              </Text>
+            ) : (
+              results.map((option) => {
+                const selected = option === value;
+                return (
+                  <Pressable
+                    key={option}
+                    style={styles.colFilterOption}
+                    onPress={() => commit(option)}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected }}
+                  >
+                    <Text
+                      style={[styles.colFilterOptionText, selected && styles.colFilterOptionOn]}
+                      numberOfLines={1}
+                    >
+                      {option}
+                    </Text>
+                    {selected ? <Ionicons name="checkmark" size={16} color={BLUE} /> : null}
+                  </Pressable>
+                );
+              })
+            )}
+          </ScrollView>
+        </View>
       ) : null}
     </View>
   );
+}
+
+function TableFrame({ minWidth, header, children }) {
+  const { width } = useWindowDimensions();
+  const inner = (
+    <View style={[styles.tableCard, { minWidth }]}>
+      <View style={styles.tableHeader}>{header}</View>
+      <ScrollView
+        style={styles.tableBody}
+        contentContainerStyle={styles.tableBodyContent}
+        nestedScrollEnabled
+        keyboardShouldPersistTaps="handled"
+      >
+        {children}
+      </ScrollView>
+    </View>
+  );
+
+  if (width < minWidth + 48) {
+    return (
+      <ScrollView
+        horizontal
+        style={styles.tableHScroll}
+        contentContainerStyle={styles.tableHContent}
+        showsHorizontalScrollIndicator={false}
+      >
+        {inner}
+      </ScrollView>
+    );
+  }
+
+  return <View style={[styles.tableHContent, styles.tableHFill]}>{inner}</View>;
 }
 
 function DateField({ value, onChange, minimumDate, maximumDate }) {
@@ -493,41 +585,52 @@ function DateField({ value, onChange, minimumDate, maximumDate }) {
 function EmptyState({ icon, title, body }) {
   return (
     <View style={styles.empty}>
-      <View style={styles.emptyIcon}>
-        <Ionicons name={icon} size={22} color={ACCENT} />
-      </View>
+      <Ionicons name={icon} size={40} color={SECONDARY} />
       <Text style={styles.emptyTitle}>{title}</Text>
       <Text style={styles.emptyBody}>{body}</Text>
     </View>
   );
 }
 
-function ListRow({ title, meta, subtitle, subtitleLines = 1, onPress, accessibilityLabel, mobile, last }) {
+function ListRow({ title, meta, subtitle, subtitleLines = 1, onPress, onDelete, accessibilityLabel, mobile, last }) {
   return (
-    <Pressable
-      style={[styles.listRow, mobile && styles.listRowMobile, mobile && last && styles.listRowMobileLast]}
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel || title}
-      {...(Platform.OS === 'web' ? { className: 'cgold-triage-row' } : null)}
-    >
-      <View style={styles.listRowText}>
-        <Text style={styles.listRowTitle} numberOfLines={1}>
-          {title}
-        </Text>
-        {meta ? (
-          <Text style={styles.listRowMeta} numberOfLines={1}>
-            {meta}
+    <View style={[styles.listRow, mobile && styles.listRowMobile, last && styles.listRowLast]}>
+      <Pressable
+        style={styles.listRowMain}
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityLabel={accessibilityLabel || title}
+        {...(Platform.OS === 'web' ? { className: 'cgold-triage-row' } : null)}
+      >
+        <View style={styles.listRowText}>
+          <Text style={styles.listRowTitle} numberOfLines={1}>
+            {title}
           </Text>
-        ) : null}
-        {subtitle ? (
-          <Text style={styles.listRowSub} numberOfLines={subtitleLines}>
-            {subtitle}
-          </Text>
-        ) : null}
-      </View>
-      <Ionicons name="chevron-forward" size={18} color={SECONDARY} />
-    </Pressable>
+          {meta ? (
+            <Text style={styles.listRowMeta} numberOfLines={1}>
+              {meta}
+            </Text>
+          ) : null}
+          {subtitle ? (
+            <Text style={styles.listRowSub} numberOfLines={subtitleLines}>
+              {subtitle}
+            </Text>
+          ) : null}
+        </View>
+        <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+      </Pressable>
+      {onDelete ? (
+        <Pressable
+          style={styles.rowDelete}
+          onPress={onDelete}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={`Delete ${title}`}
+        >
+          <Text style={styles.rowDeleteText}>Delete</Text>
+        </Pressable>
+      ) : null}
+    </View>
   );
 }
 
@@ -755,7 +858,7 @@ function DateRangeModal({
                 accessibilityLabel="From last transfer"
               >
                 {lastBusy ? (
-                  <ActivityIndicator color={ACCENT} />
+                  <ActivityIndicator color={BLUE} />
                 ) : (
                   <Text style={styles.lastTransferButtonText}>From last transfer</Text>
                 )}
@@ -784,75 +887,143 @@ function poKindLabel(row) {
   return row?.type === 'order' ? 'SO' : 'PO';
 }
 
-function poListTitle(row) {
-  return [row?.reference, row?.dateLabel].filter(Boolean).join(' · ');
-}
-
-function poListSubtitle(row) {
+function meltProductLabel(row) {
   const items = Array.isArray(row?.itemNames) ? row.itemNames.filter(Boolean) : [];
-  const itemBit =
-    items.length === 0 ? '' : items.length === 1 ? items[0] : `${items[0]} +${items.length - 1}`;
-  return [
-    row?.customerName,
-    row?.storeName,
-    itemBit,
-    row?.review ? 'Reviewed' : '',
-  ]
-    .filter(Boolean)
-    .join(' · ');
+  if (!items.length) return '';
+  return items.length === 1 ? items[0] : `${items[0]} +${items.length - 1}`;
 }
 
-function MeltPoRow({ row, onOpen, onToggleReceived, onRemove, mobile }) {
-  const received = Boolean(row.received);
-  const reviewed = Boolean(row.review);
-  const title = poListTitle(row);
-  const subtitle = poListSubtitle(row);
+function meltStatusLabel(row) {
+  if (row?.received) return 'Received';
+  if (row?.review) return 'Reviewed';
+  return 'Open';
+}
 
+function bullionStatusLabel(row) {
+  return RECEIVE_STATUS_LABELS[row?.receiveStatus] || 'Not Received';
+}
+
+function bullionToLabel(row) {
+  return row?.toName || (row?.pathLabels || []).filter(Boolean).slice(-1)[0] || '';
+}
+
+function TableCell({ children, flex = 1, minWidth = 88, width, last }) {
+  return (
+    <View
+      style={[
+        styles.tableCell,
+        width
+          ? { width, flexGrow: 0, flexShrink: 0 }
+          : { flex, minWidth },
+        last && styles.tableCellLast,
+      ]}
+    >
+      {typeof children === 'string' || children == null ? (
+        <Text style={styles.tableCellText} numberOfLines={1}>
+          {children || '—'}
+        </Text>
+      ) : (
+        children
+      )}
+    </View>
+  );
+}
+
+function MeltTableRow({ row, onOpen, onToggleReceived, onRemove, last }) {
+  const received = Boolean(row.received);
+  return (
+    <View style={[styles.tableRow, last && styles.tableRowLast]}>
+      <Pressable
+        style={styles.tableRowMain}
+        onPress={() => onOpen(row)}
+        accessibilityRole="button"
+        accessibilityLabel={`Open ${row.reference}`}
+        {...(Platform.OS === 'web' ? { className: 'cgold-triage-row' } : null)}
+      >
+        <View style={styles.tablePhotoCell}>
+          <PoThumb urls={row.imageUrls} label={row.reference} />
+        </View>
+        <TableCell flex={1.15} minWidth={108}>
+          <Text style={styles.tableCellStrong} numberOfLines={1}>
+            {row.reference}
+          </Text>
+        </TableCell>
+        <TableCell flex={0.9} minWidth={92}>
+          {row.dateLabel}
+        </TableCell>
+        <TableCell flex={1.15} minWidth={110}>
+          {row.customerName}
+        </TableCell>
+        <TableCell flex={1.1} minWidth={110}>
+          {row.storeName}
+        </TableCell>
+        <TableCell flex={1.35} minWidth={120}>
+          {meltProductLabel(row)}
+        </TableCell>
+        <TableCell flex={0.85} minWidth={88}>
+          <Text
+            style={[
+              styles.tableCellText,
+              received && styles.tableStatusOn,
+              row.review && !received && styles.tableStatusReview,
+            ]}
+            numberOfLines={1}
+          >
+            {meltStatusLabel(row)}
+          </Text>
+        </TableCell>
+      </Pressable>
+      <View style={styles.tableActions}>
+        <Pressable
+          style={[styles.tableAction, received && styles.tableActionOn]}
+          onPress={() => onToggleReceived(row.id)}
+          accessibilityRole="button"
+          accessibilityLabel={received ? `${row.reference} received` : `Receive ${row.reference}`}
+        >
+          <Text style={[styles.tableActionText, received && styles.tableActionTextOn]}>
+            {received ? 'Received' : 'Receive'}
+          </Text>
+        </Pressable>
+        <Pressable
+          style={styles.tableRemove}
+          onPress={() => onRemove(row.id)}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={`Remove ${row.reference}`}
+        >
+          <Ionicons name="close" size={16} color={SECONDARY} />
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+function BullionTableRow({ row, onOpen, last }) {
   return (
     <Pressable
-      style={[styles.poRow, mobile && styles.poRowMobile]}
+      style={[styles.tableRow, last && styles.tableRowLast]}
       onPress={() => onOpen(row)}
       accessibilityRole="button"
       accessibilityLabel={`Open ${row.reference}`}
       {...(Platform.OS === 'web' ? { className: 'cgold-triage-row' } : null)}
     >
-      <PoThumb urls={row.imageUrls} label={row.reference} />
-      <View style={styles.poRowText}>
-        <Text style={styles.poRef} numberOfLines={1}>
-          {title}
+      <TableCell flex={1.2} minWidth={120}>
+        <Text style={styles.tableCellStrong} numberOfLines={1}>
+          {row.reference}
         </Text>
-        <Text style={[styles.poSub, reviewed && styles.poReview]} numberOfLines={1}>
-          {subtitle || '—'}
-        </Text>
-      </View>
-      <View style={styles.poRowActionsInline}>
-        <Pressable
-          style={[styles.receivedButton, received && styles.receivedButtonOn]}
-          onPress={(event) => {
-            event?.stopPropagation?.();
-            onToggleReceived(row.id);
-          }}
-          accessibilityRole="button"
-          accessibilityLabel={received ? `${row.reference} received` : `Receive ${row.reference}`}
-          accessibilityState={{ selected: received }}
-        >
-          <Text style={[styles.receivedButtonText, received && styles.receivedButtonTextOn]}>
-            {received ? 'Received' : 'Receive'}
-          </Text>
-        </Pressable>
-        <Pressable
-          style={styles.removePoButton}
-          onPress={(event) => {
-            event?.stopPropagation?.();
-            onRemove(row.id);
-          }}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel={`Remove ${row.reference}`}
-        >
-          <Ionicons name="close-circle" size={22} color={SECONDARY} />
-        </Pressable>
-      </View>
+      </TableCell>
+      <TableCell flex={0.9} minWidth={92}>
+        {row.dateLabel}
+      </TableCell>
+      <TableCell flex={1.15} minWidth={110}>
+        {row.fromName}
+      </TableCell>
+      <TableCell flex={1.15} minWidth={110}>
+        {bullionToLabel(row)}
+      </TableCell>
+      <TableCell flex={1} minWidth={110} last>
+        {bullionStatusLabel(row)}
+      </TableCell>
     </Pressable>
   );
 }
@@ -893,7 +1064,7 @@ function FeedHero({ urls, label }) {
         <Image
           source={{ uri: photo }}
           style={styles.feedHeroImage}
-          resizeMode="contain"
+          resizeMode="cover"
           onError={() => setFailed(true)}
         />
       )}
@@ -911,72 +1082,39 @@ function FeedHero({ urls, label }) {
   );
 }
 
-function MeltPoFeedCard({ row, index, total, mobile, onOpen, onToggleReceived, onRemove }) {
+function MeltPoFeedCard({ row, index, total, onOpen, onToggleReceived }) {
   const received = Boolean(row.received);
   const reviewed = Boolean(row.review);
   const isBuy = row.type !== 'order';
   const lines = Array.isArray(row.pricedLines) ? row.pricedLines.filter((line) => line?.name) : [];
-  const extraLines = Math.max(0, lines.length - 3);
+  const extraLines = Math.max(0, lines.length - 2);
 
   return (
-    <View style={[styles.feedCard, mobile && styles.feedCardMobile]}>
-      <View style={styles.feedTop}>
-        <View style={styles.feedTopText}>
-          <View style={styles.feedTitleRow}>
-            <Text style={[styles.feedKind, isBuy && styles.feedKindBuy]}>{poKindLabel(row)}</Text>
-            <Text style={styles.feedRef} numberOfLines={1}>
-              {row.reference}
-            </Text>
-          </View>
-          <Text style={styles.feedMeta} numberOfLines={1}>
-            {[row.dateLabel, row.timeLabel, row.storeName].filter(Boolean).join(' · ')}
-          </Text>
-        </View>
-        <Text style={styles.feedCount}>
-          {index + 1} / {total}
-        </Text>
-        <Pressable
-          style={styles.feedIconButton}
-          onPress={() => onRemove(row.id)}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel={`Remove ${row.reference}`}
-        >
-          <Ionicons name="close" size={18} color="rgba(255,255,255,0.72)" />
-        </Pressable>
-      </View>
-
+    <View style={styles.feedCard}>
       <FeedHero urls={row.imageUrls} label={row.reference} />
+      <View style={styles.feedScrim} pointerEvents="none" />
 
-      <View style={styles.feedDetails}>
-        <Text style={styles.feedBuyer} numberOfLines={1}>
-          {[row.customerName || '—', row.amountLabel].filter(Boolean).join(' · ')}
+      <View style={styles.feedCaption} pointerEvents="box-none">
+        <Text style={[styles.feedKind, isBuy && styles.feedKindBuy]}>{poKindLabel(row)}</Text>
+        <Text style={styles.feedHandle} numberOfLines={1}>
+          @{String(row.customerName || 'walk-in').replace(/\s+/g, '').toLowerCase() || 'walkin'}
         </Text>
-        <Text style={styles.feedMeta} numberOfLines={1}>
-          {[
-            row.employeeName ? `Staff ${row.employeeName}` : '',
-            row.paymentMethodLabel,
-            reviewed ? 'Reviewed' : '',
-          ]
+        <Text style={styles.feedBuyer} numberOfLines={2}>
+          {[row.reference, row.amountLabel].filter(Boolean).join(' · ')}
+        </Text>
+        <Text style={styles.feedMeta} numberOfLines={2}>
+          {[row.storeName, row.dateLabel, row.timeLabel, row.employeeName, reviewed ? 'Reviewed' : '']
             .filter(Boolean)
-            .join(' · ') || 'Purchase details'}
+            .join(' · ')}
         </Text>
         {lines.length > 0 ? (
-          <View style={styles.feedLines}>
-            {lines.slice(0, 3).map((line, lineIndex) => (
-              <Text
-                key={`${row.id}-line-${lineIndex}`}
-                style={styles.feedLine}
-                numberOfLines={1}
-              >
-                {line.name}
-                {Number(line.quantity) > 1 ? ` · ×${line.quantity}` : ''}
-              </Text>
-            ))}
-            {extraLines > 0 ? (
-              <Text style={styles.feedLineMuted}>+{extraLines} more</Text>
-            ) : null}
-          </View>
+          <Text style={styles.feedLine} numberOfLines={2}>
+            {lines
+              .slice(0, 2)
+              .map((line) => line.name)
+              .join(' · ')}
+            {extraLines > 0 ? ` +${extraLines}` : ''}
+          </Text>
         ) : row.itemNames?.length ? (
           <Text style={styles.feedLine} numberOfLines={2}>
             {row.itemNames.filter(Boolean).join(' · ')}
@@ -984,179 +1122,136 @@ function MeltPoFeedCard({ row, index, total, mobile, onOpen, onToggleReceived, o
         ) : null}
       </View>
 
-      <View style={styles.feedActions}>
+      <View style={styles.feedRail}>
+        <Text style={styles.feedCount}>
+          {index + 1}/{total}
+        </Text>
         <Pressable
-          style={styles.feedEditButton}
+          style={styles.feedRailButton}
           onPress={() => onOpen(row)}
           accessibilityRole="button"
           accessibilityLabel={`Edit or correct ${row.reference}`}
         >
-          <Ionicons name="create-outline" size={18} color="#fff" />
-          <Text style={styles.feedEditButtonText}>Edit / Correct</Text>
+          <View style={styles.feedRailIcon}>
+            <Ionicons name="create" size={22} color="#fff" />
+          </View>
+          <Text style={styles.feedRailLabel}>Edit</Text>
         </Pressable>
         <Pressable
-          style={[styles.feedReceiveButton, received && styles.feedReceiveButtonOn]}
+          style={styles.feedRailButton}
           onPress={() => onToggleReceived(row.id)}
           accessibilityRole="button"
           accessibilityLabel={received ? `${row.reference} received` : `Receive ${row.reference}`}
           accessibilityState={{ selected: received }}
         >
-          <Text style={[styles.feedReceiveButtonText, received && styles.feedReceiveButtonTextOn]}>
-            {received ? 'Received' : 'Receive'}
-          </Text>
+          <View style={[styles.feedRailIcon, received && styles.feedRailIconOn]}>
+            <Ionicons name={received ? 'checkmark' : 'arrow-down'} size={22} color="#fff" />
+          </View>
+          <Text style={styles.feedRailLabel}>{received ? 'Got' : 'Recv'}</Text>
         </Pressable>
       </View>
     </View>
   );
 }
 
-function MeltPoFeed({ rows, mobile, onOpen, onToggleReceived, onRemove }) {
+function MeltPoFeedModal({ visible, rows, onClose, onOpen, onToggleReceived }) {
+  const { width, height } = useWindowDimensions();
+  const isMobile = width < 768;
   const [pageH, setPageH] = useState(0);
+  const stageWidth = isMobile ? width : Math.min(420, Math.max(320, Math.round(width * 0.38)));
+  const stageHeight = isMobile ? height : Math.min(height - 40, Math.round(stageWidth * (16 / 9) + 120));
+
+  useEffect(() => {
+    if (!visible) setPageH(0);
+  }, [visible]);
 
   return (
-    <View
-      style={styles.feedShell}
-      onLayout={(event) => {
-        const next = Math.round(event.nativeEvent.layout.height);
-        if (next > 0 && next !== pageH) setPageH(next);
-      }}
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+      statusBarTranslucent
     >
-      {pageH > 0 ? (
-        <FlatList
-          data={rows}
-          keyExtractor={(row) => row.id}
-          pagingEnabled
-          decelerationRate="fast"
-          snapToInterval={pageH}
-          snapToAlignment="start"
-          disableIntervalMomentum
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-          getItemLayout={(_, index) => ({ length: pageH, offset: pageH * index, index })}
-          style={[styles.feedList, { height: pageH }]}
-          {...(Platform.OS === 'web' ? { className: 'cgold-triage-feed' } : null)}
-          renderItem={({ item, index }) => (
-            <View
-              style={[styles.feedPage, { height: pageH }, mobile && styles.feedPageMobile]}
-              {...(Platform.OS === 'web' ? { className: 'cgold-triage-feed-page' } : null)}
-            >
-              <MeltPoFeedCard
-                row={item}
-                index={index}
-                total={rows.length}
-                mobile={mobile}
-                onOpen={onOpen}
-                onToggleReceived={onToggleReceived}
-                onRemove={onRemove}
-              />
-            </View>
-          )}
+      <View style={styles.feedModalRoot}>
+        <Pressable
+          style={styles.feedModalBackdrop}
+          onPress={onClose}
+          accessibilityRole="button"
+          accessibilityLabel="Close feed"
         />
-      ) : null}
-    </View>
-  );
-}
-
-function MeltViewToggle({ value, onChange }) {
-  return (
-    <View style={styles.viewToggle} accessibilityRole="tablist">
-      {[
-        { key: 'classic', icon: 'list-outline', label: 'Classic list' },
-        { key: 'feed', icon: 'phone-portrait-outline', label: 'Feed view' },
-      ].map((option) => {
-        const active = value === option.key;
-        return (
+        <View
+          style={[
+            styles.feedModalStage,
+            isMobile && styles.feedModalStageFull,
+            { width: isMobile ? '100%' : stageWidth, height: isMobile ? '100%' : stageHeight },
+          ]}
+          onLayout={(event) => {
+            const next = Math.round(event.nativeEvent.layout.height);
+            if (next > 0 && next !== pageH) setPageH(next);
+          }}
+        >
           <Pressable
-            key={option.key}
-            style={[styles.viewToggleButton, active && styles.viewToggleButtonOn]}
-            onPress={() => onChange(option.key)}
-            accessibilityRole="tab"
-            accessibilityState={{ selected: active }}
-            accessibilityLabel={option.label}
+            style={[styles.feedClose, { top: isMobile ? mobileSafeTop() : 12 }]}
+            onPress={onClose}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Close feed"
           >
-            <Ionicons name={option.icon} size={16} color={active ? '#fff' : TEXT} />
+            <Ionicons name="close" size={22} color="#fff" />
           </Pressable>
-        );
-      })}
-    </View>
+
+          {rows.length === 0 ? (
+            <View style={styles.feedEmpty}>
+              <Ionicons name="images-outline" size={40} color="rgba(255,255,255,0.45)" />
+              <Text style={styles.feedEmptyText}>No purchases to show</Text>
+            </View>
+          ) : pageH > 0 ? (
+            <FlatList
+              data={rows}
+              keyExtractor={(row) => row.id}
+              pagingEnabled
+              decelerationRate="fast"
+              snapToInterval={pageH}
+              snapToAlignment="start"
+              disableIntervalMomentum
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+              getItemLayout={(_, index) => ({ length: pageH, offset: pageH * index, index })}
+              style={[styles.feedList, { height: pageH }]}
+              {...(Platform.OS === 'web' ? { className: 'cgold-triage-feed' } : null)}
+              renderItem={({ item, index }) => (
+                <View
+                  style={[styles.feedPage, { height: pageH }]}
+                  {...(Platform.OS === 'web' ? { className: 'cgold-triage-feed-page' } : null)}
+                >
+                  <MeltPoFeedCard
+                    row={item}
+                    index={index}
+                    total={rows.length}
+                    onOpen={onOpen}
+                    onToggleReceived={onToggleReceived}
+                  />
+                </View>
+              )}
+            />
+          ) : null}
+        </View>
+      </View>
+    </Modal>
   );
 }
 
-function MeltToolbarFields({
-  mobile,
-  docQuery,
-  setDocQuery,
-  listedRange,
-  filtersActive,
-  visibleCount,
-  totalCount,
-  showFilters,
-  storeFilter,
-  setStoreFilter,
-  storeOptions,
-  personFilter,
-  setPersonFilter,
-  personOptions,
-  productFilter,
-  setProductFilter,
-  productOptions,
-}) {
+function MeltFeedButton({ onPress }) {
   return (
-    <>
-      <View style={[styles.searchField, styles.meltSearchInline, mobile && styles.searchFieldMobile]}>
-        <Ionicons name="search" size={16} color={SECONDARY} style={styles.searchIcon} />
-        <TextInput
-          style={styles.searchInput}
-          value={docQuery}
-          onChangeText={setDocQuery}
-          placeholder="Search PO# or SO#"
-          placeholderTextColor={SECONDARY}
-          autoCapitalize="characters"
-          autoCorrect={false}
-          clearButtonMode="while-editing"
-          accessibilityLabel={
-            listedRange
-              ? `Search PO or SO. ${listedRange}. ${
-                  filtersActive ? `${visibleCount} of ${totalCount}` : visibleCount
-                } documents`
-              : 'Search PO or SO'
-          }
-        />
-        {docQuery ? (
-          <Pressable onPress={() => setDocQuery('')} hitSlop={8} accessibilityRole="button">
-            <Ionicons name="close-circle" size={18} color="#c7c7cc" />
-          </Pressable>
-        ) : null}
-      </View>
-      {showFilters ? (
-        <>
-          <FilterPicker
-            compact
-            label="Store"
-            value={storeFilter}
-            onChange={setStoreFilter}
-            options={storeOptions}
-            placeholder="Store"
-          />
-          <FilterPicker
-            compact
-            label="Person"
-            value={personFilter}
-            onChange={setPersonFilter}
-            options={personOptions}
-            placeholder="Person"
-          />
-          <FilterPicker
-            compact
-            label="Product"
-            value={productFilter}
-            onChange={setProductFilter}
-            options={productOptions}
-            placeholder="Product"
-          />
-        </>
-      ) : null}
-    </>
+    <Pressable
+      style={styles.feedOpenButton}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel="Open feed view"
+    >
+      <Ionicons name="phone-portrait-outline" size={18} color={TEXT} />
+    </Pressable>
   );
 }
 
@@ -1325,7 +1420,7 @@ function SpecificDocSearch({ store, auth, existingIds, onClose, onAdd }) {
           </View>
           {busy ? (
             <View style={styles.modalBusy}>
-              <ActivityIndicator color={ACCENT} />
+              <ActivityIndicator color={BLUE} />
             </View>
           ) : null}
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
@@ -1391,20 +1486,27 @@ function MeltTab({
   onSaveReview,
 }) {
   const { triage } = useTransferWorkflow();
-  const isMobile = useIsMobile();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [openRow, setOpenRow] = useState(null);
-  const [docQuery, setDocQuery] = useState('');
-  const [storeFilter, setStoreFilter] = useState('');
-  const [personFilter, setPersonFilter] = useState('');
-  const [productFilter, setProductFilter] = useState('');
-  const [listView, setListView] = useState('classic');
+  const [feedOpen, setFeedOpen] = useState(false);
+  const [openFilter, setOpenFilter] = useState(null);
+  const [filters, setFilters] = useState({
+    reference: '',
+    dateLabel: '',
+    person: '',
+    store: '',
+    product: '',
+    status: '',
+  });
   const auth = useMemo(
     () => resolvePosAuthForRow(session, { systemKey: store.systemKey }),
     [session, store.systemKey],
   );
   const existingIds = useMemo(() => (pos || []).map((row) => row.id), [pos]);
+  const setFilter = useCallback((key, value) => {
+    setFilters((current) => ({ ...current, [key]: value }));
+  }, []);
   const storeOptions = useMemo(
     () => uniqueLabels((pos || []).map((row) => row.storeName)),
     [pos],
@@ -1423,21 +1525,32 @@ function MeltTab({
       ),
     [pos],
   );
+  const referenceOptions = useMemo(
+    () => uniqueLabels((pos || []).map((row) => row.reference)),
+    [pos],
+  );
+  const dateOptions = useMemo(
+    () => uniqueLabels((pos || []).map((row) => row.dateLabel)),
+    [pos],
+  );
+  const statusOptions = useMemo(
+    () => uniqueLabels((pos || []).map((row) => meltStatusLabel(row))),
+    [pos],
+  );
   const visiblePos = useMemo(
     () =>
       (pos || []).filter(
         (row) =>
-          matchesDocQuery(row, docQuery) &&
-          matchesLabelFilter(row.storeName, storeFilter) &&
-          matchesPersonFilter(row, personFilter) &&
-          matchesProductFilter(row, productFilter),
+          matchesDocQuery(row, filters.reference) &&
+          matchesLabelFilter(row.dateLabel, filters.dateLabel) &&
+          matchesPersonFilter(row, filters.person) &&
+          matchesLabelFilter(row.storeName, filters.store) &&
+          matchesProductFilter(row, filters.product) &&
+          matchesLabelFilter(meltStatusLabel(row), filters.status),
       ),
-    [docQuery, personFilter, pos, productFilter, storeFilter],
+    [filters, pos],
   );
-  const listedRange = useMemo(() => listedDateRange(pos), [pos]);
-  const filtersActive = Boolean(
-    storeFilter.trim() || personFilter.trim() || productFilter.trim() || docQuery.trim(),
-  );
+  const filtersActive = Object.values(filters).some((value) => String(value || '').trim());
 
   const loadRange = useCallback(
     async ({ startDate, endDate }) => {
@@ -1487,59 +1600,16 @@ function MeltTab({
 
   return (
     <View style={styles.body}>
-      <View style={[styles.meltToolbar, styles.meltToolbarRow, isMobile && styles.meltToolbarMobile]}>
-        {isMobile ? (
-          <ScrollView
-            horizontal
-            style={styles.meltToolbarScroll}
-            contentContainerStyle={styles.meltToolbarScrollContent}
-            showsHorizontalScrollIndicator={false}
-            keyboardShouldPersistTaps="handled"
-          >
-            <MeltToolbarFields
-              mobile
-              docQuery={docQuery}
-              setDocQuery={setDocQuery}
-              listedRange={listedRange}
-              filtersActive={filtersActive}
-              visibleCount={visiblePos.length}
-              totalCount={pos.length}
-              showFilters={pos.length > 0}
-              storeFilter={storeFilter}
-              setStoreFilter={setStoreFilter}
-              storeOptions={storeOptions}
-              personFilter={personFilter}
-              setPersonFilter={setPersonFilter}
-              personOptions={personOptions}
-              productFilter={productFilter}
-              setProductFilter={setProductFilter}
-              productOptions={productOptions}
-            />
-          </ScrollView>
-        ) : (
-          <View style={[styles.meltToolbarScroll, styles.meltToolbarScrollContent]}>
-            <MeltToolbarFields
-              docQuery={docQuery}
-              setDocQuery={setDocQuery}
-              listedRange={listedRange}
-              filtersActive={filtersActive}
-              visibleCount={visiblePos.length}
-              totalCount={pos.length}
-              showFilters={pos.length > 0}
-              storeFilter={storeFilter}
-              setStoreFilter={setStoreFilter}
-              storeOptions={storeOptions}
-              personFilter={personFilter}
-              setPersonFilter={setPersonFilter}
-              personOptions={personOptions}
-              productFilter={productFilter}
-              setProductFilter={setProductFilter}
-              productOptions={productOptions}
-            />
-          </View>
-        )}
-        {pos.length > 0 ? <MeltViewToggle value={listView} onChange={setListView} /> : null}
-      </View>
+      {pos.length > 0 ? (
+        <View style={styles.tableToolbar}>
+          <Text style={styles.tableMeta}>
+            {filtersActive ? `${visiblePos.length} of ${pos.length}` : pos.length}
+            {' '}
+            {pos.length === 1 ? 'document' : 'documents'}
+          </Text>
+          <MeltFeedButton onPress={() => setFeedOpen(true)} />
+        </View>
+      ) : null}
 
       {pos.length === 0 ? (
         <EmptyState
@@ -1547,44 +1617,97 @@ function MeltTab({
           title="Melt"
           body="Tap Add to load a date range or search a single PO/SO from this store."
         />
-      ) : visiblePos.length === 0 ? (
-        <EmptyState
-          icon="search-outline"
-          title="No matches"
-          body="No PO or SO matches that search or filter."
-        />
-      ) : listView === 'feed' ? (
-        <MeltPoFeed
-          rows={visiblePos}
-          mobile={isMobile}
-          onOpen={setOpenRow}
-          onToggleReceived={onToggleReceived}
-          onRemove={(id) => {
-            if (openRow?.id === id) setOpenRow(null);
-            onRemovePos(id);
-          }}
-        />
       ) : (
-        <ScrollView
-          style={styles.list}
-          contentContainerStyle={[styles.listContent, isMobile && styles.listContentMobile]}
+        <TableFrame
+          minWidth={920}
+          header={
+            <>
+              <View style={styles.tablePhotoCell} />
+              <ColumnFilter
+                columnKey="reference"
+                label="PO / SO"
+                value={filters.reference}
+                onChange={(value) => setFilter('reference', value)}
+                options={referenceOptions}
+                openKey={openFilter}
+                onOpenKey={setOpenFilter}
+                style={{ flex: 1.15, minWidth: 108 }}
+              />
+              <ColumnFilter
+                columnKey="dateLabel"
+                label="Date"
+                value={filters.dateLabel}
+                onChange={(value) => setFilter('dateLabel', value)}
+                options={dateOptions}
+                openKey={openFilter}
+                onOpenKey={setOpenFilter}
+                style={{ flex: 0.9, minWidth: 92 }}
+              />
+              <ColumnFilter
+                columnKey="person"
+                label="Person"
+                value={filters.person}
+                onChange={(value) => setFilter('person', value)}
+                options={personOptions}
+                openKey={openFilter}
+                onOpenKey={setOpenFilter}
+                style={{ flex: 1.15, minWidth: 110 }}
+              />
+              <ColumnFilter
+                columnKey="store"
+                label="Store"
+                value={filters.store}
+                onChange={(value) => setFilter('store', value)}
+                options={storeOptions}
+                openKey={openFilter}
+                onOpenKey={setOpenFilter}
+                style={{ flex: 1.1, minWidth: 110 }}
+              />
+              <ColumnFilter
+                columnKey="product"
+                label="Product"
+                value={filters.product}
+                onChange={(value) => setFilter('product', value)}
+                options={productOptions}
+                openKey={openFilter}
+                onOpenKey={setOpenFilter}
+                style={{ flex: 1.35, minWidth: 120 }}
+              />
+              <ColumnFilter
+                columnKey="status"
+                label="Status"
+                value={filters.status}
+                onChange={(value) => setFilter('status', value)}
+                options={statusOptions}
+                openKey={openFilter}
+                onOpenKey={setOpenFilter}
+                style={{ flex: 0.85, minWidth: 88 }}
+              />
+              <View style={styles.tableActionsHead} />
+            </>
+          }
         >
-          <View style={isMobile ? styles.listGroup : null}>
-            {visiblePos.map((row) => (
-              <MeltPoRow
+          {visiblePos.length === 0 ? (
+            <Text style={styles.tableEmpty}>No PO or SO matches that column filter.</Text>
+          ) : (
+            visiblePos.map((row, index) => (
+              <MeltTableRow
                 key={row.id}
                 row={row}
-                mobile={isMobile}
-                onOpen={setOpenRow}
+                last={index === visiblePos.length - 1}
+                onOpen={(item) => {
+                  setOpenFilter(null);
+                  setOpenRow(item);
+                }}
                 onToggleReceived={onToggleReceived}
                 onRemove={(id) => {
                   if (openRow?.id === id) setOpenRow(null);
                   onRemovePos(id);
                 }}
               />
-            ))}
-          </View>
-        </ScrollView>
+            ))
+          )}
+        </TableFrame>
       )}
 
       <DateRangeModal
@@ -1615,6 +1738,14 @@ function MeltTab({
               .catch(() => {});
           }
         }}
+      />
+
+      <MeltPoFeedModal
+        visible={feedOpen}
+        rows={visiblePos}
+        onClose={() => setFeedOpen(false)}
+        onOpen={setOpenRow}
+        onToggleReceived={onToggleReceived}
       />
 
       <TriageReviewDrawer
@@ -1741,10 +1872,17 @@ function DrawerRow({ label, value, last }) {
 
 function BullionTab({ dateKey, store, session }) {
   const { planned } = useTransferWorkflow();
-  const isMobile = useIsMobile();
   const [openId, setOpenId] = useState(null);
   const [posRows, setPosRows] = useState([]);
   const [posBusy, setPosBusy] = useState(false);
+  const [openFilter, setOpenFilter] = useState(null);
+  const [filters, setFilters] = useState({
+    reference: '',
+    dateLabel: '',
+    fromName: '',
+    toName: '',
+    status: '',
+  });
 
   useEffect(() => {
     if (!session?.token || !store?.name) {
@@ -1798,7 +1936,43 @@ function BullionTab({ dateKey, store, session }) {
     );
   }, [planned, posRows, store?.name, store?.storeKey]);
 
-  const openRow = rows.find((row) => row.id === openId) || null;
+  const setFilter = useCallback((key, value) => {
+    setFilters((current) => ({ ...current, [key]: value }));
+  }, []);
+  const referenceOptions = useMemo(
+    () => uniqueLabels(rows.map((row) => row.reference)),
+    [rows],
+  );
+  const dateOptions = useMemo(
+    () => uniqueLabels(rows.map((row) => row.dateLabel)),
+    [rows],
+  );
+  const fromOptions = useMemo(
+    () => uniqueLabels(rows.map((row) => row.fromName)),
+    [rows],
+  );
+  const toOptions = useMemo(
+    () => uniqueLabels(rows.map((row) => bullionToLabel(row))),
+    [rows],
+  );
+  const statusOptions = useMemo(
+    () => uniqueLabels(rows.map((row) => bullionStatusLabel(row))),
+    [rows],
+  );
+  const visibleRows = useMemo(
+    () =>
+      rows.filter(
+        (row) =>
+          matchesLabelFilter(row.reference, filters.reference) &&
+          matchesLabelFilter(row.dateLabel, filters.dateLabel) &&
+          matchesLabelFilter(row.fromName, filters.fromName) &&
+          matchesLabelFilter(bullionToLabel(row), filters.toName) &&
+          matchesLabelFilter(bullionStatusLabel(row), filters.status),
+      ),
+    [filters, rows],
+  );
+  const filtersActive = Object.values(filters).some((value) => String(value || '').trim());
+  const openRow = visibleRows.find((row) => row.id === openId) || rows.find((row) => row.id === openId) || null;
 
   return (
     <View style={styles.body}>
@@ -1813,30 +1987,88 @@ function BullionTab({ dateKey, store, session }) {
           }
         />
       ) : (
-        <ScrollView
-          style={styles.list}
-          contentContainerStyle={[styles.listContent, isMobile && styles.listContentMobile]}
-        >
-          <View style={isMobile ? styles.listGroup : null}>
-            {rows.map((row, index) => (
-              <ListRow
-                key={row.id}
-                title={row.reference}
-                meta={RECEIVE_STATUS_LABELS[row.receiveStatus] || 'Not Received'}
-                subtitle={
-                  [row.dateLabel, (row.pathLabels || []).join(' → ') || `${row.fromName} → ${row.toName}`]
-                    .filter(Boolean)
-                    .join('\n')
-                }
-                subtitleLines={2}
-                mobile={isMobile}
-                last={index === rows.length - 1}
-                onPress={() => setOpenId(row.id)}
-                accessibilityLabel={`Open ${row.reference}`}
-              />
-            ))}
+        <>
+          <View style={styles.tableToolbar}>
+            <Text style={styles.tableMeta}>
+              {filtersActive ? `${visibleRows.length} of ${rows.length}` : rows.length}
+              {' '}
+              {rows.length === 1 ? 'transfer' : 'transfers'}
+            </Text>
           </View>
-        </ScrollView>
+          <TableFrame
+            minWidth={720}
+            header={
+              <>
+                <ColumnFilter
+                  columnKey="reference"
+                  label="Transfer"
+                  value={filters.reference}
+                  onChange={(value) => setFilter('reference', value)}
+                  options={referenceOptions}
+                  openKey={openFilter}
+                  onOpenKey={setOpenFilter}
+                  style={{ flex: 1.2, minWidth: 120 }}
+                />
+                <ColumnFilter
+                  columnKey="dateLabel"
+                  label="Date"
+                  value={filters.dateLabel}
+                  onChange={(value) => setFilter('dateLabel', value)}
+                  options={dateOptions}
+                  openKey={openFilter}
+                  onOpenKey={setOpenFilter}
+                  style={{ flex: 0.9, minWidth: 92 }}
+                />
+                <ColumnFilter
+                  columnKey="fromName"
+                  label="From"
+                  value={filters.fromName}
+                  onChange={(value) => setFilter('fromName', value)}
+                  options={fromOptions}
+                  openKey={openFilter}
+                  onOpenKey={setOpenFilter}
+                  style={{ flex: 1.15, minWidth: 110 }}
+                />
+                <ColumnFilter
+                  columnKey="toName"
+                  label="To"
+                  value={filters.toName}
+                  onChange={(value) => setFilter('toName', value)}
+                  options={toOptions}
+                  openKey={openFilter}
+                  onOpenKey={setOpenFilter}
+                  style={{ flex: 1.15, minWidth: 110 }}
+                />
+                <ColumnFilter
+                  columnKey="status"
+                  label="Status"
+                  value={filters.status}
+                  onChange={(value) => setFilter('status', value)}
+                  options={statusOptions}
+                  openKey={openFilter}
+                  onOpenKey={setOpenFilter}
+                  style={{ flex: 1, minWidth: 110 }}
+                />
+              </>
+            }
+          >
+            {visibleRows.length === 0 ? (
+              <Text style={styles.tableEmpty}>No transfers match that column filter.</Text>
+            ) : (
+              visibleRows.map((row, index) => (
+                <BullionTableRow
+                  key={row.id}
+                  row={row}
+                  last={index === visibleRows.length - 1}
+                  onOpen={(item) => {
+                    setOpenFilter(null);
+                    setOpenId(item.id);
+                  }}
+                />
+              ))
+            )}
+          </TableFrame>
+        </>
       )}
       <BullionTransferDrawer
         visible={Boolean(openRow)}
@@ -1904,6 +2136,7 @@ function StoreMultiPicker({ session, addedKeys, selectedIds, onChangeSelected })
     const q = query.trim().toLowerCase();
     return stores.filter((store) => {
       if (addedKeys.has(store.id)) return false;
+      if (isWorkshopStore(store)) return false;
       if (!q) return true;
       const hay = [store.name, store.city, store.systemLabel, store.address]
         .filter(Boolean)
@@ -1965,7 +2198,7 @@ function StoreMultiPicker({ session, addedKeys, selectedIds, onChangeSelected })
 
       {loading ? (
         <View style={styles.modalBusy}>
-          <ActivityIndicator color={ACCENT} />
+          <ActivityIndicator color={BLUE} />
         </View>
       ) : (
         <ScrollView
@@ -1985,17 +2218,12 @@ function StoreMultiPicker({ session, addedKeys, selectedIds, onChangeSelected })
               return (
                 <Pressable
                   key={store.id}
-                  style={[styles.storePickRow, selected && styles.storePickRowSelected]}
+                  style={styles.storePickRow}
                   onPress={() => toggle(store.id)}
                   accessibilityRole="checkbox"
                   accessibilityState={{ checked: selected }}
                   accessibilityLabel={store.name}
                 >
-                  <Ionicons
-                    name={selected ? 'checkbox' : 'square-outline'}
-                    size={22}
-                    color={selected ? ACCENT : '#c7c7cc'}
-                  />
                   <View style={styles.listRowText}>
                     <Text style={styles.listRowTitle} numberOfLines={1}>
                       {store.name}
@@ -2004,116 +2232,7 @@ function StoreMultiPicker({ session, addedKeys, selectedIds, onChangeSelected })
                       {[store.city, store.systemLabel].filter(Boolean).join(' · ') || store.address}
                     </Text>
                   </View>
-                </Pressable>
-              );
-            })
-          )}
-        </ScrollView>
-      )}
-    </View>
-  );
-}
-
-function LocationPicker({ session, selectedId, onSelect }) {
-  const isMobile = useIsMobile();
-  const [query, setQuery] = useState('');
-  const [stores, setStores] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    let cancelled = false;
-    setQuery('');
-    setError('');
-    setLoading(true);
-    fetchTransferStores(session)
-      .then((result) => {
-        if (cancelled) return;
-        setStores(result.stores || []);
-        if (result.warning) setError(result.warning);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setStores([]);
-        setError(err?.message || 'Failed to load locations.');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [session]);
-
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return stores;
-    return stores.filter((store) => {
-      const hay = [store.name, store.city, store.systemLabel, store.address]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase();
-      return hay.includes(q);
-    });
-  }, [query, stores]);
-
-  return (
-    <View style={styles.storePicker}>
-      <View style={[styles.searchField, isMobile && styles.searchFieldMobile]}>
-        <Ionicons name="search" size={16} color={SECONDARY} style={styles.searchIcon} />
-        <TextInput
-          style={styles.searchInput}
-          value={query}
-          onChangeText={setQuery}
-          placeholder="Search locations"
-          placeholderTextColor={SECONDARY}
-          autoCorrect={false}
-          autoCapitalize="none"
-          clearButtonMode="while-editing"
-        />
-      </View>
-      {error ? <Text style={styles.errorText}>{error}</Text> : null}
-      {loading ? (
-        <View style={styles.modalBusy}>
-          <ActivityIndicator color={ACCENT} />
-        </View>
-      ) : (
-        <ScrollView
-          style={styles.storeList}
-          contentContainerStyle={styles.storeListContent}
-          keyboardShouldPersistTaps="handled"
-          nestedScrollEnabled
-          showsVerticalScrollIndicator
-        >
-          {filtered.length === 0 ? (
-            <Text style={styles.modalEmpty}>
-              {stores.length === 0 ? 'No locations available.' : 'No matching locations.'}
-            </Text>
-          ) : (
-            filtered.map((store) => {
-              const selected = selectedId === store.id;
-              return (
-                <Pressable
-                  key={store.id}
-                  style={[styles.storePickRow, selected && styles.storePickRowSelected]}
-                  onPress={() => onSelect(store)}
-                  accessibilityRole="radio"
-                  accessibilityState={{ selected }}
-                  accessibilityLabel={store.name}
-                >
-                  <Ionicons
-                    name={selected ? 'radio-button-on' : 'radio-button-off'}
-                    size={22}
-                    color={selected ? ACCENT : '#c7c7cc'}
-                  />
-                  <View style={styles.listRowText}>
-                    <Text style={styles.listRowTitle} numberOfLines={1}>
-                      {store.name}
-                    </Text>
-                    <Text style={styles.listRowSub} numberOfLines={1}>
-                      {[store.city, store.systemLabel].filter(Boolean).join(' · ') || store.address}
-                    </Text>
-                  </View>
+                  {selected ? <Ionicons name="checkmark" size={22} color={BLUE} /> : null}
                 </Pressable>
               );
             })
@@ -2126,24 +2245,20 @@ function LocationPicker({ session, selectedId, onSelect }) {
 
 function CreateTransferModal({ visible, session, existingKeys, onClose, onCreate }) {
   const isMobile = useIsMobile();
-  const [step, setStep] = useState('stores');
   const [date, setDate] = useState(() => parseDateParam(new Date()));
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [pickedStores, setPickedStores] = useState([]);
-  const [location, setLocation] = useState(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
     if (!visible) return;
-    setStep('stores');
     setDate(parseDateParam(new Date()));
     setSelectedIds(new Set());
     setPickedStores([]);
-    setLocation(null);
     setError('');
   }, [visible]);
 
-  const goNext = () => {
+  const create = () => {
     const key = formatDateParam(date);
     if (existingKeys.has(key)) {
       setError('A transfer for this date already exists.');
@@ -2153,26 +2268,11 @@ function CreateTransferModal({ visible, session, existingKeys, onClose, onCreate
       setError('Select at least one store.');
       return;
     }
-    setError('');
-    setStep('location');
-  };
-
-  const create = () => {
-    if (!location) {
-      setError('Select where triage is taking place.');
-      return;
-    }
     onCreate({
       id: newId('xfer'),
-      dateKey: formatDateParam(date),
+      dateKey: key,
       dateLabel: formatPickerDate(date),
-      triageLocation: {
-        storeKey: location.id,
-        name: location.name,
-        systemKey: location.systemKey,
-        systemLabel: location.systemLabel,
-        city: location.city || '',
-      },
+      triageLocation: { ...WORKSHOP_LOCATION },
       stores: pickedStores
         .map(mapPickedStore)
         .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })),
@@ -2181,8 +2281,6 @@ function CreateTransferModal({ visible, session, existingKeys, onClose, onCreate
 
   if (!visible) return null;
 
-  const onStores = step === 'stores';
-
   return (
     <Modal visible transparent animationType={isMobile ? 'slide' : 'fade'} onRequestClose={onClose}>
       <View style={[styles.modalBackdrop, isMobile && styles.sheetBackdrop]} pointerEvents="box-none">
@@ -2190,59 +2288,37 @@ function CreateTransferModal({ visible, session, existingKeys, onClose, onCreate
         <View style={[styles.storeCard, isMobile && styles.sheetCard]} pointerEvents="auto">
           {isMobile ? <View style={styles.sheetGrabber} /> : null}
           <View style={styles.storeHeader}>
+            <Pressable onPress={onClose} hitSlop={8} accessibilityRole="button">
+              <Text style={styles.iosNavAction}>Cancel</Text>
+            </Pressable>
             <View style={styles.storeTitleBlock}>
-              {onStores ? null : (
-                <Pressable onPress={() => setStep('stores')} style={styles.backButton} hitSlop={8}>
-                  <Ionicons name="chevron-back" size={isMobile ? 28 : 18} color={isMobile ? MOBILE.blue : ACCENT} />
-                  <Text style={[styles.backText, isMobile && styles.iosBackText]}>Stores</Text>
-                </Pressable>
-              )}
-              <Text style={styles.modalTitle}>{onStores ? 'New transfer' : 'Triage location'}</Text>
-              <Text style={styles.modalSub}>
-                {onStores
-                  ? 'Pick a date, then select one or more stores.'
-                  : `Select where triage is taking place on ${formatPickerDate(date)}.`}
-              </Text>
+              <Text style={styles.modalTitle}>New Transfer</Text>
+              <Text style={styles.modalSub}>Stores sending to Workshop</Text>
             </View>
-            <Pressable onPress={onClose} hitSlop={8} accessibilityLabel="Close">
-              <Ionicons name="close" size={22} color={SECONDARY} />
+            <Pressable
+              onPress={create}
+              disabled={pickedStores.length === 0}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Create"
+            >
+              <Text style={[styles.iosNavAction, styles.iosNavActionStrong, pickedStores.length === 0 && styles.iosNavActionDisabled]}>
+                Create
+              </Text>
             </Pressable>
           </View>
-          {onStores ? <DateField value={date} onChange={setDate} /> : null}
+          <DateField value={date} onChange={setDate} />
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
-          {onStores ? (
-            <StoreMultiPicker
-              session={session}
-              addedKeys={new Set()}
-              selectedIds={selectedIds}
-              onChangeSelected={(ids, picked) => {
-                setSelectedIds(ids);
-                setPickedStores(picked);
-                if (error) setError('');
-              }}
-            />
-          ) : (
-            <LocationPicker session={session} selectedId={location?.id} onSelect={setLocation} />
-          )}
-          <View style={styles.modalActions}>
-            <Pressable
-              style={styles.secondaryButton}
-              onPress={onStores ? onClose : () => setStep('stores')}
-            >
-              <Text style={styles.secondaryButtonText}>{onStores ? 'Cancel' : 'Back'}</Text>
-            </Pressable>
-            <Pressable
-              style={[
-                styles.primaryButton,
-                styles.primaryButtonInline,
-                (onStores ? pickedStores.length === 0 : !location) && styles.primaryButtonDisabled,
-              ]}
-              onPress={onStores ? goNext : create}
-              disabled={onStores ? pickedStores.length === 0 : !location}
-            >
-              <Text style={styles.primaryButtonText}>{onStores ? 'Next' : 'Create'}</Text>
-            </Pressable>
-          </View>
+          <StoreMultiPicker
+            session={session}
+            addedKeys={new Set()}
+            selectedIds={selectedIds}
+            onChangeSelected={(ids, picked) => {
+              setSelectedIds(ids);
+              setPickedStores(picked);
+              if (error) setError('');
+            }}
+          />
         </View>
       </View>
     </Modal>
@@ -2274,12 +2350,28 @@ function AddStoreModal({ visible, session, addedKeys, onClose, onAdd }) {
         <View style={[styles.storeCard, isMobile && styles.sheetCard]} pointerEvents="auto">
           {isMobile ? <View style={styles.sheetGrabber} /> : null}
           <View style={styles.storeHeader}>
+            <Pressable onPress={onClose} hitSlop={8} accessibilityRole="button">
+              <Text style={styles.iosNavAction}>Cancel</Text>
+            </Pressable>
             <View style={styles.storeTitleBlock}>
-              <Text style={styles.modalTitle}>Add stores</Text>
-              <Text style={styles.modalSub}>Select one or more stores to add to this transfer.</Text>
+              <Text style={styles.modalTitle}>Add Stores</Text>
             </View>
-            <Pressable onPress={onClose} hitSlop={8} accessibilityLabel="Close">
-              <Ionicons name="close" size={22} color={SECONDARY} />
+            <Pressable
+              onPress={add}
+              disabled={selectedIds.size === 0}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Add"
+            >
+              <Text
+                style={[
+                  styles.iosNavAction,
+                  styles.iosNavActionStrong,
+                  selectedIds.size === 0 && styles.iosNavActionDisabled,
+                ]}
+              >
+                {selectedIds.size > 0 ? `Add ${selectedIds.size}` : 'Add'}
+              </Text>
             </Pressable>
           </View>
           <StoreMultiPicker
@@ -2291,24 +2383,6 @@ function AddStoreModal({ visible, session, addedKeys, onClose, onAdd }) {
               setPickedStores(picked);
             }}
           />
-          <View style={styles.modalActions}>
-            <Pressable style={styles.secondaryButton} onPress={onClose}>
-              <Text style={styles.secondaryButtonText}>Cancel</Text>
-            </Pressable>
-            <Pressable
-              style={[
-                styles.primaryButton,
-                styles.primaryButtonInline,
-                selectedIds.size === 0 && styles.primaryButtonDisabled,
-              ]}
-              onPress={add}
-              disabled={selectedIds.size === 0}
-            >
-              <Text style={styles.primaryButtonText}>
-                {selectedIds.size > 0 ? `Add ${selectedIds.size}` : 'Add'}
-              </Text>
-            </Pressable>
-          </View>
         </View>
       </View>
     </Modal>
@@ -2393,6 +2467,17 @@ export default function TriageTransfersPanel({
     },
     [enterStore, onCreateOpenChange],
   );
+
+  const removeTransfer = useCallback((row) => {
+    confirmDestructive(
+      'Delete Transfer',
+      `Delete ${row.dateLabel || 'this transfer'}? Stores and purchase orders on this date will be removed.`,
+      () => {
+        updateTriageTransfers((current) => current.filter((item) => item.id !== row.id));
+        persistTransferWorkflowNow().catch(() => {});
+      },
+    );
+  }, []);
 
   useEffect(() => {
     if (!selected || selectedStore) return;
@@ -2512,13 +2597,13 @@ export default function TriageTransfersPanel({
 
   if (!session?.token) {
     return (
-      <View style={styles.body}>
-        <View style={styles.empty}>
-          <View style={styles.emptyIcon}>
-            <Ionicons name="swap-horizontal-outline" size={22} color={ACCENT} />
-          </View>
-          <Text style={styles.emptyTitle}>Transfers</Text>
-          <Text style={styles.emptyBody}>Log in to create transfers and add stores.</Text>
+      <View style={[styles.body, styles.bodyTinted]}>
+        <EmptyState
+          icon="lock-closed-outline"
+          title="Sign in"
+          body="Log in to create transfers and add stores."
+        />
+        <View style={styles.emptyAction}>
           <Pressable style={styles.loginButton} onPress={onRequireLogin}>
             <Text style={styles.loginButtonText}>Go to Profile</Text>
           </Pressable>
@@ -2527,34 +2612,30 @@ export default function TriageTransfersPanel({
     );
   }
 
-  const meltActions = storeTab === 'melt' ? (
-    <View style={isMobile ? styles.mobileActionBar : styles.tabBarTrailing}>
+  const meltActions =
+    storeTab === 'melt' ? (
       <Pressable
-        style={isMobile ? styles.mobileActionPrimary : styles.newButton}
+        style={styles.iosTextAction}
         onPress={() => setAddMeltOpen(true)}
         accessibilityRole="button"
         accessibilityLabel="Add"
       >
-        <Ionicons name="add" size={18} color="#fff" />
-        <Text style={isMobile ? styles.mobileActionPrimaryText : styles.newButtonText}>Add</Text>
+        <Ionicons name="add" size={22} color={BLUE} />
+        <Text style={styles.iosNavAction}>Add</Text>
       </Pressable>
-    </View>
-  ) : null;
+    ) : null;
 
   if (selectedStore && selected) {
     return (
-      <View style={[styles.body, isMobile && styles.bodyMobile]}>
-        <View style={[styles.tabBar, isMobile && styles.tabBarMobile]} accessibilityRole="tablist">
-          <View style={[styles.tabBarTabs, isMobile && styles.segment]}>
+      <View style={[styles.body, styles.bodyTinted]}>
+        <View style={[styles.tabBar, styles.tabBarCompact]} accessibilityRole="tablist">
+          <View style={styles.segment}>
             {STORE_TABS.map((tab) => {
               const active = tab.key === storeTab;
               return (
                 <Pressable
                   key={tab.key}
-                  style={[
-                    isMobile ? styles.segmentButton : styles.tab,
-                    active && (isMobile ? styles.segmentButtonActive : styles.tabActive),
-                  ]}
+                  style={[styles.segmentButton, active && styles.segmentButtonActive]}
                   onPress={() => {
                     setStoreTab(tab.key);
                     if (tab.key !== 'melt') setAddMeltOpen(false);
@@ -2563,19 +2644,14 @@ export default function TriageTransfersPanel({
                   accessibilityState={{ selected: active }}
                   accessibilityLabel={tab.label}
                 >
-                  <Text
-                    style={[
-                      isMobile ? styles.segmentText : styles.tabLabel,
-                      active && (isMobile ? styles.segmentTextActive : styles.tabLabelActive),
-                    ]}
-                  >
+                  <Text style={[styles.segmentText, active && styles.segmentTextActive]}>
                     {tab.label}
                   </Text>
                 </Pressable>
               );
             })}
           </View>
-          {isMobile ? null : meltActions}
+          {meltActions}
         </View>
 
         {storeTab === 'melt' ? (
@@ -2594,39 +2670,39 @@ export default function TriageTransfersPanel({
         ) : (
           <BullionTab dateKey={selected.dateKey} store={selectedStore} session={session} />
         )}
-        {isMobile ? meltActions : null}
       </View>
     );
   }
 
   return (
-    <View style={[styles.body, isMobile && styles.bodyMobile]}>
+    <View style={[styles.body, styles.bodyTinted]}>
       {transfers.length === 0 ? (
         <EmptyState
-          icon="swap-horizontal-outline"
-          title="Transfers"
-          body="Tap New to create a transfer for a date."
+          icon="calendar-outline"
+          title="No Transfers"
+          body="Tap New to start a workshop transfer for a date."
         />
       ) : (
         <ScrollView
           style={styles.list}
-          contentContainerStyle={[styles.listContent, isMobile && styles.listContentMobile]}
+          contentContainerStyle={styles.listContentInset}
+          showsVerticalScrollIndicator={false}
         >
-          <View style={isMobile ? styles.listGroup : null}>
+          <View style={styles.listGroup}>
             {transfers.map((row, index) => (
               <ListRow
                 key={row.id}
                 title={row.dateLabel}
-                meta={row.triageLocation?.name ? `Triage at ${row.triageLocation.name}` : ''}
                 subtitle={
                   row.stores.length
-                    ? row.stores.map((store) => store.name).join('\n')
+                    ? row.stores.map((store) => store.name).join(', ')
                     : 'No stores yet'
                 }
-                subtitleLines={row.stores.length || 1}
+                subtitleLines={2}
                 mobile={isMobile}
                 last={index === transfers.length - 1}
                 onPress={() => openTransfer(row)}
+                onDelete={() => removeTransfer(row)}
                 accessibilityLabel={`Open transfer ${row.dateLabel}`}
               />
             ))}
@@ -2650,8 +2726,16 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
   },
+  bodyTinted: {
+    backgroundColor: MOBILE.bg,
+  },
   bodyMobile: {
     backgroundColor: MOBILE.bg,
+  },
+  listContentInset: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 32,
   },
   listContentMobile: {
     paddingHorizontal: 16,
@@ -2663,15 +2747,344 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     overflow: 'hidden',
   },
-  listRowMobile: {
-    minHeight: 56,
+  tableToolbar: {
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingBottom: 8,
+    minHeight: 36,
+  },
+  tableMeta: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: SECONDARY,
+  },
+  tableHScroll: {
+    flex: 1,
+    minHeight: 0,
+  },
+  tableHContent: {
+    flexGrow: 1,
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+  },
+  tableHFill: {
+    flex: 1,
+    minHeight: 0,
+  },
+  tableCard: {
+    flex: 1,
+    minHeight: 0,
     backgroundColor: '#fff',
+    borderRadius: 12,
+    overflow: 'visible',
+    ...Platform.select({
+      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.04)' },
+      default: {},
+    }),
+  },
+  tableHeader: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    minHeight: 36,
+    backgroundColor: '#f2f2f7',
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#d1d1d6',
+    zIndex: 8,
+    overflow: 'visible',
+  },
+  tableBody: {
+    flex: 1,
+    minHeight: 0,
+  },
+  tableBodyContent: {
+    flexGrow: 1,
+  },
+  tableRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 52,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
+    backgroundColor: '#fff',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  tableRowLast: {
+    borderBottomWidth: 0,
+    borderBottomLeftRadius: 12,
+    borderBottomRightRadius: 12,
+  },
+  tableRowMain: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  tableCell: {
+    minHeight: 52,
+    paddingHorizontal: 8,
+    justifyContent: 'center',
+  },
+  tableCellLast: {
+    paddingRight: 14,
+  },
+  tableCellText: {
+    fontFamily,
+    fontSize: 13,
+    color: TEXT,
+    letterSpacing: -0.08,
+  },
+  tableCellStrong: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: -0.08,
+  },
+  tableStatusOn: {
+    color: GREEN,
+    fontWeight: '600',
+  },
+  tableStatusReview: {
+    color: BLUE,
+    fontWeight: '600',
+  },
+  tablePhotoCell: {
+    width: 52,
+    flexGrow: 0,
+    flexShrink: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingLeft: 8,
+  },
+  tableActions: {
+    width: 118,
+    flexGrow: 0,
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 4,
+    paddingRight: 8,
+  },
+  tableActionsHead: {
+    width: 118,
+    flexGrow: 0,
+    flexShrink: 0,
+  },
+  tableAction: {
+    height: 28,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    backgroundColor: FILL,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  tableActionOn: {
+    backgroundColor: GREEN,
+  },
+  tableActionText: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: TEXT,
+  },
+  tableActionTextOn: {
+    color: '#fff',
+  },
+  tableRemove: {
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  tableEmpty: {
+    fontFamily,
+    fontSize: 14,
+    color: SECONDARY,
+    textAlign: 'center',
+    paddingVertical: 36,
+    paddingHorizontal: 16,
+  },
+  colFilter: {
+    justifyContent: 'center',
+    zIndex: 8,
+    overflow: 'visible',
+  },
+  colFilterHit: {
+    minHeight: 36,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  colFilterLabel: {
+    fontFamily,
+    flexShrink: 1,
+    fontSize: 12,
+    fontWeight: '600',
+    color: SECONDARY,
+    letterSpacing: 0.2,
+    textTransform: 'uppercase',
+  },
+  colFilterLabelOn: {
+    color: TEXT,
+    textTransform: 'none',
+    letterSpacing: -0.08,
+  },
+  colFilterMenu: {
+    position: 'absolute',
+    top: 36,
+    left: 4,
+    right: 4,
+    minWidth: 180,
+    maxWidth: 280,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: HAIRLINE,
+    overflow: 'hidden',
+    zIndex: 30,
+    ...Platform.select({
+      web: { boxShadow: '0 10px 28px rgba(0,0,0,0.12)' },
+      default: { elevation: 6 },
+    }),
+  },
+  colFilterSearch: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    margin: 8,
+    paddingHorizontal: 8,
+    minHeight: 32,
+    borderRadius: 8,
+    backgroundColor: FILL,
+  },
+  colFilterInput: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily,
+    fontSize: 14,
+    color: TEXT,
+    paddingVertical: 6,
+    outlineStyle: 'none',
+  },
+  colFilterList: {
+    maxHeight: 220,
+  },
+  colFilterOption: {
+    minHeight: 36,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  colFilterOptionText: {
+    fontFamily,
+    flex: 1,
+    fontSize: 14,
+    color: TEXT,
+  },
+  colFilterOptionOn: {
+    fontWeight: '600',
+  },
+  colFilterClear: {
+    fontFamily,
+    fontSize: 14,
+    color: BLUE,
+  },
+  colFilterEmpty: {
+    fontFamily,
+    fontSize: 13,
+    color: SECONDARY,
+    textAlign: 'center',
+    paddingVertical: 14,
+  },
+  listRowMobile: {
     borderBottomColor: MOBILE.separator,
   },
   listRowMobileLast: {
     borderBottomWidth: 0,
+  },
+  listRowLast: {
+    borderBottomWidth: 0,
+  },
+  rowDelete: {
+    paddingHorizontal: 8,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  rowDeleteText: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '400',
+    color: RED,
+  },
+  tabBarCompact: {
+    borderBottomWidth: 0,
+    marginTop: 8,
+    marginBottom: 10,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+  },
+  iosTextAction: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    paddingHorizontal: 2,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  iosNavAction: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '400',
+    color: BLUE,
+    minWidth: 64,
+  },
+  iosNavActionStrong: {
+    fontWeight: '600',
+    textAlign: 'right',
+  },
+  iosNavActionDisabled: {
+    opacity: 0.35,
   },
   iosNavHeader: {
     paddingHorizontal: 4,
@@ -2889,25 +3302,21 @@ const styles = StyleSheet.create({
     minHeight: 0,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 8,
     paddingHorizontal: 24,
     paddingBottom: 48,
   },
-  emptyIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 14,
-    backgroundColor: '#FFEDD5',
+  emptyAction: {
     alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
+    paddingBottom: 48,
   },
   emptyTitle: {
     fontFamily,
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: '600',
     color: TEXT,
-    letterSpacing: -0.3,
-    marginBottom: 6,
+    letterSpacing: -0.4,
+    marginTop: 4,
   },
   emptyBody: {
     fontFamily,
@@ -2918,11 +3327,12 @@ const styles = StyleSheet.create({
     maxWidth: 320,
   },
   loginButton: {
-    marginTop: 16,
-    backgroundColor: '#1a1a1a',
-    borderRadius: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    backgroundColor: BLUE,
+    borderRadius: 12,
+    paddingHorizontal: 18,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   loginButtonText: {
     fontFamily,
@@ -2940,12 +3350,19 @@ const styles = StyleSheet.create({
   listRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 56,
-    paddingHorizontal: 4,
-    paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: HAIRLINE,
+    backgroundColor: '#fff',
+  },
+  listRowMain: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 10,
+    minHeight: 56,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -2972,13 +3389,13 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 13,
     fontWeight: '600',
-    color: ACCENT,
+    color: BLUE,
   },
   pageMeta: {
     fontFamily,
     fontSize: 14,
     fontWeight: '600',
-    color: ACCENT,
+    color: BLUE,
   },
   subHeader: {
     flexShrink: 0,
@@ -2999,7 +3416,7 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 14,
     fontWeight: '600',
-    color: ACCENT,
+    color: BLUE,
   },
   pageTitle: {
     fontFamily,
@@ -3054,7 +3471,7 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 14,
     fontWeight: '600',
-    color: ACCENT,
+    color: BLUE,
   },
   saveButtonTextOn: {
     color: '#fff',
@@ -3077,13 +3494,13 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 14,
     fontWeight: '600',
-    color: ACCENT,
+    color: BLUE,
   },
   newButton: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: ACCENT,
+    backgroundColor: BLUE,
     borderRadius: 10,
     paddingHorizontal: 12,
     height: 32,
@@ -3171,39 +3588,39 @@ const styles = StyleSheet.create({
   },
   storeSelectAll: {
     fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: ACCENT,
+    fontSize: 17,
+    fontWeight: '400',
+    color: BLUE,
   },
   storeListContent: {
     paddingBottom: 8,
   },
-  storePickRowSelected: {
-    backgroundColor: '#FFF7ED',
-  },
   storeHeader: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 12,
+    gap: 8,
   },
   storeTitleBlock: {
     flex: 1,
     minWidth: 0,
-    gap: 4,
+    alignItems: 'center',
+    gap: 2,
   },
   modalTitle: {
     fontFamily,
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '600',
     color: TEXT,
     letterSpacing: -0.3,
+    textAlign: 'center',
   },
   modalSub: {
     fontFamily,
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 13,
+    lineHeight: 18,
     color: SECONDARY,
+    textAlign: 'center',
   },
   kindRow: {
     flexDirection: 'row',
@@ -3280,12 +3697,12 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 16,
     fontWeight: '600',
-    color: ACCENT,
+    color: BLUE,
   },
   errorText: {
     fontFamily,
     fontSize: 13,
-    color: ACCENT,
+    color: BLUE,
   },
   lastTransferHint: {
     fontFamily,
@@ -3308,7 +3725,7 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 15,
     fontWeight: '600',
-    color: ACCENT,
+    color: BLUE,
   },
   modalActions: {
     flexDirection: 'row',
@@ -3334,7 +3751,7 @@ const styles = StyleSheet.create({
     color: TEXT,
   },
   primaryButton: {
-    backgroundColor: ACCENT,
+    backgroundColor: BLUE,
     borderRadius: 12,
     height: 50,
     alignItems: 'center',
@@ -3454,127 +3871,110 @@ const styles = StyleSheet.create({
     minHeight: 36,
     paddingHorizontal: 8,
   },
-  viewToggle: {
-    flexDirection: 'row',
-    flexShrink: 0,
-    alignItems: 'center',
-    backgroundColor: FILL,
-    borderRadius: 8,
-    padding: 2,
-    gap: 2,
-  },
-  viewToggleButton: {
+  feedOpenButton: {
     width: 32,
     height: 32,
-    borderRadius: 6,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: FILL,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
-  viewToggleButtonOn: {
-    backgroundColor: TEXT,
-  },
-  feedShell: {
+  feedModalRoot: {
     flex: 1,
-    minHeight: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  feedModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+  },
+  feedModalStage: {
+    backgroundColor: '#000',
+    overflow: 'hidden',
+    borderRadius: 24,
+    zIndex: 1,
+    ...Platform.select({
+      web: { boxShadow: '0 24px 80px rgba(0,0,0,0.45)' },
+      default: {
+        shadowColor: '#000',
+        shadowOpacity: 0.4,
+        shadowRadius: 24,
+        shadowOffset: { width: 0, height: 12 },
+        elevation: 16,
+      },
+    }),
+  },
+  feedModalStageFull: {
+    borderRadius: 0,
+    ...Platform.select({
+      web: { boxShadow: 'none' },
+      default: { elevation: 0, shadowOpacity: 0 },
+    }),
+  },
+  feedClose: {
+    position: 'absolute',
+    right: 12,
+    zIndex: 4,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
   feedList: {
     flexGrow: 0,
   },
   feedPage: {
     width: '100%',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    backgroundColor: '#111113',
-  },
-  feedPageMobile: {
-    paddingHorizontal: 0,
-    paddingVertical: 0,
+    backgroundColor: '#000',
   },
   feedCard: {
-    width: '100%',
-    maxWidth: 460,
     flex: 1,
-    minHeight: 0,
-    borderRadius: 18,
-    backgroundColor: '#1c1c1e',
-    paddingHorizontal: 14,
-    paddingTop: 12,
-    paddingBottom: 14,
-    gap: 10,
-  },
-  feedCardMobile: {
-    maxWidth: '100%',
-    borderRadius: 0,
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: Math.max(16, mobileSafeBottom() + 8),
-  },
-  feedTop: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  feedTopText: {
-    flex: 1,
-    minWidth: 0,
-    gap: 2,
-  },
-  feedTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+    backgroundColor: '#000',
+    overflow: 'hidden',
   },
   feedKind: {
     fontFamily,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '700',
-    color: ACCENT,
+    color: '#5AC8FA',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
   },
   feedKindBuy: {
-    color: '#93C5FD',
+    color: '#FFD60A',
   },
-  feedRef: {
+  feedHandle: {
     fontFamily,
-    flex: 1,
-    fontSize: 18,
-    fontWeight: '600',
+    fontSize: 16,
+    fontWeight: '700',
     color: '#fff',
-    letterSpacing: -0.3,
+    marginTop: 2,
   },
   feedMeta: {
     fontFamily,
     fontSize: 13,
-    color: 'rgba(255,255,255,0.62)',
+    color: 'rgba(255,255,255,0.72)',
+    marginTop: 2,
   },
   feedCount: {
     fontFamily,
     fontSize: 12,
     fontWeight: '600',
-    color: 'rgba(255,255,255,0.52)',
-  },
-  feedIconButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
+    color: 'rgba(255,255,255,0.7)',
+    marginBottom: 8,
   },
   feedHero: {
-    flex: 1,
-    minHeight: 180,
-    borderRadius: 14,
-    overflow: 'hidden',
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: '#0b0b0c',
     alignItems: 'center',
     justifyContent: 'center',
@@ -3596,7 +3996,8 @@ const styles = StyleSheet.create({
   },
   feedHeroDots: {
     position: 'absolute',
-    bottom: 10,
+    top: 16,
+    alignSelf: 'center',
     flexDirection: 'row',
     gap: 5,
   },
@@ -3609,77 +4010,77 @@ const styles = StyleSheet.create({
   feedHeroDotOn: {
     backgroundColor: '#fff',
   },
-  feedDetails: {
-    gap: 4,
+  feedScrim: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 240,
+    backgroundColor: 'rgba(0,0,0,0.38)',
+  },
+  feedCaption: {
+    position: 'absolute',
+    left: 16,
+    right: 88,
+    bottom: Math.max(20, mobileSafeBottom() + 12),
+    gap: 2,
   },
   feedBuyer: {
     fontFamily,
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
     color: '#fff',
     letterSpacing: -0.2,
-  },
-  feedLines: {
-    gap: 2,
-    paddingTop: 2,
+    marginTop: 4,
   },
   feedLine: {
     fontFamily,
     fontSize: 13,
     color: 'rgba(255,255,255,0.86)',
+    marginTop: 4,
   },
-  feedLineMuted: {
-    fontFamily,
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.5)',
-  },
-  feedActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  feedEditButton: {
+  feedEmpty: {
     flex: 1,
-    minHeight: 44,
-    borderRadius: 12,
-    backgroundColor: ACCENT,
-    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
+    gap: 10,
+    padding: 24,
   },
-  feedEditButtonText: {
+  feedEmptyText: {
     fontFamily,
     fontSize: 15,
-    fontWeight: '600',
-    color: '#fff',
+    color: 'rgba(255,255,255,0.7)',
   },
-  feedReceiveButton: {
-    minHeight: 44,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.12)',
+  feedRail: {
+    position: 'absolute',
+    right: 10,
+    bottom: Math.max(28, mobileSafeBottom() + 16),
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 16,
+  },
+  feedRailButton: {
+    alignItems: 'center',
+    gap: 4,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
-  feedReceiveButtonOn: {
+  feedRailIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.16)',
+  },
+  feedRailIconOn: {
     backgroundColor: GREEN,
   },
-  feedReceiveButtonText: {
+  feedRailLabel: {
     fontFamily,
-    fontSize: 14,
+    fontSize: 11,
     fontWeight: '600',
-    color: '#fff',
-  },
-  feedReceiveButtonTextOn: {
     color: '#fff',
   },
   listRange: {
@@ -3757,7 +4158,7 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 12,
     fontWeight: '600',
-    color: ACCENT,
+    color: BLUE,
   },
   poThumbSlot: {
     width: 44,
@@ -3888,7 +4289,7 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 15,
     fontWeight: '600',
-    color: ACCENT,
+    color: BLUE,
   },
   docResultActionMuted: {
     color: SECONDARY,

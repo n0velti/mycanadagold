@@ -22,6 +22,7 @@ const ACCENT = '#C2410C';
 const TEXT = '#1d1d1f';
 const SECONDARY = '#8e8e93';
 const HAIRLINE = '#e5e5ea';
+const BLUE = MOBILE.blue;
 
 const ACCURACY_TABS = [
   { key: 'correct', label: 'Correct' },
@@ -48,57 +49,29 @@ function CorrectionPair({ original, value }) {
 function EmptyState({ icon, title, body }) {
   return (
     <View style={styles.empty}>
-      <View style={styles.emptyIcon}>
-        <Ionicons name={icon} size={22} color={ACCENT} />
-      </View>
+      <Ionicons name={icon} size={40} color={SECONDARY} />
       <Text style={styles.emptyTitle}>{title}</Text>
       <Text style={styles.emptyBody}>{body}</Text>
     </View>
   );
 }
 
-function AccuracyTabs({ value, onChange, mobile }) {
-  if (mobile) {
-    return (
-      <View style={styles.tabBarMobile}>
-        <View style={styles.segment} accessibilityRole="tablist">
-          {ACCURACY_TABS.map((tab) => {
-            const active = tab.key === value;
-            return (
-              <Pressable
-                key={tab.key}
-                style={[styles.segmentButton, active && styles.segmentButtonActive]}
-                onPress={() => onChange(tab.key)}
-                accessibilityRole="tab"
-                accessibilityState={{ selected: active }}
-                accessibilityLabel={tab.label}
-              >
-                <Text style={[styles.segmentText, active && styles.segmentTextActive]} numberOfLines={1}>
-                  {tab.label}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-      </View>
-    );
-  }
-
+function AccuracyTabs({ value, onChange }) {
   return (
-    <View style={styles.tabBar} accessibilityRole="tablist">
-      <View style={styles.tabBarTabs}>
+    <View style={styles.tabBar}>
+      <View style={styles.segment} accessibilityRole="tablist">
         {ACCURACY_TABS.map((tab) => {
           const active = tab.key === value;
           return (
             <Pressable
               key={tab.key}
-              style={[styles.tab, active && styles.tabActive]}
+              style={[styles.segmentButton, active && styles.segmentButtonActive]}
               onPress={() => onChange(tab.key)}
               accessibilityRole="tab"
               accessibilityState={{ selected: active }}
               accessibilityLabel={tab.label}
             >
-              <Text style={[styles.tabLabel, active && styles.tabLabelActive]} numberOfLines={1}>
+              <Text style={[styles.segmentText, active && styles.segmentTextActive]} numberOfLines={1}>
                 {tab.label}
               </Text>
             </Pressable>
@@ -140,7 +113,6 @@ function AccuracyPoCard({ entry, onOpen, mobile }) {
       {row.triageDateLabel ? (
         <Text style={styles.cardMeta} numberOfLines={1}>
           Received {row.triageDateLabel}
-          {row.triageLocationName ? ` · ${row.triageLocationName}` : ''}
         </Text>
       ) : null}
 
@@ -216,8 +188,8 @@ export default function TriageAccuracyPanel({ session, storeFilter }) {
   }, []);
 
   return (
-    <View style={styles.body}>
-      <AccuracyTabs value={activeTab} onChange={setActiveTab} mobile={isMobile} />
+    <View style={[styles.body, styles.bodyTinted]}>
+      <AccuracyTabs value={activeTab} onChange={setActiveTab} />
 
       {visible.length === 0 ? (
         <EmptyState
@@ -232,10 +204,10 @@ export default function TriageAccuracyPanel({ session, storeFilter }) {
       ) : (
         <ScrollView
           style={styles.list}
-          contentContainerStyle={[styles.listContent, isMobile && styles.listContentMobile]}
+          contentContainerStyle={styles.listContentInset}
           showsVerticalScrollIndicator={false}
         >
-          <View style={isMobile ? styles.listGroup : styles.listStack}>
+          <View style={styles.listGroup}>
             {visible.map((row) => (
               <AccuracyPoCard
                 key={`${row.triageId}-${row.id}`}
@@ -266,8 +238,12 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
   },
-  tabBarMobile: {
+  bodyTinted: {
+    backgroundColor: MOBILE.bg,
+  },
+  tabBar: {
     flexShrink: 0,
+    paddingHorizontal: 16,
     paddingBottom: 8,
   },
   segment: {
@@ -306,73 +282,21 @@ const styles = StyleSheet.create({
   segmentTextActive: {
     fontWeight: '600',
   },
-  tabBar: {
-    flexShrink: 0,
-    marginBottom: 14,
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
-  },
-  tabBarTabs: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'stretch',
-    gap: 2,
-  },
-  tab: {
-    paddingHorizontal: 14,
-    paddingTop: 6,
-    paddingBottom: 11,
-    borderBottomWidth: 2,
-    borderBottomColor: 'transparent',
-    marginBottom: -StyleSheet.hairlineWidth,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  tabActive: {
-    borderBottomColor: ACCENT,
-  },
-  tabLabel: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '500',
-    color: SECONDARY,
-    letterSpacing: -0.2,
-  },
-  tabLabelActive: {
-    color: TEXT,
-    fontWeight: '600',
-  },
   empty: {
     flex: 1,
     minHeight: 0,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 8,
     paddingHorizontal: 24,
     paddingBottom: 48,
   },
-  emptyIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 14,
-    backgroundColor: '#FFEDD5',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
-  },
   emptyTitle: {
     fontFamily,
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: '600',
     color: TEXT,
-    letterSpacing: -0.3,
-    marginBottom: 6,
+    letterSpacing: -0.4,
   },
   emptyBody: {
     fontFamily,
@@ -386,10 +310,7 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
   },
-  listContent: {
-    paddingBottom: 24,
-  },
-  listContentMobile: {
+  listContentInset: {
     paddingHorizontal: 16,
     paddingBottom: Math.max(28, mobileSafeBottom() + 8),
   },
@@ -403,9 +324,10 @@ const styles = StyleSheet.create({
   },
   card: {
     backgroundColor: '#fff',
-    borderRadius: 12,
     padding: 14,
-    gap: 8,
+    gap: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: MOBILE.separator,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -413,8 +335,6 @@ const styles = StyleSheet.create({
   },
   cardMobile: {
     borderRadius: 0,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: MOBILE.separator,
   },
   cardHeader: {
     flexDirection: 'row',
