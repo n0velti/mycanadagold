@@ -25,6 +25,7 @@ import {
   formatLastSeen,
   formatThreadStamp,
   getOrCreateDm,
+  getOrCreateTeamDm,
   initialsFromName,
   leaveDmGroup,
   listDmContacts,
@@ -38,6 +39,7 @@ import {
   subscribeDmTyping,
   toggleDmLike,
 } from '../lib/messages';
+import { intakeNames, listTeams } from '../lib/teams';
 import ProfilePhotoModal from './ProfilePhotoModal';
 
 const fontFamily = Platform.select({
@@ -142,6 +144,23 @@ function firstNameOf(person) {
 }
 
 function ConversationAvatar({ conversation, size = 52 }) {
+  if (conversation?.isTeam) {
+    return (
+      <View
+        style={[
+          styles.avatar,
+          {
+            width: size,
+            height: size,
+            borderRadius: size / 2,
+            backgroundColor: BLUE,
+          },
+        ]}
+      >
+        <Ionicons name="people" size={Math.max(16, Math.round(size * 0.46))} color="#fff" />
+      </View>
+    );
+  }
   const members = conversation?.members || (conversation?.other ? [conversation.other] : []);
   if (!conversation?.isGroup) {
     return <PersonAvatar person={members[0]} size={size} showOnline />;
@@ -324,6 +343,7 @@ export default function MessagesScreen({ session, onUnreadChange }) {
     'You';
   const [inbox, setInbox] = useState([]);
   const [contacts, setContacts] = useState([]);
+  const [teams, setTeams] = useState([]);
   const [query, setQuery] = useState('');
   const [composeOpen, setComposeOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
@@ -354,9 +374,14 @@ export default function MessagesScreen({ session, onUnreadChange }) {
 
   const refreshInbox = useCallback(async () => {
     try {
-      const [rows, people] = await Promise.all([listDmInbox(), listDmContacts()]);
+      const [rows, people, teamRows] = await Promise.all([
+        listDmInbox(),
+        listDmContacts(),
+        listTeams().catch(() => []),
+      ]);
       setInbox(rows);
       setContacts(people);
+      setTeams(teamRows);
       setError('');
       onUnreadChangeRef.current?.();
       return rows;
@@ -424,6 +449,20 @@ export default function MessagesScreen({ session, onUnreadChange }) {
         await openConversation(conversationId);
       } catch (err) {
         setError(err.message || 'Could not start that chat.');
+      }
+    },
+    [openConversation, refreshInbox],
+  );
+
+  const openTeam = useCallback(
+    async (teamId) => {
+      if (!teamId) return;
+      try {
+        const conversationId = await getOrCreateTeamDm(teamId);
+        await refreshInbox();
+        await openConversation(conversationId);
+      } catch (err) {
+        setError(err.message || 'Could not start that team chat.');
       }
     },
     [openConversation, refreshInbox],
@@ -567,10 +606,19 @@ export default function MessagesScreen({ session, onUnreadChange }) {
     const q = query.trim().toLowerCase();
     if (!q) return peopleIndex;
     return peopleIndex.filter((person) => {
-      const hay = `${contactName(person)} ${person.locationName || ''}`.toLowerCase();
+      const hay = `${contactName(person)} ${person.locationName || ''} ${person.teamName || ''}`.toLowerCase();
       return hay.includes(q);
     });
   }, [peopleIndex, query]);
+
+  const filteredTeams = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return teams;
+    return teams.filter((team) => {
+      const hay = `${team.name} ${team.description} ${intakeNames(team)}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }, [teams, query]);
 
   const onlinePeople = useMemo(
     () => peopleIndex.filter((person) => person.isOnline && person.id !== myId),
@@ -669,16 +717,35 @@ export default function MessagesScreen({ session, onUnreadChange }) {
 
   const renderInboxList = () => {
     if (composeOpen) {
-      if (filteredPeople.length === 0) {
+      const teamRows = filteredTeams.map((team) => {
+        const intake = intakeNames(team, 2);
         return (
-          <Text style={styles.emptyHint}>
-            {peopleIndex.length === 0
-              ? 'No other staff have signed in yet.'
-              : 'No matching people.'}
-          </Text>
+          <Pressable
+            key={`team-${team.id}`}
+            onPress={() => openTeam(team.id)}
+            {...(Platform.OS === 'web' ? { className: 'cgold-dm-row' } : null)}
+            style={({ pressed }) => [styles.personRow, pressed && styles.rowPressed]}
+          >
+            <View style={[styles.avatar, styles.teamAvatar]}>
+              <Ionicons name="people" size={20} color="#fff" />
+            </View>
+            <View style={styles.personCopy}>
+              <Text style={styles.personName} numberOfLines={1}>
+                {team.name}
+              </Text>
+              <Text style={styles.personSub} numberOfLines={1}>
+                {team.memberCount
+                  ? `${team.memberCount} ${team.memberCount === 1 ? 'person' : 'people'}`
+                  : 'No members yet'}
+                {intake ? ` · Intake ${intake}` : ''}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color="#c7c7cc" />
+          </Pressable>
         );
-      }
-      return filteredPeople.map((person) => {
+      });
+
+      const peopleRows = filteredPeople.map((person) => {
         const checked = selectedIds.includes(person.id);
         return (
           <Pressable
@@ -694,7 +761,8 @@ export default function MessagesScreen({ session, onUnreadChange }) {
               </Text>
               <Text style={styles.personSub} numberOfLines={1}>
                 {formatLastSeen(person.isOnline, person.lastSeenAt)}
-                {person.locationName ? ` · ${person.locationName}` : ''}
+                {person.teamName ? ` · ${person.teamName}` : person.locationName ? ` · ${person.locationName}` : ''}
+                {person.isTeamIntake ? ' · Intake' : ''}
               </Text>
             </View>
             <Ionicons
@@ -705,6 +773,33 @@ export default function MessagesScreen({ session, onUnreadChange }) {
           </Pressable>
         );
       });
+
+      if (teamRows.length === 0 && peopleRows.length === 0) {
+        return (
+          <Text style={styles.emptyHint}>
+            {peopleIndex.length === 0 && teams.length === 0
+              ? 'No other staff have signed in yet, and no teams have been created.'
+              : 'No matching people or teams.'}
+          </Text>
+        );
+      }
+
+      return (
+        <>
+          {teamRows.length > 0 ? (
+            <>
+              <Text style={styles.composeSection}>Teams</Text>
+              {teamRows}
+            </>
+          ) : null}
+          {peopleRows.length > 0 ? (
+            <>
+              <Text style={styles.composeSection}>People</Text>
+              {peopleRows}
+            </>
+          ) : null}
+        </>
+      );
     }
 
     if (loadingInbox && inbox.length === 0) {
@@ -720,7 +815,7 @@ export default function MessagesScreen({ session, onUnreadChange }) {
         <View style={styles.inboxCentered}>
           <Ionicons name="chatbubbles-outline" size={36} color="#c7c7cc" />
           <Text style={styles.emptyTitle}>No messages yet</Text>
-          <Text style={styles.emptyHint}>Tap the compose button to message a teammate or start a group.</Text>
+          <Text style={styles.emptyHint}>Tap the compose button to message a person or a team.</Text>
         </View>
       );
     }
@@ -736,7 +831,9 @@ export default function MessagesScreen({ session, onUnreadChange }) {
         ? row.isGroup || row.lastMessageSenderId === myId
           ? `${senderName}: ${row.lastMessagePreview}`
           : row.lastMessagePreview
-        : row.isGroup
+        : row.isTeam
+          ? 'New team chat'
+          : row.isGroup
           ? 'New group chat'
           : 'Start the conversation';
       return (
@@ -887,7 +984,7 @@ export default function MessagesScreen({ session, onUnreadChange }) {
               style={styles.searchInput}
               value={query}
               onChangeText={setQuery}
-              placeholder={composeOpen ? 'Search people' : 'Search'}
+              placeholder={composeOpen ? 'Search people or teams' : 'Search'}
               placeholderTextColor="#8e8e93"
               autoCapitalize="none"
               autoCorrect={false}
@@ -998,32 +1095,41 @@ export default function MessagesScreen({ session, onUnreadChange }) {
                   contentContainerStyle={styles.detailsContent}
                   keyboardShouldPersistTaps="handled"
                 >
-                  <Text style={styles.detailsLabel}>Group name</Text>
-                  <TextInput
-                    style={styles.detailsNameInput}
-                    value={titleDraft}
-                    onChangeText={setTitleDraft}
-                    placeholder={conversationTitle(activeThread)}
-                    placeholderTextColor="#8e8e93"
-                    maxLength={80}
-                    onSubmitEditing={async () => {
-                      try {
-                        await renameDmGroup(activeThread.conversationId, titleDraft);
-                        await refreshInbox();
-                      } catch (err) {
-                        setError(err.message || 'Could not rename that group.');
-                      }
-                    }}
-                    onEndEditing={async () => {
-                      if (titleDraft === (activeThread.title || '')) return;
-                      try {
-                        await renameDmGroup(activeThread.conversationId, titleDraft);
-                        await refreshInbox();
-                      } catch (err) {
-                        setError(err.message || 'Could not rename that group.');
-                      }
-                    }}
-                  />
+                  {activeThread.isTeam ? (
+                    <>
+                      <Text style={styles.detailsLabel}>Team</Text>
+                      <Text style={styles.detailsTeamName}>{conversationTitle(activeThread)}</Text>
+                    </>
+                  ) : (
+                    <>
+                      <Text style={styles.detailsLabel}>Group name</Text>
+                      <TextInput
+                        style={styles.detailsNameInput}
+                        value={titleDraft}
+                        onChangeText={setTitleDraft}
+                        placeholder={conversationTitle(activeThread)}
+                        placeholderTextColor="#8e8e93"
+                        maxLength={80}
+                        onSubmitEditing={async () => {
+                          try {
+                            await renameDmGroup(activeThread.conversationId, titleDraft);
+                            await refreshInbox();
+                          } catch (err) {
+                            setError(err.message || 'Could not rename that group.');
+                          }
+                        }}
+                        onEndEditing={async () => {
+                          if (titleDraft === (activeThread.title || '')) return;
+                          try {
+                            await renameDmGroup(activeThread.conversationId, titleDraft);
+                            await refreshInbox();
+                          } catch (err) {
+                            setError(err.message || 'Could not rename that group.');
+                          }
+                        }}
+                      />
+                    </>
+                  )}
                   <Text style={styles.detailsLabel}>
                     {activeThread.members.length + 1} people
                   </Text>
@@ -1040,38 +1146,48 @@ export default function MessagesScreen({ session, onUnreadChange }) {
                           {contactName(person)}
                         </Text>
                         <Text style={styles.personSub} numberOfLines={1}>
+                          {person.isTeamIntake && person.teamId === activeThread.teamId ? 'Intake contact · ' : ''}
                           {formatLastSeen(person.isOnline, person.lastSeenAt)}
                         </Text>
                       </View>
+                      {person.isTeamIntake && person.teamId === activeThread.teamId ? (
+                        <View style={styles.intakeBadge}>
+                          <Text style={styles.intakeBadgeText}>Intake</Text>
+                        </View>
+                      ) : null}
                     </Pressable>
                   ))}
-                  <Pressable
-                    onPress={() => setAddingMembers((current) => !current)}
-                    style={styles.detailsAction}
-                  >
-                    <Ionicons name="person-add-outline" size={18} color={BLUE} />
-                    <Text style={styles.detailsActionText}>Add people</Text>
-                  </Pressable>
-                  {addingMembers
-                    ? addablePeople.map((person) => (
-                        <Pressable
-                          key={person.id}
-                          onPress={async () => {
-                            try {
-                              await addDmGroupMembers(activeThread.conversationId, [person.id]);
-                              await refreshInbox();
-                            } catch (err) {
-                              setError(err.message || 'Could not add that person.');
-                            }
-                          }}
-                          style={styles.detailsMember}
-                        >
-                          <PersonAvatar person={person} size={36} showOnline />
-                          <Text style={styles.personName}>{contactName(person)}</Text>
-                          <Ionicons name="add-circle-outline" size={20} color={BLUE} />
-                        </Pressable>
-                      ))
-                    : null}
+                  {!activeThread.isTeam ? (
+                    <>
+                      <Pressable
+                        onPress={() => setAddingMembers((current) => !current)}
+                        style={styles.detailsAction}
+                      >
+                        <Ionicons name="person-add-outline" size={18} color={BLUE} />
+                        <Text style={styles.detailsActionText}>Add people</Text>
+                      </Pressable>
+                      {addingMembers
+                        ? addablePeople.map((person) => (
+                            <Pressable
+                              key={person.id}
+                              onPress={async () => {
+                                try {
+                                  await addDmGroupMembers(activeThread.conversationId, [person.id]);
+                                  await refreshInbox();
+                                } catch (err) {
+                                  setError(err.message || 'Could not add that person.');
+                                }
+                              }}
+                              style={styles.detailsMember}
+                            >
+                              <PersonAvatar person={person} size={36} showOnline />
+                              <Text style={styles.personName}>{contactName(person)}</Text>
+                              <Ionicons name="add-circle-outline" size={20} color={BLUE} />
+                            </Pressable>
+                          ))
+                        : null}
+                    </>
+                  ) : null}
                   <Pressable
                     onPress={async () => {
                       try {
@@ -1086,7 +1202,9 @@ export default function MessagesScreen({ session, onUnreadChange }) {
                     }}
                     style={styles.leaveButton}
                   >
-                    <Text style={styles.leaveButtonText}>Leave group</Text>
+                    <Text style={styles.leaveButtonText}>
+                      {activeThread.isTeam ? 'Leave team chat' : 'Leave group'}
+                    </Text>
                   </Pressable>
                 </ScrollView>
               ) : (
@@ -1221,7 +1339,7 @@ export default function MessagesScreen({ session, onUnreadChange }) {
               </View>
               <Text style={styles.emptyTitle}>Direct Messages</Text>
               <Text style={styles.emptyHint}>
-                Pick a conversation, or start a group with people on the team.
+                Pick a conversation, or message a person or a team.
               </Text>
             </View>
           )}
@@ -1416,6 +1534,25 @@ const styles = StyleSheet.create({
   },
   inboxListContent: {
     paddingBottom: 24,
+  },
+  composeSection: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#8e8e93',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 4,
+  },
+  teamAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: BLUE,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   inboxCentered: {
     alignItems: 'center',
@@ -1680,6 +1817,25 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     outlineStyle: 'none',
+  },
+  detailsTeamName: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    marginBottom: 4,
+  },
+  intakeBadge: {
+    backgroundColor: '#eef4ff',
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  intakeBadgeText: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '700',
+    color: BLUE,
   },
   detailsMember: {
     flexDirection: 'row',

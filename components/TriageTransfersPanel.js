@@ -1,9 +1,11 @@
-import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+/**
+ * Triage dashboard: date batches of stores shipping melt POs and bullion to the
+ * Workshop. Batches live in Supabase via lib/transferWorkflow; this panel is
+ * presentational and delegates every mutation to that store.
+ */
+import { createElement, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
-  Animated,
-  Easing,
   FlatList,
   Image,
   Modal,
@@ -16,52 +18,104 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { MOBILE, mobileSafeBottom, mobileSafeTop, useIsMobile } from '../lib/mobileUi';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
+import { mobileSafeBottom, mobileSafeTop, useIsMobile } from '../lib/mobileUi';
 import { fetchTransferStores } from '../lib/locations';
 import {
   collectRecordImageUrls,
   defaultDateRange,
   fetchTransactionDetail,
   fetchTransactions,
+  formatAmount,
   formatDateParam,
   formatPickerDate,
-  formatTransactionDate,
   parseDateParam,
   parseDocReference,
+  posSourcesFromSession,
   resolvePosAuthForRow,
   rowFromDocument,
+  withLineItems,
 } from '../lib/transactions';
 import {
   RECEIVE_STATUS,
   RECEIVE_STATUS_LABELS,
+  addStandaloneTriagePo,
+  applyTriageReviewToPo,
+  batchStats,
+  flattenBatchPos,
+  findTriagePo,
+  isStandaloneTriage,
+  mergeTriagePos,
+  patchTriagePosDetails,
   persistTransferWorkflowNow,
-  saveTriagePoReview,
   plannedForTriageStore,
   plannedWorkshopTransfersForStore,
+  receiveAllTriagePos,
+  recordPurchaseCensus,
+  refreshPurchaseCensus,
+  removeTriageBatch,
+  removeTriageBatchStore,
+  removeTriagePo,
+  saveTriagePoReview,
+  toggleTriagePoReceived,
   transferGoesToWorkshop,
+  triagePoNeedsCorrection,
   updateTriageTransfers,
   useTransferWorkflow,
 } from '../lib/transferWorkflow';
 import { formatQty } from '../lib/transferPlan';
 import { fetchTransfers } from '../lib/transfers';
+import { classifyPurchaseForTriage } from '../lib/priceCheck';
 import TriageReviewDrawer from './TriageReviewDrawer';
+import {
+  Chip,
+  EmptyState,
+  FONT,
+  Group,
+  GroupRow,
+  IconAction,
+  ProgressBar,
+  SearchField,
+  SectionLabel,
+  Stat,
+  StatStrip,
+  StatusPill,
+  T,
+  TextAction,
+  TextTabs,
+  TriageDrawer,
+  confirmDestructive,
+  useHeldValue,
+} from './TriageKit';
+import {
+  ColumnFilter,
+  docNoun,
+  matchesSelectedLabel,
+  PoThumb,
+  selectedLabels,
+  sortRows,
+  TableCell,
+  TableEmpty,
+  TableFrame,
+  TableMuted,
+  TablePhotoCell,
+  TableRow,
+  TableRowMain,
+  TableRowPressable,
+  TableStatus,
+  TableStrong,
+  uniqueLabels,
+} from './TriageTable';
 
-const fontFamily = Platform.select({
-  ios: 'Sohne',
-  android: 'Sohne',
-  default: 'Sohne',
-});
+const fontFamily = FONT;
+const TEXT = T.text;
+const SECONDARY = T.secondary;
+const FILL = T.fill;
+const HAIRLINE = T.hairline;
+const BLUE = T.blue;
+const GREEN = T.green;
 
-const ACCENT = '#C2410C';
-const TEXT = '#1d1d1f';
-const SECONDARY = '#8e8e93';
-const FILL = '#e8e8ed';
-const HAIRLINE = '#e5e5ea';
-const GREEN = '#2F8A4E';
-const BLUE = MOBILE.blue;
-const RED = '#FF3B30';
 const WORKSHOP_LOCATION = {
   storeKey: 'workshop',
   name: 'Workshop',
@@ -70,26 +124,22 @@ const WORKSHOP_LOCATION = {
   city: '',
 };
 
-function isWorkshopStore(store) {
-  return Boolean(store?.isWorkshop) || String(store?.name || '').toLowerCase().includes('workshop');
-}
+const EMPTY_MELT_FILTERS = {
+  reference: [],
+  dateLabel: [],
+  customer: [],
+  employee: [],
+  store: [],
+  status: [],
+};
 
-function confirmDestructive(title, message, onConfirm) {
-  if (Platform.OS === 'web') {
-    const ok = typeof window !== 'undefined' && window.confirm([title, message].filter(Boolean).join('\n\n'));
-    if (ok) onConfirm();
-    return;
-  }
-  Alert.alert(title, message, [
-    { text: 'Cancel', style: 'cancel' },
-    { text: 'Delete', style: 'destructive', onPress: onConfirm },
-  ]);
-}
-
-const STORE_TABS = [
-  { key: 'melt', label: 'Melt', icon: 'flame-outline' },
-  { key: 'bullion', label: 'Bullion', icon: 'diamond-outline' },
-];
+const EMPTY_BULLION_FILTERS = {
+  reference: [],
+  dateLabel: [],
+  fromName: [],
+  toName: [],
+  status: [],
+};
 
 if (Platform.OS === 'web' && typeof document !== 'undefined') {
   const styleId = 'cgold-triage-feed-snap';
@@ -106,155 +156,20 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
   ].join('');
 }
 
-const DRAWER_OPEN_MS = 280;
-const DRAWER_CLOSE_MS = 220;
+/* ------------------------------------------------------------------ */
+/* Helpers                                                              */
+/* ------------------------------------------------------------------ */
 
-function useHeldValue(value) {
-  const held = useRef(value);
-  if (value != null) held.current = value;
-  return value ?? held.current;
+function meltKey(row) {
+  return String(row.id);
 }
 
-function useRightDrawerAnimation(visible, slideDistance) {
-  const [mounted, setMounted] = useState(visible);
-  const slide = useRef(new Animated.Value(slideDistance)).current;
-  const backdrop = useRef(new Animated.Value(0)).current;
-  const slideDistanceRef = useRef(slideDistance);
-  const activeAnim = useRef(null);
-  slideDistanceRef.current = slideDistance;
-
-  useEffect(() => {
-    if (!mounted) slide.setValue(slideDistance);
-  }, [slideDistance, mounted, slide]);
-
-  useEffect(() => {
-    if (visible) {
-      setMounted(true);
-      return undefined;
-    }
-    if (!mounted) return undefined;
-
-    const anim = Animated.parallel([
-      Animated.timing(slide, {
-        toValue: slideDistanceRef.current,
-        duration: DRAWER_CLOSE_MS,
-        easing: Easing.bezier(0.4, 0, 0.2, 1),
-        useNativeDriver: true,
-      }),
-      Animated.timing(backdrop, {
-        toValue: 0,
-        duration: DRAWER_CLOSE_MS,
-        easing: Easing.out(Easing.quad),
-        useNativeDriver: true,
-      }),
-    ]);
-    activeAnim.current = anim;
-    anim.start(({ finished }) => {
-      if (activeAnim.current === anim) activeAnim.current = null;
-      if (finished) setMounted(false);
-    });
-    return () => {
-      if (activeAnim.current === anim) {
-        anim.stop();
-        activeAnim.current = null;
-      }
-    };
-  }, [visible, mounted, slide, backdrop]);
-
-  useEffect(() => {
-    if (!visible || !mounted) return undefined;
-    slide.setValue(slideDistanceRef.current);
-    backdrop.setValue(0);
-    let cancelled = false;
-    const raf = requestAnimationFrame(() => {
-      if (cancelled) return;
-      Animated.parallel([
-        Animated.timing(slide, {
-          toValue: 0,
-          duration: DRAWER_OPEN_MS,
-          easing: Easing.bezier(0.22, 1, 0.36, 1),
-          useNativeDriver: true,
-        }),
-        Animated.timing(backdrop, {
-          toValue: 1,
-          duration: DRAWER_OPEN_MS,
-          easing: Easing.out(Easing.quad),
-          useNativeDriver: true,
-        }),
-      ]).start();
-    });
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(raf);
-    };
-  }, [visible, mounted, slide, backdrop]);
-
-  return { mounted, slide, backdrop };
-}
-
-function posTransferToRow(transfer) {
-  const received = String(transfer.status || '').toLowerCase() === 'received';
-  const partial = !received && Number(transfer.receivedQty) > 0;
-  return {
-    id: `pos-${transfer.id}`,
-    reference: transfer.reference || (transfer.id ? `TR# ${transfer.id}` : 'Transfer'),
-    dateKey: transfer.date || '',
-    dateLabel: transfer.date ? formatPickerDate(transfer.date) : '',
-    note: transfer.comments || '',
-    fromName: transfer.from?.name || '',
-    toName: transfer.to?.name || '',
-    pathLabels: [transfer.from?.name, transfer.to?.name].filter(Boolean),
-    items: (transfer.items || []).map((item, index) => ({
-      id: item.id || `pos-item-${transfer.id}-${index}`,
-      productName: item.name || 'Item',
-      sku: item.sku || '',
-      fromName: transfer.from?.name || '',
-      toName: transfer.to?.name || '',
-      sentQty: item.quantity || 0,
-      receivedQty: item.receivedQuantity,
-    })),
-    receiveStatus: received
-      ? RECEIVE_STATUS.all_received
-      : partial
-        ? RECEIVE_STATUS.partially_received
-        : RECEIVE_STATUS.not_received,
-    aureusId: transfer.id != null ? String(transfer.id) : null,
-  };
+function isWorkshopStore(store) {
+  return Boolean(store?.isWorkshop) || String(store?.name || '').toLowerCase().includes('workshop');
 }
 
 function newId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-async function fillMissingPoImages(token, baseUrl, rows) {
-  const missing = rows.filter((row) => !(row.imageUrls || []).length);
-  if (missing.length === 0) return rows;
-  const updates = new Map();
-  let cursor = 0;
-  const workers = Math.min(4, missing.length);
-
-  async function worker() {
-    while (cursor < missing.length) {
-      const index = cursor;
-      cursor += 1;
-      const row = missing[index];
-      try {
-        const detail = await fetchTransactionDetail(token, {
-          type: 'purchase',
-          sourceId: row.sourceId,
-          baseUrl,
-        });
-        const imageUrls = collectRecordImageUrls(detail);
-        if (imageUrls.length) updates.set(row.id, imageUrls);
-      } catch {
-        // Keep the row without a photo if detail lookup fails.
-      }
-    }
-  }
-
-  await Promise.all(Array.from({ length: workers }, () => worker()));
-  if (updates.size === 0) return rows;
-  return rows.map((row) => (updates.has(row.id) ? { ...row, imageUrls: updates.get(row.id) } : row));
 }
 
 function namesMatch(a, b) {
@@ -292,14 +207,6 @@ function sortBatchStores(stores) {
   );
 }
 
-function flattenMeltPos(stores) {
-  const rows = [];
-  for (const store of stores || []) {
-    for (const item of store.meltPos || []) rows.push(item);
-  }
-  return rows.sort((a, b) => (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0));
-}
-
 function uniqueSystemGroups(stores) {
   const groups = new Map();
   for (const store of stores || []) {
@@ -316,37 +223,90 @@ function uniqueSystemGroups(stores) {
   return [...groups.values()];
 }
 
-function matchesDocQuery(row, query) {
-  const q = String(query || '').trim();
-  if (!q) return true;
-  if (!row) return false;
-  const parsed = parseDocReference(q);
-  const digits = q.replace(/[^\d]/g, '');
-  if (parsed && String(row.sourceId) === parsed.sourceId) {
-    if (parsed.type === 'purchase') return row.type === 'purchase';
-    if (parsed.type === 'order') return row.type === 'order';
-    return true;
-  }
-  if (digits && String(row.sourceId || '').includes(digits)) return true;
-  const hay = [row.reference, row.sourceId, row.customerName, row.employeeName, row.storeName, row.dateLabel]
-    .filter(Boolean)
-    .join(' ')
-    .toLowerCase();
-  return hay.includes(q.toLowerCase());
+function actorNameOf(session) {
+  if (!session) return '';
+  if (session.profile?.fullName) return session.profile.fullName;
+  const user = session.user;
+  const parts = [user?.first_name, user?.last_name].filter(Boolean).join(' ').trim();
+  return parts || user?.name || user?.full_name || session.login || '';
 }
 
-function uniqueLabels(values) {
-  const seen = new Set();
-  const out = [];
-  for (const raw of values) {
-    const label = String(raw || '').trim();
-    if (!label || label === '—') continue;
-    const key = label.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(label);
+function formatStamp(iso) {
+  const time = Date.parse(iso || '');
+  if (!Number.isFinite(time)) return '';
+  const date = new Date(time);
+  const today = new Date();
+  const sameDay =
+    date.getFullYear() === today.getFullYear() &&
+    date.getMonth() === today.getMonth() &&
+    date.getDate() === today.getDate();
+  const clock = date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  if (sameDay) return clock;
+  return `${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} · ${clock}`;
+}
+
+function firstName(name) {
+  return String(name || '').trim().split(/\s+/)[0] || '';
+}
+
+function poKindLabel(row) {
+  return row?.type === 'order' ? 'SO' : 'PO';
+}
+
+function personLabel(value) {
+  const text = String(value || '').trim();
+  return text && text !== '—' ? text : '';
+}
+
+/** Status shown in the Melt table; flagged wins over received so problems stay visible. */
+function meltStatus(row) {
+  const received = Boolean(row?.received);
+  const flagged = triagePoNeedsCorrection(row);
+  const stamp = [firstName(row?.receivedBy), formatStamp(row?.receivedAt)].filter(Boolean).join(' · ');
+  if (flagged) {
+    return {
+      label: 'Flagged',
+      tone: 'orange',
+      sub: received ? `Received${stamp ? ` · ${stamp}` : ''}` : 'Not received',
+    };
   }
-  return out.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  if (received) return { label: 'Received', tone: 'green', sub: stamp || null };
+  if (row?.review) return { label: 'Checked', tone: 'blue', sub: null };
+  return { label: 'Open', tone: 'neutral', sub: null };
+}
+
+function bullionStatus(row) {
+  const key = row?.receiveStatus || RECEIVE_STATUS.not_received;
+  const tone =
+    key === RECEIVE_STATUS.all_received
+      ? 'green'
+      : key === RECEIVE_STATUS.partially_received
+        ? 'orange'
+        : 'neutral';
+  return { label: RECEIVE_STATUS_LABELS[key] || 'Not Received', tone };
+}
+
+function bullionToLabel(row) {
+  return row?.toName || (row?.pathLabels || []).filter(Boolean).slice(-1)[0] || '';
+}
+
+function bullionItemsLabel(row) {
+  const items = Array.isArray(row?.items) ? row.items : [];
+  const qty = items.reduce((sum, item) => sum + (Number(item.sentQty) || 0), 0);
+  return { count: items.length, qty };
+}
+
+function rowAmountNumber(row) {
+  const raw = row?.amount ?? row?.amountLabel;
+  if (typeof raw === 'number') return raw;
+  const n = Number(String(raw ?? '').replace(/[^0-9.-]/g, ''));
+  return Number.isFinite(n) ? n : null;
+}
+
+function rowAmountLabel(row) {
+  if (row?.amountLabel) return row.amountLabel;
+  const n = rowAmountNumber(row);
+  return n == null ? '' : formatAmount(n);
 }
 
 function rowTime(row) {
@@ -356,172 +316,234 @@ function rowTime(row) {
   return Number.isFinite(time) ? time : 0;
 }
 
-function listedDateRange(rows) {
-  const times = (rows || []).map(rowTime).filter(Boolean).sort((a, b) => a - b);
-  if (!times.length) return '';
-  const start = formatTransactionDate(new Date(times[0]).toISOString());
-  const end = formatTransactionDate(new Date(times[times.length - 1]).toISOString());
-  return start === end ? start : `${start} – ${end}`;
+function meltBullionKind(row) {
+  if (row?.bullionOnly) return 'only';
+  const cls = classifyPurchaseForTriage(row);
+  if (cls.bullionOnly) return 'only';
+  if (row?.hasHeldBullion || cls.hasHeldBullion) return 'mixed';
+  return null;
 }
 
-function rowPersonLabels(row) {
-  return uniqueLabels([row?.customerName, row?.employeeName]);
+function poHoldsBullion(row) {
+  return Boolean(meltBullionKind(row));
 }
 
-function matchesLabelFilter(value, query) {
-  const q = String(query || '').trim().toLowerCase();
-  if (!q) return true;
-  return String(value || '').toLowerCase().includes(q);
+function itemCountLabel(row) {
+  const count = Array.isArray(row?.pricedLines) && row.pricedLines.length
+    ? row.pricedLines.length
+    : Array.isArray(row?.itemNames)
+      ? row.itemNames.filter(Boolean).length
+      : 0;
+  if (!count) return '';
+  return `${count} ${count === 1 ? 'item' : 'items'}`;
 }
 
-function matchesPersonFilter(row, query) {
-  const q = String(query || '').trim();
-  if (!q) return true;
-  return rowPersonLabels(row).some((label) => matchesLabelFilter(label, q));
+function expectedPosLabel(stats) {
+  if (!stats || !(stats.totalPurchases > stats.expected)) return '';
+  return `${stats.expected}/${stats.totalPurchases} POs expected`;
 }
 
-function ColumnFilter({
-  columnKey,
-  label,
-  value,
-  onChange,
-  options,
-  openKey,
-  onOpenKey,
-  style,
-}) {
-  const open = openKey === columnKey;
-  const [query, setQuery] = useState('');
-  const active = Boolean(String(value || '').trim());
-
-  useEffect(() => {
-    if (!open) setQuery('');
-  }, [open]);
-
-  const results = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const list = options || [];
-    if (!q) return list.slice(0, 40);
-    return list.filter((option) => option.toLowerCase().includes(q)).slice(0, 40);
-  }, [options, query]);
-
-  const commit = (next) => {
-    onChange(String(next || '').trim());
-    onOpenKey(null);
+function posTransferToRow(transfer) {
+  const received = String(transfer.status || '').toLowerCase() === 'received';
+  const partial = !received && Number(transfer.receivedQty) > 0;
+  return {
+    id: `pos-${transfer.id}`,
+    reference: transfer.reference || (transfer.id ? `TR# ${transfer.id}` : 'Transfer'),
+    dateKey: transfer.date || '',
+    dateLabel: transfer.date ? formatPickerDate(transfer.date) : '',
+    note: transfer.comments || '',
+    fromName: transfer.from?.name || '',
+    toName: transfer.to?.name || '',
+    pathLabels: [transfer.from?.name, transfer.to?.name].filter(Boolean),
+    items: (transfer.items || []).map((item, index) => ({
+      id: item.id || `pos-item-${transfer.id}-${index}`,
+      productName: item.name || 'Item',
+      sku: item.sku || '',
+      fromName: transfer.from?.name || '',
+      toName: transfer.to?.name || '',
+      sentQty: item.quantity || 0,
+      receivedQty: item.receivedQuantity,
+    })),
+    receiveStatus: received
+      ? RECEIVE_STATUS.all_received
+      : partial
+        ? RECEIVE_STATUS.partially_received
+        : RECEIVE_STATUS.not_received,
+    aureusId: transfer.id != null ? String(transfer.id) : null,
+    source: 'pos',
   };
-
-  return (
-    <View style={[styles.colFilter, style]}>
-      <Pressable
-        style={styles.colFilterHit}
-        onPress={() => onOpenKey(open ? null : columnKey)}
-        accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
-        accessibilityLabel={active ? `${label} filter ${value}` : `Filter ${label}`}
-      >
-        <Text style={[styles.colFilterLabel, active && styles.colFilterLabelOn]} numberOfLines={1}>
-          {active ? value : label}
-        </Text>
-        <Ionicons
-          name={active ? 'funnel' : open ? 'chevron-up' : 'chevron-down'}
-          size={11}
-          color={active ? TEXT : SECONDARY}
-        />
-      </Pressable>
-      {open ? (
-        <View style={styles.colFilterMenu}>
-          <View style={styles.colFilterSearch}>
-            <Ionicons name="search" size={14} color={SECONDARY} />
-            <TextInput
-              style={styles.colFilterInput}
-              value={query}
-              onChangeText={setQuery}
-              placeholder={`Filter ${label.toLowerCase()}`}
-              placeholderTextColor={SECONDARY}
-              autoCapitalize="none"
-              autoCorrect={false}
-              onSubmitEditing={() => commit(query)}
-            />
-          </View>
-          {active ? (
-            <Pressable
-              style={styles.colFilterOption}
-              onPress={() => commit('')}
-              accessibilityRole="button"
-              accessibilityLabel={`Clear ${label} filter`}
-            >
-              <Text style={styles.colFilterClear}>Clear filter</Text>
-            </Pressable>
-          ) : null}
-          <ScrollView
-            style={styles.colFilterList}
-            keyboardShouldPersistTaps="handled"
-            nestedScrollEnabled
-          >
-            {results.length === 0 ? (
-              <Text style={styles.colFilterEmpty}>
-                {query.trim() ? 'No matching values' : 'No values'}
-              </Text>
-            ) : (
-              results.map((option) => {
-                const selected = option === value;
-                return (
-                  <Pressable
-                    key={option}
-                    style={styles.colFilterOption}
-                    onPress={() => commit(option)}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected }}
-                  >
-                    <Text
-                      style={[styles.colFilterOptionText, selected && styles.colFilterOptionOn]}
-                      numberOfLines={1}
-                    >
-                      {option}
-                    </Text>
-                    {selected ? <Ionicons name="checkmark" size={16} color={BLUE} /> : null}
-                  </Pressable>
-                );
-              })
-            )}
-          </ScrollView>
-        </View>
-      ) : null}
-    </View>
-  );
 }
 
-function TableFrame({ minWidth, header, children }) {
-  const { width } = useWindowDimensions();
-  const inner = (
-    <View style={[styles.tableCard, { minWidth }]}>
-      <View style={styles.tableHeader}>{header}</View>
-      <ScrollView
-        style={styles.tableBody}
-        contentContainerStyle={styles.tableBodyContent}
-        nestedScrollEnabled
-        keyboardShouldPersistTaps="handled"
-      >
-        {children}
-      </ScrollView>
-    </View>
+async function fillMissingPoDetails(token, baseUrl, rows) {
+  const missing = (rows || []).filter(
+    (row) =>
+      row?.type !== 'order' &&
+      (!(row.pricedLines || []).length || !(row.imageUrls || []).length),
   );
+  if (missing.length === 0) return rows;
+  const updates = new Map();
+  let cursor = 0;
+  const workers = Math.min(6, missing.length);
 
-  if (width < minWidth + 48) {
-    return (
-      <ScrollView
-        horizontal
-        style={styles.tableHScroll}
-        contentContainerStyle={styles.tableHContent}
-        showsHorizontalScrollIndicator={false}
-      >
-        {inner}
-      </ScrollView>
-    );
+  async function worker() {
+    while (cursor < missing.length) {
+      const index = cursor;
+      cursor += 1;
+      const row = missing[index];
+      try {
+        const detail = await fetchTransactionDetail(token, {
+          type: row.type === 'order' ? 'order' : 'purchase',
+          sourceId: row.sourceId,
+          baseUrl,
+        });
+        const enriched = withLineItems(row, detail);
+        const imageUrls = (row.imageUrls || []).length ? row.imageUrls : collectRecordImageUrls(detail);
+        updates.set(row.id, imageUrls.length ? { ...enriched, imageUrls } : enriched);
+      } catch {
+        // Keep the row as-is if detail lookup fails.
+      }
+    }
   }
 
-  return <View style={[styles.tableHContent, styles.tableHFill]}>{inner}</View>;
+  await Promise.all(Array.from({ length: workers }, () => worker()));
+  if (updates.size === 0) return rows;
+  return rows.map((row) => updates.get(row.id) || row);
 }
+
+async function fillMissingPoImages(token, baseUrl, rows) {
+  return fillMissingPoDetails(token, baseUrl, rows);
+}
+
+function storeOnTransfer(row, store) {
+  return (row?.stores || []).some(
+    (entry) =>
+      (store.storeKey && entry.storeKey === store.storeKey) || namesMatch(entry.name, store.name),
+  );
+}
+
+function lastTriageTransferDate(transfers, store, currentDateKey) {
+  const current = currentDateKey || formatDateParam(new Date());
+  const prior = (transfers || [])
+    .filter((row) => row.dateKey && row.dateKey < current && storeOnTransfer(row, store))
+    .sort((a, b) => b.dateKey.localeCompare(a.dateKey));
+  return prior[0]?.dateKey || null;
+}
+
+function lastTriageTransferDateForStores(transfers, stores, currentDateKey) {
+  const dates = (stores || [])
+    .map((store) => lastTriageTransferDate(transfers, store, currentDateKey))
+    .filter(Boolean)
+    .sort();
+  return dates[0] || null;
+}
+
+async function lastPosTransferDate(session, store) {
+  const auth = resolvePosAuthForRow(session, { systemKey: store.systemKey });
+  if (!auth.token) return null;
+  const since = new Date();
+  since.setFullYear(since.getFullYear() - 2);
+  const sinceKey = formatDateParam(since);
+  const lists = await Promise.all([
+    fetchTransfers(auth.token, { status: 'received', since: sinceKey, baseUrl: auth.baseUrl }).catch(
+      () => [],
+    ),
+    fetchTransfers(auth.token, { status: 'pending', since: sinceKey, baseUrl: auth.baseUrl }).catch(
+      () => [],
+    ),
+  ]);
+  const matches = lists
+    .flat()
+    .filter((row) => namesMatch(row?.from?.name, store.name) && row.date)
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  return matches[0]?.date || null;
+}
+
+function mapPickedStore(store) {
+  return {
+    id: newId('store'),
+    storeKey: store.id,
+    name: store.name,
+    systemKey: store.systemKey,
+    systemLabel: store.systemLabel,
+    sourceId: store.sourceId,
+    city: store.city || '',
+    meltPos: [],
+  };
+}
+
+/** Load POS transfers headed to the Workshop from the batch's stores. */
+function useWorkshopTransfers(session, stores) {
+  const storeList = stores || [];
+  const storeKey = storeList.map((store) => store.id || store.storeKey || store.name).join('|');
+  const [posRows, setPosRows] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const { planned } = useTransferWorkflow();
+
+  useEffect(() => {
+    if (!session?.token || storeList.length === 0) {
+      setPosRows([]);
+      return undefined;
+    }
+    let cancelled = false;
+    setBusy(true);
+    const since = new Date();
+    since.setFullYear(since.getFullYear() - 2);
+    const sinceKey = formatDateParam(since);
+    Promise.all(
+      uniqueSystemGroups(storeList).map(async (group) => {
+        const auth = resolvePosAuthForRow(session, { systemKey: group.systemKey });
+        if (!auth.token) return [];
+        const [pending, received] = await Promise.all([
+          fetchTransfers(auth.token, { status: 'pending', since: sinceKey, baseUrl: auth.baseUrl }).catch(
+            () => [],
+          ),
+          fetchTransfers(auth.token, { status: 'received', since: sinceKey, baseUrl: auth.baseUrl }).catch(
+            () => [],
+          ),
+        ]);
+        return [...pending, ...received]
+          .filter((row) => transferGoesToWorkshop(row) && storeInList(group.stores, row.from?.name))
+          .map(posTransferToRow);
+      }),
+    )
+      .then((groups) => {
+        if (cancelled) return;
+        const seen = new Set();
+        const next = [];
+        for (const row of groups.flat()) {
+          if (!row?.id || seen.has(row.id)) continue;
+          seen.add(row.id);
+          next.push(row);
+        }
+        setPosRows(next);
+      })
+      .finally(() => {
+        if (!cancelled) setBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, storeKey]);
+
+  const rows = useMemo(() => {
+    const local = storeList.flatMap((store) =>
+      plannedWorkshopTransfersForStore(store?.storeKey, store?.name),
+    );
+    const seen = new Set(local.map((row) => row.aureusId).filter(Boolean).map(String));
+    const extras = posRows.filter((row) => !row.aureusId || !seen.has(String(row.aureusId)));
+    return [...local, ...extras].sort((a, b) =>
+      String(b.dateKey || '').localeCompare(String(a.dateKey || '')),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planned, posRows, storeKey]);
+
+  return { rows, busy };
+}
+
+/* ------------------------------------------------------------------ */
+/* Date field + Add modal                                               */
+/* ------------------------------------------------------------------ */
 
 function DateField({ value, onChange, minimumDate, maximumDate }) {
   const [open, setOpen] = useState(false);
@@ -615,163 +637,233 @@ function DateField({ value, onChange, minimumDate, maximumDate }) {
   );
 }
 
-function EmptyState({ icon, title, body }) {
+function Segmented({ options, value, onChange, disabled }) {
   return (
-    <View style={styles.empty}>
-      <Ionicons name={icon} size={40} color={SECONDARY} />
-      <Text style={styles.emptyTitle}>{title}</Text>
-      <Text style={styles.emptyBody}>{body}</Text>
+    <View style={styles.segment} accessibilityRole="tablist">
+      {options.map((option) => {
+        const active = option.key === value;
+        return (
+          <Pressable
+            key={option.key}
+            style={[styles.segmentButton, active && styles.segmentButtonActive]}
+            onPress={() => {
+              if (!disabled) onChange(option.key);
+            }}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: active }}
+            accessibilityLabel={option.label}
+          >
+            <Text style={[styles.segmentText, active && styles.segmentTextActive]}>{option.label}</Text>
+          </Pressable>
+        );
+      })}
     </View>
   );
 }
 
-function ListRow({ title, meta, subtitle, subtitleLines = 1, onPress, onDelete, accessibilityLabel, mobile, last }) {
+const ADD_MODES = [
+  { key: 'range', label: 'Date range' },
+  { key: 'doc', label: 'PO / SO number' },
+];
+
+function posGroupsFromSession(session) {
+  const sources = posSourcesFromSession(session);
+  return sources.map((source) => ({
+    systemKey: source.key,
+    systemLabel: source.label,
+    stores: [],
+  }));
+}
+
+function SpecificDocSearch({ stores, session, existingIds, onAdd, allStores = false }) {
+  const [kind, setKind] = useState('PO');
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [results, setResults] = useState([]);
+  const searchGen = useRef(0);
+  const storeKey = (stores || []).map((store) => store.id || store.name).join('|');
+  const batchLabel = allStores ? 'every store' : storeNamesLabel(stores) || 'the selected stores';
+
+  useEffect(() => {
+    setKind('PO');
+    setValue('');
+    setBusy(false);
+    setError('');
+    setResults([]);
+  }, [storeKey, allStores]);
+
+  const runSearch = useCallback(
+    async (raw, selectedKind) => {
+      const query = String(raw || '').trim();
+      if (!query) {
+        setResults([]);
+        setError('');
+        return;
+      }
+
+      const searchGroups = allStores ? posGroupsFromSession(session) : uniqueSystemGroups(stores);
+      if (
+        searchGroups.length === 0 ||
+        searchGroups.every((group) => !resolvePosAuthForRow(session, { systemKey: group.systemKey }).token)
+      ) {
+        setError('Sign in to search PO / SO.');
+        setResults([]);
+        return;
+      }
+
+      const gen = (searchGen.current += 1);
+      setBusy(true);
+      setError('');
+      try {
+        const digits = query.replace(/[^\d]/g, '');
+        const typed = parseDocReference(query);
+        const candidates = [];
+        if (typed) candidates.push(typed);
+        else if (digits) {
+          candidates.push(parseDocReference(`${selectedKind}# ${digits}`));
+          const other = selectedKind === 'PO' ? 'SO' : 'PO';
+          candidates.push(parseDocReference(`${other}# ${digits}`));
+        }
+
+        const found = [];
+        const seen = new Set();
+        let otherStore = '';
+        let otherKind = 'PO';
+
+        for (const doc of candidates.filter(Boolean)) {
+          for (const group of searchGroups) {
+            const auth = resolvePosAuthForRow(session, { systemKey: group.systemKey });
+            if (!auth.token) continue;
+            try {
+              const system = { key: group.systemKey, label: group.systemLabel, baseUrl: auth.baseUrl };
+              const detail = await fetchTransactionDetail(auth.token, {
+                type: doc.type,
+                sourceId: doc.sourceId,
+                baseUrl: auth.baseUrl,
+              });
+              const row = rowFromDocument(detail, doc.type, system);
+              if (!row?.id || seen.has(row.id)) continue;
+              if (!allStores && !storeInList(stores, row.storeName)) {
+                otherStore = row.storeName || 'another store';
+                otherKind = row.type === 'purchase' ? 'PO' : 'SO';
+                continue;
+              }
+              seen.add(row.id);
+              found.push(row);
+            } catch {
+              // Try the next POS system or PO/SO candidate.
+            }
+          }
+        }
+
+        if (gen !== searchGen.current) return;
+        setResults(found);
+        if (found.length === 0) {
+          setError(
+            otherStore
+              ? `That ${otherKind} is for ${otherStore}, not ${batchLabel}.`
+              : `No matching PO or SO at ${batchLabel}.`,
+          );
+        }
+      } catch (err) {
+        if (gen !== searchGen.current) return;
+        setResults([]);
+        setError(err?.message || 'Search failed.');
+      } finally {
+        if (gen === searchGen.current) setBusy(false);
+      }
+    },
+    [allStores, batchLabel, session, stores],
+  );
+
+  useEffect(() => {
+    const query = value.trim();
+    if (!query) {
+      setResults([]);
+      setError('');
+      return undefined;
+    }
+    const timer = setTimeout(() => runSearch(query, kind), 350);
+    return () => clearTimeout(timer);
+  }, [kind, runSearch, value]);
+
   return (
-    <View style={[styles.listRow, mobile && styles.listRowMobile, last && styles.listRowLast]}>
-      <Pressable
-        style={styles.listRowMain}
-        onPress={onPress}
-        accessibilityRole="button"
-        accessibilityLabel={accessibilityLabel || title}
-        {...(Platform.OS === 'web' ? { className: 'cgold-triage-row' } : null)}
-      >
-        <View style={styles.listRowText}>
-          <Text style={styles.listRowTitle} numberOfLines={1}>
-            {title}
-          </Text>
-          {meta ? (
-            <Text style={styles.listRowMeta} numberOfLines={1}>
-              {meta}
-            </Text>
-          ) : null}
-          {subtitle ? (
-            <Text style={styles.listRowSub} numberOfLines={subtitleLines}>
-              {subtitle}
-            </Text>
-          ) : null}
+    <View style={styles.addBlock}>
+      <View style={styles.docSearchRow}>
+        <Segmented
+          options={[
+            { key: 'PO', label: 'PO' },
+            { key: 'SO', label: 'SO' },
+          ]}
+          value={kind}
+          onChange={setKind}
+        />
+        <View style={styles.docSearchField}>
+          <Ionicons name="search" size={16} color={SECONDARY} />
+          <TextInput
+            style={styles.docSearchInput}
+            value={value}
+            onChangeText={setValue}
+            placeholder={`${kind}# 12345`}
+            placeholderTextColor={SECONDARY}
+            autoCapitalize="characters"
+            autoCorrect={false}
+            autoFocus
+            onSubmitEditing={() => runSearch(value, kind)}
+          />
+          {busy ? <ActivityIndicator size="small" color={SECONDARY} /> : null}
         </View>
-        <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
-      </Pressable>
-      {onDelete ? (
-        <Pressable
-          style={styles.rowDelete}
-          onPress={onDelete}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel={`Delete ${title}`}
-        >
-          <Text style={styles.rowDeleteText}>Delete</Text>
-        </Pressable>
+      </View>
+      <Text style={styles.modalHint}>{allStores ? 'Searches every store on every POS.' : `Searches ${batchLabel}.`}</Text>
+      {error ? <Text style={styles.errorText}>{error}</Text> : null}
+      {results.length > 0 ? (
+        <Group>
+          {results.map((row, index) => {
+            const already = (existingIds || []).includes(row.id);
+            const cls = classifyPurchaseForTriage(row);
+            const triageNote = cls.bullionOnly
+              ? 'bullion stays in store'
+              : cls.hasHeldBullion
+                ? 'mixed · bullion stays in store'
+                : '';
+            return (
+              <Pressable
+                key={row.id}
+                style={[styles.docResultRow, index === results.length - 1 && styles.docResultRowLast]}
+                onPress={() => {
+                  if (already) {
+                    setError(`${row.reference} is already on this list.`);
+                    return;
+                  }
+                  onAdd(row);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel={`Add ${row.reference}`}
+              >
+                <PoThumb urls={row.imageUrls} label={row.reference} />
+                <View style={styles.docResultText}>
+                  <Text style={styles.docResultTitle} numberOfLines={1}>
+                    {row.reference}
+                    {rowAmountLabel(row) ? `  ·  ${rowAmountLabel(row)}` : ''}
+                  </Text>
+                  <Text style={styles.docResultSub} numberOfLines={1}>
+                    {[row.dateLabel, row.customerName, row.storeName, triageNote].filter(Boolean).join(' · ')}
+                  </Text>
+                </View>
+                <Text style={[styles.docResultAction, already && styles.docResultActionMuted]}>
+                  {already ? 'Added' : 'Add'}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </Group>
       ) : null}
     </View>
   );
 }
 
-function PoThumb({ urls, label }) {
-  const [open, setOpen] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const photos = Array.isArray(urls) ? urls.filter(Boolean) : [];
-
-  useEffect(() => {
-    setFailed(false);
-  }, [photos[0]]);
-
-  if (!photos.length || failed) {
-    return (
-      <View style={styles.poThumbSlot}>
-        <Ionicons name="image-outline" size={16} color={SECONDARY} />
-      </View>
-    );
-  }
-
-  return (
-    <>
-      <Pressable
-        onPress={(event) => {
-          event?.stopPropagation?.();
-          setOpen(true);
-        }}
-        style={styles.poThumbPress}
-        accessibilityRole="button"
-        accessibilityLabel={`View photo for ${label}`}
-      >
-        <Image
-          source={{ uri: photos[0] }}
-          style={styles.poThumb}
-          resizeMode="cover"
-          onError={() => setFailed(true)}
-        />
-      </Pressable>
-      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
-        <View style={styles.photoViewerRoot}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setOpen(false)} />
-          <View style={styles.photoViewerSheet} pointerEvents="box-none">
-            <View style={styles.photoViewerBar}>
-              <Text style={styles.photoViewerTitle} numberOfLines={1}>
-                {label}
-              </Text>
-              <Pressable onPress={() => setOpen(false)} hitSlop={8} accessibilityLabel="Close photo">
-                <Ionicons name="close" size={20} color={TEXT} />
-              </Pressable>
-            </View>
-            <Image source={{ uri: photos[0] }} style={styles.photoViewerImage} resizeMode="contain" />
-          </View>
-        </View>
-      </Modal>
-    </>
-  );
-}
-
-function storeOnTransfer(row, store) {
-  return (row?.stores || []).some(
-    (entry) =>
-      (store.storeKey && entry.storeKey === store.storeKey) || namesMatch(entry.name, store.name),
-  );
-}
-
-function lastTriageTransferDate(transfers, store, currentDateKey) {
-  const current = currentDateKey || formatDateParam(new Date());
-  const prior = (transfers || [])
-    .filter((row) => row.dateKey && row.dateKey < current && storeOnTransfer(row, store))
-    .sort((a, b) => b.dateKey.localeCompare(a.dateKey));
-  return prior[0]?.dateKey || null;
-}
-
-function lastTriageTransferDateForStores(transfers, stores, currentDateKey) {
-  const dates = (stores || [])
-    .map((store) => lastTriageTransferDate(transfers, store, currentDateKey))
-    .filter(Boolean)
-    .sort();
-  return dates[0] || null;
-}
-
-async function lastPosTransferDate(session, store) {
-  const auth = resolvePosAuthForRow(session, { systemKey: store.systemKey });
-  if (!auth.token) return null;
-  const since = new Date();
-  since.setFullYear(since.getFullYear() - 2);
-  const sinceKey = formatDateParam(since);
-  const lists = await Promise.all([
-    fetchTransfers(auth.token, { status: 'received', since: sinceKey, baseUrl: auth.baseUrl }).catch(
-      () => [],
-    ),
-    fetchTransfers(auth.token, { status: 'pending', since: sinceKey, baseUrl: auth.baseUrl }).catch(
-      () => [],
-    ),
-  ]);
-  const matches = lists
-    .flat()
-    .filter((row) => namesMatch(row?.from?.name, store.name) && row.date)
-    .sort((a, b) => String(b.date).localeCompare(String(a.date)));
-  return matches[0]?.date || null;
-}
-
-const ADD_MODES = [
-  { key: 'range', label: 'Date range' },
-  { key: 'doc', label: 'PO / SO' },
-];
-
-function DateRangeModal({
+function AddDocumentsModal({
   visible,
   onClose,
   onConfirm,
@@ -820,29 +912,24 @@ function DateRangeModal({
     try {
       let startKey = lastTriageTransferDateForStores(transfers, stores, currentDateKey);
       if (!startKey) {
-        const dates = (
-          await Promise.all((stores || []).map((store) => lastPosTransferDate(session, store)))
-        )
+        const dates = (await Promise.all((stores || []).map((store) => lastPosTransferDate(session, store))))
           .filter(Boolean)
           .sort();
         startKey = dates[0] || null;
       }
       if (!startKey) {
         setLastHint('');
-        setLocalError(
-          `No previous transfer found for ${storeNamesLabel(stores) || 'these stores'}.`,
-        );
+        setLocalError(`No previous transfer found for ${storeNamesLabel(stores) || 'these stores'}.`);
         return;
       }
       const today = formatDateParam(new Date());
       setStart(parseDateParam(startKey));
       setEnd(parseDateParam(today));
-      setLastHint(`Last transfer: ${formatPickerDate(startKey)}`);
+      setLastHint(`Since the last transfer on ${formatPickerDate(startKey)}`);
       confirm(startKey, today);
     } catch (err) {
       setLocalError(
-        err?.message ||
-          `Could not find the last transfer for ${storeNamesLabel(stores) || 'these stores'}.`,
+        err?.message || `Could not find the last transfer for ${storeNamesLabel(stores) || 'these stores'}.`,
       );
     } finally {
       setLastBusy(false);
@@ -855,79 +942,67 @@ function DateRangeModal({
     <Modal visible={visible} transparent animationType={isMobile ? 'slide' : 'fade'} onRequestClose={onClose}>
       <View style={[styles.modalBackdrop, isMobile && styles.sheetBackdropBottom]}>
         <Pressable style={StyleSheet.absoluteFill} onPress={waiting ? undefined : onClose} />
-        <View style={[styles.smallCard, isMobile && styles.sheetCardBottom]}>
+        <View style={[styles.sheetCard, isMobile && styles.sheetCardBottom]}>
           {isMobile ? <View style={styles.sheetGrabber} /> : null}
-          <Text style={styles.modalTitle}>Add</Text>
-          <View style={styles.addModeRow} accessibilityRole="tablist">
-            {ADD_MODES.map((option) => {
-              const active = mode === option.key;
-              return (
-                <Pressable
-                  key={option.key}
-                  style={[styles.kindChip, active && styles.kindChipActive]}
-                  onPress={() => {
-                    if (!waiting) setMode(option.key);
-                  }}
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected: active }}
-                  accessibilityLabel={option.label}
-                >
-                  <Text style={[styles.kindChipText, active && styles.kindChipTextActive]}>{option.label}</Text>
-                </Pressable>
-              );
-            })}
+          <View style={styles.sheetHeader}>
+            <Pressable onPress={onClose} disabled={waiting} hitSlop={8} accessibilityRole="button">
+              <Text style={styles.navAction}>Cancel</Text>
+            </Pressable>
+            <Text style={styles.modalTitle}>Add PO / SO</Text>
+            {mode === 'range' ? (
+              <Pressable
+                onPress={() => confirm()}
+                disabled={waiting}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Add"
+              >
+                {busy ? (
+                  <ActivityIndicator color={BLUE} />
+                ) : (
+                  <Text style={[styles.navAction, styles.navActionStrong]}>Add</Text>
+                )}
+              </Pressable>
+            ) : (
+              <View style={styles.navSpacer} />
+            )}
           </View>
+          <Segmented options={ADD_MODES} value={mode} onChange={setMode} disabled={waiting} />
           {mode === 'doc' ? (
-            <SpecificDocSearch
-              stores={stores}
-              session={session}
-              existingIds={existingIds}
-              onAdd={onAddDoc}
-              onClose={onClose}
-            />
+            <SpecificDocSearch stores={stores} session={session} existingIds={existingIds} onAdd={onAddDoc} />
           ) : (
-            <>
-              <Text style={styles.modalSub}>
-                Choose the date range to load POs from {storeNamesLabel(stores) || 'the selected stores'}.
-              </Text>
+            <View style={styles.addBlock}>
               <View style={styles.rangeRow}>
                 <View style={styles.rangeField}>
-                  <Text style={styles.rangeLabel}>Start</Text>
+                  <Text style={styles.rangeLabel}>From</Text>
                   <DateField value={start} onChange={setStart} maximumDate={end} />
                 </View>
                 <View style={styles.rangeField}>
-                  <Text style={styles.rangeLabel}>End</Text>
+                  <Text style={styles.rangeLabel}>To</Text>
                   <DateField value={end} onChange={setEnd} minimumDate={start} />
                 </View>
               </View>
-              {lastHint ? <Text style={styles.lastTransferHint}>{lastHint}</Text> : null}
-              {localError || error ? <Text style={styles.errorText}>{localError || error}</Text> : null}
               <Pressable
                 style={styles.lastTransferButton}
                 onPress={fromLastTransfer}
                 disabled={waiting}
                 accessibilityRole="button"
-                accessibilityLabel="From last transfer"
+                accessibilityLabel="Since last transfer"
               >
                 {lastBusy ? (
                   <ActivityIndicator color={BLUE} />
                 ) : (
-                  <Text style={styles.lastTransferButtonText}>From last transfer</Text>
+                  <>
+                    <Ionicons name="time-outline" size={16} color={BLUE} />
+                    <Text style={styles.lastTransferButtonText}>Since last transfer</Text>
+                  </>
                 )}
               </Pressable>
-              <View style={styles.modalActions}>
-                <Pressable style={styles.secondaryButton} onPress={onClose} disabled={waiting}>
-                  <Text style={styles.secondaryButtonText}>Cancel</Text>
-                </Pressable>
-                <Pressable
-                  style={[styles.primaryButton, styles.primaryButtonInline, waiting && styles.primaryButtonDisabled]}
-                  onPress={() => confirm()}
-                  disabled={waiting}
-                >
-                  {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Add</Text>}
-                </Pressable>
-              </View>
-            </>
+              <Text style={styles.modalHint}>
+                {lastHint || `Loads purchases from ${storeNamesLabel(stores) || 'the selected stores'}.`}
+              </Text>
+              {localError || error ? <Text style={styles.errorText}>{localError || error}</Text> : null}
+            </View>
           )}
         </View>
       </View>
@@ -935,141 +1010,41 @@ function DateRangeModal({
   );
 }
 
-function poKindLabel(row) {
-  return row?.type === 'order' ? 'SO' : 'PO';
-}
-
-function meltStatusLabel(row) {
-  if (row?.received) return 'Received';
-  if (row?.review) return 'Reviewed';
-  return 'Open';
-}
-
-function bullionStatusLabel(row) {
-  return RECEIVE_STATUS_LABELS[row?.receiveStatus] || 'Not Received';
-}
-
-function bullionToLabel(row) {
-  return row?.toName || (row?.pathLabels || []).filter(Boolean).slice(-1)[0] || '';
-}
-
-function TableCell({ children, flex = 1, minWidth = 88, width, last }) {
+function QuickAddModal({ visible, session, existingIds, onClose, onAdd, error }) {
+  const isMobile = useIsMobile();
   return (
-    <View
-      style={[
-        styles.tableCell,
-        width
-          ? { width, flexGrow: 0, flexShrink: 0 }
-          : { flex, minWidth },
-        last && styles.tableCellLast,
-      ]}
-    >
-      {typeof children === 'string' || children == null ? (
-        <Text style={styles.tableCellText} numberOfLines={1}>
-          {children || '—'}
-        </Text>
-      ) : (
-        children
-      )}
-    </View>
-  );
-}
-
-function MeltTableRow({ row, onOpen, onToggleReceived, onRemove, last }) {
-  const received = Boolean(row.received);
-  return (
-    <View style={[styles.tableRow, last && styles.tableRowLast]}>
-      <Pressable
-        style={styles.tableRowMain}
-        onPress={() => onOpen(row)}
-        accessibilityRole="button"
-        accessibilityLabel={`Open ${row.reference}`}
-        {...(Platform.OS === 'web' ? { className: 'cgold-triage-row' } : null)}
-      >
-        <View style={styles.tablePhotoCell}>
-          <PoThumb urls={row.imageUrls} label={row.reference} />
+    <Modal visible={visible} transparent animationType={isMobile ? 'slide' : 'fade'} onRequestClose={onClose}>
+      <View style={[styles.modalBackdrop, isMobile && styles.sheetBackdropBottom]}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+        <View style={[styles.sheetCard, isMobile && styles.sheetCardBottom]}>
+          {isMobile ? <View style={styles.sheetGrabber} /> : null}
+          <View style={styles.sheetHeader}>
+            <Pressable onPress={onClose} hitSlop={8} accessibilityRole="button">
+              <Text style={styles.navAction}>Cancel</Text>
+            </Pressable>
+            <Text style={styles.modalTitle}>Quick Add</Text>
+            <View style={styles.navSpacer} />
+          </View>
+          <Text style={styles.quickAddIntro}>
+            Search any store. The PO lands as its own dashboard line — not inside a date batch.
+          </Text>
+          {error ? <Text style={styles.errorText}>{error}</Text> : null}
+          <SpecificDocSearch
+            allStores
+            stores={[]}
+            session={session}
+            existingIds={existingIds}
+            onAdd={onAdd}
+          />
         </View>
-        <TableCell flex={1.15} minWidth={108}>
-          <Text style={styles.tableCellStrong} numberOfLines={1}>
-            {row.reference}
-          </Text>
-        </TableCell>
-        <TableCell flex={0.9} minWidth={92}>
-          {row.dateLabel}
-        </TableCell>
-        <TableCell flex={1.15} minWidth={110}>
-          {row.customerName}
-        </TableCell>
-        <TableCell flex={1.1} minWidth={110}>
-          {row.storeName}
-        </TableCell>
-        <TableCell flex={0.85} minWidth={88}>
-          <Text
-            style={[
-              styles.tableCellText,
-              received && styles.tableStatusOn,
-              row.review && !received && styles.tableStatusReview,
-            ]}
-            numberOfLines={1}
-          >
-            {meltStatusLabel(row)}
-          </Text>
-        </TableCell>
-      </Pressable>
-      <View style={styles.tableActions}>
-        <Pressable
-          style={[styles.tableAction, received && styles.tableActionOn]}
-          onPress={() => onToggleReceived(row.id)}
-          accessibilityRole="button"
-          accessibilityLabel={received ? `${row.reference} received` : `Receive ${row.reference}`}
-        >
-          <Text style={[styles.tableActionText, received && styles.tableActionTextOn]}>
-            {received ? 'Received' : 'Receive'}
-          </Text>
-        </Pressable>
-        <Pressable
-          style={styles.tableRemove}
-          onPress={() => onRemove(row.id)}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel={`Remove ${row.reference}`}
-        >
-          <Ionicons name="close" size={16} color={SECONDARY} />
-        </Pressable>
       </View>
-    </View>
+    </Modal>
   );
 }
 
-function BullionTableRow({ row, onOpen, last }) {
-  return (
-    <Pressable
-      style={[styles.tableRow, last && styles.tableRowLast]}
-      onPress={() => onOpen(row)}
-      accessibilityRole="button"
-      accessibilityLabel={`Open ${row.reference}`}
-      {...(Platform.OS === 'web' ? { className: 'cgold-triage-row' } : null)}
-    >
-      <TableCell flex={1.2} minWidth={120}>
-        <Text style={styles.tableCellStrong} numberOfLines={1}>
-          {row.reference}
-        </Text>
-      </TableCell>
-      <TableCell flex={0.9} minWidth={92}>
-        {row.dateLabel}
-      </TableCell>
-      <TableCell flex={1.15} minWidth={110}>
-        {row.fromName}
-      </TableCell>
-      <TableCell flex={1.15} minWidth={110}>
-        {bullionToLabel(row)}
-      </TableCell>
-      <TableCell flex={1} minWidth={110} last>
-        {bullionStatusLabel(row)}
-      </TableCell>
-    </Pressable>
-  );
-}
+/* ------------------------------------------------------------------ */
+/* Feed (TikTok-style) view                                             */
+/* ------------------------------------------------------------------ */
 
 function FeedHero({ urls, label, width }) {
   const photos = Array.isArray(urls) ? urls.filter(Boolean) : [];
@@ -1082,6 +1057,7 @@ function FeedHero({ urls, label, width }) {
   useEffect(() => {
     setIndex(0);
     setFailed(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [photos[0], photos.length]);
 
   useEffect(() => {
@@ -1130,9 +1106,7 @@ function FeedHero({ urls, label, width }) {
       onPress={cycle}
       disabled={photos.length < 2}
       accessibilityRole={photos.length > 1 ? 'button' : 'image'}
-      accessibilityLabel={
-        photos.length > 1 ? `${label} photo ${index + 1} of ${photos.length}` : `${label} photo`
-      }
+      accessibilityLabel={photos.length > 1 ? `${label} photo ${index + 1} of ${photos.length}` : `${label} photo`}
     >
       <Image
         source={{ uri: photo }}
@@ -1143,10 +1117,7 @@ function FeedHero({ urls, label, width }) {
       {photos.length > 1 ? (
         <View style={styles.feedHeroDots} pointerEvents="none">
           {photos.slice(0, 6).map((url, dot) => (
-            <View
-              key={`${url}-${dot}`}
-              style={[styles.feedHeroDot, dot === index && styles.feedHeroDotOn]}
-            />
+            <View key={`${url}-${dot}`} style={[styles.feedHeroDot, dot === index && styles.feedHeroDotOn]} />
           ))}
         </View>
       ) : null}
@@ -1156,7 +1127,7 @@ function FeedHero({ urls, label, width }) {
 
 function MeltPoFeedCard({ row, index, total, width, onOpen, onToggleReceived }) {
   const received = Boolean(row.received);
-  const reviewed = Boolean(row.review);
+  const status = meltStatus(row);
   const isBuy = row.type !== 'order';
   const lines = Array.isArray(row.pricedLines) ? row.pricedLines.filter((line) => line?.name) : [];
   const extraLines = Math.max(0, lines.length - 2);
@@ -1181,15 +1152,19 @@ function MeltPoFeedCard({ row, index, total, width, onOpen, onToggleReceived }) 
       >
         <FeedHero urls={row.imageUrls} label={row.reference} width={cardW || width} />
         <View style={styles.feedCaption}>
-          <Text style={[styles.feedKind, isBuy && styles.feedKindBuy]}>{poKindLabel(row)}</Text>
+          <View style={styles.feedKindRow}>
+            <Text style={[styles.feedKind, isBuy && styles.feedKindBuy]}>{poKindLabel(row)}</Text>
+            <Text style={styles.feedStatus}>{status.label}</Text>
+            {poHoldsBullion(row) ? <Text style={styles.feedBullion}>Bullion in store</Text> : null}
+          </View>
           <Text style={styles.feedHandle} numberOfLines={1}>
             @{String(row.customerName || 'walk-in').replace(/\s+/g, '').toLowerCase() || 'walkin'}
           </Text>
           <Text style={styles.feedBuyer} numberOfLines={2}>
-            {[row.reference, row.amountLabel].filter(Boolean).join(' · ')}
+            {[row.reference, rowAmountLabel(row)].filter(Boolean).join(' · ')}
           </Text>
           <Text style={styles.feedMeta} numberOfLines={2}>
-            {[row.storeName, row.dateLabel, row.timeLabel, row.employeeName, reviewed ? 'Reviewed' : '']
+            {[row.storeName, row.dateLabel, row.timeLabel, personLabel(row.employeeName)]
               .filter(Boolean)
               .join(' · ')}
           </Text>
@@ -1253,13 +1228,7 @@ function MeltPoFeedModal({ visible, rows, onClose, onOpen, onToggleReceived }) {
   }, [visible]);
 
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={onClose}
-      statusBarTranslucent
-    >
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose} statusBarTranslucent>
       <View style={styles.feedModalRoot}>
         <Pressable
           style={styles.feedModalBackdrop}
@@ -1330,252 +1299,120 @@ function MeltPoFeedModal({ visible, rows, onClose, onOpen, onToggleReceived }) {
   );
 }
 
-function MeltFeedButton({ onPress }) {
+/* ------------------------------------------------------------------ */
+/* Melt tab                                                             */
+/* ------------------------------------------------------------------ */
+
+const MELT_SORTERS = {
+  reference: (row) => row.reference,
+  dateLabel: (row) => rowTime(row),
+  customer: (row) => personLabel(row.customerName),
+  employee: (row) => personLabel(row.employeeName),
+  store: (row) => row.storeName,
+  amount: (row) => rowAmountNumber(row),
+  status: (row) => meltStatus(row).label,
+};
+
+const MeltTableRow = memo(function MeltTableRow({ row, onOpen, onToggleReceived, onRemove, last }) {
+  const received = Boolean(row.received);
+  const status = meltStatus(row);
+  const items = itemCountLabel(row);
+  const bullionKind = meltBullionKind(row);
+  const heldBullion = Boolean(bullionKind);
+  const bullionOnly = bullionKind === 'only';
   return (
-    <Pressable
-      style={styles.feedOpenButton}
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel="Open feed view"
+    <TableRow
+      last={last}
+      style={bullionOnly ? styles.meltRowBullion : heldBullion ? styles.meltRowMixed : null}
+      webClassName={bullionOnly ? 'cgold-triage-row-bullion' : heldBullion ? 'cgold-triage-row-mixed' : undefined}
     >
-      <Ionicons name="phone-portrait-outline" size={18} color={BLUE} />
-    </Pressable>
-  );
-}
-
-function SpecificDocSearch({ stores, session, existingIds, onClose, onAdd }) {
-  const [kind, setKind] = useState('PO');
-  const [value, setValue] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const [results, setResults] = useState([]);
-  const searchGen = useRef(0);
-  const storeKey = (stores || []).map((store) => store.id || store.name).join('|');
-  const batchLabel = storeNamesLabel(stores) || 'the selected stores';
-
-  useEffect(() => {
-    setKind('PO');
-    setValue('');
-    setBusy(false);
-    setError('');
-    setResults([]);
-  }, [storeKey]);
-
-  const runSearch = useCallback(
-    async (raw, selectedKind) => {
-      const query = String(raw || '').trim();
-      if (!query) {
-        setResults([]);
-        setError('');
-        return;
-      }
-
-      const groups = uniqueSystemGroups(stores);
-      if (groups.some((group) => !resolvePosAuthForRow(session, { systemKey: group.systemKey }).token)) {
-        if (groups.every((group) => !resolvePosAuthForRow(session, { systemKey: group.systemKey }).token)) {
-          setError('Sign in to search documents.');
-          setResults([]);
-          return;
-        }
-      }
-
-      const gen = (searchGen.current += 1);
-      setBusy(true);
-      setError('');
-      try {
-        const digits = query.replace(/[^\d]/g, '');
-        const typed = parseDocReference(query);
-        const candidates = [];
-        if (typed) candidates.push(typed);
-        else if (digits) {
-          candidates.push(parseDocReference(`${selectedKind}# ${digits}`));
-          const other = selectedKind === 'PO' ? 'SO' : 'PO';
-          candidates.push(parseDocReference(`${other}# ${digits}`));
-        }
-
-        const found = [];
-        const seen = new Set();
-        let otherStore = '';
-
-        for (const doc of candidates.filter(Boolean)) {
-          for (const group of groups) {
-            const auth = resolvePosAuthForRow(session, { systemKey: group.systemKey });
-            if (!auth.token) continue;
-            try {
-              const system = {
-                key: group.systemKey,
-                label: group.systemLabel,
-                baseUrl: auth.baseUrl,
-              };
-              const detail = await fetchTransactionDetail(auth.token, {
-                type: doc.type,
-                sourceId: doc.sourceId,
-                baseUrl: auth.baseUrl,
-              });
-              const row = rowFromDocument(detail, doc.type, system);
-              if (!row?.id || seen.has(row.id)) continue;
-              if (!storeInList(stores, row.storeName)) {
-                otherStore = row.storeName || 'another store';
-                continue;
-              }
-              seen.add(row.id);
-              found.push(row);
-            } catch {
-              // Try the next POS system or PO/SO candidate.
-            }
-          }
-        }
-
-        if (gen !== searchGen.current) return;
-        setResults(found);
-        if (found.length === 0) {
-          setError(
-            otherStore
-              ? `That document is for ${otherStore}, not ${batchLabel}.`
-              : `No matching PO or SO at ${batchLabel}.`,
-          );
-        }
-      } catch (err) {
-        if (gen !== searchGen.current) return;
-        setResults([]);
-        setError(err?.message || 'Search failed.');
-      } finally {
-        if (gen === searchGen.current) setBusy(false);
-      }
-    },
-    [batchLabel, session, stores],
-  );
-
-  useEffect(() => {
-    const query = value.trim();
-    if (!query) {
-      setResults([]);
-      setError('');
-      return undefined;
-    }
-    const timer = setTimeout(() => {
-      runSearch(query, kind);
-    }, 350);
-    return () => clearTimeout(timer);
-  }, [kind, runSearch, value]);
-
-  const pick = (row) => {
-    if ((existingIds || []).includes(row.id)) {
-      setError(`${row.reference} is already on this list.`);
-      return;
-    }
-    onAdd(row);
-  };
-
-  return (
-    <View style={styles.docSearchBlock}>
-          <Text style={styles.modalSub}>
-            Search a document number from {batchLabel}.
-          </Text>
-          <View style={styles.kindRow}>
-            {['PO', 'SO'].map((option) => {
-              const active = kind === option;
-              return (
-                <Pressable
-                  key={option}
-                  style={[styles.kindChip, active && styles.kindChipActive]}
-                  onPress={() => setKind(option)}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
-                >
-                  <Text style={[styles.kindChipText, active && styles.kindChipTextActive]}>{option}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-          <View style={styles.searchField}>
-            <Ionicons name="search" size={16} color={SECONDARY} style={styles.searchIcon} />
-            <TextInput
-              style={styles.searchInput}
-              value={value}
-              onChangeText={setValue}
-              placeholder={`${kind}# 12345`}
-              placeholderTextColor={SECONDARY}
-              autoCapitalize="characters"
-              autoCorrect={false}
-              keyboardType="default"
-              onSubmitEditing={() => runSearch(value, kind)}
-            />
-            {value ? (
-              <Pressable
-                onPress={() => {
-                  setValue('');
-                  setResults([]);
-                  setError('');
-                }}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel="Clear search"
-              >
-                <Ionicons name="close-circle" size={18} color="#c7c7cc" />
-              </Pressable>
+      <TableRowMain onPress={() => onOpen(row)} accessibilityLabel={`Open ${row.reference}`}>
+        <TablePhotoCell>
+          <PoThumb urls={row.imageUrls} label={row.reference} />
+        </TablePhotoCell>
+        <TableCell flex={1.35} minWidth={148}>
+          <View style={styles.meltRefRow}>
+            <View style={styles.meltRefText}>
+              <TableStrong>{row.reference}</TableStrong>
+            </View>
+            {heldBullion ? (
+              <StatusPill label={bullionOnly ? 'Bullion only' : 'Bullion'} tone={bullionOnly ? 'red' : 'orange'} compact />
             ) : null}
           </View>
-          {busy ? (
-            <View style={styles.modalBusy}>
-              <ActivityIndicator color={BLUE} />
-            </View>
+          {items || heldBullion ? (
+            <TableMuted>
+              {bullionOnly
+                ? items
+                  ? `${items} · no scrap`
+                  : 'Bullion only · no scrap'
+                : heldBullion
+                  ? items
+                    ? `${items} · stays in store`
+                    : 'Bullion stays in store'
+                  : items}
+            </TableMuted>
           ) : null}
-          {error ? <Text style={styles.errorText}>{error}</Text> : null}
-          {results.length > 0 ? (
-            <ScrollView
-              style={styles.docResultList}
-              contentContainerStyle={styles.docResultListContent}
-              keyboardShouldPersistTaps="handled"
-              nestedScrollEnabled
-            >
-              {results.map((row) => {
-                const already = (existingIds || []).includes(row.id);
-                return (
-                  <Pressable
-                    key={row.id}
-                    style={styles.docResultRow}
-                    onPress={() => pick(row)}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Add ${row.reference}`}
-                  >
-                    <View style={styles.poRowText}>
-                      <Text style={styles.poRef} numberOfLines={1}>
-                        {row.reference}
-                      </Text>
-                      <Text style={styles.poSub} numberOfLines={1}>
-                        {[row.dateLabel, row.customerName].filter(Boolean).join(' · ')}
-                      </Text>
-                    </View>
-                    <Text style={[styles.docResultAction, already && styles.docResultActionMuted]}>
-                      {already ? 'Added' : 'Add'}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-          ) : null}
-          <View style={styles.modalActions}>
-            <Pressable style={styles.secondaryButton} onPress={onClose} disabled={busy}>
-              <Text style={styles.secondaryButtonText}>Cancel</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.primaryButton, styles.primaryButtonInline, busy && styles.primaryButtonDisabled]}
-              onPress={() => runSearch(value, kind)}
-              disabled={busy}
-            >
-              {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Search</Text>}
-            </Pressable>
-          </View>
-    </View>
+        </TableCell>
+        <TableCell flex={0.9} minWidth={96}>
+          <Text style={styles.cellText} numberOfLines={1}>
+            {row.dateLabel || '—'}
+          </Text>
+          {row.timeLabel ? <TableMuted>{row.timeLabel}</TableMuted> : null}
+        </TableCell>
+        <TableCell flex={1.15} minWidth={120}>
+          {personLabel(row.customerName)}
+        </TableCell>
+        <TableCell flex={1} minWidth={110}>
+          {personLabel(row.employeeName)}
+        </TableCell>
+        <TableCell flex={1} minWidth={110}>
+          {row.storeName}
+        </TableCell>
+        <TableCell flex={0.8} minWidth={92} align="right">
+          {rowAmountLabel(row)}
+        </TableCell>
+        <TableCell flex={1.05} minWidth={124}>
+          <TableStatus label={status.label} tone={status.tone} sub={status.sub} />
+        </TableCell>
+      </TableRowMain>
+      <View style={styles.meltActions}>
+        <Pressable
+          style={[styles.receiveButton, received && styles.receiveButtonOn]}
+          onPress={() => onToggleReceived(row.id)}
+          accessibilityRole="button"
+          accessibilityLabel={received ? `Undo receive ${row.reference}` : `Receive ${row.reference}`}
+          accessibilityState={{ selected: received }}
+        >
+          <Ionicons
+            name={received ? 'checkmark-circle' : 'ellipse-outline'}
+            size={16}
+            color={received ? '#fff' : TEXT}
+          />
+          <Text style={[styles.receiveButtonText, received && styles.receiveButtonTextOn]}>
+            {received ? 'Received' : 'Receive'}
+          </Text>
+        </Pressable>
+        <Pressable
+          style={styles.removeButton}
+          onPress={() => onRemove(row)}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={`Remove ${row.reference}`}
+        >
+          <Ionicons name="close" size={16} color={SECONDARY} />
+        </Pressable>
+      </View>
+    </TableRow>
   );
-}
+});
 
 function MeltTab({
   session,
+  batch,
   stores,
-  dateKey,
   pos,
+  storeScope,
+  transfers,
   addOpen,
   onAddOpenChange,
   onMergePos,
@@ -1584,66 +1421,125 @@ function MeltTab({
   onReceiveAll,
   onSaveReview,
 }) {
-  const { triage } = useTransferWorkflow();
-  const storeList = stores || [];
+  const storeList = useMemo(() => stores || [], [stores]);
   const batchLabel = storeNamesLabel(storeList) || 'the selected stores';
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [openRow, setOpenRow] = useState(null);
   const [feedOpen, setFeedOpen] = useState(false);
   const [openFilter, setOpenFilter] = useState(null);
-  const [filters, setFilters] = useState({
-    reference: '',
-    dateLabel: '',
-    person: '',
-    store: '',
-    status: '',
-  });
+  const [filters, setFilters] = useState(EMPTY_MELT_FILTERS);
+  const [sort, setSort] = useState(null);
   const existingIds = useMemo(() => (pos || []).map((row) => row.id), [pos]);
+  const needsHydrate = useMemo(
+    () => (pos || []).some((row) => row?.type !== 'order' && !(row.pricedLines || []).length),
+    [pos],
+  );
+  const posRef = useRef(pos);
+  posRef.current = pos;
+
+  useEffect(() => {
+    if (!needsHydrate || !session) return undefined;
+    const snapshot = posRef.current || [];
+    let cancelled = false;
+    (async () => {
+      const need = snapshot.filter((row) => row?.type !== 'order' && !(row.pricedLines || []).length);
+      if (!need.length) return;
+      const bySystem = new Map();
+      for (const row of need) {
+        const key = row.systemKey || 'east';
+        if (!bySystem.has(key)) bySystem.set(key, []);
+        bySystem.get(key).push(row);
+      }
+      const enriched = [];
+      for (const [key, groupRows] of bySystem) {
+        const auth = resolvePosAuthForRow(session, { systemKey: key });
+        if (!auth.token) continue;
+        enriched.push(...(await fillMissingPoDetails(auth.token, auth.baseUrl, groupRows)));
+      }
+      if (cancelled || !enriched.length) return;
+      patchTriagePosDetails(batch.id, enriched);
+      const byId = new Map(enriched.map((row) => [row.id, row]));
+      refreshPurchaseCensus(
+        batch.id,
+        snapshot.map((row) => byId.get(row.id) || row),
+      );
+    })().catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [batch.id, needsHydrate, session]);
+
+  const scoped = useMemo(
+    () => (storeScope ? (pos || []).filter((row) => namesMatch(row.storeName, storeScope)) : pos || []),
+    [pos, storeScope],
+  );
+
   const setFilter = useCallback((key, value) => {
     setFilters((current) => ({ ...current, [key]: value }));
   }, []);
-  const storeOptions = useMemo(
-    () => uniqueLabels((pos || []).map((row) => row.storeName)),
-    [pos],
+  const filtersActive = Object.values(filters).some((value) => selectedLabels(value).length > 0);
+  const clearFilters = useCallback(() => {
+    setFilters(EMPTY_MELT_FILTERS);
+    setSort(null);
+    setOpenFilter(null);
+  }, []);
+
+  const rowMatches = useCallback(
+    (row, skip) =>
+      (skip === 'reference' || matchesSelectedLabel(row.reference, filters.reference)) &&
+      (skip === 'dateLabel' || matchesSelectedLabel(row.dateLabel, filters.dateLabel)) &&
+      (skip === 'customer' || matchesSelectedLabel(personLabel(row.customerName), filters.customer)) &&
+      (skip === 'employee' || matchesSelectedLabel(personLabel(row.employeeName), filters.employee)) &&
+      (skip === 'store' || matchesSelectedLabel(row.storeName, filters.store)) &&
+      (skip === 'status' || matchesSelectedLabel(meltStatus(row).label, filters.status)),
+    [filters],
   );
-  const personOptions = useMemo(
-    () => uniqueLabels((pos || []).flatMap((row) => rowPersonLabels(row))),
-    [pos],
+
+  const optionsFor = useCallback(
+    (key, getValue) => uniqueLabels(scoped.filter((row) => rowMatches(row, key)).map(getValue)),
+    [rowMatches, scoped],
   );
-  const referenceOptions = useMemo(
-    () => uniqueLabels((pos || []).map((row) => row.reference)),
-    [pos],
+  const referenceOptions = useMemo(() => optionsFor('reference', (row) => row.reference), [optionsFor]);
+  const dateOptions = useMemo(() => optionsFor('dateLabel', (row) => row.dateLabel), [optionsFor]);
+  const customerOptions = useMemo(
+    () => optionsFor('customer', (row) => personLabel(row.customerName)),
+    [optionsFor],
   );
-  const dateOptions = useMemo(
-    () => uniqueLabels((pos || []).map((row) => row.dateLabel)),
-    [pos],
+  const employeeOptions = useMemo(
+    () => optionsFor('employee', (row) => personLabel(row.employeeName)),
+    [optionsFor],
   );
-  const statusOptions = useMemo(
-    () => uniqueLabels((pos || []).map((row) => meltStatusLabel(row))),
-    [pos],
-  );
-  const visiblePos = useMemo(
-    () =>
-      (pos || []).filter(
-        (row) =>
-          matchesDocQuery(row, filters.reference) &&
-          matchesLabelFilter(row.dateLabel, filters.dateLabel) &&
-          matchesPersonFilter(row, filters.person) &&
-          matchesLabelFilter(row.storeName, filters.store) &&
-          matchesLabelFilter(meltStatusLabel(row), filters.status),
-      ),
-    [filters, pos],
-  );
-  const allReceived = (pos || []).length > 0 && (pos || []).every((row) => row.received);
-  const filtersActive = Object.values(filters).some((value) => String(value || '').trim());
+  const storeOptions = useMemo(() => optionsFor('store', (row) => row.storeName), [optionsFor]);
+  const statusOptions = useMemo(() => optionsFor('status', (row) => meltStatus(row).label), [optionsFor]);
+
+  const visiblePos = useMemo(() => {
+    const filtered = scoped.filter((row) => rowMatches(row));
+    return sort ? sortRows(filtered, MELT_SORTERS[sort.key], sort.dir) : filtered;
+  }, [rowMatches, scoped, sort]);
+
+  const expectedScoped = scoped.filter((row) => meltBullionKind(row) !== 'only');
+  const allReceived = expectedScoped.length > 0 && expectedScoped.every((row) => row.received);
+  const openCount = expectedScoped.filter((row) => !row.received).length;
+  const noun = docNoun(expectedScoped.length ? expectedScoped : scoped);
+  const expectedMeta = expectedPosLabel(batchStats(batch));
+
+  const sortProps = (key) => ({
+    sortDir: sort?.key === key ? sort.dir : null,
+    onSort: (dir) => setSort(dir ? { key, dir } : null),
+  });
+
+  const openRowFromTable = useCallback((item) => {
+    setOpenFilter(null);
+    setOpenRow(item);
+  }, []);
 
   const loadRange = useCallback(
     async ({ startDate, endDate }) => {
       if (!startDate || !endDate) return;
       const groups = uniqueSystemGroups(storeList);
       if (groups.length === 0) {
-        setError('Select at least one store.');
+        setError('Add at least one store to this batch first.');
         return;
       }
       setBusy(true);
@@ -1664,16 +1560,10 @@ function MeltTab({
               baseUrl: auth.baseUrl,
               includePurchases: true,
               includeOrders: false,
-              system: {
-                key: group.systemKey,
-                label: group.systemLabel,
-                baseUrl: auth.baseUrl,
-              },
+              system: { key: group.systemKey, label: group.systemLabel, baseUrl: auth.baseUrl },
             });
             collected.push(
-              ...result.rows.filter(
-                (row) => row.type === 'purchase' && storeInList(group.stores, row.storeName),
-              ),
+              ...result.rows.filter((row) => row.type === 'purchase' && storeInList(group.stores, row.storeName)),
             );
           } catch (err) {
             errors.push(err?.message || `Failed to load ${group.systemLabel}.`);
@@ -1683,64 +1573,101 @@ function MeltTab({
           setError(errors[0] || `No purchases in that range for ${batchLabel}.`);
           return;
         }
-        onMergePos(collected);
-        onAddOpenChange(false);
         const bySystem = new Map();
         for (const row of collected) {
           const key = row.systemKey || 'east';
           if (!bySystem.has(key)) bySystem.set(key, []);
           bySystem.get(key).push(row);
         }
-        Promise.all(
+        const hydratedGroups = await Promise.all(
           [...bySystem.entries()].map(async ([key, groupRows]) => {
             const auth = resolvePosAuthForRow(session, { systemKey: key });
             if (!auth.token) return groupRows;
-            return fillMissingPoImages(auth.token, auth.baseUrl, groupRows);
+            return fillMissingPoDetails(auth.token, auth.baseUrl, groupRows);
           }),
-        )
-          .then((groupsEnriched) => {
-            const map = new Map();
-            for (const groupRows of groupsEnriched) {
-              for (const row of groupRows) map.set(row.id, row);
-            }
-            const enriched = collected.map((row) => map.get(row.id) || row);
-            if (enriched.some((row, index) => row !== collected[index])) onMergePos(enriched);
-          })
-          .catch(() => {});
+        );
+        const hydrated = [];
+        for (const groupRows of hydratedGroups) hydrated.push(...groupRows);
+        recordPurchaseCensus(batch.id, hydrated);
+        onMergePos(hydrated);
+        onAddOpenChange(false);
       } catch (err) {
         setError(err?.message || 'Failed to load purchases.');
       } finally {
         setBusy(false);
       }
     },
-    [batchLabel, onAddOpenChange, onMergePos, session, storeList],
+    [batch, batchLabel, onAddOpenChange, onMergePos, session, storeList],
+  );
+
+  const removeRow = useCallback(
+    (row) => {
+      confirmDestructive(
+        `Remove ${row.reference}?`,
+        'It comes off this batch only. The purchase itself is not changed.',
+        () => {
+          if (openRow?.id === row.id) setOpenRow(null);
+          onRemovePos(row.id);
+        },
+        'Remove',
+      );
+    },
+    [onRemovePos, openRow?.id],
+  );
+
+  const renderMeltRow = useCallback(
+    ({ item, index }) => (
+      <MeltTableRow
+        row={item}
+        last={index === visiblePos.length - 1}
+        onOpen={openRowFromTable}
+        onToggleReceived={onToggleReceived}
+        onRemove={removeRow}
+      />
+    ),
+    [onToggleReceived, openRowFromTable, removeRow, visiblePos.length],
   );
 
   return (
     <View style={styles.body}>
-      {pos?.length > 0 ? (
-        <View style={styles.tableToolbar}>
-          <Text style={styles.tableMeta}>
-            {filtersActive ? `${visiblePos.length} of ${pos.length}` : pos.length}
-            {' '}
-            {pos.length === 1 ? 'document' : 'documents'}
-          </Text>
-          <MeltFeedButton onPress={() => setFeedOpen(true)} />
-        </View>
-      ) : null}
-
-      {!(pos || []).length ? (
+      {scoped.length === 0 ? (
         <EmptyState
           icon="flame-outline"
-          title="Melt"
-          body={`Tap Add to load a date range or search a single PO/SO from ${batchLabel}.`}
+          title={storeScope ? `No PO / SO for ${storeScope}` : 'No PO / SO yet'}
+          body={
+            storeScope
+              ? 'Add a date range or a PO/SO number to bring in purchases for this store.'
+              : `Add a date range or a single PO/SO from ${batchLabel} to start checking the melt.`
+          }
+          action={<TextAction icon="add" label="Add PO / SO" strong onPress={() => onAddOpenChange(true)} />}
         />
       ) : (
         <TableFrame
-          minWidth={780}
+          minWidth={1080}
+          data={visiblePos}
+          renderItem={renderMeltRow}
+          keyExtractor={meltKey}
+          ListEmptyComponent={<TableEmpty>No PO or SO matches those filters.</TableEmpty>}
+          toolbar={
+            <>
+              <Text style={styles.tableMeta}>
+                {filtersActive ? `${visiblePos.length} of ${scoped.length}` : scoped.length} {noun}
+                {openCount > 0 ? `  ·  ${openCount} open` : '  ·  all received'}
+                {expectedMeta ? `  ·  ${expectedMeta}` : ''}
+              </Text>
+              <View style={styles.toolbarActions}>
+                {filtersActive || sort ? <TextAction label="Clear" onPress={clearFilters} /> : null}
+                <IconAction
+                  icon="phone-portrait-outline"
+                  onPress={() => setFeedOpen(true)}
+                  accessibilityLabel="Open feed view"
+                />
+              </View>
+            </>
+          }
           header={
             <>
-              <View style={styles.tablePhotoCell} />
+              <TablePhotoCell />
               <ColumnFilter
                 columnKey="reference"
                 label="PO / SO"
@@ -1749,7 +1676,8 @@ function MeltTab({
                 options={referenceOptions}
                 openKey={openFilter}
                 onOpenKey={setOpenFilter}
-                style={{ flex: 1.15, minWidth: 108 }}
+                style={{ flex: 1.35, minWidth: 148 }}
+                {...sortProps('reference')}
               />
               <ColumnFilter
                 columnKey="dateLabel"
@@ -1759,17 +1687,30 @@ function MeltTab({
                 options={dateOptions}
                 openKey={openFilter}
                 onOpenKey={setOpenFilter}
-                style={{ flex: 0.9, minWidth: 92 }}
+                style={{ flex: 0.9, minWidth: 96 }}
+                {...sortProps('dateLabel')}
               />
               <ColumnFilter
-                columnKey="person"
-                label="Person"
-                value={filters.person}
-                onChange={(value) => setFilter('person', value)}
-                options={personOptions}
+                columnKey="customer"
+                label="Customer"
+                value={filters.customer}
+                onChange={(value) => setFilter('customer', value)}
+                options={customerOptions}
                 openKey={openFilter}
                 onOpenKey={setOpenFilter}
-                style={{ flex: 1.15, minWidth: 110 }}
+                style={{ flex: 1.15, minWidth: 120 }}
+                {...sortProps('customer')}
+              />
+              <ColumnFilter
+                columnKey="employee"
+                label="Employee"
+                value={filters.employee}
+                onChange={(value) => setFilter('employee', value)}
+                options={employeeOptions}
+                openKey={openFilter}
+                onOpenKey={setOpenFilter}
+                style={{ flex: 1, minWidth: 110 }}
+                {...sortProps('employee')}
               />
               <ColumnFilter
                 columnKey="store"
@@ -1779,7 +1720,19 @@ function MeltTab({
                 options={storeOptions}
                 openKey={openFilter}
                 onOpenKey={setOpenFilter}
-                style={{ flex: 1.1, minWidth: 110 }}
+                style={{ flex: 1, minWidth: 110 }}
+                {...sortProps('store')}
+              />
+              <ColumnFilter
+                columnKey="amount"
+                label="Amount"
+                value={[]}
+                sortOnly
+                openKey={openFilter}
+                onOpenKey={setOpenFilter}
+                align="end"
+                style={{ flex: 0.8, minWidth: 92, alignItems: 'flex-end' }}
+                {...sortProps('amount')}
               />
               <ColumnFilter
                 columnKey="status"
@@ -1789,56 +1742,43 @@ function MeltTab({
                 options={statusOptions}
                 openKey={openFilter}
                 onOpenKey={setOpenFilter}
-                style={{ flex: 0.85, minWidth: 88 }}
+                align="end"
+                style={{ flex: 1.05, minWidth: 124 }}
+                {...sortProps('status')}
               />
-              <View style={styles.tableActionsHead}>
+              <View style={styles.meltActionsHead}>
                 <Pressable
-                  style={[styles.tableAction, allReceived && styles.tableActionOn]}
-                  onPress={onReceiveAll}
+                  style={[styles.receiveButton, allReceived && styles.receiveButtonOn]}
+                  onPress={() => onReceiveAll(storeScope)}
+                  disabled={allReceived}
                   accessibilityRole="button"
                   accessibilityLabel={allReceived ? 'All received' : 'Receive all'}
                 >
-                  <Text style={[styles.tableActionText, allReceived && styles.tableActionTextOn]}>
-                    {allReceived ? 'Received' : 'Receive all'}
+                  <Ionicons
+                    name={allReceived ? 'checkmark-done' : 'checkmark-done-outline'}
+                    size={15}
+                    color={allReceived ? '#fff' : TEXT}
+                  />
+                  <Text style={[styles.receiveButtonText, allReceived && styles.receiveButtonTextOn]}>
+                    {allReceived ? 'All received' : 'Receive all'}
                   </Text>
                 </Pressable>
-                <View style={styles.tableRemove} />
+                <View style={styles.removeButton} />
               </View>
             </>
           }
-        >
-          {visiblePos.length === 0 ? (
-            <Text style={styles.tableEmpty}>No PO or SO matches that column filter.</Text>
-          ) : (
-            visiblePos.map((row, index) => (
-              <MeltTableRow
-                key={row.id}
-                row={row}
-                last={index === visiblePos.length - 1}
-                onOpen={(item) => {
-                  setOpenFilter(null);
-                  setOpenRow(item);
-                }}
-                onToggleReceived={onToggleReceived}
-                onRemove={(id) => {
-                  if (openRow?.id === id) setOpenRow(null);
-                  onRemovePos(id);
-                }}
-              />
-            ))
-          )}
-        </TableFrame>
+        />
       )}
 
-      <DateRangeModal
+      <AddDocumentsModal
         visible={addOpen}
         busy={busy}
         error={error}
         session={session}
         stores={storeList}
         existingIds={existingIds}
-        transfers={triage}
-        currentDateKey={dateKey}
+        transfers={transfers}
+        currentDateKey={batch?.dateKey}
         onClose={() => {
           if (!busy) {
             setError('');
@@ -1861,13 +1801,15 @@ function MeltTab({
         }}
       />
 
-      <MeltPoFeedModal
-        visible={feedOpen}
-        rows={visiblePos}
-        onClose={() => setFeedOpen(false)}
-        onOpen={setOpenRow}
-        onToggleReceived={onToggleReceived}
-      />
+      {feedOpen ? (
+        <MeltPoFeedModal
+          visible
+          rows={visiblePos}
+          onClose={() => setFeedOpen(false)}
+          onOpen={setOpenRow}
+          onToggleReceived={onToggleReceived}
+        />
+      ) : null}
 
       <TriageReviewDrawer
         visible={Boolean(openRow)}
@@ -1877,262 +1819,232 @@ function MeltTab({
         extraRows={pos}
         onClose={() => setOpenRow(null)}
         onSave={onSaveReview}
+        onHydrate={(enriched) => patchTriagePosDetails(batch.id, [enriched])}
       />
     </View>
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* Bullion tab                                                          */
+/* ------------------------------------------------------------------ */
+
+const BULLION_SORTERS = {
+  reference: (row) => row.reference,
+  dateLabel: (row) => row.dateKey || '',
+  fromName: (row) => row.fromName,
+  toName: (row) => bullionToLabel(row),
+  items: (row) => bullionItemsLabel(row).qty,
+  status: (row) => bullionStatus(row).label,
+};
+
 function BullionTransferDrawer({ visible, transfer, onClose }) {
-  const { width: windowWidth } = useWindowDimensions();
-  const isMobile = windowWidth < 768;
-  const panelWidth = isMobile
-    ? Math.max(windowWidth, 240)
-    : Math.min(Math.max(Math.round(windowWidth * 0.52), 420), Math.round(windowWidth - 64));
-  const { mounted, slide, backdrop } = useRightDrawerAnimation(visible, panelWidth);
   const held = useHeldValue(transfer);
   const live = transfer || held;
-
-  if (!mounted || !live) return null;
+  if (!live) return null;
 
   const items = Array.isArray(live.items) ? live.items : [];
-  const path =
-    (live.pathLabels || []).filter(Boolean).join(' → ') ||
-    `${live.fromName || '—'} → ${live.toName || '—'}`;
-  const statusLabel = RECEIVE_STATUS_LABELS[live.receiveStatus] || 'Not Received';
+  const path = (live.pathLabels || []).filter(Boolean).join(' → ') || `${live.fromName || '—'} → ${live.toName || '—'}`;
+  const status = bullionStatus(live);
+  const sent = items.reduce((sum, item) => sum + (Number(item.sentQty) || 0), 0);
+  const got = items.reduce(
+    (sum, item) =>
+      sum + (item.received ? Number(item.sentQty) || 0 : Math.min(Number(item.receivedQty) || 0, Number(item.sentQty) || 0)),
+    0,
+  );
 
   return (
-    <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose}>
-      <View style={styles.drawerRoot}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose}>
-          <Animated.View style={[styles.drawerBackdrop, { opacity: backdrop }]} />
-        </Pressable>
-        <Animated.View
-          style={[
-            styles.drawerPanel,
-            isMobile && styles.drawerPanelMobile,
-            { width: panelWidth, transform: [{ translateX: slide }] },
-          ]}
-        >
-          <View
-            style={[styles.drawerTopBar, isMobile && styles.drawerTopBarMobile]}
-            {...(Platform.OS === 'web' && isMobile ? { className: 'cgold-mobile-sheet-top' } : null)}
-          >
-            <Pressable onPress={onClose} hitSlop={8} style={styles.drawerDone} accessibilityLabel="Done">
-              <Text style={styles.drawerDoneText}>Done</Text>
-            </Pressable>
-            <Text style={styles.drawerTitle} numberOfLines={1}>
-              Transfer
+    <TriageDrawer visible={visible} onClose={onClose} title={live.reference} subtitle={live.dateLabel} widthRatio={0.46}>
+      <ScrollView
+        style={styles.drawerBody}
+        contentContainerStyle={styles.drawerBodyContent}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.drawerHero}>
+          <Text style={styles.drawerHeroRoute}>{path}</Text>
+          <StatusPill label={status.label} tone={status.tone} />
+          <View style={styles.drawerProgress}>
+            <ProgressBar value={got} total={sent} tone={status.tone === 'neutral' ? 'blue' : status.tone} height={5} />
+            <Text style={styles.drawerProgressText}>
+              {formatQty(got)} of {formatQty(sent)} units received
             </Text>
-            <View style={styles.drawerDone} />
           </View>
+        </View>
 
-          <ScrollView
-            style={styles.drawerBody}
-            contentContainerStyle={styles.drawerBodyContent}
-            showsVerticalScrollIndicator={false}
-          >
-            <View style={styles.drawerHero}>
-              <Text style={styles.drawerHeroRoute}>{path}</Text>
-              <Text style={styles.drawerHeroMeta}>
-                {[live.reference, live.dateLabel].filter(Boolean).join(' · ')}
-              </Text>
-              <View style={styles.drawerStatusPill}>
-                <Text style={styles.drawerStatusText}>{statusLabel}</Text>
-              </View>
-            </View>
+        <SectionLabel>Details</SectionLabel>
+        <Group>
+          <GroupRow label="Transfer" value={live.reference} />
+          <GroupRow label="Date" value={live.dateLabel} />
+          <GroupRow label="From" value={live.fromName} />
+          <GroupRow label="To" value={bullionToLabel(live)} />
+          <GroupRow label="Source" value={live.source === 'pos' ? 'POS transfer' : 'Planned in app'} />
+          <GroupRow label="Note" value={live.note} last />
+        </Group>
 
-            <Text style={styles.drawerSectionLabel}>Details</Text>
-            <View style={styles.drawerGroup}>
-              <DrawerRow label="Transfer" value={live.reference} />
-              <DrawerRow label="Date" value={live.dateLabel || '—'} />
-              <DrawerRow label="From" value={live.fromName || '—'} />
-              <DrawerRow label="To" value={live.toName || '—'} />
-              <DrawerRow label="Note" value={live.note || '—'} last />
-            </View>
-
-            <Text style={styles.drawerSectionLabel}>
-              Items{items.length ? ` · ${items.length}` : ''}
-            </Text>
-            <View style={styles.drawerGroup}>
-              {items.length === 0 ? (
-                <Text style={styles.drawerEmpty}>No line items on this transfer.</Text>
-              ) : (
-                items.map((item, index) => (
-                  <View
-                    key={item.id}
-                    style={[styles.drawerItem, index === items.length - 1 && styles.drawerItemLast]}
-                  >
-                    <View style={styles.listRowText}>
-                      <Text style={styles.drawerItemName} numberOfLines={2}>
-                        {item.productName}
-                      </Text>
-                      <Text style={styles.listRowSub} numberOfLines={1}>
-                        {[item.fromName, item.toName].filter(Boolean).join(' → ') || path}
-                      </Text>
-                    </View>
-                    <Text style={styles.drawerItemQty}>{formatQty(item.sentQty)}</Text>
+        <SectionLabel>Items{items.length ? ` · ${items.length}` : ''}</SectionLabel>
+        <Group>
+          {items.length === 0 ? (
+            <Text style={styles.drawerEmpty}>No line items on this transfer.</Text>
+          ) : (
+            items.map((item, index) => {
+              const itemSent = Number(item.sentQty) || 0;
+              const itemGot = item.received ? itemSent : Number(item.receivedQty) || 0;
+              const done = itemSent > 0 && itemGot >= itemSent;
+              return (
+                <View key={item.id} style={[styles.drawerItem, index === items.length - 1 && styles.drawerItemLast]}>
+                  <Ionicons
+                    name={done ? 'checkmark-circle' : itemGot > 0 ? 'remove-circle' : 'ellipse-outline'}
+                    size={20}
+                    color={done ? GREEN : itemGot > 0 ? T.orange : T.tertiary}
+                  />
+                  <View style={styles.drawerItemText}>
+                    <Text style={styles.drawerItemName} numberOfLines={2}>
+                      {item.productName}
+                    </Text>
+                    <Text style={styles.drawerItemSub} numberOfLines={1}>
+                      {[item.sku, [item.fromName, item.toName].filter(Boolean).join(' → ')].filter(Boolean).join(' · ') || path}
+                    </Text>
                   </View>
-                ))
-              )}
-            </View>
-          </ScrollView>
-        </Animated.View>
-      </View>
-    </Modal>
+                  <Text style={styles.drawerItemQty}>
+                    {itemGot !== itemSent && (itemGot > 0 || item.receivedQty != null)
+                      ? `${formatQty(itemGot)} / ${formatQty(itemSent)}`
+                      : formatQty(itemSent)}
+                  </Text>
+                </View>
+              );
+            })
+          )}
+        </Group>
+      </ScrollView>
+    </TriageDrawer>
   );
 }
 
-function DrawerRow({ label, value, last }) {
+const BullionTableRow = memo(function BullionTableRow({ row, onOpen, last }) {
+  const status = bullionStatus(row);
+  const items = bullionItemsLabel(row);
   return (
-    <View style={[styles.drawerRow, last && styles.drawerRowLast]}>
-      <Text style={styles.drawerRowLabel}>{label}</Text>
-      <Text style={styles.drawerRowValue}>{value}</Text>
-    </View>
+    <TableRowPressable last={last} onPress={() => onOpen(row)} accessibilityLabel={`Open ${row.reference}`}>
+      <TableCell flex={1.2} minWidth={128}>
+        <TableStrong>{row.reference}</TableStrong>
+        {row.source === 'pos' ? <TableMuted>POS</TableMuted> : null}
+      </TableCell>
+      <TableCell flex={0.9} minWidth={96}>
+        {row.dateLabel}
+      </TableCell>
+      <TableCell flex={1.15} minWidth={116}>
+        {row.fromName}
+      </TableCell>
+      <TableCell flex={1.15} minWidth={116}>
+        {bullionToLabel(row)}
+      </TableCell>
+      <TableCell flex={0.8} minWidth={96} align="right">
+        <Text style={[styles.cellText, styles.cellRight]} numberOfLines={1}>
+          {items.count ? `${items.count} · ${formatQty(items.qty)}` : '—'}
+        </Text>
+      </TableCell>
+      <TableCell flex={1.05} minWidth={130} last>
+        <TableStatus label={status.label} tone={status.tone} />
+      </TableCell>
+    </TableRowPressable>
   );
-}
+});
 
-function BullionTab({ dateKey, stores, session }) {
-  const { planned } = useTransferWorkflow();
+function BullionTab({ rows, busy, stores, storeScope }) {
   const storeList = stores || [];
-  const storeKey = storeList.map((store) => store.id || store.storeKey || store.name).join('|');
   const [openId, setOpenId] = useState(null);
-  const [posRows, setPosRows] = useState([]);
-  const [posBusy, setPosBusy] = useState(false);
   const [openFilter, setOpenFilter] = useState(null);
-  const [filters, setFilters] = useState({
-    reference: '',
-    dateLabel: '',
-    fromName: '',
-    toName: '',
-    status: '',
-  });
+  const [filters, setFilters] = useState(EMPTY_BULLION_FILTERS);
+  const [sort, setSort] = useState(null);
 
-  useEffect(() => {
-    if (!session?.token || storeList.length === 0) {
-      setPosRows([]);
-      return undefined;
-    }
-    let cancelled = false;
-    setPosBusy(true);
-    const since = new Date();
-    since.setFullYear(since.getFullYear() - 2);
-    const sinceKey = formatDateParam(since);
-    Promise.all(
-      uniqueSystemGroups(storeList).map(async (group) => {
-        const auth = resolvePosAuthForRow(session, { systemKey: group.systemKey });
-        if (!auth.token) return [];
-        const [pending, received] = await Promise.all([
-          fetchTransfers(auth.token, { status: 'pending', since: sinceKey, baseUrl: auth.baseUrl }).catch(
-            () => [],
-          ),
-          fetchTransfers(auth.token, { status: 'received', since: sinceKey, baseUrl: auth.baseUrl }).catch(
-            () => [],
-          ),
-        ]);
-        return [...pending, ...received]
-          .filter(
-            (row) =>
-              transferGoesToWorkshop(row) && storeInList(group.stores, row.from?.name),
-          )
-          .map(posTransferToRow);
-      }),
-    )
-      .then((groups) => {
-        if (cancelled) return;
-        const seen = new Set();
-        const next = [];
-        for (const row of groups.flat()) {
-          if (!row?.id || seen.has(row.id)) continue;
-          seen.add(row.id);
-          next.push(row);
-        }
-        setPosRows(next);
-      })
-      .finally(() => {
-        if (!cancelled) setPosBusy(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [session, storeKey]);
-
-  const rows = useMemo(() => {
-    const local = storeList.flatMap((store) =>
-      plannedWorkshopTransfersForStore(store?.storeKey, store?.name),
-    );
-    const seen = new Set(
-      local
-        .map((row) => row.aureusId)
-        .filter(Boolean)
-        .map(String),
-    );
-    const extras = posRows.filter((row) => !row.aureusId || !seen.has(String(row.aureusId)));
-    return [...local, ...extras].sort((a, b) =>
-      String(b.dateKey || '').localeCompare(String(a.dateKey || '')),
-    );
-  }, [planned, posRows, storeKey]);
+  const scoped = useMemo(
+    () => (storeScope ? rows.filter((row) => namesMatch(row.fromName, storeScope)) : rows),
+    [rows, storeScope],
+  );
 
   const setFilter = useCallback((key, value) => {
     setFilters((current) => ({ ...current, [key]: value }));
   }, []);
-  const referenceOptions = useMemo(
-    () => uniqueLabels(rows.map((row) => row.reference)),
-    [rows],
+  const filtersActive = Object.values(filters).some((value) => selectedLabels(value).length > 0);
+  const clearFilters = useCallback(() => {
+    setFilters(EMPTY_BULLION_FILTERS);
+    setSort(null);
+    setOpenFilter(null);
+  }, []);
+
+  const rowMatches = useCallback(
+    (row, skip) =>
+      (skip === 'reference' || matchesSelectedLabel(row.reference, filters.reference)) &&
+      (skip === 'dateLabel' || matchesSelectedLabel(row.dateLabel, filters.dateLabel)) &&
+      (skip === 'fromName' || matchesSelectedLabel(row.fromName, filters.fromName)) &&
+      (skip === 'toName' || matchesSelectedLabel(bullionToLabel(row), filters.toName)) &&
+      (skip === 'status' || matchesSelectedLabel(bullionStatus(row).label, filters.status)),
+    [filters],
   );
-  const dateOptions = useMemo(
-    () => uniqueLabels(rows.map((row) => row.dateLabel)),
-    [rows],
+  const optionsFor = useCallback(
+    (key, getValue) => uniqueLabels(scoped.filter((row) => rowMatches(row, key)).map(getValue)),
+    [rowMatches, scoped],
   );
-  const fromOptions = useMemo(
-    () => uniqueLabels(rows.map((row) => row.fromName)),
-    [rows],
-  );
-  const toOptions = useMemo(
-    () => uniqueLabels(rows.map((row) => bullionToLabel(row))),
-    [rows],
-  );
-  const statusOptions = useMemo(
-    () => uniqueLabels(rows.map((row) => bullionStatusLabel(row))),
-    [rows],
-  );
-  const visibleRows = useMemo(
-    () =>
-      rows.filter(
-        (row) =>
-          matchesLabelFilter(row.reference, filters.reference) &&
-          matchesLabelFilter(row.dateLabel, filters.dateLabel) &&
-          matchesLabelFilter(row.fromName, filters.fromName) &&
-          matchesLabelFilter(bullionToLabel(row), filters.toName) &&
-          matchesLabelFilter(bullionStatusLabel(row), filters.status),
-      ),
-    [filters, rows],
-  );
-  const filtersActive = Object.values(filters).some((value) => String(value || '').trim());
+  const referenceOptions = useMemo(() => optionsFor('reference', (row) => row.reference), [optionsFor]);
+  const dateOptions = useMemo(() => optionsFor('dateLabel', (row) => row.dateLabel), [optionsFor]);
+  const fromOptions = useMemo(() => optionsFor('fromName', (row) => row.fromName), [optionsFor]);
+  const toOptions = useMemo(() => optionsFor('toName', bullionToLabel), [optionsFor]);
+  const statusOptions = useMemo(() => optionsFor('status', (row) => bullionStatus(row).label), [optionsFor]);
+
+  const visibleRows = useMemo(() => {
+    const filtered = scoped.filter((row) => rowMatches(row));
+    return sort ? sortRows(filtered, BULLION_SORTERS[sort.key], sort.dir) : filtered;
+  }, [rowMatches, scoped, sort]);
+
+  const pending = scoped.filter((row) => row.receiveStatus !== RECEIVE_STATUS.all_received).length;
   const openRow = visibleRows.find((row) => row.id === openId) || rows.find((row) => row.id === openId) || null;
+
+  const sortProps = (key) => ({
+    sortDir: sort?.key === key ? sort.dir : null,
+    onSort: (dir) => setSort(dir ? { key, dir } : null),
+  });
+
+  const openFromTable = useCallback((item) => {
+    setOpenFilter(null);
+    setOpenId(item.id);
+  }, []);
+  const renderBullionRow = useCallback(
+    ({ item, index }) => <BullionTableRow row={item} last={index === visibleRows.length - 1} onOpen={openFromTable} />,
+    [openFromTable, visibleRows.length],
+  );
 
   return (
     <View style={styles.body}>
-      {rows.length === 0 ? (
+      {scoped.length === 0 ? (
         <EmptyState
-          icon="diamond-outline"
-          title="Bullion"
+          icon="cube-outline"
+          title={busy ? 'Loading transfers…' : 'No bullion transfers'}
           body={
-            posBusy
-              ? 'Loading transfers to the workshop…'
-              : `All transfers from ${storeNamesLabel(storeList) || 'the selected stores'} to the workshop appear here.`
+            busy
+              ? 'Checking POS for transfers headed to the Workshop.'
+              : `Transfers from ${storeScope || storeNamesLabel(storeList) || 'these stores'} to the Workshop appear here automatically.`
           }
         />
       ) : (
-        <>
-          <View style={styles.tableToolbar}>
-            <Text style={styles.tableMeta}>
-              {filtersActive ? `${visibleRows.length} of ${rows.length}` : rows.length}
-              {' '}
-              {rows.length === 1 ? 'transfer' : 'transfers'}
-            </Text>
-          </View>
-          <TableFrame
-            minWidth={720}
+        <TableFrame
+            minWidth={800}
+            data={visibleRows}
+            renderItem={renderBullionRow}
+            keyExtractor={meltKey}
+            ListEmptyComponent={<TableEmpty>No transfers match those filters.</TableEmpty>}
+            toolbar={
+              <>
+                <Text style={styles.tableMeta}>
+                  {filtersActive ? `${visibleRows.length} of ${scoped.length}` : scoped.length}{' '}
+                  {scoped.length === 1 ? 'transfer' : 'transfers'}
+                  {pending > 0 ? `  ·  ${pending} pending` : '  ·  all received'}
+                  {busy ? '  ·  refreshing…' : ''}
+                </Text>
+                <View style={styles.toolbarActions}>
+                  {filtersActive || sort ? <TextAction label="Clear" onPress={clearFilters} /> : null}
+                </View>
+              </>
+            }
             header={
               <>
                 <ColumnFilter
@@ -2143,7 +2055,8 @@ function BullionTab({ dateKey, stores, session }) {
                   options={referenceOptions}
                   openKey={openFilter}
                   onOpenKey={setOpenFilter}
-                  style={{ flex: 1.2, minWidth: 120 }}
+                  style={{ flex: 1.2, minWidth: 128 }}
+                  {...sortProps('reference')}
                 />
                 <ColumnFilter
                   columnKey="dateLabel"
@@ -2153,7 +2066,8 @@ function BullionTab({ dateKey, stores, session }) {
                   options={dateOptions}
                   openKey={openFilter}
                   onOpenKey={setOpenFilter}
-                  style={{ flex: 0.9, minWidth: 92 }}
+                  style={{ flex: 0.9, minWidth: 96 }}
+                  {...sortProps('dateLabel')}
                 />
                 <ColumnFilter
                   columnKey="fromName"
@@ -2163,7 +2077,8 @@ function BullionTab({ dateKey, stores, session }) {
                   options={fromOptions}
                   openKey={openFilter}
                   onOpenKey={setOpenFilter}
-                  style={{ flex: 1.15, minWidth: 110 }}
+                  style={{ flex: 1.15, minWidth: 116 }}
+                  {...sortProps('fromName')}
                 />
                 <ColumnFilter
                   columnKey="toName"
@@ -2173,7 +2088,19 @@ function BullionTab({ dateKey, stores, session }) {
                   options={toOptions}
                   openKey={openFilter}
                   onOpenKey={setOpenFilter}
-                  style={{ flex: 1.15, minWidth: 110 }}
+                  style={{ flex: 1.15, minWidth: 116 }}
+                  {...sortProps('toName')}
+                />
+                <ColumnFilter
+                  columnKey="items"
+                  label="Items"
+                  value={[]}
+                  sortOnly
+                  openKey={openFilter}
+                  onOpenKey={setOpenFilter}
+                  align="end"
+                  style={{ flex: 0.8, minWidth: 96, alignItems: 'flex-end' }}
+                  {...sortProps('items')}
                 />
                 <ColumnFilter
                   columnKey="status"
@@ -2183,53 +2110,24 @@ function BullionTab({ dateKey, stores, session }) {
                   options={statusOptions}
                   openKey={openFilter}
                   onOpenKey={setOpenFilter}
-                  style={{ flex: 1, minWidth: 110 }}
+                  align="end"
+                  style={{ flex: 1.05, minWidth: 130 }}
+                  {...sortProps('status')}
                 />
               </>
             }
-          >
-            {visibleRows.length === 0 ? (
-              <Text style={styles.tableEmpty}>No transfers match that column filter.</Text>
-            ) : (
-              visibleRows.map((row, index) => (
-                <BullionTableRow
-                  key={row.id}
-                  row={row}
-                  last={index === visibleRows.length - 1}
-                  onOpen={(item) => {
-                    setOpenFilter(null);
-                    setOpenId(item.id);
-                  }}
-                />
-              ))
-            )}
-          </TableFrame>
-        </>
+          />
       )}
-      <BullionTransferDrawer
-        visible={Boolean(openRow)}
-        transfer={openRow}
-        onClose={() => setOpenId(null)}
-      />
+      <BullionTransferDrawer visible={Boolean(openRow)} transfer={openRow} onClose={() => setOpenId(null)} />
     </View>
   );
 }
 
-function mapPickedStore(store) {
-  return {
-    id: newId('store'),
-    storeKey: store.id,
-    name: store.name,
-    systemKey: store.systemKey,
-    systemLabel: store.systemLabel,
-    sourceId: store.sourceId,
-    city: store.city || '',
-    meltPos: [],
-  };
-}
+/* ------------------------------------------------------------------ */
+/* Store picker + create / add-store modals                             */
+/* ------------------------------------------------------------------ */
 
 function StoreMultiPicker({ session, addedKeys, selectedIds, onChangeSelected }) {
-  const isMobile = useIsMobile();
   const [query, setQuery] = useState('');
   const [stores, setStores] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -2274,10 +2172,7 @@ function StoreMultiPicker({ session, addedKeys, selectedIds, onChangeSelected })
       if (addedKeys.has(store.id)) return false;
       if (isWorkshopStore(store)) return false;
       if (!q) return true;
-      const hay = [store.name, store.city, store.systemLabel, store.address]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase();
+      const hay = [store.name, store.city, store.systemLabel, store.address].filter(Boolean).join(' ').toLowerCase();
       return hay.includes(q);
     });
   }, [addedKeys, query, stores]);
@@ -2293,39 +2188,22 @@ function StoreMultiPicker({ session, addedKeys, selectedIds, onChangeSelected })
 
   const toggleVisible = () => {
     const next = new Set(selectedIds);
-    if (allVisibleSelected) {
-      filtered.forEach((store) => next.delete(store.id));
-    } else {
-      filtered.forEach((store) => next.add(store.id));
-    }
+    if (allVisibleSelected) filtered.forEach((store) => next.delete(store.id));
+    else filtered.forEach((store) => next.add(store.id));
     emit(next);
   };
 
   return (
     <View style={styles.storePicker}>
-      <View style={[styles.searchField, isMobile && styles.searchFieldMobile]}>
-        <Ionicons name="search" size={16} color={SECONDARY} style={styles.searchIcon} />
-        <TextInput
-          style={styles.searchInput}
-          value={query}
-          onChangeText={setQuery}
-          placeholder="Search stores"
-          placeholderTextColor={SECONDARY}
-          autoCorrect={false}
-          autoCapitalize="none"
-          clearButtonMode="while-editing"
-        />
-      </View>
+      <SearchField value={query} onChangeText={setQuery} placeholder="Search stores" style={styles.storeSearch} />
 
       <View style={styles.storeSelectBar}>
         <Text style={styles.storeSelectCount}>
-          {selectedIds.size === 0
-            ? 'Select stores'
-            : `${selectedIds.size} selected`}
+          {selectedIds.size === 0 ? 'Choose the stores sending to the Workshop' : `${selectedIds.size} selected`}
         </Text>
         {filtered.length > 0 ? (
           <Pressable onPress={toggleVisible} hitSlop={8} accessibilityRole="button">
-            <Text style={styles.storeSelectAll}>{allVisibleSelected ? 'Clear visible' : 'Select visible'}</Text>
+            <Text style={styles.storeSelectAll}>{allVisibleSelected ? 'Clear' : 'Select all'}</Text>
           </Pressable>
         ) : null}
       </View>
@@ -2344,42 +2222,48 @@ function StoreMultiPicker({ session, addedKeys, selectedIds, onChangeSelected })
           nestedScrollEnabled
           showsVerticalScrollIndicator
         >
-          {filtered.length === 0 ? (
-            <Text style={styles.modalEmpty}>
-              {stores.length === 0 ? 'No stores available.' : 'No matching stores.'}
-            </Text>
-          ) : (
-            filtered.map((store) => {
-              const selected = selectedIds.has(store.id);
-              return (
-                <Pressable
-                  key={store.id}
-                  style={styles.storePickRow}
-                  onPress={() => toggle(store.id)}
-                  accessibilityRole="checkbox"
-                  accessibilityState={{ checked: selected }}
-                  accessibilityLabel={store.name}
-                >
-                  <View style={styles.listRowText}>
-                    <Text style={styles.listRowTitle} numberOfLines={1}>
-                      {store.name}
-                    </Text>
-                    <Text style={styles.listRowSub} numberOfLines={1}>
-                      {[store.city, store.systemLabel].filter(Boolean).join(' · ') || store.address}
-                    </Text>
-                  </View>
-                  {selected ? <Ionicons name="checkmark" size={22} color={BLUE} /> : null}
-                </Pressable>
-              );
-            })
-          )}
+          <Group>
+            {filtered.length === 0 ? (
+              <Text style={styles.modalEmpty}>
+                {stores.length === 0 ? 'No stores available.' : addedKeys.size && !query ? 'Every store is already on this batch.' : 'No matching stores.'}
+              </Text>
+            ) : (
+              filtered.map((store, index) => {
+                const selected = selectedIds.has(store.id);
+                return (
+                  <Pressable
+                    key={store.id}
+                    style={[styles.storePickRow, index === filtered.length - 1 && styles.storePickRowLast]}
+                    onPress={() => toggle(store.id)}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: selected }}
+                    accessibilityLabel={store.name}
+                  >
+                    <Ionicons
+                      name={selected ? 'checkmark-circle' : 'ellipse-outline'}
+                      size={22}
+                      color={selected ? BLUE : T.tertiary}
+                    />
+                    <View style={styles.storePickText}>
+                      <Text style={styles.storePickTitle} numberOfLines={1}>
+                        {store.name}
+                      </Text>
+                      <Text style={styles.storePickSub} numberOfLines={1}>
+                        {[store.city, store.systemLabel].filter(Boolean).join(' · ') || store.address}
+                      </Text>
+                    </View>
+                  </Pressable>
+                );
+              })
+            )}
+          </Group>
         </ScrollView>
       )}
     </View>
   );
 }
 
-function CreateTransferModal({ visible, session, transfers, onClose, onCreate }) {
+function CreateBatchModal({ visible, session, transfers, onClose, onCreate }) {
   const isMobile = useIsMobile();
   const [date, setDate] = useState(() => parseDateParam(new Date()));
   const [selectedIds, setSelectedIds] = useState(() => new Set());
@@ -2395,10 +2279,7 @@ function CreateTransferModal({ visible, session, transfers, onClose, onCreate })
   }, [visible]);
 
   const dateKey = formatDateParam(date);
-  const existing = useMemo(
-    () => (transfers || []).find((row) => row.dateKey === dateKey) || null,
-    [dateKey, transfers],
-  );
+  const existing = useMemo(() => (transfers || []).find((row) => row.dateKey === dateKey) || null, [dateKey, transfers]);
   const addedKeys = useMemo(
     () => new Set((existing?.stores || []).map((store) => store.storeKey).filter(Boolean)),
     [existing],
@@ -2439,16 +2320,14 @@ function CreateTransferModal({ visible, session, transfers, onClose, onCreate })
         {isMobile ? null : <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />}
         <View style={[styles.storeCard, isMobile && styles.sheetCard]} pointerEvents="auto">
           {isMobile ? <View style={styles.sheetGrabber} /> : null}
-          <View style={styles.storeHeader}>
+          <View style={styles.sheetHeader}>
             <Pressable onPress={onClose} hitSlop={8} accessibilityRole="button">
-              <Text style={styles.iosNavAction}>Cancel</Text>
+              <Text style={styles.navAction}>Cancel</Text>
             </Pressable>
-            <View style={styles.storeTitleBlock}>
-              <Text style={styles.modalTitle}>{existing ? 'Add Stores' : 'New Transfer'}</Text>
+            <View style={styles.sheetTitleBlock}>
+              <Text style={styles.modalTitle}>{existing ? 'Add Stores' : 'New Batch'}</Text>
               <Text style={styles.modalSub}>
-                {existing
-                  ? `Adding to ${existing.dateLabel || dateKey}`
-                  : 'Stores sending to Workshop'}
+                {existing ? `Adding to ${existing.dateLabel || dateKey}` : 'Stores sending to the Workshop'}
               </Text>
             </View>
             <Pressable
@@ -2458,7 +2337,9 @@ function CreateTransferModal({ visible, session, transfers, onClose, onCreate })
               accessibilityRole="button"
               accessibilityLabel={existing ? 'Add' : 'Create'}
             >
-              <Text style={[styles.iosNavAction, styles.iosNavActionStrong, pickedStores.length === 0 && styles.iosNavActionDisabled]}>
+              <Text
+                style={[styles.navAction, styles.navActionStrong, pickedStores.length === 0 && styles.navActionDisabled]}
+              >
                 {existing ? 'Add' : 'Create'}
               </Text>
             </Pressable>
@@ -2481,7 +2362,7 @@ function CreateTransferModal({ visible, session, transfers, onClose, onCreate })
   );
 }
 
-function AddStoreModal({ visible, session, addedKeys, onClose, onAdd }) {
+function AddStoreModal({ visible, session, addedKeys, dateLabel, onClose, onAdd }) {
   const isMobile = useIsMobile();
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [pickedStores, setPickedStores] = useState([]);
@@ -2492,11 +2373,6 @@ function AddStoreModal({ visible, session, addedKeys, onClose, onAdd }) {
     setPickedStores([]);
   }, [visible]);
 
-  const add = () => {
-    if (pickedStores.length === 0) return;
-    onAdd(pickedStores.map(mapPickedStore));
-  };
-
   if (!visible) return null;
 
   return (
@@ -2505,27 +2381,24 @@ function AddStoreModal({ visible, session, addedKeys, onClose, onAdd }) {
         {isMobile ? null : <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />}
         <View style={[styles.storeCard, isMobile && styles.sheetCard]} pointerEvents="auto">
           {isMobile ? <View style={styles.sheetGrabber} /> : null}
-          <View style={styles.storeHeader}>
+          <View style={styles.sheetHeader}>
             <Pressable onPress={onClose} hitSlop={8} accessibilityRole="button">
-              <Text style={styles.iosNavAction}>Cancel</Text>
+              <Text style={styles.navAction}>Cancel</Text>
             </Pressable>
-            <View style={styles.storeTitleBlock}>
+            <View style={styles.sheetTitleBlock}>
               <Text style={styles.modalTitle}>Add Stores</Text>
+              {dateLabel ? <Text style={styles.modalSub}>{dateLabel}</Text> : null}
             </View>
             <Pressable
-              onPress={add}
+              onPress={() => {
+                if (pickedStores.length) onAdd(pickedStores.map(mapPickedStore));
+              }}
               disabled={selectedIds.size === 0}
               hitSlop={8}
               accessibilityRole="button"
               accessibilityLabel="Add"
             >
-              <Text
-                style={[
-                  styles.iosNavAction,
-                  styles.iosNavActionStrong,
-                  selectedIds.size === 0 && styles.iosNavActionDisabled,
-                ]}
-              >
+              <Text style={[styles.navAction, styles.navActionStrong, selectedIds.size === 0 && styles.navActionDisabled]}>
                 {selectedIds.size > 0 ? `Add ${selectedIds.size}` : 'Add'}
               </Text>
             </Pressable>
@@ -2545,11 +2418,474 @@ function AddStoreModal({ visible, session, addedKeys, onClose, onAdd }) {
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* Dashboard list                                                       */
+/* ------------------------------------------------------------------ */
+
+function batchMatchesQuery(batch, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return true;
+  const pos = flattenBatchPos(batch);
+  const hay = [
+    batch.dateLabel,
+    batch.dateKey,
+    ...(batch.stores || []).map((store) => store.name),
+    ...pos.map((row) => row.reference),
+    ...pos.map((row) => row.customerName),
+    ...pos.map((row) => row.storeName),
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  return hay.includes(q);
+}
+
+function standalonePo(batch) {
+  return flattenBatchPos(batch)[0] || null;
+}
+
+function BatchRow({ batch, stats, today, mobile, last, onPress, onDelete }) {
+  const storeNames = (batch.stores || []).map((store) => store.name).filter(Boolean);
+  const tone = stats.empty ? 'neutral' : stats.complete ? 'green' : 'blue';
+  const statusLabel = stats.empty
+    ? stats.totalPurchases > stats.expected
+      ? `0/${stats.totalPurchases} POs expected`
+      : 'No PO / SO'
+    : stats.complete
+      ? 'Complete'
+      : `${stats.received} of ${stats.expected} received`;
+  const expectedLabel = expectedPosLabel(stats);
+
+  return (
+    <View style={[styles.batchRow, last && styles.batchRowLast]}>
+      <Pressable
+        style={styles.batchRowMain}
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityLabel={`Open batch ${batch.dateLabel}`}
+        {...(Platform.OS === 'web' ? { className: 'cgold-triage-row' } : null)}
+      >
+        <View style={[styles.batchDateBadge, today && styles.batchDateBadgeToday]}>
+          <Text style={[styles.batchDateDay, today && styles.batchDateDayToday]}>
+            {String(parseDateParam(batch.dateKey).getDate())}
+          </Text>
+          <Text style={[styles.batchDateMonth, today && styles.batchDateMonthToday]}>
+            {parseDateParam(batch.dateKey).toLocaleDateString(undefined, { month: 'short' })}
+          </Text>
+        </View>
+        <View style={styles.batchText}>
+          <View style={styles.batchTitleRow}>
+            <Text style={styles.batchTitle} numberOfLines={1}>
+              {today ? 'Today' : batch.dateLabel}
+            </Text>
+            {today ? <Text style={styles.batchTitleMeta}>{batch.dateLabel}</Text> : null}
+          </View>
+          <Text style={styles.batchSub} numberOfLines={mobile ? 2 : 1}>
+            {storeNames.length ? storeNames.join(', ') : 'No stores yet'}
+            {expectedLabel ? `  ·  ${expectedLabel}` : ''}
+          </Text>
+          {mobile ? (
+            <View style={styles.batchMobileMeta}>
+              <StatusPill label={statusLabel} tone={tone} compact />
+              {stats.flagged > 0 ? <StatusPill label={`${stats.flagged} flagged`} tone="orange" compact /> : null}
+            </View>
+          ) : null}
+        </View>
+        {!mobile ? (
+          <View style={styles.batchProgress}>
+            <View style={styles.batchProgressRow}>
+              {stats.flagged > 0 ? <StatusPill label={`${stats.flagged} flagged`} tone="orange" compact /> : null}
+              <Text style={[styles.batchProgressText, stats.complete && styles.batchProgressTextDone]}>{statusLabel}</Text>
+            </View>
+            <ProgressBar value={stats.received} total={stats.expected} tone={stats.complete ? 'green' : 'blue'} style={styles.batchProgressBar} />
+          </View>
+        ) : null}
+        <Ionicons name="chevron-forward" size={18} color={T.tertiary} />
+      </Pressable>
+      <Pressable
+        style={styles.batchDelete}
+        onPress={onDelete}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel={`Delete batch ${batch.dateLabel}`}
+      >
+        <Text style={styles.batchDeleteText}>Delete</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+function QuickPoRow({ batch, stats, last, onPress, onDelete }) {
+  const row = standalonePo(batch);
+  const flagged = Boolean(stats?.flagged);
+  const received = Boolean(row?.received);
+  return (
+    <View style={[styles.batchRow, last && styles.batchRowLast]}>
+      <Pressable
+        style={styles.batchRowMain}
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityLabel={`Open ${row?.reference || 'PO'}`}
+        {...(Platform.OS === 'web' ? { className: 'cgold-triage-row' } : null)}
+      >
+        <PoThumb urls={row?.imageUrls} label={row?.reference} />
+        <View style={styles.batchText}>
+          <Text style={styles.batchTitle} numberOfLines={1}>
+            {row?.reference || 'PO'}
+          </Text>
+          <Text style={styles.batchSub} numberOfLines={1}>
+            {[row?.storeName, row?.dateLabel, row?.customerName].filter(Boolean).join(' · ')}
+          </Text>
+        </View>
+        <StatusPill
+          label={flagged ? 'Flagged' : received ? 'Received' : 'Open'}
+          tone={flagged ? 'orange' : received ? 'green' : 'blue'}
+          compact
+        />
+        {poHoldsBullion(row) ? <StatusPill label="Bullion" tone="purple" compact /> : null}
+        <Ionicons name="chevron-forward" size={18} color={T.tertiary} />
+      </Pressable>
+      <Pressable
+        style={styles.batchDelete}
+        onPress={onDelete}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel={`Remove ${row?.reference || 'PO'}`}
+      >
+        <Text style={styles.batchDeleteText}>Delete</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+function BatchList({ transfers, mobile, onOpen, onOpenPo, onDelete, onCreate }) {
+  const [query, setQuery] = useState('');
+  const todayKey = formatDateParam(new Date());
+  const batches = useMemo(() => transfers.filter((row) => !isStandaloneTriage(row)), [transfers]);
+  const quickPos = useMemo(() => transfers.filter((row) => isStandaloneTriage(row)), [transfers]);
+  const statsById = useMemo(() => new Map(transfers.map((row) => [row.id, batchStats(row)])), [transfers]);
+  const filteredBatches = useMemo(() => batches.filter((row) => batchMatchesQuery(row, query)), [batches, query]);
+  const filteredPos = useMemo(() => quickPos.filter((row) => batchMatchesQuery(row, query)), [quickPos, query]);
+  const open = filteredBatches.filter((row) => !statsById.get(row.id)?.complete);
+  const done = filteredBatches.filter((row) => statsById.get(row.id)?.complete);
+  const hasToday = batches.some((row) => row.dateKey === todayKey);
+  const totals = useMemo(() => {
+    let openDocs = 0;
+    let flagged = 0;
+    for (const stats of statsById.values()) {
+      openDocs += stats.open;
+      flagged += stats.flagged;
+    }
+    return { openDocs, flagged };
+  }, [statsById]);
+
+  const renderSection = (title, rows, trailing) =>
+    rows.length === 0 ? null : (
+      <View key={title}>
+        <SectionLabel trailing={trailing}>{title}</SectionLabel>
+        <Group>
+          {rows.map((row, index) => (
+            <BatchRow
+              key={row.id}
+              batch={row}
+              stats={statsById.get(row.id)}
+              today={row.dateKey === todayKey}
+              mobile={mobile}
+              last={index === rows.length - 1}
+              onPress={() => onOpen(row)}
+              onDelete={() => onDelete(row)}
+            />
+          ))}
+        </Group>
+      </View>
+    );
+
+  return (
+    <ScrollView style={styles.list} contentContainerStyle={styles.listContent} showsVerticalScrollIndicator={false}>
+      <View style={styles.listHead}>
+        <SearchField value={query} onChangeText={setQuery} placeholder="Search dates, stores, or PO#" style={styles.listSearch} />
+        <Text style={styles.listMeta} numberOfLines={1}>
+          {batches.length} {batches.length === 1 ? 'batch' : 'batches'}
+          {quickPos.length ? `  ·  ${quickPos.length} quick` : ''}
+          {totals.openDocs > 0 ? `  ·  ${totals.openDocs} open` : ''}
+          {totals.flagged > 0 ? `  ·  ${totals.flagged} flagged` : ''}
+        </Text>
+      </View>
+
+      {!hasToday && !query ? (
+        <Pressable
+          style={styles.todayCta}
+          onPress={onCreate}
+          accessibilityRole="button"
+          accessibilityLabel="Start today's batch"
+        >
+          <View style={styles.todayCtaIcon}>
+            <Ionicons name="add" size={20} color={BLUE} />
+          </View>
+          <View style={styles.batchText}>
+            <Text style={styles.todayCtaTitle}>Start today&apos;s batch</Text>
+            <Text style={styles.batchSub}>{formatPickerDate(new Date())} · pick the stores shipping in</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={T.tertiary} />
+        </Pressable>
+      ) : null}
+
+      {filteredBatches.length === 0 && filteredPos.length === 0 && query ? (
+        <Text style={styles.listEmpty}>No batches or POs match “{query.trim()}”.</Text>
+      ) : null}
+
+      {filteredPos.length ? (
+        <View>
+          <SectionLabel>Quick add</SectionLabel>
+          <Group>
+            {filteredPos.map((row, index) => (
+              <QuickPoRow
+                key={row.id}
+                batch={row}
+                stats={statsById.get(row.id)}
+                last={index === filteredPos.length - 1}
+                onPress={() => onOpenPo(row)}
+                onDelete={() => onDelete(row)}
+              />
+            ))}
+          </Group>
+        </View>
+      ) : null}
+
+      {renderSection('In progress', open)}
+      {renderSection('Completed', done)}
+    </ScrollView>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Batch detail                                                         */
+/* ------------------------------------------------------------------ */
+
+function BatchSummary({ pos, stats, bullion, storeScope, onStoreScope, mobile, onAddStore, onRemoveStore }) {
+  const tone = stats.empty ? 'neutral' : stats.complete ? 'green' : 'blue';
+  const pendingBullion = bullion.rows.filter((row) => row.receiveStatus !== RECEIVE_STATUS.all_received).length;
+  const stripContent = (
+    <StatStrip style={mobile && styles.statStripMobile}>
+      <Stat
+        label="Expected"
+        value={stats.totalPurchases > stats.expected ? `${stats.expected}/${stats.totalPurchases}` : String(stats.expected)}
+        sub={
+          stats.bullionOnly
+            ? `${stats.bullionOnly} bullion only · stay in store`
+            : stats.amount
+              ? formatAmount(stats.amount)
+              : 'No purchases'
+        }
+      />
+      <Stat
+        label="Received"
+        value={stats.expected ? `${stats.received}/${stats.expected}` : '0'}
+        sub={stats.expected ? `${stats.percent}%` : '—'}
+        tone={stats.complete ? 'green' : undefined}
+      />
+      <Stat label="Open" value={String(stats.open)} sub={stats.open ? 'to receive' : 'nothing left'} tone={stats.open ? 'orange' : undefined} />
+      <Stat label="Flagged" value={String(stats.flagged)} sub={stats.flagged ? 'need correction' : 'all clean'} tone={stats.flagged ? 'red' : undefined} />
+      <Stat
+        label="Bullion"
+        value={bullion.busy && bullion.rows.length === 0 ? '…' : String(bullion.rows.length)}
+        sub={bullion.rows.length ? (pendingBullion ? `${pendingBullion} pending` : 'all received') : 'no transfers'}
+        tone={pendingBullion ? 'blue' : undefined}
+      />
+    </StatStrip>
+  );
+
+  return (
+    <View style={styles.summary}>
+      {mobile ? (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.statScroll}>
+          {stripContent}
+        </ScrollView>
+      ) : (
+        stripContent
+      )}
+      <ProgressBar value={stats.received} total={stats.expected} tone={tone} height={4} style={styles.summaryProgress} />
+      <View style={styles.storeChips}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.storeChipsScroll}>
+          <Chip label="All stores" count={stats.documents} selected={!storeScope} onPress={() => onStoreScope(null)} />
+          {stats.stores.map((store) => (
+            <Chip
+              key={store.id}
+              label={store.name}
+              count={store.documents}
+              selected={Boolean(storeScope && namesMatch(storeScope, store.name))}
+              onPress={() => onStoreScope(namesMatch(storeScope, store.name) ? null : store.name)}
+            />
+          ))}
+        </ScrollView>
+        <View style={styles.storeChipActions}>
+          {storeScope ? (
+            <TextAction
+              label="Remove store"
+              destructive
+              onPress={() => {
+                const store = stats.stores.find((entry) => namesMatch(entry.name, storeScope));
+                if (store) onRemoveStore(store);
+              }}
+            />
+          ) : null}
+          <TextAction icon="add" label="Store" onPress={onAddStore} accessibilityLabel="Add store to batch" />
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function BatchDetail({ session, batch, transfers, storeTab, onStoreTab, addMeltOpen, onAddMeltOpen, mobile }) {
+  const actor = actorNameOf(session);
+  const stores = useMemo(() => batch.stores || [], [batch.stores]);
+  const pos = useMemo(() => flattenBatchPos(batch), [batch]);
+  const stats = useMemo(() => batchStats(batch), [batch]);
+  const bullion = useWorkshopTransfers(session, stores);
+  const [storeScope, setStoreScope] = useState(null);
+  const [addStoreOpen, setAddStoreOpen] = useState(false);
+
+  useEffect(() => {
+    if (storeScope && !stores.some((store) => namesMatch(store.name, storeScope))) setStoreScope(null);
+  }, [storeScope, stores]);
+
+  const mergePos = useCallback(
+    (rows) => {
+      mergeTriagePos(batch.id, rows);
+    },
+    [batch.id],
+  );
+  const removePo = useCallback(
+    (poId) => {
+      removeTriagePo(batch.id, poId);
+    },
+    [batch.id],
+  );
+  const toggleReceived = useCallback(
+    (poId) => {
+      toggleTriagePoReceived(batch.id, poId, actor);
+    },
+    [actor, batch.id],
+  );
+  const receiveAll = useCallback(
+    (scopeName) => {
+      const store = scopeName ? stores.find((entry) => namesMatch(entry.name, scopeName)) : null;
+      receiveAllTriagePos(batch.id, actor, store?.id);
+    },
+    [actor, batch.id, stores],
+  );
+  const saveReview = useCallback((poId, review) => {
+    saveTriagePoReview(poId, review);
+  }, []);
+  const addStores = useCallback(
+    (incoming) => {
+      updateTriageTransfers((current) =>
+        current.map((row) => {
+          if (row.id !== batch.id) return row;
+          const fresh = incoming.filter((store) => !storeOnBatch(row.stores, store));
+          return { ...row, stores: sortBatchStores([...(row.stores || []), ...fresh]) };
+        }),
+      );
+      setAddStoreOpen(false);
+      if (incoming.length) onAddMeltOpen(true);
+    },
+    [batch.id, onAddMeltOpen],
+  );
+  const removeStore = useCallback(
+    (store) => {
+      const docs = store.documents || 0;
+      confirmDestructive(
+        `Remove ${store.name}?`,
+        docs ? `${docs} ${docNoun(pos.filter((row) => namesMatch(row.storeName, store.name)), docs)} from ${store.name} will come off this batch.` : 'This store will come off the batch.',
+        () => {
+          removeTriageBatchStore(batch.id, store.id);
+          setStoreScope(null);
+        },
+        'Remove',
+      );
+    },
+    [batch.id, pos],
+  );
+
+  const addedKeys = useMemo(() => new Set(stores.map((store) => store.storeKey).filter(Boolean)), [stores]);
+  const tabOptions = useMemo(
+    () => [
+      { key: 'melt', label: 'Melt', count: storeScope ? stats.stores.find((s) => namesMatch(s.name, storeScope))?.documents ?? 0 : stats.documents },
+      { key: 'bullion', label: 'Bullion', count: storeScope ? bullion.rows.filter((row) => namesMatch(row.fromName, storeScope)).length : bullion.rows.length },
+    ],
+    [bullion.rows, stats, storeScope],
+  );
+
+  return (
+    <View style={styles.body}>
+      <BatchSummary
+        pos={pos}
+        stats={stats}
+        bullion={bullion}
+        storeScope={storeScope}
+        onStoreScope={setStoreScope}
+        mobile={mobile}
+        onAddStore={() => setAddStoreOpen(true)}
+        onRemoveStore={removeStore}
+      />
+      <TextTabs
+        options={tabOptions}
+        value={storeTab}
+        onChange={(key) => {
+          onStoreTab(key);
+          if (key !== 'melt') onAddMeltOpen(false);
+        }}
+        style={styles.detailTabs}
+        trailing={
+          storeTab === 'melt' ? (
+            <TextAction icon="add" label="Add" onPress={() => onAddMeltOpen(true)} accessibilityLabel="Add PO / SO" />
+          ) : null
+        }
+      />
+
+      {storeTab === 'melt' ? (
+        <MeltTab
+          session={session}
+          batch={batch}
+          stores={stores}
+          pos={pos}
+          storeScope={storeScope}
+          transfers={transfers}
+          addOpen={addMeltOpen}
+          onAddOpenChange={onAddMeltOpen}
+          onMergePos={mergePos}
+          onRemovePos={removePo}
+          onToggleReceived={toggleReceived}
+          onReceiveAll={receiveAll}
+          onSaveReview={saveReview}
+        />
+      ) : (
+        <BullionTab rows={bullion.rows} busy={bullion.busy} stores={stores} storeScope={storeScope} />
+      )}
+
+      <AddStoreModal
+        visible={addStoreOpen}
+        session={session}
+        addedKeys={addedKeys}
+        dateLabel={batch.dateLabel}
+        onClose={() => setAddStoreOpen(false)}
+        onAdd={addStores}
+      />
+    </View>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Panel root                                                           */
+/* ------------------------------------------------------------------ */
+
 export default function TriageTransfersPanel({
   session,
   onRequireLogin,
   createOpen,
   onCreateOpenChange,
+  quickAddOpen,
+  onQuickAddOpenChange,
   onViewChange,
   onBackChange,
 }) {
@@ -2558,20 +2894,24 @@ export default function TriageTransfersPanel({
   const [selectedId, setSelectedId] = useState(null);
   const [storeTab, setStoreTab] = useState('melt');
   const [addMeltOpen, setAddMeltOpen] = useState(false);
+  const [openStandalone, setOpenStandalone] = useState(null);
+  const [quickAddError, setQuickAddError] = useState('');
 
   const selected = useMemo(
-    () => transfers.find((row) => row.id === selectedId) || null,
+    () => transfers.find((row) => row.id === selectedId && !isStandaloneTriage(row)) || null,
     [selectedId, transfers],
   );
-  const batchStores = selected?.stores || [];
-  const meltPos = useMemo(() => flattenMeltPos(batchStores), [selected]);
+  const existingPoIds = useMemo(
+    () => transfers.flatMap((row) => flattenBatchPos(row).map((item) => item.id)),
+    [transfers],
+  );
   const batchContext = useMemo(() => {
     if (!selected) return null;
     return {
       dateLabel: selected.dateLabel || selected.dateKey || '',
-      storeNames: storeNamesLabel(batchStores),
+      storeNames: storeNamesLabel(selected.stores || []),
     };
-  }, [batchStores, selected]);
+  }, [selected]);
 
   const view = selected ? 'store' : 'list';
 
@@ -2590,23 +2930,56 @@ export default function TriageTransfersPanel({
   }, [batchContext, goBackToList, onBackChange, selected]);
 
   const openBatch = useCallback((row) => {
+    if (isStandaloneTriage(row)) {
+      const item = standalonePo(row);
+      if (item) setOpenStandalone(item);
+      return;
+    }
     if (!row?.stores?.length) return;
     setSelectedId(row.id);
-    const hasBullion = row.stores.some(
-      (store) => plannedForTriageStore(row.dateKey, store.storeKey).length > 0,
-    );
+    const hasBullion = row.stores.some((store) => plannedForTriageStore(row.dateKey, store.storeKey).length > 0);
     const hasMelt = row.stores.some((store) => (store.meltPos || []).length > 0);
     setStoreTab(hasBullion && !hasMelt ? 'bullion' : 'melt');
   }, []);
 
-  const openTransfer = useCallback(
-    (row) => {
-      openBatch(row);
-    },
-    [openBatch],
-  );
+  const openStandalonePo = useCallback((row) => {
+    const item = standalonePo(row);
+    if (item) setOpenStandalone(item);
+  }, []);
 
-  const createTransfer = useCallback(
+  const addQuickPo = useCallback((row) => {
+    const result = addStandaloneTriagePo(row);
+    if (!result.ok) {
+      const where = isStandaloneTriage(result.batch)
+        ? 'the dashboard'
+        : result.batch?.dateLabel || 'a batch';
+      setQuickAddError(`${row.reference} is already on ${where}.`);
+      return;
+    }
+    setQuickAddError('');
+    persistTransferWorkflowNow().catch(() => {});
+    onQuickAddOpenChange?.(false);
+    setOpenStandalone(result.item);
+    const auth = resolvePosAuthForRow(session, { systemKey: row.systemKey });
+    if (!auth.token) return;
+    fillMissingPoImages(auth.token, auth.baseUrl, [result.item])
+      .then((enriched) => {
+        const next = enriched[0];
+        if (!next?.imageUrls?.length) return;
+        mergeTriagePos(result.batch.id, [next]);
+        setOpenStandalone((current) =>
+          current?.id === next.id ? { ...current, imageUrls: next.imageUrls } : current,
+        );
+      })
+      .catch(() => {});
+  }, [onQuickAddOpenChange, session]);
+
+  const saveStandaloneReview = useCallback((poId, review) => {
+    saveTriagePoReview(poId, review);
+    setOpenStandalone((current) => (current?.id === poId ? applyTriageReviewToPo(current, review) : current));
+  }, []);
+
+  const createBatch = useCallback(
     (row) => {
       const mergeId = row.mergeIntoId;
       const incoming = row.stores || [];
@@ -2615,26 +2988,17 @@ export default function TriageTransfersPanel({
         const existing = transfers.find((item) => item.id === mergeId);
         if (existing) {
           const fresh = incoming.filter((store) => !storeOnBatch(existing.stores, store));
-          nextRow = {
-            ...existing,
-            stores: sortBatchStores([...(existing.stores || []), ...fresh]),
-          };
-          updateTriageTransfers((current) =>
-            current.map((item) => (item.id === mergeId ? nextRow : item)),
-          );
+          nextRow = { ...existing, stores: sortBatchStores([...(existing.stores || []), ...fresh]) };
+          updateTriageTransfers((current) => current.map((item) => (item.id === mergeId ? nextRow : item)));
         } else {
           updateTriageTransfers((current) =>
-            [{ ...row, stores: sortBatchStores(incoming) }, ...current].sort((a, b) =>
-              b.dateKey.localeCompare(a.dateKey),
-            ),
+            [{ ...row, stores: sortBatchStores(incoming) }, ...current].sort((a, b) => b.dateKey.localeCompare(a.dateKey)),
           );
         }
       } else {
         nextRow = { ...row, stores: sortBatchStores(incoming) };
         delete nextRow.mergeIntoId;
-        updateTriageTransfers((current) =>
-          [nextRow, ...current].sort((a, b) => b.dateKey.localeCompare(a.dateKey)),
-        );
+        updateTriageTransfers((current) => [nextRow, ...current].sort((a, b) => b.dateKey.localeCompare(a.dateKey)));
       }
       persistTransferWorkflowNow().catch(() => {});
       onCreateOpenChange(false);
@@ -2644,198 +3008,60 @@ export default function TriageTransfersPanel({
     [onCreateOpenChange, openBatch, transfers],
   );
 
-  const removeTransfer = useCallback((row) => {
+  const deleteBatch = useCallback((row) => {
+    if (isStandaloneTriage(row)) {
+      const po = standalonePo(row);
+      confirmDestructive(
+        `Remove ${po?.reference || 'this PO'}?`,
+        'It comes off the dashboard. The purchase itself is not changed.',
+        () => {
+          if (openStandalone?.id === po?.id) setOpenStandalone(null);
+          removeTriageBatch(row.id);
+          persistTransferWorkflowNow().catch(() => {});
+        },
+      );
+      return;
+    }
+    const stats = batchStats(row);
     confirmDestructive(
-      'Delete Transfer',
-      `Delete ${row.dateLabel || 'this transfer'}? Stores and purchase orders on this date will be removed.`,
+      `Delete ${row.dateLabel || 'this batch'}?`,
+      stats.documents
+        ? `${stats.documents} ${docNoun(flattenBatchPos(row), stats.documents)} and ${row.stores.length} ${row.stores.length === 1 ? 'store' : 'stores'} will be removed from triage.`
+        : 'The stores on this date will be removed from triage.',
       () => {
-        updateTriageTransfers((current) => current.filter((item) => item.id !== row.id));
+        removeTriageBatch(row.id);
         persistTransferWorkflowNow().catch(() => {});
       },
     );
-  }, []);
-
-  const mergeMeltPos = useCallback(
-    (nextRows) => {
-      if (!selectedId) return;
-      updateTriageTransfers((current) =>
-        current.map((row) => {
-          if (row.id !== selectedId) return row;
-          const stores = (row.stores || []).map((store) => ({
-            ...store,
-            meltPos: [...(store.meltPos || [])],
-          }));
-          for (const item of nextRows || []) {
-            const dest =
-              stores.find((store) => namesMatch(store.name, item.storeName)) || stores[0];
-            if (!dest) continue;
-            const index = dest.meltPos.findIndex((entry) => entry.id === item.id);
-            if (index >= 0) {
-              const prev = dest.meltPos[index];
-              const imageUrls =
-                (prev.imageUrls || []).length > 0 ? prev.imageUrls : item.imageUrls || [];
-              if (imageUrls !== prev.imageUrls) {
-                dest.meltPos[index] = { ...prev, imageUrls };
-              }
-              continue;
-            }
-            dest.meltPos.push({ ...item, received: false });
-          }
-          for (const store of stores) {
-            store.meltPos.sort((a, b) => (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0));
-          }
-          return { ...row, stores };
-        }),
-      );
-      persistTransferWorkflowNow().catch(() => {});
-    },
-    [selectedId],
-  );
-
-  const saveMeltReview = useCallback((poId, review) => {
-    saveTriagePoReview(poId, review);
-    persistTransferWorkflowNow().catch(() => {});
-  }, []);
-
-  const removeMeltPo = useCallback(
-    (poId) => {
-      if (!selectedId) return;
-      updateTriageTransfers((current) =>
-        current.map((row) => {
-          if (row.id !== selectedId) return row;
-          return {
-            ...row,
-            stores: row.stores.map((store) => ({
-              ...store,
-              meltPos: (store.meltPos || []).filter((item) => item.id !== poId),
-            })),
-          };
-        }),
-      );
-      persistTransferWorkflowNow().catch(() => {});
-    },
-    [selectedId],
-  );
-
-  const receiveAllMelt = useCallback(() => {
-    if (!selectedId) return;
-    updateTriageTransfers((current) =>
-      current.map((row) => {
-        if (row.id !== selectedId) return row;
-        return {
-          ...row,
-          stores: row.stores.map((store) => {
-            const melt = store.meltPos || [];
-            if (melt.length === 0 || melt.every((item) => item.received)) return store;
-            return {
-              ...store,
-              meltPos: melt.map((item) => (item.received ? item : { ...item, received: true })),
-            };
-          }),
-        };
-      }),
-    );
-    persistTransferWorkflowNow().catch(() => {});
-  }, [selectedId]);
-
-  const toggleMeltReceived = useCallback(
-    (poId) => {
-      if (!selectedId) return;
-      updateTriageTransfers((current) =>
-        current.map((row) => {
-          if (row.id !== selectedId) return row;
-          return {
-            ...row,
-            stores: row.stores.map((store) => ({
-              ...store,
-              meltPos: (store.meltPos || []).map((item) =>
-                item.id === poId ? { ...item, received: !item.received } : item,
-              ),
-            })),
-          };
-        }),
-      );
-      persistTransferWorkflowNow().catch(() => {});
-    },
-    [selectedId],
-  );
+  }, [openStandalone?.id]);
 
   if (!session?.token) {
     return (
       <View style={[styles.body, styles.bodyTinted]}>
         <EmptyState
           icon="lock-closed-outline"
-          title="Sign in"
-          body="Log in to create transfers and add stores."
+          title="Sign in to triage"
+          body="Log in to open batches, receive melt, and check bullion transfers."
+          action={<TextAction label="Go to Profile" strong onPress={onRequireLogin} />}
         />
-        <View style={styles.emptyAction}>
-          <Pressable style={styles.loginButton} onPress={onRequireLogin}>
-            <Text style={styles.loginButtonText}>Go to Profile</Text>
-          </Pressable>
-        </View>
       </View>
     );
   }
 
-  const meltActions =
-    storeTab === 'melt' ? (
-      <Pressable
-        style={styles.compactAdd}
-        onPress={() => setAddMeltOpen(true)}
-        accessibilityRole="button"
-        accessibilityLabel="Add"
-      >
-        <Ionicons name="add" size={18} color={BLUE} />
-        <Text style={styles.compactAddText}>Add</Text>
-      </Pressable>
-    ) : null;
-
   if (selected) {
     return (
       <View style={[styles.body, styles.bodyTinted]}>
-        <View style={styles.viewTabs} accessibilityRole="tablist">
-          <View style={styles.textTabs}>
-            {STORE_TABS.map((tab) => {
-              const active = tab.key === storeTab;
-              return (
-                <Pressable
-                  key={tab.key}
-                  style={styles.textTab}
-                  onPress={() => {
-                    setStoreTab(tab.key);
-                    if (tab.key !== 'melt') setAddMeltOpen(false);
-                  }}
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected: active }}
-                  accessibilityLabel={tab.label}
-                >
-                  <Text style={[styles.textTabLabel, active && styles.textTabLabelActive]}>
-                    {tab.label}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-          {meltActions}
-        </View>
-
-        {storeTab === 'melt' ? (
-          <MeltTab
-            session={session}
-            stores={batchStores}
-            dateKey={selected.dateKey}
-            pos={meltPos}
-            addOpen={addMeltOpen}
-            onAddOpenChange={setAddMeltOpen}
-            onMergePos={mergeMeltPos}
-            onRemovePos={removeMeltPo}
-            onToggleReceived={toggleMeltReceived}
-            onReceiveAll={receiveAllMelt}
-            onSaveReview={saveMeltReview}
-          />
-        ) : (
-          <BullionTab dateKey={selected.dateKey} stores={batchStores} session={session} />
-        )}
+        <BatchDetail
+          key={selected.id}
+          session={session}
+          batch={selected}
+          transfers={transfers}
+          storeTab={storeTab}
+          onStoreTab={setStoreTab}
+          addMeltOpen={addMeltOpen}
+          onAddMeltOpen={setAddMeltOpen}
+          mobile={isMobile}
+        />
       </View>
     );
   }
@@ -2845,47 +3071,67 @@ export default function TriageTransfersPanel({
       {transfers.length === 0 ? (
         <EmptyState
           icon="calendar-outline"
-          title="No Transfers"
-          body="Tap New to start a workshop transfer for a date."
+          title="No batches yet"
+          body="A batch is one date plus the stores shipping to the Workshop. Or Quick Add a single PO from any store."
+          action={
+            <View style={styles.emptyActions}>
+              <TextAction label="Quick Add" destructive strong onPress={() => onQuickAddOpenChange?.(true)} />
+              <TextAction icon="add" label="New batch" strong onPress={() => onCreateOpenChange(true)} />
+            </View>
+          }
         />
       ) : (
-        <ScrollView
-          style={styles.list}
-          contentContainerStyle={styles.listContentInset}
-          showsVerticalScrollIndicator={false}
-        >
-          <View style={styles.listGroup}>
-            {transfers.map((row, index) => (
-              <ListRow
-                key={row.id}
-                title={row.dateLabel}
-                subtitle={
-                  row.stores.length
-                    ? row.stores.map((store) => store.name).join(', ')
-                    : 'No stores yet'
-                }
-                subtitleLines={2}
-                mobile={isMobile}
-                last={index === transfers.length - 1}
-                onPress={() => openTransfer(row)}
-                onDelete={() => removeTransfer(row)}
-                accessibilityLabel={`Open transfer ${row.dateLabel}`}
-              />
-            ))}
-          </View>
-        </ScrollView>
+        <BatchList
+          transfers={transfers}
+          mobile={isMobile}
+          onOpen={openBatch}
+          onOpenPo={openStandalonePo}
+          onDelete={deleteBatch}
+          onCreate={() => onCreateOpenChange(true)}
+        />
       )}
 
-      <CreateTransferModal
+      <CreateBatchModal
         visible={createOpen}
         session={session}
         transfers={transfers}
         onClose={() => onCreateOpenChange(false)}
-        onCreate={createTransfer}
+        onCreate={createBatch}
+      />
+      <QuickAddModal
+        visible={Boolean(quickAddOpen)}
+        session={session}
+        existingIds={existingPoIds}
+        error={quickAddError}
+        onClose={() => {
+          setQuickAddError('');
+          onQuickAddOpenChange?.(false);
+        }}
+        onAdd={addQuickPo}
+      />
+      <TriageReviewDrawer
+        visible={Boolean(openStandalone)}
+        session={session}
+        row={openStandalone}
+        review={openStandalone?.review || null}
+        extraRows={openStandalone ? [openStandalone] : []}
+        onClose={() => setOpenStandalone(null)}
+        onSave={saveStandaloneReview}
+        onHydrate={(enriched) => {
+          const found = findTriagePo(enriched.id);
+          if (found) patchTriagePosDetails(found.batch.id, [enriched]);
+          setOpenStandalone((current) => (current?.id === enriched.id ? { ...current, ...enriched } : current));
+        }}
       />
     </View>
   );
 }
+
+/* ------------------------------------------------------------------ */
+/* Styles                                                               */
+/* ------------------------------------------------------------------ */
+
+const webCursor = Platform.select({ web: { cursor: 'pointer' }, default: {} });
 
 const styles = StyleSheet.create({
   body: {
@@ -2893,537 +3139,414 @@ const styles = StyleSheet.create({
     minHeight: 0,
   },
   bodyTinted: {
-    backgroundColor: MOBILE.bg,
+    backgroundColor: T.bg,
   },
-  bodyMobile: {
-    backgroundColor: MOBILE.bg,
+  emptyActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
   },
-  listContentInset: {
+  quickAddIntro: {
+    fontFamily,
+    fontSize: 13,
+    lineHeight: 18,
+    color: SECONDARY,
+  },
+
+  /* dashboard list */
+  list: {
+    flex: 1,
+    minHeight: 0,
+  },
+  listContent: {
     paddingHorizontal: 16,
     paddingTop: 8,
-    paddingBottom: 32,
+    paddingBottom: 24,
   },
-  listContentMobile: {
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 32,
-  },
-  listGroup: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    overflow: 'hidden',
-  },
-  tableToolbar: {
-    flexShrink: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingBottom: 8,
-    minHeight: 36,
-  },
-  tableMeta: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '400',
-    color: SECONDARY,
-  },
-  tableHScroll: {
-    flex: 1,
-    minHeight: 0,
-  },
-  tableHContent: {
-    flexGrow: 1,
-    paddingHorizontal: 16,
-    paddingBottom: 16,
-  },
-  tableHFill: {
-    flex: 1,
-    minHeight: 0,
-  },
-  tableCard: {
-    flex: 1,
-    minHeight: 0,
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    overflow: 'visible',
-    ...Platform.select({
-      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.04)' },
-      default: {},
-    }),
-  },
-  tableHeader: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
-    minHeight: 36,
-    backgroundColor: '#f2f2f7',
-    borderTopLeftRadius: 12,
-    borderTopRightRadius: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#d1d1d6',
-    zIndex: 8,
-    overflow: 'visible',
-  },
-  tableBody: {
-    flex: 1,
-    minHeight: 0,
-  },
-  tableBodyContent: {
-    flexGrow: 1,
-  },
-  tableRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 52,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
-    backgroundColor: '#fff',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  tableRowLast: {
-    borderBottomWidth: 0,
-    borderBottomLeftRadius: 12,
-    borderBottomRightRadius: 12,
-  },
-  tableRowMain: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  tableCell: {
-    minHeight: 52,
-    paddingHorizontal: 8,
-    justifyContent: 'center',
-  },
-  tableCellLast: {
-    paddingRight: 14,
-  },
-  tableCellText: {
-    fontFamily,
-    fontSize: 13,
-    color: TEXT,
-    letterSpacing: -0.08,
-  },
-  tableCellStrong: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: TEXT,
-    letterSpacing: -0.08,
-  },
-  tableStatusOn: {
-    color: GREEN,
-    fontWeight: '600',
-  },
-  tableStatusReview: {
-    color: BLUE,
-    fontWeight: '600',
-  },
-  tablePhotoCell: {
-    width: 52,
-    flexGrow: 0,
-    flexShrink: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingLeft: 8,
-  },
-  tableActions: {
-    width: 132,
-    flexGrow: 0,
-    flexShrink: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    gap: 4,
-    paddingRight: 8,
-  },
-  tableActionsHead: {
-    width: 132,
-    flexGrow: 0,
-    flexShrink: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    gap: 4,
-    paddingRight: 8,
-  },
-  tableAction: {
-    height: 28,
-    paddingHorizontal: 8,
-    borderRadius: 8,
-    backgroundColor: FILL,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  tableActionOn: {
-    backgroundColor: GREEN,
-  },
-  tableActionText: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: TEXT,
-  },
-  tableActionTextOn: {
-    color: '#fff',
-  },
-  tableRemove: {
-    width: 28,
-    height: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  tableEmpty: {
-    fontFamily,
-    fontSize: 14,
-    color: SECONDARY,
-    textAlign: 'center',
-    paddingVertical: 36,
-    paddingHorizontal: 16,
-  },
-  colFilter: {
-    justifyContent: 'center',
-    zIndex: 8,
-    overflow: 'visible',
-  },
-  colFilterHit: {
-    minHeight: 36,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 8,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  colFilterLabel: {
-    fontFamily,
-    flexShrink: 1,
-    fontSize: 12,
-    fontWeight: '600',
-    color: SECONDARY,
-    letterSpacing: 0.2,
-    textTransform: 'uppercase',
-  },
-  colFilterLabelOn: {
-    color: TEXT,
-    textTransform: 'none',
-    letterSpacing: -0.08,
-  },
-  colFilterMenu: {
-    position: 'absolute',
-    top: 36,
-    left: 4,
-    right: 4,
-    minWidth: 180,
-    maxWidth: 280,
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: HAIRLINE,
-    overflow: 'hidden',
-    zIndex: 30,
-    ...Platform.select({
-      web: { boxShadow: '0 10px 28px rgba(0,0,0,0.12)' },
-      default: { elevation: 6 },
-    }),
-  },
-  colFilterSearch: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    margin: 8,
-    paddingHorizontal: 8,
-    minHeight: 32,
-    borderRadius: 8,
-    backgroundColor: FILL,
-  },
-  colFilterInput: {
-    flex: 1,
-    minWidth: 0,
-    fontFamily,
-    fontSize: 14,
-    color: TEXT,
-    paddingVertical: 6,
-    outlineStyle: 'none',
-  },
-  colFilterList: {
-    maxHeight: 220,
-  },
-  colFilterOption: {
-    minHeight: 36,
-    paddingHorizontal: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  colFilterOptionText: {
-    fontFamily,
-    flex: 1,
-    fontSize: 14,
-    color: TEXT,
-  },
-  colFilterOptionOn: {
-    fontWeight: '600',
-  },
-  colFilterClear: {
-    fontFamily,
-    fontSize: 14,
-    color: BLUE,
-  },
-  colFilterEmpty: {
-    fontFamily,
-    fontSize: 13,
-    color: SECONDARY,
-    textAlign: 'center',
-    paddingVertical: 14,
-  },
-  listRowMobile: {
-    borderBottomColor: MOBILE.separator,
-  },
-  listRowMobileLast: {
-    borderBottomWidth: 0,
-  },
-  listRowLast: {
-    borderBottomWidth: 0,
-  },
-  rowDelete: {
-    paddingHorizontal: 8,
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  rowDeleteText: {
-    fontFamily,
-    fontSize: 17,
-    fontWeight: '400',
-    color: RED,
-  },
-  viewTabs: {
-    flexShrink: 0,
+  listHead: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    paddingHorizontal: 16,
-    paddingTop: 2,
-    paddingBottom: 2,
   },
-  textTabs: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
+  listSearch: {
+    flex: 1,
+    maxWidth: 360,
   },
-  textTab: {
-    paddingVertical: 6,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  textTabLabel: {
+  listMeta: {
+    flexShrink: 1,
     fontFamily,
     fontSize: 13,
-    fontWeight: '400',
-    color: MOBILE.secondary,
-    letterSpacing: -0.2,
-  },
-  textTabLabelActive: {
-    fontWeight: '600',
-    color: MOBILE.blue,
-  },
-  compactAdd: {
-    minHeight: 28,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
-    marginLeft: 'auto',
-    paddingHorizontal: 4,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  compactAddText: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '400',
-    color: BLUE,
-  },
-  iosTextAction: {
-    minHeight: 44,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
-    paddingHorizontal: 2,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  iosNavAction: {
-    fontFamily,
-    fontSize: 17,
-    fontWeight: '400',
-    color: BLUE,
-    minWidth: 64,
-  },
-  iosNavActionStrong: {
-    fontWeight: '600',
+    color: SECONDARY,
     textAlign: 'right',
   },
-  iosNavActionDisabled: {
-    opacity: 0.35,
-  },
-  iosNavHeader: {
-    paddingHorizontal: 4,
-    paddingBottom: 8,
-    marginBottom: 4,
-    backgroundColor: MOBILE.bg,
-  },
-  iosBackButton: {
-    minHeight: 44,
-    marginLeft: 0,
-  },
-  iosBackText: {
-    fontSize: 17,
-    fontWeight: '400',
-    color: MOBILE.blue,
-  },
-  iosNavTitle: {
-    fontSize: 17,
-    fontWeight: '600',
+  listEmpty: {
+    fontFamily,
+    fontSize: 14,
+    color: SECONDARY,
     textAlign: 'center',
-    letterSpacing: -0.3,
+    paddingVertical: 32,
   },
-  iosNavMeta: {
-    fontSize: 13,
-    fontWeight: '400',
-    color: MOBILE.secondary,
-    textAlign: 'center',
-  },
-  tabBarMobile: {
-    borderBottomWidth: 0,
-    marginBottom: 10,
-    paddingHorizontal: 16,
-    alignItems: 'stretch',
-  },
-  segment: {
-    flex: 1,
+  todayCta: {
     flexDirection: 'row',
     alignItems: 'center',
-    height: 36,
-    backgroundColor: 'rgba(118,118,128,0.12)',
-    borderRadius: 9,
-    padding: 2,
-    gap: 0,
+    gap: 12,
+    marginTop: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0,122,255,0.08)',
+    ...webCursor,
   },
-  segmentButton: {
-    flex: 1,
-    height: 32,
-    borderRadius: 7,
+  todayCtaIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  segmentButtonActive: {
     backgroundColor: '#fff',
-    ...Platform.select({
-      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.16)' },
-      default: { elevation: 1 },
-    }),
   },
-  segmentText: {
+  todayCtaTitle: {
     fontFamily,
-    fontSize: 13,
-    fontWeight: '500',
-    color: MOBILE.label,
+    fontSize: 14,
+    fontWeight: '600',
+    color: BLUE,
+    letterSpacing: -0.2,
   },
-  segmentTextActive: {
+  batchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
+    backgroundColor: '#fff',
+  },
+  batchRowLast: {
+    borderBottomWidth: 0,
+  },
+  batchRowMain: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minHeight: 54,
+    paddingLeft: 12,
+    paddingRight: 8,
+    paddingVertical: 7,
+    ...webCursor,
+  },
+  batchDateBadge: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: T.fillSoft,
+  },
+  batchDateBadgeToday: {
+    backgroundColor: BLUE,
+  },
+  batchDateDay: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '700',
+    color: TEXT,
+    letterSpacing: -0.4,
+    lineHeight: 20,
+  },
+  batchDateDayToday: {
+    color: '#fff',
+  },
+  batchDateMonth: {
+    fontFamily,
+    fontSize: 9,
+    fontWeight: '600',
+    color: SECONDARY,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  batchDateMonthToday: {
+    color: 'rgba(255,255,255,0.85)',
+  },
+  batchText: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  batchTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 8,
+  },
+  batchTitle: {
+    fontFamily,
+    fontSize: 14.5,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: -0.2,
+  },
+  batchTitleMeta: {
+    fontFamily,
+    fontSize: 12,
+    color: SECONDARY,
+  },
+  batchSub: {
+    fontFamily,
+    fontSize: 12.5,
+    color: SECONDARY,
+  },
+  batchMobileMeta: {
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 4,
+  },
+  batchProgress: {
+    width: 180,
+    gap: 5,
+    alignItems: 'flex-end',
+  },
+  batchProgressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  batchProgressText: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '500',
+    color: TEXT,
+    fontVariant: ['tabular-nums'],
+  },
+  batchProgressTextDone: {
+    color: '#248A3D',
     fontWeight: '600',
   },
-  mobileActionBar: {
+  batchProgressBar: {
+    width: 180,
+  },
+  batchDelete: {
+    paddingHorizontal: 12,
+    minHeight: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...webCursor,
+  },
+  batchDeleteText: {
+    fontFamily,
+    fontSize: 14,
+    color: T.red,
+  },
+
+  /* batch detail summary */
+  summary: {
     flexShrink: 0,
-    flexDirection: 'row',
-    gap: 8,
     paddingHorizontal: 16,
     paddingTop: 10,
-    paddingBottom: Math.max(12, mobileSafeBottom()),
-    backgroundColor: 'rgba(255,255,255,0.92)',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: MOBILE.separator,
+    gap: 8,
   },
-  mobileAction: {
-    flex: 1,
-    minHeight: 44,
-    borderRadius: 12,
-    backgroundColor: FILL,
+  statScroll: {
+    flexGrow: 1,
+  },
+  statStripMobile: {
+    minWidth: '100%',
+  },
+  summaryProgress: {
+    marginHorizontal: 2,
+  },
+  storeChips: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
+    gap: 8,
   },
-  mobileActionSaved: {
+  storeChipsScroll: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingRight: 8,
+  },
+  storeChipActions: {
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  detailTabs: {
+    marginTop: 2,
+  },
+
+  /* tables */
+  tableMeta: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily,
+    fontSize: 12.5,
+    color: SECONDARY,
+  },
+  toolbarActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  meltRefRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minWidth: 0,
+  },
+  meltRefText: {
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  meltRowMixed: {
+    backgroundColor: 'rgba(255,149,0,0.16)',
+  },
+  meltRowBullion: {
+    backgroundColor: 'rgba(255,59,48,0.16)',
+  },
+  cellText: {
+    fontFamily,
+    fontSize: 13,
+    color: TEXT,
+    letterSpacing: -0.08,
+  },
+  cellRight: {
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
+  meltActions: {
+    width: 146,
+    flexGrow: 0,
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 4,
+    paddingRight: 8,
+  },
+  meltActionsHead: {
+    width: 146,
+    flexGrow: 0,
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 4,
+    paddingRight: 8,
+  },
+  receiveButton: {
+    height: 26,
+    paddingHorizontal: 9,
+    borderRadius: 8,
+    backgroundColor: FILL,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    ...webCursor,
+  },
+  receiveButtonOn: {
     backgroundColor: GREEN,
   },
-  mobileActionText: {
+  receiveButtonText: {
     fontFamily,
-    fontSize: 16,
+    fontSize: 11.5,
     fontWeight: '600',
     color: TEXT,
   },
-  mobileActionTextSaved: {
+  receiveButtonTextOn: {
     color: '#fff',
   },
-  mobileActionPrimary: {
-    flex: 1,
-    minHeight: 44,
-    borderRadius: 12,
-    backgroundColor: ACCENT,
-    flexDirection: 'row',
+  removeButton: {
+    width: 26,
+    height: 26,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
+    ...webCursor,
   },
-  mobileActionPrimaryText: {
+
+  /* drawer content */
+  drawerBody: {
+    flex: 1,
+    minHeight: 0,
+  },
+  drawerBodyContent: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: Math.max(32, mobileSafeBottom() + 16),
+  },
+  drawerHero: {
+    alignItems: 'center',
+    paddingVertical: 8,
+    gap: 10,
+  },
+  drawerHeroRoute: {
     fontFamily,
-    fontSize: 16,
+    fontSize: 20,
     fontWeight: '600',
-    color: '#fff',
+    color: TEXT,
+    letterSpacing: -0.4,
+    textAlign: 'center',
+  },
+  drawerProgress: {
+    alignSelf: 'stretch',
+    gap: 6,
+    paddingTop: 4,
+  },
+  drawerProgressText: {
+    fontFamily,
+    fontSize: 13,
+    color: SECONDARY,
+    textAlign: 'center',
+  },
+  drawerEmpty: {
+    fontFamily,
+    fontSize: 15,
+    color: SECONDARY,
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+  },
+  drawerItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
+  },
+  drawerItemLast: {
+    borderBottomWidth: 0,
+  },
+  drawerItemText: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  drawerItemName: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: TEXT,
+  },
+  drawerItemSub: {
+    fontFamily,
+    fontSize: 12,
+    color: SECONDARY,
+  },
+  drawerItemQty: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: TEXT,
+    fontVariant: ['tabular-nums'],
+  },
+
+  /* modals & sheets */
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
   },
   sheetBackdrop: {
     padding: 0,
@@ -3437,23 +3560,31 @@ const styles = StyleSheet.create({
   },
   sheetCard: {
     width: '100%',
-    maxWidth: '100%',
-    height: '100%',
-    maxHeight: '100%',
-    borderRadius: 0,
-    paddingTop: 10,
-    paddingBottom: Math.max(18, mobileSafeBottom()),
+    maxWidth: 460,
+    backgroundColor: T.bg,
+    borderRadius: 14,
+    padding: 16,
+    gap: 12,
   },
   sheetCardBottom: {
-    width: '100%',
     maxWidth: '100%',
-    height: 'auto',
-    maxHeight: '92%',
     borderRadius: 0,
     borderTopLeftRadius: 14,
     borderTopRightRadius: 14,
     paddingTop: 10,
     paddingBottom: Math.max(20, mobileSafeBottom()),
+  },
+  storeCard: {
+    width: '96%',
+    maxWidth: 560,
+    maxHeight: Platform.OS === 'web' ? '82vh' : '82%',
+    height: Platform.OS === 'web' ? 640 : '82%',
+    backgroundColor: T.bg,
+    borderRadius: 14,
+    padding: 16,
+    gap: 12,
+    overflow: 'hidden',
+    zIndex: 2,
   },
   sheetGrabber: {
     alignSelf: 'center',
@@ -3461,365 +3592,37 @@ const styles = StyleSheet.create({
     height: 5,
     borderRadius: 2.5,
     backgroundColor: 'rgba(60,60,67,0.28)',
-    marginBottom: 8,
+    marginBottom: 4,
   },
-  searchFieldMobile: {
-    borderRadius: 10,
+  sheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
     minHeight: 36,
-    backgroundColor: 'rgba(118,118,128,0.12)',
   },
-  meltSearchMobile: {
-    marginHorizontal: 16,
-  },
-  poRowMobile: {
-    minHeight: 56,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    gap: 8,
-    borderBottomColor: MOBILE.separator,
-  },
-  poRowMain: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  sheetTitleBlock: {
     flex: 1,
     minWidth: 0,
-    gap: 10,
-  },
-  poRowMainMobile: {
-    flex: 0,
-  },
-  poRowActions: {
-    flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 1,
   },
-  poRowActionsInline: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  receivedGroupMobile: {
-    flex: 1,
-    minHeight: 44,
-  },
-  receivedButtonMobile: {
-    flex: 1,
-    height: 44,
-    borderRadius: 12,
-  },
-  removePoButtonMobile: {
-    width: 44,
-    height: 44,
-  },
-  empty: {
-    flex: 1,
-    minHeight: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingHorizontal: 24,
-    paddingBottom: 48,
-  },
-  emptyAction: {
-    alignItems: 'center',
-    paddingBottom: 48,
-  },
-  emptyTitle: {
-    fontFamily,
-    fontSize: 22,
-    fontWeight: '600',
-    color: TEXT,
-    letterSpacing: -0.4,
-    marginTop: 4,
-  },
-  emptyBody: {
-    fontFamily,
-    fontSize: 15,
-    lineHeight: 21,
-    color: SECONDARY,
-    textAlign: 'center',
-    maxWidth: 320,
-  },
-  loginButton: {
-    backgroundColor: BLUE,
-    borderRadius: 12,
-    paddingHorizontal: 18,
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  loginButtonText: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#fff',
-  },
-  list: {
-    flex: 1,
-    minHeight: 0,
-  },
-  listContent: {
-    paddingBottom: 24,
-  },
-  listRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
-    backgroundColor: '#fff',
-  },
-  listRowMain: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    minHeight: 56,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  listRowText: {
-    flex: 1,
-    minWidth: 0,
-    gap: 2,
-  },
-  listRowTitle: {
-    fontFamily,
-    fontSize: 16,
-    fontWeight: '600',
-    color: TEXT,
-    letterSpacing: -0.2,
-  },
-  listRowSub: {
-    fontFamily,
-    fontSize: 13,
-    color: SECONDARY,
-  },
-  listRowMeta: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: BLUE,
-  },
-  pageMeta: {
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '600',
-    color: BLUE,
-  },
-  subHeader: {
-    flexShrink: 0,
-    marginBottom: 8,
-    gap: 6,
-  },
-  backButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    marginLeft: -4,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  backText: {
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '600',
-    color: BLUE,
-  },
-  pageTitle: {
-    fontFamily,
-    fontSize: 22,
-    fontWeight: '600',
-    color: TEXT,
-    letterSpacing: -0.4,
-  },
-  tabBar: {
-    flexShrink: 0,
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    justifyContent: 'space-between',
-    gap: 12,
-    marginBottom: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
-  },
-  tabBarTabs: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'stretch',
-    gap: 2,
-  },
-  tabBarTrailing: {
-    flexShrink: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingBottom: 6,
-  },
-  saveButton: {
-    height: 32,
-    paddingHorizontal: 10,
-    borderRadius: 10,
-    borderWidth: 1.5,
-    borderColor: ACCENT,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#fff',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  saveButtonOn: {
-    backgroundColor: GREEN,
-    borderColor: GREEN,
-  },
-  saveButtonText: {
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '600',
-    color: BLUE,
-  },
-  saveButtonTextOn: {
-    color: '#fff',
-  },
-  ghostButton: {
-    height: 32,
-    paddingHorizontal: 10,
-    borderRadius: 10,
-    borderWidth: 1.5,
-    borderColor: ACCENT,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#fff',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  ghostButtonText: {
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '600',
-    color: BLUE,
-  },
-  newButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: BLUE,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    height: 32,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  newButtonText: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#fff',
-  },
-  tab: {
-    paddingHorizontal: 14,
-    paddingTop: 6,
-    paddingBottom: 11,
-    borderBottomWidth: 2,
-    borderBottomColor: 'transparent',
-    marginBottom: -StyleSheet.hairlineWidth,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  tabActive: {
-    borderBottomColor: ACCENT,
-  },
-  tabLabel: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '500',
-    color: SECONDARY,
-    letterSpacing: -0.2,
-  },
-  tabLabelActive: {
-    color: TEXT,
-    fontWeight: '600',
-  },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.35)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 16,
-  },
-  smallCard: {
-    width: '100%',
-    maxWidth: 420,
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 18,
-    gap: 12,
-  },
-  storeCard: {
-    width: '96%',
-    maxWidth: 560,
-    maxHeight: Platform.OS === 'web' ? '80vh' : '80%',
-    height: Platform.OS === 'web' ? 640 : '80%',
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 18,
-    gap: 12,
-    overflow: 'hidden',
-    zIndex: 2,
-  },
-  storePicker: {
-    flex: 1,
-    minHeight: 0,
-    gap: 8,
-  },
-  storeSelectBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
-  },
-  storeSelectCount: {
-    fontFamily,
-    fontSize: 13,
-    color: SECONDARY,
-  },
-  storeSelectAll: {
+  navAction: {
     fontFamily,
     fontSize: 17,
     fontWeight: '400',
     color: BLUE,
+    minWidth: 60,
   },
-  storeListContent: {
-    paddingBottom: 8,
+  navActionStrong: {
+    fontWeight: '600',
+    textAlign: 'right',
   },
-  storeHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
+  navActionDisabled: {
+    opacity: 0.35,
   },
-  storeTitleBlock: {
-    flex: 1,
-    minWidth: 0,
-    alignItems: 'center',
-    gap: 2,
+  navSpacer: {
+    minWidth: 60,
   },
   modalTitle: {
     fontFamily,
@@ -3831,61 +3634,81 @@ const styles = StyleSheet.create({
   },
   modalSub: {
     fontFamily,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 12,
     color: SECONDARY,
     textAlign: 'center',
   },
-  kindRow: {
+  modalHint: {
+    fontFamily,
+    fontSize: 13,
+    lineHeight: 18,
+    color: SECONDARY,
+  },
+  errorText: {
+    fontFamily,
+    fontSize: 13,
+    color: T.red,
+  },
+  segment: {
     flexDirection: 'row',
-    gap: 8,
+    alignItems: 'center',
+    height: 32,
+    backgroundColor: T.fillSoft,
+    borderRadius: 9,
+    padding: 2,
   },
-  addModeRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  docSearchBlock: {
-    gap: 10,
-  },
-  kindChip: {
+  segmentButton: {
     flex: 1,
-    height: 36,
-    borderRadius: 8,
-    backgroundColor: FILL,
+    height: 28,
+    minWidth: 48,
+    paddingHorizontal: 10,
+    borderRadius: 7,
     alignItems: 'center',
     justifyContent: 'center',
+    ...webCursor,
+  },
+  segmentButtonActive: {
+    backgroundColor: '#fff',
     ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
+      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.16)' },
+      default: { elevation: 1 },
     }),
   },
-  kindChipActive: {
-    backgroundColor: ACCENT,
-  },
-  kindChipText: {
+  segmentText: {
     fontFamily,
-    fontSize: 15,
+    fontSize: 13,
+    fontWeight: '500',
+    color: TEXT,
+  },
+  segmentTextActive: {
     fontWeight: '600',
-    color: TEXT,
   },
-  kindChipTextActive: {
-    color: '#fff',
+  addBlock: {
+    gap: 10,
   },
-  fieldInput: {
+  rangeRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  rangeField: {
+    flex: 1,
+    minWidth: 0,
+    gap: 6,
+  },
+  rangeLabel: {
     fontFamily,
-    fontSize: 16,
-    color: TEXT,
-    backgroundColor: FILL,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    minHeight: 44,
+    fontSize: 12,
+    fontWeight: '600',
+    color: SECONDARY,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
   },
   dateField: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: FILL,
-    borderRadius: 8,
+    backgroundColor: '#fff',
+    borderRadius: 10,
     paddingHorizontal: 12,
     minHeight: 44,
   },
@@ -3913,27 +3736,15 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: BLUE,
   },
-  errorText: {
-    fontFamily,
-    fontSize: 13,
-    color: BLUE,
-  },
-  lastTransferHint: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: TEXT,
-  },
   lastTransferButton: {
     height: 44,
-    borderRadius: 6,
+    borderRadius: 10,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#FFF7ED',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
+    gap: 6,
+    backgroundColor: '#fff',
+    ...webCursor,
   },
   lastTransferButtonText: {
     fontFamily,
@@ -3941,160 +3752,156 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: BLUE,
   },
-  modalActions: {
+  docSearchRow: {
     flexDirection: 'row',
+    alignItems: 'center',
     gap: 8,
-    marginTop: 4,
   },
-  secondaryButton: {
+  docSearchField: {
     flex: 1,
-    height: 50,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: FILL,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  secondaryButtonText: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: TEXT,
-  },
-  primaryButton: {
-    backgroundColor: BLUE,
-    borderRadius: 12,
-    height: 50,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  primaryButtonInline: {
-    flex: 1,
-  },
-  primaryButtonDisabled: {
-    opacity: 0.6,
-  },
-  rangeRow: {
     flexDirection: 'row',
-    gap: 10,
+    alignItems: 'center',
+    gap: 8,
+    minHeight: 40,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: '#fff',
   },
-  rangeField: {
+  docSearchInput: {
     flex: 1,
     minWidth: 0,
-    gap: 6,
-  },
-  rangeLabel: {
     fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: SECONDARY,
+    fontSize: 16,
+    color: TEXT,
+    paddingVertical: 8,
+    outlineStyle: 'none',
   },
-  poRow: {
+  docResultRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 56,
-    paddingHorizontal: 4,
+    gap: 12,
+    minHeight: 60,
+    paddingHorizontal: 12,
     paddingVertical: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: HAIRLINE,
-    gap: 10,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
+    ...webCursor,
   },
-  poRowText: {
+  docResultRowLast: {
+    borderBottomWidth: 0,
+  },
+  docResultText: {
     flex: 1,
     minWidth: 0,
     gap: 2,
   },
-  poRef: {
+  docResultTitle: {
     fontFamily,
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
     color: TEXT,
     letterSpacing: -0.2,
   },
-  poSub: {
+  docResultSub: {
     fontFamily,
     fontSize: 13,
     color: SECONDARY,
   },
-  poMeta: {
+  docResultAction: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: BLUE,
+  },
+  docResultActionMuted: {
+    color: SECONDARY,
+  },
+
+  /* store picker */
+  storePicker: {
+    flex: 1,
+    minHeight: 0,
+    gap: 8,
+  },
+  storeSearch: {
+    minHeight: 36,
+  },
+  storeSelectBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    paddingHorizontal: 4,
+  },
+  storeSelectCount: {
+    flex: 1,
     fontFamily,
     fontSize: 13,
-    color: TEXT,
+    color: SECONDARY,
   },
-  meltToolbar: {
-    gap: 8,
-    marginBottom: 10,
-    zIndex: 3,
-    overflow: 'visible',
+  storeSelectAll: {
+    fontFamily,
+    fontSize: 15,
+    color: BLUE,
   },
-  meltToolbarRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'nowrap',
-    overflow: 'visible',
-  },
-  meltToolbarMobile: {
-    marginHorizontal: 16,
-  },
-  meltSearchInline: {
-    flexGrow: 1.4,
-    flexShrink: 1,
-    flexBasis: 140,
-    minWidth: 108,
-    minHeight: 36,
-    marginBottom: 0,
-  },
-  meltToolbarScroll: {
-    flexGrow: 1,
-    minWidth: 0,
-  },
-  meltToolbarScrollContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    flexGrow: 1,
-    paddingRight: 4,
-  },
-  filterFieldCompact: {
-    flexGrow: 1,
-    flexShrink: 1,
-    flexBasis: 88,
-    minWidth: 78,
-    marginBottom: 0,
-    position: 'relative',
-  },
-  filterMenuCompact: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: 38,
-    zIndex: 20,
-  },
-  filterInputWrapCompact: {
-    minHeight: 36,
-    paddingHorizontal: 8,
-  },
-  feedOpenButton: {
-    width: 28,
-    height: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
+  storeList: {
+    flex: 1,
+    minHeight: 0,
     ...Platform.select({
-      web: { cursor: 'pointer' },
+      web: { overflow: 'auto' },
       default: {},
     }),
   },
+  storeListContent: {
+    paddingBottom: 8,
+  },
+  storePickRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 52,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
+    gap: 12,
+    ...webCursor,
+  },
+  storePickRowLast: {
+    borderBottomWidth: 0,
+  },
+  storePickText: {
+    flex: 1,
+    minWidth: 0,
+    gap: 1,
+  },
+  storePickTitle: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: -0.2,
+  },
+  storePickSub: {
+    fontFamily,
+    fontSize: 12,
+    color: SECONDARY,
+  },
+  modalBusy: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 36,
+  },
+  modalEmpty: {
+    fontFamily,
+    fontSize: 14,
+    color: SECONDARY,
+    textAlign: 'center',
+    paddingVertical: 28,
+    paddingHorizontal: 16,
+  },
+
+  /* feed */
   feedModalRoot: {
     flex: 1,
     alignItems: 'center',
@@ -4137,10 +3944,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: 'rgba(0,0,0,0.45)',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
+    ...webCursor,
   },
   feedList: {
     flexGrow: 0,
@@ -4154,6 +3958,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#000',
     overflow: 'hidden',
   },
+  feedKindRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   feedKind: {
     fontFamily,
     fontSize: 13,
@@ -4164,6 +3973,20 @@ const styles = StyleSheet.create({
   },
   feedKindBuy: {
     color: '#FFD60A',
+  },
+  feedStatus: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: 'rgba(255,255,255,0.7)',
+  },
+  feedBullion: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#AF52DE',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
   },
   feedHandle: {
     fontFamily,
@@ -4268,10 +4091,7 @@ const styles = StyleSheet.create({
   feedRailButton: {
     alignItems: 'center',
     gap: 4,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
+    ...webCursor,
   },
   feedRailIcon: {
     width: 48,
@@ -4289,436 +4109,5 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
     color: '#fff',
-  },
-  listRange: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: SECONDARY,
-  },
-  filterRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    zIndex: 3,
-  },
-  filterField: {
-    flexGrow: 1,
-    flexBasis: 140,
-    minWidth: 140,
-    zIndex: 3,
-  },
-  filterLabel: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: SECONDARY,
-    marginBottom: 4,
-  },
-  filterInputWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: FILL,
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    minHeight: 36,
-  },
-  filterInput: {
-    flex: 1,
-    minWidth: 0,
-    fontFamily,
-    fontSize: 14,
-    color: TEXT,
-    paddingVertical: 8,
-    outlineStyle: 'none',
-  },
-  filterMenu: {
-    marginTop: 4,
-    maxHeight: 180,
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: HAIRLINE,
-    overflow: 'hidden',
-    zIndex: 8,
-    ...Platform.select({
-      web: { boxShadow: '0 8px 20px rgba(0,0,0,0.08)' },
-      default: { elevation: 3 },
-    }),
-  },
-  filterOption: {
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  filterOptionText: {
-    fontFamily,
-    fontSize: 14,
-    color: TEXT,
-  },
-  poReview: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: BLUE,
-  },
-  poThumbSlot: {
-    width: 44,
-    height: 44,
-    borderRadius: 8,
-    backgroundColor: FILL,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  poThumbPress: {
-    width: 44,
-    height: 44,
-    borderRadius: 8,
-    overflow: 'hidden',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  poThumb: {
-    width: 44,
-    height: 44,
-    backgroundColor: FILL,
-  },
-  photoViewerRoot: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.72)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 16,
-  },
-  photoViewerSheet: {
-    width: '100%',
-    maxWidth: 720,
-    gap: 12,
-  },
-  photoViewerBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  photoViewerTitle: {
-    flex: 1,
-    fontFamily,
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#fff',
-  },
-  photoViewerImage: {
-    width: '100%',
-    height: 420,
-    backgroundColor: '#111',
-    borderRadius: 10,
-  },
-  removePoButton: {
-    width: 28,
-    height: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  receivedGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  receivedButton: {
-    height: 32,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    backgroundColor: FILL,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  receivedButtonOn: {
-    backgroundColor: GREEN,
-  },
-  receivedButtonText: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: TEXT,
-  },
-  receivedButtonTextOn: {
-    color: '#fff',
-  },
-  primaryButtonText: {
-    fontFamily,
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#fff',
-  },
-  meltSearchField: {
-    marginBottom: 0,
-  },
-  docResultList: {
-    maxHeight: 240,
-  },
-  docResultListContent: {
-    paddingBottom: 4,
-  },
-  docResultRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 52,
-    paddingVertical: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
-    gap: 10,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  docResultAction: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: BLUE,
-  },
-  docResultActionMuted: {
-    color: SECONDARY,
-  },
-  searchField: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: 6,
-    paddingHorizontal: 12,
-    backgroundColor: FILL,
-    minHeight: 42,
-  },
-  searchIcon: {
-    marginRight: 8,
-  },
-  searchInput: {
-    flex: 1,
-    fontFamily,
-    fontSize: 16,
-    color: TEXT,
-    paddingVertical: 10,
-    outlineStyle: 'none',
-  },
-  storeList: {
-    flex: 1,
-    minHeight: 0,
-    ...Platform.select({
-      web: { overflow: 'auto' },
-      default: {},
-    }),
-  },
-  storePickRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 52,
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
-    gap: 10,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  modalBusy: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 36,
-  },
-  modalEmpty: {
-    fontFamily,
-    fontSize: 14,
-    color: SECONDARY,
-    textAlign: 'center',
-    paddingVertical: 28,
-  },
-  drawerRoot: {
-    flex: 1,
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-  },
-  drawerBackdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.28)',
-  },
-  drawerPanel: {
-    height: '100%',
-    backgroundColor: MOBILE.bg,
-    ...Platform.select({
-      web: { boxShadow: '-12px 0 32px rgba(0,0,0,0.18)' },
-      default: { elevation: 12 },
-    }),
-  },
-  drawerPanelMobile: {
-    backgroundColor: MOBILE.bg,
-  },
-  drawerTopBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 52,
-    paddingHorizontal: 8,
-    backgroundColor: '#fff',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: MOBILE.separator,
-  },
-  drawerTopBarMobile: {
-    paddingTop: Platform.OS === 'ios' ? 12 : 2,
-  },
-  drawerDone: {
-    width: 72,
-    minHeight: 44,
-    justifyContent: 'center',
-  },
-  drawerDoneText: {
-    fontFamily,
-    fontSize: 17,
-    fontWeight: '400',
-    color: MOBILE.blue,
-  },
-  drawerTitle: {
-    fontFamily,
-    flex: 1,
-    fontSize: 17,
-    fontWeight: '600',
-    color: MOBILE.label,
-    textAlign: 'center',
-    letterSpacing: -0.3,
-  },
-  drawerBody: {
-    flex: 1,
-    minHeight: 0,
-  },
-  drawerBodyContent: {
-    paddingHorizontal: 16,
-    paddingTop: 20,
-    paddingBottom: Math.max(32, mobileSafeBottom() + 16),
-    gap: 8,
-  },
-  drawerHero: {
-    alignItems: 'center',
-    paddingVertical: 8,
-    gap: 6,
-  },
-  drawerHeroRoute: {
-    fontFamily,
-    fontSize: 20,
-    fontWeight: '600',
-    color: MOBILE.label,
-    letterSpacing: -0.4,
-    textAlign: 'center',
-  },
-  drawerHeroMeta: {
-    fontFamily,
-    fontSize: 15,
-    color: MOBILE.secondary,
-    textAlign: 'center',
-  },
-  drawerStatusPill: {
-    marginTop: 4,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: '#fff',
-  },
-  drawerStatusText: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: MOBILE.label,
-  },
-  drawerSectionLabel: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '400',
-    color: MOBILE.secondary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    marginTop: 16,
-    marginBottom: 6,
-    marginLeft: 4,
-  },
-  drawerGroup: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    overflow: 'hidden',
-  },
-  drawerRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: MOBILE.separator,
-  },
-  drawerRowLast: {
-    borderBottomWidth: 0,
-  },
-  drawerRowLabel: {
-    fontFamily,
-    fontSize: 16,
-    color: MOBILE.secondary,
-  },
-  drawerRowValue: {
-    fontFamily,
-    flex: 1,
-    fontSize: 16,
-    color: MOBILE.label,
-    textAlign: 'right',
-  },
-  drawerEmpty: {
-    fontFamily,
-    fontSize: 15,
-    color: MOBILE.secondary,
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-  },
-  drawerItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: MOBILE.separator,
-  },
-  drawerItemLast: {
-    borderBottomWidth: 0,
-  },
-  drawerItemName: {
-    fontFamily,
-    fontSize: 16,
-    fontWeight: '600',
-    color: MOBILE.label,
-  },
-  drawerItemQty: {
-    fontFamily,
-    fontSize: 16,
-    fontWeight: '600',
-    color: MOBILE.label,
-    fontVariant: ['tabular-nums'],
   },
 });

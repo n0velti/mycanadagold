@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  FlatList,
   Image,
   Modal,
   Platform,
@@ -11,21 +12,54 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
+import { BlurView } from 'expo-blur';
 import { Ionicons } from '@expo/vector-icons';
 import { parseDocReference } from '../lib/transactions';
-import { MOBILE } from '../lib/mobileUi';
+import { FONT, T } from './TriageKit';
 
-const fontFamily = Platform.select({
-  ios: 'Sohne',
-  android: 'Sohne',
-  default: 'Sohne',
-});
+if (Platform.OS === 'web' && typeof document !== 'undefined') {
+  const styleId = 'cgold-triage-table-blur';
+  let style = document.getElementById(styleId);
+  if (!style) {
+    style = document.createElement('style');
+    style.id = styleId;
+    document.head.appendChild(style);
+  }
+  style.textContent = [
+    '.cgold-triage-table-blur{-webkit-backdrop-filter:saturate(180%) blur(18px);backdrop-filter:saturate(180%) blur(18px);background-color:rgba(246,246,249,0.78)!important;}',
+  ].join('');
+}
 
-const TEXT = '#1d1d1f';
-const SECONDARY = '#8e8e93';
-const FILL = '#e8e8ed';
+/** Row height used for FlatList layout hints; keep in sync with styles.tableRow. */
+export const TABLE_ROW_HEIGHT = 46;
+const HEADER_FALLBACK_HEIGHT = 32;
+const TOOLBAR_FALLBACK_HEIGHT = 34;
+
+/**
+ * Human label for a set of PO/SO rows: "PO", "SO", or "PO / SO" when mixed.
+ * `count` controls pluralisation ("3 POs", "1 SO", "4 PO / SO").
+ */
+export function docNoun(rows, count) {
+  let po = 0;
+  let so = 0;
+  for (const row of rows || []) {
+    if (row?.type === 'purchase') po += 1;
+    else if (row?.type === 'order' || row?.type === 'sale') so += 1;
+    else po += 1;
+  }
+  const n = count == null ? po + so : count;
+  if (po && !so) return n === 1 ? 'PO' : 'POs';
+  if (so && !po) return n === 1 ? 'SO' : 'SOs';
+  return 'PO / SO';
+}
+
+const fontFamily = FONT;
+
+const TEXT = T.text;
+const SECONDARY = T.secondary;
+const FILL = T.fill;
 const HAIRLINE = '#e5e5ea';
-const BLUE = MOBILE.blue;
+const BLUE = T.blue;
 
 export function uniqueLabels(values) {
   const seen = new Set();
@@ -98,17 +132,22 @@ export function matchesDocQuery(row, query) {
   return hay.includes(q.toLowerCase());
 }
 
-export function TableCell({ children, flex = 1, minWidth = 88, width, last }) {
+export function TableCell({ children, flex = 1, minWidth = 88, width, last, align = 'left' }) {
+  const alignStyle = align === 'right' ? styles.tableCellRight : null;
   return (
     <View
       style={[
         styles.tableCell,
         width ? { width, flexGrow: 0, flexShrink: 0 } : { flex, minWidth },
         last && styles.tableCellLast,
+        alignStyle,
       ]}
     >
       {typeof children === 'string' || children == null ? (
-        <Text style={styles.tableCellText} numberOfLines={1}>
+        <Text
+          style={[styles.tableCellText, align === 'right' && styles.tableCellTextRight]}
+          numberOfLines={1}
+        >
           {children || '—'}
         </Text>
       ) : (
@@ -118,12 +157,51 @@ export function TableCell({ children, flex = 1, minWidth = 88, width, last }) {
   );
 }
 
-export function TableStrong({ children }) {
+export function TableStrong({ children, align }) {
   return (
-    <Text style={styles.tableCellStrong} numberOfLines={1}>
+    <Text style={[styles.tableCellStrong, align === 'right' && styles.tableCellTextRight]} numberOfLines={1}>
       {children || '—'}
     </Text>
   );
+}
+
+const STATUS_TONES = {
+  neutral: T.secondary,
+  blue: T.blue,
+  green: '#248A3D',
+  orange: '#C93400',
+  red: '#D70015',
+};
+
+/** Compact status text with a leading dot, coloured by tone. */
+export function TableStatus({ label, tone = 'neutral', sub }) {
+  const color = STATUS_TONES[tone] || STATUS_TONES.neutral;
+  return (
+    <View>
+      <View style={styles.statusRow}>
+        <View style={[styles.statusDot, { backgroundColor: color }]} />
+        <Text style={[styles.statusText, { color }]} numberOfLines={1}>
+          {label}
+        </Text>
+      </View>
+      {sub ? <TableMuted>{sub}</TableMuted> : null}
+    </View>
+  );
+}
+
+/** Sort a list of rows by a string/number getter and direction. */
+export function sortRows(rows, getValue, dir) {
+  if (!dir || !getValue) return rows;
+  const sign = dir === 'desc' ? -1 : 1;
+  return [...rows].sort((a, b) => {
+    const av = getValue(a);
+    const bv = getValue(b);
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * sign;
+    return String(av).localeCompare(String(bv), undefined, { sensitivity: 'base', numeric: true }) * sign;
+  });
 }
 
 export function TablePhotoCell({ children }) {
@@ -144,8 +222,15 @@ export function TableRowPressable({ last, onPress, accessibilityLabel, children 
   );
 }
 
-export function TableRow({ last, children }) {
-  return <View style={[styles.tableRow, last && styles.tableRowLast]}>{children}</View>;
+export function TableRow({ last, children, style, webClassName }) {
+  return (
+    <View
+      style={[styles.tableRow, last && styles.tableRowLast, style]}
+      {...(Platform.OS === 'web' && webClassName ? { className: webClassName } : null)}
+    >
+      {children}
+    </View>
+  );
 }
 
 export function TableRowMain({ onPress, accessibilityLabel, children }) {
@@ -204,19 +289,79 @@ export function TableEmpty({ children }) {
   return <Text style={styles.tableEmpty}>{children}</Text>;
 }
 
-export function TableFrame({ minWidth, header, children }) {
+/**
+ * Table shell: a blurred, sticky filter bar (optional toolbar line + column
+ * headers) floating over a virtualized body. Pass `data`/`renderItem` for the
+ * FlatList path, or `children` for small static tables.
+ */
+export function TableFrame({
+  minWidth,
+  header,
+  toolbar,
+  data,
+  renderItem,
+  keyExtractor,
+  ListEmptyComponent,
+  children,
+  extraData,
+}) {
   const { width } = useWindowDimensions();
+  const [chromeHeight, setChromeHeight] = useState(
+    HEADER_FALLBACK_HEIGHT + (toolbar ? TOOLBAR_FALLBACK_HEIGHT : 0),
+  );
+  const onChromeLayout = useCallback((event) => {
+    const next = Math.ceil(event.nativeEvent.layout.height);
+    if (next > 0) setChromeHeight((current) => (current === next ? current : next));
+  }, []);
+  const getItemLayout = useCallback(
+    (_, index) => ({ length: TABLE_ROW_HEIGHT, offset: TABLE_ROW_HEIGHT * index, index }),
+    [],
+  );
+  const bodyPad = useMemo(() => ({ paddingTop: chromeHeight }), [chromeHeight]);
+
+  const chrome = (
+    <BlurView
+      intensity={60}
+      tint="light"
+      style={styles.tableChrome}
+      onLayout={onChromeLayout}
+      {...(Platform.OS === 'web' ? { className: 'cgold-triage-table-blur' } : null)}
+    >
+      {toolbar ? <View style={styles.tableToolbarInner}>{toolbar}</View> : null}
+      <View style={styles.tableHeader}>{header}</View>
+    </BlurView>
+  );
+
   const inner = (
     <View style={[styles.tableCard, { minWidth }]}>
-      <View style={styles.tableHeader}>{header}</View>
-      <ScrollView
-        style={styles.tableBody}
-        contentContainerStyle={styles.tableBodyContent}
-        nestedScrollEnabled
-        keyboardShouldPersistTaps="handled"
-      >
-        {children}
-      </ScrollView>
+      {Array.isArray(data) ? (
+        <FlatList
+          style={styles.tableBody}
+          contentContainerStyle={[styles.tableBodyContent, bodyPad]}
+          data={data}
+          renderItem={renderItem}
+          keyExtractor={keyExtractor}
+          extraData={extraData}
+          ListEmptyComponent={ListEmptyComponent}
+          getItemLayout={getItemLayout}
+          initialNumToRender={18}
+          maxToRenderPerBatch={16}
+          windowSize={7}
+          removeClippedSubviews={Platform.OS !== 'web'}
+          keyboardShouldPersistTaps="handled"
+          nestedScrollEnabled
+        />
+      ) : (
+        <ScrollView
+          style={styles.tableBody}
+          contentContainerStyle={[styles.tableBodyContent, bodyPad]}
+          nestedScrollEnabled
+          keyboardShouldPersistTaps="handled"
+        >
+          {children}
+        </ScrollView>
+      )}
+      {chrome}
     </View>
   );
 
@@ -246,11 +391,16 @@ export function ColumnFilter({
   onOpenKey,
   style,
   align = 'start',
+  sortDir,
+  onSort,
+  sortOnly = false,
 }) {
   const open = openKey === columnKey;
   const [query, setQuery] = useState('');
   const selected = selectedLabels(value);
   const active = selected.length > 0;
+  const sorted = Boolean(sortDir);
+  const handleChange = onChange || (() => {});
 
   useEffect(() => {
     if (!open) setQuery('');
@@ -269,7 +419,7 @@ export function ColumnFilter({
       .toLowerCase();
     if (!key) return;
     const exists = selected.some((item) => item.toLowerCase() === key);
-    onChange(exists ? selected.filter((item) => item.toLowerCase() !== key) : [...selected, option]);
+    handleChange(exists ? selected.filter((item) => item.toLowerCase() !== key) : [...selected, option]);
   };
 
   return (
@@ -283,13 +433,17 @@ export function ColumnFilter({
           active ? `${label} filter, ${selected.length} selected` : `Filter ${label}`
         }
       >
-        <Text style={[styles.colFilterLabel, active && styles.colFilterLabelOn]} numberOfLines={1}>
+        <Text
+          style={[styles.colFilterLabel, (active || sorted) && styles.colFilterLabelOn]}
+          numberOfLines={1}
+        >
           {label}
         </Text>
+        {active ? <View style={styles.colFilterBadge}><Text style={styles.colFilterBadgeText}>{selected.length}</Text></View> : null}
         <Ionicons
-          name={active ? 'funnel' : 'chevron-down'}
+          name={sorted ? (sortDir === 'desc' ? 'arrow-down' : 'arrow-up') : 'chevron-down'}
           size={11}
-          color={active || open ? BLUE : SECONDARY}
+          color={active || open || sorted ? BLUE : SECONDARY}
         />
       </Pressable>
       {open ? (
@@ -300,7 +454,7 @@ export function ColumnFilter({
             <Text style={styles.colFilterMenuTitle}>{label}</Text>
             {active ? (
               <Pressable
-                onPress={() => onChange([])}
+                onPress={() => handleChange([])}
                 hitSlop={8}
                 accessibilityRole="button"
                 accessibilityLabel={`Clear ${label} filter`}
@@ -309,54 +463,85 @@ export function ColumnFilter({
               </Pressable>
             ) : null}
           </View>
-          <View style={styles.colFilterSearch}>
-            <Ionicons name="search" size={15} color={SECONDARY} />
-            <TextInput
-              style={styles.colFilterInput}
-              value={query}
-              onChangeText={setQuery}
-              placeholder="Search"
-              placeholderTextColor={SECONDARY}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-          </View>
-          <ScrollView
-            style={styles.colFilterList}
-            keyboardShouldPersistTaps="handled"
-            nestedScrollEnabled
-          >
-            {results.length === 0 ? (
-              <Text style={styles.colFilterEmpty}>
-                {query.trim() ? 'No matching values' : 'No values'}
-              </Text>
-            ) : (
-              results.map((option) => {
-                const on = selected.some((item) => item.toLowerCase() === option.toLowerCase());
+          {onSort ? (
+            <View style={styles.colFilterSortRow}>
+              {[
+                { dir: 'asc', label: 'A → Z', icon: 'arrow-up' },
+                { dir: 'desc', label: 'Z → A', icon: 'arrow-down' },
+              ].map((option) => {
+                const on = sortDir === option.dir;
                 return (
                   <Pressable
-                    key={option}
-                    style={styles.colFilterOption}
-                    onPress={() => toggle(option)}
-                    accessibilityRole="checkbox"
-                    accessibilityState={{ checked: on }}
+                    key={option.dir}
+                    style={[styles.colFilterSort, on && styles.colFilterSortOn]}
+                    onPress={() => onSort(on ? null : option.dir)}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: on }}
+                    accessibilityLabel={`Sort ${label} ${option.label}`}
                   >
-                    <Ionicons
-                      name={on ? 'checkmark-circle' : 'ellipse-outline'}
-                      size={22}
-                      color={on ? BLUE : '#C7C7CC'}
-                    />
-                    <Text
-                      style={[styles.colFilterOptionText, on && styles.colFilterOptionOn]}
-                      numberOfLines={1}
-                    >
-                      {option}
+                    <Ionicons name={option.icon} size={12} color={on ? '#fff' : TEXT} />
+                    <Text style={[styles.colFilterSortText, on && styles.colFilterSortTextOn]}>
+                      {option.label}
                     </Text>
                   </Pressable>
                 );
-              })
-            )}
-          </ScrollView>
+              })}
+            </View>
+          ) : null}
+          {sortOnly ? (
+            <View style={styles.colFilterSortSpacer} />
+          ) : (
+            <>
+              <View style={styles.colFilterSearch}>
+                <Ionicons name="search" size={15} color={SECONDARY} />
+                <TextInput
+                  style={styles.colFilterInput}
+                  value={query}
+                  onChangeText={setQuery}
+                  placeholder="Search"
+                  placeholderTextColor={SECONDARY}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </View>
+              <ScrollView
+                style={styles.colFilterList}
+                keyboardShouldPersistTaps="handled"
+                nestedScrollEnabled
+              >
+                {results.length === 0 ? (
+                  <Text style={styles.colFilterEmpty}>
+                    {query.trim() ? 'No matching values' : 'No values'}
+                  </Text>
+                ) : (
+                  results.map((option) => {
+                    const on = selected.some((item) => item.toLowerCase() === option.toLowerCase());
+                    return (
+                      <Pressable
+                        key={option}
+                        style={styles.colFilterOption}
+                        onPress={() => toggle(option)}
+                        accessibilityRole="checkbox"
+                        accessibilityState={{ checked: on }}
+                      >
+                        <Ionicons
+                          name={on ? 'checkmark-circle' : 'ellipse-outline'}
+                          size={22}
+                          color={on ? BLUE : '#C7C7CC'}
+                        />
+                        <Text
+                          style={[styles.colFilterOptionText, on && styles.colFilterOptionOn]}
+                          numberOfLines={1}
+                        >
+                          {option}
+                        </Text>
+                      </Pressable>
+                    );
+                  })
+                )}
+              </ScrollView>
+            </>
+          )}
           <Pressable
             style={styles.colFilterDone}
             onPress={() => onOpenKey(null)}
@@ -371,14 +556,15 @@ export function ColumnFilter({
   );
 }
 
-export function PoThumb({ urls, label }) {
+export const PoThumb = memo(function PoThumb({ urls, label }) {
   const [open, setOpen] = useState(false);
   const [failed, setFailed] = useState(false);
   const photos = Array.isArray(urls) ? urls.filter(Boolean) : [];
+  const firstPhoto = photos[0];
 
   useEffect(() => {
     setFailed(false);
-  }, [photos[0]]);
+  }, [firstPhoto]);
 
   if (!photos.length || failed) {
     return (
@@ -406,25 +592,27 @@ export function PoThumb({ urls, label }) {
           onError={() => setFailed(true)}
         />
       </Pressable>
-      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
-        <View style={styles.photoViewerRoot}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setOpen(false)} />
-          <View style={styles.photoViewerSheet} pointerEvents="box-none">
-            <View style={styles.photoViewerBar}>
-              <Text style={styles.photoViewerTitle} numberOfLines={1}>
-                {label}
-              </Text>
-              <Pressable onPress={() => setOpen(false)} hitSlop={8} accessibilityLabel="Close photo">
-                <Ionicons name="close" size={20} color={TEXT} />
-              </Pressable>
+      {open ? (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+          <View style={styles.photoViewerRoot}>
+            <Pressable style={StyleSheet.absoluteFill} onPress={() => setOpen(false)} />
+            <View style={styles.photoViewerSheet} pointerEvents="box-none">
+              <View style={styles.photoViewerBar}>
+                <Text style={styles.photoViewerTitle} numberOfLines={1}>
+                  {label}
+                </Text>
+                <Pressable onPress={() => setOpen(false)} hitSlop={8} accessibilityLabel="Close photo">
+                  <Ionicons name="close" size={20} color={TEXT} />
+                </Pressable>
+              </View>
+              <Image source={{ uri: photos[0] }} style={styles.photoViewerImage} resizeMode="contain" />
             </View>
-            <Image source={{ uri: photos[0] }} style={styles.photoViewerImage} resizeMode="contain" />
           </View>
-        </View>
-      </Modal>
+        </Modal>
+      ) : null}
     </>
   );
-}
+});
 
 const styles = StyleSheet.create({
   tableToolbar: {
@@ -466,16 +654,33 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  tableHeader: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
-    minHeight: 36,
-    backgroundColor: '#f2f2f7',
+  tableChrome: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 8,
     borderTopLeftRadius: 12,
     borderTopRightRadius: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#d1d1d6',
-    zIndex: 8,
+    backgroundColor: 'rgba(246,246,249,0.9)',
+  },
+  tableToolbarInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    minHeight: 34,
+    paddingLeft: 14,
+    paddingRight: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(60,60,67,0.12)',
+  },
+  tableHeader: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    minHeight: 32,
     overflow: 'visible',
   },
   tableBody: {
@@ -488,7 +693,7 @@ const styles = StyleSheet.create({
   tableRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 52,
+    height: TABLE_ROW_HEIGHT,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: HAIRLINE,
     backgroundColor: '#fff',
@@ -509,18 +714,91 @@ const styles = StyleSheet.create({
     }),
   },
   tableCell: {
-    minHeight: 52,
+    height: TABLE_ROW_HEIGHT,
     paddingHorizontal: 8,
     justifyContent: 'center',
   },
   tableCellLast: {
     paddingRight: 14,
   },
+  tableCellRight: {
+    alignItems: 'flex-end',
+  },
   tableCellText: {
     fontFamily,
     fontSize: 13,
     color: TEXT,
     letterSpacing: -0.08,
+  },
+  tableCellTextRight: {
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
+  statusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  statusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+  },
+  statusText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    letterSpacing: -0.08,
+  },
+  colFilterBadge: {
+    minWidth: 16,
+    height: 16,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    backgroundColor: BLUE,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  colFilterBadgeText: {
+    fontFamily,
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  colFilterSortRow: {
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingTop: 8,
+  },
+  colFilterSortSpacer: {
+    height: 8,
+  },
+  colFilterSort: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    height: 30,
+    borderRadius: 8,
+    backgroundColor: FILL,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  colFilterSortOn: {
+    backgroundColor: BLUE,
+  },
+  colFilterSortText: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: TEXT,
+  },
+  colFilterSortTextOn: {
+    color: '#fff',
   },
   tableCellStrong: {
     fontFamily,
@@ -531,9 +809,9 @@ const styles = StyleSheet.create({
   },
   tableCellMuted: {
     fontFamily,
-    fontSize: 12,
+    fontSize: 11.5,
     color: SECONDARY,
-    marginTop: 1,
+    marginTop: 0,
   },
   tableActions: {
     width: 64,
@@ -559,12 +837,12 @@ const styles = StyleSheet.create({
   },
   tableDeleteText: {
     fontFamily,
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '400',
     color: '#FF3B30',
   },
   tablePhotoCell: {
-    width: 52,
+    width: 46,
     flexGrow: 0,
     flexShrink: 0,
     alignItems: 'center',
@@ -573,10 +851,10 @@ const styles = StyleSheet.create({
   },
   tableEmpty: {
     fontFamily,
-    fontSize: 14,
+    fontSize: 13,
     color: SECONDARY,
     textAlign: 'center',
-    paddingVertical: 36,
+    paddingVertical: 32,
     paddingHorizontal: 16,
   },
   colFilter: {
@@ -585,7 +863,7 @@ const styles = StyleSheet.create({
     overflow: 'visible',
   },
   colFilterHit: {
-    minHeight: 36,
+    minHeight: 32,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
@@ -601,7 +879,7 @@ const styles = StyleSheet.create({
   colFilterLabel: {
     fontFamily,
     flexShrink: 1,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
     color: SECONDARY,
     letterSpacing: 0.2,
@@ -612,7 +890,7 @@ const styles = StyleSheet.create({
   },
   colFilterMenu: {
     position: 'absolute',
-    top: 38,
+    top: 34,
     left: 4,
     width: 248,
     backgroundColor: 'rgba(255,255,255,0.96)',
@@ -718,16 +996,16 @@ const styles = StyleSheet.create({
     paddingVertical: 18,
   },
   poThumbSlot: {
-    width: 44,
-    height: 44,
+    width: 36,
+    height: 36,
     borderRadius: 8,
     backgroundColor: FILL,
     alignItems: 'center',
     justifyContent: 'center',
   },
   poThumbPress: {
-    width: 44,
-    height: 44,
+    width: 36,
+    height: 36,
     borderRadius: 8,
     overflow: 'hidden',
     ...Platform.select({
@@ -736,8 +1014,8 @@ const styles = StyleSheet.create({
     }),
   },
   poThumb: {
-    width: 44,
-    height: 44,
+    width: 36,
+    height: 36,
     backgroundColor: FILL,
   },
   photoViewerRoot: {
