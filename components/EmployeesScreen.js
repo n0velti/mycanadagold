@@ -249,16 +249,25 @@ function StaffEmployeeDetail({ person, onClose, compact, onOpenPhoto }) {
   );
 }
 
-function AppEmployeesPanel({ session, onProfileUpdated }) {
+function locationMatchesStore(locationName, storeName) {
+  const store = String(storeName || '').trim().toLowerCase();
+  const location = String(locationName || '').trim().toLowerCase();
+  if (!store || !location) return false;
+  if (location === store) return true;
+  return location.includes(store) || store.includes(location);
+}
+
+function AppEmployeesPanel({ session, onProfileUpdated, storeFilter }) {
   const { width } = useWindowDimensions();
   const isMobile = width < MOBILE_BREAKPOINT;
   const { canFilter } = useAppAccess();
-  const allowFilters = canFilter('employees');
+  const lockedLocation = String(storeFilter || '').trim();
+  const allowFilters = canFilter('employees') && !lockedLocation;
   const [people, setPeople] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
-  const [location, setLocation] = useState(null);
+  const [location, setLocation] = useState(lockedLocation || null);
   const [selectedId, setSelectedId] = useState(null);
   const [photoPerson, setPhotoPerson] = useState(null);
   const onProfileUpdatedRef = useRef(onProfileUpdated);
@@ -296,8 +305,12 @@ function AppEmployeesPanel({ session, onProfileUpdated }) {
   }, [load]);
 
   useEffect(() => {
+    if (lockedLocation) {
+      setLocation(lockedLocation);
+      return;
+    }
     if (!allowFilters) setLocation(null);
-  }, [allowFilters]);
+  }, [allowFilters, lockedLocation]);
 
   const locations = useMemo(() => {
     const names = new Set();
@@ -310,7 +323,11 @@ function AppEmployeesPanel({ session, onProfileUpdated }) {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return people.filter((row) => {
-      if (location && row.locationName !== location) return false;
+      if (lockedLocation) {
+        if (!locationMatchesStore(row.locationName, lockedLocation)) return false;
+      } else if (location && row.locationName !== location) {
+        return false;
+      }
       if (!q) return true;
       const haystack = [
         staffDisplayName(row),
@@ -326,7 +343,7 @@ function AppEmployeesPanel({ session, onProfileUpdated }) {
         .toLowerCase();
       return haystack.includes(q);
     });
-  }, [people, query, location]);
+  }, [people, query, location, lockedLocation]);
 
   const selected = useMemo(
     () => filtered.find((row) => row.id === selectedId) || null,
@@ -382,7 +399,9 @@ function AppEmployeesPanel({ session, onProfileUpdated }) {
       ) : null}
 
       <Text style={styles.directoryHint}>
-        Employees who have signed in
+        {lockedLocation
+          ? `Employees at ${lockedLocation}`
+          : 'Employees who have signed in'}
         {people.length ? ` · ${people.length}` : ''}
       </Text>
 
@@ -407,7 +426,7 @@ function AppEmployeesPanel({ session, onProfileUpdated }) {
               {filtered.length === 0 ? (
                 <View style={styles.empty}>
                   <Text style={styles.emptyText}>
-                    {query.trim() || location
+                    {query.trim() || location || lockedLocation
                       ? 'No employees match the current filters.'
                       : 'No employees have signed in yet.'}
                   </Text>
@@ -1190,16 +1209,27 @@ function RipplingPanel() {
   );
 }
 
-export default function EmployeesScreen({ session, onProfileUpdated }) {
+export default function EmployeesScreen({
+  session,
+  onProfileUpdated,
+  storeFilter,
+  embedded = false,
+}) {
   const [activeTab, setActiveTab] = useState(() =>
-    readRipplingOAuthCallback() ? 'rippling' : 'employees',
+    !embedded && readRipplingOAuthCallback() ? 'rippling' : 'employees',
   );
 
   return (
     <View style={styles.screen}>
-      <TabBar options={EMPLOYEE_TABS} value={activeTab} onChange={setActiveTab} />
+      {embedded ? null : (
+        <TabBar options={EMPLOYEE_TABS} value={activeTab} onChange={setActiveTab} />
+      )}
       {activeTab === 'employees' ? (
-        <AppEmployeesPanel session={session} onProfileUpdated={onProfileUpdated} />
+        <AppEmployeesPanel
+          session={session}
+          onProfileUpdated={onProfileUpdated}
+          storeFilter={storeFilter}
+        />
       ) : (
         <RipplingPanel />
       )}

@@ -23,13 +23,14 @@ import {
   ERROR_TYPES,
   fieldChanged,
   isWeightUnit,
+  MAX_REVIEW_IMAGES,
   normalizeDraft,
   normalizeReviewImages,
 } from '../lib/triageDraft';
 import TriageCorrectionImages from './TriageCorrectionImages';
 import { FONT, T, TextAction, TriageDrawer, useHeldValue } from './TriageKit';
+import { useIsMobile } from '../lib/mobileUi';
 import {
-  createClient,
   fetchLookupLocations,
   fetchLookupUsers,
   mergeEmployeeOptions,
@@ -39,7 +40,6 @@ import {
 import { catalogProductOptions, fetchWebsitePrices, filterCatalogProductOptions } from '../lib/websitePrices';
 
 const fontFamily = FONT;
-const BLUE = T.blue;
 const TEXT = T.text;
 const SECONDARY = T.secondary;
 const HAIRLINE = T.hairline;
@@ -82,17 +82,18 @@ function ChangedOriginal({ field, onReverse }) {
 }
 
 function CorrectableField({ label, field, onChange, keyboardType, last, suffix }) {
+  const stacked = useIsMobile();
   const changed = fieldChanged(field);
   const reverse = () => onChange(field.original ?? '');
   return (
     <View style={[styles.iosRowWrap, last && styles.iosRowLast]}>
-      <View style={styles.iosRow}>
-        {label ? <Text style={styles.iosRowLabel}>{label}</Text> : null}
+      <View style={[styles.iosRow, stacked && styles.iosRowStacked]}>
+        {label ? <Text style={[styles.iosRowLabel, stacked && styles.iosRowLabelStacked]}>{label}</Text> : null}
         <View style={styles.iosRowControl}>
           <ChangedOriginal field={field} onReverse={reverse} />
           <View style={styles.valueRow}>
             <TextInput
-              style={[styles.iosRowInput, changed && styles.iosRowInputChanged]}
+              style={[styles.iosRowInput, stacked && styles.iosRowInputStacked, changed && styles.iosRowInputChanged]}
               value={field.value}
               onChangeText={onChange}
               placeholder="Edit"
@@ -122,6 +123,7 @@ function LookupField({
   rightAction,
   last,
 }) {
+  const stacked = useIsMobile();
   const changed = fieldChanged(field);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState(field.value || '');
@@ -241,14 +243,14 @@ function LookupField({
 
   return (
     <View style={[styles.iosRowWrap, last && styles.iosRowLast, styles.lookupBlock]}>
-      <View style={styles.iosRow}>
-        {label ? <Text style={styles.iosRowLabel}>{label}</Text> : null}
+      <View style={[styles.iosRow, stacked && styles.iosRowStacked]}>
+        {label ? <Text style={[styles.iosRowLabel, stacked && styles.iosRowLabelStacked]}>{label}</Text> : null}
         <View style={styles.iosRowControl}>
           <ChangedOriginal field={field} onReverse={reverse} />
           <View style={styles.lookupRow}>
             <View style={styles.lookupInputWrap}>
               <TextInput
-                style={[styles.iosRowInput, changed && styles.iosRowInputChanged]}
+                style={[styles.iosRowInput, stacked && styles.iosRowInputStacked, changed && styles.iosRowInputChanged]}
                 value={query}
                 onChangeText={(value) => {
                   setQuery(value);
@@ -333,55 +335,60 @@ function LookupField({
   );
 }
 
-function NewCustomerPanel({ onCancel, onCreated, token, baseUrl }) {
+function NewCustomerPanel({ onCancel, onCreated }) {
+  const stacked = useIsMobile();
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
-  const save = async () => {
-    setBusy(true);
-    setError('');
-    try {
-      const created = await createClient(token, { firstName, lastName, email, phone }, baseUrl);
-      onCreated(created);
-    } catch (err) {
-      setError(err?.message || 'Could not add customer.');
-    } finally {
-      setBusy(false);
+  const save = () => {
+    const first = firstName.trim();
+    const last = lastName.trim();
+    const label = [first, last].filter(Boolean).join(' ');
+    if (!label) {
+      setError('Enter a customer name.');
+      return;
     }
+    onCreated({
+      id: `local-${Date.now()}`,
+      label,
+      firstName: first,
+      lastName: last,
+      email: email.trim(),
+      phone: phone.trim(),
+    });
   };
 
   return (
     <View style={styles.newCustomerCard}>
       <Text style={styles.groupHeader}>New customer</Text>
       <View style={styles.group}>
-        <View style={styles.iosRow}>
-          <Text style={styles.iosRowLabel}>First</Text>
+        <View style={[styles.iosRow, stacked && styles.iosRowStacked]}>
+          <Text style={[styles.iosRowLabel, stacked && styles.iosRowLabelStacked]}>First</Text>
           <TextInput
-            style={styles.iosRowInput}
+            style={[styles.iosRowInput, stacked && styles.iosRowInputStacked]}
             value={firstName}
             onChangeText={setFirstName}
             placeholder="First name"
             placeholderTextColor="#c7c7cc"
           />
         </View>
-        <View style={styles.iosRow}>
-          <Text style={styles.iosRowLabel}>Last</Text>
+        <View style={[styles.iosRow, stacked && styles.iosRowStacked]}>
+          <Text style={[styles.iosRowLabel, stacked && styles.iosRowLabelStacked]}>Last</Text>
           <TextInput
-            style={styles.iosRowInput}
+            style={[styles.iosRowInput, stacked && styles.iosRowInputStacked]}
             value={lastName}
             onChangeText={setLastName}
             placeholder="Last name"
             placeholderTextColor="#c7c7cc"
           />
         </View>
-        <View style={styles.iosRow}>
-          <Text style={styles.iosRowLabel}>Email</Text>
+        <View style={[styles.iosRow, stacked && styles.iosRowStacked]}>
+          <Text style={[styles.iosRowLabel, stacked && styles.iosRowLabelStacked]}>Email</Text>
           <TextInput
-            style={styles.iosRowInput}
+            style={[styles.iosRowInput, stacked && styles.iosRowInputStacked]}
             value={email}
             onChangeText={setEmail}
             placeholder="name@email.com"
@@ -390,10 +397,10 @@ function NewCustomerPanel({ onCancel, onCreated, token, baseUrl }) {
             keyboardType="email-address"
           />
         </View>
-        <View style={[styles.iosRow, styles.iosRowLast]}>
-          <Text style={styles.iosRowLabel}>Phone</Text>
+        <View style={[styles.iosRow, styles.iosRowLast, stacked && styles.iosRowStacked]}>
+          <Text style={[styles.iosRowLabel, stacked && styles.iosRowLabelStacked]}>Phone</Text>
           <TextInput
-            style={styles.iosRowInput}
+            style={[styles.iosRowInput, stacked && styles.iosRowInputStacked]}
             value={phone}
             onChangeText={setPhone}
             placeholder="Optional"
@@ -405,7 +412,7 @@ function NewCustomerPanel({ onCancel, onCreated, token, baseUrl }) {
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
       <View style={styles.newCustomerActions}>
         <TextAction label="Cancel" onPress={onCancel} accessibilityLabel="Cancel new customer" />
-        {busy ? <ActivityIndicator color={BLUE} /> : <TextAction label="Add" strong onPress={save} accessibilityLabel="Add customer" />}
+        <TextAction label="Add" strong onPress={save} accessibilityLabel="Add customer" />
       </View>
     </View>
   );
@@ -430,8 +437,16 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
   const [employees, setEmployees] = useState([]);
   const [pricingOptions, setPricingOptions] = useState([]);
   const [addingCustomer, setAddingCustomer] = useState(false);
+  const imagesRef = useRef(null);
   const detailRequestId = useRef(0);
+  const openedIdRef = useRef(null);
+  const rowRef = useRef(row);
+  const reviewRef = useRef(review);
+  const sessionRef = useRef(session);
   const onHydrateRef = useRef(onHydrate);
+  rowRef.current = row;
+  reviewRef.current = review;
+  sessionRef.current = session;
   onHydrateRef.current = onHydrate;
 
   const reset = useCallback(() => {
@@ -452,6 +467,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
       setMounted(true);
       return undefined;
     }
+    openedIdRef.current = null;
     const timer = setTimeout(() => {
       setMounted(false);
       reset();
@@ -460,24 +476,28 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
   }, [reset, visible]);
 
   useEffect(() => {
-    if (!visible || !row) return;
+    if (!visible) return;
+    const current = rowRef.current;
+    if (!current?.id || openedIdRef.current === current.id) return;
 
-    setActiveRow(row);
+    openedIdRef.current = current.id;
+    setActiveRow(current);
     setAddingCustomer(false);
     setStep('edit');
     const id = ++detailRequestId.current;
-    if (review?.draft) {
-      setDraft(normalizeDraft(review.draft));
-      setNote(review.note || '');
-      setErrorType(review.errorType || '');
-      setErrorAmount(String(review.errorAmount || '').replace(/^\$/, ''));
-      setImages(normalizeReviewImages(review.images));
+    const existingReview = reviewRef.current || current.review;
+    if (existingReview?.draft) {
+      setDraft(normalizeDraft(existingReview.draft));
+      setNote(existingReview.note || '');
+      setErrorType(existingReview.errorType || '');
+      setErrorAmount(String(existingReview.errorAmount || '').replace(/^\$/, ''));
+      setImages(normalizeReviewImages(existingReview.images));
       setDetailLoading(false);
       setDetailError('');
       return;
     }
 
-    setDraft(buildDraft(row, null));
+    setDraft(buildDraft(current, null));
     setNote('');
     setErrorType('');
     setErrorAmount('');
@@ -485,15 +505,15 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
     setDetailLoading(true);
     setDetailError('');
 
-    const auth = resolvePosAuthForRow(session, row);
+    const auth = resolvePosAuthForRow(sessionRef.current, current);
     fetchTransactionDetail(auth.token, {
-      type: row.type,
-      sourceId: row.sourceId,
+      type: current.type,
+      sourceId: current.sourceId,
       baseUrl: auth.baseUrl,
     })
       .then((detail) => {
         if (id !== detailRequestId.current) return;
-        const enriched = withLineItems(row, detail);
+        const enriched = withLineItems(current, detail);
         setActiveRow(enriched);
         setDraft(buildDraft(enriched, detail));
         onHydrateRef.current?.(enriched);
@@ -505,7 +525,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
       .finally(() => {
         if (id === detailRequestId.current) setDetailLoading(false);
       });
-  }, [review, row, session, visible]);
+  }, [row?.id, visible]);
 
   useEffect(() => {
     if (!visible) return undefined;
@@ -629,12 +649,28 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
       rightLabel={step === 'edit' ? 'Next' : 'Done'}
       onRight={step === 'edit' ? () => setStep('note') : finish}
       rightDisabled={step === 'edit' && detailLoading}
-      widthRatio={0.56}
-      minWidth={520}
+      rightLeading={
+        <Pressable
+          style={[
+            styles.addImageBtn,
+            isMobile && styles.addImageBtnMobile,
+            images.length >= MAX_REVIEW_IMAGES && styles.addImageBtnDisabled,
+          ]}
+          onPress={() => imagesRef.current?.addImage?.()}
+          disabled={images.length >= MAX_REVIEW_IMAGES}
+          accessibilityRole="button"
+          accessibilityLabel="Add image"
+        >
+          <Ionicons name="image-outline" size={18} color={TEXT} />
+          <Text style={styles.addImageBtnText}>Add image</Text>
+        </Pressable>
+      }
+      widthRatio={0.78}
+      minWidth={720}
     >
           {detailLoading && step === 'edit' ? (
             <View style={styles.inlineBusy}>
-              <ActivityIndicator color={BLUE} />
+              <ActivityIndicator color={TEXT} />
               <Text style={styles.metaText}>Loading document…</Text>
             </View>
           ) : null}
@@ -643,16 +679,13 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
           {step === 'edit' ? (
             <ScrollView
               style={styles.body}
-              contentContainerStyle={styles.editContent}
+              contentContainerStyle={[styles.editContent, isMobile && styles.editContentMobile]}
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
             >
               <Text style={styles.groupHeader}>Details</Text>
-              <Text style={styles.editHint}>Tap a value to edit</Text>
               {addingCustomer ? (
                 <NewCustomerPanel
-                  token={auth.token}
-                  baseUrl={auth.baseUrl}
                   onCancel={() => setAddingCustomer(false)}
                   onCreated={(created) => {
                     updateHeader('customer', created.label);
@@ -674,7 +707,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
                           onPress={() => setAddingCustomer(true)}
                           accessibilityLabel="New customer"
                         >
-                          <Ionicons name="add-circle-outline" size={22} color={BLUE} />
+                          <Ionicons name="add-circle-outline" size={22} color={TEXT} />
                         </Pressable>
                       }
                     />
@@ -789,13 +822,20 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
 
               <Text style={styles.groupHeader}>Photos</Text>
               <View style={styles.groupPadded}>
-                <TriageCorrectionImages images={images} onChange={setImages} compact={isMobile} hideHeading />
+                <TriageCorrectionImages
+                  ref={imagesRef}
+                  images={images}
+                  onChange={setImages}
+                  compact={isMobile}
+                  hideHeading
+                  hideActions
+                />
               </View>
             </ScrollView>
           ) : (
             <ScrollView
               style={styles.body}
-              contentContainerStyle={styles.editContent}
+              contentContainerStyle={[styles.editContent, isMobile && styles.editContentMobile]}
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
             >
@@ -831,7 +871,14 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
 
               <Text style={styles.groupHeader}>Photos</Text>
               <View style={styles.groupPadded}>
-                <TriageCorrectionImages images={images} onChange={setImages} compact={isMobile} hideHeading />
+                <TriageCorrectionImages
+                  ref={imagesRef}
+                  images={images}
+                  onChange={setImages}
+                  compact={isMobile}
+                  hideHeading
+                  hideActions
+                />
               </View>
 
               <Text style={styles.groupHeader}>Type of error</Text>
@@ -887,31 +934,83 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
   },
+  addImageBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    minHeight: 36,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: HAIRLINE,
+    backgroundColor: '#fff',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  addImageBtnMobile: {
+    minHeight: 44,
+    width: '100%',
+  },
+  addImageBtnDisabled: {
+    opacity: 0.35,
+  },
+  addImageBtnText: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: TEXT,
+  },
   editContent: {
+    paddingHorizontal: 28,
+    paddingTop: 16,
+    paddingBottom: 40,
+  },
+  editContentMobile: {
     paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 32,
+    paddingTop: 12,
+    paddingBottom: 28,
+  },
+  iosRowStacked: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 4,
+    paddingVertical: 10,
+  },
+  iosRowLabelStacked: {
+    width: 'auto',
+    fontSize: 13,
+    fontWeight: '600',
+    color: SECONDARY,
+  },
+  iosRowInputStacked: {
+    textAlign: 'left',
   },
   groupHeader: {
     fontFamily,
-    fontSize: 13,
-    fontWeight: '400',
-    color: SECONDARY,
+    fontSize: 12,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: 0.3,
     textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    marginTop: 18,
-    marginBottom: 6,
-    marginLeft: 4,
+    marginTop: 22,
+    marginBottom: 8,
   },
   group: {
     backgroundColor: '#fff',
-    borderRadius: 12,
+    borderRadius: 10,
     overflow: 'visible',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: HAIRLINE,
   },
   groupPadded: {
     backgroundColor: '#fff',
-    borderRadius: 12,
+    borderRadius: 10,
     padding: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: HAIRLINE,
   },
   iosRowWrap: {
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -945,21 +1044,13 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     fontSize: 17,
-    color: BLUE,
+    color: TEXT,
     paddingVertical: 4,
     outlineStyle: 'none',
     textAlign: 'right',
   },
   iosRowInputChanged: {
     fontWeight: '600',
-  },
-  editHint: {
-    fontFamily,
-    fontSize: 13,
-    color: SECONDARY,
-    marginTop: -2,
-    marginBottom: 8,
-    marginLeft: 4,
   },
   valueRow: {
     flexDirection: 'row',
@@ -1028,7 +1119,7 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 15,
     fontWeight: '400',
-    color: BLUE,
+    color: TEXT,
   },
   lookupBlock: {
     zIndex: 4,
@@ -1153,24 +1244,28 @@ const styles = StyleSheet.create({
   },
   typeChip: {
     backgroundColor: '#fff',
-    borderRadius: 999,
-    paddingHorizontal: 14,
+    borderRadius: 8,
+    paddingHorizontal: 12,
     paddingVertical: 8,
-    minHeight: 36,
+    minHeight: 34,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: HAIRLINE,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
   typeChipActive: {
-    backgroundColor: '#E5E5EA',
+    backgroundColor: TEXT,
+    borderColor: TEXT,
   },
   typeChipText: {
     fontFamily,
-    fontSize: 15,
+    fontSize: 14,
     color: TEXT,
   },
   typeChipTextActive: {
+    color: '#fff',
     fontWeight: '600',
   },
   amountBox: {

@@ -13,6 +13,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -20,7 +21,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { MOBILE, mobileSafeBottom, mobileSafeTop } from '../lib/mobileUi';
+import { MOBILE, mobileSafeBottom, mobileSafeTop, useIsMobile } from '../lib/mobileUi';
 
 export const FONT = Platform.select({
   ios: 'Sohne',
@@ -29,7 +30,7 @@ export const FONT = Platform.select({
 });
 
 export const T = {
-  bg: MOBILE.bg,
+  bg: '#FFFFFF',
   card: '#FFFFFF',
   text: '#1D1D1F',
   secondary: '#8E8E93',
@@ -43,6 +44,20 @@ export const T = {
   red: '#FF3B30',
   purple: '#AF52DE',
 };
+
+if (Platform.OS === 'web' && typeof document !== 'undefined') {
+  const styleId = 'cgold-triage-kit';
+  let style = document.getElementById(styleId);
+  if (!style) {
+    style = document.createElement('style');
+    style.id = styleId;
+    document.head.appendChild(style);
+  }
+  style.textContent = [
+    '.cgold-triage-btn{cursor:pointer;}',
+    '.cgold-triage-btn:hover{background-color:#f5f5f7!important;}',
+  ].join('');
+}
 
 export const TONES = {
   neutral: { fg: T.secondary, bg: 'rgba(142,142,147,0.14)' },
@@ -154,6 +169,7 @@ export function TriageDrawer({
   onRight,
   rightDisabled = false,
   rightEmphasis = true,
+  rightLeading,
   widthRatio = 0.46,
   minWidth = 400,
   children,
@@ -188,7 +204,7 @@ export function TriageDrawer({
             <Pressable
               onPress={onLeft || onClose}
               hitSlop={8}
-              style={styles.drawerNavSide}
+              style={[styles.drawerNavSide, isMobile && styles.drawerNavSideMobile]}
               accessibilityRole="button"
               accessibilityLabel={leftLabel}
             >
@@ -204,27 +220,30 @@ export function TriageDrawer({
                 </Text>
               ) : null}
             </View>
-            <Pressable
-              onPress={onRight}
-              hitSlop={8}
-              disabled={!onRight || rightDisabled}
-              style={[styles.drawerNavSide, styles.drawerNavSideRight]}
-              accessibilityRole="button"
-              accessibilityLabel={rightLabel || ''}
-            >
-              {rightLabel ? (
-                <Text
-                  style={[
-                    styles.drawerNavAction,
-                    rightEmphasis && styles.drawerNavActionStrong,
-                    rightDisabled && styles.drawerNavActionDisabled,
-                  ]}
-                >
-                  {rightLabel}
-                </Text>
-              ) : null}
-            </Pressable>
+            <View style={[styles.drawerNavSide, styles.drawerNavSideRight, isMobile && styles.drawerNavSideMobile]}>
+              {isMobile ? null : rightLeading}
+              <Pressable
+                onPress={onRight}
+                hitSlop={8}
+                disabled={!onRight || rightDisabled}
+                accessibilityRole="button"
+                accessibilityLabel={rightLabel || ''}
+              >
+                {rightLabel ? (
+                  <Text
+                    style={[
+                      styles.drawerNavAction,
+                      rightEmphasis && styles.drawerNavActionStrong,
+                      rightDisabled && styles.drawerNavActionDisabled,
+                    ]}
+                  >
+                    {rightLabel}
+                  </Text>
+                ) : null}
+              </Pressable>
+            </View>
           </View>
+          {isMobile && rightLeading ? <View style={styles.drawerSubNav}>{rightLeading}</View> : null}
           {children}
         </Animated.View>
       </View>
@@ -247,42 +266,83 @@ export function EmptyState({ icon, title, body, action }) {
 
 /** Text-only tabs with a thin underline, used at every level of the app. */
 export function TextTabs({ options, value, onChange, trailing, size = 'md', style }) {
+  const isMobile = useIsMobile();
+  const tabs = options.map((option) => {
+    const active = option.key === value;
+    return (
+      <Pressable
+        key={option.key}
+        style={[styles.tab, size === 'lg' && styles.tabLg, isMobile && styles.tabMobile]}
+        onPress={() => onChange(option.key)}
+        accessibilityRole="tab"
+        accessibilityState={{ selected: active }}
+        accessibilityLabel={option.label}
+      >
+        <View style={styles.tabLabelRow}>
+          <Text
+            style={[
+              styles.tabLabel,
+              size === 'lg' && styles.tabLabelLg,
+              active && styles.tabLabelActive,
+            ]}
+            numberOfLines={1}
+          >
+            {option.label}
+          </Text>
+          {option.count != null ? (
+            <Text style={[styles.tabCount, active && styles.tabCountActive]}>{option.count}</Text>
+          ) : null}
+        </View>
+        <View style={[styles.tabLine, size === 'lg' && styles.tabLineLg, active && styles.tabLineActive]} />
+      </Pressable>
+    );
+  });
+
   return (
-    <View style={[styles.tabBar, style]} accessibilityRole="tablist">
-      <View style={styles.tabs}>
-        {options.map((option) => {
-          const active = option.key === value;
-          return (
-            <Pressable
-              key={option.key}
-              style={styles.tab}
-              onPress={() => onChange(option.key)}
-              accessibilityRole="tab"
-              accessibilityState={{ selected: active }}
-              accessibilityLabel={option.label}
-            >
-              <View style={styles.tabLabelRow}>
-                <Text
-                  style={[
-                    styles.tabLabel,
-                    size === 'lg' && styles.tabLabelLg,
-                    active && styles.tabLabelActive,
-                  ]}
-                  numberOfLines={1}
-                >
-                  {option.label}
-                </Text>
-                {option.count != null ? (
-                  <Text style={[styles.tabCount, active && styles.tabCountActive]}>{option.count}</Text>
-                ) : null}
-              </View>
-              <View style={[styles.tabLine, active && styles.tabLineActive]} />
-            </Pressable>
-          );
-        })}
-      </View>
-      {trailing ? <View style={styles.tabTrailing}>{trailing}</View> : null}
+    <View
+      style={[styles.tabBar, size === 'lg' && styles.tabBarLg, isMobile && styles.tabBarMobile, style]}
+      accessibilityRole="tablist"
+    >
+      {isMobile ? (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.tabsMobile}
+        >
+          {tabs}
+        </ScrollView>
+      ) : (
+        <View style={[styles.tabs, size === 'lg' && styles.tabsLg]}>{tabs}</View>
+      )}
+      {trailing ? (
+        <View
+          style={[
+            styles.tabTrailing,
+            size === 'lg' && styles.tabTrailingLg,
+            isMobile && styles.tabTrailingMobile,
+          ]}
+        >
+          {trailing}
+        </View>
+      ) : null}
     </View>
+  );
+}
+
+/** Neutral outlined toolbar button — same treatment for every action, no colour coding. */
+export function BarButton({ label, icon, onPress, disabled, accessibilityLabel }) {
+  return (
+    <Pressable
+      style={[styles.barButton, disabled && styles.textActionDisabled]}
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel || label}
+      {...(Platform.OS === 'web' ? { className: 'cgold-triage-btn' } : null)}
+    >
+      {icon ? <Ionicons name={icon} size={15} color={T.text} /> : null}
+      <Text style={styles.barButtonLabel}>{label}</Text>
+    </Pressable>
   );
 }
 
@@ -501,14 +561,15 @@ const styles = StyleSheet.create({
   drawerNav: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 48,
-    paddingHorizontal: 8,
-    backgroundColor: 'rgba(242,242,247,0.94)',
+    minHeight: 56,
+    paddingHorizontal: 12,
+    backgroundColor: T.bg,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: T.hairline,
   },
   drawerNavMobile: {
     paddingTop: Platform.OS === 'ios' ? mobileSafeTop() - 12 : 6,
+    paddingHorizontal: 10,
   },
   drawerNavSide: {
     width: 84,
@@ -516,14 +577,31 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     ...webCursor,
   },
+  drawerNavSideMobile: {
+    width: 'auto',
+    minWidth: 56,
+    flexShrink: 0,
+  },
   drawerNavSideRight: {
-    alignItems: 'flex-end',
+    width: 'auto',
+    minWidth: 84,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 14,
+  },
+  drawerSubNav: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: T.hairline,
+    backgroundColor: T.bg,
   },
   drawerNavAction: {
     fontFamily: FONT,
     fontSize: 16,
     fontWeight: '400',
-    color: T.blue,
+    color: T.text,
   },
   drawerNavActionStrong: {
     fontWeight: '600',
@@ -590,38 +668,68 @@ const styles = StyleSheet.create({
     flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'flex-end',
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingTop: 2,
+    gap: 16,
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    backgroundColor: T.bg,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: T.hairline,
+  },
+  tabBarLg: {
+    paddingHorizontal: 24,
+    paddingTop: 12,
+  },
+  tabBarMobile: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 10,
   },
   tabs: {
     flex: 1,
     minWidth: 0,
     flexDirection: 'row',
     alignItems: 'flex-end',
+    gap: 20,
+  },
+  tabsLg: {
+    gap: 28,
+  },
+  tabsMobile: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
     gap: 16,
+    paddingRight: 8,
   },
   tab: {
-    paddingTop: 6,
+    paddingTop: 10,
+    paddingHorizontal: 2,
     alignItems: 'center',
     ...webCursor,
+  },
+  tabLg: {
+    paddingTop: 12,
+    paddingHorizontal: 4,
+  },
+  tabMobile: {
+    paddingTop: 8,
   },
   tabLabelRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    gap: 6,
   },
   tabLabel: {
     fontFamily: FONT,
-    fontSize: 13,
-    fontWeight: '400',
+    fontSize: 14,
+    fontWeight: '500',
     color: T.secondary,
     letterSpacing: -0.2,
   },
   tabLabelLg: {
-    fontSize: 14,
+    fontSize: 15,
   },
   tabLabelActive: {
     fontWeight: '600',
@@ -634,30 +742,62 @@ const styles = StyleSheet.create({
     color: T.secondary,
     backgroundColor: T.fillSoft,
     paddingHorizontal: 6,
-    paddingVertical: 1,
+    paddingVertical: 2,
     borderRadius: 8,
     overflow: 'hidden',
   },
   tabCountActive: {
-    color: '#fff',
-    backgroundColor: T.blue,
+    color: T.text,
+    backgroundColor: T.fill,
   },
   tabLine: {
-    marginTop: 6,
+    marginTop: 10,
     height: 2,
     alignSelf: 'stretch',
     borderRadius: 1,
     backgroundColor: 'transparent',
   },
+  tabLineLg: {
+    marginTop: 12,
+  },
   tabLineActive: {
-    backgroundColor: T.blue,
+    backgroundColor: T.text,
   },
   tabTrailing: {
     flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    paddingBottom: 5,
+    gap: 8,
+    paddingBottom: 8,
+  },
+  tabTrailingLg: {
+    paddingBottom: 10,
+  },
+  tabTrailingMobile: {
+    flexWrap: 'wrap',
+    justifyContent: 'flex-start',
+    paddingBottom: 0,
+    width: '100%',
+  },
+  barButton: {
+    minHeight: 32,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
+    backgroundColor: T.card,
+    ...webCursor,
+  },
+  barButtonLabel: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '500',
+    color: T.text,
+    letterSpacing: -0.15,
   },
   textAction: {
     minHeight: 26,
@@ -726,6 +866,8 @@ const styles = StyleSheet.create({
     backgroundColor: T.card,
     borderRadius: 12,
     overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
   },
   stat: {
     minWidth: 0,
@@ -816,6 +958,8 @@ const styles = StyleSheet.create({
     backgroundColor: T.card,
     borderRadius: 12,
     overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
   },
   groupRow: {
     flexDirection: 'row',

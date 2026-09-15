@@ -69,6 +69,7 @@ import { fetchTransfers } from '../lib/transfers';
 import { classifyPurchaseForTriage } from '../lib/priceCheck';
 import TriageReviewDrawer from './TriageReviewDrawer';
 import {
+  BarButton,
   Chip,
   EmptyState,
   FONT,
@@ -1604,7 +1605,7 @@ function MeltTab({
     (row) => {
       confirmDestructive(
         `Remove ${row.reference}?`,
-        'It comes off this batch only. The purchase itself is not changed.',
+        'It moves to the Deleted tab and stays off this batch.',
         () => {
           if (openRow?.id === row.id) setOpenRow(null);
           onRemovePos(row.id);
@@ -2279,7 +2280,10 @@ function CreateBatchModal({ visible, session, transfers, onClose, onCreate }) {
   }, [visible]);
 
   const dateKey = formatDateParam(date);
-  const existing = useMemo(() => (transfers || []).find((row) => row.dateKey === dateKey) || null, [dateKey, transfers]);
+  const existing = useMemo(
+    () => (transfers || []).find((row) => !isStandaloneTriage(row) && row.dateKey === dateKey) || null,
+    [dateKey, transfers],
+  );
   const addedKeys = useMemo(
     () => new Set((existing?.stores || []).map((store) => store.storeKey).filter(Boolean)),
     [existing],
@@ -2444,216 +2448,154 @@ function standalonePo(batch) {
   return flattenBatchPos(batch)[0] || null;
 }
 
-function BatchRow({ batch, stats, today, mobile, last, onPress, onDelete }) {
-  const storeNames = (batch.stores || []).map((store) => store.name).filter(Boolean);
-  const tone = stats.empty ? 'neutral' : stats.complete ? 'green' : 'blue';
-  const statusLabel = stats.empty
-    ? stats.totalPurchases > stats.expected
-      ? `0/${stats.totalPurchases} POs expected`
-      : 'No PO / SO'
-    : stats.complete
-      ? 'Complete'
-      : `${stats.received} of ${stats.expected} received`;
-  const expectedLabel = expectedPosLabel(stats);
-
+function DashboardRow({ kind, title, detail, status, last, onPress, onDelete, openLabel, deleteLabel, thumbs }) {
+  const isMobile = useIsMobile();
   return (
-    <View style={[styles.batchRow, last && styles.batchRowLast]}>
+    <View style={[styles.dashRow, last && styles.dashRowLast]}>
       <Pressable
-        style={styles.batchRowMain}
+        style={[styles.dashMain, isMobile && styles.dashMainMobile]}
         onPress={onPress}
         accessibilityRole="button"
-        accessibilityLabel={`Open batch ${batch.dateLabel}`}
+        accessibilityLabel={openLabel}
         {...(Platform.OS === 'web' ? { className: 'cgold-triage-row' } : null)}
       >
-        <View style={[styles.batchDateBadge, today && styles.batchDateBadgeToday]}>
-          <Text style={[styles.batchDateDay, today && styles.batchDateDayToday]}>
-            {String(parseDateParam(batch.dateKey).getDate())}
+        <Text style={styles.dashKind}>{kind}</Text>
+        {thumbs ? <View style={styles.dashThumbs}>{thumbs}</View> : null}
+        <View style={styles.dashText}>
+          <Text style={styles.dashTitle} numberOfLines={1}>
+            {title}
           </Text>
-          <Text style={[styles.batchDateMonth, today && styles.batchDateMonthToday]}>
-            {parseDateParam(batch.dateKey).toLocaleDateString(undefined, { month: 'short' })}
-          </Text>
-        </View>
-        <View style={styles.batchText}>
-          <View style={styles.batchTitleRow}>
-            <Text style={styles.batchTitle} numberOfLines={1}>
-              {today ? 'Today' : batch.dateLabel}
+          {detail ? (
+            <Text style={styles.dashDetail} numberOfLines={isMobile ? 2 : 1}>
+              {detail}
             </Text>
-            {today ? <Text style={styles.batchTitleMeta}>{batch.dateLabel}</Text> : null}
-          </View>
-          <Text style={styles.batchSub} numberOfLines={mobile ? 2 : 1}>
-            {storeNames.length ? storeNames.join(', ') : 'No stores yet'}
-            {expectedLabel ? `  ·  ${expectedLabel}` : ''}
-          </Text>
-          {mobile ? (
-            <View style={styles.batchMobileMeta}>
-              <StatusPill label={statusLabel} tone={tone} compact />
-              {stats.flagged > 0 ? <StatusPill label={`${stats.flagged} flagged`} tone="orange" compact /> : null}
-            </View>
+          ) : null}
+          {isMobile && status ? (
+            <Text style={styles.dashDetail} numberOfLines={1}>
+              {status}
+            </Text>
           ) : null}
         </View>
-        {!mobile ? (
-          <View style={styles.batchProgress}>
-            <View style={styles.batchProgressRow}>
-              {stats.flagged > 0 ? <StatusPill label={`${stats.flagged} flagged`} tone="orange" compact /> : null}
-              <Text style={[styles.batchProgressText, stats.complete && styles.batchProgressTextDone]}>{statusLabel}</Text>
-            </View>
-            <ProgressBar value={stats.received} total={stats.expected} tone={stats.complete ? 'green' : 'blue'} style={styles.batchProgressBar} />
-          </View>
+        {!isMobile && status ? (
+          <Text style={styles.dashStatus} numberOfLines={1}>
+            {status}
+          </Text>
         ) : null}
-        <Ionicons name="chevron-forward" size={18} color={T.tertiary} />
       </Pressable>
       <Pressable
         style={styles.batchDelete}
         onPress={onDelete}
         hitSlop={8}
         accessibilityRole="button"
-        accessibilityLabel={`Delete batch ${batch.dateLabel}`}
+        accessibilityLabel={deleteLabel}
       >
         <Text style={styles.batchDeleteText}>Delete</Text>
       </Pressable>
     </View>
+  );
+}
+
+function BatchRow({ batch, stats, today, last, onPress, onDelete }) {
+  const storeNames = (batch.stores || []).map((store) => store.name).filter(Boolean);
+  const expected = expectedPosLabel(stats);
+  const photos = flattenBatchPos(batch)
+    .filter((row) => (row.imageUrls || []).some(Boolean))
+    .slice(0, 3);
+  const status = stats.empty
+    ? expected || 'No documents'
+    : [
+        stats.complete ? 'Received' : `${stats.received} of ${stats.expected}`,
+        stats.flagged ? `${stats.flagged} flagged` : '',
+      ]
+        .filter(Boolean)
+        .join(' · ');
+  return (
+    <DashboardRow
+      kind="Batch"
+      title={today ? 'Today' : batch.dateLabel || 'Batch'}
+      detail={[storeNames.length ? storeNames.join(', ') : 'No stores', !stats.empty && expected].filter(Boolean).join(' · ')}
+      status={status}
+      last={last}
+      onPress={onPress}
+      onDelete={onDelete}
+      openLabel={`Open batch ${batch.dateLabel}`}
+      deleteLabel={`Delete batch ${batch.dateLabel}`}
+      thumbs={
+        photos.length
+          ? photos.map((row) => <PoThumb key={row.id} urls={row.imageUrls} label={row.reference} />)
+          : null
+      }
+    />
   );
 }
 
 function QuickPoRow({ batch, stats, last, onPress, onDelete }) {
   const row = standalonePo(batch);
-  const flagged = Boolean(stats?.flagged);
-  const received = Boolean(row?.received);
+  const kind = parseDocReference(row?.reference || row)?.kind || 'PO';
+  const status = [
+    stats?.flagged ? 'Flagged' : row?.received ? 'Received' : 'Open',
+    poHoldsBullion(row) ? 'Bullion' : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
   return (
-    <View style={[styles.batchRow, last && styles.batchRowLast]}>
-      <Pressable
-        style={styles.batchRowMain}
-        onPress={onPress}
-        accessibilityRole="button"
-        accessibilityLabel={`Open ${row?.reference || 'PO'}`}
-        {...(Platform.OS === 'web' ? { className: 'cgold-triage-row' } : null)}
-      >
-        <PoThumb urls={row?.imageUrls} label={row?.reference} />
-        <View style={styles.batchText}>
-          <Text style={styles.batchTitle} numberOfLines={1}>
-            {row?.reference || 'PO'}
-          </Text>
-          <Text style={styles.batchSub} numberOfLines={1}>
-            {[row?.storeName, row?.dateLabel, row?.customerName].filter(Boolean).join(' · ')}
-          </Text>
-        </View>
-        <StatusPill
-          label={flagged ? 'Flagged' : received ? 'Received' : 'Open'}
-          tone={flagged ? 'orange' : received ? 'green' : 'blue'}
-          compact
-        />
-        {poHoldsBullion(row) ? <StatusPill label="Bullion" tone="purple" compact /> : null}
-        <Ionicons name="chevron-forward" size={18} color={T.tertiary} />
-      </Pressable>
-      <Pressable
-        style={styles.batchDelete}
-        onPress={onDelete}
-        hitSlop={8}
-        accessibilityRole="button"
-        accessibilityLabel={`Remove ${row?.reference || 'PO'}`}
-      >
-        <Text style={styles.batchDeleteText}>Delete</Text>
-      </Pressable>
-    </View>
+    <DashboardRow
+      kind={kind}
+      title={row?.reference || kind}
+      detail={[row?.storeName, row?.dateLabel, row?.customerName].filter(Boolean).join(' · ')}
+      status={status}
+      last={last}
+      onPress={onPress}
+      onDelete={onDelete}
+      openLabel={`Open ${row?.reference || kind}`}
+      deleteLabel={`Remove ${row?.reference || kind}`}
+      thumbs={<PoThumb urls={row?.imageUrls} label={row?.reference} />}
+    />
   );
 }
 
-function BatchList({ transfers, mobile, onOpen, onOpenPo, onDelete, onCreate }) {
-  const [query, setQuery] = useState('');
+function BatchList({ transfers, query = '', onOpen, onOpenPo, onDelete }) {
   const todayKey = formatDateParam(new Date());
-  const batches = useMemo(() => transfers.filter((row) => !isStandaloneTriage(row)), [transfers]);
-  const quickPos = useMemo(() => transfers.filter((row) => isStandaloneTriage(row)), [transfers]);
   const statsById = useMemo(() => new Map(transfers.map((row) => [row.id, batchStats(row)])), [transfers]);
-  const filteredBatches = useMemo(() => batches.filter((row) => batchMatchesQuery(row, query)), [batches, query]);
-  const filteredPos = useMemo(() => quickPos.filter((row) => batchMatchesQuery(row, query)), [quickPos, query]);
-  const open = filteredBatches.filter((row) => !statsById.get(row.id)?.complete);
-  const done = filteredBatches.filter((row) => statsById.get(row.id)?.complete);
-  const hasToday = batches.some((row) => row.dateKey === todayKey);
-  const totals = useMemo(() => {
-    let openDocs = 0;
-    let flagged = 0;
-    for (const stats of statsById.values()) {
-      openDocs += stats.open;
-      flagged += stats.flagged;
-    }
-    return { openDocs, flagged };
-  }, [statsById]);
-
-  const renderSection = (title, rows, trailing) =>
-    rows.length === 0 ? null : (
-      <View key={title}>
-        <SectionLabel trailing={trailing}>{title}</SectionLabel>
-        <Group>
-          {rows.map((row, index) => (
-            <BatchRow
-              key={row.id}
-              batch={row}
-              stats={statsById.get(row.id)}
-              today={row.dateKey === todayKey}
-              mobile={mobile}
-              last={index === rows.length - 1}
-              onPress={() => onOpen(row)}
-              onDelete={() => onDelete(row)}
-            />
-          ))}
-        </Group>
-      </View>
-    );
+  const rows = useMemo(
+    () =>
+      transfers
+        .filter((row) => batchMatchesQuery(row, query))
+        .slice()
+        .sort((a, b) => String(b.dateKey || '').localeCompare(String(a.dateKey || ''))),
+    [query, transfers],
+  );
 
   return (
     <ScrollView style={styles.list} contentContainerStyle={styles.listContent} showsVerticalScrollIndicator={false}>
-      <View style={styles.listHead}>
-        <SearchField value={query} onChangeText={setQuery} placeholder="Search dates, stores, or PO#" style={styles.listSearch} />
-        <Text style={styles.listMeta} numberOfLines={1}>
-          {batches.length} {batches.length === 1 ? 'batch' : 'batches'}
-          {quickPos.length ? `  ·  ${quickPos.length} quick` : ''}
-          {totals.openDocs > 0 ? `  ·  ${totals.openDocs} open` : ''}
-          {totals.flagged > 0 ? `  ·  ${totals.flagged} flagged` : ''}
-        </Text>
-      </View>
-
-      {!hasToday && !query ? (
-        <Pressable
-          style={styles.todayCta}
-          onPress={onCreate}
-          accessibilityRole="button"
-          accessibilityLabel="Start today's batch"
-        >
-          <View style={styles.todayCtaIcon}>
-            <Ionicons name="add" size={20} color={BLUE} />
-          </View>
-          <View style={styles.batchText}>
-            <Text style={styles.todayCtaTitle}>Start today&apos;s batch</Text>
-            <Text style={styles.batchSub}>{formatPickerDate(new Date())} · pick the stores shipping in</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={18} color={T.tertiary} />
-        </Pressable>
-      ) : null}
-
-      {filteredBatches.length === 0 && filteredPos.length === 0 && query ? (
-        <Text style={styles.listEmpty}>No batches or POs match “{query.trim()}”.</Text>
-      ) : null}
-
-      {filteredPos.length ? (
-        <View>
-          <SectionLabel>Quick add</SectionLabel>
-          <Group>
-            {filteredPos.map((row, index) => (
+      {rows.length === 0 && query ? (
+        <Text style={styles.listEmpty}>No PO or SO matches “{query.trim()}”.</Text>
+      ) : (
+        <Group>
+          {rows.map((row, index) =>
+            isStandaloneTriage(row) ? (
               <QuickPoRow
                 key={row.id}
                 batch={row}
                 stats={statsById.get(row.id)}
-                last={index === filteredPos.length - 1}
+                last={index === rows.length - 1}
                 onPress={() => onOpenPo(row)}
                 onDelete={() => onDelete(row)}
               />
-            ))}
-          </Group>
-        </View>
-      ) : null}
-
-      {renderSection('In progress', open)}
-      {renderSection('Completed', done)}
+            ) : (
+              <BatchRow
+                key={row.id}
+                batch={row}
+                stats={statsById.get(row.id)}
+                today={row.dateKey === todayKey}
+                last={index === rows.length - 1}
+                onPress={() => onOpen(row)}
+                onDelete={() => onDelete(row)}
+              />
+            ),
+          )}
+        </Group>
+      )}
     </ScrollView>
   );
 }
@@ -2757,9 +2699,9 @@ function BatchDetail({ session, batch, transfers, storeTab, onStoreTab, addMeltO
   );
   const removePo = useCallback(
     (poId) => {
-      removeTriagePo(batch.id, poId);
+      removeTriagePo(batch.id, poId, actor);
     },
-    [batch.id],
+    [actor, batch.id],
   );
   const toggleReceived = useCallback(
     (poId) => {
@@ -2888,6 +2830,7 @@ export default function TriageTransfersPanel({
   onQuickAddOpenChange,
   onViewChange,
   onBackChange,
+  listQuery = '',
 }) {
   const { triage: transfers } = useTransferWorkflow();
   const isMobile = useIsMobile();
@@ -2959,7 +2902,6 @@ export default function TriageTransfersPanel({
     setQuickAddError('');
     persistTransferWorkflowNow().catch(() => {});
     onQuickAddOpenChange?.(false);
-    setOpenStandalone(result.item);
     const auth = resolvePosAuthForRow(session, { systemKey: row.systemKey });
     if (!auth.token) return;
     fillMissingPoImages(auth.token, auth.baseUrl, [result.item])
@@ -3013,10 +2955,10 @@ export default function TriageTransfersPanel({
       const po = standalonePo(row);
       confirmDestructive(
         `Remove ${po?.reference || 'this PO'}?`,
-        'It comes off the dashboard. The purchase itself is not changed.',
+        'It moves to the Deleted tab and stays off the dashboard.',
         () => {
           if (openStandalone?.id === po?.id) setOpenStandalone(null);
-          removeTriageBatch(row.id);
+          removeTriageBatch(row.id, actorNameOf(session));
           persistTransferWorkflowNow().catch(() => {});
         },
       );
@@ -3026,14 +2968,14 @@ export default function TriageTransfersPanel({
     confirmDestructive(
       `Delete ${row.dateLabel || 'this batch'}?`,
       stats.documents
-        ? `${stats.documents} ${docNoun(flattenBatchPos(row), stats.documents)} and ${row.stores.length} ${row.stores.length === 1 ? 'store' : 'stores'} will be removed from triage.`
-        : 'The stores on this date will be removed from triage.',
+        ? `${stats.documents} ${docNoun(flattenBatchPos(row), stats.documents)} and ${row.stores.length} ${row.stores.length === 1 ? 'store' : 'stores'} move to the Deleted tab.`
+        : 'This date moves to the Deleted tab and will not come back on the dashboard.',
       () => {
-        removeTriageBatch(row.id);
+        removeTriageBatch(row.id, actorNameOf(session));
         persistTransferWorkflowNow().catch(() => {});
       },
     );
-  }, [openStandalone?.id]);
+  }, [openStandalone?.id, session]);
 
   if (!session?.token) {
     return (
@@ -3075,19 +3017,18 @@ export default function TriageTransfersPanel({
           body="A batch is one date plus the stores shipping to the Workshop. Or Quick Add a single PO from any store."
           action={
             <View style={styles.emptyActions}>
-              <TextAction label="Quick Add" destructive strong onPress={() => onQuickAddOpenChange?.(true)} />
-              <TextAction icon="add" label="New batch" strong onPress={() => onCreateOpenChange(true)} />
+              <BarButton label="Quick Add" onPress={() => onQuickAddOpenChange?.(true)} />
+              <BarButton icon="add" label="Add Batch" onPress={() => onCreateOpenChange(true)} />
             </View>
           }
         />
       ) : (
         <BatchList
           transfers={transfers}
-          mobile={isMobile}
+          query={listQuery}
           onOpen={openBatch}
           onOpenPo={openStandalonePo}
           onDelete={deleteBatch}
-          onCreate={() => onCreateOpenChange(true)}
         />
       )}
 
@@ -3120,7 +3061,6 @@ export default function TriageTransfersPanel({
         onHydrate={(enriched) => {
           const found = findTriagePo(enriched.id);
           if (found) patchTriagePosDetails(found.batch.id, [enriched]);
-          setOpenStandalone((current) => (current?.id === enriched.id ? { ...current, ...enriched } : current));
         }}
       />
     </View>
@@ -3145,7 +3085,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 16,
+    gap: 10,
   },
   quickAddIntro: {
     fontFamily,
@@ -3164,22 +3104,6 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 24,
   },
-  listHead: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  listSearch: {
-    flex: 1,
-    maxWidth: 360,
-  },
-  listMeta: {
-    flexShrink: 1,
-    fontFamily,
-    fontSize: 13,
-    color: SECONDARY,
-    textAlign: 'right',
-  },
   listEmpty: {
     fontFamily,
     fontSize: 14,
@@ -3187,142 +3111,72 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     paddingVertical: 32,
   },
-  todayCta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginTop: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    borderRadius: 12,
-    backgroundColor: 'rgba(0,122,255,0.08)',
-    ...webCursor,
-  },
-  todayCtaIcon: {
-    width: 30,
-    height: 30,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#fff',
-  },
-  todayCtaTitle: {
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '600',
-    color: BLUE,
-    letterSpacing: -0.2,
-  },
-  batchRow: {
+  dashRow: {
     flexDirection: 'row',
     alignItems: 'center',
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: HAIRLINE,
-    backgroundColor: '#fff',
+    backgroundColor: T.card,
   },
-  batchRowLast: {
+  dashRowLast: {
     borderBottomWidth: 0,
   },
-  batchRowMain: {
+  dashMain: {
     flex: 1,
     minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    minHeight: 54,
-    paddingLeft: 12,
+    gap: 14,
+    minHeight: 52,
+    paddingLeft: 16,
     paddingRight: 8,
-    paddingVertical: 7,
+    paddingVertical: 10,
     ...webCursor,
   },
-  batchDateBadge: {
-    width: 38,
-    height: 38,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: T.fillSoft,
+  dashMainMobile: {
+    gap: 10,
+    paddingLeft: 12,
+    minHeight: 56,
   },
-  batchDateBadgeToday: {
-    backgroundColor: BLUE,
-  },
-  batchDateDay: {
+  dashKind: {
+    width: 44,
     fontFamily,
-    fontSize: 15,
-    fontWeight: '700',
-    color: TEXT,
-    letterSpacing: -0.4,
-    lineHeight: 20,
-  },
-  batchDateDayToday: {
-    color: '#fff',
-  },
-  batchDateMonth: {
-    fontFamily,
-    fontSize: 9,
+    fontSize: 11,
     fontWeight: '600',
     color: SECONDARY,
+    letterSpacing: 0.4,
     textTransform: 'uppercase',
-    letterSpacing: 0.3,
   },
-  batchDateMonthToday: {
-    color: 'rgba(255,255,255,0.85)',
+  dashThumbs: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
-  batchText: {
+  dashText: {
     flex: 1,
     minWidth: 0,
     gap: 2,
   },
-  batchTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 8,
-  },
-  batchTitle: {
+  dashTitle: {
     fontFamily,
-    fontSize: 14.5,
-    fontWeight: '600',
+    fontSize: 15,
+    fontWeight: '500',
     color: TEXT,
     letterSpacing: -0.2,
   },
-  batchTitleMeta: {
+  dashDetail: {
     fontFamily,
-    fontSize: 12,
+    fontSize: 13,
     color: SECONDARY,
   },
-  batchSub: {
+  dashStatus: {
+    flexShrink: 0,
+    maxWidth: 160,
     fontFamily,
-    fontSize: 12.5,
+    fontSize: 13,
     color: SECONDARY,
-  },
-  batchMobileMeta: {
-    flexDirection: 'row',
-    gap: 6,
-    marginTop: 4,
-  },
-  batchProgress: {
-    width: 180,
-    gap: 5,
-    alignItems: 'flex-end',
-  },
-  batchProgressRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  batchProgressText: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '500',
-    color: TEXT,
+    textAlign: 'right',
     fontVariant: ['tabular-nums'],
-  },
-  batchProgressTextDone: {
-    color: '#248A3D',
-    fontWeight: '600',
-  },
-  batchProgressBar: {
-    width: 180,
   },
   batchDelete: {
     paddingHorizontal: 12,
