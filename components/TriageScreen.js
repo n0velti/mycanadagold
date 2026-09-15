@@ -127,7 +127,6 @@ function CompactAccuracyInsights({ accuracyRows }) {
     [accuracyRows],
   );
   const correctCount = total - incorrectRows.length;
-  const incorrectCount = incorrectRows.length;
   const accuracyPct = total ? (correctCount / total) * 100 : null;
 
   const errorRanks = useMemo(() => countRanks(incorrectRows, errorPlace), [incorrectRows]);
@@ -146,13 +145,8 @@ function CompactAccuracyInsights({ accuracyRows }) {
         </View>
         <View style={styles.insightsDivider} />
         <View style={styles.insightsStat}>
-          <Text style={styles.insightsLabel}>Correct</Text>
-          <Text style={[styles.insightsValue, { color: GREEN }]}>{correctCount}</Text>
-        </View>
-        <View style={styles.insightsDivider} />
-        <View style={styles.insightsStat}>
-          <Text style={styles.insightsLabel}>Incorrect</Text>
-          <Text style={[styles.insightsValue, { color: incorrectCount > 0 ? RED : TEXT }]}>{incorrectCount}</Text>
+          <Text style={styles.insightsLabel}>Reviewed</Text>
+          <Text style={styles.insightsValue}>{total}</Text>
         </View>
         {topError ? (
           <>
