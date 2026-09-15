@@ -56,11 +56,6 @@ function accuracyTint(pct) {
   return RED;
 }
 
-function staffName(row) {
-  const name = String(row?.employeeName || '').trim();
-  return name && name !== '—' ? name : '';
-}
-
 function errorPlace(row) {
   const type = String(row?.review?.errorType || '').trim();
   if (type) return type;
@@ -123,16 +118,10 @@ function TodayInsightsStrip({ accuracyRows }) {
     () => accuracyRows.filter((row) => triagePoNeedsCorrection(row)),
     [accuracyRows],
   );
-  const incorrectCount = incorrectRows.length;
-  const correctCount = total - incorrectCount;
+  const correctCount = total - incorrectRows.length;
   const accuracyPct = total ? (correctCount / total) * 100 : null;
   const errorRanks = useMemo(() => countRanks(incorrectRows, errorPlace), [incorrectRows]);
-  const peopleRanks = useMemo(
-    () => countRanks(incorrectRows, (row) => staffName(row) || 'Unknown'),
-    [incorrectRows],
-  );
   const topError = errorRanks[0] || null;
-  const topPerson = peopleRanks[0] || null;
 
   if (total === 0) return null;
 
@@ -145,15 +134,6 @@ function TodayInsightsStrip({ accuracyRows }) {
         </Text>
       </View>
 
-      <View style={styles.insightsStripDivider} />
-
-      <View style={styles.insightsStripCell}>
-        <Text style={styles.insightsStripKicker}>Flagged</Text>
-        <Text style={[styles.insightsStripValue, incorrectCount > 0 && { color: ORANGE }]}>
-          {incorrectCount}
-        </Text>
-      </View>
-
       {topError ? (
         <>
           <View style={styles.insightsStripDivider} />
@@ -161,18 +141,6 @@ function TodayInsightsStrip({ accuracyRows }) {
             <Text style={styles.insightsStripKicker}>Top Error</Text>
             <Text style={styles.insightsStripLabel} numberOfLines={1}>
               {topError.label}
-            </Text>
-          </View>
-        </>
-      ) : null}
-
-      {topPerson ? (
-        <>
-          <View style={styles.insightsStripDivider} />
-          <View style={[styles.insightsStripCell, styles.insightsStripCellFlex]}>
-            <Text style={styles.insightsStripKicker}>Most Flags</Text>
-            <Text style={styles.insightsStripLabel} numberOfLines={1}>
-              {topPerson.label} ({topPerson.count})
             </Text>
           </View>
         </>
