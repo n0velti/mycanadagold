@@ -1,4 +1,4 @@
-import { createElement, useEffect, useRef, useState } from 'react';
+import { createElement, forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import * as ImagePicker from 'expo-image-picker';
 import {
   Image,
@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { MAX_REVIEW_IMAGES, normalizeReviewImages } from '../lib/triageDraft';
-import { MOBILE } from '../lib/mobileUi';
+import { MOBILE, mobileSafeBottom, useIsMobile } from '../lib/mobileUi';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -59,18 +59,21 @@ function captureFrame(video) {
   return canvas.toDataURL('image/jpeg', 0.85);
 }
 
-export default function TriageCorrectionImages({
+function TriageCorrectionImages({
   images,
   onChange,
   readOnly = false,
   compact = false,
   hideHeading = false,
-}) {
+  hideActions = false,
+}, ref) {
+  const isMobile = useIsMobile();
   const list = normalizeReviewImages(images);
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const [viewerUri, setViewerUri] = useState('');
   const [error, setError] = useState('');
+  const [sourceOpen, setSourceOpen] = useState(false);
   const [captureOpen, setCaptureOpen] = useState(false);
   const [cameraState, setCameraState] = useState('idle');
   const canAdd = !readOnly && list.length < MAX_REVIEW_IMAGES;
@@ -195,6 +198,27 @@ export default function TriageCorrectionImages({
     void takeNativePhoto();
   };
 
+  const openAddMenu = () => {
+    if (!canAdd) return;
+    setError('');
+    setSourceOpen(true);
+  };
+
+  const chooseCamera = () => {
+    setSourceOpen(false);
+    takePhoto();
+  };
+
+  const chooseFiles = () => {
+    setSourceOpen(false);
+    void pickFromLibrary();
+  };
+
+  useImperativeHandle(ref, () => ({
+    addImage: openAddMenu,
+    canAdd,
+  }));
+
   const captureWebcam = () => {
     if (cameraState !== 'live') return;
     const dataUrl = captureFrame(videoRef.current);
@@ -248,30 +272,31 @@ export default function TriageCorrectionImages({
               )}
             </View>
           ))}
+          {canAdd ? (
+            <Pressable
+              style={styles.addTile}
+              onPress={openAddMenu}
+              accessibilityRole="button"
+              accessibilityLabel="Add image"
+            >
+              <Ionicons name="add" size={22} color={TEXT} />
+              <Text style={styles.addTileText}>Add</Text>
+            </Pressable>
+          ) : null}
         </View>
       )}
 
-      {readOnly ? null : (
+      {readOnly || hideActions ? null : (
         <View style={[styles.actions, compact && styles.actionsColumn]}>
           <Pressable
             style={[styles.captureButton, !canAdd && styles.actionDisabled]}
-            onPress={takePhoto}
+            onPress={openAddMenu}
             disabled={!canAdd}
             accessibilityRole="button"
-            accessibilityLabel="Capture photo"
+            accessibilityLabel="Add image"
           >
-            <Ionicons name="camera" size={18} color={canAdd ? '#fff' : SECONDARY} />
-            <Text style={[styles.captureText, !canAdd && styles.actionTextDisabled]}>Capture</Text>
-          </Pressable>
-          <Pressable
-            style={[styles.actionButton, !canAdd && styles.actionDisabled]}
-            onPress={pickFromLibrary}
-            disabled={!canAdd}
-            accessibilityRole="button"
-            accessibilityLabel="Choose photo"
-          >
-            <Ionicons name="image-outline" size={18} color={canAdd ? ACCENT : SECONDARY} />
-            <Text style={[styles.actionText, !canAdd && styles.actionTextDisabled]}>Choose photo</Text>
+            <Ionicons name="image-outline" size={18} color={canAdd ? '#fff' : SECONDARY} />
+            <Text style={[styles.captureText, !canAdd && styles.actionTextDisabled]}>Add image</Text>
           </Pressable>
         </View>
       )}
@@ -280,10 +305,59 @@ export default function TriageCorrectionImages({
         <Text style={styles.hint}>Up to {MAX_REVIEW_IMAGES} photos.</Text>
       ) : null}
 
+      <Modal visible={sourceOpen} transparent animationType="fade" onRequestClose={() => setSourceOpen(false)}>
+        <View style={[styles.sourceRoot, isMobile && styles.sourceRootMobile]}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setSourceOpen(false)} accessibilityLabel="Close" />
+          <View style={[styles.sourceCard, isMobile && styles.sourceCardMobile]}>
+            {isMobile ? <View style={styles.sourceGrabber} /> : null}
+            <Text style={styles.sourceTitle}>Add image</Text>
+            <Text style={styles.sourceSub}>Take a photo or attach a file of the item, tag, or receipt.</Text>
+            <Pressable
+              style={styles.sourceOption}
+              onPress={chooseCamera}
+              accessibilityRole="button"
+              accessibilityLabel="Use camera"
+            >
+              <View style={styles.sourceIcon}>
+                <Ionicons name="camera-outline" size={22} color={TEXT} />
+              </View>
+              <View style={styles.sourceCopy}>
+                <Text style={styles.sourceOptionTitle}>Camera</Text>
+                <Text style={styles.sourceOptionSub}>Take a new photo</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={SECONDARY} />
+            </Pressable>
+            <Pressable
+              style={[styles.sourceOption, styles.sourceOptionLast]}
+              onPress={chooseFiles}
+              accessibilityRole="button"
+              accessibilityLabel="Choose from files"
+            >
+              <View style={styles.sourceIcon}>
+                <Ionicons name="folder-open-outline" size={22} color={TEXT} />
+              </View>
+              <View style={styles.sourceCopy}>
+                <Text style={styles.sourceOptionTitle}>Files</Text>
+                <Text style={styles.sourceOptionSub}>Choose from photos or files</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={SECONDARY} />
+            </Pressable>
+            <Pressable
+              style={styles.sourceCancel}
+              onPress={() => setSourceOpen(false)}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel"
+            >
+              <Text style={styles.sourceCancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
       <Modal visible={captureOpen} transparent animationType="fade" onRequestClose={closeCapture}>
-        <View style={styles.captureRoot}>
+        <View style={[styles.captureRoot, isMobile && styles.captureRootMobile]}>
           <Pressable style={StyleSheet.absoluteFill} onPress={closeCapture} />
-          <View style={styles.captureCard}>
+          <View style={[styles.captureCard, isMobile && styles.captureCardMobile]}>
             <View style={styles.captureHeader}>
               <Text style={styles.captureTitle}>Capture photo</Text>
               <Pressable onPress={closeCapture} hitSlop={8} accessibilityLabel="Close camera">
@@ -293,7 +367,7 @@ export default function TriageCorrectionImages({
             <Text style={styles.captureSub}>
               Point the camera at the item or document that shows the error.
             </Text>
-            <View style={styles.previewShell}>
+            <View style={[styles.previewShell, isMobile && styles.previewShellMobile]}>
               {Platform.OS === 'web'
                 ? createElement('video', {
                     ref: videoRef,
@@ -374,6 +448,8 @@ export default function TriageCorrectionImages({
     </View>
   );
 }
+
+export default forwardRef(TriageCorrectionImages);
 
 const styles = StyleSheet.create({
   wrap: {
@@ -486,6 +562,136 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: SECONDARY,
   },
+  addTile: {
+    width: 84,
+    height: 84,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#d2d2d7',
+    borderStyle: 'dashed',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+    backgroundColor: '#fafafa',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  addTileText: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: TEXT,
+  },
+  sourceRoot: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  sourceRootMobile: {
+    justifyContent: 'flex-end',
+    padding: 0,
+  },
+  sourceCard: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 16,
+    gap: 10,
+    maxWidth: 420,
+    width: '100%',
+    alignSelf: 'center',
+  },
+  sourceCardMobile: {
+    maxWidth: '100%',
+    borderRadius: 16,
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
+    paddingBottom: 16 + mobileSafeBottom(),
+    paddingTop: 10,
+  },
+  sourceGrabber: {
+    alignSelf: 'center',
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#d2d2d7',
+    marginBottom: 4,
+  },
+  sourceTitle: {
+    fontFamily,
+    fontSize: 18,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: -0.3,
+  },
+  sourceSub: {
+    fontFamily,
+    fontSize: 14,
+    lineHeight: 19,
+    color: SECONDARY,
+    marginBottom: 4,
+  },
+  sourceOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    minHeight: 64,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e5e5ea',
+    backgroundColor: '#fff',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  sourceOptionLast: {
+    marginBottom: 4,
+  },
+  sourceIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: FILL,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sourceCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  sourceOptionTitle: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '600',
+    color: TEXT,
+  },
+  sourceOptionSub: {
+    fontFamily,
+    fontSize: 13,
+    color: SECONDARY,
+  },
+  sourceCancel: {
+    minHeight: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    backgroundColor: FILL,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  sourceCancelText: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '600',
+    color: TEXT,
+  },
   captureRoot: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
@@ -500,6 +706,17 @@ const styles = StyleSheet.create({
     maxWidth: 520,
     width: '100%',
     alignSelf: 'center',
+    maxHeight: '92%',
+  },
+  captureRootMobile: {
+    justifyContent: 'flex-end',
+    padding: 0,
+  },
+  captureCardMobile: {
+    maxWidth: '100%',
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
+    maxHeight: '94%',
   },
   captureHeader: {
     flexDirection: 'row',
@@ -523,6 +740,9 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     backgroundColor: '#111',
     position: 'relative',
+  },
+  previewShellMobile: {
+    height: 360,
   },
   overlay: {
     ...StyleSheet.absoluteFillObject,

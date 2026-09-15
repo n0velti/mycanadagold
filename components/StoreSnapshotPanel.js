@@ -13,37 +13,15 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import {
-  hasSheetValues,
-  loadStoreCashCounts,
-  subscribeStoreCashCounts,
-} from '../lib/cashCounts';
-import {
-  addPieceMaps,
-  denomPieceLabel,
-  denomTitle,
-  denomValueFromPieces,
-  denomsForCurrency,
-  piecesFromSheet,
-} from '../lib/cashDenoms';
-import { fetchStoreCashPosition, shiftDateParam } from '../lib/cashTill';
+import { fetchStoreCashPosition } from '../lib/cashTill';
 import { checkTransactionPrices } from '../lib/priceCheck';
 import { AUREUS_CASH_LIVE_MS, useLiveRefresh } from '../lib/liveRefresh';
 import { fetchInventoryMatrix, formatQty, peekInventoryMatrix } from '../lib/inventory';
 import { textMatchesQuery } from '../lib/itemSearch';
-import {
-  formatAmount,
-  formatDateParam,
-  isCashTransaction,
-  parseDateParam,
-  rowMatchesQuery,
-} from '../lib/transactions';
-import {
-  loadStoreDayTxnCashBreakdowns,
-  subscribeStoreTxnCashBreakdowns,
-  sumBreakdownPieces,
-  useTxnCashBreakdowns,
-} from '../lib/txnCashBreakdowns';
+import { listStaffProfiles } from '../lib/permissions';
+import { initialsFor } from '../lib/rippling';
+import { formatAmount, isCashTransaction } from '../lib/transactions';
+import { useTxnCashBreakdowns } from '../lib/txnCashBreakdowns';
 import snapshot from '../lib/websitePriceSnapshot.json';
 import { fetchWebsitePrices, reconcileCatalog } from '../lib/websitePrices';
 import TxnCashBreakdownModal, { TxnCashIcon } from './TxnCashBreakdownModal';
@@ -72,7 +50,7 @@ const PRIORITY_COLORS = {
 
 // Stores can carry hundreds of stocked SKUs; render a page at a time so the
 // drawer opens quickly and scrolls smoothly.
-const INVENTORY_PAGE = 60;
+const INVENTORY_PAGE = 12;
 
 function sameJson(a, b) {
   if (a === b) return true;
@@ -98,6 +76,13 @@ function namesMatch(a, b) {
   );
 }
 
+const SNAPSHOT_APPS = {
+  financials: { key: 'financials', label: 'Financials', icon: 'wallet', accent: '#3D8B4F' },
+  inventory: { key: 'inventory', label: 'Inventory', icon: 'cube', accent: '#C47A12' },
+  employees: { key: 'employees', label: 'Employees', icon: 'people', accent: '#1D4ED8' },
+  transactions: { key: 'transactions', label: 'Transactions', icon: 'swap-horizontal', accent: '#2F6FED' },
+};
+
 function hasDrawerActivity(drawer) {
   if (!drawer) return false;
   return (
@@ -109,12 +94,31 @@ function hasDrawerActivity(drawer) {
   );
 }
 
-function signedAmount(value, currency) {
-  const n = Number(value) || 0;
-  const label = formatAmount(Math.abs(n), currency);
-  if (n > 0) return `+${label}`;
-  if (n < 0) return `-${label}`;
-  return label;
+function staffDisplayName(row) {
+  return (
+    row?.fullName ||
+    [row?.firstName, row?.lastName].filter(Boolean).join(' ') ||
+    row?.email ||
+    'Staff'
+  );
+}
+
+function personMatchesStore(person, storeName) {
+  const store = String(storeName || '').trim().toLowerCase();
+  const location = String(person?.locationName || '').trim().toLowerCase();
+  if (!store || !location) return false;
+  if (location === store) return true;
+  return location.includes(store) || store.includes(location);
+}
+
+function personMatchesTxName(person, employeeName) {
+  const name = String(employeeName || '').trim();
+  if (!name || name === '—') return false;
+  return (
+    namesMatch(staffDisplayName(person), name) ||
+    namesMatch(person?.fullName, name) ||
+    namesMatch([person?.firstName, person?.lastName].filter(Boolean).join(' '), name)
+  );
 }
 
 function formatScrapGrams(grams) {
@@ -122,41 +126,6 @@ function formatScrapGrams(grams) {
   if (!Number.isFinite(n)) return '';
   const text = n.toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1');
   return `${text}g`;
-}
-
-function movementHaystack(row) {
-  return [
-    row?.comments,
-    row?.category,
-    row?.directionLabel,
-    row?.amountLabel,
-    row?.tillName,
-    row?.type,
-  ]
-    .filter(Boolean)
-    .join(' ');
-}
-
-function movementMatches(row, query) {
-  const q = String(query || '').trim();
-  if (!q) return true;
-  const hay = movementHaystack(row);
-  return hay.toLowerCase().includes(q.toLowerCase()) || textMatchesQuery(hay, q);
-}
-
-function txMatches(row, query) {
-  const q = String(query || '').trim();
-  if (!q) return true;
-  if (rowMatchesQuery(row, q)) return true;
-  const hay = String(row?.searchText || '');
-  if (hay.toLowerCase().includes(q.toLowerCase())) return true;
-  return (
-    textMatchesQuery(hay, q) ||
-    textMatchesQuery(row?.customerName, q) ||
-    textMatchesQuery(row?.reference, q) ||
-    textMatchesQuery(row?.employeeName, q) ||
-    textMatchesQuery(row?.paymentMethodLabel, q)
-  );
 }
 
 function itemMatches(row, query) {
@@ -172,21 +141,21 @@ function pickStoreColumns(stores, storeName) {
   return [linked || matches[0]];
 }
 
-function SearchField({ value, onChangeText }) {
+function InventorySearch({ value, onChangeText }) {
   return (
     <View style={styles.searchField}>
-      <Ionicons name="search" size={16} color={SECONDARY} />
+      <Ionicons name="search" size={15} color={SECONDARY} />
       <TextInput
         style={styles.searchInput}
         value={value}
         onChangeText={onChangeText}
-        placeholder="Transactions, items, cash"
+        placeholder="Search inventory"
         placeholderTextColor={SECONDARY}
         autoCorrect={false}
         autoCapitalize="none"
         clearButtonMode="while-editing"
         returnKeyType="search"
-        accessibilityLabel="Search store snapshot"
+        accessibilityLabel="Search inventory"
       />
       {value ? (
         <Pressable onPress={() => onChangeText('')} hitSlop={8} accessibilityLabel="Clear">
@@ -197,176 +166,91 @@ function SearchField({ value, onChangeText }) {
   );
 }
 
-function SectionHeader({ title, meta }) {
+function AppBox({ app, meta, onOpen, children, style, bodyStyle }) {
   return (
-    <View style={styles.sectionHeader}>
-      <Text style={styles.sectionTitle}>{title}</Text>
-      {meta ? <Text style={styles.sectionMeta}>{meta}</Text> : null}
+    <View style={[styles.appBox, style]}>
+      <Pressable
+        onPress={() => onOpen?.(app.key)}
+        style={({ hovered, pressed }) => [
+          styles.appBoxHead,
+          (hovered || pressed) && styles.appBoxHeadHovered,
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel={`Open ${app.label}`}
+      >
+        <View style={[styles.appBoxIcon, { backgroundColor: app.accent }]}>
+          <Ionicons name={app.icon} size={16} color="#fff" />
+        </View>
+        <View style={styles.appBoxHeadCopy}>
+          <Text style={styles.appBoxTitle}>{app.label}</Text>
+          {meta ? <Text style={styles.appBoxMeta}>{meta}</Text> : null}
+        </View>
+        <Ionicons name="chevron-forward" size={14} color={SECONDARY} />
+      </Pressable>
+      <View style={[styles.appBoxBody, bodyStyle]}>{children}</View>
     </View>
   );
 }
 
-function Group({ children, flush }) {
-  return <View style={[styles.group, flush && styles.groupFlush]}>{children}</View>;
-}
-
-function pieceCountLabel(denom, count) {
-  const n = Number(count) || 0;
-  if (!n) return '—';
-  const abs = Math.abs(n);
-  const label = `${abs} ${denomPieceLabel(denom, abs)}`;
-  return n < 0 ? `−${label}` : label;
-}
-
-function sheetCountedTotal(sheet, currency) {
-  if (!hasSheetValues(sheet)) return null;
-  const listed = Number(sheet.countedTotal);
-  if (String(sheet.countedTotal || '').trim() !== '' && Number.isFinite(listed)) return listed;
-  const denoms = denomsForCurrency(currency);
-  const pieces = piecesFromSheet(denoms, sheet.loose, sheet.stacks);
-  const other = Number(sheet.otherCash);
-  const otherN = String(sheet.otherCash || '').trim() !== '' && Number.isFinite(other) ? other : 0;
-  return Math.round((denomValueFromPieces(denoms, pieces) + otherN) * 100) / 100;
-}
-
-function buildDenomCompare(currency, openingSheet, todaySheet, slips) {
-  const denoms = denomsForCurrency(currency);
-  const opening = hasSheetValues(openingSheet)
-    ? piecesFromSheet(denoms, openingSheet.loose, openingSheet.stacks)
-    : null;
-  const txns = sumBreakdownPieces(slips, currency);
-  const expectedPieces = opening || txns.count ? addPieceMaps(opening || {}, txns.net) : null;
-  const hasActual = hasSheetValues(todaySheet);
-  const actualPieces = hasActual
-    ? piecesFromSheet(denoms, todaySheet.loose, todaySheet.stacks)
-    : null;
-  const actualOther = hasActual ? Number(todaySheet.otherCash) || 0 : 0;
-  const rows = [];
-  for (const denom of denoms) {
-    const expected = expectedPieces ? Number(expectedPieces[denom.key]) || 0 : 0;
-    const actual = actualPieces ? Number(actualPieces[denom.key]) || 0 : 0;
-    if (!expected && !actual) continue;
-    rows.push({
-      key: denom.key,
-      title: denomTitle(denom),
-      color: denom.color,
-      expected,
-      actual,
-      expectedLabel: expectedPieces ? pieceCountLabel(denom, expected) : '—',
-      actualLabel: hasActual ? pieceCountLabel(denom, actual) : '—',
-      actualAmount: Math.round(actual * denom.face * 100) / 100,
-    });
-  }
-  if (actualOther) {
-    rows.push({
-      key: 'other',
-      title: 'Other',
-      color: '#8e8e93',
-      expected: 0,
-      actual: 0,
-      expectedLabel: '—',
-      actualLabel: 'Cheques, extras',
-      actualAmount: actualOther,
-    });
-  }
-  return {
-    rows,
-    hasExpected: Boolean(expectedPieces),
-    hasActual,
-    actualTotal: sheetCountedTotal(todaySheet, currency),
-  };
-}
-
-function CompareBand({ title, total, currency, rows, empty, showAmounts }) {
+function EmployeeAvatar({ person, size = 32 }) {
+  const [failed, setFailed] = useState(false);
+  const photoUrl = person?.photoUrl || '';
+  useEffect(() => {
+    setFailed(false);
+  }, [photoUrl]);
+  const showImage = Boolean(photoUrl) && !failed;
   return (
-    <View style={styles.compareBand}>
-      <View style={styles.compareBandHead}>
-        <Text style={styles.compareColTitle}>{title}</Text>
-        <Text style={styles.compareColTotal}>
-          {total != null ? formatAmount(total, currency) : '—'}
-        </Text>
-      </View>
-      {rows.length === 0 ? (
-        <Text style={styles.compareEmpty}>{empty}</Text>
+    <View
+      style={[
+        styles.employeeAvatar,
+        { width: size, height: size, borderRadius: size / 2 },
+        !showImage && styles.employeeAvatarFallback,
+      ]}
+    >
+      {showImage ? (
+        <Image
+          source={{ uri: photoUrl }}
+          style={{ width: size, height: size, borderRadius: size / 2 }}
+          onError={() => setFailed(true)}
+        />
       ) : (
-        <View style={styles.compareChips}>
-          {rows.map((row) => (
-            <View key={row.key} style={styles.compareChip}>
-              <View style={[styles.cashDot, { backgroundColor: row.color }]} />
-              <Text style={styles.compareChipTitle}>{row.title}</Text>
-              <Text style={styles.compareChipCount}>
-                {showAmounts ? row.actualLabel : row.expectedLabel}
-              </Text>
-              {showAmounts && row.actualAmount ? (
-                <Text style={styles.compareChipAmount}>
-                  {formatAmount(row.actualAmount, currency)}
-                </Text>
-              ) : null}
-            </View>
-          ))}
-        </View>
+        <Text style={[styles.employeeInitials, { fontSize: size > 34 ? 13 : 11 }]}>
+          {initialsFor(person?.name)}
+        </Text>
       )}
     </View>
   );
 }
 
-function CashDrawerCard({ drawer, compare }) {
-  if (!drawer) return null;
-  const currency = drawer.currency || 'CAD';
-  const expectedRows = (compare?.rows || []).filter((row) => row.expected);
-  const actualRows = (compare?.rows || []).filter(
-    (row) => row.actual || row.key === 'other',
-  );
-
-  return (
-    <Group flush>
-      <View style={styles.compareStack}>
-        <CompareBand
-          title="Expected"
-          total={drawer.expectedOnHand}
-          currency={currency}
-          rows={expectedRows}
-          empty="No bill count yet"
-        />
-        <View style={styles.compareRule} />
-        <CompareBand
-          title="Actual"
-          total={compare?.hasActual ? compare.actualTotal : null}
-          currency={currency}
-          rows={actualRows}
-          empty="No count saved"
-          showAmounts
-        />
-      </View>
-    </Group>
-  );
-}
-
-const MovementRow = memo(function MovementRow({ row, last, cashSaved, onCashPress }) {
-  const inbound = row.type === 'In';
+function EmployeeRow({ person, last }) {
+  const subtitle = person.txCount
+    ? `${person.txCount} transaction${person.txCount === 1 ? '' : 's'} today`
+    : person.role || 'Assigned to this store';
   return (
     <View style={[styles.row, styles.rowStatic, last && styles.rowLast]}>
+      <EmployeeAvatar person={person} />
       <View style={styles.rowCopy}>
         <Text style={styles.rowTitle} numberOfLines={1}>
-          {row.comments || row.category || row.directionLabel}
+          {person.name}
         </Text>
         <Text style={styles.rowSubtitle} numberOfLines={1}>
-          {[row.directionLabel, row.category !== row.comments ? row.category : null]
-            .filter(Boolean)
-            .join(' · ')}
-        </Text>
-      </View>
-      <View style={styles.rowAmount}>
-        {onCashPress ? (
-          <TxnCashIcon saved={cashSaved} onPress={() => onCashPress(row)} />
-        ) : null}
-        <Text style={[styles.rowValue, { color: inbound ? GREEN : RED }]}>
-          {signedAmount(row.signedAmount, row.currency)}
+          {subtitle}
         </Text>
       </View>
     </View>
   );
-});
+}
+
+function ExpectedCash({ drawer }) {
+  if (!drawer) return null;
+  const currency = drawer.currency || 'CAD';
+  return (
+    <View style={styles.cashHero}>
+      <Text style={styles.cashHeroLabel}>Expected {currency}</Text>
+      <Text style={styles.cashHeroValue}>{formatAmount(drawer.expectedOnHand, currency)}</Text>
+    </View>
+  );
+}
 
 function itemSnapshotLabel(row) {
   const names = (row?.itemNames || [])
@@ -715,24 +599,24 @@ function StoreSnapshotPanel({
   periodLabel = 'Today',
   txRows = [],
   onOpenTransaction,
+  onOpenApp,
   topInset = 0,
   ready = true,
 }) {
   const storeName = store?.store || '';
   const { width: windowWidth } = useWindowDimensions();
   const isMobile = windowWidth < 768;
-  const [query, setQuery] = useState('');
+  const [inventoryQuery, setInventoryQuery] = useState('');
   const [inventoryLimit, setInventoryLimit] = useState(INVENTORY_PAGE);
   const [cash, setCash] = useState(null);
   const [cashLoading, setCashLoading] = useState(false);
   const [cashError, setCashError] = useState('');
-  const [openingCounts, setOpeningCounts] = useState({ cad: null, usd: null });
-  const [todayCounts, setTodayCounts] = useState({ cad: null, usd: null });
-  const [daySlips, setDaySlips] = useState([]);
   const [inventoryStores, setInventoryStores] = useState([]);
   const [inventoryRows, setInventoryRows] = useState([]);
   const [inventoryLoading, setInventoryLoading] = useState(false);
   const [inventoryError, setInventoryError] = useState('');
+  const [staff, setStaff] = useState([]);
+  const [staffLoading, setStaffLoading] = useState(false);
   const [priceCatalog, setPriceCatalog] = useState(() => {
     try {
       return { ...snapshot, ...reconcileCatalog(snapshot.buy, snapshot.sell) };
@@ -748,9 +632,6 @@ function StoreSnapshotPanel({
   const loadCash = useCallback(async ({ silent = false } = {}) => {
     if (!session?.token || !storeName) {
       setCash(null);
-      setOpeningCounts({ cad: null, usd: null });
-      setTodayCounts({ cad: null, usd: null });
-      setDaySlips([]);
       setCashError('');
       return;
     }
@@ -760,46 +641,14 @@ function StoreSnapshotPanel({
       setCashError('');
     }
     try {
-      const dateKey = formatDateParam(parseDateParam(new Date()));
-      const previousDate = shiftDateParam(dateKey, -1);
-      const [result, opening, today, slips] = await Promise.all([
-        fetchStoreCashPosition(session, {
-          storeName,
-          date: dateKey,
-        }),
-        loadStoreCashCounts(storeName, previousDate).catch(() => ({
-          cad: null,
-          usd: null,
-        })),
-        loadStoreCashCounts(storeName, dateKey).catch(() => ({
-          cad: null,
-          usd: null,
-        })),
-        loadStoreDayTxnCashBreakdowns(storeName, dateKey).catch(() => []),
-      ]);
+      const result = await fetchStoreCashPosition(session, { storeName });
       if (id !== cashRequestId.current) return;
       setCash(keepIfSame(result));
-      setOpeningCounts(
-        keepIfSame({
-          cad: opening.cad || null,
-          usd: opening.usd || null,
-        }),
-      );
-      setTodayCounts(
-        keepIfSame({
-          cad: today.cad || null,
-          usd: today.usd || null,
-        }),
-      );
-      setDaySlips(keepIfSame(slips));
       setCashError('');
     } catch (err) {
       if (id !== cashRequestId.current) return;
       if (silent) return;
       setCash(null);
-      setOpeningCounts({ cad: null, usd: null });
-      setTodayCounts({ cad: null, usd: null });
-      setDaySlips([]);
       setCashError(err?.message || 'Failed to load cash.');
     } finally {
       if (id === cashRequestId.current) setCashLoading(false);
@@ -846,13 +695,26 @@ function StoreSnapshotPanel({
     }
   }, [session]);
 
+  const loadStaff = useCallback(async () => {
+    if (!storeName) {
+      setStaff([]);
+      return;
+    }
+    setStaffLoading(true);
+    try {
+      const rows = await listStaffProfiles();
+      setStaff(keepIfSame((rows || []).filter((row) => row.isActive !== false)));
+    } catch {
+      setStaff((current) => current);
+    } finally {
+      setStaffLoading(false);
+    }
+  }, [storeName]);
+
   useEffect(() => {
-    setQuery('');
+    setInventoryQuery('');
     setInventoryLimit(INVENTORY_PAGE);
     setCash(null);
-    setOpeningCounts({ cad: null, usd: null });
-    setTodayCounts({ cad: null, usd: null });
-    setDaySlips([]);
     setCashError('');
   }, [storeName]);
 
@@ -864,6 +726,10 @@ function StoreSnapshotPanel({
     loadInventory();
   }, [loadInventory]);
 
+  useEffect(() => {
+    loadStaff();
+  }, [loadStaff]);
+
   useLiveRefresh(loadCash, AUREUS_CASH_LIVE_MS, Boolean(session?.token && storeName));
   useLiveRefresh(
     (opts) => loadInventory({ ...opts, force: true }),
@@ -871,26 +737,16 @@ function StoreSnapshotPanel({
     Boolean(session?.token && storeName),
   );
 
-  useEffect(() => {
-    if (!session?.token || !storeName) return undefined;
-    const reload = () => {
-      loadCash({ silent: true });
-    };
-    const unsubs = [
-      subscribeStoreCashCounts(storeName, reload),
-      subscribeStoreTxnCashBreakdowns(storeName, reload),
-    ];
-    return () => {
-      for (const unsub of unsubs) unsub();
-    };
-  }, [session?.token, storeName, loadCash]);
-
   const storeColumns = useMemo(
     () => pickStoreColumns(inventoryStores, storeName),
     [inventoryStores, storeName],
   );
   const storeId = storeColumns[0]?.id;
-  const searching = Boolean(query.trim());
+  const searching = Boolean(inventoryQuery.trim());
+
+  useEffect(() => {
+    setInventoryLimit(INVENTORY_PAGE);
+  }, [inventoryQuery]);
 
   useEffect(() => {
     let cancelled = false;
@@ -925,14 +781,12 @@ function StoreSnapshotPanel({
     return map;
   }, [priceCatalog, txRows]);
 
-  const visibleTx = useMemo(() => txRows.filter((row) => txMatches(row, query)), [txRows, query]);
-
   const allItems = useMemo(() => {
     if (!storeId) return [];
     return inventoryRows
       .map((row) => ({ row, qty: row.quantities[storeId] || 0 }))
-      .filter(({ row, qty }) => (searching ? itemMatches(row, query) : qty !== 0));
-  }, [inventoryRows, storeId, query, searching]);
+      .filter(({ row, qty }) => (searching ? itemMatches(row, inventoryQuery) : qty !== 0));
+  }, [inventoryRows, storeId, inventoryQuery, searching]);
   const visibleItems = useMemo(
     () => (allItems.length > inventoryLimit ? allItems.slice(0, inventoryLimit) : allItems),
     [allItems, inventoryLimit],
@@ -942,47 +796,205 @@ function StoreSnapshotPanel({
     setInventoryLimit((current) => current + INVENTORY_PAGE);
   }, []);
 
-  const tillMoves = useMemo(() => {
-    const rows = [
-      ...(cash?.cad?.cashTransactions || []),
-      ...(cash?.usd?.cashTransactions || []),
-    ];
-    return rows.filter((row) => movementMatches(row, query));
-  }, [cash, query]);
-
-  const cashSlipRows = useMemo(() => [...txRows, ...tillMoves], [txRows, tillMoves]);
-  const cashSlips = useTxnCashBreakdowns(cashSlipRows);
-
-  const mergedSlips = useMemo(() => {
-    const map = {};
-    for (const row of daySlips) {
-      if (row?.transactionId) map[row.transactionId] = row;
-    }
-    for (const [id, sheet] of Object.entries(cashSlips.byId)) {
-      if (sheet?.hasCount) map[id] = sheet;
-      else delete map[id];
-    }
-    return Object.values(map);
-  }, [daySlips, cashSlips.byId]);
-
-  const cadCompare = useMemo(
-    () => buildDenomCompare('CAD', openingCounts.cad, todayCounts.cad, mergedSlips),
-    [openingCounts.cad, todayCounts.cad, mergedSlips],
-  );
-  const usdCompare = useMemo(
-    () => buildDenomCompare('USD', openingCounts.usd, todayCounts.usd, mergedSlips),
-    [openingCounts.usd, todayCounts.usd, mergedSlips],
-  );
-  const showUsd =
-    hasDrawerActivity(cash?.usd) || usdCompare.hasExpected || usdCompare.hasActual;
-  const txMeta = searching
-    ? `${visibleTx.length} match${visibleTx.length === 1 ? '' : 'es'}`
-    : `${periodLabel} · ${txRows.length}`;
+  const cashSlips = useTxnCashBreakdowns(txRows);
+  const showUsd = hasDrawerActivity(cash?.usd);
+  const txMeta = `${periodLabel} · ${txRows.length}`;
   const itemMeta = searching
     ? `${allItems.length} match${allItems.length === 1 ? '' : 'es'}`
     : storeId
       ? `${allItems.length} in stock`
       : '';
+
+  const presentEmployees = useMemo(() => {
+    const byKey = new Map();
+    for (const row of txRows) {
+      const name = String(row.employeeName || '').trim();
+      if (!name || name === '—') continue;
+      const key = name.toLowerCase();
+      const current = byKey.get(key) || {
+        name,
+        txCount: 0,
+        photoUrl: '',
+        role: '',
+      };
+      current.txCount += 1;
+      const match = staff.find((person) => personMatchesTxName(person, name));
+      if (match) {
+        current.photoUrl = match.avatarUrl || match.photoUrl || current.photoUrl;
+        current.role = match.employeeType || match.posRole || current.role;
+      }
+      byKey.set(key, current);
+    }
+    for (const person of staff) {
+      if (!personMatchesStore(person, storeName)) continue;
+      const name = staffDisplayName(person);
+      const key = name.toLowerCase();
+      if (byKey.has(key)) {
+        const current = byKey.get(key);
+        current.photoUrl = person.avatarUrl || person.photoUrl || current.photoUrl;
+        current.role = person.employeeType || person.posRole || current.role;
+        continue;
+      }
+      const already = [...byKey.values()].some((entry) => personMatchesTxName(person, entry.name));
+      if (already) continue;
+      byKey.set(key, {
+        name,
+        txCount: 0,
+        photoUrl: person.avatarUrl || person.photoUrl || '',
+        role: person.employeeType || person.posRole || '',
+      });
+    }
+    return Array.from(byKey.values()).sort((a, b) => {
+      if (b.txCount !== a.txCount) return b.txCount - a.txCount;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    });
+  }, [txRows, staff, storeName]);
+
+  const employeeMeta = presentEmployees.length
+    ? `${presentEmployees.length} here`
+    : 'Now';
+
+  const inventoryBody = inventoryError && !hasInventoryRef.current ? (
+    <Pressable onPress={loadInventory}>
+      <EmptyRow text={`${inventoryError} · Tap to retry`} />
+    </Pressable>
+  ) : (inventoryLoading && inventoryRows.length === 0) || !ready ? (
+    <LoadingRow />
+  ) : !storeId ? (
+    <EmptyRow text={`No inventory data for ${storeName || 'this store'}.`} />
+  ) : visibleItems.length === 0 ? (
+    <EmptyRow text={searching ? 'No matching items.' : 'No stocked items.'} />
+  ) : (
+    <>
+      {visibleItems.map(({ row, qty }, index) => (
+        <InventoryRow
+          key={row.id}
+          row={row}
+          qty={qty}
+          last={hiddenItemCount === 0 && index === visibleItems.length - 1}
+        />
+      ))}
+      {hiddenItemCount > 0 ? (
+        <ShowMoreRow remaining={hiddenItemCount} onPress={showMoreItems} />
+      ) : null}
+    </>
+  );
+
+  const financialsBody = cashError ? (
+    <Pressable onPress={loadCash}>
+      <EmptyRow text={`${cashError} · Tap to retry`} />
+    </Pressable>
+  ) : cashLoading && !cash ? (
+    <LoadingRow />
+  ) : cash ? (
+    <View style={styles.cashHeroStack}>
+      <ExpectedCash drawer={cash.cad} />
+      {showUsd ? <ExpectedCash drawer={cash.usd} /> : null}
+    </View>
+  ) : (
+    <EmptyRow text="No cash data for this store." />
+  );
+
+  const employeesBody = staffLoading && presentEmployees.length === 0 ? (
+    <LoadingRow />
+  ) : presentEmployees.length === 0 ? (
+    <EmptyRow text="No employees at this store right now." />
+  ) : (
+    presentEmployees.map((person, index) => (
+      <EmployeeRow
+        key={`${person.name}-${index}`}
+        person={person}
+        last={index === presentEmployees.length - 1}
+      />
+    ))
+  );
+
+  const transactionsBody =
+    txRows.length === 0 ? (
+      <EmptyRow
+        text={`No transactions ${periodLabel === 'Today' ? 'today' : 'in this period'}.`}
+      />
+    ) : (
+      txRows.map((item, index) => (
+        <TransactionRow
+          key={item.id}
+          item={item}
+          last={index === txRows.length - 1}
+          onPress={onOpenTransaction}
+          cashSaved={cashSlips.isSaved(item)}
+          onCashPress={cashSlips.openEditor}
+          priceCheck={priceChecks.get(item.id)}
+          onPricePress={setPriceReview}
+        />
+      ))
+    );
+
+  const content = (
+    <>
+      <View style={[styles.appRow, isMobile && styles.appRowMobile]}>
+        <AppBox
+          app={SNAPSHOT_APPS.financials}
+          meta="Now"
+          onOpen={onOpenApp}
+          style={[styles.appRowBox, !isMobile && styles.appRowBoxDesktop]}
+        >
+          {financialsBody}
+        </AppBox>
+        <AppBox
+          app={SNAPSHOT_APPS.inventory}
+          meta={itemMeta}
+          onOpen={onOpenApp}
+          style={[styles.appRowBox, !isMobile && styles.appRowBoxDesktop]}
+          bodyStyle={!isMobile ? styles.inventoryBoxBody : null}
+        >
+          <InventorySearch value={inventoryQuery} onChangeText={setInventoryQuery} />
+          {isMobile ? (
+            inventoryBody
+          ) : (
+            <ScrollView
+              style={styles.inventoryList}
+              contentContainerStyle={styles.boxListContent}
+              nestedScrollEnabled
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              {inventoryBody}
+            </ScrollView>
+          )}
+        </AppBox>
+        <AppBox
+          app={SNAPSHOT_APPS.employees}
+          meta={employeeMeta}
+          onOpen={onOpenApp}
+          style={[styles.appRowBox, !isMobile && styles.appRowBoxDesktop]}
+          bodyStyle={!isMobile ? styles.appBoxBodyFill : null}
+        >
+          {isMobile ? (
+            employeesBody
+          ) : (
+            <ScrollView
+              style={styles.employeeList}
+              contentContainerStyle={styles.boxListContent}
+              nestedScrollEnabled
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              {employeesBody}
+            </ScrollView>
+          )}
+        </AppBox>
+      </View>
+
+      <AppBox
+        app={SNAPSHOT_APPS.transactions}
+        meta={txMeta}
+        onOpen={onOpenApp}
+        style={styles.txAppBox}
+      >
+        {transactionsBody}
+      </AppBox>
+    </>
+  );
 
   return (
     <View style={[styles.body, isMobile && styles.bodyMobile]}>
@@ -993,109 +1005,7 @@ function StoreSnapshotPanel({
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
       >
-        <SearchField value={query} onChangeText={setQuery} />
-
-        <SectionHeader title="Cash" meta="Today" />
-        {cashError ? (
-          <Pressable onPress={loadCash}>
-            <Group>
-              <EmptyRow text={`${cashError} · Tap to retry`} />
-            </Group>
-          </Pressable>
-        ) : cashLoading && !cash ? (
-          <Group>
-            <LoadingRow />
-          </Group>
-        ) : cash ? (
-          <>
-            <View style={styles.cashStack}>
-              <CashDrawerCard drawer={cash.cad} compare={cadCompare} />
-              {showUsd ? (
-                <CashDrawerCard drawer={cash.usd} compare={usdCompare} />
-              ) : null}
-              {tillMoves.length > 0 ? (
-                <Group flush>
-                  {tillMoves.map((row, index) => (
-                    <MovementRow
-                      key={row.id}
-                      row={row}
-                      last={index === tillMoves.length - 1}
-                      cashSaved={cashSlips.isSaved(row)}
-                      onCashPress={cashSlips.openEditor}
-                    />
-                  ))}
-                </Group>
-              ) : null}
-            </View>
-          </>
-        ) : (
-          <Group>
-            <EmptyRow text="No cash data for this store." />
-          </Group>
-        )}
-
-        <SectionHeader title="Transactions" meta={txMeta} />
-        <Group>
-          {visibleTx.length === 0 ? (
-            <EmptyRow
-              text={
-                searching
-                  ? 'No matching transactions.'
-                  : `No transactions ${periodLabel === 'Today' ? 'today' : 'in this period'}.`
-              }
-            />
-          ) : (
-            visibleTx.map((item, index) => (
-              <TransactionRow
-                key={item.id}
-                item={item}
-                last={index === visibleTx.length - 1}
-                onPress={onOpenTransaction}
-                cashSaved={cashSlips.isSaved(item)}
-                onCashPress={cashSlips.openEditor}
-                priceCheck={priceChecks.get(item.id)}
-                onPricePress={setPriceReview}
-              />
-            ))
-          )}
-        </Group>
-
-        <SectionHeader title="Inventory" meta={itemMeta} />
-        {inventoryError && !hasInventoryRef.current ? (
-          <Pressable onPress={loadInventory}>
-            <Group>
-              <EmptyRow text={`${inventoryError} · Tap to retry`} />
-            </Group>
-          </Pressable>
-        ) : (inventoryLoading && inventoryRows.length === 0) || !ready ? (
-          <Group>
-            <LoadingRow />
-          </Group>
-        ) : !storeId ? (
-          <Group>
-            <EmptyRow text={`No inventory data for ${storeName || 'this store'}.`} />
-          </Group>
-        ) : (
-          <Group>
-            {visibleItems.length === 0 ? (
-              <EmptyRow text={searching ? 'No matching items.' : 'No stocked items.'} />
-            ) : (
-              <>
-                {visibleItems.map(({ row, qty }, index) => (
-                  <InventoryRow
-                    key={row.id}
-                    row={row}
-                    qty={qty}
-                    last={hiddenItemCount === 0 && index === visibleItems.length - 1}
-                  />
-                ))}
-                {hiddenItemCount > 0 ? (
-                  <ShowMoreRow remaining={hiddenItemCount} onPress={showMoreItems} />
-                ) : null}
-              </>
-            )}
-          </Group>
-        )}
+        {content}
       </ScrollView>
       <TxnCashBreakdownModal
         visible={Boolean(cashSlips.editorRow)}
@@ -1120,6 +1030,7 @@ export default memo(
     prev.periodLabel === next.periodLabel &&
     prev.txRows === next.txRows &&
     prev.onOpenTransaction === next.onOpenTransaction &&
+    prev.onOpenApp === next.onOpenApp &&
     prev.topInset === next.topInset &&
     prev.ready === next.ready,
 );
@@ -1134,12 +1045,143 @@ const styles = StyleSheet.create({
   bodyMobile: {
     paddingHorizontal: 14,
   },
+  appRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 12,
+  },
+  appRowMobile: {
+    flexDirection: 'column',
+  },
+  appRowBox: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 200,
+  },
+  appRowBoxDesktop: {
+    height: 280,
+    maxHeight: 280,
+    minHeight: 280,
+  },
+  appBox: {
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    overflow: 'hidden',
+    flexDirection: 'column',
+  },
+  appBoxHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: SEPARATOR,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  appBoxHeadHovered: {
+    backgroundColor: '#f7f7f8',
+  },
+  appBoxIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  appBoxHeadCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  appBoxTitle: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: LABEL,
+    letterSpacing: -0.2,
+  },
+  appBoxMeta: {
+    fontFamily,
+    fontSize: 12,
+    color: SECONDARY,
+    letterSpacing: -0.04,
+    marginTop: 1,
+  },
+  appBoxBody: {
+    minHeight: 0,
+  },
+  appBoxBodyFill: {
+    flex: 1,
+    minHeight: 0,
+  },
+  inventoryBoxBody: {
+    flex: 1,
+    minHeight: 0,
+  },
+  inventoryList: {
+    flex: 1,
+    minHeight: 0,
+  },
+  employeeList: {
+    flex: 1,
+    minHeight: 0,
+  },
+  boxListContent: {
+    flexGrow: 1,
+  },
+  txAppBox: {
+    marginTop: 0,
+  },
+  cashHeroStack: {
+    paddingHorizontal: 14,
+    paddingVertical: 16,
+    gap: 14,
+  },
+  cashHero: {
+    gap: 4,
+  },
+  cashHeroLabel: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: SECONDARY,
+    letterSpacing: -0.04,
+    textTransform: 'uppercase',
+  },
+  cashHeroValue: {
+    fontFamily,
+    fontSize: 28,
+    fontWeight: '700',
+    color: LABEL,
+    letterSpacing: -0.6,
+    fontVariant: ['tabular-nums'],
+  },
+  employeeAvatar: {
+    overflow: 'hidden',
+    backgroundColor: '#ececf0',
+    flexShrink: 0,
+  },
+  employeeAvatarFallback: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#EFF6FF',
+  },
+  employeeInitials: {
+    fontFamily,
+    fontWeight: '700',
+    color: '#1D4ED8',
+  },
   searchField: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
     minHeight: 32,
-    marginBottom: 14,
+    marginHorizontal: 12,
+    marginTop: 10,
+    marginBottom: 4,
     paddingHorizontal: 10,
     borderRadius: 9,
     backgroundColor: FILL,
@@ -1162,122 +1204,7 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingBottom: 32,
-  },
-  sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    justifyContent: 'space-between',
     gap: 12,
-    marginBottom: 6,
-    paddingHorizontal: 4,
-  },
-  sectionTitle: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: SECONDARY,
-    letterSpacing: -0.04,
-    textTransform: 'uppercase',
-  },
-  sectionMeta: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '500',
-    color: SECONDARY,
-    letterSpacing: -0.04,
-  },
-  group: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    overflow: 'hidden',
-    marginBottom: 16,
-  },
-  groupFlush: {
-    marginBottom: 0,
-  },
-  cashStack: {
-    gap: 8,
-    marginBottom: 16,
-  },
-  compareStack: {
-    flexDirection: 'column',
-  },
-  compareBand: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  compareBandHead: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  compareRule: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: SEPARATOR,
-    alignSelf: 'stretch',
-  },
-  compareColTitle: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: SECONDARY,
-    letterSpacing: -0.04,
-  },
-  compareColTotal: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '700',
-    color: LABEL,
-    letterSpacing: -0.3,
-    fontVariant: ['tabular-nums'],
-  },
-  compareEmpty: {
-    fontFamily,
-    fontSize: 12,
-    color: SECONDARY,
-    letterSpacing: -0.04,
-    marginTop: 3,
-  },
-  compareChips: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    alignItems: 'center',
-    gap: 7,
-    marginTop: 5,
-  },
-  compareChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  compareChipTitle: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: LABEL,
-    letterSpacing: -0.04,
-  },
-  compareChipCount: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '400',
-    color: SECONDARY,
-    letterSpacing: -0.04,
-  },
-  compareChipAmount: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '500',
-    color: LABEL,
-    letterSpacing: -0.04,
-    fontVariant: ['tabular-nums'],
-  },
-  cashDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    flexShrink: 0,
   },
   row: {
     flexDirection: 'row',

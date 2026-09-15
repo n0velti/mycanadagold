@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   Image,
   KeyboardAvoidingView,
@@ -26,6 +27,7 @@ import {
   formatThreadStamp,
   getOrCreateDm,
   getOrCreateTeamDm,
+  hideDmMessage,
   initialsFromName,
   leaveDmGroup,
   listDmContacts,
@@ -208,16 +210,34 @@ function HeartBurst({ trigger }) {
   );
 }
 
+function confirmDeleteForMe(onConfirm) {
+  const title = 'Delete for you?';
+  const body = 'This message will be removed from your chat. The other person will still see it.';
+  if (Platform.OS === 'web') {
+    if (typeof window !== 'undefined' && window.confirm(`${title}\n\n${body}`)) onConfirm();
+    return;
+  }
+  Alert.alert(title, body, [
+    { text: 'Cancel', style: 'cancel' },
+    { text: 'Delete', style: 'destructive', onPress: onConfirm },
+  ]);
+}
+
 function MessageBubble({
   message,
   mine,
   groupedWithPrev,
   groupedWithNext,
   senderLabel,
+  menuOpen,
+  onOpenMenu,
+  onCloseMenu,
   onToggleLike,
+  onDeleteForMe,
 }) {
   const lastTap = useRef(0);
   const [burst, setBurst] = useState(0);
+  const [hovered, setHovered] = useState(false);
   const radius = 18;
   const cluster = {
     borderTopLeftRadius: !mine && groupedWithPrev ? 6 : radius,
@@ -225,8 +245,13 @@ function MessageBubble({
     borderTopRightRadius: mine && groupedWithPrev ? 6 : radius,
     borderBottomRightRadius: mine && groupedWithNext ? 6 : radius,
   };
+  const showMore = Platform.OS === 'web' && (hovered || menuOpen);
 
   const handlePress = () => {
+    if (menuOpen) {
+      onCloseMenu();
+      return;
+    }
     const now = Date.now();
     if (now - lastTap.current < 320) {
       if (!message.likedByMe) setBurst((current) => current + 1);
@@ -235,28 +260,92 @@ function MessageBubble({
     lastTap.current = now;
   };
 
+  const openMenu = (event) => {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    onOpenMenu(message);
+  };
+
   return (
-    <View style={[styles.bubbleRow, mine ? styles.bubbleRowMine : styles.bubbleRowTheirs, message.likeCount > 0 && styles.bubbleRowLiked]}>
+    <View
+      style={[styles.bubbleRow, mine ? styles.bubbleRowMine : styles.bubbleRowTheirs, message.likeCount > 0 && styles.bubbleRowLiked]}
+      {...(Platform.OS === 'web'
+        ? {
+            onMouseEnter: () => setHovered(true),
+            onMouseLeave: () => setHovered(false),
+          }
+        : null)}
+    >
       {senderLabel && !groupedWithPrev ? (
         <Text style={styles.senderLabel} numberOfLines={1}>
           {senderLabel}
         </Text>
       ) : null}
-      <Pressable
-        onPress={handlePress}
-        onLongPress={() => onToggleLike(message)}
-        delayLongPress={280}
-        style={({ hovered }) => [
-          styles.bubble,
-          mine ? styles.bubbleMine : styles.bubbleTheirs,
-          cluster,
-          hovered && !mine && styles.bubbleHoverTheirs,
-          hovered && mine && styles.bubbleHoverMine,
-        ]}
-      >
-        <Text style={[styles.bubbleText, mine && styles.bubbleTextMine]}>{message.body}</Text>
-        <HeartBurst trigger={burst} />
-      </Pressable>
+      <View style={[styles.bubbleStack, mine && styles.bubbleStackMine]}>
+        {menuOpen ? (
+          <View
+            style={[styles.msgMenu, mine ? styles.msgMenuMine : styles.msgMenuTheirs]}
+            {...(Platform.OS === 'web' ? { onClick: (event) => event.stopPropagation() } : null)}
+          >
+            <Pressable
+              onPress={() => {
+                if (!message.likedByMe) setBurst((current) => current + 1);
+                onToggleLike(message);
+                onCloseMenu();
+              }}
+              style={({ hovered: itemHover, pressed }) => [
+                styles.msgMenuItem,
+                (itemHover || pressed) && styles.msgMenuItemHover,
+              ]}
+            >
+              <Text style={styles.msgMenuText}>{message.likedByMe ? 'Unlike' : 'Like'}</Text>
+            </Pressable>
+            <View style={styles.msgMenuDivider} />
+            <Pressable
+              onPress={() => {
+                onCloseMenu();
+                confirmDeleteForMe(() => onDeleteForMe(message));
+              }}
+              style={({ hovered: itemHover, pressed }) => [
+                styles.msgMenuItem,
+                (itemHover || pressed) && styles.msgMenuItemHover,
+              ]}
+            >
+              <Text style={[styles.msgMenuText, styles.msgMenuDanger]}>Delete for you</Text>
+            </Pressable>
+          </View>
+        ) : null}
+        <View style={[styles.bubbleLine, mine && styles.bubbleLineMine]}>
+          <Pressable
+            onPress={handlePress}
+            onLongPress={openMenu}
+            delayLongPress={280}
+            {...(Platform.OS === 'web' ? { onContextMenu: openMenu } : null)}
+            style={({ hovered: bubbleHover }) => [
+              styles.bubble,
+              mine ? styles.bubbleMine : styles.bubbleTheirs,
+              cluster,
+              bubbleHover && !mine && styles.bubbleHoverTheirs,
+              bubbleHover && mine && styles.bubbleHoverMine,
+            ]}
+          >
+            <Text style={[styles.bubbleText, mine && styles.bubbleTextMine]}>{message.body}</Text>
+            <HeartBurst trigger={burst} />
+          </Pressable>
+          {showMore ? (
+            <Pressable
+              onPress={openMenu}
+              style={({ hovered: moreHover, pressed }) => [
+                styles.bubbleMore,
+                (moreHover || pressed) && styles.bubbleMoreHover,
+              ]}
+              accessibilityLabel="Message actions"
+            >
+              <Ionicons name="ellipsis-horizontal" size={16} color="#8e8e93" />
+            </Pressable>
+          ) : null}
+        </View>
+      </View>
       {message.likeCount > 0 ? (
         <View style={[styles.likeBadge, mine ? styles.likeBadgeMine : styles.likeBadgeTheirs]}>
           <Text style={styles.likeBadgeText}>
@@ -361,6 +450,7 @@ export default function MessagesScreen({ session, onUnreadChange }) {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
   const [photoPerson, setPhotoPerson] = useState(null);
+  const [menuMessageId, setMenuMessageId] = useState(null);
   const threadRef = useRef(null);
   const typingRef = useRef(null);
   const activeIdRef = useRef(null);
@@ -404,6 +494,7 @@ export default function MessagesScreen({ session, onUnreadChange }) {
       setDetailsOpen(false);
       setAddingMembers(false);
       setTypingByUser({});
+      setMenuMessageId(null);
       setQuery('');
       setTitleDraft('');
       if (!skipLoad) setLoadingThread(true);
@@ -501,6 +592,16 @@ export default function MessagesScreen({ session, onUnreadChange }) {
         }
         if (payload.eventType === 'DELETE' && row?.id && conversationId === activeIdRef.current) {
           setMessages((current) => current.filter((item) => item.id !== row.id));
+        }
+        refreshInbox();
+      },
+      onHide: (payload) => {
+        const messageId = payload.new?.message_id || payload.old?.message_id;
+        const userId = payload.new?.user_id || payload.old?.user_id;
+        if (!messageId || userId !== myId) return;
+        if (payload.eventType === 'INSERT') {
+          setMessages((current) => current.filter((item) => item.id !== messageId));
+          setMenuMessageId((current) => (current === messageId ? null : current));
         }
         refreshInbox();
       },
@@ -625,6 +726,16 @@ export default function MessagesScreen({ session, onUnreadChange }) {
     [peopleIndex, myId],
   );
 
+  useEffect(() => {
+    if (!menuMessageId || Platform.OS !== 'web' || typeof window === 'undefined') return undefined;
+    const close = () => setMenuMessageId(null);
+    const timer = setTimeout(() => window.addEventListener('click', close), 0);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('click', close);
+    };
+  }, [menuMessageId]);
+
   const handleToggleLike = async (message) => {
     if (!message?.id || String(message.id).startsWith('temp-')) return;
     setMessages((current) =>
@@ -643,6 +754,20 @@ export default function MessagesScreen({ session, onUnreadChange }) {
     } catch (err) {
       setError(err.message || 'Could not like that message.');
       refreshInbox();
+      if (activeId) openConversation(activeId, { skipLoad: true });
+    }
+  };
+
+  const handleDeleteForMe = async (message) => {
+    if (!message?.id) return;
+    setMenuMessageId(null);
+    setMessages((current) => current.filter((item) => item.id !== message.id));
+    if (String(message.id).startsWith('temp-')) return;
+    try {
+      await hideDmMessage(message.id);
+      await refreshInbox();
+    } catch (err) {
+      setError(err.message || 'Could not delete that message.');
       if (activeId) openConversation(activeId, { skipLoad: true });
     }
   };
@@ -890,19 +1015,6 @@ export default function MessagesScreen({ session, onUnreadChange }) {
           <View style={[styles.inboxHeader, isMobile && styles.inboxHeaderMobile]}>
             <Text style={styles.inboxTitle}>{composeOpen ? 'New message' : 'Messages'}</Text>
             <View style={styles.inboxHeaderActions}>
-              {composeOpen && selectedIds.length > 0 ? (
-                <Pressable
-                  onPress={startConversation}
-                  style={({ hovered, pressed }) => [
-                    styles.createChatButton,
-                    (hovered || pressed) && styles.createChatButtonHover,
-                  ]}
-                >
-                  <Text style={styles.createChatButtonText}>
-                    {selectedIds.length === 1 ? 'Chat' : 'Create'}
-                  </Text>
-                </Pressable>
-              ) : null}
               <Pressable
                 onPress={() => {
                   setComposeOpen((current) => !current);
@@ -926,22 +1038,43 @@ export default function MessagesScreen({ session, onUnreadChange }) {
             </View>
           </View>
           {composeOpen && selectedPeople.length > 0 ? (
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.chipRow}
-            >
-              {selectedPeople.map((person) => (
+            <View style={styles.recipientBar}>
+              <Text style={styles.recipientLabel}>To</Text>
+              <View style={styles.recipientBody}>
+                {selectedPeople.map((person) => (
+                  <Pressable
+                    key={person.id}
+                    onPress={() => toggleSelected(person.id)}
+                    style={({ hovered, pressed }) => [
+                      styles.chip,
+                      (hovered || pressed) && styles.chipHover,
+                    ]}
+                    accessibilityLabel={`Remove ${firstNameOf(person)}`}
+                  >
+                    <PersonAvatar person={person} size={20} />
+                    <Text style={styles.chipText}>{firstNameOf(person)}</Text>
+                    <Ionicons name="close" size={11} color={BLUE} />
+                  </Pressable>
+                ))}
                 <Pressable
-                  key={person.id}
-                  onPress={() => toggleSelected(person.id)}
-                  style={styles.chip}
+                  onPress={startConversation}
+                  style={({ hovered, pressed }) => [
+                    styles.createChatButton,
+                    (hovered || pressed) && styles.createChatButtonHover,
+                  ]}
+                  accessibilityLabel={
+                    selectedIds.length === 1
+                      ? `Start chat with ${firstNameOf(selectedPeople[0])}`
+                      : 'Create group chat'
+                  }
                 >
-                  <Text style={styles.chipText}>{firstNameOf(person)}</Text>
-                  <Ionicons name="close" size={12} color={BLUE} />
+                  <Text style={styles.createChatButtonText} numberOfLines={1}>
+                    {selectedIds.length === 1 ? 'Start chat' : 'Create group'}
+                  </Text>
+                  <Ionicons name="arrow-forward" size={13} color="#fff" />
                 </Pressable>
-              ))}
-            </ScrollView>
+              </View>
+            </View>
           ) : null}
           {composeOpen && selectedIds.length >= 2 ? (
             <View style={styles.groupNameWrap}>
@@ -1258,7 +1391,11 @@ export default function MessagesScreen({ session, onUnreadChange }) {
                               senderLabel={
                                 activeThread.isGroup && !mine ? firstNameOf(sender) : null
                               }
+                              menuOpen={menuMessageId === message.id}
+                              onOpenMenu={(item) => setMenuMessageId(item.id)}
+                              onCloseMenu={() => setMenuMessageId(null)}
                               onToggleLike={handleToggleLike}
+                              onDeleteForMe={handleDeleteForMe}
                             />
                           </View>
                         );
@@ -1436,38 +1573,74 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
+  recipientBar: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    marginHorizontal: 12,
+    marginBottom: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 12,
+    backgroundColor: '#f2f2f7',
+    flexGrow: 0,
+    flexShrink: 0,
+  },
+  recipientLabel: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#8e8e93',
+    lineHeight: 24,
+  },
+  recipientBody: {
+    flex: 1,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 6,
+  },
   createChatButton: {
-    paddingHorizontal: 12,
-    height: 34,
-    borderRadius: 17,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
     backgroundColor: BLUE,
+    alignSelf: 'flex-start',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
   createChatButtonHover: {
     backgroundColor: '#0077ed',
   },
   createChatButtonText: {
     fontFamily,
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '700',
     color: '#fff',
-  },
-  chipRow: {
-    paddingHorizontal: 12,
-    paddingBottom: 8,
-    gap: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
   },
   chip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 5,
+    backgroundColor: '#fff',
+    borderRadius: 999,
+    paddingLeft: 2,
+    paddingRight: 8,
+    paddingVertical: 2,
+    alignSelf: 'flex-start',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  chipHover: {
     backgroundColor: '#eef4ff',
-    borderRadius: 14,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
   },
   chipText: {
     fontFamily,
@@ -1868,6 +2041,77 @@ const styles = StyleSheet.create({
   },
   bubbleRowLiked: {
     marginBottom: 12,
+  },
+  bubbleStack: {
+    alignItems: 'flex-start',
+  },
+  bubbleStackMine: {
+    alignItems: 'flex-end',
+  },
+  bubbleLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  bubbleLineMine: {
+    flexDirection: 'row-reverse',
+  },
+  bubbleMore: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  bubbleMoreHover: {
+    backgroundColor: '#f2f2f7',
+  },
+  msgMenu: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
+    backgroundColor: '#1d1d1f',
+    borderRadius: 12,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOpacity: 0.22,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+  },
+  msgMenuMine: {
+    alignSelf: 'flex-end',
+  },
+  msgMenuTheirs: {
+    alignSelf: 'flex-start',
+  },
+  msgMenuItem: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  msgMenuItemHover: {
+    backgroundColor: '#2c2c2e',
+  },
+  msgMenuDivider: {
+    width: StyleSheet.hairlineWidth,
+    alignSelf: 'stretch',
+    backgroundColor: 'rgba(255,255,255,0.18)',
+  },
+  msgMenuText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  msgMenuDanger: {
+    color: '#ff453a',
   },
   bubble: {
     paddingHorizontal: 14,

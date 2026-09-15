@@ -134,9 +134,9 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-tx-row:active{background-color:#e5e5ea!important;}',
     '.cgold-tx-row-selected,.cgold-tx-row-selected:hover{background-color:#e8e8ed!important;}',
     '.cgold-home-row{cursor:pointer;background-color:transparent;transition:background-color 160ms ease;}',
-    '.cgold-home-row:hover{background-color:#f2f2f7!important;}',
+    '.cgold-home-row:hover{background-color:#e8e8ed!important;}',
     '.cgold-home-row:active{background-color:#e5e5ea!important;}',
-    '.cgold-home-row-selected,.cgold-home-row-selected:hover{background-color:#ebebed!important;}',
+    '.cgold-home-row-selected,.cgold-home-row-selected:hover{background-color:#e8e8ed!important;}',
     '.cgold-filter-option{cursor:pointer;transition:none!important;}',
     '.cgold-filter-option:hover{background-color:#f5f5f5!important;}',
     '.cgold-floating-tip{position:fixed;z-index:100000;pointer-events:none;max-width:280px;min-width:160px;padding:8px 10px;border-radius:6px;background:#1a1a1a;box-shadow:0 4px 16px rgba(0,0,0,0.18);font:12px/16px Sohne,sans-serif;color:#fff;white-space:pre-wrap;}',
@@ -501,6 +501,7 @@ const STORE_DRAWER_TAB_KEYS = [
   'transactions',
   'inventory',
   'financials',
+  'employees',
   'debit',
   'audit',
   'supplies',
@@ -2133,6 +2134,11 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
 
   const lastStoreNameRef = useRef(store?.store);
   const incomingTxKey = (store?.transactions || []).map((row) => row.id).join('\n');
+  const openApp = useCallback((key) => {
+    if (key === 'overview' || key === 'settings' || hasApp(key)) {
+      setActiveTab(key);
+    }
+  }, [hasApp]);
 
   useEffect(() => {
     const storeChanged = lastStoreNameRef.current !== store?.store;
@@ -2346,6 +2352,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
               {activeTab === 'overview' ||
               activeTab === 'inventory' ||
               activeTab === 'financials' ||
+              activeTab === 'employees' ||
               activeTab === 'debit' ||
               activeTab === 'audit' ||
               activeTab === 'ai' ||
@@ -2359,6 +2366,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                       periodLabel={periodLabel}
                       txRows={txRows}
                       onOpenTransaction={openDetail}
+                      onOpenApp={openApp}
                       topInset={topInset}
                       ready={settled}
                     />
@@ -2404,6 +2412,12 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                       />
                     ) : activeTab === 'triage' ? (
                       <TriageScreen
+                        session={session}
+                        storeFilter={heldStore.store}
+                        embedded
+                      />
+                    ) : activeTab === 'employees' ? (
+                      <EmployeesScreen
                         session={session}
                         storeFilter={heldStore.store}
                         embedded
@@ -2651,11 +2665,11 @@ function HomeStoreCard({ row, selected, last, onOpenStore }) {
   return (
     <Pressable
       onPress={() => onOpenStore(row)}
-      style={({ pressed }) => [
+      style={({ hovered, pressed }) => [
         styles.igStoreCard,
         last && styles.igStoreCardLast,
         selected && styles.igStoreCardSelected,
-        pressed && styles.igStoreCardPressed,
+        (hovered || pressed) && styles.igStoreCardPressed,
       ]}
       accessibilityRole="button"
       accessibilityLabel={row.store}
@@ -2706,7 +2720,11 @@ function HomeStoreTableRow({ row, selected, last, onOpenStore }) {
   return (
     <Pressable
       onPress={() => onOpenStore(row)}
-      style={[styles.homeStoreRow, selected && styles.homeStoreRowSelected]}
+      style={({ hovered, pressed }) => [
+        styles.homeStoreRow,
+        !selected && (hovered || pressed) && styles.homeStoreRowHovered,
+        selected && styles.homeStoreRowSelected,
+      ]}
       {...(Platform.OS === 'web'
         ? {
             className: selected
@@ -2718,7 +2736,7 @@ function HomeStoreTableRow({ row, selected, last, onOpenStore }) {
       accessibilityLabel={row.store}
     >
       <View style={[styles.homeStoreIconTile, { backgroundColor: accent }]}>
-        <Ionicons name="storefront" size={12} color="#fff" />
+        <Ionicons name="storefront" size={14} color="#fff" />
       </View>
       <View style={[styles.homeStoreRowBody, !last && styles.homeStoreRowDivider]}>
         <View style={styles.homeStoreColStore}>
@@ -2733,7 +2751,7 @@ function HomeStoreTableRow({ row, selected, last, onOpenStore }) {
         <HomeStoreAmount amount={row.poAmount} count={row.purchaseCount} />
         <HomeStoreAmount amount={row.totalAmount} count={row.txCount} strong />
         <View style={styles.homeStoreChevron}>
-          <Ionicons name="chevron-forward" size={13} color="#c7c7cc" />
+          <Ionicons name="chevron-forward" size={16} color="#c7c7cc" />
         </View>
       </View>
     </Pressable>
@@ -6549,13 +6567,13 @@ const styles = StyleSheet.create({
   },
   homeStoreTable: {
     flexGrow: 1,
-    minWidth: 560,
+    minWidth: 640,
   },
   homeStoreRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 38,
-    paddingLeft: 12,
+    minHeight: 46,
+    paddingLeft: 16,
     ...Platform.select({
       web: {
         cursor: 'pointer',
@@ -6566,6 +6584,9 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
+  homeStoreRowHovered: {
+    backgroundColor: '#e8e8ed',
+  },
   homeStoreRowSelected: {
     backgroundColor: '#e8e8ed',
   },
@@ -6575,9 +6596,9 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    marginLeft: 10,
-    paddingRight: 12,
+    gap: 16,
+    marginLeft: 12,
+    paddingRight: 16,
   },
   homeStoreRowDivider: {
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -6585,7 +6606,7 @@ const styles = StyleSheet.create({
   },
   homeStoreHeaderRow: {
     backgroundColor: '#fff',
-    minHeight: 32,
+    minHeight: 34,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#e5e5ea',
     ...Platform.select({
@@ -6599,7 +6620,7 @@ const styles = StyleSheet.create({
     }),
   },
   homeStoreTotalRow: {
-    minHeight: 38,
+    minHeight: 46,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: '#d1d1d6',
     ...Platform.select({
@@ -6608,28 +6629,28 @@ const styles = StyleSheet.create({
     }),
   },
   homeStoreIconTile: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
+    width: 28,
+    height: 28,
+    borderRadius: 7,
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
   },
   homeStoreIconSpacer: {
-    width: 22,
-    height: 22,
+    width: 28,
+    height: 28,
     flexShrink: 0,
   },
   homeStoreHeader: {
     fontFamily,
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '500',
     color: '#8e8e93',
     letterSpacing: -0.04,
   },
   homeStoreName: {
     fontFamily,
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: '600',
     color: '#1d1d1f',
     letterSpacing: -0.16,
@@ -6638,7 +6659,7 @@ const styles = StyleSheet.create({
   },
   homeStoreMeta: {
     fontFamily,
-    fontSize: 12,
+    fontSize: 14,
     color: '#8e8e93',
     letterSpacing: -0.04,
     fontVariant: ['tabular-nums'],
@@ -6646,7 +6667,7 @@ const styles = StyleSheet.create({
   },
   homeStoreMoney: {
     fontFamily,
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: '400',
     color: '#1d1d1f',
     letterSpacing: -0.16,
@@ -6660,7 +6681,7 @@ const styles = StyleSheet.create({
   },
   homeStoreTotalLabel: {
     fontFamily,
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: '600',
     color: '#1d1d1f',
     letterSpacing: -0.16,
@@ -6669,7 +6690,7 @@ const styles = StyleSheet.create({
   },
   homeStoreColStore: {
     flex: 1,
-    minWidth: 168,
+    minWidth: 200,
     flexDirection: 'row',
     alignItems: 'baseline',
     gap: 8,
@@ -6679,7 +6700,7 @@ const styles = StyleSheet.create({
     }),
   },
   homeStoreColMoney: {
-    width: 112,
+    width: 128,
     flexShrink: 0,
     textAlign: 'right',
     ...Platform.select({
@@ -6688,7 +6709,7 @@ const styles = StyleSheet.create({
     }),
   },
   homeStoreChevron: {
-    width: 14,
+    width: 18,
     alignItems: 'center',
     flexShrink: 0,
   },

@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Platform, StyleSheet, Text, View } from 'react-native';
 import TriageAccuracyPanel from './TriageAccuracyPanel';
+import TriageDeletedPanel from './TriageDeletedPanel';
 import TriageTransfersPanel from './TriageTransfersPanel';
-import { EmptyState, FONT, T, TextAction, TextTabs } from './TriageKit';
+import { BarButton, EmptyState, FONT, SearchField, T, TextTabs } from './TriageKit';
+import { useIsMobile } from '../lib/mobileUi';
 import {
   batchStats,
   collectAccuracyTriagePos,
@@ -37,6 +39,7 @@ const TRIAGE_TABS = [
   { key: 'transfers', label: 'Dashboard', icon: 'grid-outline' },
   { key: 'accuracy', label: 'Accuracy', icon: 'checkmark-done-outline' },
   { key: 'allocation', label: 'Allocation', icon: 'git-branch-outline' },
+  { key: 'deleted', label: 'Deleted', icon: 'trash-outline' },
 ];
 
 export default function TriageScreen({
@@ -46,10 +49,12 @@ export default function TriageScreen({
   embedded = false,
   onStoreBackChange,
 }) {
-  const { triage } = useTransferWorkflow();
+  const isMobile = useIsMobile();
+  const { triage, deleted = [] } = useTransferWorkflow();
   const [activeTab, setActiveTab] = useState('transfers');
   const [createTransferOpen, setCreateTransferOpen] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [listQuery, setListQuery] = useState('');
   const [transferView, setTransferView] = useState('list');
   const [canLeaveStore, setCanLeaveStore] = useState(false);
   const [batchContext, setBatchContext] = useState(null);
@@ -71,15 +76,17 @@ export default function TriageScreen({
     return TRIAGE_TABS.map((tab) => {
       if (tab.key === 'transfers' && openDocs > 0) return { ...tab, count: openDocs };
       if (tab.key === 'accuracy' && flagged > 0) return { ...tab, count: flagged };
+      if (tab.key === 'deleted' && deleted.length > 0) return { ...tab, count: deleted.length };
       return tab;
     });
-  }, [triage]);
+  }, [deleted.length, triage]);
 
   const changeTab = useCallback((key) => {
     leaveStoreRef.current?.();
     setActiveTab(key);
     setCreateTransferOpen(false);
     setQuickAddOpen(false);
+    setListQuery('');
   }, []);
 
   const handleBackChange = useCallback((fn, context) => {
@@ -93,14 +100,23 @@ export default function TriageScreen({
   const trailing =
     session?.token && activeTab === 'transfers' && transferView === 'list' ? (
       <>
-        <TextAction
+        <SearchField
+          value={listQuery}
+          onChangeText={setListQuery}
+          placeholder="PO / SO"
+          style={[styles.tabSearch, isMobile && styles.tabSearchMobile]}
+        />
+        <BarButton
           label="Quick Add"
-          destructive
-          strong
           onPress={() => setQuickAddOpen(true)}
           accessibilityLabel="Quick Add a PO from any store"
         />
-        <TextAction icon="add" label="New" onPress={() => setCreateTransferOpen(true)} accessibilityLabel="New batch" />
+        <BarButton
+          icon="add"
+          label="Add Batch"
+          onPress={() => setCreateTransferOpen(true)}
+          accessibilityLabel="Add a new batch"
+        />
       </>
     ) : session?.token && inBatch && !onStoreBackChange ? (
       <View style={styles.batchTitle} pointerEvents="none">
@@ -129,11 +145,14 @@ export default function TriageScreen({
           onQuickAddOpenChange={setQuickAddOpen}
           onViewChange={setTransferView}
           onBackChange={handleBackChange}
+          listQuery={listQuery}
         />
       </View>
 
       {activeTab === 'accuracy' ? (
         <TriageAccuracyPanel session={session} storeFilter={storeFilter} />
+      ) : activeTab === 'deleted' ? (
+        <TriageDeletedPanel session={session} />
       ) : activeTab !== 'transfers' ? (
         <EmptyState
           icon={currentTab.icon}
@@ -154,6 +173,17 @@ const styles = StyleSheet.create({
   bodyEmbedded: {
     width: '100%',
     maxWidth: '100%',
+  },
+  tabSearch: {
+    width: 220,
+    maxWidth: 220,
+  },
+  tabSearchMobile: {
+    flexGrow: 1,
+    flexBasis: 140,
+    width: 'auto',
+    maxWidth: '100%',
+    minWidth: 120,
   },
   batchTitle: {
     maxWidth: 220,
