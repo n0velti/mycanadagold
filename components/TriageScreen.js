@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import TriageTransfersPanel from './TriageTransfersPanel';
+import TriageReviewDrawer from './TriageReviewDrawer';
 import { FONT, T, TextAction } from './TriageKit';
 import {
+  applyTriageReviewToPo,
   batchStats,
   collectAccuracyTriagePos,
+  saveTriagePoReview,
   syncTransferWorkflowRemote,
   triagePoNeedsCorrection,
   useTransferWorkflow,
@@ -90,7 +93,7 @@ function countRanks(rows, getLabel) {
     .map((row) => ({ ...row, pct: Math.round((row.count / total) * 100) }));
 }
 
-function TodayInsightsStrip({ triage, onDetailsPress }) {
+function TodayInsightsStrip({ triage }) {
   const accuracyRows = useMemo(() => collectAccuracyTriagePos(triage), [triage]);
   const total = accuracyRows.length;
   const incorrectRows = useMemo(
@@ -144,25 +147,11 @@ function TodayInsightsStrip({ triage, onDetailsPress }) {
         <>
           <View style={styles.insightsStripDivider} />
           <View style={[styles.insightsStripCell, styles.insightsStripCellFlex]}>
-            <Text style={styles.insightsStripKicker}>Top Contributor</Text>
+            <Text style={styles.insightsStripKicker}>Most Flags</Text>
             <Text style={styles.insightsStripLabel} numberOfLines={1}>
               {topPerson.label} ({topPerson.count})
             </Text>
           </View>
-        </>
-      ) : null}
-
-      {onDetailsPress ? (
-        <>
-          <View style={styles.insightsStripDivider} />
-          <Pressable
-            style={styles.insightsStripLink}
-            onPress={onDetailsPress}
-            accessibilityRole="button"
-            accessibilityLabel="View accuracy details"
-          >
-            <Ionicons name="analytics-outline" size={14} color={SECONDARY} />
-          </Pressable>
         </>
       ) : null}
     </View>
@@ -217,6 +206,79 @@ function TodayHeader({ session, triage, onNewPress, onQuickAddPress, batchContex
   );
 }
 
+function FlaggedExceptionRow({ row, onPress }) {
+  const errorType = errorPlace(row);
+  const person = staffName(row) || 'Unknown';
+  const received = Boolean(row?.received);
+
+  return (
+    <Pressable
+      style={styles.flaggedRow}
+      onPress={() => onPress(row)}
+      accessibilityRole="button"
+      accessibilityLabel={`Review ${row.reference}`}
+    >
+      <View style={styles.flaggedRowMain}>
+        <Text style={styles.flaggedRowRef} numberOfLines={1}>
+          {row.reference}
+        </Text>
+        <Text style={styles.flaggedRowMeta} numberOfLines={1}>
+          {errorType} · {person}
+          {row.storeName ? ` · ${row.storeName}` : ''}
+        </Text>
+      </View>
+      <View style={styles.flaggedRowStatus}>
+        <View style={[styles.flaggedPill, received && styles.flaggedPillReceived]}>
+          <Text style={[styles.flaggedPillText, received && styles.flaggedPillTextReceived]}>
+            {received ? 'Received' : 'Open'}
+          </Text>
+        </View>
+        <Ionicons name="chevron-forward" size={16} color={SECONDARY} />
+      </View>
+    </Pressable>
+  );
+}
+
+function FlaggedExceptionsList({ triage, onOpenRow }) {
+  const flaggedRows = useMemo(() => {
+    const rows = collectAccuracyTriagePos(triage).filter(triagePoNeedsCorrection);
+    return rows.sort((a, b) => {
+      const aReceived = a.received ? 1 : 0;
+      const bReceived = b.received ? 1 : 0;
+      if (aReceived !== bReceived) return aReceived - bReceived;
+      return (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0);
+    });
+  }, [triage]);
+
+  if (flaggedRows.length === 0) return null;
+
+  return (
+    <View style={styles.flaggedSection}>
+      <View style={styles.flaggedHeader}>
+        <View style={styles.flaggedHeaderIcon}>
+          <Ionicons name="alert-circle" size={14} color={ORANGE} />
+        </View>
+        <Text style={styles.flaggedHeaderText}>
+          Exceptions ({flaggedRows.length})
+        </Text>
+      </View>
+      <ScrollView
+        style={styles.flaggedList}
+        contentContainerStyle={styles.flaggedListContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {flaggedRows.map((row, index) => (
+          <FlaggedExceptionRow
+            key={`${row.triageId}-${row.id}`}
+            row={row}
+            onPress={onOpenRow}
+          />
+        ))}
+      </ScrollView>
+    </View>
+  );
+}
+
 export default function TriageScreen({
   session,
   onRequireLogin,
@@ -228,6 +290,7 @@ export default function TriageScreen({
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [canLeaveStore, setCanLeaveStore] = useState(false);
   const [batchContext, setBatchContext] = useState(null);
+  const [reviewRow, setReviewRow] = useState(null);
   const leaveStoreRef = useRef(null);
   const onStoreBackChangeRef = useRef(onStoreBackChange);
   onStoreBackChangeRef.current = onStoreBackChange;
@@ -245,6 +308,16 @@ export default function TriageScreen({
     onStoreBackChangeRef.current?.(fn, context || null);
   }, []);
 
+  const handleSaveReview = useCallback((poId, review) => {
+    saveTriagePoReview(poId, review);
+    setReviewRow((current) => (current?.id === poId ? applyTriageReviewToPo(current, review) : current));
+  }, []);
+
+  const flaggedRows = useMemo(
+    () => collectAccuracyTriagePos(triage).filter(triagePoNeedsCorrection),
+    [triage],
+  );
+
   const inBatch = canLeaveStore && Boolean(batchContext);
 
   return (
@@ -259,7 +332,10 @@ export default function TriageScreen({
       />
 
       {!inBatch ? (
-        <TodayInsightsStrip triage={triage} />
+        <>
+          <TodayInsightsStrip triage={triage} />
+          <FlaggedExceptionsList triage={triage} onOpenRow={setReviewRow} />
+        </>
       ) : null}
 
       <View style={styles.pageVisible}>
@@ -273,6 +349,16 @@ export default function TriageScreen({
           onBackChange={handleBackChange}
         />
       </View>
+
+      <TriageReviewDrawer
+        visible={Boolean(reviewRow)}
+        session={session}
+        row={reviewRow}
+        review={reviewRow?.review || null}
+        extraRows={flaggedRows}
+        onClose={() => setReviewRow(null)}
+        onSave={handleSaveReview}
+      />
     </View>
   );
 }
@@ -393,12 +479,90 @@ const styles = StyleSheet.create({
     height: 28,
     backgroundColor: HAIRLINE,
   },
-  insightsStripLink: {
-    padding: 6,
+  flaggedSection: {
+    backgroundColor: '#fff',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
+    maxHeight: 200,
+  },
+  flaggedHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 6,
+    gap: 6,
+  },
+  flaggedHeaderIcon: {
+    width: 18,
+    height: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  flaggedHeaderText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: ORANGE,
+    letterSpacing: -0.1,
+  },
+  flaggedList: {
+    flex: 1,
+    minHeight: 0,
+  },
+  flaggedListContent: {
+    paddingBottom: 8,
+  },
+  flaggedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    gap: 12,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
+  },
+  flaggedRowMain: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  flaggedRowRef: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '500',
+    color: TEXT,
+    letterSpacing: -0.2,
+  },
+  flaggedRowMeta: {
+    fontFamily,
+    fontSize: 12,
+    color: SECONDARY,
+  },
+  flaggedRowStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  flaggedPill: {
+    backgroundColor: 'rgba(255,149,0,0.14)',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  flaggedPillReceived: {
+    backgroundColor: 'rgba(52,199,89,0.14)',
+  },
+  flaggedPillText: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: ORANGE,
+  },
+  flaggedPillTextReceived: {
+    color: GREEN,
   },
   pageVisible: {
     flex: 1,
