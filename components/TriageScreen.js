@@ -45,12 +45,20 @@ const ORANGE = T.orange;
 const RED = T.red;
 const HAIRLINE = T.hairline;
 
-function namesMatch(a, b) {
-  return (
-    String(a || '')
-      .trim()
-      .localeCompare(String(b || '').trim(), undefined, { sensitivity: 'base' }) === 0
-  );
+function formatPct(value) {
+  if (!Number.isFinite(value)) return '—';
+  return `${Math.round(value)}%`;
+}
+
+function accuracyTint(pct) {
+  if (pct >= 90) return GREEN;
+  if (pct >= 75) return ORANGE;
+  return RED;
+}
+
+function staffName(row) {
+  const name = String(row?.employeeName || '').trim();
+  return name && name !== '—' ? name : '';
 }
 
 function errorPlace(row) {
@@ -86,17 +94,6 @@ function countRanks(rows, getLabel) {
     .map((row) => ({ ...row, pct: Math.round((row.count / total) * 100) }));
 }
 
-function formatPct(value) {
-  if (!Number.isFinite(value)) return '—';
-  return `${Math.round(value)}%`;
-}
-
-function accuracyTint(pct) {
-  if (pct >= 90) return GREEN;
-  if (pct >= 75) return ORANGE;
-  return RED;
-}
-
 const ExceptionRow = memo(function ExceptionRow({ row, onPress }) {
   const errorType = errorPlace(row);
   const sub = [row.storeName, row.dateLabel, errorType].filter(Boolean).join(' · ');
@@ -120,50 +117,66 @@ const ExceptionRow = memo(function ExceptionRow({ row, onPress }) {
   );
 });
 
-function CompactAccuracyInsights({ accuracyRows }) {
+function TodayInsightsStrip({ accuracyRows }) {
   const total = accuracyRows.length;
   const incorrectRows = useMemo(
     () => accuracyRows.filter((row) => triagePoNeedsCorrection(row)),
     [accuracyRows],
   );
-  const correctCount = total - incorrectRows.length;
   const incorrectCount = incorrectRows.length;
+  const correctCount = total - incorrectCount;
   const accuracyPct = total ? (correctCount / total) * 100 : null;
-
   const errorRanks = useMemo(() => countRanks(incorrectRows, errorPlace), [incorrectRows]);
+  const peopleRanks = useMemo(
+    () => countRanks(incorrectRows, (row) => staffName(row) || 'Unknown'),
+    [incorrectRows],
+  );
   const topError = errorRanks[0] || null;
+  const topPerson = peopleRanks[0] || null;
 
   if (total === 0) return null;
 
   return (
-    <View style={styles.insightsCompact}>
-      <View style={styles.insightsRow}>
-        <View style={styles.insightsStat}>
-          <Text style={styles.insightsLabel}>Accuracy</Text>
-          <Text style={[styles.insightsValue, { color: accuracyPct == null ? TEXT : accuracyTint(accuracyPct) }]}>
-            {formatPct(accuracyPct)}
-          </Text>
-        </View>
-        <View style={styles.insightsDivider} />
-        <View style={styles.insightsStat}>
-          <Text style={styles.insightsLabel}>Correct</Text>
-          <Text style={[styles.insightsValue, { color: GREEN }]}>{correctCount}</Text>
-        </View>
-        <View style={styles.insightsDivider} />
-        <View style={styles.insightsStat}>
-          <Text style={styles.insightsLabel}>Incorrect</Text>
-          <Text style={[styles.insightsValue, { color: incorrectCount > 0 ? RED : TEXT }]}>{incorrectCount}</Text>
-        </View>
-        {topError ? (
-          <>
-            <View style={styles.insightsDivider} />
-            <View style={[styles.insightsStat, styles.insightsStatWide]}>
-              <Text style={styles.insightsLabel}>Top Error</Text>
-              <Text style={styles.insightsErrorType} numberOfLines={1}>{topError.label}</Text>
-            </View>
-          </>
-        ) : null}
+    <View style={styles.insightsStrip}>
+      <View style={styles.insightsStripCell}>
+        <Text style={styles.insightsStripKicker}>Accuracy</Text>
+        <Text style={[styles.insightsStripValue, { color: accuracyPct == null ? TEXT : accuracyTint(accuracyPct) }]}>
+          {formatPct(accuracyPct)}
+        </Text>
       </View>
+
+      <View style={styles.insightsStripDivider} />
+
+      <View style={styles.insightsStripCell}>
+        <Text style={styles.insightsStripKicker}>Flagged</Text>
+        <Text style={[styles.insightsStripValue, incorrectCount > 0 && { color: ORANGE }]}>
+          {incorrectCount}
+        </Text>
+      </View>
+
+      {topError ? (
+        <>
+          <View style={styles.insightsStripDivider} />
+          <View style={[styles.insightsStripCell, styles.insightsStripCellFlex]}>
+            <Text style={styles.insightsStripKicker}>Top Error</Text>
+            <Text style={styles.insightsStripLabel} numberOfLines={1}>
+              {topError.label}
+            </Text>
+          </View>
+        </>
+      ) : null}
+
+      {topPerson ? (
+        <>
+          <View style={styles.insightsStripDivider} />
+          <View style={[styles.insightsStripCell, styles.insightsStripCellFlex]}>
+            <Text style={styles.insightsStripKicker}>Most Flags</Text>
+            <Text style={styles.insightsStripLabel} numberOfLines={1}>
+              {topPerson.label} ({topPerson.count})
+            </Text>
+          </View>
+        </>
+      ) : null}
     </View>
   );
 }
@@ -195,14 +208,12 @@ function ExceptionsSection({ flaggedRows, onOpenReview }) {
 export default function TriageScreen({
   session,
   onRequireLogin,
-  storeFilter,
   embedded = false,
   onStoreBackChange,
 }) {
   const { triage } = useTransferWorkflow();
   const [createTransferOpen, setCreateTransferOpen] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
-  const [transferView, setTransferView] = useState('list');
   const [canLeaveStore, setCanLeaveStore] = useState(false);
   const [batchContext, setBatchContext] = useState(null);
   const [reviewRow, setReviewRow] = useState(null);
@@ -216,11 +227,7 @@ export default function TriageScreen({
     return undefined;
   }, [session?.supabaseUserId, session?.token]);
 
-  const accuracyRows = useMemo(() => {
-    const rows = collectAccuracyTriagePos(triage);
-    if (!storeFilter) return rows;
-    return rows.filter((row) => namesMatch(row.storeName, storeFilter));
-  }, [storeFilter, triage]);
+  const accuracyRows = useMemo(() => collectAccuracyTriagePos(triage), [triage]);
 
   const flaggedRows = useMemo(
     () => accuracyRows.filter((row) => triagePoNeedsCorrection(row)),
@@ -262,7 +269,7 @@ export default function TriageScreen({
           </View>
         ) : null}
       </View>
-      {session?.token && transferView === 'list' ? (
+      {session?.token ? (
         <View style={styles.todayActions}>
           <TextAction
             label="Quick Add"
@@ -296,13 +303,13 @@ export default function TriageScreen({
     <View style={[styles.body, embedded && styles.bodyEmbedded]}>
       {headerContent}
 
-      {showHeader && transferView === 'list' ? (
+      {showHeader ? (
         <ScrollView
           style={styles.summaryScroll}
           contentContainerStyle={styles.summaryContent}
           showsVerticalScrollIndicator={false}
         >
-          <CompactAccuracyInsights accuracyRows={accuracyRows} />
+          <TodayInsightsStrip accuracyRows={accuracyRows} />
           <ExceptionsSection flaggedRows={flaggedRows} onOpenReview={handleOpenReview} />
         </ScrollView>
       ) : null}
@@ -315,7 +322,6 @@ export default function TriageScreen({
           onCreateOpenChange={setCreateTransferOpen}
           quickAddOpen={quickAddOpen}
           onQuickAddOpenChange={setQuickAddOpen}
-          onViewChange={setTransferView}
           onBackChange={handleBackChange}
         />
       </View>
@@ -414,45 +420,43 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
     gap: 12,
   },
-  insightsCompact: {
+  insightsStrip: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: '#fff',
     borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 10,
+    gap: 12,
     ...Platform.select({
       web: { boxShadow: '0 1px 2px rgba(0,0,0,0.04)' },
       default: {},
     }),
   },
-  insightsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  insightsStat: {
-    flex: 1,
-    minWidth: 0,
+  insightsStripCell: {
     alignItems: 'center',
     gap: 2,
   },
-  insightsStatWide: {
-    flex: 1.5,
+  insightsStripCellFlex: {
+    flex: 1,
+    minWidth: 0,
   },
-  insightsLabel: {
+  insightsStripKicker: {
     fontFamily,
     fontSize: 10.5,
     fontWeight: '600',
     color: SECONDARY,
-    textTransform: 'uppercase',
     letterSpacing: 0.3,
+    textTransform: 'uppercase',
   },
-  insightsValue: {
+  insightsStripValue: {
     fontFamily,
     fontSize: 18,
     fontWeight: '700',
     color: TEXT,
     letterSpacing: -0.4,
   },
-  insightsErrorType: {
+  insightsStripLabel: {
     fontFamily,
     fontSize: 13,
     fontWeight: '600',
@@ -460,11 +464,11 @@ const styles = StyleSheet.create({
     letterSpacing: -0.2,
     textAlign: 'center',
   },
-  insightsDivider: {
+  insightsStripDivider: {
     width: StyleSheet.hairlineWidth,
     height: 32,
     backgroundColor: HAIRLINE,
-    marginHorizontal: 8,
+    marginHorizontal: 4,
   },
   exceptionsSection: {
     backgroundColor: '#fff',
