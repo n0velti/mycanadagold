@@ -393,18 +393,21 @@ function ReadValue({ field, suffix }) {
   const valueText = [field?.value || '—', suffix].filter(Boolean).join(' ');
   if (!changed) {
     return (
-      <Text style={styles.readValue} numberOfLines={1}>
+      <Text style={styles.readValue} numberOfLines={2}>
         {valueText}
       </Text>
     );
   }
   const originalText = [field?.original || '—', suffix].filter(Boolean).join(' ');
   return (
-    <View style={styles.readValueChangedRow}>
-      <Text style={[styles.readValue, styles.readValueStruck]} numberOfLines={1}>
+    <View
+      style={styles.readValueChangedCol}
+      accessibilityLabel={`${originalText} corrected to ${valueText}`}
+    >
+      <Text style={styles.readValueStruck} numberOfLines={2}>
         {originalText}
       </Text>
-      <Text style={[styles.readValue, styles.readValueChanged]} numberOfLines={1}>
+      <Text style={styles.readValueChanged} numberOfLines={2}>
         {valueText}
       </Text>
     </View>
@@ -865,6 +868,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
   const heldRow = useHeldValue(row);
   const { reviews = [] } = useTransferWorkflow();
   const [mounted, setMounted] = useState(visible);
+  if (visible && !mounted) setMounted(true);
 
   const [step, setStep] = useState('edit');
   const [activeRow, setActiveRow] = useState(null);
@@ -1878,8 +1882,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     minHeight: 36,
-    height: 36,
     paddingHorizontal: 10,
+    paddingVertical: 6,
     gap: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: HAIRLINE,
@@ -1976,26 +1980,27 @@ const styles = StyleSheet.create({
     color: TEXT,
     paddingHorizontal: 8,
   },
-  readValueChangedRow: {
+  readValueChangedCol: {
     flex: 1,
     minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
     paddingHorizontal: 8,
+    gap: 1,
   },
   readValueStruck: {
-    flexGrow: 0,
-    flexShrink: 1,
-    paddingHorizontal: 0,
+    fontFamily,
     fontSize: 12,
+    lineHeight: 16,
     color: STRUCK,
     textDecorationLine: 'line-through',
+    ...Platform.select({
+      web: { textDecoration: 'line-through' },
+      default: {},
+    }),
   },
   readValueChanged: {
-    flex: 1,
-    minWidth: 0,
-    paddingHorizontal: 0,
+    fontFamily,
+    fontSize: 14,
+    lineHeight: 18,
     fontWeight: '600',
     color: '#C2410C',
   },
@@ -2110,7 +2115,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     minHeight: 44,
-    height: 44,
+    paddingVertical: 6,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: HAIRLINE,
   },
@@ -2392,6 +2397,10 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: STRUCK,
     textDecorationLine: 'line-through',
+    ...Platform.select({
+      web: { textDecoration: 'line-through' },
+      default: {},
+    }),
   },
   correctedText: {
     fontFamily,

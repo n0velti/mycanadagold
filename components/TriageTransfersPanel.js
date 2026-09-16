@@ -61,7 +61,10 @@ import {
   saveTriagePoReview,
   toggleTriagePoReceived,
   transferGoesToWorkshop,
+  triageEditorFromSession,
   triagePoNeedsCorrection,
+  triageReviewEditor,
+  latestTriageEditor,
   updateTriageTransfers,
   useTransferWorkflow,
 } from '../lib/transferWorkflow';
@@ -71,7 +74,6 @@ import { classifyPurchaseForTriage } from '../lib/priceCheck';
 import TriageReviewDrawer from './TriageReviewDrawer';
 import {
   BarButton,
-  Chip,
   EmptyState,
   FONT,
   Group,
@@ -96,6 +98,9 @@ import {
 import {
   ColumnFilter,
   docNoun,
+  lastEditedName,
+  LastEditedAvatar,
+  LAST_EDITED_COL,
   matchesSelectedLabel,
   PoThumb,
   selectedLabels,
@@ -135,6 +140,7 @@ const EMPTY_MELT_FILTERS = {
   dateLabel: [],
   customer: [],
   employee: [],
+  edited: [],
   store: [],
   status: [],
 };
@@ -149,9 +155,9 @@ const EMPTY_BULLION_FILTERS = {
 
 const EMPTY_DASH_FILTERS = {
   document: [],
-  customer: [],
   dateLabel: [],
   stores: [],
+  edited: [],
   status: [],
 };
 
@@ -350,11 +356,6 @@ function itemCountLabel(row) {
       : 0;
   if (!count) return '';
   return `${count} ${count === 1 ? 'item' : 'items'}`;
-}
-
-function expectedPosLabel(stats) {
-  if (!stats || !(stats.totalPurchases > stats.expected)) return '';
-  return `${stats.expected}/${stats.totalPurchases} POs expected`;
 }
 
 function posTransferToRow(transfer) {
@@ -1322,6 +1323,7 @@ const MELT_SORTERS = {
   dateLabel: (row) => rowTime(row),
   customer: (row) => personLabel(row.customerName),
   employee: (row) => personLabel(row.employeeName),
+  edited: (row) => Date.parse(triageReviewEditor(row.review)?.at || '') || 0,
   store: (row) => row.storeName,
   amount: (row) => rowAmountNumber(row),
   status: (row) => meltStatus(row).label,
@@ -1332,14 +1334,9 @@ const MeltTableRow = memo(function MeltTableRow({ row, staffProfiles, onOpen, on
   const status = meltStatus(row);
   const items = itemCountLabel(row);
   const bullionKind = meltBullionKind(row);
-  const heldBullion = Boolean(bullionKind);
   const bullionOnly = bullionKind === 'only';
   return (
-    <TableRow
-      last={last}
-      style={bullionOnly ? styles.meltRowBullion : heldBullion ? styles.meltRowMixed : null}
-      webClassName={bullionOnly ? 'cgold-triage-row-bullion' : heldBullion ? 'cgold-triage-row-mixed' : undefined}
-    >
+    <TableRow last={last}>
       <TablePhotoCell>
         <PoThumb urls={row.imageUrls} label={row.reference} />
       </TablePhotoCell>
@@ -1349,23 +1346,9 @@ const MeltTableRow = memo(function MeltTableRow({ row, staffProfiles, onOpen, on
             <View style={styles.meltRefText}>
               <TableStrong>{row.reference}</TableStrong>
             </View>
-            {heldBullion ? (
-              <StatusPill label={bullionOnly ? 'Bullion only' : 'Bullion'} tone={bullionOnly ? 'red' : 'orange'} compact />
-            ) : null}
+            {bullionOnly ? <StatusPill label="Bullion only" tone="red" compact /> : null}
           </View>
-          {items || heldBullion ? (
-            <TableMuted>
-              {bullionOnly
-                ? items
-                  ? `${items} · no scrap`
-                  : 'Bullion only · no scrap'
-                : heldBullion
-                  ? items
-                    ? `${items} · stays in store`
-                    : 'Bullion stays in store'
-                  : items}
-            </TableMuted>
-          ) : null}
+          {items ? <TableMuted>{items}</TableMuted> : null}
         </TableCell>
         <TableCell flex={0.9} minWidth={96}>
           <Text style={styles.cellText} numberOfLines={1}>
@@ -1382,6 +1365,9 @@ const MeltTableRow = memo(function MeltTableRow({ row, staffProfiles, onOpen, on
             avatarUrl={findStaffByEmployeeName(staffProfiles, row.employeeName)?.avatarUrl || ''}
           />
         </TableCell>
+        <View style={styles.lastEditedCell}>
+          <LastEditedAvatar editor={triageReviewEditor(row.review)} staffProfiles={staffProfiles} />
+        </View>
         <TableCell flex={1} minWidth={110}>
           {row.storeName}
         </TableCell>
@@ -1437,13 +1423,15 @@ function MeltTab({
   onToggleReceived,
   onReceiveAll,
   onSaveReview,
+  feedOpen,
+  onFeedOpenChange,
+  leading,
 }) {
   const storeList = useMemo(() => stores || [], [stores]);
   const batchLabel = storeNamesLabel(storeList) || 'the selected stores';
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [openRow, setOpenRow] = useState(null);
-  const [feedOpen, setFeedOpen] = useState(false);
   const [openFilter, setOpenFilter] = useState(null);
   const [filters, setFilters] = useState(EMPTY_MELT_FILTERS);
   const [sort, setSort] = useState(null);
@@ -1523,6 +1511,7 @@ function MeltTab({
       (skip === 'dateLabel' || matchesSelectedLabel(row.dateLabel, filters.dateLabel)) &&
       (skip === 'customer' || matchesSelectedLabel(personLabel(row.customerName), filters.customer)) &&
       (skip === 'employee' || matchesSelectedLabel(personLabel(row.employeeName), filters.employee)) &&
+      (skip === 'edited' || matchesSelectedLabel(lastEditedName(triageReviewEditor(row.review)), filters.edited)) &&
       (skip === 'store' || matchesSelectedLabel(row.storeName, filters.store)) &&
       (skip === 'status' || matchesSelectedLabel(meltStatus(row).label, filters.status)),
     [filters],
@@ -1542,6 +1531,10 @@ function MeltTab({
     () => optionsFor('employee', (row) => personLabel(row.employeeName)),
     [optionsFor],
   );
+  const editedOptions = useMemo(
+    () => optionsFor('edited', (row) => lastEditedName(triageReviewEditor(row.review))),
+    [optionsFor],
+  );
   const storeOptions = useMemo(() => optionsFor('store', (row) => row.storeName), [optionsFor]);
   const statusOptions = useMemo(() => optionsFor('status', (row) => meltStatus(row).label), [optionsFor]);
 
@@ -1552,9 +1545,6 @@ function MeltTab({
 
   const expectedScoped = scoped.filter((row) => meltBullionKind(row) !== 'only');
   const allReceived = expectedScoped.length > 0 && expectedScoped.every((row) => row.received);
-  const openCount = expectedScoped.filter((row) => !row.received).length;
-  const noun = docNoun(expectedScoped.length ? expectedScoped : scoped);
-  const expectedMeta = expectedPosLabel(batchStats(batch));
 
   const sortProps = (key) => ({
     sortDir: sort?.key === key ? sort.dir : null,
@@ -1664,40 +1654,34 @@ function MeltTab({
 
   return (
     <View style={styles.body}>
-      {scoped.length === 0 ? (
-        <EmptyState
-          icon="flame-outline"
-          title={storeScope ? `No PO / SO for ${storeScope}` : 'No PO / SO yet'}
-          body={
-            storeScope
-              ? 'Add a date range or a PO/SO number to bring in purchases for this store.'
-              : `Add a date range or a single PO/SO from ${batchLabel} to start checking the melt.`
-          }
-          action={<TextAction icon="add" label="Add PO / SO" strong onPress={() => onAddOpenChange(true)} />}
-        />
-      ) : (
         <TableFrame
-          minWidth={1080}
+          minWidth={1180}
+          leading={leading}
           data={visiblePos}
           renderItem={renderMeltRow}
           keyExtractor={meltKey}
-          ListEmptyComponent={<TableEmpty>No PO or SO matches those filters.</TableEmpty>}
+          ListEmptyComponent={
+            scoped.length === 0 ? (
+              <EmptyState
+                icon="flame-outline"
+                title={storeScope ? `No PO / SO for ${storeScope}` : 'No PO / SO yet'}
+                body={
+                  storeScope
+                    ? 'Add a date range or a PO/SO number to bring in purchases for this store.'
+                    : `Add a date range or a single PO/SO from ${batchLabel} to start checking the melt.`
+                }
+                action={<TextAction icon="add" label="Add PO / SO" strong onPress={() => onAddOpenChange(true)} />}
+              />
+            ) : (
+              <TableEmpty>No PO or SO matches those filters.</TableEmpty>
+            )
+          }
           toolbar={
-            <>
-              <Text style={styles.tableMeta}>
-                {filtersActive ? `${visiblePos.length} of ${scoped.length}` : scoped.length} {noun}
-                {openCount > 0 ? `  ·  ${openCount} open` : '  ·  all received'}
-                {expectedMeta ? `  ·  ${expectedMeta}` : ''}
-              </Text>
+            filtersActive || sort ? (
               <View style={styles.toolbarActions}>
-                {filtersActive || sort ? <TextAction label="Clear" onPress={clearFilters} /> : null}
-                <IconAction
-                  icon="phone-portrait-outline"
-                  onPress={() => setFeedOpen(true)}
-                  accessibilityLabel="Open feed view"
-                />
+                <TextAction label="Clear" onPress={clearFilters} />
               </View>
-            </>
+            ) : null
           }
           header={
             <>
@@ -1745,6 +1729,17 @@ function MeltTab({
                 onOpenKey={setOpenFilter}
                 style={{ flex: 1, minWidth: 140 }}
                 {...sortProps('employee')}
+              />
+              <ColumnFilter
+                columnKey="edited"
+                label="Last edited"
+                value={filters.edited}
+                onChange={(value) => setFilter('edited', value)}
+                options={editedOptions}
+                openKey={openFilter}
+                onOpenKey={setOpenFilter}
+                style={styles.lastEditedHead}
+                {...sortProps('edited')}
               />
               <ColumnFilter
                 columnKey="store"
@@ -1802,7 +1797,6 @@ function MeltTab({
             </>
           }
         />
-      )}
 
       <AddDocumentsModal
         visible={addOpen}
@@ -1843,7 +1837,7 @@ function MeltTab({
         <MeltPoFeedModal
           visible
           rows={visiblePos}
-          onClose={() => setFeedOpen(false)}
+          onClose={() => onFeedOpenChange(false)}
           onOpen={setOpenRow}
           onToggleReceived={onToggleReceived}
         />
@@ -1996,7 +1990,7 @@ const BullionTableRow = memo(function BullionTableRow({ row, onOpen, last }) {
   );
 });
 
-function BullionTab({ rows, busy, stores, storeScope }) {
+function BullionTab({ rows, busy, stores, storeScope, leading }) {
   const storeList = stores || [];
   const [openId, setOpenId] = useState(null);
   const [openFilter, setOpenFilter] = useState(null);
@@ -2061,23 +2055,27 @@ function BullionTab({ rows, busy, stores, storeScope }) {
 
   return (
     <View style={styles.body}>
-      {scoped.length === 0 ? (
-        <EmptyState
-          icon="cube-outline"
-          title={busy ? 'Loading transfers…' : 'No bullion transfers'}
-          body={
-            busy
-              ? 'Checking POS for transfers headed to the Workshop.'
-              : `Transfers from ${storeScope || storeNamesLabel(storeList) || 'these stores'} to the Workshop appear here automatically.`
-          }
-        />
-      ) : (
         <TableFrame
             minWidth={800}
+            leading={leading}
             data={visibleRows}
             renderItem={renderBullionRow}
             keyExtractor={meltKey}
-            ListEmptyComponent={<TableEmpty>No transfers match those filters.</TableEmpty>}
+            ListEmptyComponent={
+              scoped.length === 0 ? (
+                <EmptyState
+                  icon="cube-outline"
+                  title={busy ? 'Loading transfers…' : 'No bullion transfers'}
+                  body={
+                    busy
+                      ? 'Checking POS for transfers headed to the Workshop.'
+                      : `Transfers from ${storeScope || storeNamesLabel(storeList) || 'these stores'} to the Workshop appear here automatically.`
+                  }
+                />
+              ) : (
+                <TableEmpty>No transfers match those filters.</TableEmpty>
+              )
+            }
             toolbar={
               <>
                 <Text style={styles.tableMeta}>
@@ -2163,7 +2161,6 @@ function BullionTab({ rows, busy, stores, storeScope }) {
               </>
             }
           />
-      )}
       <BullionTransferDrawer visible={Boolean(openRow)} transfer={openRow} onClose={() => setOpenId(null)} />
     </View>
   );
@@ -2515,22 +2512,6 @@ function dashboardEmployees(standalone, batch, po) {
   return names;
 }
 
-function dashboardCustomers(standalone, batch, po) {
-  if (standalone) return personLabel(po?.customerName);
-  const seen = new Set();
-  const names = [];
-  for (const item of flattenBatchPos(batch)) {
-    const name = personLabel(item.customerName);
-    const key = name.toLowerCase();
-    if (!name || seen.has(key)) continue;
-    seen.add(key);
-    names.push(name);
-  }
-  if (!names.length) return '';
-  if (names.length <= 2) return names.join(', ');
-  return `${names[0]} +${names.length - 1}`;
-}
-
 function dashboardDocument(standalone, batch, po, today) {
   if (standalone) return po?.reference || dashboardType(batch, po);
   const pos = flattenBatchPos(batch);
@@ -2546,7 +2527,7 @@ function dashboardStatus(standalone, stats, po) {
     if (poHoldsBullion(po)) return { label: 'Bullion', tone: 'orange' };
     return { label: 'Open', tone: 'neutral' };
   }
-  if (stats?.flagged) return { label: 'Flagged', tone: 'orange', sub: `${stats.flagged}` };
+  if (stats?.flagged) return { label: `Flagged ${stats.flagged}`, tone: 'orange' };
   if (stats?.empty) return { label: 'Empty', tone: 'neutral' };
   if (stats?.complete) {
     return { label: 'Received', tone: 'green', sub: `${stats.received} of ${stats.expected}` };
@@ -2563,55 +2544,42 @@ function dashboardPhotoUrls(standalone, batch, po) {
 
 const DASH_COL = {
   document: { flex: 1.2, minWidth: 112 },
-  customer: { flex: 1.5, minWidth: 128 },
+  stores: { flex: 2.2, minWidth: 180 },
   date: { flex: 0.9, minWidth: 96 },
-  stores: { flex: 1.4, minWidth: 120 },
   value: { flex: 0.85, minWidth: 88 },
-  status: { flex: 1.05, minWidth: 108 },
+  status: { flex: 1.15, minWidth: 128 },
 };
 
 const DASH_SORTERS = {
   document: (row) => row.document,
-  customer: (row) => row.customer,
+  stores: (row) => (row.storeNames || []).join(', '),
   dateLabel: (row) => row.dateKey || row.dateLabel || '',
-  stores: (row) => row.stores,
   employee: (row) => row.employeeNames?.[0] || '',
+  edited: (row) => Date.parse(row.editor?.at || '') || 0,
   value: (row) => row.valueNumber,
   status: (row) => row.status.label,
 };
 
-const DashboardTableRow = memo(function DashboardTableRow({ row, staffProfiles, last, onOpen, onDelete }) {
-  const employeeNames = row.employeeNames || [];
-  const employeeName = employeeNames[0] || '';
-  const buyer = findStaffByEmployeeName(staffProfiles, employeeName);
-  const employeeLabel =
-    employeeNames.length > 1 ? `${employeeNames.join(', ')}` : employeeName;
+const DashboardTableRow = memo(function DashboardTableRow({ row, staffProfiles, last, onOpen, onOpenBatch, onDelete }) {
   return (
-    <TableRow last={last}>
+    <TableRow last={last} wrap>
       <TablePhotoCell>
         <PoThumb urls={row.photoUrls} label={row.document} />
       </TablePhotoCell>
       <TableRowMain onPress={onOpen} accessibilityLabel={row.openLabel}>
-        <View style={styles.dashEmployeeCell}>
-          {employeeName ? (
-            <StaffAvatar uri={buyer?.avatarUrl || ''} name={employeeLabel} size={26} />
-          ) : (
-            <Text style={styles.dashEmployeeEmpty}>—</Text>
-          )}
-        </View>
-        <TableCell flex={DASH_COL.document.flex} minWidth={DASH_COL.document.minWidth}>
+        <TableCell flex={DASH_COL.document.flex} minWidth={DASH_COL.document.minWidth} wrap>
           <TableStrong>{row.document}</TableStrong>
         </TableCell>
-        <TableCell flex={DASH_COL.customer.flex} minWidth={DASH_COL.customer.minWidth}>
-          {row.customer || '—'}
+        <TableCell flex={DASH_COL.stores.flex} minWidth={DASH_COL.stores.minWidth} wrap>
+          {(row.storeNames || []).length ? (row.storeNames || []).join(', ') : '—'}
         </TableCell>
-        <TableCell flex={DASH_COL.date.flex} minWidth={DASH_COL.date.minWidth}>
+        <TableCell flex={DASH_COL.date.flex} minWidth={DASH_COL.date.minWidth} wrap>
           {row.dateLabel}
         </TableCell>
-        <TableCell flex={DASH_COL.stores.flex} minWidth={DASH_COL.stores.minWidth}>
-          {row.stores || '—'}
-        </TableCell>
-        <TableCell flex={DASH_COL.value.flex} minWidth={DASH_COL.value.minWidth} align="right">
+        <View style={styles.lastEditedCell}>
+          <LastEditedAvatar editor={row.editor} staffProfiles={staffProfiles} />
+        </View>
+        <TableCell flex={DASH_COL.value.flex} minWidth={DASH_COL.value.minWidth} align="right" wrap>
           {row.valueLabel}
         </TableCell>
         <TableCell flex={DASH_COL.status.flex} minWidth={DASH_COL.status.minWidth}>
@@ -2621,10 +2589,10 @@ const DashboardTableRow = memo(function DashboardTableRow({ row, staffProfiles, 
       <View style={styles.dashActions}>
         <Pressable
           style={styles.dashOpen}
-          onPress={onOpen}
+          onPress={onOpenBatch || onOpen}
           hitSlop={8}
           accessibilityRole="button"
-          accessibilityLabel={row.openLabel}
+          accessibilityLabel={row.standalone ? row.openLabel : `Open batch ${row.dateLabel}`}
         >
           <Text style={styles.dashOpenText}>Open</Text>
         </Pressable>
@@ -2669,10 +2637,14 @@ function BatchList({ transfers, query = '', onOpen, onOpenPo, onDelete }) {
       .filter((row) => batchMatchesQuery(row, query))
       .map((batch) => {
         const standalone = isStandaloneTriage(batch);
-        const po = standalone ? standalonePo(batch) : null;
+        const pos = flattenBatchPos(batch);
+        const po = standalone ? pos[0] || null : null;
         const stats = statsById.get(batch.id);
         const today = !standalone && batch.dateKey === todayKey;
         const type = dashboardType(batch, po);
+        const storeNames = standalone
+          ? [po?.storeName].filter(Boolean)
+          : (batch.stores || []).map((store) => store.name).filter(Boolean);
         return {
           id: batch.id,
           batch,
@@ -2680,13 +2652,10 @@ function BatchList({ transfers, query = '', onOpen, onOpenPo, onDelete }) {
           standalone,
           type,
           document: dashboardDocument(standalone, batch, po, today),
-          customer: dashboardCustomers(standalone, batch, po),
           title: standalone ? po?.reference || type : today ? 'Today' : batch.dateLabel || 'Batch',
           dateLabel: standalone ? po?.dateLabel || batch.dateLabel || '' : batch.dateLabel || '',
           dateKey: batch.dateKey || '',
-          stores: standalone
-            ? po?.storeName || ''
-            : (batch.stores || []).map((store) => store.name).filter(Boolean).join(', '),
+          storeNames,
           valueNumber: standalone ? rowAmountNumber(po) || 0 : stats?.amount || 0,
           valueLabel: standalone
             ? rowAmountLabel(po) || '—'
@@ -2695,6 +2664,7 @@ function BatchList({ transfers, query = '', onOpen, onOpenPo, onDelete }) {
               : '—',
           photoUrls: dashboardPhotoUrls(standalone, batch, po),
           employeeNames: dashboardEmployees(standalone, batch, po),
+          editor: standalone ? triageReviewEditor(po?.review) : latestTriageEditor(pos),
           status: dashboardStatus(standalone, stats, po),
           openLabel: standalone ? `Open ${po?.reference || type}` : `Open batch ${batch.dateLabel}`,
           deleteLabel: standalone ? `Remove ${po?.reference || type}` : `Delete batch ${batch.dateLabel}`,
@@ -2719,9 +2689,11 @@ function BatchList({ transfers, query = '', onOpen, onOpenPo, onDelete }) {
   const rowMatches = useCallback(
     (row, skip) =>
       (skip === 'document' || matchesSelectedLabel(row.document, filters.document)) &&
-      (skip === 'customer' || matchesSelectedLabel(row.customer, filters.customer)) &&
+      (skip === 'stores' ||
+        !selectedLabels(filters.stores).length ||
+        (row.storeNames || []).some((name) => matchesSelectedLabel(name, filters.stores))) &&
       (skip === 'dateLabel' || matchesSelectedLabel(row.dateLabel, filters.dateLabel)) &&
-      (skip === 'stores' || matchesSelectedLabel(row.stores, filters.stores)) &&
+      (skip === 'edited' || matchesSelectedLabel(lastEditedName(row.editor), filters.edited)) &&
       (skip === 'status' || matchesSelectedLabel(row.status.label, filters.status)),
     [filters],
   );
@@ -2730,9 +2702,12 @@ function BatchList({ transfers, query = '', onOpen, onOpenPo, onDelete }) {
     [entries, rowMatches],
   );
   const documentOptions = useMemo(() => optionsFor('document', (row) => row.document), [optionsFor]);
-  const customerOptions = useMemo(() => optionsFor('customer', (row) => row.customer), [optionsFor]);
+  const storeOptions = useMemo(
+    () => uniqueLabels(entries.filter((row) => rowMatches(row, 'stores')).flatMap((row) => row.storeNames || [])),
+    [entries, rowMatches],
+  );
   const dateOptions = useMemo(() => optionsFor('dateLabel', (row) => row.dateLabel), [optionsFor]);
-  const storeOptions = useMemo(() => optionsFor('stores', (row) => row.stores), [optionsFor]);
+  const editedOptions = useMemo(() => optionsFor('edited', (row) => lastEditedName(row.editor)), [optionsFor]);
   const statusOptions = useMemo(() => optionsFor('status', (row) => row.status.label), [optionsFor]);
 
   const visible = useMemo(() => {
@@ -2752,7 +2727,19 @@ function BatchList({ transfers, query = '', onOpen, onOpenPo, onDelete }) {
         row={item}
         staffProfiles={staffProfiles}
         last={index === visible.length - 1}
-        onOpen={() => (item.standalone ? onOpenPo(item.batch) : onOpen(item.batch))}
+        onOpen={() => {
+          if (item.standalone && item.po) {
+            onOpenPo(item.po);
+            return;
+          }
+          const only = flattenBatchPos(item.batch);
+          if (only.length === 1) {
+            onOpenPo(only[0]);
+            return;
+          }
+          onOpen(item.batch);
+        }}
+        onOpenBatch={() => (item.standalone && item.po ? onOpenPo(item.po) : onOpen(item.batch))}
         onDelete={() => onDelete(item.batch)}
       />
     ),
@@ -2761,11 +2748,12 @@ function BatchList({ transfers, query = '', onOpen, onOpenPo, onDelete }) {
 
   return (
     <TableFrame
-      minWidth={960}
+      minWidth={980}
       data={visible}
       renderItem={renderRow}
       keyExtractor={meltKey}
       extraData={`${visible.length}:${sort?.key || ''}:${sort?.dir || ''}`}
+      fixedRowHeight={false}
       ListEmptyComponent={
         <TableEmpty>
           {query.trim() || filtersActive
@@ -2786,7 +2774,6 @@ function BatchList({ transfers, query = '', onOpen, onOpenPo, onDelete }) {
       header={
         <>
           <TablePhotoCell />
-          <View style={styles.dashEmployeeHead} />
           <ColumnFilter
             columnKey="document"
             label="PO / SO"
@@ -2799,15 +2786,15 @@ function BatchList({ transfers, query = '', onOpen, onOpenPo, onDelete }) {
             {...sortProps('document')}
           />
           <ColumnFilter
-            columnKey="customer"
-            label="Customer"
-            value={filters.customer}
-            onChange={(value) => setFilter('customer', value)}
-            options={customerOptions}
+            columnKey="stores"
+            label="Stores"
+            value={filters.stores}
+            onChange={(value) => setFilter('stores', value)}
+            options={storeOptions}
             openKey={openFilter}
             onOpenKey={setOpenFilter}
-            style={DASH_COL.customer}
-            {...sortProps('customer')}
+            style={DASH_COL.stores}
+            {...sortProps('stores')}
           />
           <ColumnFilter
             columnKey="dateLabel"
@@ -2821,15 +2808,15 @@ function BatchList({ transfers, query = '', onOpen, onOpenPo, onDelete }) {
             {...sortProps('dateLabel')}
           />
           <ColumnFilter
-            columnKey="stores"
-            label="Stores"
-            value={filters.stores}
-            onChange={(value) => setFilter('stores', value)}
-            options={storeOptions}
+            columnKey="edited"
+            label="Last edited"
+            value={filters.edited}
+            onChange={(value) => setFilter('edited', value)}
+            options={editedOptions}
             openKey={openFilter}
             onOpenKey={setOpenFilter}
-            style={DASH_COL.stores}
-            {...sortProps('stores')}
+            style={styles.lastEditedHead}
+            {...sortProps('edited')}
           />
           <ColumnFilter
             columnKey="value"
@@ -2864,17 +2851,16 @@ function BatchList({ transfers, query = '', onOpen, onOpenPo, onDelete }) {
 /* Batch detail                                                         */
 /* ------------------------------------------------------------------ */
 
-function BatchSummary({ pos, stats, bullion, storeScope, onStoreScope, mobile, onAddStore, onRemoveStore }) {
+function BatchSummary({ stats, mobile }) {
   const tone = stats.empty ? 'neutral' : stats.complete ? 'green' : 'blue';
-  const pendingBullion = bullion.rows.filter((row) => row.receiveStatus !== RECEIVE_STATUS.all_received).length;
   const stripContent = (
-    <StatStrip style={mobile && styles.statStripMobile}>
+    <StatStrip style={[styles.statStripFlush, mobile && styles.statStripMobile]}>
       <Stat
         label="Expected"
         value={stats.totalPurchases > stats.expected ? `${stats.expected}/${stats.totalPurchases}` : String(stats.expected)}
         sub={
           stats.bullionOnly
-            ? `${stats.bullionOnly} bullion only · stay in store`
+            ? `${stats.bullionOnly} bullion only`
             : stats.amount
               ? formatAmount(stats.amount)
               : 'No purchases'
@@ -2888,12 +2874,6 @@ function BatchSummary({ pos, stats, bullion, storeScope, onStoreScope, mobile, o
       />
       <Stat label="Open" value={String(stats.open)} sub={stats.open ? 'to receive' : 'nothing left'} tone={stats.open ? 'orange' : undefined} />
       <Stat label="Flagged" value={String(stats.flagged)} sub={stats.flagged ? 'need correction' : 'all clean'} tone={stats.flagged ? 'red' : undefined} />
-      <Stat
-        label="Bullion"
-        value={bullion.busy && bullion.rows.length === 0 ? '…' : String(bullion.rows.length)}
-        sub={bullion.rows.length ? (pendingBullion ? `${pendingBullion} pending` : 'all received') : 'no transfers'}
-        tone={pendingBullion ? 'blue' : undefined}
-      />
     </StatStrip>
   );
 
@@ -2906,34 +2886,7 @@ function BatchSummary({ pos, stats, bullion, storeScope, onStoreScope, mobile, o
       ) : (
         stripContent
       )}
-      <ProgressBar value={stats.received} total={stats.expected} tone={tone} height={4} style={styles.summaryProgress} />
-      <View style={styles.storeChips}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.storeChipsScroll}>
-          <Chip label="All stores" count={stats.documents} selected={!storeScope} onPress={() => onStoreScope(null)} />
-          {stats.stores.map((store) => (
-            <Chip
-              key={store.id}
-              label={store.name}
-              count={store.documents}
-              selected={Boolean(storeScope && namesMatch(storeScope, store.name))}
-              onPress={() => onStoreScope(namesMatch(storeScope, store.name) ? null : store.name)}
-            />
-          ))}
-        </ScrollView>
-        <View style={styles.storeChipActions}>
-          {storeScope ? (
-            <TextAction
-              label="Remove store"
-              destructive
-              onPress={() => {
-                const store = stats.stores.find((entry) => namesMatch(entry.name, storeScope));
-                if (store) onRemoveStore(store);
-              }}
-            />
-          ) : null}
-          <TextAction icon="add" label="Store" onPress={onAddStore} accessibilityLabel="Add store to batch" />
-        </View>
-      </View>
+      <ProgressBar value={stats.received} total={stats.expected} tone={tone} height={2} style={styles.summaryProgress} />
     </View>
   );
 }
@@ -2946,6 +2899,7 @@ function BatchDetail({ session, batch, transfers, storeTab, onStoreTab, addMeltO
   const bullion = useWorkshopTransfers(session, stores);
   const [storeScope, setStoreScope] = useState(null);
   const [addStoreOpen, setAddStoreOpen] = useState(false);
+  const [feedOpen, setFeedOpen] = useState(false);
 
   useEffect(() => {
     if (storeScope && !stores.some((store) => namesMatch(store.name, storeScope))) setStoreScope(null);
@@ -2977,8 +2931,8 @@ function BatchDetail({ session, batch, transfers, storeTab, onStoreTab, addMeltO
     [actor, batch.id, stores],
   );
   const saveReview = useCallback((poId, review) => {
-    saveTriagePoReview(poId, review);
-  }, []);
+    saveTriagePoReview(poId, review, triageEditorFromSession(session));
+  }, [session]);
   const addStores = useCallback(
     (incoming) => {
       updateTriageTransfers((current) =>
@@ -3018,33 +2972,38 @@ function BatchDetail({ session, batch, transfers, storeTab, onStoreTab, addMeltO
     [bullion.rows, stats, storeScope],
   );
 
-  return (
-    <View style={styles.body}>
-      <BatchSummary
-        pos={pos}
-        stats={stats}
-        bullion={bullion}
-        storeScope={storeScope}
-        onStoreScope={setStoreScope}
-        mobile={mobile}
-        onAddStore={() => setAddStoreOpen(true)}
-        onRemoveStore={removeStore}
-      />
+  const batchChrome = (
+    <>
+      <BatchSummary stats={stats} mobile={mobile} />
       <TextTabs
         options={tabOptions}
         value={storeTab}
         onChange={(key) => {
           onStoreTab(key);
-          if (key !== 'melt') onAddMeltOpen(false);
+          if (key !== 'melt') {
+            onAddMeltOpen(false);
+            setFeedOpen(false);
+          }
         }}
         style={styles.detailTabs}
         trailing={
           storeTab === 'melt' ? (
-            <TextAction icon="add" label="Add" onPress={() => onAddMeltOpen(true)} accessibilityLabel="Add PO / SO" />
+            <>
+              <IconAction
+                icon="phone-portrait-outline"
+                onPress={() => setFeedOpen(true)}
+                accessibilityLabel="Open feed view"
+              />
+              <TextAction icon="add" label="Add" onPress={() => onAddMeltOpen(true)} accessibilityLabel="Add PO / SO" />
+            </>
           ) : null
         }
       />
+    </>
+  );
 
+  return (
+    <View style={styles.body}>
       {storeTab === 'melt' ? (
         <MeltTab
           session={session}
@@ -3060,9 +3019,18 @@ function BatchDetail({ session, batch, transfers, storeTab, onStoreTab, addMeltO
           onToggleReceived={toggleReceived}
           onReceiveAll={receiveAll}
           onSaveReview={saveReview}
+          feedOpen={feedOpen}
+          onFeedOpenChange={setFeedOpen}
+          leading={batchChrome}
         />
       ) : (
-        <BullionTab rows={bullion.rows} busy={bullion.busy} stores={stores} storeScope={storeScope} />
+        <BullionTab
+          rows={bullion.rows}
+          busy={bullion.busy}
+          stores={stores}
+          storeScope={storeScope}
+          leading={batchChrome}
+        />
       )}
 
       <AddStoreModal
@@ -3146,7 +3114,8 @@ export default function TriageTransfersPanel({
   }, []);
 
   const openStandalonePo = useCallback((row) => {
-    const item = standalonePo(row);
+    if (!row) return;
+    const item = row.stores ? flattenBatchPos(row)[0] : row;
     if (item) setOpenStandalone(item);
   }, []);
 
@@ -3187,9 +3156,9 @@ export default function TriageTransfersPanel({
   }, [onQuickAddOpenChange, session]);
 
   const saveStandaloneReview = useCallback((poId, review) => {
-    saveTriagePoReview(poId, review);
-    setOpenStandalone((current) => (current?.id === poId ? applyTriageReviewToPo(current, review) : current));
-  }, []);
+    const saved = saveTriagePoReview(poId, review, triageEditorFromSession(session));
+    setOpenStandalone((current) => (current?.id === poId ? applyTriageReviewToPo(current, saved || review) : current));
+  }, [session]);
 
   const createBatch = useCallback(
     (row) => {
@@ -3381,6 +3350,7 @@ const styles = StyleSheet.create({
   dashActions: {
     flexDirection: 'row',
     alignItems: 'center',
+    alignSelf: 'center',
     justifyContent: 'flex-end',
     flexGrow: 0,
     flexShrink: 0,
@@ -3388,22 +3358,13 @@ const styles = StyleSheet.create({
     paddingRight: 12,
     gap: 12,
   },
-  dashEmployeeCell: {
-    width: 46,
-    flexGrow: 0,
-    flexShrink: 0,
+  lastEditedCell: {
+    ...LAST_EDITED_COL,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  dashEmployeeHead: {
-    width: 46,
-    flexGrow: 0,
-    flexShrink: 0,
-  },
-  dashEmployeeEmpty: {
-    fontFamily,
-    fontSize: 13,
-    color: SECONDARY,
+  lastEditedHead: {
+    ...LAST_EDITED_COL,
   },
   dashActionsHead: {
     width: 108,
@@ -3433,9 +3394,10 @@ const styles = StyleSheet.create({
   /* batch detail summary */
   summary: {
     flexShrink: 0,
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    gap: 8,
+    paddingHorizontal: 10,
+    paddingTop: 8,
+    paddingBottom: 2,
+    gap: 4,
   },
   statScroll: {
     flexGrow: 1,
@@ -3443,28 +3405,20 @@ const styles = StyleSheet.create({
   statStripMobile: {
     minWidth: '100%',
   },
+  statStripFlush: {
+    backgroundColor: 'transparent',
+    borderWidth: 0,
+    borderRadius: 0,
+  },
   summaryProgress: {
     marginHorizontal: 2,
   },
-  storeChips: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  storeChipsScroll: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingRight: 8,
-  },
-  storeChipActions: {
-    flexShrink: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
   detailTabs: {
-    marginTop: 2,
+    marginTop: 0,
+    backgroundColor: 'transparent',
+    borderBottomWidth: 0,
+    paddingHorizontal: 10,
+    paddingTop: 0,
   },
 
   /* tables */
@@ -3489,12 +3443,6 @@ const styles = StyleSheet.create({
   meltRefText: {
     flexShrink: 1,
     minWidth: 0,
-  },
-  meltRowMixed: {
-    backgroundColor: 'rgba(255,149,0,0.16)',
-  },
-  meltRowBullion: {
-    backgroundColor: 'rgba(255,59,48,0.16)',
   },
   cellText: {
     fontFamily,

@@ -15,7 +15,8 @@ import {
 import { BlurView } from 'expo-blur';
 import { Ionicons } from '@expo/vector-icons';
 import { parseDocReference } from '../lib/transactions';
-import { FONT, T } from './TriageKit';
+import { findStaffByEmployeeName, findStaffById, staffDisplayName } from '../lib/permissions';
+import { FONT, StaffAvatar, T } from './TriageKit';
 
 if (Platform.OS === 'web' && typeof document !== 'undefined') {
   const styleId = 'cgold-triage-table-blur';
@@ -27,10 +28,8 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
   }
   style.textContent = [
     '.cgold-triage-table-blur{-webkit-backdrop-filter:saturate(180%) blur(18px);backdrop-filter:saturate(180%) blur(18px);background-color:rgba(246,246,249,0.78)!important;}',
-    '.cgold-triage-table-row{cursor:pointer;}',
-    '.cgold-triage-table-row:hover{background-color:#f5f5f7!important;}',
-    '.cgold-triage-table-row.cgold-triage-row-mixed:hover{background-color:rgba(255,149,0,0.26)!important;}',
-    '.cgold-triage-table-row.cgold-triage-row-bullion:hover{background-color:rgba(255,59,48,0.26)!important;}',
+    '.cgold-triage-table-row{cursor:pointer;background-color:#fff;}',
+    '.cgold-triage-table-row:hover,.cgold-triage-table-row:has(:hover){background-color:#f5f5f7!important;}',
   ].join('');
 }
 
@@ -38,6 +37,7 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
 export const TABLE_ROW_HEIGHT = 46;
 const HEADER_FALLBACK_HEIGHT = 32;
 const TOOLBAR_FALLBACK_HEIGHT = 34;
+const LEADING_FALLBACK_HEIGHT = 88;
 
 /**
  * Human label for a set of PO/SO rows: "PO", "SO", or "PO / SO" when mixed.
@@ -136,12 +136,13 @@ export function matchesDocQuery(row, query) {
   return hay.includes(q.toLowerCase());
 }
 
-export function TableCell({ children, flex = 1, minWidth = 88, width, last, align = 'left' }) {
+export function TableCell({ children, flex = 1, minWidth = 88, width, last, align = 'left', wrap = false }) {
   const alignStyle = align === 'right' ? styles.tableCellRight : null;
   return (
     <View
       style={[
         styles.tableCell,
+        wrap && styles.tableCellWrap,
         width ? { width, flexGrow: 0, flexShrink: 0 } : { flex, minWidth },
         last && styles.tableCellLast,
         alignStyle,
@@ -150,7 +151,7 @@ export function TableCell({ children, flex = 1, minWidth = 88, width, last, alig
       {typeof children === 'string' || children == null ? (
         <Text
           style={[styles.tableCellText, align === 'right' && styles.tableCellTextRight]}
-          numberOfLines={1}
+          numberOfLines={wrap ? undefined : 1}
         >
           {children || '—'}
         </Text>
@@ -180,15 +181,13 @@ const STATUS_TONES = {
 /** Compact status text with a leading dot, coloured by tone. */
 export function TableStatus({ label, tone = 'neutral', sub }) {
   const color = STATUS_TONES[tone] || STATUS_TONES.neutral;
+  const text = sub ? `${label} ${sub}` : label;
   return (
-    <View>
-      <View style={styles.statusRow}>
-        <View style={[styles.statusDot, { backgroundColor: color }]} />
-        <Text style={[styles.statusText, { color }]} numberOfLines={1}>
-          {label}
-        </Text>
-      </View>
-      {sub ? <TableMuted>{sub}</TableMuted> : null}
+    <View style={styles.statusRow}>
+      <View style={[styles.statusDot, { backgroundColor: color }]} />
+      <Text style={[styles.statusText, { color }]} numberOfLines={1}>
+        {text}
+      </Text>
     </View>
   );
 }
@@ -212,6 +211,46 @@ export function TablePhotoCell({ children }) {
   return <View style={styles.tablePhotoCell}>{children}</View>;
 }
 
+export const LAST_EDITED_COL = {
+  width: 92,
+  flexGrow: 0,
+  flexShrink: 0,
+};
+
+function formatLastEditedAt(iso) {
+  const time = Date.parse(iso || '');
+  if (!Number.isFinite(time)) return '';
+  const date = new Date(time);
+  const today = new Date();
+  const sameDay =
+    date.getFullYear() === today.getFullYear() &&
+    date.getMonth() === today.getMonth() &&
+    date.getDate() === today.getDate();
+  const clock = date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  if (sameDay) return clock;
+  return `${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} · ${clock}`;
+}
+
+export function lastEditedName(editor) {
+  return String(editor?.name || '').trim();
+}
+
+export function LastEditedAvatar({ editor, staffProfiles, size = 26 }) {
+  const id = String(editor?.id || '').trim();
+  const name = lastEditedName(editor);
+  if (!id && !name) {
+    return <Text style={styles.lastEditedEmpty}>—</Text>;
+  }
+  const person = findStaffById(staffProfiles, id) || findStaffByEmployeeName(staffProfiles, name);
+  const label = staffDisplayName(person) || name || 'Edited';
+  const at = formatLastEditedAt(editor?.at);
+  return (
+    <View style={styles.lastEditedSlot} accessibilityLabel={at ? `${label} last edited ${at}` : `Last edited by ${label}`}>
+      <StaffAvatar uri={person?.avatarUrl || editor?.avatarUrl || ''} name={at ? `${label} · ${at}` : label} size={size} />
+    </View>
+  );
+}
+
 export function TableRowPressable({ last, onPress, accessibilityLabel, children }) {
   return (
     <Pressable
@@ -226,10 +265,10 @@ export function TableRowPressable({ last, onPress, accessibilityLabel, children 
   );
 }
 
-export function TableRow({ last, children, style, webClassName }) {
+export function TableRow({ last, children, style, webClassName, wrap = false }) {
   return (
     <View
-      style={[styles.tableRow, last && styles.tableRowLast, style]}
+      style={[styles.tableRow, wrap && styles.tableRowWrap, last && styles.tableRowLast, style]}
       {...(Platform.OS === 'web'
         ? { className: ['cgold-triage-table-row', webClassName].filter(Boolean).join(' ') }
         : null)}
@@ -242,10 +281,7 @@ export function TableRow({ last, children, style, webClassName }) {
 export function TableRowMain({ onPress, accessibilityLabel, children }) {
   return (
     <Pressable
-      style={({ hovered, pressed }) => [
-        styles.tableRowMain,
-        (hovered || pressed) && styles.tableRowMainHover,
-      ]}
+      style={styles.tableRowMain}
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
@@ -307,16 +343,20 @@ export function TableFrame({
   minWidth,
   header,
   toolbar,
+  leading,
   data,
   renderItem,
   keyExtractor,
   ListEmptyComponent,
   children,
   extraData,
+  fixedRowHeight = true,
 }) {
   const { width } = useWindowDimensions();
   const [chromeHeight, setChromeHeight] = useState(
-    HEADER_FALLBACK_HEIGHT + (toolbar ? TOOLBAR_FALLBACK_HEIGHT : 0),
+    HEADER_FALLBACK_HEIGHT +
+      (toolbar ? TOOLBAR_FALLBACK_HEIGHT : 0) +
+      (leading ? LEADING_FALLBACK_HEIGHT : 0),
   );
   const onChromeLayout = useCallback((event) => {
     const next = Math.ceil(event.nativeEvent.layout.height);
@@ -336,6 +376,7 @@ export function TableFrame({
       onLayout={onChromeLayout}
       {...(Platform.OS === 'web' ? { className: 'cgold-triage-table-blur' } : null)}
     >
+      {leading ? <View style={styles.tableLeading}>{leading}</View> : null}
       {toolbar ? <View style={styles.tableToolbarInner}>{toolbar}</View> : null}
       <View style={styles.tableHeader}>{header}</View>
     </BlurView>
@@ -352,7 +393,7 @@ export function TableFrame({
           keyExtractor={keyExtractor}
           extraData={extraData}
           ListEmptyComponent={ListEmptyComponent}
-          getItemLayout={getItemLayout}
+          getItemLayout={fixedRowHeight ? getItemLayout : undefined}
           initialNumToRender={18}
           maxToRenderPerBatch={16}
           windowSize={7}
@@ -683,6 +724,14 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#d1d1d6',
     backgroundColor: 'rgba(246,246,249,0.9)',
+    ...Platform.select({
+      web: { height: 'fit-content' },
+      default: {},
+    }),
+  },
+  tableLeading: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(60,60,67,0.12)',
   },
   tableToolbarInner: {
     flexDirection: 'row',
@@ -716,6 +765,11 @@ const styles = StyleSheet.create({
     borderBottomColor: HAIRLINE,
     backgroundColor: '#fff',
   },
+  tableRowWrap: {
+    height: undefined,
+    minHeight: TABLE_ROW_HEIGHT,
+    alignItems: 'stretch',
+  },
   tableRowHover: {
     backgroundColor: '#f5f5f7',
   },
@@ -732,6 +786,7 @@ const styles = StyleSheet.create({
     minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
+    backgroundColor: 'transparent',
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -741,6 +796,11 @@ const styles = StyleSheet.create({
     height: TABLE_ROW_HEIGHT,
     paddingHorizontal: 8,
     justifyContent: 'center',
+  },
+  tableCellWrap: {
+    height: undefined,
+    minHeight: TABLE_ROW_HEIGHT,
+    paddingVertical: 8,
   },
   tableCellLast: {
     paddingRight: 14,
@@ -872,6 +932,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingLeft: 8,
+  },
+  lastEditedSlot: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  lastEditedEmpty: {
+    fontFamily,
+    fontSize: 13,
+    color: SECONDARY,
+    textAlign: 'center',
   },
   tableEmpty: {
     fontFamily,

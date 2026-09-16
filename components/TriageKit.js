@@ -5,7 +5,7 @@
  * pulls its tokens and primitives from here so the app reads as one product:
  * one type ramp, one set of status colours, one drawer, one empty state.
  */
-import { Component, useEffect, useRef, useState } from 'react';
+import { Component, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Alert,
   Animated,
@@ -135,60 +135,97 @@ export class TriageErrorBoundary extends Component {
 /** Slide-from-right drawer animation with mount/unmount handling. */
 export function useRightDrawerAnimation(visible, slideDistance) {
   const [mounted, setMounted] = useState(visible);
-  const slide = useRef(new Animated.Value(0)).current;
-  const backdrop = useRef(new Animated.Value(visible ? 1 : 0)).current;
+  const slide = useRef(new Animated.Value(slideDistance)).current;
+  const backdrop = useRef(new Animated.Value(0)).current;
   const slideDistanceRef = useRef(slideDistance);
-  const opened = useRef(visible);
+  const activeAnim = useRef(null);
   slideDistanceRef.current = slideDistance;
-  const native = Platform.OS !== 'web';
+
+  const stopActiveAnim = () => {
+    if (activeAnim.current) {
+      activeAnim.current.stop();
+      activeAnim.current = null;
+    }
+  };
+
+  useEffect(() => {
+    if (!mounted) slide.setValue(slideDistance);
+  }, [slideDistance, mounted, slide]);
 
   useEffect(() => {
     if (visible) {
-      opened.current = true;
       setMounted(true);
-      slide.setValue(native ? slideDistanceRef.current : 0);
-      backdrop.setValue(native ? 0 : 1);
-      const anim = Animated.parallel([
-        Animated.timing(slide, {
-          toValue: 0,
-          duration: native ? DRAWER_OPEN_MS : 0,
-          easing: Easing.bezier(0.22, 1, 0.36, 1),
-          useNativeDriver: native,
-        }),
-        Animated.timing(backdrop, {
-          toValue: 1,
-          duration: native ? DRAWER_OPEN_MS : 0,
-          easing: Easing.out(Easing.quad),
-          useNativeDriver: native,
-        }),
-      ]);
-      anim.start();
-      return () => anim.stop();
+      return undefined;
     }
+    if (!mounted) return undefined;
 
-    if (!opened.current) return undefined;
-
+    stopActiveAnim();
     const anim = Animated.parallel([
       Animated.timing(slide, {
-        toValue: native ? slideDistanceRef.current : 0,
-        duration: native ? DRAWER_CLOSE_MS : 0,
+        toValue: slideDistanceRef.current,
+        duration: DRAWER_CLOSE_MS,
         easing: Easing.bezier(0.4, 0, 0.2, 1),
-        useNativeDriver: native,
+        useNativeDriver: true,
       }),
       Animated.timing(backdrop, {
         toValue: 0,
-        duration: native ? DRAWER_CLOSE_MS : 0,
+        duration: DRAWER_CLOSE_MS,
         easing: Easing.out(Easing.quad),
-        useNativeDriver: native,
+        useNativeDriver: true,
       }),
     ]);
-    const timeout = setTimeout(() => setMounted(false), DRAWER_CLOSE_MS + 32);
-    anim.start(() => setMounted(false));
+    activeAnim.current = anim;
+    anim.start(({ finished }) => {
+      if (activeAnim.current === anim) activeAnim.current = null;
+      if (finished) setMounted(false);
+    });
     return () => {
-      anim.stop();
-      clearTimeout(timeout);
+      if (activeAnim.current === anim) {
+        anim.stop();
+        activeAnim.current = null;
+      }
     };
-  }, [visible, slide, backdrop]);
+  }, [visible, mounted, slide, backdrop]);
+
+  useLayoutEffect(() => {
+    if (!visible || !mounted) return undefined;
+
+    stopActiveAnim();
+    slide.setValue(slideDistanceRef.current);
+    backdrop.setValue(0);
+
+    let cancelled = false;
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        if (cancelled) return;
+        const anim = Animated.parallel([
+          Animated.timing(slide, {
+            toValue: 0,
+            duration: DRAWER_OPEN_MS,
+            easing: Easing.bezier(0.22, 1, 0.36, 1),
+            useNativeDriver: true,
+          }),
+          Animated.timing(backdrop, {
+            toValue: 1,
+            duration: DRAWER_OPEN_MS,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+          }),
+        ]);
+        activeAnim.current = anim;
+        anim.start(({ finished }) => {
+          if (finished && activeAnim.current === anim) activeAnim.current = null;
+        });
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
+  }, [visible, mounted, slide, backdrop]);
 
   return { mounted, slide, backdrop };
 }
@@ -1039,18 +1076,20 @@ const styles = StyleSheet.create({
   },
   statStrip: {
     flexDirection: 'row',
-    alignItems: 'stretch',
+    alignItems: 'center',
     backgroundColor: T.card,
-    borderRadius: 12,
+    borderRadius: 8,
     overflow: 'hidden',
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: T.hairline,
   },
   stat: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
     minWidth: 0,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    gap: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    gap: 6,
     borderRightWidth: StyleSheet.hairlineWidth,
     borderRightColor: T.hairline,
   },
@@ -1062,24 +1101,28 @@ const styles = StyleSheet.create({
   },
   statLabel: {
     fontFamily: FONT,
-    fontSize: 10.5,
+    fontSize: 10,
     fontWeight: '600',
     color: T.secondary,
     textTransform: 'uppercase',
     letterSpacing: 0.3,
+    flexShrink: 0,
   },
   statValue: {
     fontFamily: FONT,
-    fontSize: 17,
+    fontSize: 13,
     fontWeight: '600',
     color: T.text,
-    letterSpacing: -0.4,
+    letterSpacing: -0.2,
     fontVariant: ['tabular-nums'],
+    flexShrink: 0,
   },
   statSub: {
     fontFamily: FONT,
-    fontSize: 11.5,
+    fontSize: 11,
     color: T.secondary,
+    flexShrink: 1,
+    minWidth: 0,
   },
   chip: {
     flexDirection: 'row',

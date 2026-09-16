@@ -2,17 +2,23 @@ import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useIsMobile } from '../lib/mobileUi';
+import { listStaffProfiles } from '../lib/permissions';
 import {
   collectAccuracyTriagePos,
   saveTriagePoReview,
   applyTriageReviewToPo,
   clearTriagePoReview,
+  triageEditorFromSession,
   triagePoNeedsCorrection,
+  triageReviewEditor,
   useTransferWorkflow,
 } from '../lib/transferWorkflow';
 import {
   ColumnFilter,
   docNoun,
+  lastEditedName,
+  LastEditedAvatar,
+  LAST_EDITED_COL,
   matchesSelectedLabel,
   PoThumb,
   selectedLabels,
@@ -50,6 +56,7 @@ const EMPTY_FILTERS = {
   reference: [],
   dateLabel: [],
   person: [],
+  edited: [],
   store: [],
   received: [],
   errorType: [],
@@ -379,6 +386,7 @@ function rowMatchesSharedFilters(row, filters) {
     matchesSelectedLabel(row.reference, filters.reference) &&
     matchesSelectedLabel(row.dateLabel, filters.dateLabel) &&
     matchesSelectedLabel(staffName(row), filters.person) &&
+    matchesSelectedLabel(lastEditedName(triageReviewEditor(row.review)), filters.edited) &&
     matchesSelectedLabel(row.storeName, filters.store) &&
     matchesSelectedLabel(row.triageDateLabel, filters.received)
   );
@@ -871,7 +879,7 @@ function ErrorBreakdownDrawer({ visible, rows, total, onClose, onOpenPo }) {
   );
 }
 
-const AccuracyTableRow = memo(function AccuracyTableRow({ row, last, showError, onOpen, onDelete }) {
+const AccuracyTableRow = memo(function AccuracyTableRow({ row, last, showError, staffProfiles, onOpen, onDelete }) {
   const review = row.review || {};
   const photo = (
     <TablePhotoCell>
@@ -890,6 +898,9 @@ const AccuracyTableRow = memo(function AccuracyTableRow({ row, last, showError, 
       <TableCell flex={1.15} minWidth={110}>
         {staffName(row)}
       </TableCell>
+      <View style={styles.lastEditedCell}>
+        <LastEditedAvatar editor={triageReviewEditor(review)} staffProfiles={staffProfiles} />
+      </View>
       <TableCell flex={1.1} minWidth={110}>
         {row.storeName}
       </TableCell>
@@ -950,6 +961,21 @@ export default function TriageAccuracyPanel({ session, storeFilter }) {
   const [openErrors, setOpenErrors] = useState(false);
   const [openFilter, setOpenFilter] = useState(null);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
+  const [staffProfiles, setStaffProfiles] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    listStaffProfiles()
+      .then((rows) => {
+        if (!cancelled) setStaffProfiles(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setStaffProfiles([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const accuracyRows = useMemo(() => {
     const rows = collectAccuracyTriagePos(triage);
@@ -1029,6 +1055,10 @@ export default function TriageAccuracyPanel({ session, storeFilter }) {
   );
   const dateOptions = useMemo(() => optionsFor('dateLabel', (row) => row.dateLabel), [optionsFor]);
   const personOptions = useMemo(() => optionsFor('person', staffName), [optionsFor]);
+  const editedOptions = useMemo(
+    () => optionsFor('edited', (row) => lastEditedName(triageReviewEditor(row.review))),
+    [optionsFor],
+  );
   const storeOptions = useMemo(() => optionsFor('store', (row) => row.storeName), [optionsFor]);
   const receivedOptions = useMemo(
     () => optionsFor('received', (row) => row.triageDateLabel),
@@ -1044,9 +1074,9 @@ export default function TriageAccuracyPanel({ session, storeFilter }) {
   );
 
   const saveReview = useCallback((poId, review) => {
-    saveTriagePoReview(poId, review);
-    setOpenRow((current) => (current?.id === poId ? applyTriageReviewToPo(current, review) : current));
-  }, []);
+    const saved = saveTriagePoReview(poId, review, triageEditorFromSession(session));
+    setOpenRow((current) => (current?.id === poId ? applyTriageReviewToPo(current, saved || review) : current));
+  }, [session]);
 
   const deleteReview = useCallback((row) => {
     if (!row?.id) return;
@@ -1064,11 +1094,12 @@ export default function TriageAccuracyPanel({ session, storeFilter }) {
         row={item}
         last={index === visible.length - 1}
         showError={showError}
+        staffProfiles={staffProfiles}
         onDelete={showError ? deleteReview : undefined}
         onOpen={openFromTable}
       />
     ),
-    [deleteReview, openFromTable, showError, visible.length],
+    [deleteReview, openFromTable, showError, staffProfiles, visible.length],
   );
 
   if (accuracyRows.length === 0) {
@@ -1112,7 +1143,7 @@ export default function TriageAccuracyPanel({ session, storeFilter }) {
       />
 
           <TableFrame
-            minWidth={showError ? 900 : 720}
+            minWidth={showError ? 1000 : 820}
             data={visible}
             renderItem={renderAccuracyRow}
             keyExtractor={accuracyKey}
@@ -1158,6 +1189,16 @@ export default function TriageAccuracyPanel({ session, storeFilter }) {
                   openKey={openFilter}
                   onOpenKey={setOpenFilter}
                   style={{ flex: 1.15, minWidth: 110 }}
+                />
+                <ColumnFilter
+                  columnKey="edited"
+                  label="Last edited"
+                  value={filters.edited}
+                  onChange={(value) => setFilter('edited', value)}
+                  options={editedOptions}
+                  openKey={openFilter}
+                  onOpenKey={setOpenFilter}
+                  style={styles.lastEditedHead}
                 />
                 <ColumnFilter
                   columnKey="store"
@@ -1216,14 +1257,22 @@ export default function TriageAccuracyPanel({ session, storeFilter }) {
             rows={incorrectScoped}
             total={scoped.length}
             onClose={() => setOpenErrors(false)}
-            onOpenPo={(row) => setOpenRow(row)}
+            onOpenPo={(row) => {
+              setOpenErrors(false);
+              setOpenPerson(null);
+              setOpenRow(row);
+            }}
           />
           <EmployeeErrorDrawer
             visible={Boolean(openPerson)}
             name={openPerson}
             rows={incorrectScoped}
             onClose={() => setOpenPerson(null)}
-            onOpenPo={(row) => setOpenRow(row)}
+            onOpenPo={(row) => {
+              setOpenErrors(false);
+              setOpenPerson(null);
+              setOpenRow(row);
+            }}
           />
           <TriageReviewDrawer
             visible={Boolean(openRow)}
@@ -1243,6 +1292,14 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
     backgroundColor: T.bg,
+  },
+  lastEditedCell: {
+    ...LAST_EDITED_COL,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  lastEditedHead: {
+    ...LAST_EDITED_COL,
   },
   insightsWrap: {
     flexShrink: 0,

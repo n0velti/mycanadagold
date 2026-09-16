@@ -1011,6 +1011,11 @@ type RingCentralAccount = {
   last_status: string;
   last_error: string;
   last_checked_at: string | null;
+  access_token?: string;
+  refresh_token?: string;
+  token_expires_at?: string | null;
+  live_calls?: unknown;
+  live_calls_at?: string | null;
   has_client_id?: boolean;
   has_secret?: boolean;
   has_jwt?: boolean;
@@ -1018,7 +1023,32 @@ type RingCentralAccount = {
   updated_at?: string;
 };
 
-const rcTokenCache = new Map<string, { token: string; expiresAt: number }>();
+type RcCachedToken = { token: string; refreshToken: string; expiresAt: number };
+type RcTokens = { accessToken: string; refreshToken: string; expiresAt: number };
+
+const RC_ACCOUNT_CORE =
+  'id, store_key, store_name, client_id, client_secret, jwt, server_url, account_id, company_name, main_number, extension_count, last_status, last_error, last_checked_at, has_client_id, has_secret, has_jwt, created_at, updated_at';
+const RC_ACCOUNT_CACHE = 'access_token, refresh_token, token_expires_at, live_calls, live_calls_at';
+// Limits from the RingCentral app console (Demonstration App):
+// Auth 5/60s, Heavy 10/60s, Medium 40/60s, Light 50/60s, penalty 60s.
+const RC_PENALTY_MS = 60_000;
+const RC_PRESENCE_TTL_MS = 8_000; // presence is Medium; one shared poll stays well under 40/min
+const RC_INBOX_TTL_MS = 45_000; // account call-log is Heavy (10/min)
+const RC_RATE_LIMIT_MESSAGE =
+  'RingCentral paused this phone line for a minute after too many requests. It will recover on its own.';
+const RC_TOKEN_RETRY_MS = RC_PENALTY_MS;
+
+const rcTokenCache = new Map<string, RcCachedToken>();
+const rcTokenInflight = new Map<string, Promise<string>>();
+const rcTokenBackoffUntil = new Map<string, number>();
+const rcPresenceCache = new Map<string, { at: number; calls: unknown[] }>();
+const rcPresenceInflight = new Map<string, Promise<unknown[]>>();
+const rcInboxCache = new Map<
+  string,
+  { at: number; calls: unknown[]; voicemails: unknown[]; callLogError: string; voicemailError: string }
+>();
+const rcCallLogScope = new Map<string, 'company' | 'extension'>();
+const rcGroupBackoffUntil = new Map<string, number>();
 
 function rcServerUrl(value: string): string {
   return value === RC_SANDBOX ? RC_SANDBOX : RC_PRODUCTION;
@@ -1061,7 +1091,32 @@ function describeRingCentralError(raw: string, fallback: string): string {
   if (/invalid_grant|invalid jwt|invalid assertion/i.test(message)) {
     return 'RingCentral rejected the JWT. Paste a fresh JWT from the developer console in Settings → RingCentral.';
   }
+  if (/request rate exceeded|cmn-301|too many requests|rate[- ]limit/i.test(message)) {
+    return RC_RATE_LIMIT_MESSAGE;
+  }
+  if (/ReadCompanyCallLog/i.test(message)) {
+    return 'This RingCentral login cannot read the whole company call log. Use a JWT for an admin user, or grant ReadCompanyCallLog on that user.';
+  }
   return message || fallback;
+}
+
+function isRingCentralRateLimit(status: number, payload?: unknown, message = ''): boolean {
+  if (status === 429) return true;
+  const raw = `${message} ${rcErrorMessage(payload, '')}`;
+  return /request rate exceeded|cmn-301|too many requests|rate[- ]limit/i.test(raw);
+}
+
+function isRcCacheSchemaError(err: unknown): boolean {
+  const message = err && typeof err === 'object'
+    ? String((err as { message?: string }).message || (err as { details?: string }).details || '')
+    : String(err || '');
+  const code = err && typeof err === 'object' ? String((err as { code?: string }).code || '') : '';
+  return (
+    code === '42703' ||
+    code === 'PGRST204' ||
+    (/schema cache|column/i.test(message) &&
+      /access_token|refresh_token|token_expires_at|live_calls/i.test(message))
+  );
 }
 
 function rcErrorMessage(payload: unknown, fallback: string): string {
@@ -1080,10 +1135,48 @@ function rcErrorMessage(payload: unknown, fallback: string): string {
   return describeRingCentralError(raw, fallback);
 }
 
-async function rcJson(url: string, init: RequestInit): Promise<{ ok: boolean; status: number; payload: unknown }> {
+type RcJsonResult = {
+  ok: boolean;
+  status: number;
+  payload: unknown;
+  rateGroup: string;
+  remaining: number | null;
+  retryAfterMs: number;
+};
+
+function rcHeader(response: Response, name: string): string {
+  return response.headers.get(name) || response.headers.get(name.toLowerCase()) || '';
+}
+
+function rcGroupKey(storeKey: string, group: string): string {
+  return `${storeKey}:${String(group || 'medium').trim().toLowerCase()}`;
+}
+
+function rcGroupBlocked(storeKey: string, group: string): boolean {
+  return (rcGroupBackoffUntil.get(rcGroupKey(storeKey, group)) || 0) > Date.now();
+}
+
+function noteRcRateHeaders(storeKey: string, result: RcJsonResult): void {
+  const group = result.rateGroup || 'medium';
+  if (result.status === 429 || (result.remaining != null && result.remaining <= 0)) {
+    rcGroupBackoffUntil.set(rcGroupKey(storeKey, group), Date.now() + (result.retryAfterMs || RC_PENALTY_MS));
+  }
+}
+
+async function rcJson(url: string, init: RequestInit): Promise<RcJsonResult> {
   const upstream = await forward(url, init, 30_000);
   const payload = await upstream.json().catch(() => null);
-  return { ok: upstream.ok, status: upstream.status, payload };
+  const retryAfter = Number(rcHeader(upstream, 'Retry-After'));
+  const remainingRaw = rcHeader(upstream, 'X-Rate-Limit-Remaining');
+  const remaining = remainingRaw === '' ? null : Number(remainingRaw);
+  return {
+    ok: upstream.ok,
+    status: upstream.status,
+    payload,
+    rateGroup: rcHeader(upstream, 'X-Rate-Limit-Group'),
+    remaining: Number.isFinite(remaining as number) ? remaining : null,
+    retryAfterMs: Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 0,
+  };
 }
 
 type EnvStoreCreds = {
@@ -1160,15 +1253,21 @@ async function seedRingCentralFromEnv(): Promise<void> {
 }
 
 async function loadRingCentralAccount(storeKey: string): Promise<RingCentralAccount | null> {
-  const { data, error: queryError } = await adminClient()
+  const full = await adminClient()
     .from('ringcentral_accounts')
-    .select(
-      'id, store_key, store_name, client_id, client_secret, jwt, server_url, account_id, company_name, main_number, extension_count, last_status, last_error, last_checked_at, has_client_id, has_secret, has_jwt, created_at, updated_at',
-    )
+    .select(`${RC_ACCOUNT_CORE}, ${RC_ACCOUNT_CACHE}`)
     .eq('store_key', storeKey)
     .maybeSingle();
-  if (queryError || !data) return null;
-  return data as RingCentralAccount;
+  if (!full.error) return (full.data as RingCentralAccount) || null;
+  if (!isRcCacheSchemaError(full.error)) return null;
+
+  const fallback = await adminClient()
+    .from('ringcentral_accounts')
+    .select(RC_ACCOUNT_CORE)
+    .eq('store_key', storeKey)
+    .maybeSingle();
+  if (fallback.error || !fallback.data) return null;
+  return fallback.data as RingCentralAccount;
 }
 
 async function listRingCentralRows(): Promise<unknown[]> {
@@ -1198,43 +1297,179 @@ async function markRingCentralStatus(
   return (data as RingCentralAccount) || null;
 }
 
-async function ringCentralAccessToken(account: RingCentralAccount): Promise<string> {
-  const cached = rcTokenCache.get(account.store_key);
-  if (cached && cached.expiresAt > Date.now() + 30_000) return cached.token;
+function rememberRcToken(storeKey: string, tokens: RcTokens): RcCachedToken {
+  const cached: RcCachedToken = {
+    token: tokens.accessToken,
+    refreshToken: tokens.refreshToken,
+    expiresAt: tokens.expiresAt,
+  };
+  rcTokenCache.set(storeKey, cached);
+  return cached;
+}
 
+function tokenFromAccount(account: RingCentralAccount): RcCachedToken | null {
+  const token = String(account.access_token || '').trim();
+  if (!token) return null;
+  const expiresAt = account.token_expires_at ? Date.parse(account.token_expires_at) : 0;
+  return {
+    token,
+    refreshToken: String(account.refresh_token || '').trim(),
+    expiresAt: Number.isFinite(expiresAt) ? expiresAt : 0,
+  };
+}
+
+async function persistRingCentralCache(
+  account: RingCentralAccount,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  try {
+    const { error: writeError } = await adminClient()
+      .from('ringcentral_accounts')
+      .update({ ...patch, updated_at: new Date().toISOString() })
+      .eq('id', account.id);
+    if (writeError && !isRcCacheSchemaError(writeError)) {
+      console.error('ringcentral cache persist failed', writeError.message);
+    }
+  } catch (err) {
+    console.error('ringcentral cache persist failed', err instanceof Error ? err.message : err);
+  }
+}
+
+async function persistRingCentralTokens(account: RingCentralAccount, tokens: RcTokens): Promise<void> {
+  account.access_token = tokens.accessToken;
+  account.refresh_token = tokens.refreshToken;
+  account.token_expires_at = new Date(tokens.expiresAt).toISOString();
+  await persistRingCentralCache(account, {
+    access_token: tokens.accessToken,
+    refresh_token: tokens.refreshToken,
+    token_expires_at: account.token_expires_at,
+  });
+}
+
+async function rcOAuthToken(account: RingCentralAccount, body: URLSearchParams): Promise<RcTokens> {
   const clientId = String(account.client_id || '').trim();
   const clientSecret = String(account.client_secret || '').trim();
-  const jwt = String(account.jwt || '').trim();
-  if (!clientId || !clientSecret || !jwt) {
-    throw new Error('missing_credentials');
-  }
-
   const origin = rcServerUrl(account.server_url);
-  const { ok, payload } = await rcJson(`${origin}/restapi/oauth/token`, {
+  const result = await rcJson(`${origin}/restapi/oauth/token`, {
     method: 'POST',
     headers: {
       Authorization: `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
       'Content-Type': 'application/x-www-form-urlencoded',
       Accept: 'application/json',
     },
-    body: new URLSearchParams({
+    body: body.toString(),
+  });
+  noteRcRateHeaders(account.store_key, { ...result, rateGroup: result.rateGroup || 'auth' });
+  if (!result.ok) {
+    const message = rcErrorMessage(result.payload, 'RingCentral rejected the JWT credentials.');
+    if (isRingCentralRateLimit(result.status, result.payload, message)) {
+      throw new Error(RC_RATE_LIMIT_MESSAGE);
+    }
+    throw new Error(message);
+  }
+  const row = (result.payload || {}) as {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+  };
+  const accessToken = String(row.access_token || '').trim();
+  if (!accessToken) throw new Error('RingCentral did not return an access token.');
+  const expiresIn = Number(row.expires_in) || 3600;
+  return {
+    accessToken,
+    refreshToken: String(row.refresh_token || '').trim(),
+    expiresAt: Date.now() + Math.max(60, expiresIn) * 1000,
+  };
+}
+
+async function mintRingCentralToken(account: RingCentralAccount, stored: RcCachedToken | null): Promise<string> {
+  const jwt = String(account.jwt || '').trim();
+  const clientId = String(account.client_id || '').trim();
+  const clientSecret = String(account.client_secret || '').trim();
+  if (!clientId || !clientSecret || !jwt) throw new Error('missing_credentials');
+
+  const refreshToken = stored?.refreshToken || String(account.refresh_token || '').trim();
+  if (refreshToken) {
+    try {
+      const refreshed = await rcOAuthToken(
+        account,
+        new URLSearchParams({
+          grant_type: 'refresh_token',
+          refresh_token: refreshToken,
+        }),
+      );
+      if (!refreshed.refreshToken) refreshed.refreshToken = refreshToken;
+      rememberRcToken(account.store_key, refreshed);
+      await persistRingCentralTokens(account, refreshed);
+      return refreshed.accessToken;
+    } catch (err) {
+      if (err instanceof Error && err.message === RC_RATE_LIMIT_MESSAGE) throw err;
+      // Expired refresh tokens fall through to a JWT grant.
+    }
+  }
+
+  const minted = await rcOAuthToken(
+    account,
+    new URLSearchParams({
       grant_type: RC_JWT_GRANT,
       assertion: jwt,
-    }).toString(),
-  });
+    }),
+  );
+  rememberRcToken(account.store_key, minted);
+  await persistRingCentralTokens(account, minted);
+  return minted.accessToken;
+}
 
-  if (!ok) {
-    throw new Error(rcErrorMessage(payload, 'RingCentral rejected the JWT credentials.'));
+async function ringCentralAccessToken(account: RingCentralAccount): Promise<string> {
+  const storeKey = account.store_key;
+  const freshEnough = (row: RcCachedToken | null | undefined) =>
+    Boolean(row?.token && row.expiresAt > Date.now() + 30_000);
+  const usableStale = (row: RcCachedToken | null | undefined) =>
+    Boolean(row?.token && row.expiresAt > Date.now() - 5 * 60_000);
+
+  const memory = rcTokenCache.get(storeKey);
+  if (freshEnough(memory)) return memory!.token;
+
+  const inflight = rcTokenInflight.get(storeKey);
+  if (inflight) return inflight;
+
+  const pending = (async () => {
+    const again = rcTokenCache.get(storeKey);
+    if (freshEnough(again)) return again!.token;
+
+    const stored = memory || tokenFromAccount(account);
+    if (stored && freshEnough(stored)) {
+      rcTokenCache.set(storeKey, stored);
+      return stored.token;
+    }
+
+    const backoffUntil = rcTokenBackoffUntil.get(storeKey) || 0;
+    if (backoffUntil > Date.now() || rcGroupBlocked(storeKey, 'auth')) {
+      if (usableStale(stored) && stored) return stored.token;
+      throw new Error(RC_RATE_LIMIT_MESSAGE);
+    }
+
+    try {
+      return await mintRingCentralToken(account, stored);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '';
+      if (isRingCentralRateLimit(0, null, message)) {
+        rcTokenBackoffUntil.set(storeKey, Date.now() + RC_TOKEN_RETRY_MS);
+        if (usableStale(stored) && stored) {
+          rcTokenCache.set(storeKey, stored);
+          return stored.token;
+        }
+      }
+      throw err;
+    }
+  })();
+
+  rcTokenInflight.set(storeKey, pending);
+  try {
+    return await pending;
+  } finally {
+    rcTokenInflight.delete(storeKey);
   }
-  const row = (payload || {}) as { access_token?: string; expires_in?: number };
-  const token = String(row.access_token || '').trim();
-  if (!token) throw new Error('RingCentral did not return an access token.');
-  const expiresIn = Number(row.expires_in) || 3600;
-  rcTokenCache.set(account.store_key, {
-    token,
-    expiresAt: Date.now() + Math.max(60, expiresIn) * 1000,
-  });
-  return token;
 }
 
 type RingCentralNumber = {
@@ -1448,6 +1683,9 @@ async function handleRingCentralLive(req: Request, includeDetails: boolean): Pro
     });
   } catch (err) {
     const message = ringCentralFailureMessage(err);
+    if (isRingCentralRateLimit(0, null, message)) {
+      return error(req, 429, message, 'throttled');
+    }
     rcTokenCache.delete(storeKey);
     const failed = await markRingCentralStatus(account.id, {
       last_status: 'error',
@@ -1493,7 +1731,7 @@ async function handleRingCentralSave(req: Request, staff: StaffContext): Promise
     return error(req, 400, 'Paste the RingCentral client ID, client secret, and JWT for this store.', 'bad_request');
   }
 
-  const row: Record<string, string> = {
+  const row: Record<string, unknown> = {
     store_key: storeKey,
     store_name: storeName,
     server_url: rcServerUrl(String(body.serverUrl || '')),
@@ -1502,16 +1740,37 @@ async function handleRingCentralSave(req: Request, staff: StaffContext): Promise
   };
   if (clientId) row.client_id = clientId;
   if (clientSecret) row.client_secret = clientSecret;
-  if (jwt) {
-    row.jwt = jwt;
+  if (jwt) row.jwt = jwt;
+  const clearSession = Boolean(clientId || clientSecret || jwt);
+  if (clearSession) {
     rcTokenCache.delete(storeKey);
+    rcTokenBackoffUntil.delete(storeKey);
+    rcPresenceCache.delete(storeKey);
+    rcInboxCache.delete(storeKey);
+    rcCallLogScope.delete(storeKey);
+    row.access_token = '';
+    row.refresh_token = '';
+    row.token_expires_at = null;
+    row.live_calls = [];
+    row.live_calls_at = null;
   }
 
-  const writer = existingId
-    ? adminClient().from('ringcentral_accounts').update(row).eq('id', existingId)
-    : adminClient().from('ringcentral_accounts').upsert(row, { onConflict: 'store_key' });
+  const write = (payload: Record<string, unknown>) =>
+    existingId
+      ? adminClient().from('ringcentral_accounts').update(payload).eq('id', existingId)
+      : adminClient().from('ringcentral_accounts').upsert(payload, { onConflict: 'store_key' });
 
-  const { data, error: writeError } = await writer.select(RC_PUBLIC_COLUMNS).maybeSingle();
+  let writer = write(row);
+  let { data, error: writeError } = await writer.select(RC_PUBLIC_COLUMNS).maybeSingle();
+  if (writeError && clearSession && isRcCacheSchemaError(writeError)) {
+    const fallback = { ...row };
+    delete fallback.access_token;
+    delete fallback.refresh_token;
+    delete fallback.token_expires_at;
+    delete fallback.live_calls;
+    delete fallback.live_calls_at;
+    ({ data, error: writeError } = await write(fallback).select(RC_PUBLIC_COLUMNS).maybeSingle());
+  }
   if (writeError) {
     return error(req, 400, writeError.message || 'The RingCentral account could not be saved.', 'bad_request');
   }
@@ -1539,7 +1798,13 @@ async function handleRingCentralDelete(req: Request, staff: StaffContext): Promi
   if (deleteError) {
     return error(req, 400, deleteError.message || 'Could not remove credentials.', 'bad_request');
   }
-  if (storeKey) rcTokenCache.delete(storeKey);
+  if (storeKey) {
+    rcTokenCache.delete(storeKey);
+    rcTokenBackoffUntil.delete(storeKey);
+    rcPresenceCache.delete(storeKey);
+    rcInboxCache.delete(storeKey);
+    rcCallLogScope.delete(storeKey);
+  }
   return json(req, 200, { ok: true });
 }
 
@@ -1733,6 +1998,39 @@ function mapCallLog(account: RingCentralAccount, payload: unknown) {
     .filter((row) => row?.id);
 }
 
+function isCompanyCallLogForbidden(result: RcJsonResult): boolean {
+  if (result.ok) return false;
+  return /ReadCompanyCallLog/i.test(rcErrorMessage(result.payload, ''));
+}
+
+async function fetchCallLog(
+  account: RingCentralAccount,
+  origin: string,
+  headers: Record<string, string>,
+  since: string,
+): Promise<RcJsonResult> {
+  const storeKey = account.store_key;
+  const query = `view=Simple&type=Voice&perPage=50&dateFrom=${encodeURIComponent(since)}`;
+  const companyUrl = `${origin}/restapi/v1.0/account/~/call-log?${query}`;
+  const extensionUrl = `${origin}/restapi/v1.0/account/~/extension/~/call-log?${query}`;
+  const preferExtension = rcCallLogScope.get(storeKey) === 'extension';
+
+  if (!preferExtension) {
+    const company = await rcJson(companyUrl, { method: 'GET', headers });
+    noteRcRateHeaders(storeKey, company);
+    if (company.ok) {
+      rcCallLogScope.set(storeKey, 'company');
+      return company;
+    }
+    if (!isCompanyCallLogForbidden(company)) return company;
+  }
+
+  const extension = await rcJson(extensionUrl, { method: 'GET', headers });
+  noteRcRateHeaders(storeKey, extension);
+  if (extension.ok) rcCallLogScope.set(storeKey, 'extension');
+  return extension;
+}
+
 function mapVoicemails(account: RingCentralAccount, payload: unknown) {
   const root = (payload || {}) as { records?: unknown[] };
   const records = Array.isArray(root.records) ? root.records : [];
@@ -1789,28 +2087,60 @@ async function ringCentralSession(
     };
   } catch (err) {
     const message = ringCentralFailureMessage(err);
-    rcTokenCache.delete(storeKey);
-    await markRingCentralStatus(account.id, {
-      last_status: 'error',
-      last_error: message.slice(0, 300),
-      last_checked_at: new Date().toISOString(),
-    });
-    return { response: error(req, 400, message, 'ringcentral_unconfigured') };
+    const rateLimited = isRingCentralRateLimit(0, null, message);
+    if (!rateLimited) rcTokenCache.delete(storeKey);
+    if (!rateLimited) {
+      await markRingCentralStatus(account.id, {
+        last_status: 'error',
+        last_error: message.slice(0, 300),
+        last_checked_at: new Date().toISOString(),
+      });
+    }
+    return {
+      response: error(req, rateLimited ? 429 : 400, message, rateLimited ? 'throttled' : 'ringcentral_unconfigured'),
+    };
   }
 }
 
-async function collectLiveCalls(
+function cachedLiveCalls(account: RingCentralAccount): { at: number; calls: LivePhoneCall[] } | null {
+  const memory = rcPresenceCache.get(account.store_key) as { at: number; calls: LivePhoneCall[] } | undefined;
+  if (memory) return memory;
+  const storedAt = account.live_calls_at ? Date.parse(account.live_calls_at) : 0;
+  if (!Number.isFinite(storedAt) || storedAt <= 0) return null;
+  const records = Array.isArray(account.live_calls) ? account.live_calls : [];
+  const calls = records
+    .map((row) => (row && typeof row === 'object' ? (row as LivePhoneCall) : null))
+    .filter((row): row is LivePhoneCall => Boolean(row?.id && row.storeKey));
+  return { at: storedAt, calls };
+}
+
+function rememberLiveCalls(account: RingCentralAccount, calls: LivePhoneCall[]): void {
+  const at = Date.now();
+  rcPresenceCache.set(account.store_key, { at, calls });
+  account.live_calls = calls;
+  account.live_calls_at = new Date(at).toISOString();
+}
+
+async function fetchLiveCallsFromRingCentral(
   account: RingCentralAccount,
   origin: string,
   headers: Record<string, string>,
 ): Promise<LivePhoneCall[]> {
-  const [presence, sessions] = await Promise.all([
-    rcJson(`${origin}/restapi/v1.0/account/~/presence?detailedTelephonyState=true&perPage=200`, {
-      method: 'GET',
-      headers,
-    }),
-    rcJson(`${origin}/restapi/v1.0/account/~/telephony/sessions`, { method: 'GET', headers }),
-  ]);
+  if (rcGroupBlocked(account.store_key, 'medium') || rcGroupBlocked(account.store_key, 'heavy')) {
+    const cached = cachedLiveCalls(account);
+    if (cached?.calls) return cached.calls;
+    throw new Error(RC_RATE_LIMIT_MESSAGE);
+  }
+
+  const presence = await rcJson(
+    `${origin}/restapi/v1.0/account/~/presence?detailedTelephonyState=true&perPage=200`,
+    { method: 'GET', headers },
+  );
+  noteRcRateHeaders(account.store_key, presence);
+
+  if (isRingCentralRateLimit(presence.status, presence.payload)) {
+    throw new Error(RC_RATE_LIMIT_MESSAGE);
+  }
 
   let presencePayload = presence.payload;
   if (!presence.ok) {
@@ -1818,13 +2148,67 @@ async function collectLiveCalls(
       `${origin}/restapi/v1.0/account/~/extension/~/presence?detailedTelephonyState=true`,
       { method: 'GET', headers },
     );
+    noteRcRateHeaders(account.store_key, fallback);
+    if (isRingCentralRateLimit(fallback.status, fallback.payload)) {
+      throw new Error(RC_RATE_LIMIT_MESSAGE);
+    }
     presencePayload = fallback.ok ? fallback.payload : {};
   }
 
+  const presenceCalls = mapPresenceCalls(account, presencePayload);
+  if (presence.ok && presenceCalls.length === 0) return [];
+
+  const sessions = await rcJson(`${origin}/restapi/v1.0/account/~/telephony/sessions`, {
+    method: 'GET',
+    headers,
+  });
+  noteRcRateHeaders(account.store_key, sessions);
+  if (isRingCentralRateLimit(sessions.status, sessions.payload)) {
+    return presenceCalls;
+  }
+
   return mergeLiveCalls([
-    ...mapPresenceCalls(account, presencePayload),
+    ...presenceCalls,
     ...mapSessionCalls(account, sessions.ok ? sessions.payload : {}),
   ]);
+}
+
+async function collectLiveCalls(
+  account: RingCentralAccount,
+  origin: string,
+  headers: Record<string, string>,
+): Promise<LivePhoneCall[]> {
+  const storeKey = account.store_key;
+  const cached = cachedLiveCalls(account);
+  if (cached && Date.now() - cached.at < RC_PRESENCE_TTL_MS) return cached.calls;
+
+  const inflight = rcPresenceInflight.get(storeKey);
+  if (inflight) return (await inflight) as LivePhoneCall[];
+
+  const pending = (async () => {
+    const again = cachedLiveCalls(account);
+    if (again && Date.now() - again.at < RC_PRESENCE_TTL_MS) return again.calls;
+    try {
+      const calls = await fetchLiveCallsFromRingCentral(account, origin, headers);
+      rememberLiveCalls(account, calls);
+      void persistRingCentralCache(account, {
+        live_calls: calls,
+        live_calls_at: account.live_calls_at,
+      });
+      return calls;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '';
+      if (isRingCentralRateLimit(0, null, message) && cached?.calls) return cached.calls;
+      throw err;
+    }
+  })();
+
+  rcPresenceInflight.set(storeKey, pending);
+  try {
+    return (await pending) as LivePhoneCall[];
+  } finally {
+    rcPresenceInflight.delete(storeKey);
+  }
 }
 
 async function firstRingCentralDevice(
@@ -1868,7 +2252,15 @@ async function handleRingCentralPhone(req: Request): Promise<Response> {
 
   const session = await ringCentralSession(req, storeKey);
   if ('response' in session) return session.response;
-  const { account, origin, headers } = session;
+  let { account, origin, headers } = session;
+  if (account.last_status === 'error') {
+    const recovered = await markRingCentralStatus(account.id, {
+      last_status: 'connected',
+      last_error: '',
+      last_checked_at: new Date().toISOString(),
+    });
+    account = recovered || { ...account, last_status: 'connected', last_error: '' };
+  }
 
   try {
     if (action === 'presence') {
@@ -1883,28 +2275,64 @@ async function handleRingCentralPhone(req: Request): Promise<Response> {
     }
 
     if (action === 'inbox') {
-      const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
-      const [logRes, vmRes, liveCalls] = await Promise.all([
-        rcJson(
-          `${origin}/restapi/v1.0/account/~/call-log?view=Simple&type=Voice&perPage=50&dateFrom=${encodeURIComponent(since)}`,
-          { method: 'GET', headers },
-        ),
-        rcJson(
-          `${origin}/restapi/v1.0/account/~/extension/~/message-store?messageType=VoiceMail&perPage=50`,
-          { method: 'GET', headers },
-        ),
-        collectLiveCalls(account, origin, headers),
-      ]);
+      const cachedInbox = rcInboxCache.get(storeKey);
+      if (cachedInbox && Date.now() - cachedInbox.at < RC_INBOX_TTL_MS) {
+        const liveCalls = cachedLiveCalls(account)?.calls || [];
+        return json(req, 200, {
+          store: publicRingCentralAccount(account),
+          liveCalls,
+          incoming: liveCalls.filter(
+            (row) => row.direction === 'Inbound' && /ringing|proceeding|setup/i.test(row.status),
+          ),
+          calls: cachedInbox.calls,
+          voicemails: cachedInbox.voicemails,
+          callLogError: cachedInbox.callLogError,
+          voicemailError: cachedInbox.voicemailError,
+        });
+      }
+
+      let calls = cachedInbox?.calls || [];
+      let voicemails = cachedInbox?.voicemails || [];
+      let callLogError = '';
+      let voicemailError = '';
+      if (rcGroupBlocked(storeKey, 'heavy')) {
+        callLogError = RC_RATE_LIMIT_MESSAGE;
+        voicemailError = RC_RATE_LIMIT_MESSAGE;
+      } else {
+        const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+        const [logRes, vmRes] = await Promise.all([
+          fetchCallLog(account, origin, headers, since),
+          rcJson(
+            `${origin}/restapi/v1.0/account/~/extension/~/message-store?messageType=VoiceMail&perPage=50`,
+            { method: 'GET', headers },
+          ),
+        ]);
+        noteRcRateHeaders(storeKey, vmRes);
+        callLogError = logRes.ok ? '' : rcErrorMessage(logRes.payload, 'Could not load the call log.');
+        voicemailError = vmRes.ok ? '' : rcErrorMessage(vmRes.payload, 'Could not load voicemail.');
+        if (logRes.ok) calls = mapCallLog(account, logRes.payload);
+        if (vmRes.ok) voicemails = mapVoicemails(account, vmRes.payload);
+        if (logRes.ok || vmRes.ok) {
+          rcInboxCache.set(storeKey, {
+            at: Date.now(),
+            calls,
+            voicemails,
+            callLogError,
+            voicemailError,
+          });
+        }
+      }
+      const liveCalls = cachedLiveCalls(account)?.calls || [];
       return json(req, 200, {
         store: publicRingCentralAccount(account),
         liveCalls,
         incoming: liveCalls.filter(
           (row) => row.direction === 'Inbound' && /ringing|proceeding|setup/i.test(row.status),
         ),
-        calls: logRes.ok ? mapCallLog(account, logRes.payload) : [],
-        voicemails: vmRes.ok ? mapVoicemails(account, vmRes.payload) : [],
-        callLogError: logRes.ok ? '' : rcErrorMessage(logRes.payload, 'Could not load the call log.'),
-        voicemailError: vmRes.ok ? '' : rcErrorMessage(vmRes.payload, 'Could not load voicemail.'),
+        calls,
+        voicemails,
+        callLogError,
+        voicemailError,
       });
     }
 
@@ -1924,9 +2352,16 @@ async function handleRingCentralPhone(req: Request): Promise<Response> {
         }),
       });
       if (!result.ok) {
-        return error(req, 400, rcErrorMessage(result.payload, 'Could not start the call.'), 'bad_request');
+        return error(
+          req,
+          result.status === 429 ? 429 : 400,
+          rcErrorMessage(result.payload, 'Could not start the call.'),
+          result.status === 429 ? 'throttled' : 'bad_request',
+        );
       }
       const row = (result.payload || {}) as Record<string, unknown>;
+      rcPresenceCache.delete(storeKey);
+      account.live_calls_at = null;
       const liveCalls = await collectLiveCalls(account, origin, headers);
       return json(req, 200, {
         store: publicRingCentralAccount(account),
@@ -1973,8 +2408,15 @@ async function handleRingCentralPhone(req: Request): Promise<Response> {
             : action === 'reject'
               ? 'Could not reject the call.'
               : 'Could not hang up.';
-        return error(req, 400, rcErrorMessage(result.payload, fallbackMessage), 'bad_request');
+        return error(
+          req,
+          result.status === 429 ? 429 : 400,
+          rcErrorMessage(result.payload, fallbackMessage),
+          result.status === 429 ? 'throttled' : 'bad_request',
+        );
       }
+      rcPresenceCache.delete(storeKey);
+      account.live_calls_at = null;
       const liveCalls = await collectLiveCalls(account, origin, headers);
       return json(req, 200, { store: publicRingCentralAccount(account), liveCalls, ok: true });
     }
@@ -1982,8 +2424,9 @@ async function handleRingCentralPhone(req: Request): Promise<Response> {
     return error(req, 400, 'Unknown phone action.', 'bad_request');
   } catch (err) {
     const message = ringCentralFailureMessage(err);
-    rcTokenCache.delete(storeKey);
-    return error(req, 502, message, 'upstream_failed');
+    const rateLimited = isRingCentralRateLimit(0, null, message);
+    if (!rateLimited) rcTokenCache.delete(storeKey);
+    return error(req, rateLimited ? 429 : 502, message, rateLimited ? 'throttled' : 'upstream_failed');
   }
 }
 

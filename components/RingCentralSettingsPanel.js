@@ -24,6 +24,8 @@ import {
   saveRingCentralAccount,
 } from '../lib/ringcentral';
 import { storeKeyFromName } from '../lib/storeSettings';
+import { isStoreWatched } from '../lib/phoneWatch';
+import { usePhoneCalls } from './PhoneCallProvider';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -61,6 +63,44 @@ function Field({ label, value, onChangeText, placeholder, secure, multiline, hin
         multiline={multiline}
         textAlignVertical={multiline ? 'top' : 'center'}
       />
+    </View>
+  );
+}
+
+function IncomingWatchList({ stores }) {
+  const { watchPrefs, setStoreWatched } = usePhoneCalls();
+  const connected = (stores || []).filter((row) => row.account?.hasJwt);
+  if (connected.length === 0) return null;
+
+  return (
+    <View style={styles.watchBlock}>
+      <Text style={styles.sectionLabel}>Incoming on this screen</Text>
+      <Text style={styles.introTight}>
+        Choose which store lines appear in the left tab bar. You can watch more than one at a time.
+      </Text>
+      <View style={styles.menuList}>
+        {connected.map((row) => {
+          const on = isStoreWatched(watchPrefs, row.key);
+          return (
+            <Pressable
+              key={row.key}
+              style={styles.watchRow}
+              onPress={() => setStoreWatched(row.key, !on)}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: on }}
+              accessibilityLabel={`Show incoming calls for ${row.storeName}`}
+            >
+              <View style={styles.menuTextWrap}>
+                <Text style={styles.menuLabel}>{row.storeName}</Text>
+                <Text style={styles.hint}>{on ? 'Showing incoming calls' : 'Hidden on this screen'}</Text>
+              </View>
+              <View style={[styles.toggle, on && styles.toggleOn]}>
+                <View style={[styles.toggleKnob, on && styles.toggleKnobOn]} />
+              </View>
+            </Pressable>
+          );
+        })}
+      </View>
     </View>
   );
 }
@@ -381,17 +421,7 @@ export default function RingCentralSettingsPanel({ session, storeName }) {
   const selectedAccount =
     selected?.account || accountByKey.get(storeKeyFromName(selectedName)) || null;
 
-  if (!canEdit) {
-    return (
-      <ScrollView style={styles.body} contentContainerStyle={styles.content}>
-        <Text style={styles.intro}>
-          RingCentral credentials are managed by a branch manager, general manager, or system admin.
-        </Text>
-      </ScrollView>
-    );
-  }
-
-  if (selectedName) {
+  if (selectedName && canEdit) {
     return (
       <StoreEditor
         session={session}
@@ -429,13 +459,23 @@ export default function RingCentralSettingsPanel({ session, storeName }) {
 
   return (
     <ScrollView style={styles.body} contentContainerStyle={styles.content}>
-      <Text style={styles.intro}>
-        Each branch uses its own RingCentral REST API app (JWT auth flow). Choose a store to paste
-        client ID, client secret, and JWT.
-      </Text>
-      {rows.length === 0 ? (
-        <Text style={styles.hint}>No stores found. Sign in and confirm locations are loading.</Text>
+      <IncomingWatchList stores={rows} />
+      {canEdit ? (
+        <>
+          <Text style={styles.sectionLabel}>Store credentials</Text>
+          <Text style={styles.introTight}>
+            Each branch uses its own RingCentral REST API app (JWT auth flow). Choose a store to paste
+            client ID, client secret, and JWT.
+          </Text>
+        </>
       ) : (
+        <Text style={styles.introTight}>
+          RingCentral credentials are managed by a branch manager, general manager, or system admin.
+        </Text>
+      )}
+      {canEdit && rows.length === 0 ? (
+        <Text style={styles.hint}>No stores found. Sign in and confirm locations are loading.</Text>
+      ) : canEdit ? (
         <View style={styles.menuList}>
           {rows.map((row) => (
             <Pressable
@@ -454,7 +494,7 @@ export default function RingCentralSettingsPanel({ session, storeName }) {
             </Pressable>
           ))}
         </View>
-      )}
+      ) : null}
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
     </ScrollView>
   );
@@ -508,6 +548,61 @@ const styles = StyleSheet.create({
     color: '#6b6b6b',
     marginBottom: 20,
     lineHeight: 18,
+  },
+  introTight: {
+    fontFamily,
+    fontSize: 13,
+    color: '#6b6b6b',
+    marginBottom: 12,
+    lineHeight: 18,
+  },
+  sectionLabel: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#8a8a8a',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginBottom: 6,
+  },
+  watchBlock: {
+    marginBottom: 24,
+    gap: 4,
+  },
+  watchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e5e5e5',
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: '#fff',
+    gap: 12,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  toggle: {
+    width: 40,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#e5e5e5',
+    padding: 2,
+    justifyContent: 'center',
+  },
+  toggleOn: {
+    backgroundColor: '#15803D',
+  },
+  toggleKnob: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#fff',
+  },
+  toggleKnobOn: {
+    alignSelf: 'flex-end',
   },
   statusCard: {
     borderWidth: StyleSheet.hairlineWidth,
