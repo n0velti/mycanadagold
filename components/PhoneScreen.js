@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -20,17 +20,18 @@ import {
   inboundCallRatio,
   isAnsweredInbound,
   resultLabel,
+  callsForStore,
 } from '../lib/phoneCalls';
 import {
   canManageRingCentral,
   connectionLabel,
-  fetchRingCentralStoreDetails,
   formatCheckedAt,
   formatPhoneNumber,
   formatUsageType,
   listRingCentralAccounts,
 } from '../lib/ringcentral';
 import { storeKeyFromName } from '../lib/storeSettings';
+import { useIsMobile } from '../lib/mobileUi';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -61,11 +62,6 @@ function statusTone(row) {
   return styles.statusMuted;
 }
 
-function applyAccount(current, next) {
-  if (!next?.storeKey) return current;
-  return [...current.filter((row) => row.storeKey !== next.storeKey), next];
-}
-
 function rangeSinceMs(key) {
   if (key === 'today') {
     const start = new Date();
@@ -85,6 +81,29 @@ function rangeCopy(key) {
 function inDateRange(value, since) {
   const time = Date.parse(value);
   return Number.isFinite(time) && time >= since;
+}
+
+function PhoneCrumb({ storeName, onStores }) {
+  return (
+    <View style={styles.crumb} accessibilityRole="header">
+      <Pressable
+        onPress={onStores}
+        style={styles.crumbLinkHit}
+        accessibilityRole="button"
+        accessibilityLabel="Back to stores"
+      >
+        <Text style={styles.crumbLink}>Stores</Text>
+      </Pressable>
+      {storeName ? (
+        <>
+          <Text style={styles.crumbSep}>›</Text>
+          <Text style={styles.crumbCurrent} numberOfLines={1}>
+            {storeName}
+          </Text>
+        </>
+      ) : null}
+    </View>
+  );
 }
 
 function DetailRow({ label, value }) {
@@ -167,7 +186,7 @@ function RatioStrip({ stats, compact = false, rangeLabel = 'the last 14 days' })
         {compact ? null : (
           <View style={styles.ratioStat}>
             <Text style={styles.summaryLabel}>Answer rate</Text>
-            <Text style={styles.summaryValue}>{stats.rate == null ? '—' : `${stats.answered}:${stats.total}`}</Text>
+            <Text style={styles.summaryValue}>{stats.rate == null ? '—' : `${stats.rate}%`}</Text>
           </View>
         )}
       </View>
@@ -192,8 +211,447 @@ function RatioStrip({ stats, compact = false, rangeLabel = 'the last 14 days' })
   );
 }
 
-export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
+const DAY_OPEN_HOUR = 9;
+const DAY_CLOSE_HOUR = 19;
+const CHART_PAD_L = 34;
+const CHART_PAD_R = 14;
+const CHART_PAD_T = 14;
+const CHART_LINE_H = 104; // running answer-rate lane
+const CHART_GAP = 10;
+const CHART_BARS_H = 36; // hourly answered / missed lane
+const CHART_PAD_B = 20; // hour labels
+const CHART_H = CHART_PAD_T + CHART_LINE_H + CHART_GAP + CHART_BARS_H + CHART_PAD_B;
+const CHART_LINE_TOP = CHART_PAD_T;
+const CHART_LINE_BOTTOM = CHART_PAD_T + CHART_LINE_H;
+const CHART_BARS_TOP = CHART_LINE_BOTTOM + CHART_GAP;
+const CHART_BARS_BOTTOM = CHART_BARS_TOP + CHART_BARS_H;
+const MISSED = '#DC2626';
+
+function hourMs(now, hour) {
+  const date = new Date(now);
+  date.setHours(hour, 0, 0, 0);
+  return date.getTime();
+}
+
+function formatHourLabel(hour, { suffix = false } = {}) {
+  const h12 = hour % 12 === 0 ? 12 : hour % 12;
+  if (!suffix) return String(h12);
+  return `${h12} ${hour < 12 ? 'AM' : 'PM'}`;
+}
+
+function formatHourRange(hour) {
+  return `${formatHourLabel(hour, { suffix: hour < 12 !== hour + 1 < 12 })}–${formatHourLabel(hour + 1, { suffix: true })}`;
+}
+
+/**
+ * The plotted business day: 9 AM to 7 PM, stretched by whole hours when a call
+ * landed outside it so nothing is hidden.
+ */
+function chartDay(calls, now = Date.now()) {
+  let openHour = DAY_OPEN_HOUR;
+  let closeHour = DAY_CLOSE_HOUR;
+  const dayStart = hourMs(now, 0);
+  for (const row of Array.isArray(calls) ? calls : []) {
+    const time = Date.parse(row?.startTime);
+    if (!Number.isFinite(time) || time < dayStart) continue;
+    const hour = new Date(time).getHours();
+    if (hour < openHour) openHour = hour;
+    if (hour + 1 > closeHour) closeHour = Math.min(24, hour + 1);
+  }
+  return { openHour, closeHour, start: hourMs(now, openHour), end: hourMs(now, closeHour) };
+}
+
+function inboundToday(calls, day) {
+  return inboundCallsUnique(calls)
+    .map((row) => ({ row, time: Date.parse(row.startTime), answered: isAnsweredInbound(row) }))
+    .filter((item) => Number.isFinite(item.time) && item.time >= day.start && item.time < day.end)
+    .sort((a, b) => a.time - b.time);
+}
+
+function runningAnswerPoints(inbound) {
+  const points = [];
+  let answered = 0;
+  inbound.forEach((item, index) => {
+    if (item.answered) answered += 1;
+    const total = index + 1;
+    points.push({ time: item.time, rate: Math.round((answered / total) * 100), answered, total });
+  });
+  return points;
+}
+
+function hourlyBins(inbound, day) {
+  const bins = [];
+  for (let hour = day.openHour; hour < day.closeHour; hour += 1) {
+    bins.push({ hour, answered: 0, missed: 0, total: 0, rate: null });
+  }
+  for (const item of inbound) {
+    const bin = bins[new Date(item.time).getHours() - day.openHour];
+    if (!bin) continue;
+    bin.total += 1;
+    if (item.answered) bin.answered += 1;
+    else bin.missed += 1;
+  }
+  for (const bin of bins) {
+    bin.rate = bin.total ? Math.round((bin.answered / bin.total) * 100) : null;
+  }
+  return bins;
+}
+
+function ChartLineSegment({ x1, y1, x2, y2, color, width = 2 }) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const length = Math.sqrt(dx * dx + dy * dy);
+  if (length < 0.5) return null;
+  const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
+  return (
+    <View
+      pointerEvents="none"
+      style={{
+        position: 'absolute',
+        left: (x1 + x2) / 2 - length / 2,
+        top: (y1 + y2) / 2 - width / 2,
+        width: length,
+        height: width,
+        borderRadius: width / 2,
+        backgroundColor: color,
+        transform: [{ rotate: `${angle}deg` }],
+      }}
+    />
+  );
+}
+
+function RatioDayChart({ calls }) {
+  const [width, setWidth] = useState(0);
+  const [pickedHour, setPickedHour] = useState(null);
+  const now = Date.now();
+  const day = useMemo(() => chartDay(calls, now), [calls, now]);
+  const inbound = useMemo(() => inboundToday(calls, day), [calls, day]);
+  const callPoints = useMemo(() => runningAnswerPoints(inbound), [inbound]);
+  const bins = useMemo(() => hourlyBins(inbound, day), [inbound, day]);
+  const current = callPoints[callPoints.length - 1] || null;
+  const clampedNow = Math.min(Math.max(now, day.start), day.end);
+  const series = useMemo(() => {
+    if (!current) return [];
+    if (clampedNow - current.time < 60_000) return callPoints;
+    return [...callPoints, { ...current, time: clampedNow, carried: true }];
+  }, [callPoints, clampedNow, current]);
+
+  const innerW = Math.max(1, width - CHART_PAD_L - CHART_PAD_R);
+  const span = Math.max(1, day.end - day.start);
+  const xOf = (time) => CHART_PAD_L + ((time - day.start) / span) * innerW;
+  const yOf = (rate) => CHART_LINE_TOP + (1 - rate / 100) * CHART_LINE_H;
+  const plotted = width > 0 ? series.map((point) => ({ ...point, x: xOf(point.time), y: yOf(point.rate) })) : [];
+  const hourW = innerW / Math.max(1, bins.length);
+  const maxHourly = Math.max(1, ...bins.map((bin) => bin.total));
+  const nowX = xOf(clampedNow);
+  const beforeOpen = now < day.start;
+  const afterClose = now >= day.end;
+  const dense = width >= 560;
+  const picked = pickedHour == null ? null : bins.find((bin) => bin.hour === pickedHour) || null;
+
+  const onLayout = (event) => {
+    const next = Math.round(event?.nativeEvent?.layout?.width || 0);
+    if (next > 0 && next !== width) setWidth(next);
+  };
+
+  const linePath = plotted.map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x} ${point.y}`).join(' ');
+  const tooltipW = 172;
+  const tooltipLeft = picked
+    ? Math.min(Math.max(0, xOf(hourMs(now, picked.hour)) + hourW / 2 - tooltipW / 2), Math.max(0, width - tooltipW))
+    : 0;
+
+  return (
+    <View style={styles.ratioChart}>
+      <View style={styles.ratioChartHead}>
+        <View style={styles.ratioChartHeadText}>
+          <Text style={styles.summaryLabel}>Answer rate today</Text>
+          <Text style={styles.ratioChartSub}>
+            {current
+              ? `${current.answered} answered · ${current.total - current.answered} missed · ${formatHourLabel(day.openHour, { suffix: true })} to ${formatHourLabel(day.closeHour, { suffix: true })}`
+              : `${formatHourLabel(DAY_OPEN_HOUR, { suffix: true })} to ${formatHourLabel(DAY_CLOSE_HOUR, { suffix: true })}`}
+          </Text>
+        </View>
+        <Text
+          style={[
+            styles.ratioChartNow,
+            current && current.rate < 80 && styles.statusError,
+            current && current.rate >= 80 && styles.statusConnected,
+          ]}
+        >
+          {current ? `${current.rate}%` : '—'}
+        </Text>
+      </View>
+      <View
+        style={styles.ratioChartFrame}
+        onLayout={onLayout}
+        accessibilityRole="image"
+        accessibilityLabel={
+          current
+            ? `Answer rate today started at ${series[0].rate}% and is ${current.rate}% now from ${current.answered} of ${current.total} inbound calls between ${formatHourLabel(day.openHour, { suffix: true })} and ${formatHourLabel(day.closeHour, { suffix: true })}`
+            : 'No inbound calls yet today'
+        }
+      >
+        {width > 0 ? (
+          <>
+            {/* Rate guides: 100, 80 (target), 50, 0 */}
+            {[100, 80, 50, 0].map((rate) => (
+              <View
+                key={`guide-${rate}`}
+                pointerEvents="none"
+                style={[
+                  styles.ratioChartGuide,
+                  rate === 80 && styles.ratioChartGuideTarget,
+                  { top: yOf(rate), left: CHART_PAD_L, right: CHART_PAD_R },
+                ]}
+              />
+            ))}
+            {[100, 80, 50, 0].map((rate) => (
+              <Text
+                key={`y-${rate}`}
+                pointerEvents="none"
+                style={[styles.ratioChartY, rate === 80 && styles.ratioChartYTarget, { top: yOf(rate) - 6 }]}
+              >
+                {rate}
+              </Text>
+            ))}
+            <Text pointerEvents="none" style={[styles.ratioChartLane, { top: CHART_BARS_TOP + 2 }]}>
+              calls
+            </Text>
+
+            {/* Hour columns: alternating tint, hourly bars, hover / tap target */}
+            {bins.map((bin, index) => {
+              const left = CHART_PAD_L + index * hourW;
+              const barH = bin.total ? Math.max(3, (bin.total / maxHourly) * (CHART_BARS_H - 4)) : 0;
+              const barW = Math.max(3, Math.min(18, hourW * 0.42));
+              const active = picked && picked.hour === bin.hour;
+              return (
+                <Pressable
+                  key={`hour-${bin.hour}`}
+                  onHoverIn={() => setPickedHour(bin.hour)}
+                  onHoverOut={() => setPickedHour((value) => (value === bin.hour ? null : value))}
+                  onPress={() => setPickedHour((value) => (value === bin.hour ? null : bin.hour))}
+                  accessibilityLabel={
+                    bin.total
+                      ? `${formatHourRange(bin.hour)}: ${bin.answered} answered, ${bin.missed} missed`
+                      : `${formatHourRange(bin.hour)}: no inbound calls`
+                  }
+                  style={[
+                    styles.ratioChartHour,
+                    index % 2 === 1 && styles.ratioChartHourAlt,
+                    active && styles.ratioChartHourActive,
+                    { left, width: hourW, top: CHART_LINE_TOP, height: CHART_BARS_BOTTOM - CHART_LINE_TOP },
+                  ]}
+                >
+                  {bin.total ? (
+                    <View
+                      pointerEvents="none"
+                      style={[
+                        styles.ratioChartBar,
+                        { left: hourW / 2 - barW / 2, width: barW, bottom: 2, height: barH },
+                      ]}
+                    >
+                      <View style={[styles.ratioChartBarMissed, { flex: bin.missed }]} />
+                      <View style={[styles.ratioChartBarAnswered, { flex: bin.answered }]} />
+                    </View>
+                  ) : null}
+                </Pressable>
+              );
+            })}
+
+            {/* Rest of the day */}
+            {!afterClose ? (
+              <View
+                pointerEvents="none"
+                style={[
+                  styles.ratioChartFuture,
+                  { left: nowX, width: Math.max(0, CHART_PAD_L + innerW - nowX), top: CHART_LINE_TOP, height: CHART_BARS_BOTTOM - CHART_LINE_TOP },
+                ]}
+              />
+            ) : null}
+
+            {/* Running answer rate */}
+            {plotted.length ? (
+              Platform.OS === 'web' ? (
+                createElement(
+                  'svg',
+                  {
+                    width,
+                    height: CHART_H,
+                    viewBox: `0 0 ${width} ${CHART_H}`,
+                    style: { position: 'absolute', left: 0, top: 0, pointerEvents: 'none' },
+                  },
+                  [
+                    createElement('path', {
+                      key: 'fill',
+                      d: `${linePath} L${plotted[plotted.length - 1].x} ${CHART_LINE_BOTTOM} L${plotted[0].x} ${CHART_LINE_BOTTOM} Z`,
+                      fill: 'rgba(21, 128, 61, 0.12)',
+                    }),
+                    createElement('path', {
+                      key: 'line',
+                      d: linePath,
+                      fill: 'none',
+                      stroke: ACCENT,
+                      strokeWidth: 2.5,
+                      strokeLinejoin: 'round',
+                      strokeLinecap: 'round',
+                    }),
+                  ],
+                )
+              ) : (
+                plotted.slice(1).map((point, index) => (
+                  <ChartLineSegment
+                    key={`${point.time}-${index}`}
+                    x1={plotted[index].x}
+                    y1={plotted[index].y}
+                    x2={point.x}
+                    y2={point.y}
+                    color={ACCENT}
+                    width={2.5}
+                  />
+                ))
+              )
+            ) : null}
+            {/* Each call on the line: green answered, red missed */}
+            {plotted
+              .filter((point) => !point.carried)
+              .map((point, index) => {
+                const missedCall = inbound[index] && !inbound[index].answered;
+                return (
+                  <View
+                    key={`call-${point.time}-${index}`}
+                    pointerEvents="none"
+                    style={[
+                      styles.ratioChartCall,
+                      missedCall && styles.ratioChartCallMissed,
+                      { left: point.x - 3, top: point.y - 3 },
+                    ]}
+                  />
+                );
+              })}
+            {current && plotted.length ? (
+              <View
+                pointerEvents="none"
+                style={[
+                  styles.ratioChartDot,
+                  current.rate < 80 && styles.ratioChartDotMissed,
+                  { left: plotted[plotted.length - 1].x - 5, top: plotted[plotted.length - 1].y - 5 },
+                ]}
+              />
+            ) : null}
+
+            {/* Now */}
+            {!beforeOpen && !afterClose ? (
+              <>
+                <View
+                  pointerEvents="none"
+                  style={[styles.ratioChartNowLine, { left: nowX, top: CHART_LINE_TOP - 4, height: CHART_BARS_BOTTOM - CHART_LINE_TOP + 4 }]}
+                />
+                <Text
+                  pointerEvents="none"
+                  style={[
+                    styles.ratioChartNowTag,
+                    nowX + 30 > width ? { left: nowX - 30 } : { left: nowX + 4 },
+                    { top: CHART_LINE_TOP - 12 },
+                  ]}
+                >
+                  Now
+                </Text>
+              </>
+            ) : null}
+
+            {/* Hour ticks */}
+            {bins.map((bin, index) => {
+              const isFirst = index === 0;
+              const isLast = index === bins.length - 1;
+              if (isLast && !dense) return null; // the closing-hour label sits right there
+              const show = dense || isFirst || bin.hour % 2 === day.openHour % 2;
+              if (!show) return null;
+              const x = CHART_PAD_L + index * hourW;
+              return (
+                <Text
+                  key={`x-${bin.hour}`}
+                  pointerEvents="none"
+                  style={[styles.ratioChartX, { left: x - 20, width: 40 }]}
+                >
+                  {formatHourLabel(bin.hour, { suffix: isFirst || bin.hour === 12 })}
+                </Text>
+              );
+            })}
+            <Text
+              pointerEvents="none"
+              style={[styles.ratioChartX, { right: 4, width: 44, textAlign: 'right' }]}
+            >
+              {formatHourLabel(day.closeHour, { suffix: true })}
+            </Text>
+
+            {!current ? (
+              <Text pointerEvents="none" style={[styles.ratioChartEmpty, { top: CHART_LINE_TOP + CHART_LINE_H / 2 - 10 }]}>
+                {beforeOpen
+                  ? `The day starts at ${formatHourLabel(DAY_OPEN_HOUR, { suffix: true })}.`
+                  : 'No inbound calls yet today.'}
+              </Text>
+            ) : null}
+
+            {picked ? (
+              <View pointerEvents="none" style={[styles.ratioChartTip, { left: tooltipLeft, width: tooltipW, top: 2 }]}>
+                <Text style={styles.ratioChartTipTitle}>{formatHourRange(picked.hour)}</Text>
+                <Text style={styles.ratioChartTipBody}>
+                  {picked.total
+                    ? `${picked.answered} answered · ${picked.missed} missed · ${picked.rate}%`
+                    : 'No inbound calls'}
+                </Text>
+              </View>
+            ) : null}
+          </>
+        ) : null}
+      </View>
+      <View style={styles.ratioChartLegend}>
+        <View style={styles.ratioChartLegendItem}>
+          <View style={styles.ratioChartLegendLine} />
+          <Text style={styles.ratioChartLegendText}>Answer rate so far</Text>
+        </View>
+        <View style={styles.ratioChartLegendItem}>
+          <View style={[styles.ratioChartLegendSwatch, { backgroundColor: ACCENT }]} />
+          <Text style={styles.ratioChartLegendText}>Answered</Text>
+        </View>
+        <View style={styles.ratioChartLegendItem}>
+          <View style={[styles.ratioChartLegendSwatch, { backgroundColor: MISSED }]} />
+          <Text style={styles.ratioChartLegendText}>Missed</Text>
+        </View>
+        <View style={styles.ratioChartLegendItem}>
+          <View style={styles.ratioChartLegendTarget} />
+          <Text style={styles.ratioChartLegendText}>80% target</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+/** One-line state of this browser's softphone registration for a store. */
+function browserPhoneLabel(status) {
+  if (Platform.OS !== 'web') return 'Use the RingCentral app or desk phone';
+  if (!status) return 'Waiting…';
+  switch (status.state) {
+    case 'ready':
+      return status.extensionName ? `Ready in this browser · ${status.extensionName}` : 'Ready in this browser';
+    case 'connecting':
+      return 'Registering this browser…';
+    case 'shared':
+      return status.message || 'Rings through another store’s line';
+    case 'other':
+      return status.message || 'Needs this store’s own JWT';
+    case 'unsupported':
+      return status.message || 'Not supported in this browser';
+    case 'error':
+      return status.message ? `Not registered: ${status.message}` : 'Not registered';
+    default:
+      return '';
+  }
+}
+
+export default function PhoneScreen({ session, onRequireLogin, storeFilter, onStoreBackChange, embedded = false }) {
   const canManage = canManageRingCentral(session?.profile);
+  const isMobile = useIsMobile();
   const phone = usePhoneCalls();
   const [tab, setTab] = useState('incoming');
   const [dateRange, setDateRange] = useState('14d');
@@ -206,7 +664,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
   const [selectedKey, setSelectedKey] = useState('');
   const [details, setDetails] = useState(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
-  const [showStores, setShowStores] = useState(false);
+  const [showStores, setShowStores] = useState(!storeFilter);
   const [digits, setDigits] = useState('');
   const [playingId, setPlayingId] = useState('');
   const [playError, setPlayError] = useState('');
@@ -217,7 +675,9 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
 
   const storeKey = phone.selectedStoreKey;
   const refreshInbox = phone.refreshInbox;
-  const calls = phone.mergedCallsByStore?.[storeKey] || [];
+  const applyStoreAccount = phone.applyStoreAccount;
+  const syncStoreAccounts = phone.syncStoreAccounts;
+  const calls = callsForStore(phone.mergedCallsByStore, storeKey);
   const voicemails = phone.inboxByStore?.[storeKey]?.voicemails || [];
   const inboxLoading = Boolean(phone.inboxFetching?.[storeKey]);
 
@@ -243,6 +703,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
       if (id !== requestId.current) return;
       setStores(pos.stores || []);
       setAccounts(ringcentral.rows || []);
+      syncStoreAccounts?.(ringcentral.rows || []);
       const notes = [pos.warning];
       if (ringcentral.unavailable) {
         notes.push('RingCentral tables are not installed yet. Run the Phone migration in Supabase.');
@@ -256,7 +717,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
     } finally {
       if (id === requestId.current) setLoading(false);
     }
-  }, [session]);
+  }, [session, syncStoreAccounts]);
 
   useEffect(() => {
     load();
@@ -339,8 +800,32 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
   }, [accounts, accountByKey, query, storeFilter, stores]);
 
   const selected = rows.find((row) => row.key === selectedKey) || null;
+  const connectedStores = useMemo(() => {
+    const map = new Map();
+    for (const row of rows) {
+      if (!row.account?.hasJwt) continue;
+      map.set(row.key, {
+        ...row.account,
+        storeKey: row.key,
+        storeName: row.storeName || row.account.storeName,
+      });
+    }
+    for (const row of phone.stores || []) {
+      if (storeFilter && row.storeKey !== storeKeyFromName(storeFilter)) continue;
+      map.set(row.storeKey, row);
+    }
+    return [...map.values()].sort((a, b) =>
+      String(a.storeName || '').localeCompare(String(b.storeName || ''), undefined, { sensitivity: 'base' }),
+    );
+  }, [phone.stores, rows, storeFilter]);
   const activeAccount = phone.stores.find((row) => row.storeKey === storeKey) || accountByKey.get(storeKey) || null;
-  const incomingLive = phone.incoming;
+  const incomingLive = useMemo(() => {
+    const all = phone.incoming || [];
+    if (!storeFilter) return all;
+    const locked = storeKeyFromName(storeFilter);
+    if (!locked) return all;
+    return all.filter((call) => call.storeKey === locked);
+  }, [phone.incoming, storeFilter]);
   const rangeSince = useMemo(() => rangeSinceMs(dateRange), [dateRange]);
   const rangeLabel = rangeCopy(dateRange);
   const visibleCalls = useMemo(
@@ -352,18 +837,31 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
     [voicemails, rangeSince],
   );
   const inboundCalls = useMemo(() => inboundCallsUnique(visibleCalls), [visibleCalls]);
+  const todayCalls = useMemo(
+    () => (Array.isArray(calls) ? calls : []).filter((row) => inDateRange(row.startTime, rangeSinceMs('today'))),
+    [calls],
+  );
   const outboundCalls = visibleCalls.filter((row) => row.direction === 'Outbound');
   const ratio = useMemo(() => inboundCallRatio(visibleCalls), [visibleCalls]);
   const storeRatios = useMemo(() => {
     const next = {};
-    for (const row of phone.stores) {
-      const storeCalls = (phone.mergedCallsByStore?.[row.storeKey] || []).filter((call) =>
+    const names = new Set();
+    for (const row of rows) {
+      if (row?.key) names.add(row.key);
+      if (row?.storeName) names.add(row.storeName);
+    }
+    for (const row of connectedStores) {
+      if (row?.storeKey) names.add(row.storeKey);
+      if (row?.storeName) names.add(row.storeName);
+    }
+    for (const name of names) {
+      const storeCalls = callsForStore(phone.mergedCallsByStore, name).filter((call) =>
         inDateRange(call.startTime, rangeSince),
       );
-      next[row.storeKey] = inboundCallRatio(storeCalls);
+      next[storeKeyFromName(name)] = inboundCallRatio(storeCalls);
     }
     return next;
-  }, [phone.mergedCallsByStore, phone.stores, rangeSince]);
+  }, [connectedStores, phone.mergedCallsByStore, rangeSince, rows]);
   const answeredCalls = inboundCalls.filter((row) => isAnsweredInbound(row));
   const missedCalls = inboundCalls.filter((row) => !isAnsweredInbound(row));
   const callLog = useMemo(() => {
@@ -390,31 +888,91 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
     [activeAccount?.mainNumber, phone],
   );
 
-  const openStore = useCallback(async (row) => {
-    if (!row?.key) return;
-    const id = ++detailsRequest.current;
-    setSelectedKey(row.key);
-    setShowStores(true);
+  const goToStoreList = useCallback(() => {
+    if (storeFilter) return;
+    detailsRequest.current += 1;
+    setSelectedKey('');
     setDetails(null);
+    setDetailsLoading(false);
+    setShowStores(true);
     setError('');
-    if (!row.account?.hasJwt) return;
+  }, [storeFilter]);
 
-    setDetailsLoading(true);
-    try {
-      const payload = await fetchRingCentralStoreDetails(row.key);
-      if (id !== detailsRequest.current) return;
-      setDetails(payload);
-      setAccounts((current) => applyAccount(current, payload.store));
-      if (payload.store?.lastStatus === 'error' && payload.store.lastError) {
-        setError(payload.store.lastError);
+  useEffect(() => {
+    const lockedKey = storeFilter ? storeKeyFromName(storeFilter) : '';
+    if (!lockedKey) return;
+    const row = rows.find((item) => item.key === lockedKey);
+    const account =
+      (row?.account?.hasJwt && row.account) ||
+      (phone.stores || []).find((item) => item.storeKey === lockedKey && item.hasJwt);
+    if (account?.hasJwt) {
+      setShowStores(false);
+      if (phone.selectedStoreKey !== lockedKey) {
+        applyStoreAccount?.(account, { select: true, watch: true });
       }
-    } catch (err) {
-      if (id !== detailsRequest.current) return;
-      setError(err?.message || 'Could not load RingCentral details.');
-    } finally {
-      if (id === detailsRequest.current) setDetailsLoading(false);
+      return;
     }
-  }, []);
+    if (row) {
+      setSelectedKey(row.key);
+      setShowStores(true);
+    }
+  }, [applyStoreAccount, phone.selectedStoreKey, phone.stores, rows, storeFilter]);
+
+  const storeCrumbName = showStores && selected ? selected.storeName : !showStores ? activeAccount?.storeName : '';
+  const useOuterCrumb = Boolean(onStoreBackChange) && !isMobile;
+  const hideStoreNav = useOuterCrumb || embedded || Boolean(storeFilter);
+  const onStoreBackChangeRef = useRef(onStoreBackChange);
+  onStoreBackChangeRef.current = onStoreBackChange;
+
+  useEffect(() => {
+    const report = onStoreBackChangeRef.current;
+    if (!report) return undefined;
+    if (storeCrumbName) {
+      report(goToStoreList, { dateLabel: storeCrumbName, storeName: storeCrumbName });
+      return () => report(null, null);
+    }
+    report(null, null);
+    return undefined;
+  }, [goToStoreList, storeCrumbName]);
+
+  useEffect(() => {
+    if (!showStores) return undefined;
+    let cancelled = false;
+    (async () => {
+      for (const row of connectedStores) {
+        if (cancelled) return;
+        try {
+          await refreshInbox(row.storeKey, { silent: true });
+        } catch {
+          // Keep any ratio already loaded for this store.
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [connectedStores, refreshInbox, showStores]);
+
+  const openStore = useCallback(
+    (row) => {
+      if (!row?.key) return;
+      if (row.account?.hasJwt) {
+        applyStoreAccount?.(row.account, { select: true, watch: true });
+        setShowStores(false);
+        setSelectedKey('');
+        setDetails(null);
+        setError('');
+        return;
+      }
+
+      detailsRequest.current += 1;
+      setSelectedKey(row.key);
+      setShowStores(true);
+      setDetails(null);
+      setError('');
+    },
+    [applyStoreAccount],
+  );
 
   const appendDigit = (value) => {
     setDigits((current) => `${current}${value}`.replace(/[^\d*#]/g, '').slice(0, 16));
@@ -467,9 +1025,32 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
     }
   };
 
+  const headerActions = (
+    <View style={styles.headerActions}>
+      <Pressable
+        style={[styles.iconBtn, phone.silent && styles.iconBtnActive]}
+        onPress={() => phone.setSilent(!phone.silent)}
+        accessibilityLabel={phone.silent ? 'Turn ringtone on' : 'Silence ringtone'}
+      >
+        <Ionicons name={phone.silent ? 'volume-mute' : 'volume-high'} size={16} color={phone.silent ? '#991B1B' : '#1a1a1a'} />
+      </Pressable>
+      <Pressable
+        style={styles.iconBtn}
+        onPress={showStores ? load : loadInbox}
+        accessibilityLabel="Refresh"
+      >
+        {(showStores ? loading : inboxLoading) ? (
+          <ActivityIndicator size="small" color={ACCENT} />
+        ) : (
+          <Ionicons name="refresh" size={16} color="#6b6b6b" />
+        )}
+      </Pressable>
+    </View>
+  );
+
   if (!session?.token) {
     return (
-      <View style={[styles.screen, styles.listContent]}>
+      <View style={[styles.screen, styles.listContent, embedded && styles.screenEmbedded]}>
         <Text style={styles.emptyText}>
           Sign in to view store phones.{' '}
           {onRequireLogin ? (
@@ -482,30 +1063,26 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
     );
   }
 
+  if (storeFilter && loading && !storeKey && !selectedKey) {
+    return (
+      <View style={[styles.screen, styles.centered, embedded && styles.screenEmbedded, { flex: 1 }]}>
+        <ActivityIndicator color={ACCENT} />
+      </View>
+    );
+  }
+
   if (showStores && selected) {
     const account = details?.store || selected.account;
     const status = connectionLabel(account);
     const numbers = details?.numbers || [];
     const extensions = details?.extensions || [];
     return (
-      <View style={styles.screen}>
-        <ScrollView style={styles.list} contentContainerStyle={styles.listContent} showsVerticalScrollIndicator={false}>
-          <Pressable
-            style={styles.backRow}
-            onPress={() => {
-              detailsRequest.current += 1;
-              setSelectedKey('');
-              setDetails(null);
-              setDetailsLoading(false);
-              setShowStores(false);
-              setError('');
-            }}
-          >
-            <Ionicons name="chevron-back" size={16} color="#1a1a1a" />
-            <Text style={styles.backText}>Calls</Text>
-          </Pressable>
-
-          <Text style={styles.sectionTitle}>{selected.storeName}</Text>
+      <View style={[styles.screen, embedded && styles.screenEmbedded]}>
+        <ScrollView style={styles.list} contentContainerStyle={[styles.listContent, embedded && styles.listContentEmbedded]} showsVerticalScrollIndicator={false}>
+          <View style={styles.headerRow}>
+            {hideStoreNav ? <View style={styles.headerCopy} /> : <PhoneCrumb storeName={selected.storeName} onStores={goToStoreList} />}
+            {headerActions}
+          </View>
           {selected.address ? <Text style={styles.sectionMeta}>{selected.address}</Text> : null}
 
           <View style={styles.statusCard}>
@@ -527,6 +1104,9 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
               value={account?.extensionCount ? String(account.extensionCount) : ''}
             />
             <DetailRow label="Checked" value={formatCheckedAt(account?.lastCheckedAt)} />
+            {account?.hasJwt ? (
+              <DetailRow label="Answer here" value={browserPhoneLabel(phone.webPhoneStatus?.[selected.key])} />
+            ) : null}
             {selected.key === storeKey ? (
               <>
                 <Text style={styles.detailLabel}>Answered to missed</Text>
@@ -605,17 +1185,16 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
 
   if (showStores) {
     return (
-      <View style={styles.screen}>
-        <ScrollView style={styles.list} contentContainerStyle={styles.listContent} showsVerticalScrollIndicator={false}>
-          <Pressable style={styles.backRow} onPress={() => setShowStores(false)}>
-            <Ionicons name="chevron-back" size={16} color="#1a1a1a" />
-            <Text style={styles.backText}>Calls</Text>
-          </Pressable>
-          <Text style={styles.sectionTitle}>Stores</Text>
+      <View style={[styles.screen, embedded && styles.screenEmbedded]}>
+        <ScrollView style={styles.list} contentContainerStyle={[styles.listContent, embedded && styles.listContentEmbedded]} showsVerticalScrollIndicator={false}>
+          <View style={styles.headerRow}>
+            {hideStoreNav ? <View style={styles.headerCopy} /> : <Text style={styles.crumbCurrent}>Stores</Text>}
+            {headerActions}
+          </View>
           <Text style={styles.sectionMeta}>
             {canManage
-              ? 'Tap a store for numbers and extensions. Add each store’s RingCentral JWT in Settings → RingCentral.'
-              : 'Tap a store for numbers and extensions.'}
+              ? 'Tap a store to open its calls, voicemail, and ratio. Add each store’s RingCentral JWT in Settings → RingCentral.'
+              : 'Tap a store to open its calls, voicemail, and ratio.'}
           </Text>
           <View style={styles.toolbar}>
             <View style={styles.search}>
@@ -631,21 +1210,20 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
                 clearButtonMode="while-editing"
               />
             </View>
-            <Pressable style={styles.refresh} onPress={load} hitSlop={8} accessibilityLabel="Refresh">
-              {loading ? <ActivityIndicator size="small" color={ACCENT} /> : <Ionicons name="refresh" size={16} color="#6b6b6b" />}
-            </Pressable>
           </View>
           {warning ? <Text style={styles.warningText}>{warning}</Text> : null}
           {rows.map((row) => {
             const account = row.account;
             const status = connectionLabel(account);
+            const storeRatio = storeRatios[row.key] || inboundCallRatio([]);
+            const rateLabel = account?.hasJwt ? storeRatio.ratio : '—';
             return (
               <Pressable
                 key={row.key}
                 style={styles.storeRow}
                 onPress={() => openStore(row)}
                 accessibilityRole="button"
-                accessibilityLabel={`${row.storeName}, ${status}`}
+                accessibilityLabel={`${row.storeName}, ${status}, ${rateLabel} answered`}
               >
                 <View style={styles.storeIcon}>
                   <Ionicons name="call-outline" size={16} color={ACCENT} />
@@ -662,12 +1240,22 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
                         : row.posPhone
                           ? formatPhoneNumber(row.posPhone)
                           : '',
+                      storeRatio.total ? `${storeRatio.answered} of ${storeRatio.total}` : '',
                     ]
                       .filter(Boolean)
                       .join(' · ')}
                   </Text>
                 </View>
-                <Text style={[styles.rowStatus, statusTone(account)]}>{status}</Text>
+                <Text
+                  style={[
+                    styles.storeRate,
+                    storeRatio.rate == null && styles.storeRateMuted,
+                    storeRatio.rate != null && storeRatio.rate < 80 && styles.statusError,
+                    storeRatio.rate != null && storeRatio.rate >= 80 && styles.statusConnected,
+                  ]}
+                >
+                  {rateLabel}
+                </Text>
                 <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
               </Pressable>
             );
@@ -678,49 +1266,37 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
   }
 
   return (
-    <View style={styles.screen}>
-      <ScrollView style={styles.list} contentContainerStyle={styles.listContent} showsVerticalScrollIndicator={false}>
+    <View style={[styles.screen, embedded && styles.screenEmbedded]}>
+      <ScrollView style={styles.list} contentContainerStyle={[styles.listContent, embedded && styles.listContentEmbedded]} showsVerticalScrollIndicator={false}>
         <View style={styles.headerRow}>
           <View style={styles.headerCopy}>
-            <Text style={styles.sectionTitle}>Phone</Text>
-            <Text style={styles.sectionMeta} numberOfLines={1}>
-              {activeAccount?.storeName || 'Connect a store in Settings → RingCentral'}
-            </Text>
+            {hideStoreNav ? null : activeAccount?.storeName || storeKey ? (
+              <PhoneCrumb
+                storeName={activeAccount?.storeName || 'Store'}
+                onStores={goToStoreList}
+              />
+            ) : (
+              <Text style={styles.crumbCurrent}>Phone</Text>
+            )}
           </View>
-          <View style={styles.headerActions}>
-            <Pressable
-              style={[styles.iconBtn, phone.silent && styles.iconBtnActive]}
-              onPress={() => phone.setSilent(!phone.silent)}
-              accessibilityLabel={phone.silent ? 'Turn ringtone on' : 'Silence ringtone'}
-            >
-              <Ionicons name={phone.silent ? 'notifications-off' : 'notifications'} size={16} color={phone.silent ? '#991B1B' : '#1a1a1a'} />
-            </Pressable>
-            <Pressable style={styles.iconBtn} onPress={loadInbox} accessibilityLabel="Refresh calls">
-              {inboxLoading ? <ActivityIndicator size="small" color={ACCENT} /> : <Ionicons name="refresh" size={16} color="#6b6b6b" />}
-            </Pressable>
-            <Pressable style={styles.storesLink} onPress={() => setShowStores(true)}>
-              <Text style={styles.link}>Stores</Text>
-            </Pressable>
-          </View>
+          {headerActions}
         </View>
 
-        {phone.stores.length > 1 ? (
+        {connectedStores.length > 1 ? (
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.storeChips}>
-            {phone.stores.map((row) => {
+            {connectedStores.map((row) => {
               const active = row.storeKey === storeKey;
               const storeRatio = storeRatios[row.storeKey];
               return (
                 <Pressable
                   key={row.storeKey}
                   style={[styles.chip, active && styles.chipActive]}
-                  onPress={() => phone.setSelectedStoreKey(row.storeKey)}
+                  onPress={() => applyStoreAccount?.(row, { select: true, watch: true })}
                 >
                   <Text style={[styles.chipText, active && styles.chipTextActive]}>{row.storeName}</Text>
-                  {storeRatio?.total ? (
-                    <Text style={[styles.chipRatio, active && styles.chipRatioActive]}>
-                      {storeRatio.ratio}
-                    </Text>
-                  ) : null}
+                  <Text style={[styles.chipRatio, active && styles.chipRatioActive]}>
+                    {storeRatio?.ratio || '—'}
+                  </Text>
                 </Pressable>
               );
             })}
@@ -796,7 +1372,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
         {!storeKey ? (
           <Text style={styles.emptyText}>
             {canManage
-              ? 'Connect Montreal (or another store) in Settings → RingCentral to make and receive calls.'
+              ? 'Connect a store in Settings → RingCentral to make and receive calls.'
               : 'No connected store phone yet.'}
           </Text>
         ) : null}
@@ -977,16 +1553,16 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
 
         {tab === 'stats' ? (
           <View style={styles.section}>
-            {phone.stores.length > 1 ? (
+            {connectedStores.length > 1 ? (
               <View style={styles.storeRatioList}>
-                {phone.stores.map((row) => {
+                {connectedStores.map((row) => {
                   const storeRatio = storeRatios[row.storeKey] || inboundCallRatio([]);
                   const selected = row.storeKey === storeKey;
                   return (
                     <Pressable
                       key={row.storeKey}
                       style={[styles.storeRatioRow, selected && styles.storeRatioRowActive]}
-                      onPress={() => phone.setSelectedStoreKey(row.storeKey)}
+                      onPress={() => applyStoreAccount?.(row, { select: true, watch: true })}
                     >
                       <Text style={[styles.storeRatioName, selected && styles.chipTextActive]} numberOfLines={1}>
                         {row.storeName}
@@ -1001,6 +1577,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
               </View>
             ) : null}
             <RatioStrip stats={ratio} rangeLabel={rangeLabel} />
+            <RatioDayChart calls={todayCalls} />
             <View style={styles.ratioStats}>
               <View style={styles.ratioStat}>
                 <Text style={styles.summaryLabel}>Voicemail</Text>
@@ -1063,6 +1640,9 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#fff',
   },
+  screenEmbedded: {
+    backgroundColor: 'transparent',
+  },
   list: {
     flex: 1,
   },
@@ -1074,6 +1654,11 @@ const styles = StyleSheet.create({
     width: '100%',
     alignSelf: 'center',
     gap: 10,
+  },
+  listContentEmbedded: {
+    paddingHorizontal: 16,
+    maxWidth: '100%',
+    paddingTop: 0,
   },
   section: {
     gap: 4,
@@ -1088,6 +1673,39 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     gap: 2,
+  },
+  crumb: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  crumbLinkHit: {
+    paddingVertical: 2,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  crumbLink: {
+    fontFamily,
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#6b6b6b',
+  },
+  crumbSep: {
+    fontFamily,
+    fontSize: 18,
+    color: '#b0b0b0',
+  },
+  crumbCurrent: {
+    fontFamily,
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    flexShrink: 1,
   },
   headerActions: {
     flexDirection: 'row',
@@ -1407,6 +2025,18 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
+  storeRate: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1a1a1a',
+    minWidth: 48,
+    textAlign: 'right',
+  },
+  storeRateMuted: {
+    color: '#8a8a8a',
+    fontWeight: '600',
+  },
   cellSub: {
     fontFamily,
     fontSize: 11,
@@ -1576,6 +2206,209 @@ const styles = StyleSheet.create({
   ratioBarEmpty: {
     flex: 1,
     backgroundColor: '#ececec',
+  },
+  ratioChart: {
+    gap: 6,
+    marginTop: 4,
+  },
+  ratioChartHead: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  ratioChartHeadText: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  ratioChartSub: {
+    fontFamily,
+    fontSize: 12,
+    color: '#6b6b6b',
+    fontVariant: ['tabular-nums'],
+  },
+  ratioChartNow: {
+    fontFamily,
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#1a1a1a',
+    fontVariant: ['tabular-nums'],
+    lineHeight: 26,
+  },
+  ratioChartFrame: {
+    height: CHART_H,
+    borderRadius: 10,
+    backgroundColor: '#FAFCFB',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#D9E4DC',
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  ratioChartEmpty: {
+    position: 'absolute',
+    left: CHART_PAD_L,
+    right: CHART_PAD_R,
+    fontFamily,
+    fontSize: 13,
+    color: '#8a8a8a',
+    textAlign: 'center',
+  },
+  ratioChartY: {
+    position: 'absolute',
+    left: 0,
+    width: CHART_PAD_L - 6,
+    textAlign: 'right',
+    fontFamily,
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#9a9a9a',
+    fontVariant: ['tabular-nums'],
+  },
+  ratioChartYTarget: {
+    color: ACCENT,
+  },
+  ratioChartLane: {
+    position: 'absolute',
+    left: 4,
+    fontFamily,
+    fontSize: 9,
+    fontWeight: '600',
+    color: '#9a9a9a',
+  },
+  ratioChartX: {
+    position: 'absolute',
+    bottom: 4,
+    fontFamily,
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#8a8a8a',
+    textAlign: 'center',
+  },
+  ratioChartGuide: {
+    position: 'absolute',
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(0, 0, 0, 0.09)',
+  },
+  ratioChartGuideTarget: {
+    height: 1,
+    backgroundColor: 'rgba(21, 128, 61, 0.45)',
+  },
+  ratioChartHour: {
+    position: 'absolute',
+  },
+  ratioChartHourAlt: {
+    backgroundColor: 'rgba(0, 0, 0, 0.018)',
+  },
+  ratioChartHourActive: {
+    backgroundColor: 'rgba(21, 128, 61, 0.09)',
+  },
+  ratioChartBar: {
+    position: 'absolute',
+    borderRadius: 3,
+    overflow: 'hidden',
+    flexDirection: 'column',
+  },
+  ratioChartBarMissed: {
+    backgroundColor: MISSED,
+    minHeight: 0,
+  },
+  ratioChartBarAnswered: {
+    backgroundColor: ACCENT,
+    minHeight: 0,
+  },
+  ratioChartFuture: {
+    position: 'absolute',
+    backgroundColor: 'rgba(255, 255, 255, 0.55)',
+  },
+  ratioChartCall: {
+    position: 'absolute',
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: ACCENT,
+    borderWidth: 1,
+    borderColor: '#fff',
+  },
+  ratioChartCallMissed: {
+    backgroundColor: MISSED,
+  },
+  ratioChartDot: {
+    position: 'absolute',
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: ACCENT,
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
+  ratioChartDotMissed: {
+    backgroundColor: MISSED,
+  },
+  ratioChartNowLine: {
+    position: 'absolute',
+    width: 1,
+    backgroundColor: 'rgba(26, 26, 26, 0.35)',
+  },
+  ratioChartNowTag: {
+    position: 'absolute',
+    fontFamily,
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#1a1a1a',
+    width: 26,
+  },
+  ratioChartTip: {
+    position: 'absolute',
+    backgroundColor: '#1a1a1a',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    gap: 1,
+  },
+  ratioChartTipTitle: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  ratioChartTipBody: {
+    fontFamily,
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.85)',
+    fontVariant: ['tabular-nums'],
+  },
+  ratioChartLegend: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    paddingHorizontal: 2,
+  },
+  ratioChartLegendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  ratioChartLegendText: {
+    fontFamily,
+    fontSize: 11,
+    color: '#6b6b6b',
+  },
+  ratioChartLegendLine: {
+    width: 14,
+    height: 2.5,
+    borderRadius: 2,
+    backgroundColor: ACCENT,
+  },
+  ratioChartLegendSwatch: {
+    width: 9,
+    height: 9,
+    borderRadius: 2,
+  },
+  ratioChartLegendTarget: {
+    width: 14,
+    height: 1,
+    backgroundColor: 'rgba(21, 128, 61, 0.6)',
   },
   itemRow: {
     flexDirection: 'row',

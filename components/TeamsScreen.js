@@ -195,14 +195,14 @@ function TeamDetail({ team, compact, onClose, onEdit, onDelete }) {
   );
 }
 
-export default function TeamsScreen() {
+export default function TeamsScreen({ focusTeamId }) {
   const { width } = useWindowDimensions();
   const isMobile = width < MOBILE_BREAKPOINT;
   const [teams, setTeams] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedId, setSelectedId] = useState(focusTeamId || null);
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -216,6 +216,7 @@ export default function TeamsScreen() {
       const rows = await listTeams();
       setTeams(rows);
       setSelectedId((current) => {
+        if (focusTeamId && rows.some((row) => row.id === focusTeamId)) return focusTeamId;
         if (current === NEW_ID) return current;
         if (current && rows.some((row) => row.id === current)) return current;
         return null;
@@ -226,11 +227,15 @@ export default function TeamsScreen() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [focusTeamId]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (focusTeamId) setSelectedId(focusTeamId);
+  }, [focusTeamId]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

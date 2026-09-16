@@ -41,13 +41,11 @@ import {
   allocatedStoreName,
   scopedStoreName,
   filterRowsToAllocatedStore,
-  uploadOwnAvatar,
 } from './lib/profiles';
 import {
   AppAccessContext,
   canFilterApp,
   canManageAppAccess,
-  categoryLabel,
   findStaffByEmployeeName,
   listStaffProfiles,
   staffDisplayName,
@@ -80,7 +78,8 @@ import {
   withLineItems,
   withPaymentBreakdown,
 } from './lib/transactions';
-import { readRipplingOAuthCallback } from './lib/rippling';
+import { readRipplingOAuthCallback, readRipplingOAuthState } from './lib/rippling';
+import { readGmailOAuthCallback } from './lib/gmail';
 import AiScreen from './components/AiScreen';
 import AccountingScreen from './components/AccountingScreen';
 import AuditScreen from './components/AuditScreen';
@@ -111,14 +110,20 @@ import {
   MobileSafeTop,
   MobileTabBar,
 } from './components/MobileChrome';
-import ProfilePhotoPicker from './components/ProfilePhotoPicker';
-import ProfilePhotoModal from './components/ProfilePhotoModal';
+import ProfileScreen, { profileTargetFromPerson } from './components/ProfileScreen';
 import ProfileLocationPicker from './components/ProfileLocationPicker';
-import ProfileTeamPicker from './components/ProfileTeamPicker';
 import MarketingScreen from './components/MarketingScreen';
 import SharedServicesScreen from './components/SharedServicesScreen';
 import PhoneScreen from './components/PhoneScreen';
-import { PhoneCallProvider, PhoneIncomingDock, PhoneRingerToggle } from './components/PhoneCallProvider';
+import EmailsScreen from './components/EmailsScreen';
+import { PhoneCallProvider, PhoneIncomingDock, usePhoneCalls } from './components/PhoneCallProvider';
+import { callsForStore, inboundCallRatio } from './lib/phoneCalls';
+import {
+  emptyStoreSettings,
+  isStoreOpenNow,
+  listSavedStoreSettings,
+  storeKeyFromName,
+} from './lib/storeSettings';
 import TeamsScreen from './components/TeamsScreen';
 import { fetchAureusEmployee } from './lib/aureusEmployees';
 import { useDirectMessages } from './lib/messages';
@@ -138,7 +143,7 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-tx-row:hover{background-color:#e8e8ed!important;}',
     '.cgold-tx-row:active{background-color:#e5e5ea!important;}',
     '.cgold-tx-row-selected,.cgold-tx-row-selected:hover{background-color:#e8e8ed!important;}',
-    '.cgold-home-row{cursor:pointer;background-color:transparent;transition:background-color 160ms ease;}',
+    '.cgold-home-row{cursor:pointer;background-color:transparent;transition:background-color 160ms ease;overflow:visible!important;}',
     '.cgold-home-row:hover{background-color:#e8e8ed!important;}',
     '.cgold-home-row:active{background-color:#e5e5ea!important;}',
     '.cgold-home-row-selected,.cgold-home-row-selected:hover{background-color:#e8e8ed!important;}',
@@ -147,12 +152,29 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-floating-tip{position:fixed;z-index:100000;pointer-events:none;max-width:280px;min-width:160px;padding:8px 10px;border-radius:6px;background:#1a1a1a;box-shadow:0 4px 16px rgba(0,0,0,0.18);font:12px/16px Sohne,sans-serif;color:#fff;white-space:pre-wrap;}',
     '.cgold-sidebar-item .cgold-sidebar-unpin{opacity:0;transition:opacity 120ms;}',
     '.cgold-sidebar-item:hover .cgold-sidebar-unpin,.cgold-sidebar-item:focus-within .cgold-sidebar-unpin{opacity:1;}',
+    '.cgold-tab-well{background:rgba(242,242,247,0.94);box-shadow:inset 0 1px 1px rgba(255,255,255,0.9),0 1px 2px rgba(0,0,0,0.05),0 4px 10px rgba(0,0,0,0.05);}',
+    '.cgold-tab-glass{-webkit-backdrop-filter:saturate(180%) blur(22px);backdrop-filter:saturate(180%) blur(22px);background-color:rgba(255,255,255,0.86)!important;box-shadow:inset 0 0.5px 0 rgba(255,255,255,0.95),0 0 0 0.5px rgba(0,0,0,0.04),0 1px 3px rgba(0,0,0,0.06)!important;}',
     '.cgold-apps-toolbar-blur{-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);background-color:rgba(255,255,255,0.62)!important;}',
     '.cgold-home-toolbar-blur{-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);background-color:rgba(255,255,255,0.62)!important;}',
     '.cgold-store-header-blur{-webkit-backdrop-filter:saturate(160%) blur(12px);backdrop-filter:saturate(160%) blur(12px);background-color:rgba(255,255,255,0.72)!important;transform:translateZ(0);}',
     '.cgold-dm-row{cursor:pointer;}',
     '.cgold-dm-row:hover{background-color:#f5f5f7!important;}',
     '.cgold-dm-row-active,.cgold-dm-row-active:hover{background-color:#ececef!important;}',
+    '.cgold-store-status{position:relative;width:48px;height:48px;flex-shrink:0;overflow:visible!important;display:flex;align-items:center;justify-content:center;}',
+    '.cgold-store-status-lg{width:56px;height:56px;}',
+    '.cgold-store-status::before,.cgold-store-status::after{content:"";position:absolute;left:50%;top:50%;width:28px;height:28px;border-radius:50%;pointer-events:none;z-index:0;transform:translate(-50%,-50%) scale(.9);}',
+    '.cgold-store-status-lg::before,.cgold-store-status-lg::after{width:40px;height:40px;}',
+    '.cgold-store-status-open::before,.cgold-store-status-open::after{background:radial-gradient(circle,rgba(48,209,88,.42) 0%,rgba(48,209,88,.16) 38%,rgba(48,209,88,0) 70%);}',
+    '.cgold-store-status-closed::before,.cgold-store-status-closed::after{background:radial-gradient(circle,rgba(255,69,58,.38) 0%,rgba(255,69,58,.14) 38%,rgba(255,69,58,0) 70%);}',
+    '.cgold-store-status::before{animation:cgold-store-radiate 2.4s ease-out infinite;}',
+    '.cgold-store-status::after{animation:cgold-store-radiate 2.4s ease-out infinite 1.2s;}',
+    '.cgold-store-status .cgold-store-ambient{position:absolute;left:50%;top:50%;width:36px;height:36px;margin-left:-18px;margin-top:-18px;border-radius:50%;pointer-events:none;z-index:0;filter:blur(7px);animation:cgold-store-ambient 2.2s ease-in-out infinite;}',
+    '.cgold-store-status-lg .cgold-store-ambient{width:46px;height:46px;margin-left:-23px;margin-top:-23px;filter:blur(9px);}',
+    '.cgold-store-status-open .cgold-store-ambient{background:rgba(48,209,88,.42);}',
+    '.cgold-store-status-closed .cgold-store-ambient{background:rgba(255,69,58,.38);}',
+    '@keyframes cgold-store-radiate{0%{transform:translate(-50%,-50%) scale(.8);opacity:.48}100%{transform:translate(-50%,-50%) scale(1.7);opacity:0}}',
+    '@keyframes cgold-store-ambient{0%,100%{opacity:.28;transform:scale(.92)}50%{opacity:.58;transform:scale(1.08)}}',
+    '@media (prefers-reduced-motion:reduce){.cgold-store-status::before,.cgold-store-status::after{animation:none;opacity:.32;transform:translate(-50%,-50%) scale(1.12)}.cgold-store-status .cgold-store-ambient{animation:none;opacity:.4;transform:none}}',
     '@media (max-width:767px){',
     'html,body,#root{background:#fff;}',
     '.cgold-mobile-inset-top{height:max(12px,env(safe-area-inset-top,0px))!important;}',
@@ -444,6 +466,14 @@ function filledIonicon(name) {
   return typeof name === 'string' && name.endsWith('-outline') ? name.slice(0, -8) : name;
 }
 
+const TAB_ICON_COLOR = '#8e8e93';
+const TAB_ICON_ACTIVE_COLOR = '#007AFF';
+
+function sidebarTabClassName(active, extra) {
+  if (Platform.OS !== 'web') return extra || undefined;
+  return [extra, active ? 'cgold-tab-glass' : null].filter(Boolean).join(' ') || undefined;
+}
+
 const MAIN_TABS = [
   { key: 'home', label: 'Home', icon: 'home-outline' },
   { key: 'tools', label: 'Apps', icon: 'apps-outline' },
@@ -509,13 +539,10 @@ const STORE_DRAWER_TAB_KEYS = [
   'preorders',
   'financials',
   'employees',
-  'debit',
+  'phone',
   'audit',
   'supplies',
-  'leaderboards',
   'serphint',
-  'ai',
-  'triage',
   'settings',
 ];
 
@@ -2182,7 +2209,7 @@ function mergeLiveTxRows(current, incoming) {
   });
 }
 
-function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date, onClose }) {
+function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date, startKey, endKey, onClose }) {
   const { width: windowWidth } = useWindowDimensions();
   const isMobile = windowWidth < MOBILE_BREAKPOINT;
   const { hasApp } = useAppAccess();
@@ -2478,6 +2505,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
               activeTab === 'audit' ||
               activeTab === 'ai' ||
               activeTab === 'triage' ||
+              activeTab === 'phone' ||
               activeTab === 'settings' ? (
                 <View style={[styles.drawerBody, styles.drawerBodyFill]}>
                   {activeTab === 'overview' ? (
@@ -2485,6 +2513,8 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                       session={session}
                       store={heldStore}
                       periodLabel={periodLabel}
+                      startKey={startKey}
+                      endKey={endKey}
                       txRows={txRows}
                       onOpenTransaction={openDetail}
                       onOpenApp={openApp}
@@ -2542,6 +2572,12 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                       />
                     ) : activeTab === 'employees' ? (
                       <EmployeesScreen
+                        session={session}
+                        storeFilter={heldStore.store}
+                        embedded
+                      />
+                    ) : activeTab === 'phone' ? (
+                      <PhoneScreen
                         session={session}
                         storeFilter={heldStore.store}
                         embedded
@@ -2784,7 +2820,136 @@ function storeAccent(name) {
   return STORE_ACCENT_FALLBACKS[hash % STORE_ACCENT_FALLBACKS.length];
 }
 
-function HomeStoreCard({ row, people, selected, last, onOpenStore, onOpenPerson }) {
+function HomeStoreNativeRadiance({ open, size }) {
+  const ringA = useRef(new Animated.Value(0)).current;
+  const ringB = useRef(new Animated.Value(0)).current;
+  const ambient = useRef(new Animated.Value(0)).current;
+  const color = open ? '#30D158' : '#FF453A';
+  const halo = size + 14;
+
+  useEffect(() => {
+    const loopRing = (value, delay) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.timing(value, {
+            toValue: 1,
+            duration: 2200,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+          }),
+          Animated.timing(value, { toValue: 0, duration: 0, useNativeDriver: true }),
+        ]),
+      );
+    const loopAmbient = Animated.loop(
+      Animated.sequence([
+        Animated.timing(ambient, {
+          toValue: 1,
+          duration: 1200,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(ambient, {
+          toValue: 0,
+          duration: 1200,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    const anim = Animated.parallel([loopRing(ringA, 0), loopRing(ringB, 1100), loopAmbient]);
+    anim.start();
+    return () => {
+      anim.stop();
+      ringA.setValue(0);
+      ringB.setValue(0);
+      ambient.setValue(0);
+    };
+  }, [ambient, open, ringA, ringB]);
+
+  return (
+    <View pointerEvents="none" style={styles.homeStoreRadianceLayer}>
+      <Animated.View
+        style={[
+          styles.homeStoreRadianceBlob,
+          {
+            width: halo,
+            height: halo,
+            borderRadius: halo / 2,
+            backgroundColor: color,
+            opacity: ambient.interpolate({ inputRange: [0, 1], outputRange: [0.2, 0.36] }),
+            transform: [{ scale: ambient.interpolate({ inputRange: [0, 1], outputRange: [0.88, 1.08] }) }],
+          },
+        ]}
+      />
+      <Animated.View
+        style={[
+          styles.homeStoreRadianceBlob,
+          {
+            width: size,
+            height: size,
+            borderRadius: size / 2,
+            backgroundColor: color,
+            opacity: ringA.interpolate({ inputRange: [0, 1], outputRange: [0.32, 0] }),
+            transform: [{ scale: ringA.interpolate({ inputRange: [0, 1], outputRange: [0.72, 1.55] }) }],
+          },
+        ]}
+      />
+      <Animated.View
+        style={[
+          styles.homeStoreRadianceBlob,
+          {
+            width: size,
+            height: size,
+            borderRadius: size / 2,
+            backgroundColor: color,
+            opacity: ringB.interpolate({ inputRange: [0, 1], outputRange: [0.32, 0] }),
+            transform: [{ scale: ringB.interpolate({ inputRange: [0, 1], outputRange: [0.72, 1.55] }) }],
+          },
+        ]}
+      />
+    </View>
+  );
+}
+
+function HomeStoreStatusIcon({ accent, open, compact = false }) {
+  const tile = compact ? 40 : 28;
+  const iconSize = compact ? 18 : 14;
+  const isOpen = Boolean(open);
+  const icon = (
+    <View
+      style={[
+        compact ? styles.igStoreIcon : styles.homeStoreIconTile,
+        styles.homeStoreIconForeground,
+        { backgroundColor: accent },
+      ]}
+    >
+      <Ionicons name="storefront" size={iconSize} color="#fff" />
+    </View>
+  );
+
+  if (Platform.OS === 'web') {
+    return createElement(
+      'div',
+      {
+        className: `cgold-store-status${compact ? ' cgold-store-status-lg' : ''} ${
+          isOpen ? 'cgold-store-status-open' : 'cgold-store-status-closed'
+        }`,
+      },
+      createElement('div', { className: 'cgold-store-ambient' }),
+      icon,
+    );
+  }
+
+  return (
+    <View style={[styles.homeStoreIconWrap, compact && styles.igStoreIconWrap]}>
+      <HomeStoreNativeRadiance open={isOpen} size={tile} />
+      {icon}
+    </View>
+  );
+}
+
+function HomeStoreCard({ row, people, phoneStats, selected, last, onOpenStore, onOpenPerson, open }) {
   const accent = storeAccent(row.store);
 
   return (
@@ -2797,17 +2962,16 @@ function HomeStoreCard({ row, people, selected, last, onOpenStore, onOpenPerson 
         (hovered || pressed) && styles.igStoreCardPressed,
       ]}
       accessibilityRole="button"
-      accessibilityLabel={row.store}
+      accessibilityLabel={`${row.store}, ${open ? 'open' : 'closed'}`}
     >
-      <View style={[styles.igStoreIcon, { backgroundColor: accent }]}>
-        <Ionicons name="storefront" size={18} color="#fff" />
-      </View>
+      <HomeStoreStatusIcon accent={accent} open={open} compact />
       <View style={styles.igStoreCopy}>
         <Text style={styles.igStoreName} numberOfLines={1}>
           {row.store}
         </Text>
         <HomePeopleStack people={people} compact onOpenPerson={onOpenPerson} />
       </View>
+      <HomePhoneRate stats={phoneStats} compact />
       <HomeStoreAmount amount={row.totalAmount} count={row.txCount} breakdown={row} compact />
       <Ionicons name="chevron-forward" size={16} color="#c7c7cc" />
     </Pressable>
@@ -2816,6 +2980,56 @@ function HomeStoreCard({ row, people, selected, last, onOpenStore, onOpenPerson 
 
 function homeStoreMeta(row) {
   return `${row.txCount} tx · ${row.saleCount} SO · ${row.purchaseCount} PO`;
+}
+
+function callsInHomeRange(calls, startKey, endKey) {
+  if (!startKey || !endKey) return Array.isArray(calls) ? calls : [];
+  return (Array.isArray(calls) ? calls : []).filter((call) => {
+    const time = Date.parse(call.startTime);
+    if (!Number.isFinite(time)) return false;
+    const day = formatDateParam(new Date(time));
+    return day >= startKey && day <= endKey;
+  });
+}
+
+function phoneRatioForStore(mergedCallsByStore, storeName, startKey, endKey) {
+  return inboundCallRatio(callsInHomeRange(callsForStore(mergedCallsByStore, storeName), startKey, endKey));
+}
+
+function HomePhoneRate({ stats, compact = false }) {
+  const [anchor, setAnchor] = useState(null);
+  const empty = stats?.rate == null;
+  const tip = empty
+    ? ''
+    : `${stats.answered} of ${stats.total} inbound answered${stats.missed ? ` · ${stats.missed} missed` : ''}`;
+  const hover =
+    Platform.OS === 'web' && tip
+      ? {
+          onMouseEnter: (event) => setAnchor(event?.currentTarget || null),
+          onMouseLeave: () => setAnchor(null),
+        }
+      : null;
+
+  return (
+    <View
+      style={[compact ? styles.igStorePhoneWrap : styles.homeStoreColPhone, hover && styles.homeStoreAmountHover]}
+      {...hover}
+      accessibilityLabel={empty ? 'No phone answer rate' : `Phone answer rate ${stats.ratio}. ${tip}`}
+    >
+      <Text
+        style={[
+          compact ? styles.igStorePhone : styles.homeStorePhone,
+          empty && styles.homeStoreMoneyEmpty,
+          !empty && stats.rate < 80 && styles.homeStorePhoneLow,
+          !empty && stats.rate >= 80 && styles.homeStorePhoneHigh,
+        ]}
+        numberOfLines={1}
+      >
+        {empty ? '—' : stats.ratio}
+      </Text>
+      <FloatingTooltip visible={Boolean(anchor && tip)} text={tip} anchorEl={anchor} align="end" />
+    </View>
+  );
 }
 
 function HomePeopleStack({ people = [], compact = false, onOpenPerson }) {
@@ -2871,7 +3085,7 @@ function HomePeopleStack({ people = [], compact = false, onOpenPerson }) {
             },
           ]}
           accessibilityRole="button"
-          accessibilityLabel={`${person.name} profile photo`}
+          accessibilityLabel={`${person.name} profile`}
           {...hoverHandlers(person.name)}
         >
           <ProfileAvatar
@@ -2949,7 +3163,7 @@ function HomeStoreAmount({ amount, count, strong = false, breakdown = null, comp
   );
 }
 
-function HomeStoreTableRow({ row, people, selected, last, onOpenStore, onOpenPerson }) {
+function HomeStoreTableRow({ row, people, phoneStats, selected, last, onOpenStore, onOpenPerson, open }) {
   const accent = storeAccent(row.store);
 
   return (
@@ -2968,11 +3182,9 @@ function HomeStoreTableRow({ row, people, selected, last, onOpenStore, onOpenPer
           }
         : null)}
       accessibilityRole="button"
-      accessibilityLabel={row.store}
+      accessibilityLabel={`${row.store}, ${open ? 'open' : 'closed'}`}
     >
-      <View style={[styles.homeStoreIconTile, { backgroundColor: accent }]}>
-        <Ionicons name="storefront" size={14} color="#fff" />
-      </View>
+      <HomeStoreStatusIcon accent={accent} open={open} />
       <View style={[styles.homeStoreRowBody, !last && styles.homeStoreRowDivider]}>
         <View style={styles.homeStoreColStore}>
           <Text style={styles.homeStoreName} numberOfLines={1}>
@@ -2982,6 +3194,7 @@ function HomeStoreTableRow({ row, people, selected, last, onOpenStore, onOpenPer
             {homeStoreMeta(row)}
           </Text>
         </View>
+        <HomePhoneRate stats={phoneStats} />
         <HomePeopleStack people={people} onOpenPerson={onOpenPerson} />
         <HomeStoreAmount amount={row.totalAmount} count={row.txCount} breakdown={row} strong />
         <View style={styles.homeStoreChevron}>
@@ -2997,15 +3210,61 @@ function HomeStoresTable({
   selectedStore,
   totals,
   staff = [],
+  startKey,
+  endKey,
   onOpenStore,
   onOpenPerson,
   compact = false,
 }) {
+  const phone = usePhoneCalls();
+  const [hoursByKey, setHoursByKey] = useState(() => new Map());
+  const [nowTick, setNowTick] = useState(() => Date.now());
   const peopleByStore = useMemo(
     () => new Map(rows.map((row) => [row.store, peopleInStore(row.store, row.transactions, staff)])),
     [rows, staff],
   );
   const totalPeople = useMemo(() => uniqueStorePeople(rows, staff), [rows, staff]);
+  const phoneByStore = useMemo(() => {
+    const next = new Map();
+    for (const row of rows) {
+      next.set(row.store, phoneRatioForStore(phone.mergedCallsByStore, row.store, startKey, endKey));
+    }
+    return next;
+  }, [endKey, phone.mergedCallsByStore, rows, startKey]);
+  const totalPhoneStats = useMemo(() => {
+    const calls = rows.flatMap((row) =>
+      callsInHomeRange(callsForStore(phone.mergedCallsByStore, row.store), startKey, endKey),
+    );
+    return inboundCallRatio(calls);
+  }, [endKey, phone.mergedCallsByStore, rows, startKey]);
+
+  useEffect(() => {
+    let cancelled = false;
+    listSavedStoreSettings()
+      .then((result) => {
+        if (cancelled) return;
+        setHoursByKey(new Map((result.rows || []).map((row) => [row.storeKey, row])));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 30000);
+    return () => clearInterval(id);
+  }, []);
+
+  const openByStore = useMemo(() => {
+    const now = new Date(nowTick);
+    const next = new Map();
+    for (const row of rows) {
+      const settings = hoursByKey.get(storeKeyFromName(row.store)) || emptyStoreSettings(row.store);
+      next.set(row.store, isStoreOpenNow(settings, now));
+    }
+    return next;
+  }, [hoursByKey, nowTick, rows]);
 
   if (compact) {
     return (
@@ -3015,10 +3274,12 @@ function HomeStoresTable({
             key={row.store}
             row={row}
             people={peopleByStore.get(row.store) || []}
+            phoneStats={phoneByStore.get(row.store)}
             selected={selectedStore?.store === row.store}
             last={index === rows.length - 1 && !totals}
             onOpenStore={onOpenStore}
             onOpenPerson={onOpenPerson}
+            open={openByStore.get(row.store) === true}
           />
         ))}
         {totals ? (
@@ -3027,6 +3288,7 @@ function HomeStoresTable({
               <Text style={styles.igStoreTotalLabel}>Total</Text>
               <HomePeopleStack people={totalPeople} compact onOpenPerson={onOpenPerson} />
             </View>
+            <HomePhoneRate stats={totalPhoneStats} compact />
             <HomeStoreAmount
               amount={totals.totalAmount}
               count={totals.txCount}
@@ -3053,6 +3315,7 @@ function HomeStoresTable({
             <View style={styles.homeStoreIconSpacer} />
             <View style={styles.homeStoreRowBody}>
               <Text style={[styles.homeStoreHeader, styles.homeStoreColStore]}>Store</Text>
+              <Text style={[styles.homeStoreHeader, styles.homeStoreColPhone]}>Phone</Text>
               <Text style={[styles.homeStoreHeader, styles.homeStoreColPeople]}>People</Text>
               <Text style={[styles.homeStoreHeader, styles.homeStoreColMoney]}>Total</Text>
               <View style={styles.homeStoreChevron} />
@@ -3063,10 +3326,12 @@ function HomeStoresTable({
               key={row.store}
               row={row}
               people={peopleByStore.get(row.store) || []}
+              phoneStats={phoneByStore.get(row.store)}
               selected={selectedStore?.store === row.store}
               last={index === rows.length - 1}
               onOpenStore={onOpenStore}
               onOpenPerson={onOpenPerson}
+              open={openByStore.get(row.store) === true}
             />
           ))}
           {totals ? (
@@ -3081,6 +3346,7 @@ function HomeStoresTable({
                     {homeStoreMeta(totals)}
                   </Text>
                 </View>
+                <HomePhoneRate stats={totalPhoneStats} />
                 <HomePeopleStack people={totalPeople} onOpenPerson={onOpenPerson} />
                 <HomeStoreAmount
                   amount={totals.totalAmount}
@@ -3098,7 +3364,7 @@ function HomeStoresTable({
   );
 }
 
-function HomeScreen({ session, onRequireLogin }) {
+function HomeScreen({ session, onRequireLogin, onOpenPerson }) {
   const isMobile = useIsMobile();
   const appGrid = useAppGridLayout();
   const storeRestricted = isStoreScopedProfile(session?.profile);
@@ -3115,7 +3381,6 @@ function HomeScreen({ session, onRequireLogin }) {
   const [error, setError] = useState('');
   const [toolbarHeight, setToolbarHeight] = useState(0);
   const [staff, setStaff] = useState([]);
-  const [photoPerson, setPhotoPerson] = useState(null);
   const requestId = useRef(0);
 
   const todayKey = formatDateParam(parseDateParam(new Date()));
@@ -3490,8 +3755,10 @@ function HomeScreen({ session, onRequireLogin }) {
               selectedStore={selectedStore}
               totals={isMobile ? null : totals}
               staff={staff}
+              startKey={startKey}
+              endKey={endKey}
               onOpenStore={openStore}
-              onOpenPerson={setPhotoPerson}
+              onOpenPerson={onOpenPerson}
               compact={isMobile}
             />
           </View>
@@ -3519,22 +3786,9 @@ function HomeScreen({ session, onRequireLogin }) {
         session={session}
         periodLabel={periodLabel}
         date={startDate}
+        startKey={startKey}
+        endKey={endKey}
         onClose={closeStore}
-      />
-      <ProfilePhotoModal
-        visible={Boolean(photoPerson)}
-        onClose={() => setPhotoPerson(null)}
-        profileId={photoPerson?.profileId || ''}
-        name={photoPerson?.name || ''}
-        avatarUrl={photoPerson?.photoUrl || ''}
-        locationName={photoPerson?.locationName || ''}
-        myId={session?.supabaseUserId || session?.profile?.id || ''}
-        myName={
-          session?.profile?.fullName ||
-          [session?.profile?.firstName, session?.profile?.lastName].filter(Boolean).join(' ') ||
-          'You'
-        }
-        myAvatarUrl={session?.profile?.avatarUrl || ''}
       />
     </View>
   );
@@ -3670,7 +3924,7 @@ function EmailStoreDrawer({ visible, store, onClose }) {
   );
 }
 
-function EmailsScreen({ session, onRequireLogin, focus = null, onFocusConsumed }) {
+function EmailCaptureScreen({ session, onRequireLogin, focus = null, onFocusConsumed }) {
   const initialRange = useMemo(() => defaultDateRange(7), []);
   const [dateMode, setDateMode] = useState('day'); // 'day' | 'range'
   const [startDate, setStartDate] = useState(() => parseDateParam(new Date()));
@@ -4586,7 +4840,7 @@ function SidebarNavItem({
   active,
   collapsed,
   onPress,
-  grouped,
+  grouped: _grouped,
   paintChrome = true,
   leading,
   trailing,
@@ -4617,13 +4871,15 @@ function SidebarNavItem({
       accessibilityRole="button"
       accessibilityState={{ selected: active }}
       accessibilityHint={accessibilityHint}
-      {...(Platform.OS === 'web' && webClassName ? { className: webClassName } : null)}
+      {...(Platform.OS === 'web'
+        ? { className: sidebarTabClassName(paintChrome && active, webClassName) }
+        : null)}
       style={({ pressed, hovered: pressHovered }) => [
         styles.tab,
         collapsed && styles.tabCollapsed,
         subtitle && !collapsed && styles.tabWithSubtitle,
         extraStyle,
-        paintChrome && (pressHovered || pressed) && !active && !grouped && styles.tabHover,
+        (pressHovered || pressed) && !active && styles.tabHover,
         paintChrome && active && styles.tabActive,
       ]}
     >
@@ -4631,7 +4887,7 @@ function SidebarNavItem({
         <Ionicons
           name={active ? filledIonicon(icon) : icon}
           size={20}
-          color={active ? '#1d1d1f' : '#6e6e73'}
+          color={active ? TAB_ICON_ACTIVE_COLOR : TAB_ICON_COLOR}
           style={!collapsed ? styles.tabIcon : undefined}
         />
       )}
@@ -4662,21 +4918,126 @@ function SidebarNavItem({
   );
 }
 
+function locationShortLabel(name) {
+  const cleaned = String(name || '')
+    .replace(/^canada\s*gold(?:\s*[-–—:])?\s*/i, '')
+    .replace(/\s+canada\s*gold$/i, '')
+    .trim();
+  if (!cleaned) return '';
+  const known = {
+    montreal: 'MTL',
+    toronto: 'TOR',
+    ottawa: 'OTT',
+    quebec: 'QC',
+    'quebec city': 'QC',
+    laval: 'LVL',
+    mississauga: 'MIS',
+    hamilton: 'HAM',
+    calgary: 'CGY',
+    edmonton: 'EDM',
+    vancouver: 'VAN',
+    'richmond hill': 'RH',
+  };
+  const match = known[cleaned.toLowerCase()];
+  if (match) return match;
+  const parts = cleaned.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return parts
+      .map((part) => part[0])
+      .join('')
+      .slice(0, 3)
+      .toUpperCase();
+  }
+  return cleaned.slice(0, 3).toUpperCase();
+}
+
+function SidebarIconButton({ icon, label, color, onPress, disabled, children }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      {...(Platform.OS === 'web' ? { title: label } : null)}
+      style={({ pressed }) => [
+        styles.profileQuickIcon,
+        pressed && !disabled && styles.profileQuickIconPressed,
+        disabled && styles.profileQuickIconDisabled,
+      ]}
+    >
+      {children || <Ionicons name={icon} size={18} color={color || TAB_ICON_COLOR} />}
+    </Pressable>
+  );
+}
+
+function ProfileQuickActions({
+  collapsed,
+  locationName,
+  notificationsActive,
+  settingsActive,
+  onOpenNotifications,
+  onOpenLocation,
+  onOpenSettings,
+}) {
+  const { silent, setSilent } = usePhoneCalls();
+  const storeCode = locationShortLabel(locationName);
+  const storeLabel = locationName ? `Store, ${locationName}` : 'Choose store location';
+
+  return (
+    <View style={[styles.profileQuickRow, collapsed && styles.profileQuickRowCollapsed]}>
+      <SidebarIconButton
+        icon={notificationsActive ? 'notifications' : 'notifications-outline'}
+        label="Notifications"
+        color={notificationsActive ? TAB_ICON_ACTIVE_COLOR : TAB_ICON_COLOR}
+        onPress={onOpenNotifications}
+      />
+      <SidebarIconButton
+        icon={silent ? 'volume-mute' : 'volume-high'}
+        label={silent ? 'Turn ringtone on' : 'Ringtone on'}
+        color={silent ? '#FF3B30' : TAB_ICON_COLOR}
+        onPress={() => setSilent(!silent)}
+      />
+      <SidebarIconButton label={storeLabel} onPress={onOpenLocation}>
+        {storeCode ? (
+          <View style={[styles.profileStoreMark, { backgroundColor: storeAccent(locationName) }]}>
+            <Text style={styles.profileStoreMarkText} numberOfLines={1}>
+              {storeCode}
+            </Text>
+          </View>
+        ) : (
+          <Ionicons name="location-outline" size={18} color="#c7c7cc" />
+        )}
+      </SidebarIconButton>
+      <SidebarIconButton
+        icon={settingsActive ? 'settings' : 'settings-outline'}
+        label="Profile settings"
+        color={settingsActive ? TAB_ICON_ACTIVE_COLOR : TAB_ICON_COLOR}
+        onPress={onOpenSettings}
+      />
+    </View>
+  );
+}
+
 function SidebarNavGroup({
   collapsed,
   homeActive,
   appsActive,
   messagesActive,
   profileActive,
+  notificationsActive,
   onSelectHome,
   onSelectApps,
   onSelectMessages,
   onSelectProfile,
+  onOpenNotifications,
+  onOpenLocation,
+  onOpenSettings,
   profileLabel,
   profileLocation,
   profileAvatarUrl,
   showMessages = true,
   messagesUnread = 0,
+  settingsActive = false,
 }) {
   const items = [
     { key: 'home', label: 'Home', icon: 'home-outline', active: homeActive, onPress: onSelectHome },
@@ -4697,7 +5058,7 @@ function SidebarNavGroup({
               <Ionicons
                 name={messagesActive ? 'chatbubbles' : 'chatbubbles-outline'}
                 size={20}
-                color={messagesActive ? '#1d1d1f' : '#6e6e73'}
+                color={messagesActive ? TAB_ICON_ACTIVE_COLOR : TAB_ICON_COLOR}
               />
               <MessagesUnreadBadge count={messagesUnread} />
             </View>
@@ -4707,7 +5068,6 @@ function SidebarNavGroup({
     {
       key: 'profile',
       label: profileLabel || PROFILE_TAB.label,
-      subtitle: profileLocation || '',
       icon: PROFILE_TAB.icon,
       active: profileActive,
       onPress: onSelectProfile,
@@ -4722,24 +5082,125 @@ function SidebarNavGroup({
     },
   ].filter(Boolean);
 
+  const layoutsRef = useRef({});
+  const indicatorY = useRef(new Animated.Value(0)).current;
+  const indicatorH = useRef(new Animated.Value(42)).current;
+  const indicatorOpacity = useRef(new Animated.Value(0)).current;
+  const positionedRef = useRef(false);
+  const [layoutsVersion, setLayoutsVersion] = useState(0);
+
+  const activeKey = homeActive
+    ? 'home'
+    : appsActive
+      ? 'tools'
+      : messagesActive
+        ? 'messages'
+        : profileActive
+          ? 'profile'
+          : null;
+
+  const onItemLayout = (key, event) => {
+    const { y, height } = event.nativeEvent.layout;
+    if (!(height > 0)) return;
+    const prev = layoutsRef.current[key];
+    if (prev && Math.abs(prev.y - y) < 0.5 && Math.abs(prev.height - height) < 0.5) return;
+    layoutsRef.current[key] = { y, height };
+    setLayoutsVersion((value) => value + 1);
+  };
+
+  useEffect(() => {
+    if (!activeKey) {
+      Animated.timing(indicatorOpacity, {
+        toValue: 0,
+        duration: 140,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: false,
+      }).start();
+      return undefined;
+    }
+
+    const layout = layoutsRef.current[activeKey];
+    if (!layout) return undefined;
+
+    if (!positionedRef.current) {
+      indicatorY.setValue(layout.y);
+      indicatorH.setValue(layout.height);
+      indicatorOpacity.setValue(1);
+      positionedRef.current = true;
+      return undefined;
+    }
+
+    Animated.parallel([
+      Animated.spring(indicatorY, {
+        toValue: layout.y,
+        damping: 26,
+        stiffness: 280,
+        mass: 0.72,
+        useNativeDriver: false,
+      }),
+      Animated.spring(indicatorH, {
+        toValue: layout.height,
+        damping: 26,
+        stiffness: 280,
+        mass: 0.72,
+        useNativeDriver: false,
+      }),
+      Animated.timing(indicatorOpacity, {
+        toValue: 1,
+        duration: 120,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: false,
+      }),
+    ]).start();
+    return undefined;
+  }, [activeKey, layoutsVersion, collapsed, indicatorY, indicatorH, indicatorOpacity]);
+
   return (
-    <View style={[styles.sidebarNavGroup, collapsed && styles.sidebarNavGroupCollapsed]}>
-      {items.map((item) => (
-        <SidebarNavItem
-          key={item.key}
-          label={item.label}
-          subtitle={item.subtitle}
-          icon={item.icon}
-          leading={item.leading}
-          trailing={item.trailing}
-          accessibilityLabel={item.accessibilityLabel}
-          active={item.active}
-          collapsed={collapsed}
-          grouped
-          style={styles.sidebarNavItem}
-          onPress={item.onPress}
+    <View style={[styles.sidebarNavStack, collapsed && styles.sidebarNavGroupCollapsed]}>
+      <View
+        style={[styles.sidebarNavGroup, collapsed && styles.sidebarNavGroupCollapsed]}
+        {...(Platform.OS === 'web' ? { className: 'cgold-tab-well' } : null)}
+      >
+        <Animated.View
+          pointerEvents="none"
+          {...(Platform.OS === 'web' ? { className: 'cgold-tab-glass' } : null)}
+          style={[
+            styles.tabIndicator,
+            {
+              top: indicatorY,
+              height: indicatorH,
+              opacity: indicatorOpacity,
+            },
+          ]}
         />
-      ))}
+        {items.map((item) => (
+          <SidebarNavItem
+            key={item.key}
+            label={item.label}
+            subtitle={item.subtitle}
+            icon={item.icon}
+            leading={item.leading}
+            trailing={item.trailing}
+            accessibilityLabel={item.accessibilityLabel}
+            active={item.active}
+            collapsed={collapsed}
+            grouped
+            paintChrome={false}
+            style={styles.sidebarNavItem}
+            onLayout={(event) => onItemLayout(item.key, event)}
+            onPress={item.onPress}
+          />
+        ))}
+      </View>
+      <ProfileQuickActions
+        collapsed={collapsed}
+        locationName={profileLocation}
+        notificationsActive={notificationsActive}
+        settingsActive={settingsActive}
+        onOpenNotifications={onOpenNotifications}
+        onOpenLocation={onOpenLocation}
+        onOpenSettings={onOpenSettings}
+      />
     </View>
   );
 }
@@ -4857,7 +5318,9 @@ function PinnedToolsList({
                 const { height } = event.nativeEvent.layout;
                 if (height > 0) itemHeightRef.current = height + 2;
               }}
-              {...(Platform.OS === 'web' ? { className: 'cgold-sidebar-item' } : null)}
+              {...(Platform.OS === 'web'
+                ? { className: sidebarTabClassName(isActive, 'cgold-sidebar-item') }
+                : null)}
               style={({ pressed, hovered }) => [
                 styles.tab,
                 styles.pinnedTab,
@@ -4931,12 +5394,11 @@ export default function App() {
   const [emailsFocus, setEmailsFocus] = useState(null);
   const [accessByRole, setAccessByRole] = useState(null);
   const [ownUserAccess, setOwnUserAccess] = useState(null);
-  const [avatarBusy, setAvatarBusy] = useState(false);
-  const [avatarError, setAvatarError] = useState('');
-  const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
-  const [avatarViewerOpen, setAvatarViewerOpen] = useState(false);
+  const [viewedProfile, setViewedProfile] = useState(null);
+  const [dmFocusUserId, setDmFocusUserId] = useState('');
+  const [teamsFocusId, setTeamsFocusId] = useState('');
+  const [profileReturnTo, setProfileReturnTo] = useState(null);
   const [locationPickerOpen, setLocationPickerOpen] = useState(false);
-  const [teamPickerOpen, setTeamPickerOpen] = useState(false);
   const emailsFocusSeq = useRef(0);
 
   const [fontsLoaded, fontsError] = useFonts(
@@ -5017,10 +5479,10 @@ export default function App() {
     setActiveTab('home');
     setActiveTool(null);
     setSettingsPanel(null);
-    setAvatarError('');
-    setAvatarBusy(false);
-    setAvatarPickerOpen(false);
-    setAvatarViewerOpen(false);
+    setViewedProfile(null);
+    setDmFocusUserId('');
+    setTeamsFocusId('');
+    setProfileReturnTo(null);
     setLocationPickerOpen(false);
   }, []);
 
@@ -5148,7 +5610,18 @@ export default function App() {
 
   useEffect(() => {
     if (bootstrapping || !session?.token) return;
-    if (!readRipplingOAuthCallback()) return;
+    if (readGmailOAuthCallback() && hasApp('emails')) {
+      const emailsTool = TOOL_CARDS.find((tool) => tool.key === 'emails');
+      setActiveTab('tools');
+      setActiveTool(emailsTool || { key: 'emails', label: 'Emails' });
+      setSettingsPanel(null);
+      setToolsQuery('');
+      return;
+    }
+    const callback = readRipplingOAuthCallback();
+    if (!callback) return;
+    const expected = readRipplingOAuthState();
+    if (!expected || expected !== callback.state) return;
     if (!hasApp('employees')) return;
     const employeesTool = TOOL_CARDS.find((tool) => tool.key === 'employees');
     setActiveTab('tools');
@@ -5158,6 +5631,10 @@ export default function App() {
   }, [bootstrapping, session?.token, hasApp]);
 
   const selectTab = (tabKey) => {
+    if (tabKey === 'profile') {
+      setViewedProfile(null);
+      setProfileReturnTo(null);
+    }
     setActiveTab(tabKey);
     setSettingsPanel(null);
     if (tabKey === 'tools') {
@@ -5166,6 +5643,78 @@ export default function App() {
       setActiveTool(null);
       setToolsQuery('');
     }
+  };
+
+  const applyOwnLocation = useCallback(({ locationId, locationName }) => {
+    setSession((current) => {
+      if (!current?.profile) return current;
+      return {
+        ...current,
+        user: current.user
+          ? { ...current.user, location_id: locationId || current.user.location_id }
+          : current.user,
+        profile: {
+          ...current.profile,
+          locationId: locationId || current.profile.locationId,
+          locationName: locationName || current.profile.locationName,
+        },
+      };
+    });
+  }, []);
+
+  const openNotificationsApp = () => {
+    const tool = TOOL_CARDS.find((item) => item.key === 'notifications') || {
+      key: 'notifications',
+      label: 'Notifications',
+    };
+    setActiveTab('tools');
+    setActiveTool(tool);
+    setSettingsPanel(null);
+    setToolsQuery('');
+  };
+
+  const openSettingsApp = () => {
+    const tool = TOOL_CARDS.find((item) => item.key === 'settings') || {
+      key: 'settings',
+      label: 'Settings',
+    };
+    if (!hasApp(tool.key)) return;
+    setActiveTab('tools');
+    setActiveTool(tool);
+    setSettingsPanel(null);
+    setToolsQuery('');
+  };
+
+  const openPersonProfile = (raw) => {
+    const person = profileTargetFromPerson(raw);
+    const myId = session?.supabaseUserId || session?.profile?.id || '';
+    if (person?.profileId && myId && person.profileId === myId) {
+      setViewedProfile(null);
+      setProfileReturnTo(null);
+    } else {
+      setViewedProfile(person);
+      setProfileReturnTo(activeTab === 'home' ? 'home' : null);
+    }
+    setActiveTab('profile');
+    setActiveTool(null);
+    setSettingsPanel(null);
+    setToolsQuery('');
+  };
+
+  const messagePerson = (profileId) => {
+    if (!profileId || !hasApp('messages')) return;
+    setDmFocusUserId(profileId);
+    selectTab('messages');
+  };
+
+  const openTeamsFromProfile = (teamId) => {
+    if (!hasApp('teams')) return;
+    setTeamsFocusId(teamId || '');
+    const teamsTool = TOOL_CARDS.find((tool) => tool.key === 'teams');
+    setActiveTab('tools');
+    setActiveTool(teamsTool || { key: 'teams', label: 'Teams' });
+    setSettingsPanel(null);
+    setToolsQuery('');
   };
 
   const openTool = (tool) => {
@@ -5276,42 +5825,11 @@ export default function App() {
     resetToSignedOut();
   };
 
-  const handlePickAvatar = () => {
-    if (avatarBusy) return;
-    setAvatarError('');
-    setAvatarViewerOpen(false);
-    setAvatarPickerOpen(true);
-  };
-
-  const handleViewAvatar = () => {
-    if (avatarBusy) return;
-    setAvatarViewerOpen(true);
-  };
-
-  const handleAvatarConfirm = async (asset) => {
-    setAvatarError('');
-    setAvatarBusy(true);
-    try {
-      const avatarUrl = await uploadOwnAvatar(asset);
-      setSession((current) => {
-        if (!current?.profile) return current;
-        return { ...current, profile: { ...current.profile, avatarUrl } };
-      });
-      setAvatarPickerOpen(false);
-    } catch (error) {
-      const message = error?.message || 'Could not save that portrait.';
-      setAvatarError(message);
-      throw error;
-    } finally {
-      setAvatarBusy(false);
-    }
-  };
-
   const renderToolsHeader = () => {
     if (!activeTool) {
       return null;
     }
-    if (activeTool.key === 'messages' && !isMobile) {
+    if ((activeTool.key === 'messages' || activeTool.key === 'emails') && !isMobile) {
       return null;
     }
 
@@ -5349,22 +5867,26 @@ export default function App() {
             <Text style={styles.breadcrumbSep}>›</Text>
             <Text style={styles.breadcrumbCurrent}>{settingsSubPanelLabel}</Text>
           </>
-        ) : activeTool.key === 'triage' && triageStoreBack && triageBatch ? (
+        ) : (activeTool.key === 'triage' || activeTool.key === 'phone') && triageStoreBack && triageBatch ? (
           <>
             <Pressable
               onPress={triageStoreBack}
               style={styles.breadcrumbLink}
               accessibilityRole="button"
-              accessibilityLabel="Back to triage dashboard"
+              accessibilityLabel={activeTool.key === 'phone' ? 'Back to stores' : 'Back to triage dashboard'}
             >
-              <Text style={styles.breadcrumbLinkText}>{activeTool.label}</Text>
+              <Text style={styles.breadcrumbLinkText}>
+                {activeTool.key === 'phone' ? 'Stores' : activeTool.label}
+              </Text>
             </Pressable>
             <Text style={styles.breadcrumbSep}>›</Text>
             <View style={styles.breadcrumbBatch}>
               <Text style={styles.breadcrumbCurrent} numberOfLines={1}>
-                {triageBatch.dateLabel}
+                {activeTool.key === 'phone'
+                  ? triageBatch.storeName || triageBatch.dateLabel
+                  : triageBatch.dateLabel}
               </Text>
-              {triageBatch.storeNames ? (
+              {activeTool.key !== 'phone' && triageBatch.storeNames ? (
                 <Text style={styles.breadcrumbSub} numberOfLines={1}>
                   {triageBatch.storeNames}
                 </Text>
@@ -5380,239 +5902,29 @@ export default function App() {
 
   const renderContent = () => {
     if (activeTab === 'profile') {
-      const linkedSystems = Object.values(session?.linked || {});
-      const profile = session?.profile;
-      const storeName = storeLocationFromSession(session);
-      const accessLabel = categoryLabel(profile);
-      const name = displayName(session);
-      const email = profile?.email || session?.login || '';
-      const sectionWidth = appGrid.maxWidth ? { maxWidth: appGrid.maxWidth } : null;
-      const accountRows = [
-        {
-          key: 'store',
-          label: 'Location',
-          value: storeName || 'Not set in Aureus',
-          onPress: () => setLocationPickerOpen(true),
-        },
-        {
-          key: 'team',
-          label: 'Team',
-          value: profile?.teamName
-            ? profile.isTeamIntake
-              ? `${profile.teamName} · Intake`
-              : profile.teamName
-            : profile?.teamId
-              ? profile.isTeamIntake
-                ? 'Assigned · Intake'
-                : 'Assigned'
-              : 'Not set',
-          onPress: () => setTeamPickerOpen(true),
-        },
-        accessLabel
-          ? { key: 'category', label: 'Category', value: accessLabel }
-          : null,
-        profile?.employeeType
-          ? { key: 'employeeType', label: 'Employee type', value: profile.employeeType }
-          : null,
-        profile?.role && profile.role !== profile.employeeType
-          ? { key: 'role', label: 'Aureus role', value: profile.role }
-          : null,
-      ].filter(Boolean);
-
       return (
-        <View style={[styles.toolsScreen, isMobile && styles.igGroupedScreen]}>
-          <ScrollView
-            style={styles.toolsScroll}
-            contentContainerStyle={[
-              styles.toolsScrollContent,
-              isMobile && styles.igProfileScroll,
-            ]}
-            showsVerticalScrollIndicator={false}
-          >
-            <View
-              style={[
-                styles.toolsSection,
-                isMobile && styles.toolsSectionMobile,
-                isMobile && styles.igProfileSection,
-                sectionWidth,
-              ]}
-            >
-              <View style={[styles.profileHero, isMobile && styles.igProfileHero]}>
-                <View style={styles.profileAvatarButton}>
-                  <Pressable
-                    onPress={handleViewAvatar}
-                    disabled={avatarBusy}
-                    style={styles.profileAvatarTap}
-                    accessibilityRole="button"
-                    accessibilityLabel={
-                      profile?.avatarUrl ? `View ${name || 'your'} portrait` : 'View portrait'
-                    }
-                  >
-                    <View style={isMobile ? styles.igAvatarRing : null}>
-                      <ProfileAvatar
-                        uri={profile?.avatarUrl || ''}
-                        name={name}
-                        size={isMobile ? 96 : 88}
-                        style={styles.profileAvatar}
-                      />
-                    </View>
-                  </Pressable>
-                  <Pressable
-                    onPress={handlePickAvatar}
-                    disabled={avatarBusy}
-                    style={[styles.profileAvatarEdit, isMobile && styles.igAvatarEdit]}
-                    accessibilityRole="button"
-                    accessibilityLabel={
-                      profile?.avatarUrl ? 'Edit Canada Gold portrait' : 'Add a Canada Gold portrait'
-                    }
-                    hitSlop={4}
-                  >
-                    {avatarBusy ? (
-                      <ActivityIndicator size="small" color="#fff" />
-                    ) : (
-                      <Ionicons name="pencil" size={13} color="#fff" />
-                    )}
-                  </Pressable>
-                </View>
-                <Text style={[styles.profileName, isMobile && styles.igProfileName]}>
-                  {name || 'Profile'}
-                </Text>
-                {email ? <Text style={styles.profileEmail}>{email}</Text> : null}
-                {storeName ? (
-                  <Pressable onPress={() => setLocationPickerOpen(true)} hitSlop={6}>
-                    <Text style={styles.profileLocation}>{storeName}</Text>
-                  </Pressable>
-                ) : null}
-                <Pressable onPress={handlePickAvatar} disabled={avatarBusy} hitSlop={6}>
-                  <Text style={styles.profilePhotoAction}>
-                    {avatarBusy
-                      ? 'Saving portrait…'
-                      : profile?.avatarUrl
-                        ? 'Change portrait'
-                        : 'Add a Canada Gold portrait'}
-                  </Text>
-                </Pressable>
-                <Text style={styles.profilePortraitHint}>
-                  Photos become a fun Disney cartoon of you — your face, with your own shirt and background.
-                </Text>
-                {avatarError ? (
-                  <Text style={[styles.errorText, styles.profileError]}>{avatarError}</Text>
-                ) : null}
-              </View>
-
-              {accountRows.length > 0 ? (
-                <>
-                  <Text style={styles.appleSheetSectionLabel}>Account</Text>
-                  <View style={styles.toolsList}>
-                    {accountRows.map((row, index) => (
-                      <AppleDetailRow
-                        key={row.key}
-                        label={row.label}
-                        value={row.value}
-                        onPress={row.onPress}
-                        last={index === accountRows.length - 1}
-                      />
-                    ))}
-                  </View>
-                  <Text style={styles.profileGroupFooter}>
-                    Assigned store in Aureus POS. Changing it updates your location here and in POS.
-                    Your team is chosen here — intake contacts receive team messages first.
-                  </Text>
-                </>
-              ) : null}
-
-              {linkedSystems.length > 0 ? (
-                <View style={styles.profileLinkedBlock}>
-                  <Text style={styles.appleSheetSectionLabel}>Linked POS</Text>
-                  <View style={styles.toolsList}>
-                    {linkedSystems.map((linked, index) => (
-                      <AppleDetailRow
-                        key={linked.key}
-                        label={linked.label}
-                        value={linked.token ? 'Connected' : linked.error || 'Not connected'}
-                        last={index === linkedSystems.length - 1}
-                      />
-                    ))}
-                  </View>
-                </View>
-              ) : null}
-
-              <ProfilePhotoModal
-                visible={avatarViewerOpen}
-                onClose={() => setAvatarViewerOpen(false)}
-                profileId={session?.supabaseUserId || profile?.id || ''}
-                name={name}
-                avatarUrl={profile?.avatarUrl || ''}
-                locationName={storeName}
-                myId={session?.supabaseUserId || profile?.id || ''}
-                myName={name}
-                myAvatarUrl={profile?.avatarUrl || ''}
-                canEdit
-                onEdit={handlePickAvatar}
-              />
-              <ProfilePhotoPicker
-                visible={avatarPickerOpen}
-                onClose={() => setAvatarPickerOpen(false)}
-                onConfirm={handleAvatarConfirm}
-              />
-              <ProfileLocationPicker
-                visible={locationPickerOpen}
-                session={session}
-                selectedId={profile?.locationId}
-                selectedName={storeName}
-                onClose={() => setLocationPickerOpen(false)}
-                onChanged={({ locationId, locationName }) => {
-                  setSession((current) => {
-                    if (!current?.profile) return current;
-                    return {
-                      ...current,
-                      profile: {
-                        ...current.profile,
-                        locationId: locationId || current.profile.locationId,
-                        locationName: locationName || current.profile.locationName,
-                      },
-                    };
-                  });
-                }}
-              />
-              <ProfileTeamPicker
-                visible={teamPickerOpen}
-                selectedId={profile?.teamId}
-                selectedName={profile?.teamName}
-                isIntake={profile?.isTeamIntake}
-                onClose={() => setTeamPickerOpen(false)}
-                onChanged={({ teamId, teamName, isTeamIntake }) => {
-                  setSession((current) => {
-                    if (!current?.profile) return current;
-                    return {
-                      ...current,
-                      profile: {
-                        ...current.profile,
-                        teamId: teamId || '',
-                        teamName: teamName || '',
-                        isTeamIntake: Boolean(isTeamIntake),
-                      },
-                    };
-                  });
-                }}
-              />
-
-              <View style={[styles.toolsList, styles.profileLogoutGroup]}>
-                <Pressable
-                  onPress={handleLogout}
-                  style={({ hovered, pressed }) => [
-                    styles.profileLogoutRow,
-                    (hovered || pressed) && styles.toolListRowHovered,
-                  ]}
-                  accessibilityRole="button"
-                  accessibilityLabel="Log out"
-                >
-                  <Text style={styles.profileLogoutText}>Log Out</Text>
-                </Pressable>
-              </View>
-            </View>
-          </ScrollView>
-        </View>
+        <ProfileScreen
+          session={session}
+          person={viewedProfile}
+          canMessage={hasApp('messages')}
+          canPhone={hasApp('phone')}
+          canTeams={hasApp('teams')}
+          onMessage={messagePerson}
+          onOpenTeams={openTeamsFromProfile}
+          onBack={() => {
+            const next = profileReturnTo;
+            setViewedProfile(null);
+            setProfileReturnTo(null);
+            if (next && next !== 'profile') selectTab(next);
+          }}
+          onLogout={handleLogout}
+          onProfileChange={(patch) => {
+            setSession((current) => {
+              if (!current?.profile) return current;
+              return { ...current, profile: { ...current.profile, ...patch } };
+            });
+          }}
+        />
       );
     }
 
@@ -5662,12 +5974,23 @@ export default function App() {
                 storeFilter={scopedStore || undefined}
               />
             ) : activeTool.key === 'emails' ? (
-              <EmailsScreen
-                session={session}
-                onRequireLogin={() => selectTab('profile')}
-                focus={emailsFocus}
-                onFocusConsumed={() => setEmailsFocus(null)}
-              />
+              <View style={styles.messagesHost}>
+                <EmailsScreen
+                  session={session}
+                  onRequireLogin={() => selectTab('profile')}
+                  onOpenProfile={openPersonProfile}
+                  focus={emailsFocus}
+                  onFocusConsumed={() => setEmailsFocus(null)}
+                  capture={
+                    <EmailCaptureScreen
+                      session={session}
+                      onRequireLogin={() => selectTab('profile')}
+                      focus={emailsFocus}
+                      onFocusConsumed={() => setEmailsFocus(null)}
+                    />
+                  }
+                />
+              </View>
             ) : activeTool.key === 'serphint' ? (
               <SerphintScreen />
             ) : activeTool.key === '100-ways' ? (
@@ -5749,6 +6072,10 @@ export default function App() {
                 session={session}
                 onRequireLogin={() => selectTab('profile')}
                 storeFilter={scopedStore || undefined}
+                onStoreBackChange={(fn, context) => {
+                  setTriageStoreBack(() => fn || null);
+                  setTriageBatch(context || null);
+                }}
               />
             ) : activeTool.key === 'employees' ? (
               <EmployeesScreen
@@ -5780,7 +6107,7 @@ export default function App() {
                 }}
               />
             ) : activeTool.key === 'teams' ? (
-              <TeamsScreen />
+              <TeamsScreen focusTeamId={teamsFocusId} />
             ) : activeTool.key === 'marketing' ? (
               <MarketingScreen />
             ) : activeTool.key === 'shared-services' ? (
@@ -5797,7 +6124,13 @@ export default function App() {
               />
             ) : activeTool.key === 'messages' ? (
               <View style={styles.messagesHost}>
-                <MessagesScreen session={session} onUnreadChange={refreshMessagesUnread} />
+                <MessagesScreen
+                  session={session}
+                  onUnreadChange={refreshMessagesUnread}
+                  openUserId={dmFocusUserId}
+                  onOpenedUser={() => setDmFocusUserId('')}
+                  onOpenProfile={openPersonProfile}
+                />
               </View>
             ) : (
               <Text style={styles.toolPageBody}>{activeTool.label} page</Text>
@@ -5979,7 +6312,13 @@ export default function App() {
       }
       return (
         <View style={styles.messagesHost}>
-          <MessagesScreen session={session} onUnreadChange={refreshMessagesUnread} />
+          <MessagesScreen
+            session={session}
+            onUnreadChange={refreshMessagesUnread}
+            openUserId={dmFocusUserId}
+            onOpenedUser={() => setDmFocusUserId('')}
+            onOpenProfile={openPersonProfile}
+          />
         </View>
       );
     }
@@ -5989,6 +6328,7 @@ export default function App() {
         <HomeScreen
           session={session}
           onRequireLogin={() => selectTab('profile')}
+          onOpenPerson={openPersonProfile}
         />
       );
     }
@@ -5998,8 +6338,10 @@ export default function App() {
 
   const showingMessages =
     activeTab === 'messages' || (activeTab === 'tools' && activeTool?.key === 'messages');
+  const showingMail = activeTab === 'tools' && activeTool?.key === 'emails';
   const isFullBleedTool =
     showingMessages ||
+    showingMail ||
     (activeTab === 'tools' &&
     (activeTool?.key === 'transactions' ||
       activeTool?.key === 'inventory' ||
@@ -6024,14 +6366,13 @@ export default function App() {
   };
   const mobileToolTitle =
     activeTool?.key === 'settings' ? settingsSubPanels[settingsPanel] || activeTool?.label : activeTool?.label;
-  const groupedMobileTab =
-    isMobile && (activeTab === 'profile' || (activeTab === 'tools' && !activeTool));
+  const groupedMobileTab = isMobile && activeTab === 'tools' && !activeTool;
   const contentStyle = [
     styles.content,
     isMobile && styles.contentMobile,
     isFullBleedTool && styles.contentTransactions,
-    showingMessages && styles.contentMessages,
-    isMobile && ((activeTab === 'tools' && activeTool) || showingMessages) && styles.contentMobileApp,
+    (showingMessages || showingMail) && styles.contentMessages,
+    isMobile && ((activeTab === 'tools' && activeTool) || showingMessages || showingMail) && styles.contentMobileApp,
     styles.contentScrollFix,
     isAppsLibrary && styles.contentAppsLibrary,
     !isMobile && activeTab === 'home' && styles.contentAppsLibrary,
@@ -6093,7 +6434,9 @@ export default function App() {
               title={
                 activeTool.key === 'triage' && triageBatch?.dateLabel
                   ? triageBatch.dateLabel
-                  : mobileToolTitle
+                  : activeTool.key === 'phone' && triageBatch?.storeName
+                    ? triageBatch.storeName
+                    : mobileToolTitle
               }
               subtitle={
                 activeTool.key === 'triage' && triageBatch?.storeNames
@@ -6105,7 +6448,7 @@ export default function App() {
                   setSettingsPanel(null);
                   return;
                 }
-                if (activeTool.key === 'triage' && triageStoreBack) {
+                if ((activeTool.key === 'triage' || activeTool.key === 'phone') && triageStoreBack) {
                   triageStoreBack();
                   return;
                 }
@@ -6167,6 +6510,8 @@ export default function App() {
             appsActive={
               activeTab === 'tools' &&
               activeTool?.key !== 'messages' &&
+              activeTool?.key !== 'notifications' &&
+              activeTool?.key !== 'settings' &&
               !pinnedTools.some((tool) => tool.key === activeTool?.key)
             }
             messagesActive={
@@ -6174,10 +6519,15 @@ export default function App() {
               (activeTab === 'tools' && activeTool?.key === 'messages')
             }
             profileActive={activeTab === PROFILE_TAB.key}
+            notificationsActive={activeTab === 'tools' && activeTool?.key === 'notifications'}
+            settingsActive={activeTab === 'tools' && activeTool?.key === 'settings'}
             onSelectHome={() => selectTab('home')}
             onSelectApps={() => selectTab('tools')}
             onSelectMessages={() => selectTab('messages')}
             onSelectProfile={() => selectTab(PROFILE_TAB.key)}
+            onOpenNotifications={openNotificationsApp}
+            onOpenLocation={() => setLocationPickerOpen(true)}
+            onOpenSettings={openSettingsApp}
             profileLabel={userLabel}
             profileLocation={storeLocationFromSession(session)}
             profileAvatarUrl={session?.profile?.avatarUrl || ''}
@@ -6197,7 +6547,6 @@ export default function App() {
 
         <View style={[styles.sidebarFooter, sidebarCollapsed && styles.sidebarFooterCollapsed]}>
           <PhoneIncomingDock collapsed={sidebarCollapsed} />
-          <PhoneRingerToggle collapsed={sidebarCollapsed} />
           <Pressable
             onPress={() => setSidebarCollapsed((current) => !current)}
             style={styles.sidebarToggle}
@@ -6213,6 +6562,14 @@ export default function App() {
       </View>
 
       <View style={contentStyle}>{renderContent()}</View>
+      <ProfileLocationPicker
+        visible={locationPickerOpen}
+        session={session}
+        selectedId={session?.profile?.locationId}
+        selectedName={storeLocationFromSession(session)}
+        onClose={() => setLocationPickerOpen(false)}
+        onChanged={applyOwnLocation}
+      />
     </View>
     </PhoneCallProvider>
     </AppAccessContext.Provider>
@@ -6408,18 +6765,56 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
+  sidebarNavStack: {
+    gap: 8,
+  },
   sidebarNavGroup: {
-    backgroundColor: '#e8e8ed',
-    borderRadius: 12,
-    padding: 2,
+    position: 'relative',
+    backgroundColor: '#f2f2f7',
+    borderRadius: 14,
+    padding: 6,
     gap: 2,
-    overflow: 'visible',
+    overflow: 'hidden',
+    ...Platform.select({
+      web: {
+        boxShadow:
+          'inset 0 1px 1px rgba(255,255,255,0.9), 0 1px 2px rgba(0,0,0,0.05), 0 4px 10px rgba(0,0,0,0.05)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.08,
+        shadowRadius: 6,
+        elevation: 2,
+      },
+    }),
   },
   sidebarNavGroupCollapsed: {
     alignItems: 'stretch',
   },
   sidebarNavItem: {
     backgroundColor: 'transparent',
+    zIndex: 1,
+  },
+  tabIndicator: {
+    position: 'absolute',
+    left: 6,
+    right: 6,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.88)',
+    zIndex: 0,
+    ...Platform.select({
+      web: {
+        backdropFilter: 'saturate(180%) blur(22px)',
+        WebkitBackdropFilter: 'saturate(180%) blur(22px)',
+        boxShadow:
+          'inset 0 0.5px 0 rgba(255,255,255,0.95), 0 0 0 0.5px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.06)',
+        willChange: 'top, height, opacity',
+      },
+      default: {
+        backgroundColor: '#fff',
+      },
+    }),
   },
   sidebarMessagesIcon: {
     position: 'relative',
@@ -6568,16 +6963,19 @@ const styles = StyleSheet.create({
     paddingRight: 6,
   },
   tabHover: {
-    backgroundColor: '#e8e8ed',
+    backgroundColor: '#f2f2f7',
   },
   tabActive: {
-    backgroundColor: '#fff',
+    backgroundColor: 'rgba(255, 255, 255, 0.88)',
     ...Platform.select({
       web: {
-        boxShadow: '0 1px 2px rgba(0,0,0,0.12)',
+        backdropFilter: 'saturate(180%) blur(22px)',
+        WebkitBackdropFilter: 'saturate(180%) blur(22px)',
+        boxShadow:
+          'inset 0 0.5px 0 rgba(255,255,255,0.95), 0 0 0 0.5px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.06)',
       },
       default: {
-        elevation: 1,
+        backgroundColor: '#fff',
       },
     }),
   },
@@ -6617,6 +7015,52 @@ const styles = StyleSheet.create({
   tabLabelActive: {
     color: '#1d1d1f',
     fontWeight: '600',
+  },
+  profileQuickRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+  },
+  profileQuickRowCollapsed: {
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    gap: 4,
+    paddingHorizontal: 0,
+  },
+  profileQuickIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'transparent',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  profileQuickIconPressed: {
+    opacity: 0.55,
+  },
+  profileQuickIconDisabled: {
+    opacity: 0.4,
+  },
+  profileStoreMark: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileStoreMarkText: {
+    fontFamily,
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#fff',
+    letterSpacing: 0.3,
   },
   content: {
     flex: 1,
@@ -6900,13 +7344,14 @@ const styles = StyleSheet.create({
   },
   homeStoreTable: {
     flexGrow: 1,
-    minWidth: 560,
+    minWidth: 640,
   },
   homeStoreRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 46,
-    paddingLeft: 16,
+    minHeight: 52,
+    paddingLeft: 12,
+    overflow: 'visible',
     ...Platform.select({
       web: {
         cursor: 'pointer',
@@ -6953,13 +7398,33 @@ const styles = StyleSheet.create({
     }),
   },
   homeStoreTotalRow: {
-    minHeight: 46,
+    minHeight: 52,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: '#d1d1d6',
     ...Platform.select({
       web: { cursor: 'default' },
       default: {},
     }),
+  },
+  homeStoreIconWrap: {
+    width: 48,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    overflow: 'visible',
+  },
+  homeStoreRadianceLayer: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  homeStoreRadianceBlob: {
+    position: 'absolute',
+  },
+  homeStoreIconForeground: {
+    zIndex: 1,
+    position: 'relative',
   },
   homeStoreIconTile: {
     width: 28,
@@ -6970,8 +7435,8 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
   homeStoreIconSpacer: {
-    width: 28,
-    height: 28,
+    width: 48,
+    height: 48,
     flexShrink: 0,
   },
   homeStoreHeader: {
@@ -7044,15 +7509,58 @@ const styles = StyleSheet.create({
     }),
   },
   homeStoreColPeople: {
-    width: 172,
+    width: 192,
     flexShrink: 0,
+    paddingLeft: 20,
+  },
+  homeStoreColPhone: {
+    width: 88,
+    flexShrink: 0,
+    paddingRight: 12,
+    marginRight: 8,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    textAlign: 'right',
+    ...Platform.select({
+      web: { whiteSpace: 'nowrap' },
+      default: {},
+    }),
+  },
+  homeStorePhone: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    letterSpacing: -0.16,
+    fontVariant: ['tabular-nums'],
+  },
+  homeStorePhoneLow: {
+    color: '#B91C1C',
+  },
+  homeStorePhoneHigh: {
+    color: '#15803D',
+  },
+  igStorePhoneWrap: {
+    flexShrink: 0,
+    minWidth: 44,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+  },
+  igStorePhone: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    letterSpacing: -0.08,
+    fontVariant: ['tabular-nums'],
   },
   homePeopleStack: {
-    width: 172,
+    width: 192,
     flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'center',
     height: HOME_PEOPLE_SIZE,
+    paddingLeft: 20,
     overflow: 'visible',
     ...Platform.select({
       web: { isolation: 'isolate' },
@@ -9759,124 +10267,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#fff',
   },
-  profileHero: {
-    alignItems: 'center',
-    paddingTop: 12,
-    paddingBottom: 28,
-  },
-  profileAvatarButton: {
-    marginBottom: 14,
-    position: 'relative',
-    overflow: 'visible',
-  },
-  profileAvatarTap: {
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  profileAvatar: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#e8e8ed',
-  },
-  profileAvatarEdit: {
-    position: 'absolute',
-    right: 0,
-    bottom: 0,
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: '#1d1d1f',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: '#fff',
-    zIndex: 2,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  profilePhotoAction: {
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#2F6FED',
-    marginTop: 8,
-    letterSpacing: -0.2,
-  },
-  profilePortraitHint: {
-    fontFamily,
-    fontSize: 13,
-    color: '#8e8e93',
-    marginTop: 8,
-    textAlign: 'center',
-    letterSpacing: -0.08,
-    maxWidth: 280,
-    lineHeight: 18,
-  },
-  profileName: {
-    fontFamily,
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#1d1d1f',
-    letterSpacing: -0.6,
-    textAlign: 'center',
-  },
-  profileEmail: {
-    fontFamily,
-    fontSize: 15,
-    color: '#8e8e93',
-    letterSpacing: -0.2,
-    marginTop: 4,
-    textAlign: 'center',
-  },
-  profileLocation: {
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#2F6FED',
-    letterSpacing: -0.2,
-    marginTop: 6,
-    textAlign: 'center',
-  },
-  profileGroupFooter: {
-    fontFamily,
-    fontSize: 13,
-    color: '#8e8e93',
-    letterSpacing: -0.08,
-    lineHeight: 18,
-    marginTop: 8,
-    paddingHorizontal: 4,
-  },
-  profileError: {
-    marginTop: 16,
-    fontSize: 13,
-  },
-  profileLinkedBlock: {
-    marginTop: 24,
-  },
-  profileLogoutGroup: {
-    marginTop: 28,
-  },
-  profileLogoutRow: {
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 16,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  profileLogoutText: {
-    fontFamily,
-    fontSize: 17,
-    fontWeight: '400',
-    color: '#ff3b30',
-    letterSpacing: -0.2,
-  },
   igGroupedScreen: {
     backgroundColor: '#f2f2f7',
   },
@@ -9979,6 +10369,10 @@ const styles = StyleSheet.create({
   igStoreCardPressed: {
     backgroundColor: '#f2f2f7',
   },
+  igStoreIconWrap: {
+    width: 56,
+    height: 56,
+  },
   igStoreIcon: {
     width: 40,
     height: 40,
@@ -10047,33 +10441,6 @@ const styles = StyleSheet.create({
   igAppsSection: {
     marginTop: 12,
     paddingHorizontal: 12,
-  },
-  igProfileScroll: {
-    paddingTop: 8,
-    paddingBottom: 48,
-    paddingHorizontal: 16,
-  },
-  igProfileSection: {
-    marginTop: 0,
-    maxWidth: '100%',
-  },
-  igProfileHero: {
-    paddingTop: 8,
-    paddingBottom: 20,
-  },
-  igProfileName: {
-    fontSize: 24,
-    letterSpacing: -0.5,
-  },
-  igAvatarRing: {
-    padding: 3,
-    borderRadius: 54,
-    borderWidth: 2,
-    borderColor: '#E8C36A',
-  },
-  igAvatarEdit: {
-    right: 2,
-    bottom: 2,
   },
   igToolPad: {
     paddingHorizontal: 16,

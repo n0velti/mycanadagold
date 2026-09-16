@@ -423,7 +423,13 @@ function EmojiPicker({ visible, onPick }) {
   );
 }
 
-export default function MessagesScreen({ session, onUnreadChange }) {
+export default function MessagesScreen({
+  session,
+  onUnreadChange,
+  openUserId,
+  onOpenedUser,
+  onOpenProfile,
+}) {
   const isMobile = useIsMobile();
   const myId = session?.supabaseUserId || session?.profile?.id || '';
   const myName =
@@ -544,6 +550,26 @@ export default function MessagesScreen({ session, onUnreadChange }) {
     },
     [openConversation, refreshInbox],
   );
+
+  const handleOpenProfile = (person) => {
+    if (!person) return;
+    if (onOpenProfile) {
+      onOpenProfile(person);
+      return;
+    }
+    setPhotoPerson(person);
+  };
+
+  const openedUserRef = useRef('');
+  useEffect(() => {
+    if (!openUserId) {
+      openedUserRef.current = '';
+      return;
+    }
+    if (openedUserRef.current === openUserId) return;
+    openedUserRef.current = openUserId;
+    void openDirect(openUserId).finally(() => onOpenedUser?.());
+  }, [openUserId, openDirect, onOpenedUser]);
 
   const openTeam = useCallback(
     async (teamId) => {
@@ -1169,12 +1195,12 @@ export default function MessagesScreen({ session, onUnreadChange }) {
                         setAddingMembers(false);
                         return;
                       }
-                      if (activeThread.other) setPhotoPerson(activeThread.other);
+                      if (activeThread.other) handleOpenProfile(activeThread.other);
                     }}
                     accessibilityLabel={
                       activeThread.isGroup
                         ? 'Group details'
-                        : `View ${conversationTitle(activeThread)}'s portrait`
+                        : `View ${conversationTitle(activeThread)}'s profile`
                     }
                   >
                     <ConversationAvatar conversation={activeThread} size={36} />
@@ -1269,9 +1295,9 @@ export default function MessagesScreen({ session, onUnreadChange }) {
                   {activeThread.members.map((person) => (
                     <Pressable
                       key={person.id}
-                      onPress={() => setPhotoPerson(person)}
+                      onPress={() => handleOpenProfile(person)}
                       style={styles.detailsMember}
-                      accessibilityLabel={`View ${contactName(person)}'s portrait`}
+                      accessibilityLabel={`View ${contactName(person)}'s profile`}
                     >
                       <PersonAvatar person={person} size={36} showOnline />
                       <View style={styles.personCopy}>
@@ -1356,10 +1382,10 @@ export default function MessagesScreen({ session, onUnreadChange }) {
                         <Pressable
                           onPress={() => {
                             if (!activeThread.isGroup && activeThread.other) {
-                              setPhotoPerson(activeThread.other);
+                              handleOpenProfile(activeThread.other);
                             }
                           }}
-                          accessibilityLabel={`View ${conversationTitle(activeThread)}'s portrait`}
+                          accessibilityLabel={`View ${conversationTitle(activeThread)}'s profile`}
                         >
                           <ConversationAvatar conversation={activeThread} size={72} />
                         </Pressable>
