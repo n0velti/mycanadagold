@@ -20,6 +20,7 @@ const PATTERNS = [
   { label: 'Rippling client secret env', regex: /RIPPLING_CLIENT_SECRET/ },
   { label: 'RingCentral Montreal client id', regex: /Z7W35fA3T0ddSGt60sxClg/ },
   { label: 'RingCentral Montreal secret', regex: /YSpjaHomPKSfiaecwIv0y30mwYczLuP3RfJJKGrc4RhL/ },
+  { label: 'RingCentral Montreal JWT', regex: /8I3ggfz3QXOf7QQwJAPipA/ },
   { label: 'localhost proxy fallback', regex: /localhost:8787/ },
 ];
 

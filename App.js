@@ -117,6 +117,7 @@ import ProfileTeamPicker from './components/ProfileTeamPicker';
 import MarketingScreen from './components/MarketingScreen';
 import SharedServicesScreen from './components/SharedServicesScreen';
 import PhoneScreen from './components/PhoneScreen';
+import { PhoneCallProvider, PhoneIncomingDock, PhoneRingerToggle } from './components/PhoneCallProvider';
 import TeamsScreen from './components/TeamsScreen';
 import { fetchAureusEmployee } from './lib/aureusEmployees';
 import { useDirectMessages } from './lib/messages';
@@ -5827,6 +5828,7 @@ export default function App() {
     const groupedShell = groupedMobileTab;
     return (
       <AppAccessContext.Provider value={appAccessValue}>
+      <PhoneCallProvider session={session} storeFilter={scopedStore || undefined} enabled={hasApp('phone')}>
         <View
           style={[
             styles.containerMobile,
@@ -5863,6 +5865,7 @@ export default function App() {
             />
           ) : null}
           <View style={contentStyle}>{renderContent()}</View>
+          <PhoneIncomingDock variant="banner" />
           <MobileTabBar
             tabs={mobileTabs}
             activeKey={activeTab}
@@ -5870,12 +5873,14 @@ export default function App() {
             messagesUnread={messagesUnread}
           />
         </View>
+      </PhoneCallProvider>
       </AppAccessContext.Provider>
     );
   }
 
   return (
     <AppAccessContext.Provider value={appAccessValue}>
+    <PhoneCallProvider session={session} storeFilter={scopedStore || undefined} enabled={hasApp('phone')}>
     <View style={styles.container}>
       <StatusBar style="auto" />
 
@@ -5941,6 +5946,8 @@ export default function App() {
         </View>
 
         <View style={[styles.sidebarFooter, sidebarCollapsed && styles.sidebarFooterCollapsed]}>
+          <PhoneIncomingDock collapsed={sidebarCollapsed} />
+          <PhoneRingerToggle collapsed={sidebarCollapsed} />
           <Pressable
             onPress={() => setSidebarCollapsed((current) => !current)}
             style={styles.sidebarToggle}
@@ -5957,6 +5964,7 @@ export default function App() {
 
       <View style={contentStyle}>{renderContent()}</View>
     </View>
+    </PhoneCallProvider>
     </AppAccessContext.Provider>
   );
 }
@@ -6194,15 +6202,17 @@ const styles = StyleSheet.create({
     }),
   },
   sidebarFooter: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'flex-start',
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    justifyContent: 'flex-end',
     marginTop: 'auto',
     paddingTop: 10,
+    gap: 10,
+    width: '100%',
   },
   sidebarFooterCollapsed: {
     flexDirection: 'column',
-    alignItems: 'flex-start',
+    alignItems: 'stretch',
   },
   sidebarBrandIcon: {
     width: 28,

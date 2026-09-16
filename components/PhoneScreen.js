@@ -10,13 +10,25 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { usePhoneCalls } from './PhoneCallProvider';
 import { fetchTransferStores } from '../lib/locations';
+import {
+  fetchPhoneInbox,
+  fetchVoicemailAudioUrl,
+  formatCallWhen,
+  formatDuration,
+  inboundCallRatio,
+  inboundOutcome,
+  resultLabel,
+} from '../lib/phoneCalls';
 import {
   canManageRingCentral,
   checkRingCentralAccount,
   connectionLabel,
+  fetchRingCentralStoreDetails,
   formatCheckedAt,
   formatPhoneNumber,
+  formatUsageType,
   listRingCentralAccounts,
 } from '../lib/ringcentral';
 import { storeKeyFromName } from '../lib/storeSettings';
@@ -28,6 +40,13 @@ const fontFamily = Platform.select({
 });
 
 const ACCENT = '#15803D';
+const TABS = [
+  { key: 'incoming', label: 'Incoming' },
+  { key: 'dial', label: 'Making calls' },
+  { key: 'voicemail', label: 'Voicemail' },
+  { key: 'stats', label: 'Ratio' },
+];
+const KEYPAD = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#'];
 
 function statusTone(row) {
   const status = row?.lastStatus || connectionLabel(row);
@@ -36,16 +55,102 @@ function statusTone(row) {
   return styles.statusMuted;
 }
 
+function applyAccount(current, next) {
+  if (!next?.storeKey) return current;
+  return [...current.filter((row) => row.storeKey !== next.storeKey), next];
+}
+
+function DetailRow({ label, value }) {
+  if (!value) return null;
+  return (
+    <View style={styles.detailRow}>
+      <Text style={styles.detailLabel}>{label}</Text>
+      <Text style={styles.detailValue}>{value}</Text>
+    </View>
+  );
+}
+
+function partyLine(entry, inbound) {
+  const number = inbound ? entry.from : entry.to;
+  const name = inbound ? entry.fromName : entry.toName;
+  return [name, number ? formatPhoneNumber(number) : ''].filter(Boolean).join(' · ') || 'Unknown';
+}
+
+function RatioStrip({ stats, compact = false }) {
+  const empty = !stats?.scored;
+  return (
+    <View style={styles.ratioBlock}>
+      <View style={styles.ratioStats}>
+        <View style={styles.ratioStat}>
+          <Text style={styles.summaryLabel}>Answered</Text>
+          <Text style={[styles.summaryValue, stats.answered ? styles.statusConnected : null]}>
+            {stats.answered}
+          </Text>
+        </View>
+        <View style={styles.ratioStat}>
+          <Text style={styles.summaryLabel}>Missed</Text>
+          <Text style={[styles.summaryValue, stats.missed ? styles.statusError : null]}>{stats.missed}</Text>
+        </View>
+        <View style={styles.ratioStat}>
+          <Text style={styles.summaryLabel}>Ratio</Text>
+          <Text style={styles.summaryValue}>{stats.ratio}</Text>
+        </View>
+        {compact ? null : (
+          <View style={styles.ratioStat}>
+            <Text style={styles.summaryLabel}>Answer rate</Text>
+            <Text style={styles.summaryValue}>{stats.rate == null ? '—' : `${stats.rate}%`}</Text>
+          </View>
+        )}
+      </View>
+      <View style={styles.ratioBarTrack}>
+        {empty ? (
+          <View style={styles.ratioBarEmpty} />
+        ) : (
+          <>
+            <View style={[styles.ratioBarFill, { flex: stats.answered || 0 }]} />
+            <View style={[styles.ratioBarMissed, { flex: stats.missed || 0 }]} />
+          </>
+        )}
+      </View>
+      <Text style={styles.sectionMeta}>
+        {empty
+          ? 'No inbound calls in the last 14 days.'
+          : stats.simplified !== stats.ratio
+            ? `Answered to missed ${stats.simplified} · last 14 days`
+            : 'Answered to missed · last 14 days'}
+      </Text>
+    </View>
+  );
+}
+
 export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
   const canManage = canManageRingCentral(session?.profile);
+  const phone = usePhoneCalls();
+  const [tab, setTab] = useState('incoming');
   const [stores, setStores] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [checkingKey, setCheckingKey] = useState('');
+  const [inboxLoading, setInboxLoading] = useState(false);
   const [error, setError] = useState('');
   const [warning, setWarning] = useState('');
   const [query, setQuery] = useState('');
+  const [selectedKey, setSelectedKey] = useState('');
+  const [details, setDetails] = useState(null);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [showStores, setShowStores] = useState(false);
+  const [calls, setCalls] = useState([]);
+  const [voicemails, setVoicemails] = useState([]);
+  const [digits, setDigits] = useState('');
+  const [playingId, setPlayingId] = useState('');
+  const [playError, setPlayError] = useState('');
+  const audioRef = useRef(null);
+  const objectUrlRef = useRef('');
   const requestId = useRef(0);
+  const detailsRequest = useRef(0);
+  const inboxRequest = useRef(0);
+  const autoChecked = useRef(new Set());
+
+  const storeKey = phone.selectedStoreKey;
 
   const load = useCallback(async () => {
     if (!session?.token) {
@@ -88,6 +193,47 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
     load();
   }, [load]);
 
+  const loadInbox = useCallback(async () => {
+    if (!session?.token || !storeKey) {
+      setCalls([]);
+      setVoicemails([]);
+      return;
+    }
+    const id = ++inboxRequest.current;
+    setInboxLoading(true);
+    try {
+      const payload = await fetchPhoneInbox(storeKey);
+      if (id !== inboxRequest.current) return;
+      setCalls(payload.calls || []);
+      setVoicemails(payload.voicemails || []);
+      if (payload.store) setAccounts((current) => applyAccount(current, payload.store));
+      const notes = [payload.callLogError, payload.voicemailError].filter(Boolean);
+      if (notes.length) setError(notes.join(' '));
+    } catch (err) {
+      if (id !== inboxRequest.current) return;
+      setError(err?.message || 'Could not load calls.');
+    } finally {
+      if (id === inboxRequest.current) setInboxLoading(false);
+    }
+  }, [session?.token, storeKey]);
+
+  useEffect(() => {
+    loadInbox();
+  }, [loadInbox]);
+
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = '';
+      }
+    };
+  }, []);
+
   const accountByKey = useMemo(() => {
     const next = new Map();
     for (const row of accounts) next.set(row.storeKey, row);
@@ -105,13 +251,12 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
       const key = storeKeyFromName(store.name);
       if (!key || seen.has(key)) continue;
       seen.add(key);
-      const account = accountByKey.get(key) || null;
       next.push({
         key,
         storeName: store.name,
         address: store.address || '',
         posPhone: store.phone || '',
-        account,
+        account: accountByKey.get(key) || null,
       });
     }
 
@@ -142,26 +287,114 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
     return filtered;
   }, [accounts, accountByKey, query, storeFilter, stores]);
 
-  const onCheck = async (storeKey) => {
-    setCheckingKey(storeKey);
+  const selected = rows.find((row) => row.key === selectedKey) || null;
+  const activeAccount = accountByKey.get(storeKey) || phone.stores.find((row) => row.storeKey === storeKey) || null;
+  const incomingLive = phone.incoming.filter((call) => !storeKey || call.storeKey === storeKey);
+  const inboundCalls = calls.filter((row) => row.direction === 'Inbound');
+  const outboundCalls = calls.filter((row) => row.direction === 'Outbound');
+  const ratio = useMemo(() => inboundCallRatio(calls), [calls]);
+  const answeredCalls = inboundCalls.filter((row) => inboundOutcome(row.result) === 'answered');
+  const missedCalls = inboundCalls.filter((row) => inboundOutcome(row.result) !== 'answered' && inboundOutcome(row.result) !== 'other');
+
+  const openStore = useCallback(async (row) => {
+    if (!row?.key) return;
+    const id = ++detailsRequest.current;
+    setSelectedKey(row.key);
+    setShowStores(true);
+    setDetails(null);
     setError('');
+    if (!row.account?.hasJwt) return;
+
+    setDetailsLoading(true);
     try {
-      const checked = await checkRingCentralAccount(storeKey);
-      setAccounts((current) => {
-        const without = current.filter((row) => row.storeKey !== checked.storeKey);
-        return [...without, checked];
-      });
-      if (checked.lastStatus === 'error' && checked.lastError) {
-        setError(checked.lastError);
+      const payload = await fetchRingCentralStoreDetails(row.key);
+      if (id !== detailsRequest.current) return;
+      setDetails(payload);
+      setAccounts((current) => applyAccount(current, payload.store));
+      if (payload.store?.lastStatus === 'error' && payload.store.lastError) {
+        setError(payload.store.lastError);
       }
     } catch (err) {
-      setError(err?.message || 'Could not reach RingCentral.');
+      if (id !== detailsRequest.current) return;
+      setError(err?.message || 'Could not load RingCentral details.');
     } finally {
-      setCheckingKey('');
+      if (id === detailsRequest.current) setDetailsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const pending = accounts.filter(
+      (row) => row.hasJwt && row.lastStatus !== 'connected' && !autoChecked.current.has(row.storeKey),
+    );
+    if (pending.length === 0) return undefined;
+    let cancelled = false;
+    (async () => {
+      for (const row of pending) {
+        autoChecked.current.add(row.storeKey);
+        try {
+          const checked = await checkRingCentralAccount(row.storeKey);
+          if (cancelled) return;
+          setAccounts((current) => applyAccount(current, checked));
+        } catch {
+          // Keep the saved row; opening the store shows the error.
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [accounts]);
+
+  const appendDigit = (value) => {
+    setDigits((current) => `${current}${value}`.replace(/[^\d*#]/g, '').slice(0, 16));
+  };
+
+  const placeCall = async () => {
+    const number = digits.replace(/[^\d+]/g, '');
+    if (!number) {
+      setError('Enter a number to call.');
+      return;
+    }
+    try {
+      await phone.ringOut(number, activeAccount?.mainNumber);
+      setError('');
+    } catch (err) {
+      setError(err?.message || 'Could not start the call.');
     }
   };
 
-  const connectedCount = accounts.filter((row) => row.lastStatus === 'connected').length;
+  const playVoicemail = async (row) => {
+    setPlayError('');
+    if (playingId === row.id) {
+      audioRef.current?.pause();
+      setPlayingId('');
+      return;
+    }
+    try {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = '';
+      }
+      const url = await fetchVoicemailAudioUrl(row.storeKey || storeKey, row.id, row.attachmentId);
+      objectUrlRef.current = url;
+      if (typeof Audio === 'undefined') {
+        setPlayError('Voicemail playback is available in the browser.');
+        return;
+      }
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () => setPlayingId('');
+      await audio.play();
+      setPlayingId(row.id);
+    } catch (err) {
+      setPlayError(err?.message || 'Could not play that voicemail.');
+      setPlayingId('');
+    }
+  };
 
   if (!session?.token) {
     return (
@@ -178,33 +411,141 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
     );
   }
 
-  return (
-    <View style={styles.screen}>
-      <ScrollView style={styles.list} contentContainerStyle={styles.listContent} showsVerticalScrollIndicator={false}>
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Stores</Text>
-            <Text style={styles.sectionMeta}>
-              {canManage
-                ? 'Numbers and connection status. Add each store’s RingCentral JWT in Settings → RingCentral.'
-                : 'Numbers and connection status for each branch.'}
-            </Text>
-          </View>
+  if (showStores && selected) {
+    const account = details?.store || selected.account;
+    const status = connectionLabel(account);
+    const numbers = details?.numbers || [];
+    const extensions = details?.extensions || [];
+    return (
+      <View style={styles.screen}>
+        <ScrollView style={styles.list} contentContainerStyle={styles.listContent} showsVerticalScrollIndicator={false}>
+          <Pressable
+            style={styles.backRow}
+            onPress={() => {
+              detailsRequest.current += 1;
+              setSelectedKey('');
+              setDetails(null);
+              setDetailsLoading(false);
+              setShowStores(false);
+              setError('');
+            }}
+          >
+            <Ionicons name="chevron-back" size={16} color="#1a1a1a" />
+            <Text style={styles.backText}>Calls</Text>
+          </Pressable>
 
-          <View style={styles.summaryCards}>
-            <View style={styles.summaryCard}>
-              <Text style={styles.summaryLabel}>Stores</Text>
-              <Text style={styles.summaryValue}>{rows.length}</Text>
-            </View>
-            <View style={styles.summaryCard}>
-              <Text style={styles.summaryLabel}>Connected</Text>
-              <Text style={[styles.summaryValue, connectedCount ? styles.statusConnected : null]}>
-                {connectedCount}
+          <Text style={styles.sectionTitle}>{selected.storeName}</Text>
+          {selected.address ? <Text style={styles.sectionMeta}>{selected.address}</Text> : null}
+
+          <View style={styles.statusCard}>
+            <Text style={[styles.statusValue, statusTone(account)]}>{status}</Text>
+            <DetailRow
+              label="Number"
+              value={
+                account?.mainNumber
+                  ? formatPhoneNumber(account.mainNumber)
+                  : selected.posPhone
+                    ? formatPhoneNumber(selected.posPhone)
+                    : ''
+              }
+            />
+            <DetailRow label="Account" value={account?.companyName} />
+            <DetailRow label="Account ID" value={account?.accountId} />
+            <DetailRow
+              label="Extensions"
+              value={account?.extensionCount ? String(account.extensionCount) : ''}
+            />
+            <DetailRow label="Checked" value={formatCheckedAt(account?.lastCheckedAt)} />
+            {selected.key === storeKey ? (
+              <>
+                <Text style={styles.detailLabel}>Answered to missed</Text>
+                <RatioStrip stats={ratio} compact />
+              </>
+            ) : null}
+            {account?.lastError ? <Text style={styles.cellError}>{account.lastError}</Text> : null}
+            {!account?.hasJwt ? (
+              <Text style={styles.sectionMeta}>
+                {canManage
+                  ? 'Add this store’s RingCentral JWT in Settings → RingCentral, then open it again.'
+                  : 'This store is not connected yet.'}
               </Text>
-              <Text style={styles.summaryHint}>of {accounts.length} saved</Text>
-            </View>
+            ) : null}
           </View>
 
+          {error && account?.lastStatus !== 'error' ? (
+            <View style={styles.errorBanner}>
+              <Text style={styles.errorText}>{error}</Text>
+            </View>
+          ) : null}
+
+          {detailsLoading ? (
+            <View style={styles.centered}>
+              <ActivityIndicator color={ACCENT} />
+              <Text style={styles.sectionMeta}>Loading numbers and extensions…</Text>
+            </View>
+          ) : null}
+
+          {numbers.length > 0 ? (
+            <View style={styles.section}>
+              <Text style={styles.blockTitle}>Numbers</Text>
+              {numbers.map((row) => (
+                <View key={`${row.phoneNumber}-${row.usageType}`} style={styles.itemRow}>
+                  <View style={styles.itemText}>
+                    <Text style={styles.itemTitle}>{formatPhoneNumber(row.phoneNumber)}</Text>
+                    <Text style={styles.itemMeta}>
+                      {[formatUsageType(row.usageType), row.extensionNumber ? `ext ${row.extensionNumber}` : '', row.extensionName]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          ) : null}
+
+          {extensions.length > 0 ? (
+            <View style={styles.section}>
+              <Text style={styles.blockTitle}>Extensions</Text>
+              {extensions.map((row) => (
+                <View key={row.id || row.extensionNumber} style={styles.itemRow}>
+                  <View style={styles.extBadge}>
+                    <Text style={styles.extBadgeText}>{row.extensionNumber || '—'}</Text>
+                  </View>
+                  <View style={styles.itemText}>
+                    <Text style={styles.itemTitle}>{row.name || 'Extension'}</Text>
+                    <Text style={styles.itemMeta}>
+                      {[row.type, row.status, row.email].filter(Boolean).join(' · ')}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          ) : null}
+
+          {account?.hasJwt ? (
+            <Pressable style={styles.refreshLink} onPress={() => openStore(selected)} disabled={detailsLoading}>
+              <Text style={styles.link}>{detailsLoading ? 'Refreshing…' : 'Refresh'}</Text>
+            </Pressable>
+          ) : null}
+        </ScrollView>
+      </View>
+    );
+  }
+
+  if (showStores) {
+    return (
+      <View style={styles.screen}>
+        <ScrollView style={styles.list} contentContainerStyle={styles.listContent} showsVerticalScrollIndicator={false}>
+          <Pressable style={styles.backRow} onPress={() => setShowStores(false)}>
+            <Ionicons name="chevron-back" size={16} color="#1a1a1a" />
+            <Text style={styles.backText}>Calls</Text>
+          </Pressable>
+          <Text style={styles.sectionTitle}>Stores</Text>
+          <Text style={styles.sectionMeta}>
+            {canManage
+              ? 'Tap a store for numbers and extensions. Add each store’s RingCentral JWT in Settings → RingCentral.'
+              : 'Tap a store for numbers and extensions.'}
+          </Text>
           <View style={styles.toolbar}>
             <View style={styles.search}>
               <Ionicons name="search" size={14} color="#8e8e93" />
@@ -220,96 +561,364 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
               />
             </View>
             <Pressable style={styles.refresh} onPress={load} hitSlop={8} accessibilityLabel="Refresh">
-              {loading ? (
-                <ActivityIndicator size="small" color={ACCENT} />
-              ) : (
-                <Ionicons name="refresh" size={16} color="#6b6b6b" />
-              )}
+              {loading ? <ActivityIndicator size="small" color={ACCENT} /> : <Ionicons name="refresh" size={16} color="#6b6b6b" />}
             </Pressable>
           </View>
-
-          {error ? (
-            <View style={styles.errorBanner}>
-              <Text style={styles.errorText}>{error}</Text>
-            </View>
-          ) : null}
           {warning ? <Text style={styles.warningText}>{warning}</Text> : null}
+          {rows.map((row) => {
+            const account = row.account;
+            const status = connectionLabel(account);
+            return (
+              <Pressable
+                key={row.key}
+                style={styles.storeRow}
+                onPress={() => openStore(row)}
+                accessibilityRole="button"
+                accessibilityLabel={`${row.storeName}, ${status}`}
+              >
+                <View style={styles.storeIcon}>
+                  <Ionicons name="call-outline" size={16} color={ACCENT} />
+                </View>
+                <View style={styles.storeText}>
+                  <Text style={styles.storeName} numberOfLines={1}>
+                    {row.storeName}
+                  </Text>
+                  <Text style={styles.cellSub} numberOfLines={1}>
+                    {[
+                      status,
+                      account?.mainNumber
+                        ? formatPhoneNumber(account.mainNumber)
+                        : row.posPhone
+                          ? formatPhoneNumber(row.posPhone)
+                          : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </Text>
+                </View>
+                <Text style={[styles.rowStatus, statusTone(account)]}>{status}</Text>
+                <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      </View>
+    );
+  }
 
-          <View style={[styles.row, styles.headerRow]}>
-            <Text style={[styles.headerText, styles.colStore]}>Store</Text>
-            <Text style={[styles.headerText, styles.colStatus]}>RingCentral</Text>
-            <Text style={[styles.headerText, styles.colNumber]}>Number</Text>
-            <Text style={[styles.headerText, styles.colExts]}>Exts</Text>
-            <Text style={[styles.headerText, styles.colAccount]}>Account</Text>
-            <Text style={[styles.headerText, styles.colActions]}> </Text>
+  return (
+    <View style={styles.screen}>
+      <ScrollView style={styles.list} contentContainerStyle={styles.listContent} showsVerticalScrollIndicator={false}>
+        <View style={styles.headerRow}>
+          <View style={styles.headerCopy}>
+            <Text style={styles.sectionTitle}>Phone</Text>
+            <Text style={styles.sectionMeta}>
+              {activeAccount?.storeName || 'Connect a store in Settings → RingCentral'}
+              {activeAccount?.mainNumber ? ` · ${formatPhoneNumber(activeAccount.mainNumber)}` : ''}
+            </Text>
           </View>
+          <View style={styles.headerActions}>
+            <Pressable
+              style={[styles.iconBtn, phone.silent && styles.iconBtnActive]}
+              onPress={() => phone.setSilent(!phone.silent)}
+              accessibilityLabel={phone.silent ? 'Turn ringtone on' : 'Silence ringtone'}
+            >
+              <Ionicons name={phone.silent ? 'notifications-off' : 'notifications'} size={16} color={phone.silent ? '#991B1B' : '#1a1a1a'} />
+            </Pressable>
+            <Pressable style={styles.iconBtn} onPress={loadInbox} accessibilityLabel="Refresh calls">
+              {inboxLoading ? <ActivityIndicator size="small" color={ACCENT} /> : <Ionicons name="refresh" size={16} color="#6b6b6b" />}
+            </Pressable>
+            <Pressable style={styles.storesLink} onPress={() => setShowStores(true)}>
+              <Text style={styles.link}>Stores</Text>
+            </Pressable>
+          </View>
+        </View>
 
-          {loading && rows.length === 0 ? (
-            <View style={styles.centered}>
-              <ActivityIndicator color={ACCENT} />
-            </View>
-          ) : rows.length === 0 ? (
-            <Text style={styles.emptyText}>No stores to show.</Text>
-          ) : (
-            rows.map((row) => {
-              const account = row.account;
-              const status = connectionLabel(account);
-              const checking = checkingKey === row.key;
+        {phone.stores.length > 1 ? (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.storeChips}>
+            {phone.stores.map((row) => {
+              const active = row.storeKey === storeKey;
               return (
-                <View key={row.key} style={styles.row}>
-                  <View style={styles.colStore}>
-                    <Text style={styles.cell} numberOfLines={1}>
-                      {row.storeName}
-                    </Text>
-                    {row.address ? (
-                      <Text style={styles.cellSub} numberOfLines={1}>
-                        {row.address}
-                      </Text>
-                    ) : null}
+                <Pressable
+                  key={row.storeKey}
+                  style={[styles.chip, active && styles.chipActive]}
+                  onPress={() => phone.setSelectedStoreKey(row.storeKey)}
+                >
+                  <Text style={[styles.chipText, active && styles.chipTextActive]}>{row.storeName}</Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        ) : null}
+
+        {activeAccount ? (
+          <View style={styles.statusCard}>
+            <Text style={[styles.statusValue, statusTone(activeAccount)]}>{connectionLabel(activeAccount)}</Text>
+            <DetailRow
+              label="Number"
+              value={activeAccount.mainNumber ? formatPhoneNumber(activeAccount.mainNumber) : ''}
+            />
+            <DetailRow label="Account" value={activeAccount.companyName} />
+            <DetailRow
+              label="Extensions"
+              value={activeAccount.extensionCount ? String(activeAccount.extensionCount) : ''}
+            />
+            <Text style={styles.detailLabel}>Answered to missed</Text>
+            <RatioStrip stats={ratio} />
+            <Pressable style={styles.refreshLink} onPress={() => setTab('stats')}>
+              <Text style={styles.link}>Open ratio tab</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
+        <View style={styles.tabs}>
+          {TABS.map((item) => {
+            const active = tab === item.key;
+            const badge =
+              item.key === 'incoming'
+                ? incomingLive.length
+                : item.key === 'voicemail'
+                  ? voicemails.filter((row) => row.readStatus === 'Unread').length
+                  : 0;
+            return (
+              <Pressable key={item.key} style={[styles.tab, active && styles.tabActive]} onPress={() => setTab(item.key)}>
+                <Text style={[styles.tabText, active && styles.tabTextActive]}>
+                  {item.key === 'stats' && ratio.scored ? `${item.label} ${ratio.ratio}` : item.label}
+                </Text>
+                {badge > 0 ? (
+                  <View style={styles.badge}>
+                    <Text style={styles.badgeText}>{badge}</Text>
                   </View>
-                  <View style={styles.colStatus}>
-                    <Text style={[styles.cell, statusTone(account)]} numberOfLines={1}>
-                      {status}
-                    </Text>
-                    {account?.lastError ? (
-                      <Text style={styles.cellError} numberOfLines={2}>
-                        {account.lastError}
-                      </Text>
-                    ) : account?.lastCheckedAt ? (
-                      <Text style={styles.cellSub} numberOfLines={1}>
-                        {formatCheckedAt(account.lastCheckedAt)}
-                      </Text>
-                    ) : null}
+                ) : null}
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <Text style={styles.silentHint}>
+          {phone.silent ? 'Silent — incoming calls still appear, without ringtone.' : 'Ringtone on for incoming calls.'}
+        </Text>
+
+        {error || phone.error ? (
+          <View style={styles.errorBanner}>
+            <Text style={styles.errorText}>{error || phone.error}</Text>
+          </View>
+        ) : null}
+        {warning ? <Text style={styles.warningText}>{warning}</Text> : null}
+
+        {!storeKey ? (
+          <Text style={styles.emptyText}>
+            {canManage
+              ? 'Connect Montreal (or another store) in Settings → RingCentral to make and receive calls.'
+              : 'No connected store phone yet.'}
+          </Text>
+        ) : null}
+
+        {tab === 'incoming' ? (
+          <View style={styles.section}>
+            {incomingLive.map((call) => (
+              <View key={`${call.storeKey}-${call.id}`} style={styles.liveCard}>
+                <View style={styles.itemText}>
+                  <Text style={styles.liveKicker}>Ringing</Text>
+                  <Text style={styles.itemTitle}>{partyLine(call, true)}</Text>
+                  <Text style={styles.itemMeta}>{call.storeName}</Text>
+                </View>
+                <View style={styles.liveActions}>
+                  <Pressable style={[styles.callBtn, styles.rejectBtn]} onPress={() => phone.reject(call)} disabled={phone.busy}>
+                    <Text style={styles.callBtnText}>Reject</Text>
+                  </Pressable>
+                  <Pressable style={[styles.callBtn, styles.answerBtn]} onPress={() => phone.answer(call)} disabled={phone.busy}>
+                    <Text style={styles.callBtnText}>Answer</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ))}
+            {inboxLoading && inboundCalls.length === 0 ? (
+              <View style={styles.centered}>
+                <ActivityIndicator color={ACCENT} />
+              </View>
+            ) : inboundCalls.length === 0 && incomingLive.length === 0 ? (
+              <Text style={styles.emptyText}>No incoming calls yet.</Text>
+            ) : (
+              inboundCalls.map((row) => (
+                <View key={row.id} style={styles.itemRow}>
+                  <View style={styles.callIcon}>
+                    <Ionicons
+                      name={row.result === 'Missed' ? 'call-outline' : 'arrow-down'}
+                      size={14}
+                      color={row.result === 'Missed' ? '#B91C1C' : ACCENT}
+                    />
                   </View>
-                  <Text style={[styles.cell, styles.colNumber]} numberOfLines={1}>
-                    {account?.mainNumber
-                      ? formatPhoneNumber(account.mainNumber)
-                      : row.posPhone
-                        ? formatPhoneNumber(row.posPhone)
-                        : '—'}
-                  </Text>
-                  <Text style={[styles.cell, styles.colExts]} numberOfLines={1}>
-                    {account?.extensionCount ? String(account.extensionCount) : '—'}
-                  </Text>
-                  <Text style={[styles.cell, styles.colAccount]} numberOfLines={1}>
-                    {account?.companyName || '—'}
-                  </Text>
-                  <View style={styles.colActions}>
-                    {account?.hasJwt ? (
-                      <Pressable onPress={() => onCheck(row.key)} disabled={checking} hitSlop={6}>
-                        {checking ? (
-                          <ActivityIndicator size="small" color={ACCENT} />
-                        ) : (
-                          <Text style={styles.link}>Check</Text>
-                        )}
-                      </Pressable>
-                    ) : null}
+                  <View style={styles.itemText}>
+                    <Text style={styles.itemTitle}>{partyLine(row, true)}</Text>
+                    <Text style={styles.itemMeta}>
+                      {[resultLabel(row.result), formatCallWhen(row.startTime), row.duration ? formatDuration(row.duration) : '']
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </Text>
                   </View>
                 </View>
-              );
-            })
-          )}
-        </View>
+              ))
+            )}
+          </View>
+        ) : null}
+
+        {tab === 'dial' ? (
+          <View style={styles.section}>
+            <TextInput
+              style={styles.dialInput}
+              value={digits}
+              onChangeText={(value) => setDigits(value.replace(/[^\d*#+]/g, '').slice(0, 16))}
+              placeholder="Enter number"
+              placeholderTextColor="#8e8e93"
+              keyboardType="phone-pad"
+              textAlign="center"
+            />
+            <View style={styles.keypad}>
+              {KEYPAD.map((key) => (
+                <Pressable key={key} style={styles.key} onPress={() => appendDigit(key)}>
+                  <Text style={styles.keyText}>{key}</Text>
+                </Pressable>
+              ))}
+            </View>
+            <View style={styles.dialActions}>
+              <Pressable style={styles.backspace} onPress={() => setDigits((current) => current.slice(0, -1))} disabled={!digits}>
+                <Ionicons name="backspace-outline" size={20} color={digits ? '#1a1a1a' : '#c4c4c4'} />
+              </Pressable>
+              <Pressable
+                style={[styles.placeCall, (!digits || phone.busy) && styles.placeCallDisabled]}
+                onPress={placeCall}
+                disabled={!digits || phone.busy}
+              >
+                {phone.busy ? <ActivityIndicator color="#fff" /> : <Ionicons name="call" size={22} color="#fff" />}
+              </Pressable>
+            </View>
+            <Text style={styles.sectionMeta}>
+              This rings the store phone first, then connects the number you dialed.
+            </Text>
+            {outboundCalls.length === 0 ? (
+              <Text style={styles.emptyText}>No outbound calls yet.</Text>
+            ) : (
+              outboundCalls.map((row) => (
+                <Pressable
+                  key={row.id}
+                  style={styles.itemRow}
+                  onPress={() => setDigits((row.to || '').replace(/\D/g, '').slice(-10))}
+                >
+                  <View style={styles.callIcon}>
+                    <Ionicons name="arrow-up" size={14} color={ACCENT} />
+                  </View>
+                  <View style={styles.itemText}>
+                    <Text style={styles.itemTitle}>{partyLine(row, false)}</Text>
+                    <Text style={styles.itemMeta}>
+                      {[resultLabel(row.result), formatCallWhen(row.startTime), row.duration ? formatDuration(row.duration) : '']
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </Text>
+                  </View>
+                </Pressable>
+              ))
+            )}
+          </View>
+        ) : null}
+
+        {tab === 'voicemail' ? (
+          <View style={styles.section}>
+            {playError ? <Text style={styles.errorText}>{playError}</Text> : null}
+            {inboxLoading && voicemails.length === 0 ? (
+              <View style={styles.centered}>
+                <ActivityIndicator color={ACCENT} />
+              </View>
+            ) : voicemails.length === 0 ? (
+              <Text style={styles.emptyText}>No voicemail.</Text>
+            ) : (
+              voicemails.map((row) => {
+                const unread = row.readStatus === 'Unread';
+                return (
+                  <View key={row.id} style={styles.itemRow}>
+                    <Pressable style={styles.playBtn} onPress={() => playVoicemail(row)} accessibilityLabel={playingId === row.id ? 'Pause voicemail' : 'Play voicemail'}>
+                      <Ionicons name={playingId === row.id ? 'pause' : 'play'} size={16} color={ACCENT} />
+                    </Pressable>
+                    <View style={styles.itemText}>
+                      <Text style={[styles.itemTitle, unread && styles.unread]}>
+                        {partyLine(row, true)}
+                      </Text>
+                      <Text style={styles.itemMeta}>
+                        {[
+                          unread ? 'Unread' : 'Heard',
+                          formatCallWhen(row.creationTime),
+                          row.duration ? formatDuration(row.duration) : '',
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </Text>
+                    </View>
+                  </View>
+                );
+              })
+            )}
+          </View>
+        ) : null}
+
+        {tab === 'stats' ? (
+          <View style={styles.section}>
+            <RatioStrip stats={ratio} />
+            <View style={styles.ratioStats}>
+              <View style={styles.ratioStat}>
+                <Text style={styles.summaryLabel}>Voicemail</Text>
+                <Text style={styles.summaryValue}>{ratio.voicemail}</Text>
+              </View>
+              <View style={styles.ratioStat}>
+                <Text style={styles.summaryLabel}>Rejected</Text>
+                <Text style={styles.summaryValue}>{ratio.rejected}</Text>
+              </View>
+              <View style={styles.ratioStat}>
+                <Text style={styles.summaryLabel}>Inbound</Text>
+                <Text style={styles.summaryValue}>{ratio.inbound}</Text>
+              </View>
+            </View>
+            <Text style={styles.blockTitle}>Answered</Text>
+            {answeredCalls.length === 0 ? (
+              <Text style={styles.emptyText}>No answered inbound calls in the last 14 days.</Text>
+            ) : (
+              answeredCalls.map((row) => (
+                <View key={row.id} style={styles.itemRow}>
+                  <View style={styles.callIcon}>
+                    <Ionicons name="arrow-down" size={14} color={ACCENT} />
+                  </View>
+                  <View style={styles.itemText}>
+                    <Text style={styles.itemTitle}>{partyLine(row, true)}</Text>
+                    <Text style={styles.itemMeta}>
+                      {[resultLabel(row.result), formatCallWhen(row.startTime), row.duration ? formatDuration(row.duration) : '']
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </Text>
+                  </View>
+                </View>
+              ))
+            )}
+            <Text style={[styles.blockTitle, styles.blockTitleSpaced]}>Missed</Text>
+            {missedCalls.length === 0 ? (
+              <Text style={styles.emptyText}>No missed inbound calls in the last 14 days.</Text>
+            ) : (
+              missedCalls.map((row) => (
+                <View key={row.id} style={styles.itemRow}>
+                  <View style={styles.callIcon}>
+                    <Ionicons name="call-outline" size={14} color="#B91C1C" />
+                  </View>
+                  <View style={styles.itemText}>
+                    <Text style={styles.itemTitle}>{partyLine(row, true)}</Text>
+                    <Text style={styles.itemMeta}>
+                      {[resultLabel(row.result), formatCallWhen(row.startTime), row.duration ? formatDuration(row.duration) : '']
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </Text>
+                  </View>
+                </View>
+              ))
+            )}
+          </View>
+        ) : null}
       </ScrollView>
     </View>
   );
@@ -327,15 +936,52 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 8,
     paddingBottom: 32,
-    maxWidth: 1100,
+    maxWidth: 720,
     width: '100%',
     alignSelf: 'center',
-  },
-  section: {
     gap: 14,
   },
-  sectionHeader: {
+  section: {
+    gap: 4,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  headerCopy: {
+    flex: 1,
+    minWidth: 0,
     gap: 2,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  iconBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f3f3f3',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  iconBtnActive: {
+    backgroundColor: '#FEE2E2',
+  },
+  storesLink: {
+    paddingHorizontal: 6,
+    paddingVertical: 6,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
   sectionTitle: {
     fontFamily,
@@ -347,44 +993,85 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 12,
     color: '#8a8a8a',
+    lineHeight: 17,
   },
-  summaryCards: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  summaryCard: {
-    flexGrow: 1,
-    flexBasis: 120,
-    minWidth: 110,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    backgroundColor: '#F3FBF6',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#D5EBD9',
-  },
-  summaryLabel: {
-    fontFamily,
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#8a8a8a',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    marginBottom: 4,
-  },
-  summaryValue: {
-    fontFamily,
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#1a1a1a',
-    fontVariant: ['tabular-nums'],
-  },
-  summaryHint: {
+  silentHint: {
     fontFamily,
     fontSize: 12,
     color: '#8a8a8a',
-    marginTop: 2,
+  },
+  storeChips: {
+    gap: 8,
+    paddingBottom: 2,
+  },
+  chip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: '#f3f3f3',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  chipActive: {
+    backgroundColor: '#ECFDF5',
+  },
+  chipText: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#6b6b6b',
+  },
+  chipTextActive: {
+    color: ACCENT,
+  },
+  tabs: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e5e5e5',
+  },
+  tab: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  tabActive: {
+    borderBottomColor: ACCENT,
+  },
+  tabText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#8a8a8a',
+  },
+  tabTextActive: {
+    color: '#1a1a1a',
+  },
+  badge: {
+    minWidth: 16,
+    height: 16,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    backgroundColor: ACCENT,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  badgeText: {
+    fontFamily,
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#fff',
   },
   toolbar: {
     flexDirection: 'row',
@@ -432,32 +1119,42 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#9a6b2f',
   },
-  headerRow: {
-    borderBottomColor: '#e5e5e5',
-    marginBottom: 2,
-    minHeight: 28,
-  },
-  headerText: {
-    fontFamily,
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#9a9a9a',
-    letterSpacing: 0.2,
-  },
-  row: {
+  storeRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     width: '100%',
-    minHeight: 44,
-    paddingVertical: 8,
+    minHeight: 56,
+    paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#f0f0f0',
-    gap: 8,
+    gap: 10,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
-  cell: {
+  storeIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#ECFDF5',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  storeText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  storeName: {
     fontFamily,
-    fontSize: 13,
+    fontSize: 14,
+    fontWeight: '600',
     color: '#1a1a1a',
+  },
+  rowStatus: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
   },
   cellSub: {
     fontFamily,
@@ -467,38 +1164,10 @@ const styles = StyleSheet.create({
   },
   cellError: {
     fontFamily,
-    fontSize: 11,
+    fontSize: 12,
     color: '#991B1B',
-    marginTop: 2,
-  },
-  colStore: {
-    flex: 1.4,
-    minWidth: 0,
-  },
-  colStatus: {
-    flex: 1.1,
-    minWidth: 0,
-  },
-  colNumber: {
-    flex: 1.1,
-    minWidth: 0,
-  },
-  colExts: {
-    flex: 0.45,
-    minWidth: 0,
-  },
-  colAccount: {
-    flex: 1.1,
-    minWidth: 0,
-  },
-  colActions: {
-    flex: 0.6,
-    minWidth: 48,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    gap: 10,
+    marginTop: 8,
+    lineHeight: 17,
   },
   statusConnected: {
     color: '#15803D',
@@ -521,6 +1190,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 24,
+    gap: 8,
   },
   emptyText: {
     fontFamily,
@@ -528,5 +1198,307 @@ const styles = StyleSheet.create({
     color: '#8a8a8a',
     paddingTop: 16,
     paddingBottom: 8,
+  },
+  backRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    marginBottom: 4,
+    alignSelf: 'flex-start',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  backText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1a1a1a',
+  },
+  statusCard: {
+    marginTop: 8,
+    marginBottom: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e5e5e5',
+    borderRadius: 8,
+    padding: 14,
+    backgroundColor: '#fafafa',
+    gap: 8,
+  },
+  statusValue: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1a1a1a',
+    marginBottom: 4,
+  },
+  detailRow: {
+    gap: 2,
+  },
+  detailLabel: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#8a8a8a',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  detailValue: {
+    fontFamily,
+    fontSize: 14,
+    color: '#1a1a1a',
+  },
+  blockTitle: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1a1a1a',
+    marginBottom: 4,
+  },
+  blockTitleSpaced: {
+    marginTop: 16,
+  },
+  ratioBlock: {
+    gap: 8,
+  },
+  ratioStats: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  ratioStat: {
+    flexGrow: 1,
+    flexBasis: 72,
+    minWidth: 70,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: '#F3FBF6',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#D5EBD9',
+  },
+  summaryLabel: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#8a8a8a',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginBottom: 4,
+  },
+  summaryValue: {
+    fontFamily,
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1a1a1a',
+    fontVariant: ['tabular-nums'],
+  },
+  ratioBarTrack: {
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#ececec',
+    overflow: 'hidden',
+    flexDirection: 'row',
+  },
+  ratioBarFill: {
+    backgroundColor: ACCENT,
+    minWidth: 0,
+  },
+  ratioBarMissed: {
+    backgroundColor: '#B91C1C',
+    minWidth: 0,
+  },
+  ratioBarEmpty: {
+    flex: 1,
+    backgroundColor: '#ececec',
+  },
+  itemRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#f0f0f0',
+  },
+  itemText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  itemTitle: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1a1a1a',
+  },
+  unread: {
+    fontWeight: '700',
+  },
+  itemMeta: {
+    fontFamily,
+    fontSize: 12,
+    color: '#8a8a8a',
+    marginTop: 2,
+  },
+  extBadge: {
+    minWidth: 40,
+    height: 24,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    backgroundColor: '#ECFDF5',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  extBadgeText: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '700',
+    color: ACCENT,
+    fontVariant: ['tabular-nums'],
+  },
+  refreshLink: {
+    marginTop: 16,
+    alignSelf: 'flex-start',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  liveCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: '#ECFDF5',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#BBF7D0',
+    marginBottom: 8,
+  },
+  liveKicker: {
+    fontFamily,
+    fontSize: 10,
+    fontWeight: '700',
+    color: ACCENT,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  liveActions: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  callBtn: {
+    minWidth: 64,
+    height: 32,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  rejectBtn: {
+    backgroundColor: '#B91C1C',
+  },
+  answerBtn: {
+    backgroundColor: ACCENT,
+  },
+  callBtnText: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  callIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#F3FBF6',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  dialInput: {
+    fontFamily,
+    fontSize: 28,
+    fontWeight: '700',
+    color: '#1a1a1a',
+    textAlign: 'center',
+    paddingVertical: 8,
+    letterSpacing: 1,
+    ...Platform.select({
+      web: { outlineStyle: 'none' },
+      default: {},
+    }),
+  },
+  keypad: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    maxWidth: 280,
+    alignSelf: 'center',
+    gap: 10,
+  },
+  key: {
+    width: 72,
+    height: 56,
+    borderRadius: 12,
+    backgroundColor: '#f6f6f6',
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  keyText: {
+    fontFamily,
+    fontSize: 22,
+    fontWeight: '600',
+    color: '#1a1a1a',
+  },
+  dialActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 24,
+    marginTop: 8,
+  },
+  backspace: {
+    width: 48,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  placeCall: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: ACCENT,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  placeCallDisabled: {
+    opacity: 0.45,
+  },
+  playBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#ECFDF5',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
 });

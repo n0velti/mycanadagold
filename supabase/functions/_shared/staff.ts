@@ -15,6 +15,8 @@ export interface StaffContext {
   aureusUserId: string;
   isSystemAdmin: boolean;
   appRole: string;
+  posRole: string;
+  employeeType: string;
 }
 
 export class StaffAuthError extends Error {
@@ -54,7 +56,7 @@ async function loadProfile(userId: string, aureusUserId: string): Promise<StaffC
 
   const { data, error } = await adminClient()
     .from('profiles')
-    .select('id, aureus_user_id, is_active, aureus_verified_at, app_role, is_system_admin')
+    .select('id, aureus_user_id, is_active, aureus_verified_at, app_role, is_system_admin, role, employee_type')
     .eq('id', userId)
     .maybeSingle();
 
@@ -65,6 +67,8 @@ async function loadProfile(userId: string, aureusUserId: string): Promise<StaffC
       aureusUserId: data.aureus_user_id,
       isSystemAdmin: Boolean(data.is_system_admin) || data.app_role === 'system_admin',
       appRole: String(data.app_role || ''),
+      posRole: String(data.role || ''),
+      employeeType: String(data.employee_type || ''),
     };
   }
 

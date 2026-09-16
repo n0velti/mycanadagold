@@ -21,6 +21,7 @@ import {
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
 import { mobileSafeBottom, mobileSafeTop, useIsMobile } from '../lib/mobileUi';
+import { fetchTransferStores } from '../lib/locations';
 import { findStaffByEmployeeName, listStaffProfiles } from '../lib/permissions';
 import {
   collectRecordImageUrls,
@@ -3303,13 +3304,18 @@ export default function TriageTransfersPanel({
         />
       )}
 
-      <CreateBatchModal
-        visible={createOpen}
-        session={session}
-        transfers={transfers}
-        onClose={() => onCreateOpenChange(false)}
-        onCreate={createBatch}
-      />
+      <TriageErrorBoundary
+        resetKey={createOpen ? 'create-open' : 'create-closed'}
+        onReset={() => onCreateOpenChange(false)}
+      >
+        <CreateBatchModal
+          visible={createOpen}
+          session={session}
+          transfers={transfers}
+          onClose={() => onCreateOpenChange(false)}
+          onCreate={createBatch}
+        />
+      </TriageErrorBoundary>
       <QuickAddModal
         visible={Boolean(quickAddOpen)}
         session={session}
