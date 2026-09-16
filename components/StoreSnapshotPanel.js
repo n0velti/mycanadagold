@@ -19,10 +19,14 @@ import { checkTransactionPrices } from '../lib/priceCheck';
 import { AUREUS_CASH_LIVE_MS, useLiveRefresh } from '../lib/liveRefresh';
 import { fetchInventoryMatrix, formatQty, peekInventoryMatrix } from '../lib/inventory';
 import { textMatchesQuery } from '../lib/itemSearch';
-import { findStaffByEmployeeName, listStaffProfiles } from '../lib/permissions';
+import { findStaffByEmployeeName, listStaffProfiles, useAppAccess } from '../lib/permissions';
 import { initialsFor } from '../lib/rippling';
-import { formatAmount, isCashTransaction } from '../lib/transactions';
+import { formatAmount, formatDateParam, isCashTransaction } from '../lib/transactions';
 import { useTxnCashBreakdowns } from '../lib/txnCashBreakdowns';
+import { callPartyLabel, callsForStore, inboundCallRatio, isPhoneRateLimitMessage } from '../lib/phoneCalls';
+import { formatPhoneNumber } from '../lib/ringcentral';
+import { storeKeyFromName } from '../lib/storeSettings';
+import { usePhoneCalls } from './PhoneCallProvider';
 import snapshot from '../lib/websitePriceSnapshot.json';
 import { fetchWebsitePrices, reconcileCatalog } from '../lib/websitePrices';
 import TxnCashBreakdownModal, { TxnCashIcon } from './TxnCashBreakdownModal';
@@ -81,6 +85,7 @@ const SNAPSHOT_APPS = {
   financials: { key: 'financials', label: 'Financials', icon: 'wallet', accent: '#3D8B4F' },
   inventory: { key: 'inventory', label: 'Inventory', icon: 'cube', accent: '#C47A12' },
   employees: { key: 'employees', label: 'Employees', icon: 'people', accent: '#1D4ED8' },
+  phone: { key: 'phone', label: 'Phone', icon: 'call', accent: '#15803D' },
   transactions: { key: 'transactions', label: 'Transactions', icon: 'swap-horizontal', accent: '#2F6FED' },
 };
 
@@ -729,6 +734,142 @@ function LoadingRow() {
   );
 }
 
+function callsInRange(calls, startKey, endKey) {
+  if (!startKey || !endKey) return Array.isArray(calls) ? calls : [];
+  return (Array.isArray(calls) ? calls : []).filter((call) => {
+    const time = Date.parse(call.startTime);
+    if (!Number.isFinite(time)) return false;
+    const day = formatDateParam(new Date(time));
+    return day >= startKey && day <= endKey;
+  });
+}
+
+function PhoneIncomingRow({ call, busy, onAnswer, onReject, last }) {
+  const label = callPartyLabel(call, { formatPhone: formatPhoneNumber });
+  return (
+    <View style={[styles.phoneLiveRow, last && styles.rowLast]}>
+      <View style={styles.rowCopy}>
+        <Text style={styles.phoneLiveKicker}>Incoming</Text>
+        <Text style={styles.rowTitle} numberOfLines={1}>
+          {label}
+        </Text>
+      </View>
+      <View style={styles.phoneLiveActions}>
+        <Pressable
+          onPress={() => onReject(call)}
+          disabled={busy}
+          style={[styles.phoneLiveBtn, styles.phoneRejectBtn]}
+          accessibilityRole="button"
+          accessibilityLabel="Reject call"
+        >
+          <Text style={styles.phoneLiveBtnText}>Reject</Text>
+        </Pressable>
+        <Pressable
+          onPress={() => onAnswer(call)}
+          disabled={busy}
+          style={[styles.phoneLiveBtn, styles.phoneAnswerBtn]}
+          accessibilityRole="button"
+          accessibilityLabel="Answer call"
+        >
+          {busy ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <Text style={styles.phoneLiveBtnText}>Answer</Text>
+          )}
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+function PhoneSnapshotBody({ storeName, startKey, endKey, periodLabel }) {
+  const phone = usePhoneCalls();
+  const storeKey = storeKeyFromName(storeName);
+  const incoming = useMemo(
+    () => (phone.incoming || []).filter((call) => call.storeKey === storeKey),
+    [phone.incoming, storeKey],
+  );
+  const recentAnswered = useMemo(
+    () => (phone.recentAnswered || []).filter((row) => row.storeKey === storeKey),
+    [phone.recentAnswered, storeKey],
+  );
+  const ratio = useMemo(
+    () => inboundCallRatio(callsInRange(callsForStore(phone.mergedCallsByStore, storeName), startKey, endKey)),
+    [endKey, phone.mergedCallsByStore, startKey, storeKey],
+  );
+  const inboxLoading = Boolean(phone.inboxFetching?.[storeKey]);
+  const phoneError = isPhoneRateLimitMessage(phone.error) ? '' : phone.error;
+
+  const answer = async (call) => {
+    try {
+      await phone.answer(call);
+    } catch {
+      // Error is shown from phone context.
+    }
+  };
+  const reject = async (call) => {
+    try {
+      await phone.reject(call);
+    } catch {
+      // Keep the live row so they can retry.
+    }
+  };
+
+  if (incoming.length) {
+    return (
+      <>
+        {incoming.map((call, index) => (
+          <PhoneIncomingRow
+            key={`${call.storeKey}-${call.id}`}
+            call={call}
+            busy={phone.busy}
+            onAnswer={answer}
+            onReject={reject}
+            last={index === incoming.length - 1 && !ratio.total && !phoneError}
+          />
+        ))}
+        {phoneError ? (
+          <Text style={styles.phoneError}>{phoneError}</Text>
+        ) : ratio.total ? (
+          <Text style={[styles.phoneRateMeta, styles.phoneRateMetaPad]}>
+            {ratio.ratio} answered · {periodLabel}
+          </Text>
+        ) : null}
+      </>
+    );
+  }
+
+  if (inboxLoading && !ratio.total && !recentAnswered.length) {
+    return <LoadingRow />;
+  }
+
+  return (
+    <View style={styles.phoneIdle}>
+      {recentAnswered.map((row) => (
+        <Text key={row.id} style={styles.phoneAnswered} numberOfLines={1}>
+          Answered{row.label ? ` · ${row.label}` : ''}
+        </Text>
+      ))}
+      <Text
+        style={[
+          styles.phoneRateValue,
+          ratio.rate == null && styles.rowValueMuted,
+          ratio.rate != null && ratio.rate < 80 && styles.phoneRateLow,
+          ratio.rate != null && ratio.rate >= 80 && styles.phoneRateHigh,
+        ]}
+      >
+        {ratio.ratio}
+      </Text>
+      <Text style={styles.phoneRateMeta}>
+        {ratio.total
+          ? `${ratio.answered} answered · ${ratio.missed} missed · ${periodLabel}`
+          : `No inbound calls ${periodLabel === 'Today' ? 'today' : 'in this period'}.`}
+      </Text>
+      {phoneError ? <Text style={styles.phoneError}>{phoneError}</Text> : null}
+    </View>
+  );
+}
+
 function employeePersonForTx(item, employeesByName, staff) {
   const name = String(item?.employeeName || '').trim();
   if (!name || name === '—') return { name: '—', photoUrl: '' };
@@ -745,6 +886,8 @@ function StoreSnapshotPanel({
   session,
   store,
   periodLabel = 'Today',
+  startKey,
+  endKey,
   txRows = [],
   onOpenTransaction,
   onOpenApp,
@@ -755,6 +898,8 @@ function StoreSnapshotPanel({
   const storeName = store?.store || '';
   const { width: windowWidth } = useWindowDimensions();
   const isMobile = windowWidth < 768;
+  const { hasApp } = useAppAccess();
+  const showPhone = hasApp('phone');
   const [inventoryQuery, setInventoryQuery] = useState('');
   const [inventoryLimit, setInventoryLimit] = useState(INVENTORY_PAGE);
   const [cash, setCash] = useState(null);
@@ -1154,6 +1299,22 @@ function StoreSnapshotPanel({
             </ScrollView>
           )}
         </AppBox>
+        {showPhone ? (
+          <AppBox
+            app={SNAPSHOT_APPS.phone}
+            meta={periodLabel}
+            onOpen={onOpenApp}
+            style={[styles.appRowBox, !isMobile && styles.appRowBoxDesktop]}
+            bodyStyle={!isMobile ? styles.appBoxBodyFill : null}
+          >
+            <PhoneSnapshotBody
+              storeName={storeName}
+              startKey={startKey}
+              endKey={endKey}
+              periodLabel={periodLabel}
+            />
+          </AppBox>
+        ) : null}
       </View>
 
       <AppBox
@@ -1199,6 +1360,8 @@ export default memo(
     prev.session === next.session &&
     (prev.store?.store || '') === (next.store?.store || '') &&
     prev.periodLabel === next.periodLabel &&
+    prev.startKey === next.startKey &&
+    prev.endKey === next.endKey &&
     prev.txRows === next.txRows &&
     prev.onOpenTransaction === next.onOpenTransaction &&
     prev.onOpenApp === next.onOpenApp &&
@@ -1220,6 +1383,7 @@ const styles = StyleSheet.create({
   appRow: {
     flexDirection: 'row',
     alignItems: 'stretch',
+    flexWrap: 'wrap',
     gap: 12,
   },
   appRowMobile: {
@@ -1227,7 +1391,7 @@ const styles = StyleSheet.create({
   },
   appRowBox: {
     flex: 1,
-    minWidth: 0,
+    minWidth: 220,
     minHeight: 200,
   },
   appRowBoxDesktop: {
@@ -1810,5 +1974,96 @@ const styles = StyleSheet.create({
   loadingRow: {
     justifyContent: 'center',
     minHeight: 52,
+  },
+  phoneLiveRow: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: '#ECFDF5',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#BBF7D0',
+  },
+  phoneLiveKicker: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#15803D',
+    letterSpacing: 0.2,
+    textTransform: 'uppercase',
+  },
+  phoneLiveActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexShrink: 0,
+  },
+  phoneLiveBtn: {
+    flex: 1,
+    minHeight: 32,
+    borderRadius: 7,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  phoneRejectBtn: {
+    backgroundColor: '#B91C1C',
+  },
+  phoneAnswerBtn: {
+    backgroundColor: '#15803D',
+  },
+  phoneLiveBtnText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  phoneIdle: {
+    paddingHorizontal: 14,
+    paddingVertical: 16,
+    gap: 4,
+  },
+  phoneRateValue: {
+    fontFamily,
+    fontSize: 28,
+    fontWeight: '700',
+    color: LABEL,
+    letterSpacing: -0.6,
+    fontVariant: ['tabular-nums'],
+  },
+  phoneRateLow: {
+    color: '#B91C1C',
+  },
+  phoneRateHigh: {
+    color: '#15803D',
+  },
+  phoneRateMeta: {
+    fontFamily,
+    fontSize: 12,
+    color: SECONDARY,
+    letterSpacing: -0.04,
+  },
+  phoneAnswered: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#15803D',
+  },
+  phoneError: {
+    fontFamily,
+    fontSize: 12,
+    color: RED,
+    paddingHorizontal: 14,
+    paddingBottom: 10,
+  },
+  phoneRateMetaPad: {
+    paddingHorizontal: 14,
+    paddingTop: 8,
+    paddingBottom: 12,
   },
 });

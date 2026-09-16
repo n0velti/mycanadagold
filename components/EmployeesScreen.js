@@ -531,6 +531,7 @@ function SignInCard({ onConnected }) {
         }
         const expected = readRipplingOAuthState();
         if (!expected || !callback.state || expected !== callback.state) {
+          if (String(callback.state || '').startsWith('gmail.')) return;
           throw new Error('Rippling sign-in state did not match. Try again.');
         }
         const session = await exchangeRipplingOAuthCode({

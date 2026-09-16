@@ -18,8 +18,10 @@ import {
   checkRingCentralAccount,
   connectionLabel,
   deleteRingCentralAccount,
+  fetchRingCentralStoreDetails,
   formatCheckedAt,
   formatPhoneNumber,
+  formatUsageType,
   listRingCentralAccounts,
   saveRingCentralAccount,
 } from '../lib/ringcentral';
@@ -105,6 +107,111 @@ function IncomingWatchList({ stores }) {
   );
 }
 
+function numberKey(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  return digits.length > 10 ? digits.slice(-10) : digits;
+}
+
+function StoreNumberList({ session, storeName, account, onAccountChange }) {
+  const [numbers, setNumbers] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!account?.hasJwt || !account?.storeKey) {
+      setNumbers([]);
+      return undefined;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    fetchRingCentralStoreDetails(account.storeKey)
+      .then((payload) => {
+        if (cancelled) return;
+        setNumbers(payload.numbers || []);
+        if (payload.store) onAccountChange?.(payload.store);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err?.message || 'Could not load numbers.');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [account?.hasJwt, account?.storeKey]);
+
+  const assigned = new Set((account?.phoneNumbers || []).map((row) => numberKey(row.phoneNumber)).filter(Boolean));
+
+  const toggleNumber = async (row) => {
+    const key = numberKey(row.phoneNumber);
+    if (!key || saving) return;
+    const next = assigned.has(key)
+      ? (account.phoneNumbers || []).filter((item) => numberKey(item.phoneNumber) !== key)
+      : [...(account.phoneNumbers || []).filter((item) => numberKey(item.phoneNumber) !== key), row];
+    setSaving(key);
+    setError('');
+    try {
+      const saved = await saveRingCentralAccount(
+        {
+          id: account.id,
+          storeName,
+          phoneNumbers: next,
+        },
+        session?.supabaseUserId || session?.profile?.id,
+      );
+      onAccountChange?.(saved);
+    } catch (err) {
+      setError(err?.message || 'Could not update that number.');
+    } finally {
+      setSaving('');
+    }
+  };
+
+  if (!account?.hasJwt) return null;
+
+  return (
+    <View style={styles.numberBlock}>
+      <Text style={styles.fieldLabel}>This store’s numbers</Text>
+      <Text style={styles.hint}>
+        A number can belong to only one store. Incoming calls to these numbers show here, not on the other
+        branches.
+      </Text>
+      {loading ? <ActivityIndicator color="#1a1a1a" style={styles.numberSpinner} /> : null}
+      {numbers.map((row) => {
+        const key = numberKey(row.phoneNumber);
+        const on = assigned.has(key);
+        return (
+          <Pressable
+            key={`${row.phoneNumber}-${row.usageType}`}
+            style={styles.watchRow}
+            onPress={() => toggleNumber(row)}
+            disabled={Boolean(saving)}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: on }}
+            accessibilityLabel={`Assign ${formatPhoneNumber(row.phoneNumber)} to ${storeName}`}
+          >
+            <View style={styles.menuTextWrap}>
+              <Text style={styles.menuLabel}>{formatPhoneNumber(row.phoneNumber)}</Text>
+              <Text style={styles.hint}>
+                {[formatUsageType(row.usageType), row.extensionNumber ? `ext ${row.extensionNumber}` : '', row.extensionName || row.siteName]
+                  .filter(Boolean)
+                  .join(' · ') || (on ? 'Assigned to this store' : 'Not assigned')}
+              </Text>
+            </View>
+            <View style={[styles.toggle, on && styles.toggleOn]}>
+              <View style={[styles.toggleKnob, on && styles.toggleKnobOn]} />
+            </View>
+          </Pressable>
+        );
+      })}
+      {error ? <Text style={styles.errorText}>{error}</Text> : null}
+    </View>
+  );
+}
+
 function statusHint(account) {
   if (!account) return 'Not connected';
   const status = connectionLabel(account);
@@ -114,6 +221,7 @@ function statusHint(account) {
 }
 
 function StoreEditor({ session, storeName, account, onBack, onAccountChange, onRemoved }) {
+  const phone = usePhoneCalls();
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
   const [jwt, setJwt] = useState('');
@@ -165,10 +273,14 @@ function StoreEditor({ session, storeName, account, onBack, onAccountChange, onR
       setChecking(true);
       const checked = await checkRingCentralAccount(next.storeKey);
       applyAccount(checked);
+      if (checked.hasJwt) {
+        phone.applyStoreAccount?.(checked, { select: true, watch: true });
+        phone.reloadStores?.({ selectKey: checked.storeKey, watch: true }).catch(() => {});
+      }
       if (checked.lastStatus === 'error' && checked.lastError) {
         setError(checked.lastError);
       } else {
-        setMessage('RingCentral credentials saved.');
+        setMessage(`Connected. Phone now loads calls, voicemail, and ratio for ${storeName}.`);
       }
     } catch (err) {
       setError(err?.message || 'Could not save RingCentral credentials.');
@@ -186,10 +298,14 @@ function StoreEditor({ session, storeName, account, onBack, onAccountChange, onR
     try {
       const checked = await checkRingCentralAccount(current?.storeKey || storeName);
       applyAccount(checked);
+      if (checked.hasJwt) {
+        phone.applyStoreAccount?.(checked, { select: true, watch: true });
+        phone.reloadStores?.({ selectKey: checked.storeKey, watch: true }).catch(() => {});
+      }
       if (checked.lastStatus === 'error' && checked.lastError) {
         setError(checked.lastError);
       } else {
-        setMessage('Connected to RingCentral.');
+        setMessage(`Connected. Phone now loads calls, voicemail, and ratio for ${storeName}.`);
       }
     } catch (err) {
       setError(err?.message || 'Could not reach RingCentral.');
@@ -206,6 +322,7 @@ function StoreEditor({ session, storeName, account, onBack, onAccountChange, onR
     setMessage('');
     try {
       await deleteRingCentralAccount(current.id);
+      phone.removeStoreAccount?.(current.storeKey || storeName);
       applyAccount(null);
       onRemoved?.();
       setMessage('Credentials removed.');
@@ -251,6 +368,13 @@ function StoreEditor({ session, storeName, account, onBack, onAccountChange, onR
           <Text style={styles.hint}>{current.extensionCount} extensions</Text>
         ) : null}
       </View>
+
+      <StoreNumberList
+        session={session}
+        storeName={storeName}
+        account={current}
+        onAccountChange={applyAccount}
+      />
 
       <Field
         label="Client ID"
@@ -464,8 +588,8 @@ export default function RingCentralSettingsPanel({ session, storeName }) {
         <>
           <Text style={styles.sectionLabel}>Store credentials</Text>
           <Text style={styles.introTight}>
-            Each branch uses its own RingCentral REST API app (JWT auth flow). Choose a store to paste
-            client ID, client secret, and JWT.
+            Each branch uses its own RingCentral REST API app (JWT auth flow). Assign that store’s
+            phone numbers here so a call to Montreal does not also appear on Laval and Quebec.
           </Text>
         </>
       ) : (
@@ -568,6 +692,13 @@ const styles = StyleSheet.create({
   watchBlock: {
     marginBottom: 24,
     gap: 4,
+  },
+  numberBlock: {
+    marginBottom: 20,
+    gap: 8,
+  },
+  numberSpinner: {
+    marginVertical: 8,
   },
   watchRow: {
     flexDirection: 'row',
