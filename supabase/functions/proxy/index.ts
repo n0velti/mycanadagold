@@ -18,6 +18,11 @@
  *   /proxy/moneris/poll                    POST  → poll a Moneris receipt URL
  *   /proxy/ringcentral/stores              GET   → per-store RingCentral connection status
  *   /proxy/ringcentral/check               POST  → JWT auth + account / numbers for one store
+ *   /proxy/ringcentral/details             POST  → JWT auth + numbers and extensions for one store
+ *   /proxy/ringcentral/save                POST  → upsert per-store JWT credentials (service role)
+ *   /proxy/ringcentral/delete              POST  → remove a store’s RingCentral credentials
+ *   /proxy/ringcentral/phone               POST  → presence, call log, voicemail, RingOut, answer/reject
+ *   /proxy/ringcentral/voicemail-content   GET   → voicemail audio for one message
  *
  * AI providers use the company key saved in Settings (System Admin / GM) or,
  * if none is saved, the Edge Function secret. Clients never send vendor keys.
@@ -25,7 +30,7 @@
  * `X-Upstream-Authorization` (the caller's own session with that vendor).
  */
 import { corsHeaders, error, json, preflight, readJson, securityHeaders } from '../_shared/http.ts';
-import { adminClient, requireActiveStaff, StaffAuthError } from '../_shared/staff.ts';
+import { adminClient, requireActiveStaff, StaffAuthError, type StaffContext } from '../_shared/staff.ts';
 
 const FUNCTION_PREFIX = '/proxy';
 const MAX_BODY_BYTES = 25 * 1024 * 1024;
@@ -1048,17 +1053,31 @@ function publicRingCentralAccount(row: Partial<RingCentralAccount> | null) {
   };
 }
 
+function describeRingCentralError(raw: string, fallback: string): string {
+  const message = String(raw || '').trim();
+  if (/unauthorized for this grant type/i.test(message)) {
+    return 'RingCentral rejected the JWT for this app. Confirm JWT auth is enabled and the JWT is assigned to this client ID.';
+  }
+  if (/invalid_grant|invalid jwt|invalid assertion/i.test(message)) {
+    return 'RingCentral rejected the JWT. Paste a fresh JWT from the developer console in Settings → RingCentral.';
+  }
+  return message || fallback;
+}
+
 function rcErrorMessage(payload: unknown, fallback: string): string {
   if (!payload || typeof payload !== 'object') return fallback;
   const row = payload as Record<string, unknown>;
   const nested = row.error;
+  let raw = '';
   if (nested && typeof nested === 'object') {
     const inner = nested as Record<string, unknown>;
-    return String(inner.message || inner.error_description || fallback);
+    raw = String(inner.message || inner.error_description || '');
+  } else {
+    raw = String(
+      row.error_description || row.message || (typeof nested === 'string' ? nested : '') || '',
+    );
   }
-  return String(
-    row.error_description || row.message || (typeof nested === 'string' ? nested : '') || fallback,
-  );
+  return describeRingCentralError(raw, fallback);
 }
 
 async function rcJson(url: string, init: RequestInit): Promise<{ ok: boolean; status: number; payload: unknown }> {
@@ -1103,7 +1122,7 @@ function envRingCentralStores(): EnvStoreCreds[] {
           storeName: storeName || storeKey,
           clientId: String((item as { clientId?: string }).clientId || '').trim(),
           clientSecret: String((item as { clientSecret?: string }).clientSecret || '').trim(),
-          jwt: String((item as { jwt?: string }).jwt || '').trim(),
+          jwt: jwtFromUnknown((item as { jwt?: unknown }).jwt),
           serverUrl: rcServerUrl(String((item as { serverUrl?: string }).serverUrl || '')),
         });
       }
@@ -1131,9 +1150,9 @@ async function seedRingCentralFromEnv(): Promise<void> {
       server_url: seed.serverUrl,
       updated_at: new Date().toISOString(),
     } as Record<string, string>;
-    if (seed.clientId && !String(current.client_id || '').trim()) next.client_id = seed.clientId;
-    if (seed.clientSecret && !String(current.client_secret || '').trim()) next.client_secret = seed.clientSecret;
-    if (seed.jwt && !String(current.jwt || '').trim()) next.jwt = seed.jwt;
+    if (seed.clientId) next.client_id = seed.clientId;
+    if (seed.clientSecret) next.client_secret = seed.clientSecret;
+    if (seed.jwt) next.jwt = seed.jwt;
     if (!next.client_id && !next.client_secret && !next.jwt && current.id) continue;
 
     await adminClient().from('ringcentral_accounts').upsert(next, { onConflict: 'store_key' });
@@ -1218,15 +1237,64 @@ async function ringCentralAccessToken(account: RingCentralAccount): Promise<stri
   return token;
 }
 
-async function refreshRingCentralAccount(account: RingCentralAccount): Promise<RingCentralAccount> {
+type RingCentralNumber = {
+  phoneNumber?: string;
+  usageType?: string;
+  type?: string;
+  label?: string;
+  primary?: boolean;
+  extension?: { id?: string | number; extensionNumber?: string; name?: string };
+};
+
+type RingCentralExtension = {
+  id?: string | number;
+  extensionNumber?: string;
+  name?: string;
+  type?: string;
+  status?: string;
+  hidden?: boolean;
+  contact?: { firstName?: string; lastName?: string; email?: string; businessPhone?: string };
+};
+
+function publicRingCentralNumber(row: RingCentralNumber) {
+  return {
+    phoneNumber: String(row.phoneNumber || ''),
+    usageType: String(row.usageType || ''),
+    type: String(row.type || ''),
+    label: String(row.label || ''),
+    primary: Boolean(row.primary),
+    extensionNumber: String(row.extension?.extensionNumber || ''),
+    extensionName: String(row.extension?.name || ''),
+  };
+}
+
+function publicRingCentralExtension(row: RingCentralExtension) {
+  const contactName = [row.contact?.firstName, row.contact?.lastName].filter(Boolean).join(' ').trim();
+  return {
+    id: String(row.id || ''),
+    extensionNumber: String(row.extensionNumber || ''),
+    name: String(row.name || contactName || ''),
+    type: String(row.type || ''),
+    status: String(row.status || ''),
+    hidden: Boolean(row.hidden),
+    email: String(row.contact?.email || ''),
+    businessPhone: String(row.contact?.businessPhone || ''),
+  };
+}
+
+async function refreshRingCentralAccount(account: RingCentralAccount): Promise<{
+  store: RingCentralAccount;
+  numbers: ReturnType<typeof publicRingCentralNumber>[];
+  extensions: ReturnType<typeof publicRingCentralExtension>[];
+}> {
   const origin = rcServerUrl(account.server_url);
   const token = await ringCentralAccessToken(account);
   const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' };
 
   const [info, numbers, extensions] = await Promise.all([
     rcJson(`${origin}/restapi/v1.0/account/~`, { method: 'GET', headers }),
-    rcJson(`${origin}/restapi/v1.0/account/~/phone-number?perPage=100`, { method: 'GET', headers }),
-    rcJson(`${origin}/restapi/v1.0/account/~/extension?perPage=1`, { method: 'GET', headers }),
+    rcJson(`${origin}/restapi/v1.0/account/~/phone-number?perPage=200`, { method: 'GET', headers }),
+    rcJson(`${origin}/restapi/v1.0/account/~/extension?perPage=200`, { method: 'GET', headers }),
   ]);
 
   if (!info.ok) {
@@ -1239,19 +1307,18 @@ async function refreshRingCentralAccount(account: RingCentralAccount): Promise<R
     operator?: { name?: string };
     serviceInfo?: { brand?: { name?: string } };
   };
-  const numberPayload = (numbers.payload || {}) as {
-    records?: Array<{ phoneNumber?: string; usageType?: string; primary?: boolean }>;
-  };
+  const numberPayload = (numbers.payload || {}) as { records?: RingCentralNumber[] };
   const extensionPayload = (extensions.payload || {}) as {
     paging?: { totalElements?: number };
-    records?: unknown[];
+    records?: RingCentralExtension[];
   };
 
-  const records = Array.isArray(numberPayload.records) ? numberPayload.records : [];
+  const numberRecords = Array.isArray(numberPayload.records) ? numberPayload.records : [];
+  const extensionRecords = Array.isArray(extensionPayload.records) ? extensionPayload.records : [];
   const mainFromList =
-    records.find((row) => row.usageType === 'MainCompanyNumber')?.phoneNumber ||
-    records.find((row) => row.primary)?.phoneNumber ||
-    records[0]?.phoneNumber ||
+    numberRecords.find((row) => row.usageType === 'MainCompanyNumber')?.phoneNumber ||
+    numberRecords.find((row) => row.primary)?.phoneNumber ||
+    numberRecords[0]?.phoneNumber ||
     '';
 
   const updated = await markRingCentralStatus(account.id, {
@@ -1264,10 +1331,75 @@ async function refreshRingCentralAccount(account: RingCentralAccount): Promise<R
     ),
     main_number: String(accountInfo.mainNumber || mainFromList || ''),
     extension_count:
-      Number(extensionPayload.paging?.totalElements) ||
-      (Array.isArray(extensionPayload.records) ? extensionPayload.records.length : 0),
+      Number(extensionPayload.paging?.totalElements) || extensionRecords.length || 0,
   });
-  return updated || account;
+
+  return {
+    store: updated || account,
+    numbers: numberRecords.map(publicRingCentralNumber).filter((row) => row.phoneNumber),
+    extensions: extensionRecords.map(publicRingCentralExtension).filter((row) => row.id || row.extensionNumber),
+  };
+}
+
+async function configuredRingCentralAccount(
+  req: Request,
+  storeKey: string,
+): Promise<{ account: RingCentralAccount } | { response: Response }> {
+  const account = await loadRingCentralAccount(storeKey);
+  if (!account) {
+    return {
+      response: error(req, 404, 'That store has no RingCentral credentials yet.', 'ringcentral_unconfigured'),
+    };
+  }
+  if (
+    !String(account.client_id || '').trim() ||
+    !String(account.client_secret || '').trim() ||
+    !String(account.jwt || '').trim()
+  ) {
+    return {
+      response: error(
+        req,
+        400,
+        'Paste the RingCentral client ID, client secret, and JWT for this store.',
+        'ringcentral_unconfigured',
+      ),
+    };
+  }
+  return { account };
+}
+
+function canManageRingCentralStaff(staff: StaffContext): boolean {
+  if (staff.isSystemAdmin) return true;
+  if (
+    staff.appRole === 'branch_manager' ||
+    staff.appRole === 'general_manager' ||
+    staff.appRole === 'system_admin'
+  ) {
+    return true;
+  }
+  const pos = `${staff.posRole} ${staff.employeeType}`.toLowerCase();
+  return /general\s*manager|\bgm\b|system\s*admin|\badmins?\b|owner|president|director|vice\s*president|\bvp\b/.test(
+    pos,
+  );
+}
+
+function jwtFromUnknown(value: unknown): string {
+  if (typeof value === 'string') return value.replace(/\s+/g, '').trim();
+  if (value && typeof value === 'object') {
+    const first = Object.values(value as Record<string, unknown>).find(
+      (item) => typeof item === 'string' && item.trim(),
+    );
+    return jwtFromUnknown(first);
+  }
+  return '';
+}
+
+function ringCentralFailureMessage(err: unknown): string {
+  if (err instanceof Error && err.message === 'missing_credentials') {
+    return 'Paste the RingCentral client ID, client secret, and JWT for this store.';
+  }
+  if (err instanceof Error) return describeRingCentralError(err.message, 'Could not reach RingCentral.');
+  return 'Could not reach RingCentral.';
 }
 
 async function handleRingCentralStores(req: Request): Promise<Response> {
@@ -1293,7 +1425,7 @@ async function handleRingCentralStores(req: Request): Promise<Response> {
   }
 }
 
-async function handleRingCentralCheck(req: Request): Promise<Response> {
+async function handleRingCentralLive(req: Request, includeDetails: boolean): Promise<Response> {
   const body = await readJson<{ storeKey?: string; storeName?: string }>(req);
   const storeKey = storeKeyOf(body.storeKey || body.storeName || '');
   if (!storeKey) return error(req, 400, 'Choose a store to check.', 'bad_request');
@@ -1304,37 +1436,575 @@ async function handleRingCentralCheck(req: Request): Promise<Response> {
     console.error('ringcentral seed failed', err instanceof Error ? err.message : err);
   }
 
-  const account = await loadRingCentralAccount(storeKey);
-  if (!account) {
-    return error(req, 404, 'That store has no RingCentral credentials yet.', 'ringcentral_unconfigured');
-  }
-  if (!String(account.client_id || '').trim() || !String(account.client_secret || '').trim() || !String(account.jwt || '').trim()) {
-    return error(
-      req,
-      400,
-      'Paste the RingCentral client ID, client secret, and JWT for this store.',
-      'ringcentral_unconfigured',
-    );
-  }
+  const loaded = await configuredRingCentralAccount(req, storeKey);
+  if ('response' in loaded) return loaded.response;
+  const account = loaded.account;
 
   try {
     const refreshed = await refreshRingCentralAccount(account);
-    return json(req, 200, { store: publicRingCentralAccount(refreshed) });
+    return json(req, 200, {
+      store: publicRingCentralAccount(refreshed.store),
+      ...(includeDetails ? { numbers: refreshed.numbers, extensions: refreshed.extensions } : {}),
+    });
   } catch (err) {
-    const message =
-      err instanceof Error && err.message === 'missing_credentials'
-        ? 'Paste the RingCentral client ID, client secret, and JWT for this store.'
-        : err instanceof Error
-          ? err.message
-          : 'Could not reach RingCentral.';
+    const message = ringCentralFailureMessage(err);
     rcTokenCache.delete(storeKey);
     const failed = await markRingCentralStatus(account.id, {
       last_status: 'error',
       last_error: message.slice(0, 300),
       last_checked_at: new Date().toISOString(),
     });
-    return json(req, 200, { store: publicRingCentralAccount(failed || account) });
+    return json(req, 200, {
+      store: publicRingCentralAccount(failed || account),
+      ...(includeDetails ? { numbers: [], extensions: [] } : {}),
+    });
   }
+}
+
+async function handleRingCentralSave(req: Request, staff: StaffContext): Promise<Response> {
+  if (!canManageRingCentralStaff(staff)) {
+    return error(
+      req,
+      403,
+      'No permission to change RingCentral credentials. Branch managers and above can edit them.',
+      'forbidden',
+    );
+  }
+
+  const body = await readJson<{
+    id?: string;
+    storeKey?: string;
+    storeName?: string;
+    clientId?: string;
+    clientSecret?: string;
+    jwt?: unknown;
+    serverUrl?: string;
+  }>(req);
+
+  const storeName = String(body.storeName || '').trim();
+  const storeKey = storeKeyOf(body.storeKey || storeName);
+  if (!storeKey || !storeName) return error(req, 400, 'Choose a store.', 'bad_request');
+
+  const clientId = String(body.clientId || '').trim();
+  const clientSecret = String(body.clientSecret || '').trim();
+  const jwt = jwtFromUnknown(body.jwt);
+  const existingId = String(body.id || '').trim();
+  if (!existingId && (!clientId || !clientSecret || !jwt)) {
+    return error(req, 400, 'Paste the RingCentral client ID, client secret, and JWT for this store.', 'bad_request');
+  }
+
+  const row: Record<string, string> = {
+    store_key: storeKey,
+    store_name: storeName,
+    server_url: rcServerUrl(String(body.serverUrl || '')),
+    updated_at: new Date().toISOString(),
+    updated_by: staff.userId,
+  };
+  if (clientId) row.client_id = clientId;
+  if (clientSecret) row.client_secret = clientSecret;
+  if (jwt) {
+    row.jwt = jwt;
+    rcTokenCache.delete(storeKey);
+  }
+
+  const writer = existingId
+    ? adminClient().from('ringcentral_accounts').update(row).eq('id', existingId)
+    : adminClient().from('ringcentral_accounts').upsert(row, { onConflict: 'store_key' });
+
+  const { data, error: writeError } = await writer.select(RC_PUBLIC_COLUMNS).maybeSingle();
+  if (writeError) {
+    return error(req, 400, writeError.message || 'The RingCentral account could not be saved.', 'bad_request');
+  }
+  if (!data) return error(req, 400, 'The RingCentral account could not be saved.', 'bad_request');
+  return json(req, 200, { store: publicRingCentralAccount(data as RingCentralAccount) });
+}
+
+async function handleRingCentralDelete(req: Request, staff: StaffContext): Promise<Response> {
+  if (!canManageRingCentralStaff(staff)) {
+    return error(
+      req,
+      403,
+      'No permission to change RingCentral credentials. Branch managers and above can edit them.',
+      'forbidden',
+    );
+  }
+  const body = await readJson<{ id?: string; storeKey?: string }>(req);
+  const id = String(body.id || '').trim();
+  const storeKey = storeKeyOf(body.storeKey || '');
+  if (!id && !storeKey) return error(req, 400, 'Missing account.', 'bad_request');
+
+  let query = adminClient().from('ringcentral_accounts').delete();
+  query = id ? query.eq('id', id) : query.eq('store_key', storeKey);
+  const { error: deleteError } = await query;
+  if (deleteError) {
+    return error(req, 400, deleteError.message || 'Could not remove credentials.', 'bad_request');
+  }
+  if (storeKey) rcTokenCache.delete(storeKey);
+  return json(req, 200, { ok: true });
+}
+
+function rcSafeId(value: unknown): string {
+  const id = String(value || '').trim();
+  return /^[\w.-]+$/.test(id) ? id : '';
+}
+
+function rcDigits(value: unknown): string {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function rcE164(value: unknown): string {
+  const digits = rcDigits(value);
+  if (!digits) return '';
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+  if (String(value || '').trim().startsWith('+')) return `+${digits}`;
+  return `+${digits}`;
+}
+
+function rcParty(value: unknown): { phoneNumber: string; name: string } {
+  if (!value) return { phoneNumber: '', name: '' };
+  if (typeof value === 'string') return { phoneNumber: value, name: '' };
+  if (typeof value === 'object') {
+    const row = value as Record<string, unknown>;
+    return {
+      phoneNumber: String(row.phoneNumber || row.extensionNumber || ''),
+      name: String(row.name || ''),
+    };
+  }
+  return { phoneNumber: '', name: '' };
+}
+
+function rcStatusFromCode(code: string): string {
+  if (code === 'Proceeding' || code === 'Setup') return 'Ringing';
+  if (code === 'Answered') return 'CallConnected';
+  if (code === 'Hold' || code === 'Parked') return 'OnHold';
+  if (code === 'VoiceMail' || code === 'VoiceMailScreening') return 'Voicemail';
+  return code || '';
+}
+
+type LivePhoneCall = {
+  id: string;
+  storeKey: string;
+  storeName: string;
+  direction: string;
+  status: string;
+  from: string;
+  fromName: string;
+  to: string;
+  toName: string;
+  telephonySessionId: string;
+  partyId: string;
+  sessionId: string;
+  startTime: string;
+  extensionNumber: string;
+  extensionName: string;
+};
+
+function mapPresenceCalls(account: RingCentralAccount, payload: unknown): LivePhoneCall[] {
+  const root = (payload || {}) as Record<string, unknown>;
+  const records = Array.isArray(root.records)
+    ? root.records
+    : Array.isArray(root.activeCalls) || root.telephonyStatus
+      ? [root]
+      : [];
+  const calls: LivePhoneCall[] = [];
+  for (const item of records) {
+    if (!item || typeof item !== 'object') continue;
+    const rec = item as Record<string, unknown>;
+    const extension = (rec.extension || {}) as Record<string, unknown>;
+    const active = Array.isArray(rec.activeCalls) ? rec.activeCalls : [];
+    for (const raw of active) {
+      if (!raw || typeof raw !== 'object') continue;
+      const call = raw as Record<string, unknown>;
+      const from = rcParty(call.from);
+      const to = rcParty(call.to);
+      const telephonySessionId = String(call.telephonySessionId || '');
+      const sessionId = String(call.sessionId || call.id || '');
+      const status = String(call.telephonyStatus || rec.telephonyStatus || '');
+      calls.push({
+        id: telephonySessionId || sessionId,
+        storeKey: account.store_key,
+        storeName: account.store_name,
+        direction: String(call.direction || '') === 'Outbound' ? 'Outbound' : 'Inbound',
+        status,
+        from: from.phoneNumber,
+        fromName: from.name,
+        to: to.phoneNumber,
+        toName: to.name,
+        telephonySessionId,
+        partyId: String(call.partyId || ''),
+        sessionId,
+        startTime: String(call.startTime || ''),
+        extensionNumber: String(extension.extensionNumber || ''),
+        extensionName: String(extension.name || ''),
+      });
+    }
+  }
+  return calls.filter((row) => row.id);
+}
+
+function mapSessionCalls(account: RingCentralAccount, payload: unknown): LivePhoneCall[] {
+  const root = (payload || {}) as Record<string, unknown>;
+  const records = Array.isArray(root.records) ? root.records : Array.isArray(payload) ? payload : [];
+  const calls: LivePhoneCall[] = [];
+  for (const item of records) {
+    if (!item || typeof item !== 'object') continue;
+    const session = item as Record<string, unknown>;
+    const parties = Array.isArray(session.parties) ? session.parties : [];
+    const telephonySessionId = String(session.id || '');
+    for (const raw of parties) {
+      if (!raw || typeof raw !== 'object') continue;
+      const party = raw as Record<string, unknown>;
+      const statusRow = (party.status || {}) as Record<string, unknown>;
+      const from = rcParty(party.from);
+      const to = rcParty(party.to);
+      const direction = String(party.direction || '') === 'Outbound' ? 'Outbound' : 'Inbound';
+      calls.push({
+        id: `${telephonySessionId}:${String(party.id || '')}`,
+        storeKey: account.store_key,
+        storeName: account.store_name,
+        direction,
+        status: rcStatusFromCode(String(statusRow.code || '')),
+        from: from.phoneNumber,
+        fromName: from.name,
+        to: to.phoneNumber,
+        toName: to.name,
+        telephonySessionId,
+        partyId: String(party.id || ''),
+        sessionId: telephonySessionId,
+        startTime: String(session.creationTime || party.startTime || ''),
+        extensionNumber: '',
+        extensionName: '',
+      });
+    }
+  }
+  return calls.filter((row) => row.telephonySessionId);
+}
+
+function mergeLiveCalls(rows: LivePhoneCall[]): LivePhoneCall[] {
+  const byKey = new Map<string, LivePhoneCall>();
+  for (const row of rows) {
+    const key = row.telephonySessionId || row.sessionId || row.id;
+    const current = byKey.get(key);
+    if (!current) {
+      byKey.set(key, row);
+      continue;
+    }
+    byKey.set(key, {
+      ...current,
+      ...row,
+      partyId: row.partyId || current.partyId,
+      telephonySessionId: row.telephonySessionId || current.telephonySessionId,
+      from: row.from || current.from,
+      fromName: row.fromName || current.fromName,
+      to: row.to || current.to,
+      toName: row.toName || current.toName,
+      status: row.status || current.status,
+      extensionNumber: current.extensionNumber || row.extensionNumber,
+      extensionName: current.extensionName || row.extensionName,
+    });
+  }
+  return [...byKey.values()];
+}
+
+function mapCallLog(account: RingCentralAccount, payload: unknown) {
+  const root = (payload || {}) as { records?: unknown[] };
+  const records = Array.isArray(root.records) ? root.records : [];
+  return records
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const row = item as Record<string, unknown>;
+      const from = rcParty(row.from);
+      const to = rcParty(row.to);
+      return {
+        id: String(row.id || ''),
+        storeKey: account.store_key,
+        storeName: account.store_name,
+        direction: String(row.direction || ''),
+        result: String(row.result || ''),
+        duration: Number(row.duration) || 0,
+        startTime: String(row.startTime || ''),
+        from: from.phoneNumber,
+        fromName: from.name,
+        to: to.phoneNumber,
+        toName: to.name,
+      };
+    })
+    .filter((row) => row?.id);
+}
+
+function mapVoicemails(account: RingCentralAccount, payload: unknown) {
+  const root = (payload || {}) as { records?: unknown[] };
+  const records = Array.isArray(root.records) ? root.records : [];
+  return records
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const row = item as Record<string, unknown>;
+      const from = rcParty(row.from);
+      const toList = Array.isArray(row.to) ? row.to : [];
+      const to = rcParty(toList[0] || row.to);
+      const attachments = Array.isArray(row.attachments) ? row.attachments : [];
+      const audio = attachments.find((att) => {
+        if (!att || typeof att !== 'object') return false;
+        const type = String((att as Record<string, unknown>).type || '');
+        const contentType = String((att as Record<string, unknown>).contentType || '');
+        return type === 'AudioRecording' || contentType.startsWith('audio/');
+      }) as Record<string, unknown> | undefined;
+      const vm = (row.vm || {}) as Record<string, unknown>;
+      return {
+        id: String(row.id || ''),
+        storeKey: account.store_key,
+        storeName: account.store_name,
+        from: from.phoneNumber,
+        fromName: from.name,
+        to: to.phoneNumber,
+        toName: to.name,
+        subject: String(row.subject || ''),
+        creationTime: String(row.creationTime || ''),
+        readStatus: String(row.readStatus || ''),
+        duration: Number(vm.duration || row.vmDuration) || 0,
+        attachmentId: String(audio?.id || ''),
+      };
+    })
+    .filter((row) => row?.id);
+}
+
+async function ringCentralSession(
+  req: Request,
+  storeKey: string,
+): Promise<{ account: RingCentralAccount; origin: string; headers: Record<string, string> } | { response: Response }> {
+  const loaded = await configuredRingCentralAccount(req, storeKey);
+  if ('response' in loaded) return loaded;
+  const account = loaded.account;
+  try {
+    const token = await ringCentralAccessToken(account);
+    return {
+      account,
+      origin: rcServerUrl(account.server_url),
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+    };
+  } catch (err) {
+    const message = ringCentralFailureMessage(err);
+    rcTokenCache.delete(storeKey);
+    await markRingCentralStatus(account.id, {
+      last_status: 'error',
+      last_error: message.slice(0, 300),
+      last_checked_at: new Date().toISOString(),
+    });
+    return { response: error(req, 400, message, 'ringcentral_unconfigured') };
+  }
+}
+
+async function collectLiveCalls(
+  account: RingCentralAccount,
+  origin: string,
+  headers: Record<string, string>,
+): Promise<LivePhoneCall[]> {
+  const [presence, sessions] = await Promise.all([
+    rcJson(`${origin}/restapi/v1.0/account/~/presence?detailedTelephonyState=true&perPage=200`, {
+      method: 'GET',
+      headers,
+    }),
+    rcJson(`${origin}/restapi/v1.0/account/~/telephony/sessions`, { method: 'GET', headers }),
+  ]);
+
+  let presencePayload = presence.payload;
+  if (!presence.ok) {
+    const fallback = await rcJson(
+      `${origin}/restapi/v1.0/account/~/extension/~/presence?detailedTelephonyState=true`,
+      { method: 'GET', headers },
+    );
+    presencePayload = fallback.ok ? fallback.payload : {};
+  }
+
+  return mergeLiveCalls([
+    ...mapPresenceCalls(account, presencePayload),
+    ...mapSessionCalls(account, sessions.ok ? sessions.payload : {}),
+  ]);
+}
+
+async function firstRingCentralDevice(
+  origin: string,
+  headers: Record<string, string>,
+): Promise<string> {
+  const devices = await rcJson(`${origin}/restapi/v1.0/account/~/extension/~/device`, {
+    method: 'GET',
+    headers,
+  });
+  if (!devices.ok) return '';
+  const records = Array.isArray((devices.payload as { records?: unknown[] })?.records)
+    ? ((devices.payload as { records: Record<string, unknown>[] }).records)
+    : [];
+  const ranked = [...records].sort((a, b) => {
+    const rank = (row: Record<string, unknown>) => {
+      const type = String(row.type || '');
+      if (type === 'WebPhone' || type === 'WebRTC') return 0;
+      if (type === 'SoftPhone') return 1;
+      if (type === 'HardPhone') return 2;
+      return 3;
+    };
+    return rank(a) - rank(b);
+  });
+  return String(ranked[0]?.id || '');
+}
+
+async function handleRingCentralPhone(req: Request): Promise<Response> {
+  const body = await readJson<{
+    action?: string;
+    storeKey?: string;
+    storeName?: string;
+    to?: string;
+    from?: string;
+    telephonySessionId?: string;
+    partyId?: string;
+  }>(req);
+  const action = String(body.action || 'presence').trim().toLowerCase();
+  const storeKey = storeKeyOf(body.storeKey || body.storeName || '');
+  if (!storeKey) return error(req, 400, 'Choose a store.', 'bad_request');
+
+  const session = await ringCentralSession(req, storeKey);
+  if ('response' in session) return session.response;
+  const { account, origin, headers } = session;
+
+  try {
+    if (action === 'presence') {
+      const liveCalls = await collectLiveCalls(account, origin, headers);
+      return json(req, 200, {
+        store: publicRingCentralAccount(account),
+        liveCalls,
+        incoming: liveCalls.filter(
+          (row) => row.direction === 'Inbound' && /ringing|proceeding|setup/i.test(row.status),
+        ),
+      });
+    }
+
+    if (action === 'inbox') {
+      const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+      const [logRes, vmRes, liveCalls] = await Promise.all([
+        rcJson(
+          `${origin}/restapi/v1.0/account/~/call-log?view=Simple&type=Voice&perPage=50&dateFrom=${encodeURIComponent(since)}`,
+          { method: 'GET', headers },
+        ),
+        rcJson(
+          `${origin}/restapi/v1.0/account/~/extension/~/message-store?messageType=VoiceMail&perPage=50`,
+          { method: 'GET', headers },
+        ),
+        collectLiveCalls(account, origin, headers),
+      ]);
+      return json(req, 200, {
+        store: publicRingCentralAccount(account),
+        liveCalls,
+        incoming: liveCalls.filter(
+          (row) => row.direction === 'Inbound' && /ringing|proceeding|setup/i.test(row.status),
+        ),
+        calls: logRes.ok ? mapCallLog(account, logRes.payload) : [],
+        voicemails: vmRes.ok ? mapVoicemails(account, vmRes.payload) : [],
+        callLogError: logRes.ok ? '' : rcErrorMessage(logRes.payload, 'Could not load the call log.'),
+        voicemailError: vmRes.ok ? '' : rcErrorMessage(vmRes.payload, 'Could not load voicemail.'),
+      });
+    }
+
+    if (action === 'ringout') {
+      const to = rcE164(body.to);
+      if (!to) return error(req, 400, 'Enter a number to call.', 'bad_request');
+      const from = rcE164(body.from || account.main_number);
+      if (!from) return error(req, 400, 'This store has no caller number yet.', 'bad_request');
+      const result = await rcJson(`${origin}/restapi/v1.0/account/~/extension/~/ring-out`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          from: { phoneNumber: from },
+          to: { phoneNumber: to },
+          playPrompt: false,
+          callerId: { phoneNumber: from },
+        }),
+      });
+      if (!result.ok) {
+        return error(req, 400, rcErrorMessage(result.payload, 'Could not start the call.'), 'bad_request');
+      }
+      const row = (result.payload || {}) as Record<string, unknown>;
+      const liveCalls = await collectLiveCalls(account, origin, headers);
+      return json(req, 200, {
+        store: publicRingCentralAccount(account),
+        ringOut: {
+          id: String(row.id || ''),
+          status: String((row.status as { callStatus?: string } | undefined)?.callStatus || row.status || ''),
+        },
+        liveCalls,
+      });
+    }
+
+    if (action === 'answer' || action === 'reject' || action === 'hangup') {
+      const telephonySessionId = rcSafeId(body.telephonySessionId);
+      const partyId = rcSafeId(body.partyId);
+      if (!telephonySessionId || !partyId) {
+        return error(req, 400, 'That call is no longer available.', 'bad_request');
+      }
+      const base = `${origin}/restapi/v1.0/account/~/telephony/sessions/${telephonySessionId}/parties/${partyId}`;
+      let result;
+      if (action === 'answer') {
+        const deviceId = await firstRingCentralDevice(origin, headers);
+        result = await rcJson(`${base}/answer`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(deviceId ? { deviceId } : {}),
+        });
+        if (!result.ok && !deviceId) {
+          return error(
+            req,
+            400,
+            'Open the RingCentral app or desk phone to take this call, then use Answer. You can still reject it here.',
+            'bad_request',
+          );
+        }
+      } else if (action === 'reject') {
+        result = await rcJson(`${base}/reject`, { method: 'POST', headers, body: '{}' });
+      } else {
+        result = await rcJson(`${base}`, { method: 'DELETE', headers });
+      }
+      if (!result.ok) {
+        const fallbackMessage =
+          action === 'answer'
+            ? 'Could not answer. Pick up on the RingCentral app or desk phone, or reject the call here.'
+            : action === 'reject'
+              ? 'Could not reject the call.'
+              : 'Could not hang up.';
+        return error(req, 400, rcErrorMessage(result.payload, fallbackMessage), 'bad_request');
+      }
+      const liveCalls = await collectLiveCalls(account, origin, headers);
+      return json(req, 200, { store: publicRingCentralAccount(account), liveCalls, ok: true });
+    }
+
+    return error(req, 400, 'Unknown phone action.', 'bad_request');
+  } catch (err) {
+    const message = ringCentralFailureMessage(err);
+    rcTokenCache.delete(storeKey);
+    return error(req, 502, message, 'upstream_failed');
+  }
+}
+
+async function handleRingCentralVoicemailContent(req: Request, query: URLSearchParams): Promise<Response> {
+  const storeKey = storeKeyOf(query.get('storeKey') || '');
+  const messageId = rcSafeId(query.get('messageId'));
+  const attachmentId = rcSafeId(query.get('attachmentId'));
+  if (!storeKey || !messageId) return error(req, 400, 'Missing voicemail.', 'bad_request');
+
+  const session = await ringCentralSession(req, storeKey);
+  if ('response' in session) return session.response;
+  const { origin, headers } = session;
+  const path = attachmentId
+    ? `${origin}/restapi/v1.0/account/~/extension/~/message-store/${messageId}/content/${attachmentId}`
+    : `${origin}/restapi/v1.0/account/~/extension/~/message-store/${messageId}/content`;
+  const upstream = await forward(path, { method: 'GET', headers: { Authorization: headers.Authorization } }, 30_000);
+  if (!upstream.ok) {
+    const payload = await upstream.json().catch(() => null);
+    return error(req, 400, rcErrorMessage(payload, 'Could not load that voicemail.'), 'bad_request');
+  }
+  return passthroughResponse(req, upstream);
 }
 
 // ---------------------------------------------------------------------------
@@ -1412,7 +2082,22 @@ Deno.serve(async (req) => {
       return await handleRingCentralStores(req);
     }
     if (path === '/ringcentral/check' && req.method === 'POST') {
-      return await handleRingCentralCheck(req);
+      return await handleRingCentralLive(req, false);
+    }
+    if (path === '/ringcentral/details' && req.method === 'POST') {
+      return await handleRingCentralLive(req, true);
+    }
+    if (path === '/ringcentral/save' && req.method === 'POST') {
+      return await handleRingCentralSave(req, staff);
+    }
+    if (path === '/ringcentral/delete' && req.method === 'POST') {
+      return await handleRingCentralDelete(req, staff);
+    }
+    if (path === '/ringcentral/phone' && req.method === 'POST') {
+      return await handleRingCentralPhone(req);
+    }
+    if (path === '/ringcentral/voicemail-content' && req.method === 'GET') {
+      return await handleRingCentralVoicemailContent(req, query);
     }
     return error(req, 404, 'Unknown proxy route.', 'not_found');
   } catch (err) {

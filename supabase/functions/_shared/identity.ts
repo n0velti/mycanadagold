@@ -129,7 +129,9 @@ function collectEmployeeType(raw: AnyRecord, nestedRole: AnyRecord): string {
 export function inferAppRole(role: string, employeeType = ''): string {
   const value = `${asString(role)} ${asString(employeeType)}`.toLowerCase();
   if (!value.trim()) return 'precious_metal_analyst';
-  if (/general\s*manager|\bgm\b/.test(value)) return 'general_manager';
+  if (/general\s*manager|\bgm\b|owner|president|director|vice\s*president|\bvp\b/.test(value)) {
+    return 'general_manager';
+  }
   if (/system\s*admin|sysadmin|super\s*admin|\badministrators?\b|\badmins?\b/.test(value)) {
     return 'general_manager';
   }
