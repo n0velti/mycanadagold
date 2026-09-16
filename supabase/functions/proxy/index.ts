@@ -16,6 +16,8 @@
  *   /proxy/canadagold/page                 GET   → canadagold.ca buy/sell price pages
  *   /proxy/moneris/cloud                   POST  → Moneris Cloud (Move 5000 / Go)
  *   /proxy/moneris/poll                    POST  → poll a Moneris receipt URL
+ *   /proxy/ringcentral/stores              GET   → per-store RingCentral connection status
+ *   /proxy/ringcentral/check               POST  → JWT auth + account / numbers for one store
  *
  * AI providers use the company key saved in Settings (System Admin / GM) or,
  * if none is saved, the Edge Function secret. Clients never send vendor keys.
@@ -980,6 +982,362 @@ async function handleMonerisPoll(req: Request, staffUserId: string): Promise<Res
 }
 
 // ---------------------------------------------------------------------------
+// RingCentral (per-store JWT)
+// ---------------------------------------------------------------------------
+
+const RC_PRODUCTION = 'https://platform.ringcentral.com';
+const RC_SANDBOX = 'https://platform.devtest.ringcentral.com';
+const RC_JWT_GRANT = 'urn:ietf:params:oauth:grant-type:jwt-bearer';
+const RC_PUBLIC_COLUMNS =
+  'id, store_key, store_name, server_url, account_id, company_name, main_number, extension_count, last_status, last_error, last_checked_at, created_at, updated_at, has_client_id, has_secret, has_jwt';
+
+type RingCentralAccount = {
+  id: string;
+  store_key: string;
+  store_name: string;
+  client_id: string;
+  client_secret: string;
+  jwt: string;
+  server_url: string;
+  account_id: string;
+  company_name: string;
+  main_number: string;
+  extension_count: number;
+  last_status: string;
+  last_error: string;
+  last_checked_at: string | null;
+  has_client_id?: boolean;
+  has_secret?: boolean;
+  has_jwt?: boolean;
+  created_at?: string;
+  updated_at?: string;
+};
+
+const rcTokenCache = new Map<string, { token: string; expiresAt: number }>();
+
+function rcServerUrl(value: string): string {
+  return value === RC_SANDBOX ? RC_SANDBOX : RC_PRODUCTION;
+}
+
+function storeKeyOf(name: string): string {
+  return String(name || '').trim().toLowerCase();
+}
+
+function publicRingCentralAccount(row: Partial<RingCentralAccount> | null) {
+  if (!row) return null;
+  const clientId = String(row.client_id || '').trim();
+  const secret = String(row.client_secret || '').trim();
+  const jwt = String(row.jwt || '').trim();
+  return {
+    id: row.id || '',
+    store_key: row.store_key || '',
+    store_name: row.store_name || '',
+    server_url: rcServerUrl(String(row.server_url || '')),
+    account_id: row.account_id || '',
+    company_name: row.company_name || '',
+    main_number: row.main_number || '',
+    extension_count: Number(row.extension_count) || 0,
+    last_status: row.last_status || '',
+    last_error: row.last_error || '',
+    last_checked_at: row.last_checked_at || null,
+    created_at: row.created_at || null,
+    updated_at: row.updated_at || null,
+    has_client_id: row.has_client_id ?? Boolean(clientId),
+    has_secret: row.has_secret ?? Boolean(secret),
+    has_jwt: row.has_jwt ?? Boolean(jwt),
+  };
+}
+
+function rcErrorMessage(payload: unknown, fallback: string): string {
+  if (!payload || typeof payload !== 'object') return fallback;
+  const row = payload as Record<string, unknown>;
+  const nested = row.error;
+  if (nested && typeof nested === 'object') {
+    const inner = nested as Record<string, unknown>;
+    return String(inner.message || inner.error_description || fallback);
+  }
+  return String(
+    row.error_description || row.message || (typeof nested === 'string' ? nested : '') || fallback,
+  );
+}
+
+async function rcJson(url: string, init: RequestInit): Promise<{ ok: boolean; status: number; payload: unknown }> {
+  const upstream = await forward(url, init, 30_000);
+  const payload = await upstream.json().catch(() => null);
+  return { ok: upstream.ok, status: upstream.status, payload };
+}
+
+type EnvStoreCreds = {
+  storeKey: string;
+  storeName: string;
+  clientId: string;
+  clientSecret: string;
+  jwt: string;
+  serverUrl: string;
+};
+
+function envRingCentralStores(): EnvStoreCreds[] {
+  const rows: EnvStoreCreds[] = [];
+  const montreal: EnvStoreCreds = {
+    storeKey: 'montreal',
+    storeName: 'Montreal',
+    clientId: (Deno.env.get('RINGCENTRAL_MONTREAL_CLIENT_ID') || '').trim(),
+    clientSecret: (Deno.env.get('RINGCENTRAL_MONTREAL_CLIENT_SECRET') || '').trim(),
+    jwt: (Deno.env.get('RINGCENTRAL_MONTREAL_JWT') || '').trim(),
+    serverUrl: rcServerUrl((Deno.env.get('RINGCENTRAL_MONTREAL_SERVER_URL') || '').trim()),
+  };
+  if (montreal.clientId || montreal.clientSecret || montreal.jwt) rows.push(montreal);
+
+  const raw = (Deno.env.get('RINGCENTRAL_STORES') || '').trim();
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      const list = Array.isArray(parsed) ? parsed : [parsed];
+      for (const item of list) {
+        if (!item || typeof item !== 'object') continue;
+        const storeName = String((item as { storeName?: string }).storeName || '').trim();
+        const storeKey = storeKeyOf((item as { storeKey?: string }).storeKey || storeName);
+        if (!storeKey) continue;
+        rows.push({
+          storeKey,
+          storeName: storeName || storeKey,
+          clientId: String((item as { clientId?: string }).clientId || '').trim(),
+          clientSecret: String((item as { clientSecret?: string }).clientSecret || '').trim(),
+          jwt: String((item as { jwt?: string }).jwt || '').trim(),
+          serverUrl: rcServerUrl(String((item as { serverUrl?: string }).serverUrl || '')),
+        });
+      }
+    } catch {
+      // Ignore malformed RINGCENTRAL_STORES JSON; Montreal env vars still apply.
+    }
+  }
+  return rows;
+}
+
+async function seedRingCentralFromEnv(): Promise<void> {
+  const seeds = envRingCentralStores();
+  if (seeds.length === 0) return;
+  for (const seed of seeds) {
+    const { data: existing } = await adminClient()
+      .from('ringcentral_accounts')
+      .select('id, client_id, client_secret, jwt')
+      .eq('store_key', seed.storeKey)
+      .maybeSingle();
+
+    const current = (existing || {}) as Partial<RingCentralAccount>;
+    const next = {
+      store_key: seed.storeKey,
+      store_name: seed.storeName,
+      server_url: seed.serverUrl,
+      updated_at: new Date().toISOString(),
+    } as Record<string, string>;
+    if (seed.clientId && !String(current.client_id || '').trim()) next.client_id = seed.clientId;
+    if (seed.clientSecret && !String(current.client_secret || '').trim()) next.client_secret = seed.clientSecret;
+    if (seed.jwt && !String(current.jwt || '').trim()) next.jwt = seed.jwt;
+    if (!next.client_id && !next.client_secret && !next.jwt && current.id) continue;
+
+    await adminClient().from('ringcentral_accounts').upsert(next, { onConflict: 'store_key' });
+  }
+}
+
+async function loadRingCentralAccount(storeKey: string): Promise<RingCentralAccount | null> {
+  const { data, error: queryError } = await adminClient()
+    .from('ringcentral_accounts')
+    .select(
+      'id, store_key, store_name, client_id, client_secret, jwt, server_url, account_id, company_name, main_number, extension_count, last_status, last_error, last_checked_at, has_client_id, has_secret, has_jwt, created_at, updated_at',
+    )
+    .eq('store_key', storeKey)
+    .maybeSingle();
+  if (queryError || !data) return null;
+  return data as RingCentralAccount;
+}
+
+async function listRingCentralRows(): Promise<unknown[]> {
+  const { data, error: queryError } = await adminClient()
+    .from('ringcentral_accounts')
+    .select(RC_PUBLIC_COLUMNS)
+    .order('store_name');
+  if (queryError) throw queryError;
+  return (data || []).map((row) => publicRingCentralAccount(row as RingCentralAccount));
+}
+
+async function markRingCentralStatus(
+  id: string,
+  patch: Partial<RingCentralAccount>,
+): Promise<RingCentralAccount | null> {
+  const { data } = await adminClient()
+    .from('ringcentral_accounts')
+    .update({
+      ...patch,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', id)
+    .select(
+      'id, store_key, store_name, client_id, client_secret, jwt, server_url, account_id, company_name, main_number, extension_count, last_status, last_error, last_checked_at, has_client_id, has_secret, has_jwt, created_at, updated_at',
+    )
+    .maybeSingle();
+  return (data as RingCentralAccount) || null;
+}
+
+async function ringCentralAccessToken(account: RingCentralAccount): Promise<string> {
+  const cached = rcTokenCache.get(account.store_key);
+  if (cached && cached.expiresAt > Date.now() + 30_000) return cached.token;
+
+  const clientId = String(account.client_id || '').trim();
+  const clientSecret = String(account.client_secret || '').trim();
+  const jwt = String(account.jwt || '').trim();
+  if (!clientId || !clientSecret || !jwt) {
+    throw new Error('missing_credentials');
+  }
+
+  const origin = rcServerUrl(account.server_url);
+  const { ok, payload } = await rcJson(`${origin}/restapi/oauth/token`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Accept: 'application/json',
+    },
+    body: new URLSearchParams({
+      grant_type: RC_JWT_GRANT,
+      assertion: jwt,
+    }).toString(),
+  });
+
+  if (!ok) {
+    throw new Error(rcErrorMessage(payload, 'RingCentral rejected the JWT credentials.'));
+  }
+  const row = (payload || {}) as { access_token?: string; expires_in?: number };
+  const token = String(row.access_token || '').trim();
+  if (!token) throw new Error('RingCentral did not return an access token.');
+  const expiresIn = Number(row.expires_in) || 3600;
+  rcTokenCache.set(account.store_key, {
+    token,
+    expiresAt: Date.now() + Math.max(60, expiresIn) * 1000,
+  });
+  return token;
+}
+
+async function refreshRingCentralAccount(account: RingCentralAccount): Promise<RingCentralAccount> {
+  const origin = rcServerUrl(account.server_url);
+  const token = await ringCentralAccessToken(account);
+  const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' };
+
+  const [info, numbers, extensions] = await Promise.all([
+    rcJson(`${origin}/restapi/v1.0/account/~`, { method: 'GET', headers }),
+    rcJson(`${origin}/restapi/v1.0/account/~/phone-number?perPage=100`, { method: 'GET', headers }),
+    rcJson(`${origin}/restapi/v1.0/account/~/extension?perPage=1`, { method: 'GET', headers }),
+  ]);
+
+  if (!info.ok) {
+    throw new Error(rcErrorMessage(info.payload, 'Could not load the RingCentral account.'));
+  }
+
+  const accountInfo = (info.payload || {}) as {
+    id?: string | number;
+    mainNumber?: string;
+    operator?: { name?: string };
+    serviceInfo?: { brand?: { name?: string } };
+  };
+  const numberPayload = (numbers.payload || {}) as {
+    records?: Array<{ phoneNumber?: string; usageType?: string; primary?: boolean }>;
+  };
+  const extensionPayload = (extensions.payload || {}) as {
+    paging?: { totalElements?: number };
+    records?: unknown[];
+  };
+
+  const records = Array.isArray(numberPayload.records) ? numberPayload.records : [];
+  const mainFromList =
+    records.find((row) => row.usageType === 'MainCompanyNumber')?.phoneNumber ||
+    records.find((row) => row.primary)?.phoneNumber ||
+    records[0]?.phoneNumber ||
+    '';
+
+  const updated = await markRingCentralStatus(account.id, {
+    last_status: 'connected',
+    last_error: '',
+    last_checked_at: new Date().toISOString(),
+    account_id: String(accountInfo.id || account.account_id || ''),
+    company_name: String(
+      accountInfo.operator?.name || accountInfo.serviceInfo?.brand?.name || account.company_name || '',
+    ),
+    main_number: String(accountInfo.mainNumber || mainFromList || ''),
+    extension_count:
+      Number(extensionPayload.paging?.totalElements) ||
+      (Array.isArray(extensionPayload.records) ? extensionPayload.records.length : 0),
+  });
+  return updated || account;
+}
+
+async function handleRingCentralStores(req: Request): Promise<Response> {
+  try {
+    await seedRingCentralFromEnv();
+  } catch (err) {
+    console.error('ringcentral seed failed', err instanceof Error ? err.message : err);
+  }
+  try {
+    const stores = await listRingCentralRows();
+    return json(req, 200, { stores });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : '';
+    if (/schema cache|does not exist|42P01|PGRST205/i.test(message)) {
+      return error(
+        req,
+        400,
+        'Run the Phone / RingCentral SQL in Supabase, including the schema reload line, then refresh.',
+        'ringcentral_unconfigured',
+      );
+    }
+    throw err;
+  }
+}
+
+async function handleRingCentralCheck(req: Request): Promise<Response> {
+  const body = await readJson<{ storeKey?: string; storeName?: string }>(req);
+  const storeKey = storeKeyOf(body.storeKey || body.storeName || '');
+  if (!storeKey) return error(req, 400, 'Choose a store to check.', 'bad_request');
+
+  try {
+    await seedRingCentralFromEnv();
+  } catch (err) {
+    console.error('ringcentral seed failed', err instanceof Error ? err.message : err);
+  }
+
+  const account = await loadRingCentralAccount(storeKey);
+  if (!account) {
+    return error(req, 404, 'That store has no RingCentral credentials yet.', 'ringcentral_unconfigured');
+  }
+  if (!String(account.client_id || '').trim() || !String(account.client_secret || '').trim() || !String(account.jwt || '').trim()) {
+    return error(
+      req,
+      400,
+      'Paste the RingCentral client ID, client secret, and JWT for this store.',
+      'ringcentral_unconfigured',
+    );
+  }
+
+  try {
+    const refreshed = await refreshRingCentralAccount(account);
+    return json(req, 200, { store: publicRingCentralAccount(refreshed) });
+  } catch (err) {
+    const message =
+      err instanceof Error && err.message === 'missing_credentials'
+        ? 'Paste the RingCentral client ID, client secret, and JWT for this store.'
+        : err instanceof Error
+          ? err.message
+          : 'Could not reach RingCentral.';
+    rcTokenCache.delete(storeKey);
+    const failed = await markRingCentralStatus(account.id, {
+      last_status: 'error',
+      last_error: message.slice(0, 300),
+      last_checked_at: new Date().toISOString(),
+    });
+    return json(req, 200, { store: publicRingCentralAccount(failed || account) });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -1049,6 +1407,12 @@ Deno.serve(async (req) => {
     }
     if (path === '/moneris/poll') {
       return await handleMonerisPoll(req, staff.userId);
+    }
+    if (path === '/ringcentral/stores' && req.method === 'GET') {
+      return await handleRingCentralStores(req);
+    }
+    if (path === '/ringcentral/check' && req.method === 'POST') {
+      return await handleRingCentralCheck(req);
     }
     return error(req, 404, 'Unknown proxy route.', 'not_found');
   } catch (err) {

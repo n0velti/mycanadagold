@@ -48,6 +48,8 @@ import {
   canFilterApp,
   canManageAppAccess,
   categoryLabel,
+  findStaffByEmployeeName,
+  listStaffProfiles,
   loadOwnUserAppAccess,
   loadRoleAppAccess,
   useAppAccess,
@@ -114,6 +116,7 @@ import ProfileLocationPicker from './components/ProfileLocationPicker';
 import ProfileTeamPicker from './components/ProfileTeamPicker';
 import MarketingScreen from './components/MarketingScreen';
 import SharedServicesScreen from './components/SharedServicesScreen';
+import PhoneScreen from './components/PhoneScreen';
 import TeamsScreen from './components/TeamsScreen';
 import { fetchAureusEmployee } from './lib/aureusEmployees';
 import { useDirectMessages } from './lib/messages';
@@ -476,6 +479,7 @@ const TOOL_CARDS = [
   { key: 'serphint', label: 'Serphint', icon: 'eye-outline', tint: '#ECFDF5', accent: '#047857' },
   { key: 'supplies', label: 'Supplies', icon: 'bag-handle-outline', tint: '#FFF1F2', accent: '#BE123C' },
   { key: 'employees', label: 'Employees', icon: 'people-outline', tint: '#EFF6FF', accent: '#1D4ED8' },
+  { key: 'phone', label: 'Phone', icon: 'call-outline', tint: '#ECFDF5', accent: '#15803D' },
   { key: 'teams', label: 'Teams', icon: 'people-circle-outline', tint: '#EEF4FF', accent: '#2563EB' },
   { key: 'marketing', label: 'Marketing', icon: 'megaphone-outline', tint: '#FDF2F8', accent: '#DB2777' },
   { key: 'shared-services', label: 'Shared Services', icon: 'briefcase-outline', tint: '#F0FDFA', accent: '#0F766E' },
@@ -500,6 +504,7 @@ const TOOL_KEYS = new Set(TOOL_CARDS.map((tool) => tool.key));
 const STORE_DRAWER_TAB_KEYS = [
   'transactions',
   'inventory',
+  'preorders',
   'financials',
   'employees',
   'debit',
@@ -964,31 +969,41 @@ const TransactionListRow = memo(function TransactionListRow({
   selected,
   onPress,
   employeeCount,
+  employeePhotoUrl = '',
   onAmountHover,
   hideStore = false,
   cashSaved = false,
   onCashPress,
 }) {
-  const [amountTip, setAmountTip] = useState('');
-  const [amountAnchor, setAmountAnchor] = useState(null);
+  const [splitTip, setSplitTip] = useState('');
+  const [splitAnchor, setSplitAnchor] = useState(null);
   const [employeeAnchor, setEmployeeAnchor] = useState(null);
   const fintrac = isFintracCash(item);
   const isBuy = item.type === 'purchase';
   const showCash = typeof onCashPress === 'function' && isCashTransaction(item);
+  const employeeName = item.employeeName || '—';
 
-  const handleAmountEnter = async (event) => {
-    setAmountAnchor(event?.currentTarget || null);
+  const handleSplitEnter = async (event) => {
+    setSplitAnchor(event?.currentTarget || null);
     if (item.paymentBreakdownLabel) {
-      setAmountTip(item.paymentBreakdownLabel);
-    } else if (!amountTip) {
-      setAmountTip('…');
+      setSplitTip(item.paymentBreakdownLabel);
+    } else if (!splitTip) {
+      setSplitTip('…');
     }
     if (!item.paymentBreakdown && onAmountHover) {
       const label = await onAmountHover(item);
-      if (label) setAmountTip(label);
-      else if (!item.paymentBreakdownLabel) setAmountTip(item.amountLabel || '');
+      if (label) setSplitTip(label);
+      else if (!item.paymentBreakdownLabel) setSplitTip(item.amountLabel || '');
     }
   };
+
+  const splitHover =
+    Platform.OS === 'web'
+      ? {
+          onMouseEnter: handleSplitEnter,
+          onMouseLeave: () => setSplitAnchor(null),
+        }
+      : null;
 
   return (
     <Pressable
@@ -1026,18 +1041,12 @@ const TransactionListRow = memo(function TransactionListRow({
       <Text style={[styles.txTableCell, styles.txTableCellPrimary, styles.colCustomer]} numberOfLines={1}>
         {item.customerName || '—'}
       </Text>
-      <Text style={[styles.txTableCell, styles.colPayment]} numberOfLines={1}>
-        {item.paymentMethodLabel || '—'}
-      </Text>
-      <View
-        style={[styles.txTableAmount, styles.colAmount]}
-        {...(Platform.OS === 'web'
-          ? {
-              onMouseEnter: handleAmountEnter,
-              onMouseLeave: () => setAmountAnchor(null),
-            }
-          : null)}
-      >
+      <View style={styles.colPayment} {...splitHover}>
+        <Text style={styles.txTableCell} numberOfLines={1}>
+          {item.paymentMethodLabel || '—'}
+        </Text>
+      </View>
+      <View style={[styles.txTableAmount, styles.colAmount]} {...splitHover}>
         {showCash ? (
           <TxnCashIcon saved={cashSaved} onPress={() => onCashPress(item)} />
         ) : null}
@@ -1048,15 +1057,9 @@ const TransactionListRow = memo(function TransactionListRow({
         >
           {item.amountLabel}
         </Text>
-        <FloatingTooltip
-          visible={Boolean(amountAnchor && amountTip)}
-          text={amountTip}
-          anchorEl={amountAnchor}
-          align="end"
-        />
       </View>
       <View
-        style={styles.colEmployee}
+        style={[styles.colEmployee, styles.txEmployeeCell]}
         {...(Platform.OS === 'web'
           ? {
               onMouseEnter: (event) => setEmployeeAnchor(event?.currentTarget || null),
@@ -1064,8 +1067,9 @@ const TransactionListRow = memo(function TransactionListRow({
             }
           : null)}
       >
+        <ProfileAvatar uri={employeePhotoUrl} name={employeeName} size={24} />
         <Text style={[styles.txTableCell, styles.txTableCellSecondary]} numberOfLines={1}>
-          {item.employeeName || '—'}
+          {employeeName}
         </Text>
         <FloatingTooltip
           visible={Boolean(employeeAnchor)}
@@ -1074,6 +1078,12 @@ const TransactionListRow = memo(function TransactionListRow({
           align="end"
         />
       </View>
+      <FloatingTooltip
+        visible={Boolean(splitAnchor && splitTip)}
+        text={splitTip}
+        anchorEl={splitAnchor}
+        align="end"
+      />
     </Pressable>
   );
 });
@@ -2131,6 +2141,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
   const [detailError, setDetailError] = useState('');
   const detailRequestId = useRef(0);
   const paymentCache = useRef({});
+  const [staff, setStaff] = useState([]);
 
   const lastStoreNameRef = useRef(store?.store);
   const incomingTxKey = (store?.transactions || []).map((row) => row.id).join('\n');
@@ -2204,6 +2215,29 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
     }
     return counts;
   }, [txRows]);
+
+  const employeePhotos = useMemo(() => {
+    const map = {};
+    for (const row of txRows) {
+      const name = row.employeeName || '';
+      if (!name || map[name] != null) continue;
+      map[name] = findStaffByEmployeeName(staff, name)?.avatarUrl || '';
+    }
+    return map;
+  }, [txRows, staff]);
+
+  useEffect(() => {
+    let cancelled = false;
+    listStaffProfiles()
+      .then((rows) => {
+        if (cancelled) return;
+        setStaff((rows || []).filter((row) => row.isActive !== false));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!visible || !session) return undefined;
@@ -2351,6 +2385,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
             >
               {activeTab === 'overview' ||
               activeTab === 'inventory' ||
+              activeTab === 'preorders' ||
               activeTab === 'financials' ||
               activeTab === 'employees' ||
               activeTab === 'debit' ||
@@ -2367,6 +2402,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                       txRows={txRows}
                       onOpenTransaction={openDetail}
                       onOpenApp={openApp}
+                      onAmountHover={ensurePaymentBreakdown}
                       topInset={topInset}
                       ready={settled}
                     />
@@ -2384,6 +2420,8 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                         storeFilter={heldStore.store}
                         embedded
                       />
+                    ) : activeTab === 'preorders' ? (
+                      <PreordersScreen />
                     ) : activeTab === 'financials' ? (
                       <FinancialsScreen
                         session={session}
@@ -2492,6 +2530,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                                 selected={selectedRow?.id === item.id}
                                 onPress={openDetail}
                                 employeeCount={employeeCounts[item.employeeName] || 0}
+                                employeePhotoUrl={employeePhotos[item.employeeName] || ''}
                                 onAmountHover={ensurePaymentBreakdown}
                                 hideStore
                                 cashSaved={cashSlips.isSaved(item)}
@@ -3830,6 +3869,30 @@ function TransactionsScreen({ session, onRequireLogin, storeFilter }) {
     return counts;
   }, [scopedRows]);
 
+  const [staff, setStaff] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    listStaffProfiles()
+      .then((rows) => {
+        if (cancelled) return;
+        setStaff((rows || []).filter((row) => row.isActive !== false));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const employeePhotos = useMemo(() => {
+    const map = {};
+    for (const row of scopedRows) {
+      const name = row.employeeName || '';
+      if (!name || map[name] != null) continue;
+      map[name] = findStaffByEmployeeName(staff, name)?.avatarUrl || '';
+    }
+    return map;
+  }, [scopedRows, staff]);
+
   const fintracCount = useMemo(
     () => scopedRows.reduce((count, row) => count + (isFintracCash(row) ? 1 : 0), 0),
     [scopedRows],
@@ -3957,6 +4020,7 @@ function TransactionsScreen({ session, onRequireLogin, storeFilter }) {
         selected={selectedRow?.id === item.id}
         onPress={openDetail}
         employeeCount={employeeCounts[item.employeeName] || 0}
+        employeePhotoUrl={employeePhotos[item.employeeName] || ''}
         onAmountHover={ensurePaymentBreakdown}
         cashSaved={cashSlips.isSaved(item)}
         onCashPress={cashSlips.openEditor}
@@ -3966,6 +4030,7 @@ function TransactionsScreen({ session, onRequireLogin, storeFilter }) {
       selectedRow?.id,
       openDetail,
       employeeCounts,
+      employeePhotos,
       ensurePaymentBreakdown,
       cashSlips.savedKey,
       cashSlips.isSaved,
@@ -4167,7 +4232,7 @@ function TransactionsScreen({ session, onRequireLogin, storeFilter }) {
             data={filteredRows}
             keyExtractor={keyExtractor}
             renderItem={renderTransaction}
-            extraData={`${selectedRow?.id}:${cashSlips.savedKey}`}
+            extraData={`${selectedRow?.id}:${cashSlips.savedKey}:${staff.length}`}
             style={styles.tableList}
             contentContainerStyle={styles.txListContent}
             showsVerticalScrollIndicator={false}
@@ -5004,6 +5069,7 @@ export default function App() {
       permissions: 'Permissions',
       database: 'Database',
       'store-settings': 'Store settings',
+      ringcentral: 'RingCentral',
     };
     const settingsSubPanelLabel =
       activeTool.key === 'settings' ? settingsSubPanels[settingsPanel] : null;
@@ -5427,6 +5493,12 @@ export default function App() {
                 onOpenEmails={openEmailsFromBonuses}
                 storeFilter={scopedStore || undefined}
               />
+            ) : activeTool.key === 'phone' ? (
+              <PhoneScreen
+                session={session}
+                onRequireLogin={() => selectTab('profile')}
+                storeFilter={scopedStore || undefined}
+              />
             ) : activeTool.key === 'employees' ? (
               <EmployeesScreen
                 session={session}
@@ -5697,6 +5769,7 @@ export default function App() {
     permissions: 'Permissions',
     database: 'Database',
     'store-settings': 'Store settings',
+    ringcentral: 'RingCentral',
   };
   const mobileToolTitle =
     activeTool?.key === 'settings' ? settingsSubPanels[settingsPanel] || activeTool?.label : activeTool?.label;
@@ -9281,8 +9354,14 @@ const styles = StyleSheet.create({
     textAlign: 'right',
   },
   colEmployee: {
-    flex: 1.45,
-    minWidth: 104,
+    flex: 1.7,
+    minWidth: 132,
+  },
+  txEmployeeCell: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minWidth: 0,
   },
   tableEmpty: {
     paddingVertical: 48,

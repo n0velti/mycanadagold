@@ -1,16 +1,13 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Platform, StyleSheet, Text, View } from 'react-native';
+import TriageAccuracyPanel from './TriageAccuracyPanel';
 import TriageDeletedPanel from './TriageDeletedPanel';
 import TriageTransfersPanel from './TriageTransfersPanel';
-import TriageReviewDrawer from './TriageReviewDrawer';
-import { FONT, T, TextAction } from './TriageKit';
-import { PoThumb, TableMuted, TableStrong } from './TriageTable';
+import { BarButton, EmptyState, FONT, SearchField, T, TextTabs } from './TriageKit';
+import { useIsMobile } from '../lib/mobileUi';
 import {
-  applyTriageReviewToPo,
   batchStats,
   collectAccuracyTriagePos,
-  saveTriagePoReview,
   syncTransferWorkflowRemote,
   triagePoNeedsCorrection,
   useTransferWorkflow,
@@ -26,170 +23,45 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
   }
   style.textContent = [
     '.cgold-triage-row{cursor:pointer;background-color:transparent;}',
-    '.cgold-triage-row:hover{background-color:#f5f5f7!important;}',
+    '.cgold-triage-table-row:hover{background-color:#f5f5f7!important;}',
     '.cgold-triage-row-selected,.cgold-triage-row-selected:hover{background-color:#EAF2FF!important;}',
     '.cgold-triage-row-mixed{background-color:rgba(255,149,0,0.16)!important;}',
-    '.cgold-triage-row-mixed .cgold-triage-row:hover{background-color:rgba(255,149,0,0.26)!important;}',
+    '.cgold-triage-row-mixed:hover,.cgold-triage-row-mixed .cgold-triage-row:hover{background-color:rgba(255,149,0,0.26)!important;}',
     '.cgold-triage-row-bullion{background-color:rgba(255,59,48,0.16)!important;}',
-    '.cgold-triage-row-bullion .cgold-triage-row:hover{background-color:rgba(255,59,48,0.26)!important;}',
+    '.cgold-triage-row-bullion:hover,.cgold-triage-row-bullion .cgold-triage-row:hover{background-color:rgba(255,59,48,0.26)!important;}',
   ].join('');
 }
 
 /** Drop cached transaction rows so nothing outlives the session that loaded them. */
 export function clearTriageCache() {}
 
-const fontFamily = FONT;
-const TEXT = T.text;
-const SECONDARY = T.secondary;
-const GREEN = T.green;
-const ORANGE = T.orange;
-const RED = T.red;
-const HAIRLINE = T.hairline;
-
-function formatPct(value) {
-  if (!Number.isFinite(value)) return '—';
-  return `${Math.round(value)}%`;
-}
-
-function accuracyTint(pct) {
-  if (pct >= 90) return GREEN;
-  if (pct >= 75) return ORANGE;
-  return RED;
-}
-
-function errorPlace(row) {
-  const type = String(row?.review?.errorType || '').trim();
-  if (type) return type;
-  const corrections = Array.isArray(row?.review?.corrections) ? row.review.corrections : [];
-  if (corrections.length) {
-    const labels = corrections.map((item) => String(item?.label || '').toLowerCase());
-    if (labels.some((label) => /\bqty\b|quantity/.test(label))) return 'Wrong quantity';
-    if (labels.some((label) => /price|amount|unit/.test(label))) return 'Wrong price';
-    if (labels.some((label) => /customer|client/.test(label))) return 'Wrong customer';
-    if (labels.some((label) => /payment/.test(label))) return 'Wrong payment';
-    if (labels.some((label) => /name|item/.test(label))) return 'Wrong item';
-    return corrections[0].label || 'Unspecified';
-  }
-  if (String(row?.review?.note || '').trim()) return 'Note only';
-  return 'Unspecified';
-}
-
-function countRanks(rows, getLabel) {
-  const counts = new Map();
-  for (const row of rows) {
-    const label = String(getLabel(row) || '').trim();
-    if (!label || label === '—') continue;
-    const key = label.toLowerCase();
-    const current = counts.get(key);
-    if (current) current.count += 1;
-    else counts.set(key, { label, count: 1 });
-  }
-  const total = rows.length || 1;
-  return [...counts.values()]
-    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }))
-    .map((row) => ({ ...row, pct: Math.round((row.count / total) * 100) }));
-}
-
-const ExceptionRow = memo(function ExceptionRow({ row, onPress }) {
-  const errorType = errorPlace(row);
-  const sub = [row.storeName, row.dateLabel, errorType].filter(Boolean).join(' · ');
-  return (
-    <Pressable
-      style={styles.exceptionRow}
-      onPress={() => onPress(row)}
-      accessibilityRole="button"
-      accessibilityLabel={`Review ${row.reference}`}
-    >
-      <PoThumb urls={row.imageUrls} label={row.reference} />
-      <View style={styles.exceptionText}>
-        <TableStrong>{row.reference}</TableStrong>
-        <TableMuted numberOfLines={1}>{sub}</TableMuted>
-      </View>
-      <View style={styles.exceptionBadge}>
-        <Text style={styles.exceptionBadgeText}>Flagged</Text>
-      </View>
-      <Ionicons name="chevron-forward" size={16} color="#c7c7cc" />
-    </Pressable>
-  );
-});
-
-function TodayInsightsStrip({ accuracyRows }) {
-  const total = accuracyRows.length;
-  const incorrectRows = useMemo(
-    () => accuracyRows.filter((row) => triagePoNeedsCorrection(row)),
-    [accuracyRows],
-  );
-  const correctCount = total - incorrectRows.length;
-  const accuracyPct = total ? (correctCount / total) * 100 : null;
-  const errorRanks = useMemo(() => countRanks(incorrectRows, errorPlace), [incorrectRows]);
-  const topError = errorRanks[0] || null;
-
-  if (total === 0) return null;
-
-  return (
-    <View style={styles.insightsStrip}>
-      <View style={styles.insightsStripCell}>
-        <Text style={styles.insightsStripKicker}>Accuracy</Text>
-        <Text style={[styles.insightsStripValue, { color: accuracyPct == null ? TEXT : accuracyTint(accuracyPct) }]}>
-          {formatPct(accuracyPct)}
-        </Text>
-      </View>
-
-      {topError ? (
-        <>
-          <View style={styles.insightsStripDivider} />
-          <View style={[styles.insightsStripCell, styles.insightsStripCellFlex]}>
-            <Text style={styles.insightsStripKicker}>Top Error</Text>
-            <Text style={styles.insightsStripLabel} numberOfLines={1}>
-              {topError.label}
-            </Text>
-          </View>
-        </>
-      ) : null}
-    </View>
-  );
-}
-
-function ExceptionsSection({ flaggedRows, onOpenReview }) {
-  if (flaggedRows.length === 0) return null;
-
-  return (
-    <View style={styles.exceptionsSection}>
-      <View style={styles.exceptionsHeader}>
-        <View style={styles.exceptionsHeaderIcon}>
-          <Ionicons name="alert-circle" size={16} color={ORANGE} />
-        </View>
-        <Text style={styles.exceptionsTitle}>Exceptions</Text>
-        <Text style={styles.exceptionsCount}>{flaggedRows.length}</Text>
-      </View>
-      <View style={styles.exceptionsList}>
-        {flaggedRows.slice(0, 5).map((row) => (
-          <ExceptionRow key={`${row.triageId}-${row.id}`} row={row} onPress={onOpenReview} />
-        ))}
-        {flaggedRows.length > 5 ? (
-          <Text style={styles.exceptionsMore}>+{flaggedRows.length - 5} more flagged POs</Text>
-        ) : null}
-      </View>
-    </View>
-  );
-}
+const TRIAGE_TABS = [
+  { key: 'transfers', label: 'Dashboard', icon: 'grid-outline' },
+  { key: 'accuracy', label: 'Accuracy', icon: 'checkmark-done-outline' },
+  { key: 'allocation', label: 'Allocation', icon: 'git-branch-outline' },
+  { key: 'deleted', label: 'Deleted', icon: 'trash-outline' },
+];
 
 export default function TriageScreen({
   session,
   onRequireLogin,
+  storeFilter,
   embedded = false,
   onStoreBackChange,
 }) {
+  const isMobile = useIsMobile();
   const { triage, deleted = [] } = useTransferWorkflow();
+  const [activeTab, setActiveTab] = useState('transfers');
   const [createTransferOpen, setCreateTransferOpen] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
-  const [showDeleted, setShowDeleted] = useState(false);
+  const [listQuery, setListQuery] = useState('');
+  const [transferView, setTransferView] = useState('list');
   const [canLeaveStore, setCanLeaveStore] = useState(false);
   const [batchContext, setBatchContext] = useState(null);
-  const [reviewRow, setReviewRow] = useState(null);
   const leaveStoreRef = useRef(null);
   const onStoreBackChangeRef = useRef(onStoreBackChange);
   onStoreBackChangeRef.current = onStoreBackChange;
+  const currentTab = TRIAGE_TABS.find((tab) => tab.key === activeTab) || TRIAGE_TABS[0];
 
   useEffect(() => {
     if (!session?.supabaseUserId && !session?.token) return undefined;
@@ -197,18 +69,25 @@ export default function TriageScreen({
     return undefined;
   }, [session?.supabaseUserId, session?.token]);
 
-  const accuracyRows = useMemo(() => collectAccuracyTriagePos(triage), [triage]);
+  const tabOptions = useMemo(() => {
+    let openDocs = 0;
+    for (const batch of triage) openDocs += batchStats(batch).open;
+    const flagged = collectAccuracyTriagePos(triage).filter(triagePoNeedsCorrection).length;
+    return TRIAGE_TABS.map((tab) => {
+      if (tab.key === 'transfers' && openDocs > 0) return { ...tab, count: openDocs };
+      if (tab.key === 'accuracy' && flagged > 0) return { ...tab, count: flagged };
+      if (tab.key === 'deleted' && deleted.length > 0) return { ...tab, count: deleted.length };
+      return tab;
+    });
+  }, [deleted.length, triage]);
 
-  const flaggedRows = useMemo(
-    () => accuracyRows.filter((row) => triagePoNeedsCorrection(row)),
-    [accuracyRows],
-  );
-
-  const openBatchCount = useMemo(() => {
-    let count = 0;
-    for (const batch of triage) count += batchStats(batch).open;
-    return count;
-  }, [triage]);
+  const changeTab = useCallback((key) => {
+    leaveStoreRef.current?.();
+    setActiveTab(key);
+    setCreateTransferOpen(false);
+    setQuickAddOpen(false);
+    setListQuery('');
+  }, []);
 
   const handleBackChange = useCallback((fn, context) => {
     leaveStoreRef.current = fn;
@@ -217,126 +96,70 @@ export default function TriageScreen({
     onStoreBackChangeRef.current?.(fn, context || null);
   }, []);
 
-  const handleOpenReview = useCallback((row) => {
-    setReviewRow(row);
-  }, []);
-
-  const handleSaveReview = useCallback((poId, review) => {
-    saveTriagePoReview(poId, review);
-    setReviewRow((current) => (current?.id === poId ? applyTriageReviewToPo(current, review) : current));
-  }, []);
-
-  const openDeleted = useCallback(() => {
-    leaveStoreRef.current?.();
-    setCreateTransferOpen(false);
-    setQuickAddOpen(false);
-    setShowDeleted(true);
-  }, []);
-
-  const inBatch = !showDeleted && canLeaveStore && Boolean(batchContext);
-  const showHeader = !inBatch || onStoreBackChange;
-
-  const headerContent = showDeleted ? (
-    <View style={styles.todayHeader}>
-      <View style={styles.todayTitleRow}>
-        <Text style={styles.todayTitle}>Deleted</Text>
-        {deleted.length > 0 ? (
-          <View style={styles.todayBadge}>
-            <Text style={styles.todayBadgeText}>{deleted.length}</Text>
-          </View>
-        ) : null}
-      </View>
-      <View style={styles.todayActions}>
-        <TextAction label="Today" onPress={() => setShowDeleted(false)} accessibilityLabel="Back to Today" />
-      </View>
-    </View>
-  ) : showHeader ? (
-    <View style={styles.todayHeader}>
-      <View style={styles.todayTitleRow}>
-        <Text style={styles.todayTitle}>Today</Text>
-        {openBatchCount > 0 ? (
-          <View style={styles.todayBadge}>
-            <Text style={styles.todayBadgeText}>{openBatchCount}</Text>
-          </View>
-        ) : null}
-      </View>
-      {session?.token ? (
-        <View style={styles.todayActions}>
-          <TextAction
-            label="Deleted"
-            onPress={openDeleted}
-            accessibilityLabel="Open deleted triage items"
-          />
-          <TextAction
-            label="Quick Add"
-            onPress={() => setQuickAddOpen(true)}
-            accessibilityLabel="Quick Add a PO from any store"
-          />
-          <TextAction
-            icon="add"
-            label="New"
-            strong
-            onPress={() => setCreateTransferOpen(true)}
-            accessibilityLabel="New batch"
-          />
-        </View>
-      ) : null}
-    </View>
-  ) : (
-    <View style={styles.batchHeader}>
-      <Text style={styles.batchTitleDate} numberOfLines={1}>
-        {batchContext.dateLabel}
-      </Text>
-      {batchContext.storeNames ? (
-        <Text style={styles.batchTitleStores} numberOfLines={1}>
-          {batchContext.storeNames}
+  const inBatch = activeTab === 'transfers' && canLeaveStore && Boolean(batchContext);
+  const trailing =
+    session?.token && activeTab === 'transfers' && transferView === 'list' ? (
+      <>
+        <SearchField
+          value={listQuery}
+          onChangeText={setListQuery}
+          placeholder="PO / SO"
+          style={[styles.tabSearch, isMobile && styles.tabSearchMobile]}
+        />
+        <BarButton
+          label="Quick Add"
+          onPress={() => setQuickAddOpen(true)}
+          accessibilityLabel="Quick Add a PO from any store"
+        />
+        <BarButton
+          icon="add"
+          label="Add Batch"
+          onPress={() => setCreateTransferOpen(true)}
+          accessibilityLabel="Add a new batch"
+        />
+      </>
+    ) : session?.token && inBatch && !onStoreBackChange ? (
+      <View style={styles.batchTitle} pointerEvents="none">
+        <Text style={styles.batchTitleDate} numberOfLines={1}>
+          {batchContext.dateLabel}
         </Text>
-      ) : null}
-    </View>
-  );
+        {batchContext.storeNames ? (
+          <Text style={styles.batchTitleStores} numberOfLines={1}>
+            {batchContext.storeNames}
+          </Text>
+        ) : null}
+      </View>
+    ) : null;
 
   return (
     <View style={[styles.body, embedded && styles.bodyEmbedded]}>
-      {headerContent}
+      <TextTabs options={tabOptions} value={activeTab} onChange={changeTab} trailing={trailing} size="lg" />
 
-      {showDeleted ? (
+      <View style={activeTab === 'transfers' ? styles.pageVisible : styles.pageHidden}>
+        <TriageTransfersPanel
+          session={session}
+          onRequireLogin={onRequireLogin}
+          createOpen={createTransferOpen}
+          onCreateOpenChange={setCreateTransferOpen}
+          quickAddOpen={quickAddOpen}
+          onQuickAddOpenChange={setQuickAddOpen}
+          onViewChange={setTransferView}
+          onBackChange={handleBackChange}
+          listQuery={listQuery}
+        />
+      </View>
+
+      {activeTab === 'accuracy' ? (
+        <TriageAccuracyPanel session={session} storeFilter={storeFilter} />
+      ) : activeTab === 'deleted' ? (
         <TriageDeletedPanel session={session} />
-      ) : (
-        <>
-          {showHeader ? (
-            <ScrollView
-              style={styles.summaryScroll}
-              contentContainerStyle={styles.summaryContent}
-              showsVerticalScrollIndicator={false}
-            >
-              <TodayInsightsStrip accuracyRows={accuracyRows} />
-              <ExceptionsSection flaggedRows={flaggedRows} onOpenReview={handleOpenReview} />
-            </ScrollView>
-          ) : null}
-
-          <View style={styles.transfersContainer}>
-            <TriageTransfersPanel
-              session={session}
-              onRequireLogin={onRequireLogin}
-              createOpen={createTransferOpen}
-              onCreateOpenChange={setCreateTransferOpen}
-              quickAddOpen={quickAddOpen}
-              onQuickAddOpenChange={setQuickAddOpen}
-              onBackChange={handleBackChange}
-            />
-          </View>
-        </>
-      )}
-
-      <TriageReviewDrawer
-        visible={Boolean(reviewRow)}
-        session={session}
-        row={reviewRow}
-        review={reviewRow?.review || null}
-        extraRows={accuracyRows}
-        onClose={() => setReviewRow(null)}
-        onSave={handleSaveReview}
-      />
+      ) : activeTab !== 'transfers' ? (
+        <EmptyState
+          icon={currentTab.icon}
+          title={currentTab.label}
+          body={`Nothing to review in ${currentTab.label.toLowerCase()} yet.`}
+        />
+      ) : null}
     </View>
   );
 }
@@ -351,210 +174,40 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: '100%',
   },
-  todayHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
+  tabSearch: {
+    width: 220,
+    maxWidth: 220,
   },
-  todayTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+  tabSearchMobile: {
+    flexGrow: 1,
+    flexBasis: 140,
+    width: 'auto',
+    maxWidth: '100%',
+    minWidth: 120,
   },
-  todayTitle: {
-    fontFamily,
-    fontSize: 20,
-    fontWeight: '700',
-    color: TEXT,
-    letterSpacing: -0.4,
-  },
-  todayBadge: {
-    minWidth: 20,
-    height: 20,
-    borderRadius: 10,
-    paddingHorizontal: 6,
-    backgroundColor: T.blue,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  todayBadgeText: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#fff',
-  },
-  todayActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  batchHeader: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
+  batchTitle: {
+    maxWidth: 220,
+    alignItems: 'flex-end',
   },
   batchTitleDate: {
-    fontFamily,
-    fontSize: 17,
+    fontFamily: FONT,
+    fontSize: 13,
     fontWeight: '600',
-    color: TEXT,
-    letterSpacing: -0.3,
+    color: T.text,
+    letterSpacing: -0.2,
+    textAlign: 'right',
   },
   batchTitleStores: {
-    fontFamily,
-    fontSize: 13,
-    color: SECONDARY,
-    marginTop: 2,
-  },
-  summaryScroll: {
-    flexShrink: 0,
-    maxHeight: 280,
-  },
-  summaryContent: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 8,
-    gap: 12,
-  },
-  insightsStrip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    gap: 12,
-    ...Platform.select({
-      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.04)' },
-      default: {},
-    }),
-  },
-  insightsStripCell: {
-    alignItems: 'center',
-    gap: 2,
-  },
-  insightsStripCellFlex: {
-    flex: 1,
-    minWidth: 0,
-  },
-  insightsStripKicker: {
-    fontFamily,
-    fontSize: 10.5,
-    fontWeight: '600',
-    color: SECONDARY,
-    letterSpacing: 0.3,
-    textTransform: 'uppercase',
-  },
-  insightsStripValue: {
-    fontFamily,
-    fontSize: 18,
-    fontWeight: '700',
-    color: TEXT,
-    letterSpacing: -0.4,
-  },
-  insightsStripLabel: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: TEXT,
-    letterSpacing: -0.2,
-    textAlign: 'center',
-  },
-  insightsStripDivider: {
-    width: StyleSheet.hairlineWidth,
-    height: 32,
-    backgroundColor: HAIRLINE,
-    marginHorizontal: 4,
-  },
-  exceptionsSection: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    overflow: 'hidden',
-    ...Platform.select({
-      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.04)' },
-      default: {},
-    }),
-  },
-  exceptionsHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
-  },
-  exceptionsHeaderIcon: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255,149,0,0.14)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  exceptionsTitle: {
-    fontFamily,
-    flex: 1,
-    fontSize: 14,
-    fontWeight: '600',
-    color: TEXT,
-    letterSpacing: -0.2,
-  },
-  exceptionsCount: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: ORANGE,
-  },
-  exceptionsList: {
-    gap: 0,
-  },
-  exceptionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  exceptionText: {
-    flex: 1,
-    minWidth: 0,
-    gap: 2,
-  },
-  exceptionBadge: {
-    backgroundColor: 'rgba(255,149,0,0.14)',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 10,
-  },
-  exceptionBadgeText: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 11,
-    fontWeight: '600',
-    color: ORANGE,
+    color: T.secondary,
+    textAlign: 'right',
   },
-  exceptionsMore: {
-    fontFamily,
-    fontSize: 13,
-    color: SECONDARY,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    textAlign: 'center',
-  },
-  transfersContainer: {
+  pageVisible: {
     flex: 1,
     minHeight: 0,
+  },
+  pageHidden: {
+    display: 'none',
   },
 });
