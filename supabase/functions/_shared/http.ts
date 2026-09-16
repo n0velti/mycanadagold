@@ -24,22 +24,53 @@ function allowedOrigins(): string[] {
     .filter(Boolean);
 }
 
+function isLocalHost(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1';
+}
+
+function originAllowed(origin: string, list: string[]): boolean {
+  if (!origin) return false;
+  if (list.includes(origin)) return true;
+  try {
+    const url = new URL(origin);
+    if (!isLocalHost(url.hostname)) return false;
+    return list.some((item) => {
+      try {
+        return isLocalHost(new URL(item).hostname);
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return false;
+  }
+}
+
 /**
  * CORS headers. When CGOLD_ALLOWED_ORIGINS is set only those origins are
  * echoed back; otherwise any origin is accepted (tokens are bearer, not
  * cookies, so CORS is not the security boundary here).
+ *
+ * Unknown origins must not be answered with a different Allow-Origin — the
+ * browser still blocks, and the app surfaces it as a dead sign-in service.
  */
 export function corsHeaders(req: Request): Record<string, string> {
   const origin = req.headers.get('origin') || '';
   const list = allowedOrigins();
-  const allow = list.length === 0 ? '*' : list.includes(origin) ? origin : list[0];
-  return {
-    'Access-Control-Allow-Origin': allow,
+  let allow = '*';
+  if (list.length > 0) {
+    if (originAllowed(origin, list)) allow = origin;
+    else if (!origin) allow = list[0];
+    else allow = '';
+  }
+  const headers: Record<string, string> = {
     'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
     'Access-Control-Allow-Headers': DEFAULT_ALLOWED_HEADERS,
     'Access-Control-Max-Age': '600',
     Vary: 'Origin',
   };
+  if (allow) headers['Access-Control-Allow-Origin'] = allow;
+  return headers;
 }
 
 export function securityHeaders(): Record<string, string> {
