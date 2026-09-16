@@ -89,10 +89,17 @@ export default function ProfilePhotoModal({
   onEdit,
 }) {
   const { width, height } = useWindowDimensions();
+  const inset = 36;
   const split = width >= SPLIT_BREAKPOINT && height >= 560;
+  const cardMaxHeight = Math.min(split ? 600 : Math.round(height * 0.8), height - inset * 2);
+  const sideWidth = 360;
   const photoSize = split
-    ? Math.min(height - 48, Math.max(320, width - 420))
-    : Math.min(width, Math.round(Math.min(height * 0.48, width)));
+    ? Math.min(cardMaxHeight, Math.max(280, width - sideWidth - inset * 2))
+    : Math.min(width - inset * 2, Math.round(Math.min(cardMaxHeight * 0.46, 380)));
+  const cardWidth = split
+    ? Math.min(width - inset * 2, photoSize + sideWidth)
+    : Math.min(420, width - inset * 2);
+  const cardHeight = split ? photoSize : Math.min(cardMaxHeight, photoSize + 260);
   const commentRef = useRef(null);
   const commentsRef = useRef(null);
   const lastTapRef = useRef(0);
@@ -443,7 +450,10 @@ export default function ProfilePhotoModal({
   const photo = (
     <Pressable
       onPress={handlePhotoPress}
-      style={[styles.photoStage, split ? { flex: 1, minHeight: photoSize } : { height: photoSize, width: '100%' }]}
+      style={[
+        styles.photoStage,
+        split ? { width: photoSize, height: photoSize } : { height: photoSize, width: '100%' },
+      ]}
       accessibilityLabel="Portrait"
     >
       {showImage ? (
@@ -487,29 +497,51 @@ export default function ProfilePhotoModal({
         style={styles.root}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <View
-          style={styles.shell}
-          {...(Platform.OS === 'web' ? { className: 'cgold-mobile-sheet-top' } : null)}
+        <Pressable
+          style={styles.backdrop}
+          onPress={onClose}
+          accessibilityLabel="Close"
+          accessibilityRole="button"
+        />
+        <Pressable
+          onPress={onClose}
+          style={styles.overlayClose}
+          hitSlop={10}
+          accessibilityLabel="Close"
         >
-          <View style={styles.topBar}>
-            <Pressable onPress={onClose} hitSlop={10} accessibilityLabel="Close">
-              <Ionicons name="close" size={28} color="#f5f5f5" />
-            </Pressable>
-            <Text style={styles.topTitle} numberOfLines={1}>
-              {displayName}
-            </Text>
-            {canEdit ? (
-              <Pressable onPress={onEdit} hitSlop={10} accessibilityLabel="Edit portrait">
-                <Ionicons name="pencil" size={20} color="#f5f5f5" />
+          <Ionicons name="close" size={28} color="#f5f5f5" />
+        </Pressable>
+        <View
+          style={[
+            styles.shell,
+            {
+              width: cardWidth,
+              maxHeight: cardMaxHeight,
+              height: cardHeight,
+            },
+          ]}
+        >
+          {split ? null : (
+            <View style={styles.topBar}>
+              <Pressable onPress={onClose} hitSlop={10} accessibilityLabel="Close">
+                <Ionicons name="close" size={22} color="#f5f5f5" />
               </Pressable>
-            ) : (
-              <View style={{ width: 28 }} />
-            )}
-          </View>
+              <Text style={styles.topTitle} numberOfLines={1}>
+                {displayName}
+              </Text>
+              {canEdit ? (
+                <Pressable onPress={onEdit} hitSlop={10} accessibilityLabel="Edit portrait">
+                  <Ionicons name="pencil" size={18} color="#f5f5f5" />
+                </Pressable>
+              ) : (
+                <View style={{ width: 22 }} />
+              )}
+            </View>
+          )}
 
           {error ? <Text style={styles.error}>{error}</Text> : null}
 
-          <View style={[styles.body, split && styles.bodySplit]}>
+          <View style={[styles.body, split && styles.bodySplit, split && { height: photoSize }]}>
             {photo}
             <View style={[styles.side, split && styles.sideSplit]}>
               {split ? (
@@ -525,6 +557,11 @@ export default function ProfilePhotoModal({
                       </Text>
                     ) : null}
                   </View>
+                  {canEdit ? (
+                    <Pressable onPress={onEdit} hitSlop={10} accessibilityLabel="Edit portrait">
+                      <Ionicons name="pencil" size={18} color="#f5f5f5" />
+                    </Pressable>
+                  ) : null}
                 </View>
               ) : null}
               {actions}
@@ -616,11 +653,42 @@ export default function ProfilePhotoModal({
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: '#000',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.62)',
+  },
+  overlayClose: {
+    position: 'absolute',
+    top: 16,
+    left: 16,
+    zIndex: 2,
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   shell: {
-    flex: 1,
+    backgroundColor: '#000',
+    borderRadius: 12,
+    overflow: 'hidden',
     minHeight: 0,
+    zIndex: 1,
+    ...Platform.select({
+      web: {
+        boxShadow: '0 24px 80px rgba(0,0,0,0.45)',
+      },
+      default: {
+        elevation: 12,
+        shadowColor: '#000',
+        shadowOpacity: 0.4,
+        shadowRadius: 24,
+        shadowOffset: { width: 0, height: 12 },
+      },
+    }),
   },
   topBar: {
     flexDirection: 'row',
@@ -652,6 +720,8 @@ const styles = StyleSheet.create({
   },
   bodySplit: {
     flexDirection: 'row',
+    flex: 1,
+    minHeight: 0,
   },
   photoStage: {
     backgroundColor: '#000',
@@ -708,8 +778,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#000',
   },
   sideSplit: {
-    width: 380,
-    maxWidth: '42%',
+    width: 360,
+    flex: 1,
     borderLeftWidth: StyleSheet.hairlineWidth,
     borderLeftColor: '#262626',
   },

@@ -50,6 +50,7 @@ import {
   categoryLabel,
   findStaffByEmployeeName,
   listStaffProfiles,
+  staffDisplayName,
   loadOwnUserAppAccess,
   loadRoleAppAccess,
   useAppAccess,
@@ -565,6 +566,90 @@ function emptyHomeStoreRow(store) {
     totalAmount: 0,
     transactions: [],
   };
+}
+
+const HOME_PEOPLE_VISIBLE = 6;
+const HOME_PEOPLE_SIZE = 28;
+const HOME_PEOPLE_OVERLAP = 10;
+
+function peopleInStore(storeName, transactions, staff) {
+  const byKey = new Map();
+
+  const applyStaff = (entry, person) => {
+    if (!person) return entry;
+    entry.photoUrl = person.avatarUrl || entry.photoUrl;
+    entry.profileId = person.id || entry.profileId || '';
+    entry.locationName = person.locationName || entry.locationName || '';
+    return entry;
+  };
+
+  for (const row of transactions || []) {
+    const name = String(row.employeeName || '').trim();
+    if (!name || name === '—') continue;
+    const key = name.toLowerCase();
+    const match = findStaffByEmployeeName(staff, name);
+    const current = byKey.get(key) || {
+      name,
+      photoUrl: '',
+      profileId: '',
+      locationName: '',
+      txCount: 0,
+    };
+    current.txCount += 1;
+    applyStaff(current, match);
+    byKey.set(key, current);
+  }
+
+  for (const person of staff || []) {
+    if (!rowMatchesAllocatedStore({ store: person.locationName }, storeName)) continue;
+    const name = staffDisplayName(person);
+    if (!name) continue;
+    const match = [...byKey.values()].find((entry) => findStaffByEmployeeName([person], entry.name));
+    if (match) {
+      applyStaff(match, person);
+      continue;
+    }
+    byKey.set(name.toLowerCase(), {
+      name,
+      photoUrl: person.avatarUrl || '',
+      profileId: person.id || '',
+      locationName: person.locationName || '',
+      txCount: 0,
+    });
+  }
+
+  return Array.from(byKey.values()).sort((a, b) => {
+    if (Boolean(b.photoUrl) !== Boolean(a.photoUrl)) return b.photoUrl ? 1 : -1;
+    if (b.txCount !== a.txCount) return b.txCount - a.txCount;
+    return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+  });
+}
+
+function uniqueStorePeople(rows, staff) {
+  const byKey = new Map();
+  for (const row of rows || []) {
+    for (const person of peopleInStore(row.store, row.transactions, staff)) {
+      const key = person.name.toLowerCase();
+      const current = byKey.get(key);
+      if (!current) {
+        byKey.set(key, { ...person });
+        continue;
+      }
+      current.txCount += person.txCount;
+      current.photoUrl = current.photoUrl || person.photoUrl;
+      current.profileId = current.profileId || person.profileId;
+      current.locationName = current.locationName || person.locationName;
+    }
+  }
+  return Array.from(byKey.values()).sort((a, b) => {
+    if (Boolean(b.photoUrl) !== Boolean(a.photoUrl)) return b.photoUrl ? 1 : -1;
+    if (b.txCount !== a.txCount) return b.txCount - a.txCount;
+    return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+  });
+}
+
+function salesPurchasesTip(row) {
+  return `Sales  ${formatAmount(row?.soAmount)}\nPurchases  ${formatAmount(row?.poAmount)}`;
 }
 
 function rowMatchesAllocatedStore(row, storeName) {
@@ -2699,7 +2784,7 @@ function storeAccent(name) {
   return STORE_ACCENT_FALLBACKS[hash % STORE_ACCENT_FALLBACKS.length];
 }
 
-function HomeStoreCard({ row, selected, last, onOpenStore }) {
+function HomeStoreCard({ row, people, selected, last, onOpenStore, onOpenPerson }) {
   const accent = storeAccent(row.store);
 
   return (
@@ -2721,13 +2806,9 @@ function HomeStoreCard({ row, selected, last, onOpenStore }) {
         <Text style={styles.igStoreName} numberOfLines={1}>
           {row.store}
         </Text>
-        <Text style={styles.igStoreMeta} numberOfLines={1}>
-          {row.txCount} tx · {row.saleCount} SO · {row.purchaseCount} PO
-        </Text>
+        <HomePeopleStack people={people} compact onOpenPerson={onOpenPerson} />
       </View>
-      <Text style={styles.igStoreAmount} numberOfLines={1}>
-        {formatAmount(row.totalAmount)}
-      </Text>
+      <HomeStoreAmount amount={row.totalAmount} count={row.txCount} breakdown={row} compact />
       <Ionicons name="chevron-forward" size={16} color="#c7c7cc" />
     </Pressable>
   );
@@ -2737,24 +2818,138 @@ function homeStoreMeta(row) {
   return `${row.txCount} tx · ${row.saleCount} SO · ${row.purchaseCount} PO`;
 }
 
-function HomeStoreAmount({ amount, count, strong = false }) {
-  const empty = !Number(amount) && !Number(count);
+function HomePeopleStack({ people = [], compact = false, onOpenPerson }) {
+  const [tip, setTip] = useState({ text: '', el: null });
+  const size = compact ? 22 : HOME_PEOPLE_SIZE;
+  const overlap = compact ? 8 : HOME_PEOPLE_OVERLAP;
+  const max = compact ? 4 : HOME_PEOPLE_VISIBLE;
+  const visible = people.slice(0, max);
+  const extra = people.length - visible.length;
+  const extraNames = extra > 0 ? people.slice(max).map((person) => person.name).join('\n') : '';
+
+  const hoverHandlers = (text) =>
+    Platform.OS === 'web'
+      ? {
+          onMouseEnter: (event) => {
+            setTip({ text, el: event?.currentTarget || null });
+          },
+          onMouseLeave: () => setTip({ text: '', el: null }),
+        }
+      : null;
+
+  if (people.length === 0) {
+    if (compact) return null;
+    return (
+      <View style={styles.homePeopleStack}>
+        <Text style={[styles.homeStoreMoney, styles.homeStoreMoneyEmpty]}>—</Text>
+      </View>
+    );
+  }
+
   return (
-    <Text
-      style={[
-        styles.homeStoreMoney,
-        styles.homeStoreColMoney,
-        strong && styles.homeStoreMoneyStrong,
-        empty && styles.homeStoreMoneyEmpty,
-      ]}
-      numberOfLines={1}
+    <View
+      style={[styles.homePeopleStack, compact && styles.homePeopleStackCompact]}
+      pointerEvents="box-none"
+      accessibilityLabel={people.map((person) => person.name).join(', ')}
     >
-      {empty ? '—' : formatAmount(amount)}
-    </Text>
+      {visible.map((person, index) => (
+        <Pressable
+          key={`${person.name}-${index}`}
+          onPress={(event) => {
+            event?.stopPropagation?.();
+            setTip({ text: '', el: null });
+            onOpenPerson?.(person);
+          }}
+          onPointerDown={(event) => event?.stopPropagation?.()}
+          style={[
+            styles.homePeopleAvatarWrap,
+            {
+              width: size,
+              height: size,
+              marginLeft: index === 0 ? 0 : -overlap,
+              zIndex: tip.text === person.name ? 20 : index + 1,
+            },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel={`${person.name} profile photo`}
+          {...hoverHandlers(person.name)}
+        >
+          <ProfileAvatar
+            uri={person.photoUrl}
+            name={person.name}
+            size={size}
+            style={styles.homePeopleAvatarRing}
+          />
+        </Pressable>
+      ))}
+      {extra > 0 ? (
+        <View
+          style={[
+            styles.homePeopleAvatarWrap,
+            styles.homePeopleMore,
+            {
+              width: size,
+              height: size,
+              borderRadius: size / 2,
+              marginLeft: -overlap,
+              zIndex: visible.length + 1,
+            },
+          ]}
+          accessibilityLabel={`${extra} more`}
+          {...hoverHandlers(extraNames)}
+        >
+          <Text style={styles.homePeopleMoreText}>+{extra}</Text>
+        </View>
+      ) : null}
+      <FloatingTooltip
+        visible={Boolean(tip.el && tip.text)}
+        text={tip.text}
+        anchorEl={tip.el}
+      />
+    </View>
   );
 }
 
-function HomeStoreTableRow({ row, selected, last, onOpenStore }) {
+function HomeStoreAmount({ amount, count, strong = false, breakdown = null, compact = false }) {
+  const [anchor, setAnchor] = useState(null);
+  const empty = !Number(amount) && !Number(count);
+  const tip = breakdown && !empty ? salesPurchasesTip(breakdown) : '';
+  const hover =
+    Platform.OS === 'web' && tip
+      ? {
+          onMouseEnter: (event) => setAnchor(event?.currentTarget || null),
+          onMouseLeave: () => setAnchor(null),
+        }
+      : null;
+
+  return (
+    <View
+      style={[compact ? styles.igStoreAmountWrap : styles.homeStoreColMoney, hover && styles.homeStoreAmountHover]}
+      {...hover}
+      accessibilityLabel={
+        empty
+          ? 'No total'
+          : tip
+            ? `Total ${formatAmount(amount)}. ${tip.replace('\n', '. ')}`
+            : formatAmount(amount)
+      }
+    >
+      <Text
+        style={[
+          compact ? styles.igStoreAmount : styles.homeStoreMoney,
+          strong && styles.homeStoreMoneyStrong,
+          empty && styles.homeStoreMoneyEmpty,
+        ]}
+        numberOfLines={1}
+      >
+        {empty ? '—' : formatAmount(amount)}
+      </Text>
+      <FloatingTooltip visible={Boolean(anchor && tip)} text={tip} anchorEl={anchor} align="end" />
+    </View>
+  );
+}
+
+function HomeStoreTableRow({ row, people, selected, last, onOpenStore, onOpenPerson }) {
   const accent = storeAccent(row.store);
 
   return (
@@ -2787,9 +2982,8 @@ function HomeStoreTableRow({ row, selected, last, onOpenStore }) {
             {homeStoreMeta(row)}
           </Text>
         </View>
-        <HomeStoreAmount amount={row.soAmount} count={row.saleCount} />
-        <HomeStoreAmount amount={row.poAmount} count={row.purchaseCount} />
-        <HomeStoreAmount amount={row.totalAmount} count={row.txCount} strong />
+        <HomePeopleStack people={people} onOpenPerson={onOpenPerson} />
+        <HomeStoreAmount amount={row.totalAmount} count={row.txCount} breakdown={row} strong />
         <View style={styles.homeStoreChevron}>
           <Ionicons name="chevron-forward" size={16} color="#c7c7cc" />
         </View>
@@ -2798,7 +2992,21 @@ function HomeStoreTableRow({ row, selected, last, onOpenStore }) {
   );
 }
 
-function HomeStoresTable({ rows, selectedStore, totals, onOpenStore, compact = false }) {
+function HomeStoresTable({
+  rows,
+  selectedStore,
+  totals,
+  staff = [],
+  onOpenStore,
+  onOpenPerson,
+  compact = false,
+}) {
+  const peopleByStore = useMemo(
+    () => new Map(rows.map((row) => [row.store, peopleInStore(row.store, row.transactions, staff)])),
+    [rows, staff],
+  );
+  const totalPeople = useMemo(() => uniqueStorePeople(rows, staff), [rows, staff]);
+
   if (compact) {
     return (
       <View style={styles.igStoreList}>
@@ -2806,20 +3014,25 @@ function HomeStoresTable({ rows, selectedStore, totals, onOpenStore, compact = f
           <HomeStoreCard
             key={row.store}
             row={row}
+            people={peopleByStore.get(row.store) || []}
             selected={selectedStore?.store === row.store}
             last={index === rows.length - 1 && !totals}
             onOpenStore={onOpenStore}
+            onOpenPerson={onOpenPerson}
           />
         ))}
         {totals ? (
           <View style={[styles.igStoreCard, styles.igStoreTotalCard]}>
             <View style={styles.igStoreCopy}>
               <Text style={styles.igStoreTotalLabel}>Total</Text>
-              <Text style={styles.igStoreMeta}>
-                {totals.txCount} tx · {totals.saleCount} SO · {totals.purchaseCount} PO
-              </Text>
+              <HomePeopleStack people={totalPeople} compact onOpenPerson={onOpenPerson} />
             </View>
-            <Text style={styles.igStoreTotalAmount}>{formatAmount(totals.totalAmount)}</Text>
+            <HomeStoreAmount
+              amount={totals.totalAmount}
+              count={totals.txCount}
+              breakdown={totals}
+              compact
+            />
           </View>
         ) : null}
       </View>
@@ -2840,8 +3053,7 @@ function HomeStoresTable({ rows, selectedStore, totals, onOpenStore, compact = f
             <View style={styles.homeStoreIconSpacer} />
             <View style={styles.homeStoreRowBody}>
               <Text style={[styles.homeStoreHeader, styles.homeStoreColStore]}>Store</Text>
-              <Text style={[styles.homeStoreHeader, styles.homeStoreColMoney]}>Sales</Text>
-              <Text style={[styles.homeStoreHeader, styles.homeStoreColMoney]}>Purchases</Text>
+              <Text style={[styles.homeStoreHeader, styles.homeStoreColPeople]}>People</Text>
               <Text style={[styles.homeStoreHeader, styles.homeStoreColMoney]}>Total</Text>
               <View style={styles.homeStoreChevron} />
             </View>
@@ -2850,9 +3062,11 @@ function HomeStoresTable({ rows, selectedStore, totals, onOpenStore, compact = f
             <HomeStoreTableRow
               key={row.store}
               row={row}
+              people={peopleByStore.get(row.store) || []}
               selected={selectedStore?.store === row.store}
               last={index === rows.length - 1}
               onOpenStore={onOpenStore}
+              onOpenPerson={onOpenPerson}
             />
           ))}
           {totals ? (
@@ -2867,9 +3081,13 @@ function HomeStoresTable({ rows, selectedStore, totals, onOpenStore, compact = f
                     {homeStoreMeta(totals)}
                   </Text>
                 </View>
-                <HomeStoreAmount amount={totals.soAmount} count={totals.saleCount} strong />
-                <HomeStoreAmount amount={totals.poAmount} count={totals.purchaseCount} strong />
-                <HomeStoreAmount amount={totals.totalAmount} count={totals.txCount} strong />
+                <HomePeopleStack people={totalPeople} onOpenPerson={onOpenPerson} />
+                <HomeStoreAmount
+                  amount={totals.totalAmount}
+                  count={totals.txCount}
+                  breakdown={totals}
+                  strong
+                />
                 <View style={styles.homeStoreChevron} />
               </View>
             </View>
@@ -2896,6 +3114,8 @@ function HomeScreen({ session, onRequireLogin }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [toolbarHeight, setToolbarHeight] = useState(0);
+  const [staff, setStaff] = useState([]);
+  const [photoPerson, setPhotoPerson] = useState(null);
   const requestId = useRef(0);
 
   const todayKey = formatDateParam(parseDateParam(new Date()));
@@ -2967,6 +3187,19 @@ function HomeScreen({ session, onRequireLogin }) {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    listStaffProfiles()
+      .then((rows) => {
+        if (cancelled) return;
+        setStaff((rows || []).filter((row) => row.isActive !== false));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const watchLive = Boolean(session?.token) && startKey <= todayKey && todayKey <= endKey;
   useLiveRefresh(load, AUREUS_TX_LIVE_MS, watchLive);
@@ -3256,7 +3489,9 @@ function HomeScreen({ session, onRequireLogin }) {
               rows={visibleRows}
               selectedStore={selectedStore}
               totals={isMobile ? null : totals}
+              staff={staff}
               onOpenStore={openStore}
+              onOpenPerson={setPhotoPerson}
               compact={isMobile}
             />
           </View>
@@ -3285,6 +3520,21 @@ function HomeScreen({ session, onRequireLogin }) {
         periodLabel={periodLabel}
         date={startDate}
         onClose={closeStore}
+      />
+      <ProfilePhotoModal
+        visible={Boolean(photoPerson)}
+        onClose={() => setPhotoPerson(null)}
+        profileId={photoPerson?.profileId || ''}
+        name={photoPerson?.name || ''}
+        avatarUrl={photoPerson?.photoUrl || ''}
+        locationName={photoPerson?.locationName || ''}
+        myId={session?.supabaseUserId || session?.profile?.id || ''}
+        myName={
+          session?.profile?.fullName ||
+          [session?.profile?.firstName, session?.profile?.lastName].filter(Boolean).join(' ') ||
+          'You'
+        }
+        myAvatarUrl={session?.profile?.avatarUrl || ''}
       />
     </View>
   );
@@ -6650,7 +6900,7 @@ const styles = StyleSheet.create({
   },
   homeStoreTable: {
     flexGrow: 1,
-    minWidth: 640,
+    minWidth: 560,
   },
   homeStoreRow: {
     flexDirection: 'row',
@@ -6785,11 +7035,74 @@ const styles = StyleSheet.create({
   homeStoreColMoney: {
     width: 128,
     flexShrink: 0,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
     textAlign: 'right',
     ...Platform.select({
       web: { whiteSpace: 'nowrap' },
       default: {},
     }),
+  },
+  homeStoreColPeople: {
+    width: 172,
+    flexShrink: 0,
+  },
+  homePeopleStack: {
+    width: 172,
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: HOME_PEOPLE_SIZE,
+    overflow: 'visible',
+    ...Platform.select({
+      web: { isolation: 'isolate' },
+      default: {},
+    }),
+  },
+  homePeopleStackCompact: {
+    width: 'auto',
+    maxWidth: 140,
+    height: 22,
+    marginTop: 4,
+  },
+  homePeopleAvatarWrap: {
+    position: 'relative',
+    borderRadius: HOME_PEOPLE_SIZE / 2,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  homePeopleAvatarRing: {
+    borderWidth: 2,
+    borderColor: '#fff',
+    backgroundColor: '#e8e8ed',
+  },
+  homePeopleMore: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#e8e8ed',
+    borderWidth: 2,
+    borderColor: '#fff',
+    overflow: 'hidden',
+  },
+  homePeopleMoreText: {
+    fontFamily,
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#6e6e73',
+    letterSpacing: -0.2,
+  },
+  homeStoreAmountHover: {
+    ...Platform.select({
+      web: { cursor: 'default' },
+      default: {},
+    }),
+  },
+  igStoreAmountWrap: {
+    flexShrink: 0,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
   },
   homeStoreChevron: {
     width: 18,

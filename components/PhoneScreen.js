@@ -13,17 +13,16 @@ import { Ionicons } from '@expo/vector-icons';
 import { usePhoneCalls } from './PhoneCallProvider';
 import { fetchTransferStores } from '../lib/locations';
 import {
-  fetchPhoneInbox,
   fetchVoicemailAudioUrl,
   formatCallWhen,
   formatDuration,
+  inboundCallsUnique,
   inboundCallRatio,
-  inboundOutcome,
+  isAnsweredInbound,
   resultLabel,
 } from '../lib/phoneCalls';
 import {
   canManageRingCentral,
-  checkRingCentralAccount,
   connectionLabel,
   fetchRingCentralStoreDetails,
   formatCheckedAt,
@@ -42,11 +41,18 @@ const fontFamily = Platform.select({
 const ACCENT = '#15803D';
 const TABS = [
   { key: 'incoming', label: 'Incoming' },
+  { key: 'missed', label: 'Missed' },
+  { key: 'log', label: 'Call log' },
   { key: 'dial', label: 'Making calls' },
   { key: 'voicemail', label: 'Voicemail' },
   { key: 'stats', label: 'Ratio' },
 ];
 const KEYPAD = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#'];
+const DATE_RANGES = [
+  { key: 'today', label: 'Today' },
+  { key: '7d', label: '7 days' },
+  { key: '14d', label: '14 days' },
+];
 
 function statusTone(row) {
   const status = row?.lastStatus || connectionLabel(row);
@@ -58,6 +64,27 @@ function statusTone(row) {
 function applyAccount(current, next) {
   if (!next?.storeKey) return current;
   return [...current.filter((row) => row.storeKey !== next.storeKey), next];
+}
+
+function rangeSinceMs(key) {
+  if (key === 'today') {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    return start.getTime();
+  }
+  const days = key === '7d' ? 7 : 14;
+  return Date.now() - days * 24 * 60 * 60 * 1000;
+}
+
+function rangeCopy(key) {
+  if (key === 'today') return 'today';
+  if (key === '7d') return 'the last 7 days';
+  return 'the last 14 days';
+}
+
+function inDateRange(value, since) {
+  const time = Date.parse(value);
+  return Number.isFinite(time) && time >= since;
 }
 
 function DetailRow({ label, value }) {
@@ -76,33 +103,75 @@ function partyLine(entry, inbound) {
   return [name, number ? formatPhoneNumber(number) : ''].filter(Boolean).join(' · ') || 'Unknown';
 }
 
-function RatioStrip({ stats, compact = false }) {
-  const empty = !stats?.scored;
+function CallHistoryRow({ row, inbound = true, showDirection = false, onCallback, callbackBusy }) {
+  const missed = inbound && !isAnsweredInbound(row);
+  const icon = !inbound ? 'arrow-up' : missed ? 'call-outline' : 'arrow-down';
   return (
-    <View style={styles.ratioBlock}>
+    <View style={styles.itemRow}>
+      <View style={styles.callIcon}>
+        <Ionicons name={icon} size={14} color={missed ? '#B91C1C' : ACCENT} />
+      </View>
+      <View style={styles.itemText}>
+        <Text style={styles.itemTitle}>{partyLine(row, inbound)}</Text>
+        <Text style={styles.itemMeta}>
+          {[
+            showDirection ? (inbound ? 'Inbound' : 'Outbound') : '',
+            resultLabel(row.result),
+            formatCallWhen(row.startTime),
+            row.duration ? formatDuration(row.duration) : '',
+          ]
+            .filter(Boolean)
+            .join(' · ')}
+        </Text>
+      </View>
+      {onCallback ? (
+        <Pressable
+          style={[styles.callbackBtn, callbackBusy && styles.callbackBtnDisabled]}
+          onPress={() => onCallback(row)}
+          disabled={callbackBusy}
+          accessibilityLabel="Call back"
+        >
+          {callbackBusy ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <>
+              <Ionicons name="call" size={12} color="#fff" />
+              <Text style={styles.callbackText}>Call back</Text>
+            </>
+          )}
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
+function RatioStrip({ stats, compact = false, rangeLabel = 'the last 14 days' }) {
+  const empty = !stats?.total;
+  return (
+    <View style={[styles.ratioBlock, compact && styles.ratioBlockCompact]}>
       <View style={styles.ratioStats}>
-        <View style={styles.ratioStat}>
+        <View style={[styles.ratioStat, compact && styles.ratioStatCompact]}>
           <Text style={styles.summaryLabel}>Answered</Text>
-          <Text style={[styles.summaryValue, stats.answered ? styles.statusConnected : null]}>
+          <Text style={[styles.summaryValue, compact && styles.summaryValueCompact, stats.answered ? styles.statusConnected : null]}>
             {stats.answered}
           </Text>
         </View>
-        <View style={styles.ratioStat}>
+        <View style={[styles.ratioStat, compact && styles.ratioStatCompact]}>
           <Text style={styles.summaryLabel}>Missed</Text>
-          <Text style={[styles.summaryValue, stats.missed ? styles.statusError : null]}>{stats.missed}</Text>
+          <Text style={[styles.summaryValue, compact && styles.summaryValueCompact, stats.missed ? styles.statusError : null]}>{stats.missed}</Text>
         </View>
-        <View style={styles.ratioStat}>
-          <Text style={styles.summaryLabel}>Ratio</Text>
-          <Text style={styles.summaryValue}>{stats.ratio}</Text>
+        <View style={[styles.ratioStat, compact && styles.ratioStatCompact]}>
+          <Text style={styles.summaryLabel}>Total</Text>
+          <Text style={[styles.summaryValue, compact && styles.summaryValueCompact]}>{stats.total}</Text>
         </View>
         {compact ? null : (
           <View style={styles.ratioStat}>
             <Text style={styles.summaryLabel}>Answer rate</Text>
-            <Text style={styles.summaryValue}>{stats.rate == null ? '—' : `${stats.rate}%`}</Text>
+            <Text style={styles.summaryValue}>{stats.rate == null ? '—' : `${stats.answered}:${stats.total}`}</Text>
           </View>
         )}
       </View>
-      <View style={styles.ratioBarTrack}>
+      <View style={[styles.ratioBarTrack, compact && styles.ratioBarTrackCompact]}>
         {empty ? (
           <View style={styles.ratioBarEmpty} />
         ) : (
@@ -114,10 +183,10 @@ function RatioStrip({ stats, compact = false }) {
       </View>
       <Text style={styles.sectionMeta}>
         {empty
-          ? 'No inbound calls in the last 14 days.'
-          : stats.simplified !== stats.ratio
-            ? `Answered to missed ${stats.simplified} · last 14 days`
-            : 'Answered to missed · last 14 days'}
+          ? `No inbound calls ${rangeLabel}.`
+          : stats.rate == null
+            ? `No inbound calls ${rangeLabel}.`
+            : `${stats.rate}% answered · ${stats.answered} of ${stats.total} · ${rangeLabel}`}
       </Text>
     </View>
   );
@@ -127,10 +196,10 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
   const canManage = canManageRingCentral(session?.profile);
   const phone = usePhoneCalls();
   const [tab, setTab] = useState('incoming');
+  const [dateRange, setDateRange] = useState('14d');
   const [stores, setStores] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [inboxLoading, setInboxLoading] = useState(false);
   const [error, setError] = useState('');
   const [warning, setWarning] = useState('');
   const [query, setQuery] = useState('');
@@ -138,8 +207,6 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
   const [details, setDetails] = useState(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [showStores, setShowStores] = useState(false);
-  const [calls, setCalls] = useState([]);
-  const [voicemails, setVoicemails] = useState([]);
   const [digits, setDigits] = useState('');
   const [playingId, setPlayingId] = useState('');
   const [playError, setPlayError] = useState('');
@@ -147,10 +214,12 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
   const objectUrlRef = useRef('');
   const requestId = useRef(0);
   const detailsRequest = useRef(0);
-  const inboxRequest = useRef(0);
-  const autoChecked = useRef(new Set());
 
   const storeKey = phone.selectedStoreKey;
+  const refreshInbox = phone.refreshInbox;
+  const calls = phone.mergedCallsByStore?.[storeKey] || [];
+  const voicemails = phone.inboxByStore?.[storeKey]?.voicemails || [];
+  const inboxLoading = Boolean(phone.inboxFetching?.[storeKey]);
 
   const load = useCallback(async () => {
     if (!session?.token) {
@@ -194,32 +263,14 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
   }, [load]);
 
   const loadInbox = useCallback(async () => {
-    if (!session?.token || !storeKey) {
-      setCalls([]);
-      setVoicemails([]);
-      return;
-    }
-    const id = ++inboxRequest.current;
-    setInboxLoading(true);
+    if (!storeKey) return;
     try {
-      const payload = await fetchPhoneInbox(storeKey);
-      if (id !== inboxRequest.current) return;
-      setCalls(payload.calls || []);
-      setVoicemails(payload.voicemails || []);
-      if (payload.store) setAccounts((current) => applyAccount(current, payload.store));
-      const notes = [payload.callLogError, payload.voicemailError].filter(Boolean);
-      if (notes.length) setError(notes.join(' '));
+      await refreshInbox(storeKey, { force: true });
+      setError('');
     } catch (err) {
-      if (id !== inboxRequest.current) return;
       setError(err?.message || 'Could not load calls.');
-    } finally {
-      if (id === inboxRequest.current) setInboxLoading(false);
     }
-  }, [session?.token, storeKey]);
-
-  useEffect(() => {
-    loadInbox();
-  }, [loadInbox]);
+  }, [refreshInbox, storeKey]);
 
   useEffect(() => {
     return () => {
@@ -288,13 +339,56 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
   }, [accounts, accountByKey, query, storeFilter, stores]);
 
   const selected = rows.find((row) => row.key === selectedKey) || null;
-  const activeAccount = accountByKey.get(storeKey) || phone.stores.find((row) => row.storeKey === storeKey) || null;
-  const incomingLive = phone.incoming.filter((call) => !storeKey || call.storeKey === storeKey);
-  const inboundCalls = calls.filter((row) => row.direction === 'Inbound');
-  const outboundCalls = calls.filter((row) => row.direction === 'Outbound');
-  const ratio = useMemo(() => inboundCallRatio(calls), [calls]);
-  const answeredCalls = inboundCalls.filter((row) => inboundOutcome(row.result) === 'answered');
-  const missedCalls = inboundCalls.filter((row) => inboundOutcome(row.result) !== 'answered' && inboundOutcome(row.result) !== 'other');
+  const activeAccount = phone.stores.find((row) => row.storeKey === storeKey) || accountByKey.get(storeKey) || null;
+  const incomingLive = phone.incoming;
+  const rangeSince = useMemo(() => rangeSinceMs(dateRange), [dateRange]);
+  const rangeLabel = rangeCopy(dateRange);
+  const visibleCalls = useMemo(
+    () => (Array.isArray(calls) ? calls : []).filter((row) => inDateRange(row.startTime, rangeSince)),
+    [calls, rangeSince],
+  );
+  const visibleVoicemails = useMemo(
+    () => (Array.isArray(voicemails) ? voicemails : []).filter((row) => inDateRange(row.creationTime, rangeSince)),
+    [voicemails, rangeSince],
+  );
+  const inboundCalls = useMemo(() => inboundCallsUnique(visibleCalls), [visibleCalls]);
+  const outboundCalls = visibleCalls.filter((row) => row.direction === 'Outbound');
+  const ratio = useMemo(() => inboundCallRatio(visibleCalls), [visibleCalls]);
+  const storeRatios = useMemo(() => {
+    const next = {};
+    for (const row of phone.stores) {
+      const storeCalls = (phone.mergedCallsByStore?.[row.storeKey] || []).filter((call) =>
+        inDateRange(call.startTime, rangeSince),
+      );
+      next[row.storeKey] = inboundCallRatio(storeCalls);
+    }
+    return next;
+  }, [phone.mergedCallsByStore, phone.stores, rangeSince]);
+  const answeredCalls = inboundCalls.filter((row) => isAnsweredInbound(row));
+  const missedCalls = inboundCalls.filter((row) => !isAnsweredInbound(row));
+  const callLog = useMemo(() => {
+    const rows = [...visibleCalls];
+    rows.sort((a, b) => String(b.startTime || '').localeCompare(String(a.startTime || '')));
+    return rows;
+  }, [visibleCalls]);
+
+  const callBack = useCallback(
+    async (row) => {
+      const inbound = row?.direction !== 'Outbound';
+      const number = inbound ? row.from : row.to;
+      if (!String(number || '').replace(/\D/g, '')) {
+        setError('That call has no number to return.');
+        return;
+      }
+      try {
+        await phone.ringOut(number, activeAccount?.mainNumber);
+        setError('');
+      } catch (err) {
+        setError(err?.message || 'Could not start the call.');
+      }
+    },
+    [activeAccount?.mainNumber, phone],
+  );
 
   const openStore = useCallback(async (row) => {
     if (!row?.key) return;
@@ -321,29 +415,6 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
       if (id === detailsRequest.current) setDetailsLoading(false);
     }
   }, []);
-
-  useEffect(() => {
-    const pending = accounts.filter(
-      (row) => row.hasJwt && row.lastStatus !== 'connected' && !autoChecked.current.has(row.storeKey),
-    );
-    if (pending.length === 0) return undefined;
-    let cancelled = false;
-    (async () => {
-      for (const row of pending) {
-        autoChecked.current.add(row.storeKey);
-        try {
-          const checked = await checkRingCentralAccount(row.storeKey);
-          if (cancelled) return;
-          setAccounts((current) => applyAccount(current, checked));
-        } catch {
-          // Keep the saved row; opening the store shows the error.
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [accounts]);
 
   const appendDigit = (value) => {
     setDigits((current) => `${current}${value}`.replace(/[^\d*#]/g, '').slice(0, 16));
@@ -459,7 +530,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
             {selected.key === storeKey ? (
               <>
                 <Text style={styles.detailLabel}>Answered to missed</Text>
-                <RatioStrip stats={ratio} compact />
+                <RatioStrip stats={ratio} compact rangeLabel={rangeLabel} />
               </>
             ) : null}
             {account?.lastError ? <Text style={styles.cellError}>{account.lastError}</Text> : null}
@@ -612,9 +683,8 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
         <View style={styles.headerRow}>
           <View style={styles.headerCopy}>
             <Text style={styles.sectionTitle}>Phone</Text>
-            <Text style={styles.sectionMeta}>
+            <Text style={styles.sectionMeta} numberOfLines={1}>
               {activeAccount?.storeName || 'Connect a store in Settings → RingCentral'}
-              {activeAccount?.mainNumber ? ` · ${formatPhoneNumber(activeAccount.mainNumber)}` : ''}
             </Text>
           </View>
           <View style={styles.headerActions}>
@@ -638,6 +708,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.storeChips}>
             {phone.stores.map((row) => {
               const active = row.storeKey === storeKey;
+              const storeRatio = storeRatios[row.storeKey];
               return (
                 <Pressable
                   key={row.storeKey}
@@ -645,6 +716,11 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
                   onPress={() => phone.setSelectedStoreKey(row.storeKey)}
                 >
                   <Text style={[styles.chipText, active && styles.chipTextActive]}>{row.storeName}</Text>
+                  {storeRatio?.total ? (
+                    <Text style={[styles.chipRatio, active && styles.chipRatioActive]}>
+                      {storeRatio.ratio}
+                    </Text>
+                  ) : null}
                 </Pressable>
               );
             })}
@@ -652,24 +728,37 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
         ) : null}
 
         {activeAccount ? (
-          <View style={styles.statusCard}>
-            <Text style={[styles.statusValue, statusTone(activeAccount)]}>{connectionLabel(activeAccount)}</Text>
-            <DetailRow
-              label="Number"
-              value={activeAccount.mainNumber ? formatPhoneNumber(activeAccount.mainNumber) : ''}
-            />
-            <DetailRow label="Account" value={activeAccount.companyName} />
-            <DetailRow
-              label="Extensions"
-              value={activeAccount.extensionCount ? String(activeAccount.extensionCount) : ''}
-            />
-            <Text style={styles.detailLabel}>Answered to missed</Text>
-            <RatioStrip stats={ratio} />
-            <Pressable style={styles.refreshLink} onPress={() => setTab('stats')}>
-              <Text style={styles.link}>Open ratio tab</Text>
-            </Pressable>
-          </View>
+          <Pressable style={styles.compactStatus} onPress={() => setTab('stats')} accessibilityLabel="Open ratio">
+            <Text style={[styles.compactStatusText, statusTone(activeAccount)]} numberOfLines={1}>
+              {connectionLabel(activeAccount)}
+            </Text>
+            {activeAccount.mainNumber ? (
+              <Text style={styles.compactStatusText} numberOfLines={1}>
+                {formatPhoneNumber(activeAccount.mainNumber)}
+              </Text>
+            ) : null}
+            {ratio.total ? (
+              <Text style={styles.compactStatusText} numberOfLines={1}>
+                {ratio.ratio}
+              </Text>
+            ) : null}
+          </Pressable>
         ) : null}
+
+        <View style={styles.dateRow}>
+          {DATE_RANGES.map((item) => {
+            const active = dateRange === item.key;
+            return (
+              <Pressable
+                key={item.key}
+                style={[styles.dateChip, active && styles.dateChipActive]}
+                onPress={() => setDateRange(item.key)}
+              >
+                <Text style={[styles.dateChipText, active && styles.dateChipTextActive]}>{item.label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
 
         <View style={styles.tabs}>
           {TABS.map((item) => {
@@ -677,13 +766,15 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
             const badge =
               item.key === 'incoming'
                 ? incomingLive.length
-                : item.key === 'voicemail'
-                  ? voicemails.filter((row) => row.readStatus === 'Unread').length
-                  : 0;
+                : item.key === 'missed'
+                  ? missedCalls.length
+                  : item.key === 'voicemail'
+                    ? visibleVoicemails.filter((row) => row.readStatus === 'Unread').length
+                    : 0;
             return (
               <Pressable key={item.key} style={[styles.tab, active && styles.tabActive]} onPress={() => setTab(item.key)}>
                 <Text style={[styles.tabText, active && styles.tabTextActive]}>
-                  {item.key === 'stats' && ratio.scored ? `${item.label} ${ratio.ratio}` : item.label}
+                  {item.key === 'stats' && ratio.total ? `${item.label} ${ratio.ratio}` : item.label}
                 </Text>
                 {badge > 0 ? (
                   <View style={styles.badge}>
@@ -694,10 +785,6 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
             );
           })}
         </View>
-
-        <Text style={styles.silentHint}>
-          {phone.silent ? 'Silent — incoming calls still appear, without ringtone.' : 'Ringtone on for incoming calls.'}
-        </Text>
 
         {error || phone.error ? (
           <View style={styles.errorBanner}>
@@ -719,9 +806,12 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
             {incomingLive.map((call) => (
               <View key={`${call.storeKey}-${call.id}`} style={styles.liveCard}>
                 <View style={styles.itemText}>
-                  <Text style={styles.liveKicker}>Ringing</Text>
-                  <Text style={styles.itemTitle}>{partyLine(call, true)}</Text>
-                  <Text style={styles.itemMeta}>{call.storeName}</Text>
+                  <Text style={styles.liveKicker}>
+                    {call.storeName || 'Ringing'}
+                  </Text>
+                  <Text style={styles.itemTitle} numberOfLines={1}>
+                    {partyLine(call, true)}
+                  </Text>
                 </View>
                 <View style={styles.liveActions}>
                   <Pressable style={[styles.callBtn, styles.rejectBtn]} onPress={() => phone.reject(call)} disabled={phone.busy}>
@@ -738,26 +828,51 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
                 <ActivityIndicator color={ACCENT} />
               </View>
             ) : inboundCalls.length === 0 && incomingLive.length === 0 ? (
-              <Text style={styles.emptyText}>No incoming calls yet.</Text>
+              <Text style={styles.emptyText}>No incoming calls {rangeLabel}.</Text>
             ) : (
-              inboundCalls.map((row) => (
-                <View key={row.id} style={styles.itemRow}>
-                  <View style={styles.callIcon}>
-                    <Ionicons
-                      name={row.result === 'Missed' ? 'call-outline' : 'arrow-down'}
-                      size={14}
-                      color={row.result === 'Missed' ? '#B91C1C' : ACCENT}
-                    />
-                  </View>
-                  <View style={styles.itemText}>
-                    <Text style={styles.itemTitle}>{partyLine(row, true)}</Text>
-                    <Text style={styles.itemMeta}>
-                      {[resultLabel(row.result), formatCallWhen(row.startTime), row.duration ? formatDuration(row.duration) : '']
-                        .filter(Boolean)
-                        .join(' · ')}
-                    </Text>
-                  </View>
-                </View>
+              inboundCalls.map((row) => <CallHistoryRow key={row.id} row={row} inbound />)
+            )}
+          </View>
+        ) : null}
+
+        {tab === 'missed' ? (
+          <View style={styles.section}>
+            {inboxLoading && missedCalls.length === 0 ? (
+              <View style={styles.centered}>
+                <ActivityIndicator color={ACCENT} />
+              </View>
+            ) : missedCalls.length === 0 ? (
+              <Text style={styles.emptyText}>No missed calls {rangeLabel}.</Text>
+            ) : (
+              missedCalls.map((row) => (
+                <CallHistoryRow
+                  key={row.id}
+                  row={row}
+                  inbound
+                  onCallback={callBack}
+                  callbackBusy={phone.busy}
+                />
+              ))
+            )}
+          </View>
+        ) : null}
+
+        {tab === 'log' ? (
+          <View style={styles.section}>
+            {inboxLoading && callLog.length === 0 ? (
+              <View style={styles.centered}>
+                <ActivityIndicator color={ACCENT} />
+              </View>
+            ) : callLog.length === 0 ? (
+              <Text style={styles.emptyText}>No calls {rangeLabel}.</Text>
+            ) : (
+              callLog.map((row) => (
+                <CallHistoryRow
+                  key={row.id}
+                  row={row}
+                  inbound={row.direction !== 'Outbound'}
+                  showDirection
+                />
               ))
             )}
           </View>
@@ -797,7 +912,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
               This rings the store phone first, then connects the number you dialed.
             </Text>
             {outboundCalls.length === 0 ? (
-              <Text style={styles.emptyText}>No outbound calls yet.</Text>
+              <Text style={styles.emptyText}>No outbound calls {rangeLabel}.</Text>
             ) : (
               outboundCalls.map((row) => (
                 <Pressable
@@ -825,14 +940,14 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
         {tab === 'voicemail' ? (
           <View style={styles.section}>
             {playError ? <Text style={styles.errorText}>{playError}</Text> : null}
-            {inboxLoading && voicemails.length === 0 ? (
+            {inboxLoading && visibleVoicemails.length === 0 ? (
               <View style={styles.centered}>
                 <ActivityIndicator color={ACCENT} />
               </View>
-            ) : voicemails.length === 0 ? (
-              <Text style={styles.emptyText}>No voicemail.</Text>
+            ) : visibleVoicemails.length === 0 ? (
+              <Text style={styles.emptyText}>No voicemail {rangeLabel}.</Text>
             ) : (
-              voicemails.map((row) => {
+              visibleVoicemails.map((row) => {
                 const unread = row.readStatus === 'Unread';
                 return (
                   <View key={row.id} style={styles.itemRow}>
@@ -862,7 +977,30 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
 
         {tab === 'stats' ? (
           <View style={styles.section}>
-            <RatioStrip stats={ratio} />
+            {phone.stores.length > 1 ? (
+              <View style={styles.storeRatioList}>
+                {phone.stores.map((row) => {
+                  const storeRatio = storeRatios[row.storeKey] || inboundCallRatio([]);
+                  const selected = row.storeKey === storeKey;
+                  return (
+                    <Pressable
+                      key={row.storeKey}
+                      style={[styles.storeRatioRow, selected && styles.storeRatioRowActive]}
+                      onPress={() => phone.setSelectedStoreKey(row.storeKey)}
+                    >
+                      <Text style={[styles.storeRatioName, selected && styles.chipTextActive]} numberOfLines={1}>
+                        {row.storeName}
+                      </Text>
+                      <Text style={styles.storeRatioValue}>
+                        {storeRatio.total ? `${storeRatio.answered} answered · ${storeRatio.missed} missed` : 'No inbound'}
+                      </Text>
+                      <Text style={styles.storeRatioChip}>{storeRatio.ratio}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ) : null}
+            <RatioStrip stats={ratio} rangeLabel={rangeLabel} />
             <View style={styles.ratioStats}>
               <View style={styles.ratioStat}>
                 <Text style={styles.summaryLabel}>Voicemail</Text>
@@ -872,14 +1010,10 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
                 <Text style={styles.summaryLabel}>Rejected</Text>
                 <Text style={styles.summaryValue}>{ratio.rejected}</Text>
               </View>
-              <View style={styles.ratioStat}>
-                <Text style={styles.summaryLabel}>Inbound</Text>
-                <Text style={styles.summaryValue}>{ratio.inbound}</Text>
-              </View>
             </View>
             <Text style={styles.blockTitle}>Answered</Text>
             {answeredCalls.length === 0 ? (
-              <Text style={styles.emptyText}>No answered inbound calls in the last 14 days.</Text>
+              <Text style={styles.emptyText}>No answered inbound calls {rangeLabel}.</Text>
             ) : (
               answeredCalls.map((row) => (
                 <View key={row.id} style={styles.itemRow}>
@@ -899,7 +1033,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter }) {
             )}
             <Text style={[styles.blockTitle, styles.blockTitleSpaced]}>Missed</Text>
             {missedCalls.length === 0 ? (
-              <Text style={styles.emptyText}>No missed inbound calls in the last 14 days.</Text>
+              <Text style={styles.emptyText}>No missed inbound calls {rangeLabel}.</Text>
             ) : (
               missedCalls.map((row) => (
                 <View key={row.id} style={styles.itemRow}>
@@ -934,19 +1068,19 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingHorizontal: 20,
-    paddingTop: 8,
+    paddingTop: 4,
     paddingBottom: 32,
     maxWidth: 720,
     width: '100%',
     alignSelf: 'center',
-    gap: 14,
+    gap: 10,
   },
   section: {
     gap: 4,
   },
   headerRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
   },
@@ -985,7 +1119,7 @@ const styles = StyleSheet.create({
   },
   sectionTitle: {
     fontFamily,
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '700',
     color: '#1a1a1a',
   },
@@ -1005,8 +1139,11 @@ const styles = StyleSheet.create({
     paddingBottom: 2,
   },
   chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingVertical: 4,
     borderRadius: 999,
     backgroundColor: '#f3f3f3',
     ...Platform.select({
@@ -1026,6 +1163,120 @@ const styles = StyleSheet.create({
   chipTextActive: {
     color: ACCENT,
   },
+  chipRatio: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#8a8a8a',
+  },
+  chipRatioActive: {
+    color: ACCENT,
+  },
+  storeRatioList: {
+    gap: 6,
+    marginBottom: 8,
+  },
+  storeRatioRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    backgroundColor: '#f7f7f7',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  storeRatioRowActive: {
+    backgroundColor: '#ECFDF5',
+  },
+  storeRatioName: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1a1a1a',
+  },
+  storeRatioValue: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#6b6b6b',
+  },
+  storeRatioChip: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1a1a1a',
+  },
+  compactStatus: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  compactStatusText: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#6b6b6b',
+  },
+  dateRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  dateChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: '#f3f3f3',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  dateChipActive: {
+    backgroundColor: '#ECFDF5',
+  },
+  dateChipText: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#6b6b6b',
+  },
+  dateChipTextActive: {
+    color: ACCENT,
+  },
+  callbackBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    minHeight: 28,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: ACCENT,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  callbackBtnDisabled: {
+    opacity: 0.6,
+  },
+  callbackText: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#fff',
+  },
   tabs: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1037,8 +1288,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
     borderBottomWidth: 2,
     borderBottomColor: 'transparent',
     ...Platform.select({
@@ -1217,21 +1468,20 @@ const styles = StyleSheet.create({
     color: '#1a1a1a',
   },
   statusCard: {
-    marginTop: 8,
-    marginBottom: 8,
+    marginTop: 4,
+    marginBottom: 4,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: '#e5e5e5',
     borderRadius: 8,
-    padding: 14,
+    padding: 10,
     backgroundColor: '#fafafa',
-    gap: 8,
+    gap: 6,
   },
   statusValue: {
     fontFamily,
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '700',
     color: '#1a1a1a',
-    marginBottom: 4,
   },
   detailRow: {
     gap: 2,
@@ -1262,21 +1512,29 @@ const styles = StyleSheet.create({
   ratioBlock: {
     gap: 8,
   },
+  ratioBlockCompact: {
+    gap: 6,
+  },
   ratioStats: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 10,
+    gap: 8,
   },
   ratioStat: {
     flexGrow: 1,
     flexBasis: 72,
     minWidth: 70,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 8,
     backgroundColor: '#F3FBF6',
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: '#D5EBD9',
+  },
+  ratioStatCompact: {
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    minWidth: 64,
   },
   summaryLabel: {
     fontFamily,
@@ -1289,17 +1547,23 @@ const styles = StyleSheet.create({
   },
   summaryValue: {
     fontFamily,
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '700',
     color: '#1a1a1a',
     fontVariant: ['tabular-nums'],
   },
+  summaryValueCompact: {
+    fontSize: 14,
+  },
   ratioBarTrack: {
-    height: 8,
-    borderRadius: 4,
+    height: 6,
+    borderRadius: 3,
     backgroundColor: '#ececec',
     overflow: 'hidden',
     flexDirection: 'row',
+  },
+  ratioBarTrackCompact: {
+    height: 4,
   },
   ratioBarFill: {
     backgroundColor: ACCENT,
@@ -1315,9 +1579,9 @@ const styles = StyleSheet.create({
   },
   itemRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     gap: 10,
-    paddingVertical: 10,
+    paddingVertical: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#f0f0f0',
   },
@@ -1368,33 +1632,34 @@ const styles = StyleSheet.create({
   liveCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    padding: 12,
-    borderRadius: 12,
+    gap: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: 8,
     backgroundColor: '#ECFDF5',
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: '#BBF7D0',
-    marginBottom: 8,
+    marginBottom: 4,
   },
   liveKicker: {
     fontFamily,
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '700',
     color: ACCENT,
     textTransform: 'uppercase',
-    letterSpacing: 0.4,
+    letterSpacing: 0.3,
   },
   liveActions: {
     flexDirection: 'row',
-    gap: 6,
+    gap: 4,
   },
   callBtn: {
-    minWidth: 64,
-    height: 32,
-    borderRadius: 8,
+    minWidth: 56,
+    height: 26,
+    borderRadius: 6,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 10,
+    paddingHorizontal: 8,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -1419,7 +1684,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#F3FBF6',
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 2,
   },
   dialInput: {
     fontFamily,

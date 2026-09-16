@@ -26,6 +26,7 @@ import {
   saveRoleAppAccess,
   saveUserAppAccess,
   updateStaffAccess,
+  useAppAccess,
 } from '../lib/permissions';
 import { getSupabaseConnectionStatus } from '../lib/supabase';
 import StoreSettingsPanel from './StoreSettingsPanel';
@@ -51,6 +52,7 @@ function SettingsHome({
   onOpenRingCentral,
   canManageAiKeys,
   canManagePhone,
+  showRingCentral,
 }) {
   const isMobile = useIsMobile();
   const [dbStatus, setDbStatus] = useState(null);
@@ -107,14 +109,18 @@ function SettingsHome({
           <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
         </Pressable>
 
-        {canManagePhone ? (
+        {showRingCentral ? (
           <Pressable style={[styles.menuRow, isMobile && styles.menuRowMobile]} onPress={onOpenRingCentral}>
             <View style={[styles.menuIcon, { backgroundColor: '#ECFDF5' }]}>
               <Ionicons name="call-outline" size={16} color="#15803D" />
             </View>
             <View style={styles.menuTextWrap}>
               <Text style={styles.menuLabel}>RingCentral</Text>
-              <Text style={styles.menuHint}>Client ID, secret, and JWT for each store</Text>
+              <Text style={styles.menuHint}>
+                {canManagePhone
+                  ? 'Incoming calls per store, plus JWT credentials'
+                  : 'Choose which store incoming calls appear on this screen'}
+              </Text>
             </View>
             <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
           </Pressable>
@@ -1126,6 +1132,8 @@ export default function SettingsScreen({
   const canManageAccess = canManageAppAccess(session?.profile);
   const canManageAiKeys = canManageCompanyAiKeys(session?.profile);
   const canManagePhone = canManageRingCentral(session?.profile);
+  const { hasApp } = useAppAccess();
+  const showRingCentral = canManagePhone || hasApp('phone');
 
   if (panel === 'ai-models') {
     return canManageAiKeys ? <AiModelsPanel /> : <AiModelsDenied />;
@@ -1165,6 +1173,7 @@ export default function SettingsScreen({
       onOpenRingCentral={() => onOpenPanel('ringcentral')}
       canManageAiKeys={canManageAiKeys}
       canManagePhone={canManagePhone}
+      showRingCentral={showRingCentral}
     />
   );
 }

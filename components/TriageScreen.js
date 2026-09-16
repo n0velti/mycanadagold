@@ -23,12 +23,8 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
   }
   style.textContent = [
     '.cgold-triage-row{cursor:pointer;background-color:transparent;}',
-    '.cgold-triage-table-row:hover{background-color:#f5f5f7!important;}',
+    '.cgold-triage-table-row:hover,.cgold-triage-table-row:has(:hover){background-color:#f5f5f7!important;}',
     '.cgold-triage-row-selected,.cgold-triage-row-selected:hover{background-color:#EAF2FF!important;}',
-    '.cgold-triage-row-mixed{background-color:rgba(255,149,0,0.16)!important;}',
-    '.cgold-triage-row-mixed:hover,.cgold-triage-row-mixed .cgold-triage-row:hover{background-color:rgba(255,149,0,0.26)!important;}',
-    '.cgold-triage-row-bullion{background-color:rgba(255,59,48,0.16)!important;}',
-    '.cgold-triage-row-bullion:hover,.cgold-triage-row-bullion .cgold-triage-row:hover{background-color:rgba(255,59,48,0.26)!important;}',
   ].join('');
 }
 
