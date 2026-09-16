@@ -29,6 +29,8 @@ import {
 } from '../lib/permissions';
 import { getSupabaseConnectionStatus } from '../lib/supabase';
 import StoreSettingsPanel from './StoreSettingsPanel';
+import RingCentralSettingsPanel from './RingCentralSettingsPanel';
+import { canManageRingCentral } from '../lib/ringcentral';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -46,7 +48,9 @@ function SettingsHome({
   onOpenPermissions,
   onOpenDatabase,
   onOpenStoreSettings,
+  onOpenRingCentral,
   canManageAiKeys,
+  canManagePhone,
 }) {
   const isMobile = useIsMobile();
   const [dbStatus, setDbStatus] = useState(null);
@@ -102,6 +106,19 @@ function SettingsHome({
           </View>
           <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
         </Pressable>
+
+        {canManagePhone ? (
+          <Pressable style={[styles.menuRow, isMobile && styles.menuRowMobile]} onPress={onOpenRingCentral}>
+            <View style={[styles.menuIcon, { backgroundColor: '#ECFDF5' }]}>
+              <Ionicons name="call-outline" size={16} color="#15803D" />
+            </View>
+            <View style={styles.menuTextWrap}>
+              <Text style={styles.menuLabel}>RingCentral</Text>
+              <Text style={styles.menuHint}>Client ID, secret, and JWT for each store</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
+          </Pressable>
+        ) : null}
 
         {canManageAiKeys ? (
           <Pressable style={[styles.menuRow, isMobile && styles.menuRowMobile]} onPress={onOpenAiModels}>
@@ -1108,6 +1125,7 @@ export default function SettingsScreen({
 }) {
   const canManageAccess = canManageAppAccess(session?.profile);
   const canManageAiKeys = canManageCompanyAiKeys(session?.profile);
+  const canManagePhone = canManageRingCentral(session?.profile);
 
   if (panel === 'ai-models') {
     return canManageAiKeys ? <AiModelsPanel /> : <AiModelsDenied />;
@@ -1134,13 +1152,19 @@ export default function SettingsScreen({
     return <StoreSettingsPanel session={session} storeName={storeName} />;
   }
 
+  if (panel === 'ringcentral') {
+    return <RingCentralSettingsPanel session={session} storeName={storeName} />;
+  }
+
   return (
     <SettingsHome
       onOpenAiModels={() => onOpenPanel('ai-models')}
       onOpenPermissions={() => onOpenPanel('permissions')}
       onOpenDatabase={() => onOpenPanel('database')}
       onOpenStoreSettings={() => onOpenPanel('store-settings')}
+      onOpenRingCentral={() => onOpenPanel('ringcentral')}
       canManageAiKeys={canManageAiKeys}
+      canManagePhone={canManagePhone}
     />
   );
 }

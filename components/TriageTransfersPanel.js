@@ -21,7 +21,7 @@ import {
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
 import { mobileSafeBottom, mobileSafeTop, useIsMobile } from '../lib/mobileUi';
-import { fetchTransferStores } from '../lib/locations';
+import { findStaffByEmployeeName, listStaffProfiles } from '../lib/permissions';
 import {
   collectRecordImageUrls,
   defaultDateRange,
@@ -82,10 +82,13 @@ import {
   Stat,
   StatStrip,
   StatusPill,
+  StaffAvatar,
+  StaffPerson,
   T,
   TextAction,
   TextTabs,
   TriageDrawer,
+  TriageErrorBoundary,
   confirmDestructive,
   useHeldValue,
 } from './TriageKit';
@@ -99,6 +102,7 @@ import {
   TableCell,
   TableEmpty,
   TableFrame,
+  TableMeta,
   TableMuted,
   TablePhotoCell,
   TableRow,
@@ -139,6 +143,14 @@ const EMPTY_BULLION_FILTERS = {
   dateLabel: [],
   fromName: [],
   toName: [],
+  status: [],
+};
+
+const EMPTY_DASH_FILTERS = {
+  document: [],
+  customer: [],
+  dateLabel: [],
+  stores: [],
   status: [],
 };
 
@@ -1314,7 +1326,7 @@ const MELT_SORTERS = {
   status: (row) => meltStatus(row).label,
 };
 
-const MeltTableRow = memo(function MeltTableRow({ row, onOpen, onToggleReceived, onRemove, last }) {
+const MeltTableRow = memo(function MeltTableRow({ row, staffProfiles, onOpen, onToggleReceived, onRemove, last }) {
   const received = Boolean(row.received);
   const status = meltStatus(row);
   const items = itemCountLabel(row);
@@ -1327,10 +1339,10 @@ const MeltTableRow = memo(function MeltTableRow({ row, onOpen, onToggleReceived,
       style={bullionOnly ? styles.meltRowBullion : heldBullion ? styles.meltRowMixed : null}
       webClassName={bullionOnly ? 'cgold-triage-row-bullion' : heldBullion ? 'cgold-triage-row-mixed' : undefined}
     >
+      <TablePhotoCell>
+        <PoThumb urls={row.imageUrls} label={row.reference} />
+      </TablePhotoCell>
       <TableRowMain onPress={() => onOpen(row)} accessibilityLabel={`Open ${row.reference}`}>
-        <TablePhotoCell>
-          <PoThumb urls={row.imageUrls} label={row.reference} />
-        </TablePhotoCell>
         <TableCell flex={1.35} minWidth={148}>
           <View style={styles.meltRefRow}>
             <View style={styles.meltRefText}>
@@ -1363,8 +1375,11 @@ const MeltTableRow = memo(function MeltTableRow({ row, onOpen, onToggleReceived,
         <TableCell flex={1.15} minWidth={120}>
           {personLabel(row.customerName)}
         </TableCell>
-        <TableCell flex={1} minWidth={110}>
-          {personLabel(row.employeeName)}
+        <TableCell flex={1} minWidth={140}>
+          <StaffPerson
+            name={personLabel(row.employeeName)}
+            avatarUrl={findStaffByEmployeeName(staffProfiles, row.employeeName)?.avatarUrl || ''}
+          />
         </TableCell>
         <TableCell flex={1} minWidth={110}>
           {row.storeName}
@@ -1431,6 +1446,7 @@ function MeltTab({
   const [openFilter, setOpenFilter] = useState(null);
   const [filters, setFilters] = useState(EMPTY_MELT_FILTERS);
   const [sort, setSort] = useState(null);
+  const [staffProfiles, setStaffProfiles] = useState([]);
   const existingIds = useMemo(() => (pos || []).map((row) => row.id), [pos]);
   const needsHydrate = useMemo(
     () => (pos || []).some((row) => row?.type !== 'order' && !(row.pricedLines || []).length),
@@ -1438,6 +1454,20 @@ function MeltTab({
   );
   const posRef = useRef(pos);
   posRef.current = pos;
+
+  useEffect(() => {
+    let cancelled = false;
+    listStaffProfiles()
+      .then((rows) => {
+        if (!cancelled) setStaffProfiles(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setStaffProfiles([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!needsHydrate || !session) return undefined;
@@ -1591,6 +1621,7 @@ function MeltTab({
         for (const groupRows of hydratedGroups) hydrated.push(...groupRows);
         recordPurchaseCensus(batch.id, hydrated);
         onMergePos(hydrated);
+        persistTransferWorkflowNow().catch(() => {});
         onAddOpenChange(false);
       } catch (err) {
         setError(err?.message || 'Failed to load purchases.');
@@ -1620,13 +1651,14 @@ function MeltTab({
     ({ item, index }) => (
       <MeltTableRow
         row={item}
+        staffProfiles={staffProfiles}
         last={index === visiblePos.length - 1}
         onOpen={openRowFromTable}
         onToggleReceived={onToggleReceived}
         onRemove={removeRow}
       />
     ),
-    [onToggleReceived, openRowFromTable, removeRow, visiblePos.length],
+    [onToggleReceived, openRowFromTable, removeRow, staffProfiles, visiblePos.length],
   );
 
   return (
@@ -1710,7 +1742,7 @@ function MeltTab({
                 options={employeeOptions}
                 openKey={openFilter}
                 onOpenKey={setOpenFilter}
-                style={{ flex: 1, minWidth: 110 }}
+                style={{ flex: 1, minWidth: 140 }}
                 {...sortProps('employee')}
               />
               <ColumnFilter
@@ -1790,15 +1822,19 @@ function MeltTab({
         onAddDoc={(row) => {
           onMergePos([row]);
           onAddOpenChange(false);
-          if (row.type === 'purchase') {
-            const auth = resolvePosAuthForRow(session, { systemKey: row.systemKey });
-            if (!auth.token) return;
-            fillMissingPoImages(auth.token, auth.baseUrl, [row])
-              .then((enriched) => {
-                if (enriched[0] && enriched[0] !== row) onMergePos(enriched);
-              })
-              .catch(() => {});
-          }
+          persistTransferWorkflowNow().catch(() => {});
+          const auth = resolvePosAuthForRow(session, { systemKey: row.systemKey });
+          if (!auth.token) return;
+          fillMissingPoDetails(auth.token, auth.baseUrl, [row])
+            .then((enriched) => {
+              const next = enriched[0];
+              if (!next) return;
+              if (next !== row || (next.pricedLines || []).length || (next.imageUrls || []).length) {
+                onMergePos([next]);
+                persistTransferWorkflowNow().catch(() => {});
+              }
+            })
+            .catch(() => {});
         }}
       />
 
@@ -1812,6 +1848,7 @@ function MeltTab({
         />
       ) : null}
 
+      <TriageErrorBoundary resetKey={openRow?.id || ''} onReset={() => setOpenRow(null)}>
       <TriageReviewDrawer
         visible={Boolean(openRow)}
         session={session}
@@ -1820,8 +1857,15 @@ function MeltTab({
         extraRows={pos}
         onClose={() => setOpenRow(null)}
         onSave={onSaveReview}
-        onHydrate={(enriched) => patchTriagePosDetails(batch.id, [enriched])}
+        onHydrate={(enriched) => {
+          try {
+            patchTriagePosDetails(batch.id, [enriched]);
+          } catch {
+            /* keep the drawer open even if cache patch fails */
+          }
+        }}
       />
+      </TriageErrorBoundary>
     </View>
   );
 }
@@ -2448,155 +2492,370 @@ function standalonePo(batch) {
   return flattenBatchPos(batch)[0] || null;
 }
 
-function DashboardRow({ kind, title, detail, status, last, onPress, onDelete, openLabel, deleteLabel, thumbs }) {
-  const isMobile = useIsMobile();
+function dashboardType(batch, po) {
+  if (isStandaloneTriage(batch)) return parseDocReference(po?.reference || po)?.kind || 'PO';
+  return 'Batch';
+}
+
+function dashboardEmployees(standalone, batch, po) {
+  if (standalone) {
+    const name = personLabel(po?.employeeName);
+    return name ? [name] : [];
+  }
+  const seen = new Set();
+  const names = [];
+  for (const item of flattenBatchPos(batch)) {
+    const name = personLabel(item.employeeName);
+    const key = name.toLowerCase();
+    if (!name || seen.has(key)) continue;
+    seen.add(key);
+    names.push(name);
+  }
+  return names;
+}
+
+function dashboardCustomers(standalone, batch, po) {
+  if (standalone) return personLabel(po?.customerName);
+  const seen = new Set();
+  const names = [];
+  for (const item of flattenBatchPos(batch)) {
+    const name = personLabel(item.customerName);
+    const key = name.toLowerCase();
+    if (!name || seen.has(key)) continue;
+    seen.add(key);
+    names.push(name);
+  }
+  if (!names.length) return '';
+  if (names.length <= 2) return names.join(', ');
+  return `${names[0]} +${names.length - 1}`;
+}
+
+function dashboardDocument(standalone, batch, po, today) {
+  if (standalone) return po?.reference || dashboardType(batch, po);
+  const pos = flattenBatchPos(batch);
+  if (pos.length === 1 && personLabel(pos[0].reference)) return pos[0].reference;
+  if (pos.length > 1 && personLabel(pos[0].reference)) return `${pos[0].reference} +${pos.length - 1}`;
+  return today ? 'Today' : batch.dateLabel || 'Batch';
+}
+
+function dashboardStatus(standalone, stats, po) {
+  if (standalone) {
+    if (stats?.flagged) return { label: 'Flagged', tone: 'orange' };
+    if (po?.received) return { label: 'Received', tone: 'green' };
+    if (poHoldsBullion(po)) return { label: 'Bullion', tone: 'orange' };
+    return { label: 'Open', tone: 'neutral' };
+  }
+  if (stats?.flagged) return { label: 'Flagged', tone: 'orange', sub: `${stats.flagged}` };
+  if (stats?.empty) return { label: 'Empty', tone: 'neutral' };
+  if (stats?.complete) {
+    return { label: 'Received', tone: 'green', sub: `${stats.received} of ${stats.expected}` };
+  }
+  if (stats?.open) return { label: `${stats.received} of ${stats.expected}`, tone: 'blue' };
+  return { label: 'Open', tone: 'neutral' };
+}
+
+function dashboardPhotoUrls(standalone, batch, po) {
+  if (standalone) return po?.imageUrls;
+  const withPhoto = flattenBatchPos(batch).find((row) => (row.imageUrls || []).some(Boolean));
+  return withPhoto?.imageUrls;
+}
+
+const DASH_COL = {
+  document: { flex: 1.2, minWidth: 112 },
+  customer: { flex: 1.5, minWidth: 128 },
+  date: { flex: 0.9, minWidth: 96 },
+  stores: { flex: 1.4, minWidth: 120 },
+  value: { flex: 0.85, minWidth: 88 },
+  status: { flex: 1.05, minWidth: 108 },
+};
+
+const DASH_SORTERS = {
+  document: (row) => row.document,
+  customer: (row) => row.customer,
+  dateLabel: (row) => row.dateKey || row.dateLabel || '',
+  stores: (row) => row.stores,
+  employee: (row) => row.employeeNames?.[0] || '',
+  value: (row) => row.valueNumber,
+  status: (row) => row.status.label,
+};
+
+const DashboardTableRow = memo(function DashboardTableRow({ row, staffProfiles, last, onOpen, onDelete }) {
+  const employeeNames = row.employeeNames || [];
+  const employeeName = employeeNames[0] || '';
+  const buyer = findStaffByEmployeeName(staffProfiles, employeeName);
+  const employeeLabel =
+    employeeNames.length > 1 ? `${employeeNames.join(', ')}` : employeeName;
   return (
-    <View style={[styles.dashRow, last && styles.dashRowLast]}>
-      <Pressable
-        style={[styles.dashMain, isMobile && styles.dashMainMobile]}
-        onPress={onPress}
-        accessibilityRole="button"
-        accessibilityLabel={openLabel}
-        {...(Platform.OS === 'web' ? { className: 'cgold-triage-row' } : null)}
-      >
-        <Text style={styles.dashKind}>{kind}</Text>
-        {thumbs ? <View style={styles.dashThumbs}>{thumbs}</View> : null}
-        <View style={styles.dashText}>
-          <Text style={styles.dashTitle} numberOfLines={1}>
-            {title}
-          </Text>
-          {detail ? (
-            <Text style={styles.dashDetail} numberOfLines={isMobile ? 2 : 1}>
-              {detail}
-            </Text>
-          ) : null}
-          {isMobile && status ? (
-            <Text style={styles.dashDetail} numberOfLines={1}>
-              {status}
-            </Text>
-          ) : null}
+    <TableRow last={last}>
+      <TablePhotoCell>
+        <PoThumb urls={row.photoUrls} label={row.document} />
+      </TablePhotoCell>
+      <TableRowMain onPress={onOpen} accessibilityLabel={row.openLabel}>
+        <View style={styles.dashEmployeeCell}>
+          {employeeName ? (
+            <StaffAvatar uri={buyer?.avatarUrl || ''} name={employeeLabel} size={26} />
+          ) : (
+            <Text style={styles.dashEmployeeEmpty}>—</Text>
+          )}
         </View>
-        {!isMobile && status ? (
-          <Text style={styles.dashStatus} numberOfLines={1}>
-            {status}
-          </Text>
-        ) : null}
-      </Pressable>
-      <Pressable
-        style={styles.batchDelete}
-        onPress={onDelete}
-        hitSlop={8}
-        accessibilityRole="button"
-        accessibilityLabel={deleteLabel}
-      >
-        <Text style={styles.batchDeleteText}>Delete</Text>
-      </Pressable>
-    </View>
+        <TableCell flex={DASH_COL.document.flex} minWidth={DASH_COL.document.minWidth}>
+          <TableStrong>{row.document}</TableStrong>
+        </TableCell>
+        <TableCell flex={DASH_COL.customer.flex} minWidth={DASH_COL.customer.minWidth}>
+          {row.customer || '—'}
+        </TableCell>
+        <TableCell flex={DASH_COL.date.flex} minWidth={DASH_COL.date.minWidth}>
+          {row.dateLabel}
+        </TableCell>
+        <TableCell flex={DASH_COL.stores.flex} minWidth={DASH_COL.stores.minWidth}>
+          {row.stores || '—'}
+        </TableCell>
+        <TableCell flex={DASH_COL.value.flex} minWidth={DASH_COL.value.minWidth} align="right">
+          {row.valueLabel}
+        </TableCell>
+        <TableCell flex={DASH_COL.status.flex} minWidth={DASH_COL.status.minWidth}>
+          <TableStatus label={row.status.label} tone={row.status.tone} sub={row.status.sub} />
+        </TableCell>
+      </TableRowMain>
+      <View style={styles.dashActions}>
+        <Pressable
+          style={styles.dashOpen}
+          onPress={onOpen}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={row.openLabel}
+        >
+          <Text style={styles.dashOpenText}>Open</Text>
+        </Pressable>
+        <Pressable
+          style={styles.dashDelete}
+          onPress={onDelete}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={row.deleteLabel}
+        >
+          <Ionicons name="trash-outline" size={18} color={T.red} />
+        </Pressable>
+      </View>
+    </TableRow>
   );
-}
-
-function BatchRow({ batch, stats, today, last, onPress, onDelete }) {
-  const storeNames = (batch.stores || []).map((store) => store.name).filter(Boolean);
-  const expected = expectedPosLabel(stats);
-  const photos = flattenBatchPos(batch)
-    .filter((row) => (row.imageUrls || []).some(Boolean))
-    .slice(0, 3);
-  const status = stats.empty
-    ? expected || 'No documents'
-    : [
-        stats.complete ? 'Received' : `${stats.received} of ${stats.expected}`,
-        stats.flagged ? `${stats.flagged} flagged` : '',
-      ]
-        .filter(Boolean)
-        .join(' · ');
-  return (
-    <DashboardRow
-      kind="Batch"
-      title={today ? 'Today' : batch.dateLabel || 'Batch'}
-      detail={[storeNames.length ? storeNames.join(', ') : 'No stores', !stats.empty && expected].filter(Boolean).join(' · ')}
-      status={status}
-      last={last}
-      onPress={onPress}
-      onDelete={onDelete}
-      openLabel={`Open batch ${batch.dateLabel}`}
-      deleteLabel={`Delete batch ${batch.dateLabel}`}
-      thumbs={
-        photos.length
-          ? photos.map((row) => <PoThumb key={row.id} urls={row.imageUrls} label={row.reference} />)
-          : null
-      }
-    />
-  );
-}
-
-function QuickPoRow({ batch, stats, last, onPress, onDelete }) {
-  const row = standalonePo(batch);
-  const kind = parseDocReference(row?.reference || row)?.kind || 'PO';
-  const status = [
-    stats?.flagged ? 'Flagged' : row?.received ? 'Received' : 'Open',
-    poHoldsBullion(row) ? 'Bullion' : '',
-  ]
-    .filter(Boolean)
-    .join(' · ');
-  return (
-    <DashboardRow
-      kind={kind}
-      title={row?.reference || kind}
-      detail={[row?.storeName, row?.dateLabel, row?.customerName].filter(Boolean).join(' · ')}
-      status={status}
-      last={last}
-      onPress={onPress}
-      onDelete={onDelete}
-      openLabel={`Open ${row?.reference || kind}`}
-      deleteLabel={`Remove ${row?.reference || kind}`}
-      thumbs={<PoThumb urls={row?.imageUrls} label={row?.reference} />}
-    />
-  );
-}
+});
 
 function BatchList({ transfers, query = '', onOpen, onOpenPo, onDelete }) {
   const todayKey = formatDateParam(new Date());
-  const statsById = useMemo(() => new Map(transfers.map((row) => [row.id, batchStats(row)])), [transfers]);
-  const rows = useMemo(
-    () =>
-      transfers
-        .filter((row) => batchMatchesQuery(row, query))
-        .slice()
-        .sort((a, b) => String(b.dateKey || '').localeCompare(String(a.dateKey || ''))),
-    [query, transfers],
+  const [openFilter, setOpenFilter] = useState(null);
+  const [filters, setFilters] = useState(EMPTY_DASH_FILTERS);
+  const [sort, setSort] = useState(null);
+  const [staffProfiles, setStaffProfiles] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    listStaffProfiles()
+      .then((rows) => {
+        if (!cancelled) setStaffProfiles(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setStaffProfiles([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const entries = useMemo(() => {
+    const statsById = new Map(transfers.map((row) => [row.id, batchStats(row)]));
+    return transfers
+      .filter((row) => batchMatchesQuery(row, query))
+      .map((batch) => {
+        const standalone = isStandaloneTriage(batch);
+        const po = standalone ? standalonePo(batch) : null;
+        const stats = statsById.get(batch.id);
+        const today = !standalone && batch.dateKey === todayKey;
+        const type = dashboardType(batch, po);
+        return {
+          id: batch.id,
+          batch,
+          po,
+          standalone,
+          type,
+          document: dashboardDocument(standalone, batch, po, today),
+          customer: dashboardCustomers(standalone, batch, po),
+          title: standalone ? po?.reference || type : today ? 'Today' : batch.dateLabel || 'Batch',
+          dateLabel: standalone ? po?.dateLabel || batch.dateLabel || '' : batch.dateLabel || '',
+          dateKey: batch.dateKey || '',
+          stores: standalone
+            ? po?.storeName || ''
+            : (batch.stores || []).map((store) => store.name).filter(Boolean).join(', '),
+          valueNumber: standalone ? rowAmountNumber(po) || 0 : stats?.amount || 0,
+          valueLabel: standalone
+            ? rowAmountLabel(po) || '—'
+            : stats?.amount
+              ? formatAmount(stats.amount)
+              : '—',
+          photoUrls: dashboardPhotoUrls(standalone, batch, po),
+          employeeNames: dashboardEmployees(standalone, batch, po),
+          status: dashboardStatus(standalone, stats, po),
+          openLabel: standalone ? `Open ${po?.reference || type}` : `Open batch ${batch.dateLabel}`,
+          deleteLabel: standalone ? `Remove ${po?.reference || type}` : `Delete batch ${batch.dateLabel}`,
+        };
+      });
+  }, [query, todayKey, transfers]);
+
+  const setFilter = useCallback((key, value) => {
+    setFilters((current) => ({ ...current, [key]: value }));
+  }, []);
+  const filtersActive = Object.values(filters).some((value) => selectedLabels(value).length > 0);
+  const clearFilters = useCallback(() => {
+    setFilters(EMPTY_DASH_FILTERS);
+    setSort(null);
+    setOpenFilter(null);
+  }, []);
+  const sortProps = (key) => ({
+    sortDir: sort?.key === key ? sort.dir : null,
+    onSort: (dir) => setSort(dir ? { key, dir } : null),
+  });
+
+  const rowMatches = useCallback(
+    (row, skip) =>
+      (skip === 'document' || matchesSelectedLabel(row.document, filters.document)) &&
+      (skip === 'customer' || matchesSelectedLabel(row.customer, filters.customer)) &&
+      (skip === 'dateLabel' || matchesSelectedLabel(row.dateLabel, filters.dateLabel)) &&
+      (skip === 'stores' || matchesSelectedLabel(row.stores, filters.stores)) &&
+      (skip === 'status' || matchesSelectedLabel(row.status.label, filters.status)),
+    [filters],
+  );
+  const optionsFor = useCallback(
+    (key, getValue) => uniqueLabels(entries.filter((row) => rowMatches(row, key)).map(getValue)),
+    [entries, rowMatches],
+  );
+  const documentOptions = useMemo(() => optionsFor('document', (row) => row.document), [optionsFor]);
+  const customerOptions = useMemo(() => optionsFor('customer', (row) => row.customer), [optionsFor]);
+  const dateOptions = useMemo(() => optionsFor('dateLabel', (row) => row.dateLabel), [optionsFor]);
+  const storeOptions = useMemo(() => optionsFor('stores', (row) => row.stores), [optionsFor]);
+  const statusOptions = useMemo(() => optionsFor('status', (row) => row.status.label), [optionsFor]);
+
+  const visible = useMemo(() => {
+    const filtered = entries.filter((row) => rowMatches(row));
+    if (sort) return sortRows(filtered, DASH_SORTERS[sort.key], sort.dir);
+    return filtered
+      .slice()
+      .sort((a, b) => String(b.dateKey || '').localeCompare(String(a.dateKey || '')));
+  }, [entries, rowMatches, sort]);
+
+  const batchCount = visible.filter((row) => !row.standalone).length;
+  const poCount = visible.filter((row) => row.standalone).length;
+
+  const renderRow = useCallback(
+    ({ item, index }) => (
+      <DashboardTableRow
+        row={item}
+        staffProfiles={staffProfiles}
+        last={index === visible.length - 1}
+        onOpen={() => (item.standalone ? onOpenPo(item.batch) : onOpen(item.batch))}
+        onDelete={() => onDelete(item.batch)}
+      />
+    ),
+    [onDelete, onOpen, onOpenPo, staffProfiles, visible.length],
   );
 
   return (
-    <ScrollView style={styles.list} contentContainerStyle={styles.listContent} showsVerticalScrollIndicator={false}>
-      {rows.length === 0 && query ? (
-        <Text style={styles.listEmpty}>No PO or SO matches “{query.trim()}”.</Text>
-      ) : (
-        <Group>
-          {rows.map((row, index) =>
-            isStandaloneTriage(row) ? (
-              <QuickPoRow
-                key={row.id}
-                batch={row}
-                stats={statsById.get(row.id)}
-                last={index === rows.length - 1}
-                onPress={() => onOpenPo(row)}
-                onDelete={() => onDelete(row)}
-              />
-            ) : (
-              <BatchRow
-                key={row.id}
-                batch={row}
-                stats={statsById.get(row.id)}
-                today={row.dateKey === todayKey}
-                last={index === rows.length - 1}
-                onPress={() => onOpen(row)}
-                onDelete={() => onDelete(row)}
-              />
-            ),
-          )}
-        </Group>
-      )}
-    </ScrollView>
+    <TableFrame
+      minWidth={960}
+      data={visible}
+      renderItem={renderRow}
+      keyExtractor={meltKey}
+      extraData={`${visible.length}:${sort?.key || ''}:${sort?.dir || ''}`}
+      ListEmptyComponent={
+        <TableEmpty>
+          {query.trim() || filtersActive
+            ? `No PO or SO matches ${query.trim() ? `“${query.trim()}”` : 'those filters'}.`
+            : 'No batches yet.'}
+        </TableEmpty>
+      }
+      toolbar={
+        <>
+          <TableMeta>
+            {filtersActive ? `${visible.length} of ${entries.length}` : visible.length}
+            {batchCount ? `  ·  ${batchCount} ${batchCount === 1 ? 'batch' : 'batches'}` : ''}
+            {poCount ? `  ·  ${poCount} ${poCount === 1 ? 'PO' : 'POs'}` : ''}
+          </TableMeta>
+          {filtersActive || sort ? <TextAction label="Clear" onPress={clearFilters} /> : null}
+        </>
+      }
+      header={
+        <>
+          <TablePhotoCell />
+          <View style={styles.dashEmployeeHead} />
+          <ColumnFilter
+            columnKey="document"
+            label="PO / SO"
+            value={filters.document}
+            onChange={(value) => setFilter('document', value)}
+            options={documentOptions}
+            openKey={openFilter}
+            onOpenKey={setOpenFilter}
+            style={DASH_COL.document}
+            {...sortProps('document')}
+          />
+          <ColumnFilter
+            columnKey="customer"
+            label="Customer"
+            value={filters.customer}
+            onChange={(value) => setFilter('customer', value)}
+            options={customerOptions}
+            openKey={openFilter}
+            onOpenKey={setOpenFilter}
+            style={DASH_COL.customer}
+            {...sortProps('customer')}
+          />
+          <ColumnFilter
+            columnKey="dateLabel"
+            label="Date"
+            value={filters.dateLabel}
+            onChange={(value) => setFilter('dateLabel', value)}
+            options={dateOptions}
+            openKey={openFilter}
+            onOpenKey={setOpenFilter}
+            style={DASH_COL.date}
+            {...sortProps('dateLabel')}
+          />
+          <ColumnFilter
+            columnKey="stores"
+            label="Stores"
+            value={filters.stores}
+            onChange={(value) => setFilter('stores', value)}
+            options={storeOptions}
+            openKey={openFilter}
+            onOpenKey={setOpenFilter}
+            style={DASH_COL.stores}
+            {...sortProps('stores')}
+          />
+          <ColumnFilter
+            columnKey="value"
+            label="Value"
+            value={[]}
+            sortOnly
+            align="end"
+            openKey={openFilter}
+            onOpenKey={setOpenFilter}
+            style={{ ...DASH_COL.value, alignItems: 'flex-end' }}
+            {...sortProps('value')}
+          />
+          <ColumnFilter
+            columnKey="status"
+            label="Status"
+            value={filters.status}
+            onChange={(value) => setFilter('status', value)}
+            options={statusOptions}
+            openKey={openFilter}
+            onOpenKey={setOpenFilter}
+            style={DASH_COL.status}
+            {...sortProps('status')}
+          />
+          <View style={styles.dashActionsHead} />
+        </>
+      }
+    />
   );
 }
 
@@ -2900,20 +3159,30 @@ export default function TriageTransfersPanel({
       return;
     }
     setQuickAddError('');
-    persistTransferWorkflowNow().catch(() => {});
     onQuickAddOpenChange?.(false);
     const auth = resolvePosAuthForRow(session, { systemKey: row.systemKey });
-    if (!auth.token) return;
-    fillMissingPoImages(auth.token, auth.baseUrl, [result.item])
+    if (!auth.token) {
+      persistTransferWorkflowNow().catch(() => {});
+      return;
+    }
+    fillMissingPoDetails(auth.token, auth.baseUrl, [result.item])
       .then((enriched) => {
         const next = enriched[0];
-        if (!next?.imageUrls?.length) return;
+        if (!next) return;
+        const hasMore =
+          next !== result.item ||
+          (next.imageUrls || []).length > (result.item.imageUrls || []).length ||
+          (next.pricedLines || []).length > (result.item.pricedLines || []).length;
+        if (!hasMore) return;
         mergeTriagePos(result.batch.id, [next]);
         setOpenStandalone((current) =>
-          current?.id === next.id ? { ...current, imageUrls: next.imageUrls } : current,
+          current?.id === next.id ? { ...current, ...next } : current,
         );
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        persistTransferWorkflowNow().catch(() => {});
+      });
   }, [onQuickAddOpenChange, session]);
 
   const saveStandaloneReview = useCallback((poId, review) => {
@@ -2993,6 +3262,7 @@ export default function TriageTransfersPanel({
   if (selected) {
     return (
       <View style={[styles.body, styles.bodyTinted]}>
+      <TriageErrorBoundary resetKey={selected.id} onReset={goBackToList}>
         <BatchDetail
           key={selected.id}
           session={session}
@@ -3004,6 +3274,7 @@ export default function TriageTransfersPanel({
           onAddMeltOpen={setAddMeltOpen}
           mobile={isMobile}
         />
+      </TriageErrorBoundary>
       </View>
     );
   }
@@ -3050,6 +3321,7 @@ export default function TriageTransfersPanel({
         }}
         onAdd={addQuickPo}
       />
+      <TriageErrorBoundary resetKey={openStandalone?.id || ''} onReset={() => setOpenStandalone(null)}>
       <TriageReviewDrawer
         visible={Boolean(openStandalone)}
         session={session}
@@ -3059,10 +3331,15 @@ export default function TriageTransfersPanel({
         onClose={() => setOpenStandalone(null)}
         onSave={saveStandaloneReview}
         onHydrate={(enriched) => {
-          const found = findTriagePo(enriched.id);
-          if (found) patchTriagePosDetails(found.batch.id, [enriched]);
+          try {
+            const found = findTriagePo(enriched.id);
+            if (found) patchTriagePosDetails(found.batch.id, [enriched]);
+          } catch {
+            /* keep the drawer open even if cache patch fails */
+          }
         }}
       />
+      </TriageErrorBoundary>
     </View>
   );
 }
@@ -3094,101 +3371,57 @@ const styles = StyleSheet.create({
     color: SECONDARY,
   },
 
-  /* dashboard list */
-  list: {
-    flex: 1,
-    minHeight: 0,
+  /* dashboard table */
+  dashActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    flexGrow: 0,
+    flexShrink: 0,
+    width: 108,
+    paddingRight: 12,
+    gap: 12,
   },
-  listContent: {
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 24,
+  dashEmployeeCell: {
+    width: 46,
+    flexGrow: 0,
+    flexShrink: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  listEmpty: {
+  dashEmployeeHead: {
+    width: 46,
+    flexGrow: 0,
+    flexShrink: 0,
+  },
+  dashEmployeeEmpty: {
     fontFamily,
-    fontSize: 14,
+    fontSize: 13,
     color: SECONDARY,
-    textAlign: 'center',
-    paddingVertical: 32,
   },
-  dashRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
-    backgroundColor: T.card,
+  dashActionsHead: {
+    width: 108,
+    flexGrow: 0,
+    flexShrink: 0,
   },
-  dashRowLast: {
-    borderBottomWidth: 0,
-  },
-  dashMain: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-    minHeight: 52,
-    paddingLeft: 16,
-    paddingRight: 8,
-    paddingVertical: 10,
+  dashOpen: {
+    minHeight: 32,
+    justifyContent: 'center',
+    paddingHorizontal: 2,
     ...webCursor,
   },
-  dashMainMobile: {
-    gap: 10,
-    paddingLeft: 12,
-    minHeight: 56,
-  },
-  dashKind: {
-    width: 44,
+  dashOpenText: {
     fontFamily,
-    fontSize: 11,
+    fontSize: 14,
     fontWeight: '600',
-    color: SECONDARY,
-    letterSpacing: 0.4,
-    textTransform: 'uppercase',
+    color: BLUE,
   },
-  dashThumbs: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  dashText: {
-    flex: 1,
-    minWidth: 0,
-    gap: 2,
-  },
-  dashTitle: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '500',
-    color: TEXT,
-    letterSpacing: -0.2,
-  },
-  dashDetail: {
-    fontFamily,
-    fontSize: 13,
-    color: SECONDARY,
-  },
-  dashStatus: {
-    flexShrink: 0,
-    maxWidth: 160,
-    fontFamily,
-    fontSize: 13,
-    color: SECONDARY,
-    textAlign: 'right',
-    fontVariant: ['tabular-nums'],
-  },
-  batchDelete: {
-    paddingHorizontal: 12,
-    minHeight: 40,
+  dashDelete: {
+    width: 32,
+    height: 32,
     alignItems: 'center',
     justifyContent: 'center',
     ...webCursor,
-  },
-  batchDeleteText: {
-    fontFamily,
-    fontSize: 14,
-    color: T.red,
   },
 
   /* batch detail summary */

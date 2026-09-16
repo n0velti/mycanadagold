@@ -26,7 +26,6 @@ import {
   TablePhotoCell,
   TableRow,
   TableRowMain,
-  TableRowPressable,
   TableStrong,
   uniqueLabels,
 } from './TriageTable';
@@ -874,11 +873,13 @@ function ErrorBreakdownDrawer({ visible, rows, total, onClose, onOpenPo }) {
 
 const AccuracyTableRow = memo(function AccuracyTableRow({ row, last, showError, onOpen, onDelete }) {
   const review = row.review || {};
+  const photo = (
+    <TablePhotoCell>
+      <PoThumb urls={row.imageUrls} label={row.reference} />
+    </TablePhotoCell>
+  );
   const cells = (
     <>
-      <TablePhotoCell>
-        <PoThumb urls={row.imageUrls} label={row.reference} />
-      </TablePhotoCell>
       <TableCell flex={1.15} minWidth={108}>
         <TableStrong>{row.reference}</TableStrong>
         {showError && !row.received ? <TableMuted>Not received</TableMuted> : null}
@@ -911,18 +912,18 @@ const AccuracyTableRow = memo(function AccuracyTableRow({ row, last, showError, 
 
   if (!onDelete) {
     return (
-      <TableRowPressable
-        last={last}
-        onPress={() => onOpen(row)}
-        accessibilityLabel={`Open ${row.reference}`}
-      >
-        {cells}
-      </TableRowPressable>
+      <TableRow last={last}>
+        {photo}
+        <TableRowMain onPress={() => onOpen(row)} accessibilityLabel={`Open ${row.reference}`}>
+          {cells}
+        </TableRowMain>
+      </TableRow>
     );
   }
 
   return (
     <TableRow last={last}>
+      {photo}
       <TableRowMain onPress={() => onOpen(row)} accessibilityLabel={`Open ${row.reference}`}>
         {cells}
       </TableRowMain>

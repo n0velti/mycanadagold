@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { prepareAvatarAsset, stylizeAvatarPhoto } from '../lib/avatarCartoon';
+import { getVideoElement, useWebcam, webcamSupported } from '../lib/webcam';
 
 const fontFamily = 'Sohne';
 
@@ -23,9 +24,9 @@ const PICKER_OPTIONS = {
   quality: 0.8,
 };
 
-function webcamSupported() {
-  return Platform.OS === 'web' && Boolean(navigator?.mediaDevices?.getUserMedia);
-}
+const CAMERA_CONSTRAINTS = [
+  { video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+];
 
 function captureSquareFrame(video) {
   if (!video || !video.videoWidth || !video.videoHeight) return null;
@@ -47,43 +48,17 @@ function captureSquareFrame(video) {
 export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
   const { width } = useWindowDimensions();
   const compact = width < 640;
-  const videoRef = useRef(null);
-  const streamRef = useRef(null);
   const abortRef = useRef(null);
   const [step, setStep] = useState('source');
-  const [cameraState, setCameraState] = useState('idle');
   const [sourceUri, setSourceUri] = useState('');
   const [cartoonUri, setCartoonUri] = useState('');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
-
-  const stopStream = () => {
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-    if (videoRef.current) videoRef.current.srcObject = null;
-  };
-
-  const startCamera = async () => {
-    if (!webcamSupported()) {
-      setCameraState('unsupported');
-      return;
-    }
-    setCameraState('requesting');
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false,
-      });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
-      setCameraState('live');
-    } catch {
-      setCameraState('denied');
-    }
-  };
+  const { videoRef, cameraState, startCamera, stopStream, setVideoNode } = useWebcam({
+    active: visible && step === 'camera',
+    autoStart: true,
+    constraints: CAMERA_CONSTRAINTS,
+  });
 
   useEffect(() => {
     if (!visible) {
@@ -91,7 +66,6 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
       abortRef.current = null;
       stopStream();
       setStep('source');
-      setCameraState('idle');
       setSourceUri('');
       setCartoonUri('');
       setError('');
@@ -99,16 +73,7 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
       return undefined;
     }
     return undefined;
-  }, [visible]);
-
-  useEffect(() => {
-    if (!visible || step !== 'camera') {
-      stopStream();
-      return undefined;
-    }
-    void startCamera();
-    return () => stopStream();
-  }, [visible, step]);
+  }, [visible, stopStream]);
 
   const close = () => {
     if (saving) return;
@@ -180,6 +145,7 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
     if (webcamSupported()) {
       setError('');
       setStep('camera');
+      void startCamera();
       return;
     }
     void takeNativePhoto();
@@ -187,7 +153,7 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
 
   const captureWebcam = () => {
     if (cameraState !== 'live') return;
-    const dataUrl = captureSquareFrame(videoRef.current);
+    const dataUrl = captureSquareFrame(getVideoElement(videoRef.current));
     if (!dataUrl) {
       setError('Could not capture a frame. Try again.');
       return;
@@ -260,7 +226,7 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
               <View style={styles.previewShell}>
                 {Platform.OS === 'web'
                   ? createElement('video', {
-                      ref: videoRef,
+                      ref: setVideoNode,
                       autoPlay: true,
                       muted: true,
                       playsInline: true,
@@ -294,7 +260,7 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
                           ? 'Open this app in a browser that can use the webcam.'
                           : 'Grant permission when prompted.'}
                     </Text>
-                    {cameraState === 'denied' || cameraState === 'unsupported' ? (
+                    {cameraState !== 'live' && cameraState !== 'requesting' ? (
                       <Pressable style={styles.retry} onPress={() => void startCamera()}>
                         <Text style={styles.retryText}>Enable camera</Text>
                       </Pressable>

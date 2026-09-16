@@ -12,6 +12,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { MAX_REVIEW_IMAGES, normalizeReviewImages } from '../lib/triageDraft';
 import { MOBILE, mobileSafeBottom, useIsMobile } from '../lib/mobileUi';
+import { getVideoElement, useWebcam, webcamSupported } from '../lib/webcam';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -31,9 +32,17 @@ const PICKER_OPTIONS = {
   base64: true,
 };
 
-function webcamSupported() {
-  return Platform.OS === 'web' && Boolean(navigator?.mediaDevices?.getUserMedia);
-}
+const CAMERA_CONSTRAINTS = [
+  {
+    video: {
+      facingMode: { ideal: 'environment' },
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
+    },
+    audio: false,
+  },
+  { video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+];
 
 function fromAsset(asset) {
   const mime = asset?.mimeType || 'image/jpeg';
@@ -66,16 +75,19 @@ function TriageCorrectionImages({
   compact = false,
   hideHeading = false,
   hideActions = false,
+  showSourceButtons = false,
+  pickerOnly = false,
 }, ref) {
   const isMobile = useIsMobile();
   const list = normalizeReviewImages(images);
-  const videoRef = useRef(null);
-  const streamRef = useRef(null);
   const [viewerUri, setViewerUri] = useState('');
   const [error, setError] = useState('');
   const [sourceOpen, setSourceOpen] = useState(false);
   const [captureOpen, setCaptureOpen] = useState(false);
-  const [cameraState, setCameraState] = useState('idle');
+  const { videoRef, cameraState, startCamera, setVideoNode } = useWebcam({
+    active: captureOpen,
+    constraints: CAMERA_CONSTRAINTS,
+  });
   const canAdd = !readOnly && list.length < MAX_REVIEW_IMAGES;
 
   const addAssets = (assets) => {
@@ -92,61 +104,6 @@ function TriageCorrectionImages({
     if (!uri || !canAdd) return;
     onChange?.([...list, { id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, uri }]);
   };
-
-  const stopStream = () => {
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-    if (videoRef.current) videoRef.current.srcObject = null;
-  };
-
-  const startCamera = async () => {
-    if (!webcamSupported()) {
-      setCameraState('unsupported');
-      return;
-    }
-    setCameraState('requesting');
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: 'environment' },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-        },
-        audio: false,
-      });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
-      setCameraState('live');
-    } catch {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
-          audio: false,
-        });
-        streamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          await videoRef.current.play();
-        }
-        setCameraState('live');
-      } catch {
-        setCameraState('denied');
-      }
-    }
-  };
-
-  useEffect(() => {
-    if (!captureOpen) {
-      stopStream();
-      setCameraState('idle');
-      return undefined;
-    }
-    void startCamera();
-    return () => stopStream();
-  }, [captureOpen]);
 
   const pickFromLibrary = async () => {
     if (!canAdd) return;
@@ -193,6 +150,7 @@ function TriageCorrectionImages({
     setError('');
     if (webcamSupported()) {
       setCaptureOpen(true);
+      void startCamera();
       return;
     }
     void takeNativePhoto();
@@ -221,7 +179,7 @@ function TriageCorrectionImages({
 
   const captureWebcam = () => {
     if (cameraState !== 'live') return;
-    const dataUrl = captureFrame(videoRef.current);
+    const dataUrl = captureFrame(getVideoElement(videoRef.current));
     if (!dataUrl) {
       setError('Could not capture a frame. Try again.');
       return;
@@ -239,6 +197,8 @@ function TriageCorrectionImages({
   };
 
   return (
+    <>
+    {pickerOnly ? null : (
     <View style={styles.wrap}>
       {hideHeading ? null : <Text style={styles.label}>Photos</Text>}
       {hideHeading ? null : (
@@ -248,7 +208,7 @@ function TriageCorrectionImages({
       )}
       {list.length === 0 && readOnly ? (
         <Text style={styles.empty}>No photos attached</Text>
-      ) : (
+      ) : list.length > 0 || (canAdd && !showSourceButtons) ? (
         <View style={styles.grid}>
           {list.map((item) => (
             <View key={item.id} style={styles.thumbWrap}>
@@ -272,7 +232,7 @@ function TriageCorrectionImages({
               )}
             </View>
           ))}
-          {canAdd ? (
+          {canAdd && !showSourceButtons ? (
             <Pressable
               style={styles.addTile}
               onPress={openAddMenu}
@@ -284,7 +244,32 @@ function TriageCorrectionImages({
             </Pressable>
           ) : null}
         </View>
-      )}
+      ) : null}
+
+      {showSourceButtons && !readOnly ? (
+        <View style={styles.sourceActions}>
+          <Pressable
+            style={[styles.sourceAction, !canAdd && styles.sourceActionDisabled]}
+            onPress={takePhoto}
+            disabled={!canAdd}
+            accessibilityRole="button"
+            accessibilityLabel="Take a photo"
+          >
+            <Ionicons name="camera-outline" size={18} color={canAdd ? '#C2410C' : SECONDARY} />
+            <Text style={[styles.sourceActionText, !canAdd && styles.sourceActionTextDisabled]}>Camera</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.sourceAction, !canAdd && styles.sourceActionDisabled]}
+            onPress={chooseFiles}
+            disabled={!canAdd}
+            accessibilityRole="button"
+            accessibilityLabel="Upload from files"
+          >
+            <Ionicons name="folder-open-outline" size={18} color={canAdd ? '#C2410C' : SECONDARY} />
+            <Text style={[styles.sourceActionText, !canAdd && styles.sourceActionTextDisabled]}>Files</Text>
+          </Pressable>
+        </View>
+      ) : null}
 
       {readOnly || hideActions ? null : (
         <View style={[styles.actions, compact && styles.actionsColumn]}>
@@ -304,8 +289,10 @@ function TriageCorrectionImages({
       {!readOnly && list.length >= MAX_REVIEW_IMAGES ? (
         <Text style={styles.hint}>Up to {MAX_REVIEW_IMAGES} photos.</Text>
       ) : null}
-
-      <Modal visible={sourceOpen} transparent animationType="fade" onRequestClose={() => setSourceOpen(false)}>
+    </View>
+    )}
+      {sourceOpen ? (
+      <Modal visible transparent animationType="fade" onRequestClose={() => setSourceOpen(false)}>
         <View style={[styles.sourceRoot, isMobile && styles.sourceRootMobile]}>
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setSourceOpen(false)} accessibilityLabel="Close" />
           <View style={[styles.sourceCard, isMobile && styles.sourceCardMobile]}>
@@ -353,8 +340,10 @@ function TriageCorrectionImages({
           </View>
         </View>
       </Modal>
+      ) : null}
 
-      <Modal visible={captureOpen} transparent animationType="fade" onRequestClose={closeCapture}>
+      {captureOpen ? (
+      <Modal visible transparent animationType="fade" onRequestClose={closeCapture}>
         <View style={[styles.captureRoot, isMobile && styles.captureRootMobile]}>
           <Pressable style={StyleSheet.absoluteFill} onPress={closeCapture} />
           <View style={[styles.captureCard, isMobile && styles.captureCardMobile]}>
@@ -370,7 +359,7 @@ function TriageCorrectionImages({
             <View style={[styles.previewShell, isMobile && styles.previewShellMobile]}>
               {Platform.OS === 'web'
                 ? createElement('video', {
-                    ref: videoRef,
+                    ref: setVideoNode,
                     autoPlay: true,
                     muted: true,
                     playsInline: true,
@@ -402,7 +391,7 @@ function TriageCorrectionImages({
                         ? 'Open this app in a browser that can use the camera.'
                         : 'Grant permission when prompted.'}
                   </Text>
-                  {cameraState === 'denied' || cameraState === 'unsupported' ? (
+                  {cameraState !== 'live' && cameraState !== 'requesting' ? (
                     <Pressable style={styles.retry} onPress={() => void startCamera()}>
                       <Text style={styles.retryText}>Enable camera</Text>
                     </Pressable>
@@ -430,8 +419,10 @@ function TriageCorrectionImages({
           </View>
         </View>
       </Modal>
+      ) : null}
 
-      <Modal visible={Boolean(viewerUri)} transparent animationType="fade" onRequestClose={() => setViewerUri('')}>
+      {viewerUri ? (
+      <Modal visible transparent animationType="fade" onRequestClose={() => setViewerUri('')}>
         <View style={styles.viewerRoot}>
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setViewerUri('')} />
           <View style={styles.viewerBar}>
@@ -445,7 +436,8 @@ function TriageCorrectionImages({
           ) : null}
         </View>
       </Modal>
-    </View>
+      ) : null}
+    </>
   );
 }
 
@@ -583,6 +575,39 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: TEXT,
+  },
+  sourceActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  sourceAction: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    minHeight: 34,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(194,65,12,0.22)',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  sourceActionDisabled: {
+    opacity: 0.35,
+  },
+  sourceActionText: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#C2410C',
+  },
+  sourceActionTextDisabled: {
+    color: SECONDARY,
   },
   sourceRoot: {
     flex: 1,

@@ -1,4 +1,5 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createElement, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ActivityIndicator,
   Image,
@@ -18,7 +19,7 @@ import { checkTransactionPrices } from '../lib/priceCheck';
 import { AUREUS_CASH_LIVE_MS, useLiveRefresh } from '../lib/liveRefresh';
 import { fetchInventoryMatrix, formatQty, peekInventoryMatrix } from '../lib/inventory';
 import { textMatchesQuery } from '../lib/itemSearch';
-import { listStaffProfiles } from '../lib/permissions';
+import { findStaffByEmployeeName, listStaffProfiles } from '../lib/permissions';
 import { initialsFor } from '../lib/rippling';
 import { formatAmount, isCashTransaction } from '../lib/transactions';
 import { useTxnCashBreakdowns } from '../lib/txnCashBreakdowns';
@@ -214,7 +215,7 @@ function EmployeeAvatar({ person, size = 32 }) {
           onError={() => setFailed(true)}
         />
       ) : (
-        <Text style={[styles.employeeInitials, { fontSize: size > 34 ? 13 : 11 }]}>
+        <Text style={[styles.employeeInitials, { fontSize: size > 34 ? 13 : size > 26 ? 11 : 9 }]}>
           {initialsFor(person?.name)}
         </Text>
       )}
@@ -481,6 +482,90 @@ function TxnPhotoThumb({ urls, label }) {
   );
 }
 
+function FloatingTooltip({ visible, text, anchorEl, align = 'start' }) {
+  const [coords, setCoords] = useState(null);
+
+  const updatePosition = useCallback(() => {
+    if (!visible || Platform.OS !== 'web' || !anchorEl?.getBoundingClientRect) {
+      setCoords(null);
+      return;
+    }
+    const rect = anchorEl.getBoundingClientRect();
+    setCoords({
+      x: rect.left,
+      y: rect.top,
+      width: rect.width,
+      height: rect.height,
+    });
+  }, [anchorEl, visible]);
+
+  useLayoutEffect(() => {
+    updatePosition();
+  }, [updatePosition, text]);
+
+  useEffect(() => {
+    if (!visible || Platform.OS !== 'web') return undefined;
+    const onMove = () => updatePosition();
+    window.addEventListener('scroll', onMove, true);
+    window.addEventListener('resize', onMove);
+    return () => {
+      window.removeEventListener('scroll', onMove, true);
+      window.removeEventListener('resize', onMove);
+    };
+  }, [visible, updatePosition]);
+
+  if (Platform.OS !== 'web' || !visible || !text || !coords || typeof document === 'undefined') {
+    return null;
+  }
+
+  const style = {
+    top: coords.y + coords.height + 4,
+    ...(align === 'end'
+      ? { right: Math.max(8, window.innerWidth - (coords.x + coords.width)) }
+      : { left: Math.max(8, coords.x) }),
+  };
+
+  return createPortal(
+    createElement('div', { className: 'cgold-floating-tip', style }, text),
+    document.body,
+  );
+}
+
+function TxTableHeader() {
+  return (
+    <View style={styles.txTableHeader}>
+      <View style={styles.colPhoto} />
+      <Text style={[styles.txTableHeaderLabel, styles.colDate]} numberOfLines={1}>
+        Date
+      </Text>
+      <Text style={[styles.txTableHeaderLabel, styles.colTime]} numberOfLines={1}>
+        Time
+      </Text>
+      <Text style={[styles.txTableHeaderLabel, styles.colRef]} numberOfLines={1}>
+        PO# / SO#
+      </Text>
+      <Text style={[styles.txTableHeaderLabel, styles.colCustomer]} numberOfLines={1}>
+        Customer
+      </Text>
+      <Text style={[styles.txTableHeaderLabel, styles.colItems]} numberOfLines={1}>
+        Items
+      </Text>
+      <Text style={[styles.txTableHeaderLabel, styles.colPayment]} numberOfLines={1}>
+        Payment
+      </Text>
+      <Text style={[styles.txTableHeaderLabel, styles.colAmount]} numberOfLines={1}>
+        Amount
+      </Text>
+      <Text style={[styles.txTableHeaderLabel, styles.colEmployee]} numberOfLines={1}>
+        Employee
+      </Text>
+      <Text style={[styles.txTableHeaderLabel, styles.colCheck]} numberOfLines={1}>
+        Price
+      </Text>
+    </View>
+  );
+}
+
 const TransactionRow = memo(function TransactionRow({
   item,
   last,
@@ -489,46 +574,97 @@ const TransactionRow = memo(function TransactionRow({
   onCashPress,
   priceCheck,
   onPricePress,
+  employeePerson,
+  onAmountHover,
 }) {
+  const [splitTip, setSplitTip] = useState('');
+  const [splitAnchor, setSplitAnchor] = useState(null);
   const isBuy = item.type === 'purchase';
   const items = itemSnapshotLabel(item);
-  const employee = String(item.employeeName || '').trim();
-  const meta = [item.timeLabel || item.dateLabel, item.paymentMethodLabel, employee]
-    .filter((part) => part && part !== '—')
-    .join(' · ');
-  const subtitle = [items || item.reference, meta].filter(Boolean).join('  ·  ');
+  const employee = String(item.employeeName || employeePerson?.name || '').trim();
   const showCash = typeof onCashPress === 'function' && isCashTransaction(item);
+  const hoverPerson = employeePerson || { name: employee || '—', photoUrl: '' };
+
+  const handleSplitEnter = async (event) => {
+    setSplitAnchor(event?.currentTarget || null);
+    if (item.paymentBreakdownLabel) {
+      setSplitTip(item.paymentBreakdownLabel);
+    } else if (!splitTip) {
+      setSplitTip('…');
+    }
+    if (!item.paymentBreakdown && onAmountHover) {
+      const label = await onAmountHover(item);
+      if (label) setSplitTip(label);
+      else if (!item.paymentBreakdownLabel) setSplitTip(item.amountLabel || '');
+    }
+  };
+
+  const splitHover =
+    Platform.OS === 'web'
+      ? {
+          onMouseEnter: handleSplitEnter,
+          onMouseLeave: () => setSplitAnchor(null),
+        }
+      : null;
 
   return (
     <Pressable
       onPress={() => onPress?.(item)}
       style={({ hovered, pressed }) => [
-        styles.row,
+        styles.txTableRow,
         last && styles.rowLast,
         (hovered || pressed) && styles.rowHovered,
       ]}
       accessibilityRole="button"
       accessibilityLabel={`${isBuy ? 'PO' : 'SO'} ${item.customerName || ''} ${item.amountLabel || ''}`}
     >
-      <TxnPhotoThumb urls={item.imageUrls} label={item.reference || (isBuy ? 'PO' : 'SO')} />
-      <Text style={[styles.kind, isBuy && styles.kindBuy]}>{isBuy ? 'PO' : 'SO'}</Text>
-      <View style={styles.rowCopy}>
-        <Text style={styles.rowTitle} numberOfLines={1}>
-          {item.customerName || '—'}
-        </Text>
-        <Text style={styles.rowSubtitle} numberOfLines={1}>
-          {subtitle}
+      <View style={styles.colPhoto}>
+        <TxnPhotoThumb urls={item.imageUrls} label={item.reference || (isBuy ? 'PO' : 'SO')} />
+      </View>
+      <Text style={[styles.txCell, styles.txCellSecondary, styles.colDate]} numberOfLines={1}>
+        {item.dateLabel || '—'}
+      </Text>
+      <Text style={[styles.txCell, styles.txCellSecondary, styles.colTime]} numberOfLines={1}>
+        {item.timeLabel || '—'}
+      </Text>
+      <View style={[styles.txRef, styles.colRef]}>
+        <Text style={[styles.kind, isBuy && styles.kindBuy]}>{isBuy ? 'PO' : 'SO'}</Text>
+        <Text style={[styles.txCell, styles.txCellSecondary]} numberOfLines={1}>
+          {item.reference || '—'}
         </Text>
       </View>
-      <View style={styles.rowAmountCol}>
-        <View style={styles.rowAmount}>
-          {showCash ? (
-            <TxnCashIcon saved={cashSaved} onPress={() => onCashPress(item)} />
-          ) : null}
-          <Text style={styles.rowValue}>{item.amountLabel}</Text>
-        </View>
+      <Text style={[styles.txCell, styles.txCellPrimary, styles.colCustomer]} numberOfLines={1}>
+        {item.customerName || '—'}
+      </Text>
+      <Text style={[styles.txCell, styles.txCellSecondary, styles.colItems]} numberOfLines={1}>
+        {items || '—'}
+      </Text>
+      <View style={styles.colPayment} {...splitHover}>
+        <Text style={styles.txCell} numberOfLines={1}>
+          {item.paymentMethodLabel || '—'}
+        </Text>
+      </View>
+      <View style={[styles.txAmount, styles.colAmount]} {...splitHover}>
+        {showCash ? (
+          <TxnCashIcon saved={cashSaved} onPress={() => onCashPress(item)} />
+        ) : null}
+        <Text style={styles.rowValue}>{item.amountLabel}</Text>
+      </View>
+      <View style={[styles.colEmployee, styles.txEmployee]}>
+        <EmployeeAvatar person={hoverPerson} size={24} />
+        <Text style={[styles.txCell, styles.txCellSecondary]} numberOfLines={1}>
+          {employee || '—'}
+        </Text>
+      </View>
+      <View style={styles.colCheck}>
         <PriceCheckBadge check={priceCheck} onPress={() => onPricePress?.(priceCheck)} />
       </View>
+      <FloatingTooltip
+        visible={Boolean(splitAnchor && splitTip)}
+        text={splitTip}
+        anchorEl={splitAnchor}
+        align="end"
+      />
     </Pressable>
   );
 });
@@ -593,6 +729,18 @@ function LoadingRow() {
   );
 }
 
+function employeePersonForTx(item, employeesByName, staff) {
+  const name = String(item?.employeeName || '').trim();
+  if (!name || name === '—') return { name: '—', photoUrl: '' };
+  const fromPresent = employeesByName.get(name.toLowerCase());
+  if (fromPresent?.photoUrl) return fromPresent;
+  const match = findStaffByEmployeeName(staff, name);
+  return {
+    name: fromPresent?.name || name,
+    photoUrl: match?.avatarUrl || match?.photoUrl || fromPresent?.photoUrl || '',
+  };
+}
+
 function StoreSnapshotPanel({
   session,
   store,
@@ -600,6 +748,7 @@ function StoreSnapshotPanel({
   txRows = [],
   onOpenTransaction,
   onOpenApp,
+  onAmountHover,
   topInset = 0,
   ready = true,
 }) {
@@ -818,7 +967,7 @@ function StoreSnapshotPanel({
         role: '',
       };
       current.txCount += 1;
-      const match = staff.find((person) => personMatchesTxName(person, name));
+      const match = findStaffByEmployeeName(staff, name);
       if (match) {
         current.photoUrl = match.avatarUrl || match.photoUrl || current.photoUrl;
         current.role = match.employeeType || match.posRole || current.role;
@@ -849,6 +998,14 @@ function StoreSnapshotPanel({
       return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
     });
   }, [txRows, staff, storeName]);
+
+  const employeesByName = useMemo(() => {
+    const map = new Map();
+    for (const person of presentEmployees) {
+      map.set(String(person.name || '').trim().toLowerCase(), person);
+    }
+    return map;
+  }, [presentEmployees]);
 
   const employeeMeta = presentEmployees.length
     ? `${presentEmployees.length} here`
@@ -909,25 +1066,39 @@ function StoreSnapshotPanel({
     ))
   );
 
-  const transactionsBody =
-    txRows.length === 0 ? (
-      <EmptyRow
-        text={`No transactions ${periodLabel === 'Today' ? 'today' : 'in this period'}.`}
-      />
-    ) : (
-      txRows.map((item, index) => (
-        <TransactionRow
-          key={item.id}
-          item={item}
-          last={index === txRows.length - 1}
-          onPress={onOpenTransaction}
-          cashSaved={cashSlips.isSaved(item)}
-          onCashPress={cashSlips.openEditor}
-          priceCheck={priceChecks.get(item.id)}
-          onPricePress={setPriceReview}
-        />
-      ))
-    );
+  const transactionsBody = (
+    <ScrollView
+      horizontal
+      nestedScrollEnabled
+      showsHorizontalScrollIndicator={false}
+      style={styles.txTableScroll}
+      contentContainerStyle={styles.txTableScrollContent}
+    >
+      <View style={styles.txTable}>
+        <TxTableHeader />
+        {txRows.length === 0 ? (
+          <EmptyRow
+            text={`No transactions ${periodLabel === 'Today' ? 'today' : 'in this period'}.`}
+          />
+        ) : (
+          txRows.map((item, index) => (
+            <TransactionRow
+              key={item.id}
+              item={item}
+              last={index === txRows.length - 1}
+              onPress={onOpenTransaction}
+              cashSaved={cashSlips.isSaved(item)}
+              onCashPress={cashSlips.openEditor}
+              priceCheck={priceChecks.get(item.id)}
+              onPricePress={setPriceReview}
+              employeePerson={employeePersonForTx(item, employeesByName, staff)}
+              onAmountHover={onAmountHover}
+            />
+          ))
+        )}
+      </View>
+    </ScrollView>
+  );
 
   const content = (
     <>
@@ -1031,6 +1202,7 @@ export default memo(
     prev.txRows === next.txRows &&
     prev.onOpenTransaction === next.onOpenTransaction &&
     prev.onOpenApp === next.onOpenApp &&
+    prev.onAmountHover === next.onAmountHover &&
     prev.topInset === next.topInset &&
     prev.ready === next.ready,
 );
@@ -1134,6 +1306,132 @@ const styles = StyleSheet.create({
   },
   txAppBox: {
     marginTop: 0,
+  },
+  txTableScroll: {
+    flexGrow: 0,
+  },
+  txTableScrollContent: {
+    flexGrow: 1,
+    minWidth: '100%',
+  },
+  txTable: {
+    minWidth: 1160,
+    width: '100%',
+  },
+  txTableHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 34,
+    paddingHorizontal: 12,
+    backgroundColor: '#f7f7f8',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: SEPARATOR,
+  },
+  txTableHeaderLabel: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: SECONDARY,
+    letterSpacing: -0.04,
+    flexShrink: 1,
+  },
+  txTableRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 48,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: SEPARATOR,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  txCell: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: LABEL,
+    letterSpacing: -0.2,
+  },
+  txCellPrimary: {
+    fontWeight: '500',
+  },
+  txCellSecondary: {
+    color: SECONDARY,
+  },
+  txRef: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minWidth: 0,
+  },
+  txAmount: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 6,
+    minWidth: 0,
+  },
+  colPhoto: {
+    width: 36,
+    flexShrink: 0,
+    paddingRight: 10,
+  },
+  colDate: {
+    flex: 1.05,
+    minWidth: 88,
+    paddingRight: 12,
+  },
+  colTime: {
+    flex: 0.75,
+    minWidth: 58,
+    paddingRight: 12,
+  },
+  colRef: {
+    flex: 1.2,
+    minWidth: 108,
+    paddingRight: 12,
+  },
+  colCustomer: {
+    flex: 1.8,
+    minWidth: 120,
+    paddingRight: 12,
+  },
+  colItems: {
+    flex: 2.2,
+    minWidth: 140,
+    paddingRight: 12,
+  },
+  colPayment: {
+    flex: 1.2,
+    minWidth: 96,
+    paddingRight: 12,
+  },
+  colAmount: {
+    flex: 1.15,
+    minWidth: 108,
+    paddingRight: 12,
+    justifyContent: 'flex-end',
+    textAlign: 'right',
+  },
+  colEmployee: {
+    flex: 1.55,
+    minWidth: 132,
+    paddingRight: 12,
+  },
+  txEmployee: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minWidth: 0,
+  },
+  colCheck: {
+    flex: 1.1,
+    minWidth: 118,
+    alignItems: 'flex-end',
+    textAlign: 'right',
   },
   cashHeroStack: {
     paddingHorizontal: 14,
@@ -1252,18 +1550,6 @@ const styles = StyleSheet.create({
     color: SECONDARY,
     letterSpacing: -0.04,
     marginTop: 1,
-  },
-  rowAmountCol: {
-    alignItems: 'flex-end',
-    gap: 4,
-    flexShrink: 0,
-    maxWidth: 200,
-  },
-  rowAmount: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    flexShrink: 0,
   },
   priceBadge: {
     flexDirection: 'row',

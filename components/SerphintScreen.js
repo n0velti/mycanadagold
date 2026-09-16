@@ -22,6 +22,7 @@ import {
   REASONER_MODELS,
   sampleImageFrames,
 } from '../lib/openrouter';
+import { getVideoElement, useWebcam } from '../lib/webcam';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -46,6 +47,27 @@ const DEFAULT_REASONER_KEY =
   REASONER_MODELS[0].key;
 
 const MAX_VIDEO_ANALYSIS_FRAMES = 10;
+
+const CAMERA_CONSTRAINTS = [
+  {
+    video: {
+      facingMode: 'user',
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+      aspectRatio: { ideal: 16 / 9 },
+    },
+    audio: true,
+  },
+  {
+    video: {
+      facingMode: 'user',
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+      aspectRatio: { ideal: 16 / 9 },
+    },
+    audio: false,
+  },
+];
 
 function formatRecordingTime(totalSeconds) {
   const minutes = Math.floor(totalSeconds / 60);
@@ -90,8 +112,6 @@ function modelOptionMetaLine(option) {
 export default function SerphintScreen() {
   const { width } = useWindowDimensions();
   const stacked = width < 900;
-  const videoRef = useRef(null);
-  const streamRef = useRef(null);
   const recorderRef = useRef(null);
   const chunksRef = useRef([]);
   const captureUrlsRef = useRef([]);
@@ -102,8 +122,12 @@ export default function SerphintScreen() {
   const fileInputRef = useRef(null);
   const bullionTimerRef = useRef(null);
   const recordingFramesRef = useRef([]);
+  const { videoRef, streamRef, cameraState, startCamera, stopStream: stopWebcam, setVideoNode } = useWebcam({
+    active: true,
+    autoStart: true,
+    constraints: CAMERA_CONSTRAINTS,
+  });
 
-  const [cameraState, setCameraState] = useState('idle');
   const [recording, setRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [frameIntervalSec, setFrameIntervalSec] = useState('2');
@@ -183,69 +207,10 @@ export default function SerphintScreen() {
       recorderRef.current.stop();
     }
     recorderRef.current = null;
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-  };
-
-  const startCamera = async () => {
-    if (Platform.OS !== 'web') {
-      setCameraState('unsupported');
-      return;
-    }
-
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraState('unsupported');
-      return;
-    }
-
-    setCameraState('requesting');
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: 'user',
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          aspectRatio: { ideal: 16 / 9 },
-        },
-        audio: true,
-      });
-      streamRef.current = stream;
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
-
-      setCameraState('live');
-    } catch {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: 'user',
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            aspectRatio: { ideal: 16 / 9 },
-          },
-          audio: false,
-        });
-        streamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          await videoRef.current.play();
-        }
-        setCameraState('live');
-      } catch {
-        setCameraState('denied');
-      }
-    }
+    stopWebcam();
   };
 
   useEffect(() => {
-    void startCamera();
     return () => {
       bullionAbortRef.current?.abort();
       clearBullionTimer();
@@ -485,7 +450,7 @@ export default function SerphintScreen() {
   }, [recording]);
 
   const grabFrameDataUrl = () => {
-    const video = videoRef.current;
+    const video = getVideoElement(videoRef.current);
     if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
       return null;
     }
@@ -700,7 +665,7 @@ export default function SerphintScreen() {
           <View style={styles.previewShell}>
             {Platform.OS === 'web'
               ? createElement('video', {
-                  ref: videoRef,
+                  ref: setVideoNode,
                   autoPlay: true,
                   muted: true,
                   playsInline: true,

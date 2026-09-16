@@ -27,6 +27,10 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
   }
   style.textContent = [
     '.cgold-triage-table-blur{-webkit-backdrop-filter:saturate(180%) blur(18px);backdrop-filter:saturate(180%) blur(18px);background-color:rgba(246,246,249,0.78)!important;}',
+    '.cgold-triage-table-row{cursor:pointer;}',
+    '.cgold-triage-table-row:hover{background-color:#f5f5f7!important;}',
+    '.cgold-triage-table-row.cgold-triage-row-mixed:hover{background-color:rgba(255,149,0,0.26)!important;}',
+    '.cgold-triage-table-row.cgold-triage-row-bullion:hover{background-color:rgba(255,59,48,0.26)!important;}',
   ].join('');
 }
 
@@ -226,7 +230,9 @@ export function TableRow({ last, children, style, webClassName }) {
   return (
     <View
       style={[styles.tableRow, last && styles.tableRowLast, style]}
-      {...(Platform.OS === 'web' && webClassName ? { className: webClassName } : null)}
+      {...(Platform.OS === 'web'
+        ? { className: ['cgold-triage-table-row', webClassName].filter(Boolean).join(' ') }
+        : null)}
     >
       {children}
     </View>
@@ -236,7 +242,10 @@ export function TableRow({ last, children, style, webClassName }) {
 export function TableRowMain({ onPress, accessibilityLabel, children }) {
   return (
     <Pressable
-      style={styles.tableRowMain}
+      style={({ hovered, pressed }) => [
+        styles.tableRowMain,
+        (hovered || pressed) && styles.tableRowMainHover,
+      ]}
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
@@ -576,14 +585,23 @@ export const PoThumb = memo(function PoThumb({ urls, label }) {
 
   return (
     <>
-      <Pressable
-        onPress={(event) => {
-          event?.stopPropagation?.();
-          setOpen(true);
-        }}
-        style={styles.poThumbPress}
-        accessibilityRole="button"
+      <View
+        accessibilityRole="image"
         accessibilityLabel={`View photo for ${label}`}
+        style={styles.poThumbPress}
+        {...(Platform.OS === 'web'
+          ? {
+              onClick: (event) => {
+                event?.stopPropagation?.();
+                setOpen(true);
+              },
+            }
+          : {
+              onTouchEnd: (event) => {
+                event?.stopPropagation?.();
+                setOpen(true);
+              },
+            })}
       >
         <Image
           source={{ uri: photos[0] }}
@@ -591,7 +609,7 @@ export const PoThumb = memo(function PoThumb({ urls, label }) {
           resizeMode="cover"
           onError={() => setFailed(true)}
         />
-      </Pressable>
+      </View>
       {open ? (
         <Modal visible transparent animationType="fade" onRequestClose={() => setOpen(false)}>
           <View style={styles.photoViewerRoot}>
@@ -697,6 +715,12 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: HAIRLINE,
     backgroundColor: '#fff',
+  },
+  tableRowHover: {
+    backgroundColor: '#f5f5f7',
+  },
+  tableRowMainHover: {
+    backgroundColor: '#f5f5f7',
   },
   tableRowLast: {
     borderBottomWidth: 0,

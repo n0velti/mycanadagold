@@ -5,11 +5,12 @@
  * pulls its tokens and primitives from here so the app reads as one product:
  * one type ramp, one set of status colours, one drawer, one empty state.
  */
-import { useEffect, useRef, useState } from 'react';
+import { Component, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Animated,
   Easing,
+  Image,
   Modal,
   Platform,
   Pressable,
@@ -94,33 +95,71 @@ export function useHeldValue(value) {
   return value ?? held.current;
 }
 
+export class TriageErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null, resetKey: props.resetKey };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  static getDerivedStateFromProps(props, state) {
+    if (props.resetKey !== state.resetKey) return { error: null, resetKey: props.resetKey };
+    return null;
+  }
+
+  componentDidCatch(error, info) {
+    console.warn('Triage view crashed', error, info?.componentStack);
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    if (this.props.fallback) return this.props.fallback;
+    return (
+      <EmptyState
+        icon="warning-outline"
+        title="Couldn’t open this"
+        body={String(this.state.error?.message || this.state.error)}
+        action={
+          this.props.onReset ? (
+            <TextAction label="Back" strong onPress={this.props.onReset} />
+          ) : null
+        }
+      />
+    );
+  }
+}
+
 /** Slide-from-right drawer animation with mount/unmount handling. */
 export function useRightDrawerAnimation(visible, slideDistance) {
   const [mounted, setMounted] = useState(visible);
-  const slide = useRef(new Animated.Value(slideDistance)).current;
-  const backdrop = useRef(new Animated.Value(0)).current;
+  const slide = useRef(new Animated.Value(0)).current;
+  const backdrop = useRef(new Animated.Value(visible ? 1 : 0)).current;
   const slideDistanceRef = useRef(slideDistance);
   const opened = useRef(visible);
   slideDistanceRef.current = slideDistance;
+  const native = Platform.OS !== 'web';
 
   useEffect(() => {
     if (visible) {
       opened.current = true;
       setMounted(true);
-      slide.setValue(slideDistanceRef.current);
-      backdrop.setValue(0);
+      slide.setValue(native ? slideDistanceRef.current : 0);
+      backdrop.setValue(native ? 0 : 1);
       const anim = Animated.parallel([
         Animated.timing(slide, {
           toValue: 0,
-          duration: DRAWER_OPEN_MS,
+          duration: native ? DRAWER_OPEN_MS : 0,
           easing: Easing.bezier(0.22, 1, 0.36, 1),
-          useNativeDriver: true,
+          useNativeDriver: native,
         }),
         Animated.timing(backdrop, {
           toValue: 1,
-          duration: DRAWER_OPEN_MS,
+          duration: native ? DRAWER_OPEN_MS : 0,
           easing: Easing.out(Easing.quad),
-          useNativeDriver: true,
+          useNativeDriver: native,
         }),
       ]);
       anim.start();
@@ -131,16 +170,16 @@ export function useRightDrawerAnimation(visible, slideDistance) {
 
     const anim = Animated.parallel([
       Animated.timing(slide, {
-        toValue: slideDistanceRef.current,
-        duration: DRAWER_CLOSE_MS,
+        toValue: native ? slideDistanceRef.current : 0,
+        duration: native ? DRAWER_CLOSE_MS : 0,
         easing: Easing.bezier(0.4, 0, 0.2, 1),
-        useNativeDriver: true,
+        useNativeDriver: native,
       }),
       Animated.timing(backdrop, {
         toValue: 0,
-        duration: DRAWER_CLOSE_MS,
+        duration: native ? DRAWER_CLOSE_MS : 0,
         easing: Easing.out(Easing.quad),
-        useNativeDriver: true,
+        useNativeDriver: native,
       }),
     ]);
     const timeout = setTimeout(() => setMounted(false), DRAWER_CLOSE_MS + 32);
@@ -172,13 +211,15 @@ export function TriageDrawer({
   rightLeading,
   widthRatio = 0.46,
   minWidth = 400,
+  coloredNav = false,
   children,
 }) {
   const { width: windowWidth } = useWindowDimensions();
-  const isMobile = windowWidth < 768;
+  const width = Number(windowWidth) > 0 ? Number(windowWidth) : 1024;
+  const isMobile = width < 768;
   const panelWidth = isMobile
-    ? Math.max(windowWidth, 240)
-    : Math.min(Math.max(Math.round(windowWidth * widthRatio), minWidth), Math.round(windowWidth - 64));
+    ? Math.max(width, 240)
+    : Math.min(Math.max(Math.round(width * widthRatio), minWidth), Math.max(240, Math.round(width - 64)));
   const { mounted, slide, backdrop } = useRightDrawerAnimation(visible, panelWidth);
 
   if (!mounted) return null;
@@ -198,24 +239,33 @@ export function TriageDrawer({
           ]}
         >
           <View
-            style={[styles.drawerNav, isMobile && styles.drawerNavMobile]}
+            style={[
+              styles.drawerNav,
+              coloredNav && styles.drawerNavColored,
+              isMobile && styles.drawerNavMobile,
+            ]}
             {...(Platform.OS === 'web' && isMobile ? { className: 'cgold-mobile-sheet-top' } : null)}
           >
             <Pressable
               onPress={onLeft || onClose}
-              hitSlop={8}
-              style={[styles.drawerNavSide, isMobile && styles.drawerNavSideMobile]}
+              hitSlop={coloredNav ? 0 : 8}
+              style={[
+                styles.drawerNavSide,
+                isMobile && styles.drawerNavSideMobile,
+                coloredNav && styles.navBtn,
+                coloredNav && styles.navBtnNeutral,
+              ]}
               accessibilityRole="button"
               accessibilityLabel={leftLabel}
             >
-              <Text style={styles.drawerNavAction}>{leftLabel}</Text>
+              <Text style={coloredNav ? styles.navBtnNeutralText : styles.drawerNavAction}>{leftLabel}</Text>
             </Pressable>
             <View style={styles.drawerNavTitleBlock}>
-              <Text style={styles.drawerNavTitle} numberOfLines={1}>
+              <Text style={[styles.drawerNavTitle, coloredNav && styles.drawerNavTitleOnColor]} numberOfLines={1}>
                 {title}
               </Text>
               {subtitle ? (
-                <Text style={styles.drawerNavSubtitle} numberOfLines={1}>
+                <Text style={[styles.drawerNavSubtitle, coloredNav && styles.drawerNavSubtitleOnColor]} numberOfLines={1}>
                   {subtitle}
                 </Text>
               ) : null}
@@ -224,18 +274,31 @@ export function TriageDrawer({
               {isMobile ? null : rightLeading}
               <Pressable
                 onPress={onRight}
-                hitSlop={8}
+                hitSlop={coloredNav ? 0 : 8}
                 disabled={!onRight || rightDisabled}
+                style={
+                  coloredNav && rightLabel
+                    ? [
+                        styles.navBtn,
+                        rightLabel === 'Done' ? styles.navBtnDone : styles.navBtnPrimary,
+                        rightDisabled && styles.drawerNavActionDisabled,
+                      ]
+                    : null
+                }
                 accessibilityRole="button"
                 accessibilityLabel={rightLabel || ''}
               >
                 {rightLabel ? (
                   <Text
-                    style={[
-                      styles.drawerNavAction,
-                      rightEmphasis && styles.drawerNavActionStrong,
-                      rightDisabled && styles.drawerNavActionDisabled,
-                    ]}
+                    style={
+                      coloredNav
+                        ? styles.navBtnPrimaryText
+                        : [
+                            styles.drawerNavAction,
+                            rightEmphasis && styles.drawerNavActionStrong,
+                            rightDisabled && styles.drawerNavActionDisabled,
+                          ]
+                    }
                   >
                     {rightLabel}
                   </Text>
@@ -243,8 +306,10 @@ export function TriageDrawer({
               </Pressable>
             </View>
           </View>
-          {isMobile && rightLeading ? <View style={styles.drawerSubNav}>{rightLeading}</View> : null}
-          {children}
+          {isMobile && rightLeading ? (
+            <View style={[styles.drawerSubNav, coloredNav && styles.drawerSubNavColored]}>{rightLeading}</View>
+          ) : null}
+          <View style={styles.drawerBody}>{children}</View>
         </Animated.View>
       </View>
     </Modal>
@@ -481,6 +546,61 @@ export function Group({ children, style }) {
   return <View style={[styles.group, style]}>{children}</View>;
 }
 
+function initialsFromName(name) {
+  const parts = String(name || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!parts.length) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+}
+
+export function StaffAvatar({ uri, name, size = 24 }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setFailed(false);
+  }, [uri]);
+  const showImage = Boolean(uri) && !failed;
+  const label = String(name || '').trim();
+  return (
+    <View
+      accessibilityLabel={label || 'Employee'}
+      style={[
+        styles.staffAvatar,
+        { width: size, height: size, borderRadius: size / 2 },
+        !showImage && styles.staffAvatarFallback,
+        Platform.OS === 'web' ? { cursor: 'default' } : null,
+      ]}
+      {...(Platform.OS === 'web' && label ? { title: label } : null)}
+    >
+      {showImage ? (
+        <Image
+          source={{ uri }}
+          style={{ width: size, height: size, borderRadius: size / 2 }}
+          onError={() => setFailed(true)}
+        />
+      ) : (
+        <Text style={[styles.staffAvatarInitials, { fontSize: size > 28 ? 12 : 10 }]}>
+          {initialsFromName(name)}
+        </Text>
+      )}
+    </View>
+  );
+}
+
+export function StaffPerson({ name, avatarUrl, extra, size = 24 }) {
+  const label = String(name || '').trim() || '—';
+  return (
+    <View style={styles.staffPerson}>
+      <StaffAvatar uri={avatarUrl} name={label} size={size} />
+      <Text style={styles.staffPersonName} numberOfLines={1}>
+        {extra ? `${label}${extra}` : label}
+      </Text>
+    </View>
+  );
+}
+
 export function GroupRow({ label, value, valueTone, last, onPress, children }) {
   const colors = valueTone ? TONES[valueTone] : null;
   const Row = onPress ? Pressable : View;
@@ -539,7 +659,7 @@ export function InlineNotice({ tone = 'neutral', icon, children, style }) {
 
 const styles = StyleSheet.create({
   drawerRoot: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     flexDirection: 'row',
     justifyContent: 'flex-end',
   },
@@ -549,6 +669,9 @@ const styles = StyleSheet.create({
   },
   drawerPanel: {
     height: '100%',
+    maxHeight: '100%',
+    flexDirection: 'column',
+    overflow: 'hidden',
     backgroundColor: T.bg,
     ...Platform.select({
       web: { boxShadow: '-12px 0 32px rgba(0,0,0,0.18)' },
@@ -558,6 +681,10 @@ const styles = StyleSheet.create({
   drawerPanelMobile: {
     paddingBottom: Platform.OS === 'ios' ? Math.max(20, mobileSafeBottom()) : 12,
   },
+  drawerBody: {
+    flex: 1,
+    minHeight: 0,
+  },
   drawerNav: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -566,6 +693,52 @@ const styles = StyleSheet.create({
     backgroundColor: T.bg,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: T.hairline,
+  },
+  drawerNavColored: {
+    minHeight: 60,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: '#FFF1E4',
+    borderBottomColor: 'rgba(194,65,12,0.18)',
+    gap: 8,
+  },
+  navBtn: {
+    width: 'auto',
+    minWidth: 72,
+    minHeight: 34,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  navBtnNeutral: {
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(194,65,12,0.22)',
+  },
+  navBtnNeutralText: {
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#C2410C',
+  },
+  navBtnPrimary: {
+    backgroundColor: T.blue,
+  },
+  navBtnDone: {
+    backgroundColor: T.green,
+  },
+  navBtnPrimaryText: {
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  drawerNavTitleOnColor: {
+    color: '#9A3412',
+  },
+  drawerNavSubtitleOnColor: {
+    color: '#C2410C',
   },
   drawerNavMobile: {
     paddingTop: Platform.OS === 'ios' ? mobileSafeTop() - 12 : 6,
@@ -596,6 +769,10 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: T.hairline,
     backgroundColor: T.bg,
+  },
+  drawerSubNavColored: {
+    backgroundColor: '#FFF1E4',
+    borderBottomColor: 'rgba(194,65,12,0.18)',
   },
   drawerNavAction: {
     fontFamily: FONT,
@@ -1018,5 +1195,33 @@ const styles = StyleSheet.create({
     fontFamily: FONT,
     fontSize: 13,
     lineHeight: 18,
+  },
+  staffAvatar: {
+    overflow: 'hidden',
+    backgroundColor: T.fill,
+    flexShrink: 0,
+  },
+  staffAvatarFallback: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  staffAvatarInitials: {
+    fontFamily: FONT,
+    fontWeight: '600',
+    color: T.secondary,
+  },
+  staffPerson: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  staffPersonName: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: FONT,
+    fontSize: 14,
+    color: T.text,
   },
 });
