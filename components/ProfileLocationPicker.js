@@ -131,71 +131,118 @@ export default function ProfileLocationPicker({
     }
   };
 
+  const showSearch = stores.length > 6;
+
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.modalRoot}>
-        <Pressable style={styles.modalBackdrop} onPress={onClose} />
-        <View style={styles.modalSheet}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Location</Text>
-            <Pressable onPress={onClose} hitSlop={8} accessibilityLabel="Close">
-              <Text style={styles.doneText}>Done</Text>
+        <Pressable style={styles.modalBackdrop} onPress={onClose} accessibilityLabel="Dismiss" />
+        <View style={styles.card}>
+          <View style={styles.header}>
+            <View style={styles.headerCopy}>
+              <Text style={styles.title}>Location</Text>
+              {selectedName ? (
+                <Text style={styles.subtitle} numberOfLines={1}>
+                  Currently at {selectedName}
+                </Text>
+              ) : null}
+            </View>
+            <Pressable
+              onPress={onClose}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Close"
+              style={({ pressed, hovered }) => [
+                styles.closeButton,
+                (pressed || hovered) && styles.closeButtonHover,
+              ]}
+            >
+              <Ionicons name="close" size={15} color="#6e6e73" />
             </Pressable>
           </View>
-          <View style={styles.searchField}>
-            <Ionicons name="search" size={16} color="#8e8e93" />
-            <TextInput
-              style={styles.searchInput}
-              value={query}
-              onChangeText={setQuery}
-              placeholder="Search stores"
-              placeholderTextColor="#8e8e93"
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoFocus={Platform.OS === 'web'}
-            />
-          </View>
+
+          {showSearch ? (
+            <View style={styles.searchField}>
+              <Ionicons name="search" size={14} color="#8e8e93" />
+              <TextInput
+                style={styles.searchInput}
+                value={query}
+                onChangeText={setQuery}
+                placeholder="Search"
+                placeholderTextColor="#8e8e93"
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoFocus={Platform.OS === 'web'}
+                returnKeyType="search"
+              />
+              {query ? (
+                <Pressable onPress={() => setQuery('')} hitSlop={6} accessibilityLabel="Clear search">
+                  <Ionicons name="close-circle" size={15} color="#aeaeb2" />
+                </Pressable>
+              ) : null}
+            </View>
+          ) : null}
+
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
+
           {loading ? (
             <View style={styles.loading}>
-              <ActivityIndicator color="#1a1a1a" />
+              <ActivityIndicator color="#8e8e93" />
             </View>
           ) : (
-            <ScrollView keyboardShouldPersistTaps="handled" style={styles.modalList}>
-              {visibleStores.map((store) => {
-                const active = asString(store.id) === asString(selectedId);
-                const saving = savingId === store.id;
-                return (
-                  <Pressable
-                    key={store.id}
-                    style={[styles.modalOption, active && styles.modalOptionActive]}
-                    onPress={() => handleSelect(store)}
-                    disabled={Boolean(savingId)}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: active, busy: saving }}
-                    accessibilityLabel={store.name}
-                  >
-                    <View style={styles.modalOptionCopy}>
-                      <Text style={styles.modalOptionTitle} numberOfLines={1}>
-                        {store.name}
-                      </Text>
-                      {store.city ? (
-                        <Text style={styles.modalOptionMeta} numberOfLines={1}>
-                          {store.city}
-                        </Text>
-                      ) : null}
-                    </View>
-                    {saving ? (
-                      <ActivityIndicator size="small" color="#1a1a1a" />
-                    ) : active ? (
-                      <Ionicons name="checkmark" size={18} color="#1d1d1f" />
-                    ) : null}
-                  </Pressable>
-                );
-              })}
-              {!visibleStores.length ? (
-                <Text style={styles.emptyText}>No stores match that search.</Text>
-              ) : null}
+            <ScrollView
+              keyboardShouldPersistTaps="handled"
+              style={styles.list}
+              contentContainerStyle={styles.listContent}
+              showsVerticalScrollIndicator={false}
+            >
+              <View style={styles.group}>
+                {visibleStores.map((store, index) => {
+                  const active = asString(store.id) === asString(selectedId);
+                  const saving = savingId === store.id;
+                  const last = index === visibleStores.length - 1;
+                  return (
+                    <Pressable
+                      key={store.id}
+                      style={({ pressed, hovered }) => [
+                        styles.option,
+                        (pressed || hovered) && !savingId && styles.optionHover,
+                      ]}
+                      onPress={() => handleSelect(store)}
+                      disabled={Boolean(savingId)}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: active, busy: saving }}
+                      accessibilityLabel={store.name}
+                    >
+                      <View style={[styles.optionInner, !last && styles.optionDivider]}>
+                        <View style={styles.optionCopy}>
+                          <Text
+                            style={[styles.optionTitle, active && styles.optionTitleActive]}
+                            numberOfLines={1}
+                          >
+                            {store.name}
+                          </Text>
+                          {store.city ? (
+                            <Text style={styles.optionMeta} numberOfLines={1}>
+                              {store.city}
+                            </Text>
+                          ) : null}
+                        </View>
+                        <View style={styles.optionTrailing}>
+                          {saving ? (
+                            <ActivityIndicator size="small" color="#8e8e93" />
+                          ) : active ? (
+                            <Ionicons name="checkmark" size={17} color="#2F6FED" />
+                          ) : null}
+                        </View>
+                      </View>
+                    </Pressable>
+                  );
+                })}
+                {!visibleStores.length ? (
+                  <Text style={styles.emptyText}>No stores match that search.</Text>
+                ) : null}
+              </View>
             </ScrollView>
           )}
         </View>
@@ -204,57 +251,99 @@ export default function ProfileLocationPicker({
   );
 }
 
+const HAIRLINE = StyleSheet.hairlineWidth;
+
 const styles = StyleSheet.create({
   modalRoot: {
     flex: 1,
+    alignItems: 'center',
     justifyContent: 'center',
-    padding: 20,
+    padding: 24,
   },
   modalBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0, 0, 0, 0.28)',
+    backgroundColor: 'rgba(0, 0, 0, 0.18)',
   },
-  modalSheet: {
+  card: {
+    width: '100%',
+    maxWidth: 320,
+    maxHeight: '70%',
     backgroundColor: '#fff',
-    borderRadius: 16,
-    maxHeight: '80%',
+    borderRadius: 18,
     overflow: 'hidden',
+    borderWidth: HAIRLINE,
+    borderColor: 'rgba(0, 0, 0, 0.08)',
+    ...Platform.select({
+      web: {
+        boxShadow: '0 18px 48px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0, 0, 0, 0.06)',
+      },
+      ios: {
+        shadowColor: '#000',
+        shadowOpacity: 0.18,
+        shadowRadius: 28,
+        shadowOffset: { width: 0, height: 14 },
+      },
+      android: { elevation: 12 },
+      default: {},
+    }),
   },
-  modalHeader: {
+  header: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 8,
+    paddingLeft: 18,
+    paddingRight: 14,
+    paddingTop: 16,
+    paddingBottom: 10,
+    gap: 12,
   },
-  modalTitle: {
+  headerCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  title: {
     fontFamily,
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: '600',
     color: '#1d1d1f',
+    letterSpacing: -0.2,
   },
-  doneText: {
+  subtitle: {
     fontFamily,
-    fontSize: 17,
-    fontWeight: '500',
-    color: '#2F6FED',
+    fontSize: 12,
+    color: '#8e8e93',
+    marginTop: 2,
+  },
+  closeButton: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f2f2f7',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  closeButtonHover: {
+    backgroundColor: '#e5e5ea',
   },
   searchField: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    marginHorizontal: 16,
-    marginBottom: 8,
+    gap: 6,
+    marginHorizontal: 14,
+    marginBottom: 10,
     backgroundColor: '#f2f2f7',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    height: 40,
+    borderRadius: 9,
+    paddingHorizontal: 9,
+    height: 30,
   },
   searchInput: {
     flex: 1,
     fontFamily,
-    fontSize: 16,
+    fontSize: 13,
     color: '#1d1d1f',
     paddingVertical: 0,
     ...Platform.select({
@@ -264,54 +353,80 @@ const styles = StyleSheet.create({
   },
   errorText: {
     fontFamily,
-    fontSize: 13,
+    fontSize: 12,
     color: '#c41e3a',
-    paddingHorizontal: 16,
+    paddingHorizontal: 18,
     paddingBottom: 8,
   },
   loading: {
-    minHeight: 160,
+    minHeight: 120,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  modalList: {
-    maxHeight: 420,
+  list: {
+    maxHeight: 340,
   },
-  modalOption: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 48,
-    paddingHorizontal: 16,
-    gap: 10,
+  listContent: {
+    paddingHorizontal: 10,
+    paddingBottom: 10,
+  },
+  group: {
+    backgroundColor: '#f7f7f9',
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  option: {
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
-  modalOptionActive: {
-    backgroundColor: '#f2f2f7',
+  optionHover: {
+    backgroundColor: '#ececf0',
   },
-  modalOptionCopy: {
+  optionInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 40,
+    marginLeft: 12,
+    paddingRight: 12,
+    paddingVertical: 8,
+    gap: 10,
+  },
+  optionDivider: {
+    borderBottomWidth: HAIRLINE,
+    borderBottomColor: 'rgba(60, 60, 67, 0.12)',
+  },
+  optionCopy: {
     flex: 1,
     minWidth: 0,
   },
-  modalOptionTitle: {
+  optionTitle: {
     fontFamily,
-    fontSize: 16,
+    fontSize: 13.5,
     color: '#1d1d1f',
-    letterSpacing: -0.2,
+    letterSpacing: -0.15,
   },
-  modalOptionMeta: {
+  optionTitleActive: {
+    fontWeight: '600',
+  },
+  optionMeta: {
     fontFamily,
-    fontSize: 13,
+    fontSize: 11.5,
     color: '#8e8e93',
-    marginTop: 2,
+    marginTop: 1,
+  },
+  optionTrailing: {
+    width: 20,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
   },
   emptyText: {
     fontFamily,
-    fontSize: 14,
+    fontSize: 13,
     color: '#8e8e93',
-    paddingHorizontal: 16,
-    paddingVertical: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 16,
+    textAlign: 'center',
   },
 });

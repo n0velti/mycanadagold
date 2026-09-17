@@ -1,10 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Platform, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import TriageAccuracyPanel from './TriageAccuracyPanel';
+import TriageDailyReceiptsDrawer from './TriageDailyReceiptsDrawer';
 import TriageDeletedPanel from './TriageDeletedPanel';
 import TriageTransfersPanel from './TriageTransfersPanel';
-import { BarButton, EmptyState, FONT, SearchField, SegmentedSlider, T, TextTabs } from './TriageKit';
+import { BarButton, EmptyState, FONT, IconAction, SearchField, SegmentedSlider, T, TextTabs } from './TriageKit';
 import { useIsMobile } from '../lib/mobileUi';
+import {
+  buildDailyReceiptGrid,
+  dailyReceiptStatus,
+  summarizeDailyReceipts,
+  useDailyReceipts,
+} from '../lib/triageDailyReceipts';
 import {
   batchStats,
   collectAccuracyTriagePos,
@@ -27,6 +35,7 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-triage-table-row:hover,.cgold-triage-table-row:has(:hover),.cgold-triage-table-row.is-hover{background-color:#f5f5f7!important;}',
     '.cgold-triage-table-row:hover > *,.cgold-triage-table-row:has(:hover) > *,.cgold-triage-table-row.is-hover > *{background-color:transparent!important;}',
     '.cgold-triage-row-selected,.cgold-triage-row-selected:hover{background-color:#EAF2FF!important;}',
+    '.cgold-accuracy-row:hover{background-color:#f5f5f7!important;}',
   ].join('');
 }
 
@@ -40,23 +49,65 @@ const TRIAGE_TABS = [
   { key: 'deleted', label: 'Deleted', icon: 'trash-outline' },
 ];
 
+function ChromeStats({ items, onPress, accessibilityLabel, wide = false }) {
+  if (!items?.length) return null;
+  const body = (
+    <View style={[styles.chromeStats, wide && styles.chromeStatsWide]}>
+      {items.map((item) => (
+        <View key={item.label} style={styles.chromeStat}>
+          <Text style={styles.chromeStatLabel}>{item.label}</Text>
+          <Text
+            style={[
+              styles.chromeStatValue,
+              item.tone === 'green' && styles.chromeStatGreen,
+              item.tone === 'red' && styles.chromeStatRed,
+              item.tone === 'orange' && styles.chromeStatOrange,
+            ]}
+            numberOfLines={1}
+          >
+            {item.value}
+          </Text>
+        </View>
+      ))}
+    </View>
+  );
+  if (!onPress) return body;
+  return (
+    <Pressable
+      style={[styles.chromeStatsHit, wide && styles.chromeStatsHitWide]}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel || 'Open details'}
+    >
+      {body}
+      <Ionicons name="chevron-forward" size={16} color={T.secondary} />
+    </Pressable>
+  );
+}
+
 export default function TriageScreen({
   session,
   onRequireLogin,
   storeFilter,
   embedded = false,
   onStoreBackChange,
+  onNavTabs,
 }) {
   const isMobile = useIsMobile();
   const { triage, deleted = [] } = useTransferWorkflow();
   const [activeTab, setActiveTab] = useState('transfers');
   const [dashTab, setDashTab] = useState('poso');
+  const [accuracyTab, setAccuracyTab] = useState('correct');
+  const [accuracyStats, setAccuracyStats] = useState({ correct: 0, incorrect: 0, total: 0, ratio: '0/0', percent: 0 });
+  const [accuracyBreakdownOpen, setAccuracyBreakdownOpen] = useState(false);
+  const [storeTab, setStoreTab] = useState('melt');
   const [createTransferOpen, setCreateTransferOpen] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [listQuery, setListQuery] = useState('');
   const [transferView, setTransferView] = useState('list');
   const [canLeaveStore, setCanLeaveStore] = useState(false);
   const [batchContext, setBatchContext] = useState(null);
+  const [dailyOpen, setDailyOpen] = useState(false);
   const leaveStoreRef = useRef(null);
   const onStoreBackChangeRef = useRef(onStoreBackChange);
   onStoreBackChangeRef.current = onStoreBackChange;
@@ -93,12 +144,22 @@ export default function TriageScreen({
     ];
   }, [triage]);
 
+  const accuracyTabOptions = useMemo(
+    () => [
+      { key: 'correct', label: 'Correct', ...(accuracyStats.correct ? { count: accuracyStats.correct } : {}) },
+      { key: 'incorrect', label: 'Incorrect', ...(accuracyStats.incorrect ? { count: accuracyStats.incorrect } : {}) },
+    ],
+    [accuracyStats],
+  );
+
   const changeTab = useCallback((key) => {
     leaveStoreRef.current?.();
     setActiveTab(key);
     setCreateTransferOpen(false);
     setQuickAddOpen(false);
     setListQuery('');
+    setAccuracyBreakdownOpen(false);
+    setDailyOpen(false);
   }, []);
 
   const changeDashTab = useCallback((key) => {
@@ -106,6 +167,15 @@ export default function TriageScreen({
     setListQuery('');
     setCreateTransferOpen(false);
     setQuickAddOpen(false);
+  }, []);
+
+  const changeAccuracyTab = useCallback((key) => {
+    setAccuracyTab(key);
+    setListQuery('');
+  }, []);
+
+  const changeStoreTab = useCallback((key) => {
+    setStoreTab(key);
   }, []);
 
   const handleBackChange = useCallback((fn, context) => {
@@ -116,15 +186,37 @@ export default function TriageScreen({
   }, []);
 
   const inBatch = activeTab === 'transfers' && canLeaveStore && Boolean(batchContext);
+  const dailyBatch = inBatch ? batchContext?.batch || null : null;
+  const daily = useDailyReceipts(dailyBatch?.id, Boolean(session?.token && dailyBatch));
+  const dailyGrid = useMemo(() => buildDailyReceiptGrid(dailyBatch), [dailyBatch]);
+  const dailySummary = useMemo(() => summarizeDailyReceipts(dailyGrid, daily.receipts), [daily.receipts, dailyGrid]);
+  const dailyStatus = useMemo(() => dailyReceiptStatus(dailySummary), [dailySummary]);
+
+  useEffect(() => {
+    if (!dailyBatch) setDailyOpen(false);
+  }, [dailyBatch]);
+
+  const searchField = session?.token ? (
+    <SearchField
+      value={listQuery}
+      onChangeText={setListQuery}
+      placeholder={
+        activeTab === 'accuracy'
+          ? 'PO / person / store'
+          : activeTab === 'deleted'
+            ? 'Batch / PO'
+            : dashTab === 'batch'
+              ? 'Batch / store'
+              : 'PO / SO'
+      }
+      style={[styles.tabSearch, isMobile && styles.tabSearchMobile]}
+    />
+  ) : null;
+
   const trailing =
     session?.token && activeTab === 'transfers' && transferView === 'list' ? (
       <>
-        <SearchField
-          value={listQuery}
-          onChangeText={setListQuery}
-          placeholder={dashTab === 'batch' ? 'Batch / store' : 'PO / SO'}
-          style={[styles.tabSearch, isMobile && styles.tabSearchMobile]}
-        />
+        {searchField}
         <BarButton
           label="Quick Add"
           onPress={() => {
@@ -145,34 +237,127 @@ export default function TriageScreen({
           accessibilityLabel="Add a new batch"
         />
       </>
-    ) : session?.token && inBatch && !onStoreBackChange ? (
-      <View style={styles.batchTitle} pointerEvents="none">
-        <Text style={styles.batchTitleDate} numberOfLines={1}>
-          {batchContext.dateLabel}
-        </Text>
-        {batchContext.storeNames ? (
-          <Text style={styles.batchTitleStores} numberOfLines={1}>
-            {batchContext.storeNames}
-          </Text>
+    ) : session?.token && inBatch ? (
+      <>
+        <ChromeStats
+          wide
+          items={[
+            { label: 'Expected', value: String(batchContext.stats?.expected || 0) },
+            { label: 'Bullion only', value: String(batchContext.stats?.bullionOnly || 0) },
+            {
+              label: 'Progress',
+              value: batchContext.stats?.expected
+                ? `${batchContext.stats.received}/${batchContext.stats.expected}`
+                : '0',
+              tone: batchContext.stats?.complete ? 'green' : undefined,
+            },
+            { label: dailyStatus.label, value: dailyStatus.value, tone: dailyStatus.tone },
+          ]}
+          onPress={() => setDailyOpen(true)}
+          accessibilityLabel="Open the daily receipt check"
+        />
+        {storeTab === 'melt' ? (
+          <>
+            <IconAction
+              icon="phone-portrait-outline"
+              onPress={() => batchContext.onOpenFeed?.()}
+              accessibilityLabel="Open feed view"
+            />
+            <BarButton
+              label="Quick Add"
+              onPress={() => batchContext.onAddMelt?.()}
+              accessibilityLabel="Quick Add a PO / SO"
+            />
+          </>
         ) : null}
-      </View>
+      </>
+    ) : session?.token && activeTab === 'accuracy' ? (
+      <ChromeStats
+        items={[
+          { label: 'Correct', value: String(accuracyStats.correct) },
+          {
+            label: 'Incorrect',
+            value: String(accuracyStats.incorrect),
+            tone: accuracyStats.incorrect ? 'red' : undefined,
+          },
+          {
+            label: 'Ratio',
+            value: accuracyStats.total ? `${accuracyStats.ratio} · ${accuracyStats.percent}%` : '0/0',
+            tone: accuracyStats.percent >= 90 ? 'green' : undefined,
+          },
+        ]}
+        onPress={() => setAccuracyBreakdownOpen(true)}
+        accessibilityLabel="Open errors breakdown"
+      />
+    ) : session?.token && activeTab === 'deleted' ? (
+      searchField
     ) : null;
+
+  const storeTabOptions = useMemo(() => {
+    const melt = batchContext?.stats?.expected || 0;
+    return [
+      { key: 'melt', label: 'Melt', ...(melt ? { count: melt } : {}) },
+      { key: 'bullion', label: 'Bullion' },
+    ];
+  }, [batchContext]);
 
   const leading =
     session?.token && activeTab === 'transfers' && transferView === 'list' ? (
-      <SegmentedSlider options={dashTabOptions} value={dashTab} onChange={changeDashTab} />
+      <SegmentedSlider
+        options={dashTabOptions}
+        value={dashTab}
+        onChange={changeDashTab}
+        style={styles.tabSlider}
+      />
+    ) : session?.token && inBatch ? (
+      <SegmentedSlider
+        options={storeTabOptions}
+        value={storeTab}
+        onChange={changeStoreTab}
+        style={styles.tabSlider}
+      />
+    ) : session?.token && activeTab === 'accuracy' ? (
+      <View style={styles.accuracyLead}>
+        <SegmentedSlider
+          options={accuracyTabOptions}
+          value={accuracyTab}
+          onChange={changeAccuracyTab}
+          style={styles.tabSlider}
+        />
+        {searchField}
+      </View>
     ) : null;
 
-  return (
-    <View style={[styles.body, embedded && styles.bodyEmbedded]}>
+  const navTabs = useMemo(
+    () => (
       <TextTabs
         options={tabOptions}
         value={activeTab}
         onChange={changeTab}
-        leading={leading}
-        trailing={trailing}
         size="lg"
+        layout="inline"
       />
+    ),
+    [activeTab, changeTab, tabOptions],
+  );
+
+  const portalNav = Boolean(onNavTabs) && !isMobile;
+
+  useLayoutEffect(() => {
+    if (!portalNav) return undefined;
+    onNavTabs(navTabs);
+    return () => onNavTabs(null);
+  }, [navTabs, onNavTabs, portalNav]);
+
+  return (
+    <View style={[styles.body, embedded && styles.bodyEmbedded]}>
+      {portalNav ? null : <View style={styles.localNavRow}>{navTabs}</View>}
+      {leading || trailing ? (
+        <View style={[styles.pageChrome, isMobile && styles.pageChromeMobile]}>
+          <View style={styles.pageChromeStart}>{leading}</View>
+          {trailing ? <View style={styles.pageChromeEnd}>{trailing}</View> : null}
+        </View>
+      ) : null}
 
       <View style={activeTab === 'transfers' ? styles.pageVisible : styles.pageHidden}>
         <TriageTransfersPanel
@@ -187,20 +372,43 @@ export default function TriageScreen({
           onViewChange={setTransferView}
           onBackChange={handleBackChange}
           listQuery={listQuery}
+          storeTab={storeTab}
+          onStoreTabChange={changeStoreTab}
         />
       </View>
 
       {activeTab === 'accuracy' ? (
-        <TriageAccuracyPanel session={session} storeFilter={storeFilter} />
-      ) : activeTab === 'deleted' ? (
-        <TriageDeletedPanel session={session} />
-      ) : activeTab !== 'transfers' ? (
-        <EmptyState
-          icon={currentTab.icon}
-          title={currentTab.label}
-          body={`Nothing to review in ${currentTab.label.toLowerCase()} yet.`}
+        <TriageAccuracyPanel
+          session={session}
+          storeFilter={storeFilter}
+          accuracyTab={accuracyTab}
+          listQuery={listQuery}
+          onStatsChange={setAccuracyStats}
+          breakdownOpen={accuracyBreakdownOpen}
+          onBreakdownOpenChange={setAccuracyBreakdownOpen}
         />
+      ) : activeTab === 'deleted' ? (
+        <TriageDeletedPanel session={session} query={listQuery} />
+      ) : activeTab !== 'transfers' ? (
+        <View style={styles.pageVisible}>
+          <EmptyState
+            icon={currentTab.icon}
+            title={currentTab.label}
+            body={`Nothing to review in ${currentTab.label.toLowerCase()} yet.`}
+          />
+        </View>
       ) : null}
+
+      <TriageDailyReceiptsDrawer
+        visible={dailyOpen && Boolean(dailyBatch)}
+        onClose={() => setDailyOpen(false)}
+        batch={dailyBatch}
+        session={session}
+        receipts={daily.receipts}
+        loading={daily.loading}
+        loadError={daily.error}
+        onSaved={daily.reload}
+      />
     </View>
   );
 }
@@ -219,6 +427,10 @@ const styles = StyleSheet.create({
     width: 220,
     maxWidth: 220,
   },
+  tabSlider: {
+    minWidth: 220,
+    maxWidth: 320,
+  },
   tabSearchMobile: {
     flexGrow: 1,
     flexBasis: 140,
@@ -226,23 +438,105 @@ const styles = StyleSheet.create({
     maxWidth: '100%',
     minWidth: 120,
   },
-  batchTitle: {
-    maxWidth: 220,
+  localNavRow: {
+    flexShrink: 0,
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
     alignItems: 'flex-end',
+    paddingBottom: 2,
   },
-  batchTitleDate: {
+  pageChrome: {
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+    paddingTop: 28,
+    paddingBottom: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: T.hairline,
+  },
+  pageChromeMobile: {
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingTop: 18,
+  },
+  pageChromeStart: {
+    flexShrink: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  pageChromeEnd: {
+    marginLeft: 'auto',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 0,
+  },
+  accuracyLead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  chromeStats: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'baseline',
+    gap: 10,
+    maxWidth: 268,
+    rowGap: 2,
+  },
+  chromeStatsWide: {
+    maxWidth: 520,
+  },
+  chromeStatsHit: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    maxWidth: 300,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  chromeStatsHitWide: {
+    maxWidth: 560,
+    paddingVertical: 4,
+    paddingLeft: 8,
+    paddingRight: 4,
+    borderRadius: 8,
+  },
+  chromeStat: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 4,
+  },
+  chromeStatLabel: {
+    fontFamily: FONT,
+    fontSize: 10,
+    fontWeight: '600',
+    color: T.secondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  chromeStatValue: {
     fontFamily: FONT,
     fontSize: 13,
     fontWeight: '600',
     color: T.text,
-    letterSpacing: -0.2,
-    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
   },
-  batchTitleStores: {
-    fontFamily: FONT,
-    fontSize: 11,
-    color: T.secondary,
-    textAlign: 'right',
+  chromeStatGreen: {
+    color: '#248A3D',
+  },
+  chromeStatRed: {
+    color: '#D70015',
+  },
+  chromeStatOrange: {
+    color: '#C93400',
   },
   pageVisible: {
     flex: 1,

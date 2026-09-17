@@ -105,7 +105,7 @@ function deletedRowProps(entry) {
   };
 }
 
-export default function TriageDeletedPanel({ session }) {
+export default function TriageDeletedPanel({ session, query = '' }) {
   const { deleted = [] } = useTransferWorkflow();
   const rows = useMemo(
     () =>
@@ -114,6 +114,20 @@ export default function TriageDeletedPanel({ session }) {
         .sort((a, b) => String(b.deletedAt || '').localeCompare(String(a.deletedAt || ''))),
     [deleted],
   );
+  const visible = useMemo(() => {
+    const q = String(query || '')
+      .trim()
+      .toLowerCase();
+    if (!q) return rows;
+    return rows.filter((entry) => {
+      const props = deletedRowProps(entry);
+      return [props.title, props.subtitle, entry.deletedBy]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(q);
+    });
+  }, [query, rows]);
 
   const restore = useCallback((entry) => {
     restoreTriageDeleted(entry.id);
@@ -146,18 +160,22 @@ export default function TriageDeletedPanel({ session }) {
 
   return (
     <ScrollView style={styles.body} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-      {rows.length === 0 ? (
+      {visible.length === 0 ? (
         <EmptyState
           icon="trash-outline"
-          title="Nothing deleted"
-          body="Batches, Quick Add POs, and documents you remove from the dashboard land here and stay off the live list."
+          title={query.trim() ? 'No matches' : 'Nothing deleted'}
+          body={
+            query.trim()
+              ? `Nothing matches “${query.trim()}”.`
+              : 'Batches, Quick Add POs, and documents you remove from the dashboard land here and stay off the live list.'
+          }
         />
       ) : (
         <Group>
-          {rows.map((entry, index) => (
+          {visible.map((entry, index) => (
             <DeletedRow
               key={entry.id}
-              last={index === rows.length - 1}
+              last={index === visible.length - 1}
               {...deletedRowProps(entry)}
               meta={[`Deleted ${formatDeletedAt(entry.deletedAt)}`, entry.deletedBy].filter(Boolean).join(' · ')}
               onRestore={() => restore(entry)}

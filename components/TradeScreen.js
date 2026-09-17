@@ -1201,24 +1201,25 @@ function BuyCatalogModal({ visible, catalog, priceByKey, onAdd, onClose }) {
     const hit = priceByKey.get(itemMatchKey(item.name));
     if (hit) {
       onAdd(hit);
-      return;
+    } else {
+      const group = section.group || section.title || '';
+      const jewellery = /jewellery|jewelry/i.test(group);
+      const perGram = jewellery || /\/\s*g\b/i.test(String(item.price || ''));
+      const match = String(item.price || '').match(/-?\$?\s*[\d,]+(?:\.\d+)?/);
+      const parsed = match ? Number(match[0].replace(/[^0-9.-]/g, '')) : null;
+      const destType = section.itemType || catalogItemType(item.name, group, catalogSellMatchKeys(catalog));
+      onAdd({
+        key: itemMatchKey(item.name),
+        name: item.name,
+        group,
+        unitPrice: Number.isFinite(parsed) ? parsed : null,
+        priceLabel: String(item.price || '').trim(),
+        unitType: perGram ? 'g' : 'ea',
+        itemType: destType,
+        searchText: item.name,
+      });
     }
-    const group = section.group || section.title || '';
-    const jewellery = /jewellery|jewelry/i.test(group);
-    const perGram = jewellery || /\/\s*g\b/i.test(String(item.price || ''));
-    const match = String(item.price || '').match(/-?\$?\s*[\d,]+(?:\.\d+)?/);
-    const parsed = match ? Number(match[0].replace(/[^0-9.-]/g, '')) : null;
-    const destType = section.itemType || catalogItemType(item.name, group, catalogSellMatchKeys(catalog));
-    onAdd({
-      key: itemMatchKey(item.name),
-      name: item.name,
-      group,
-      unitPrice: Number.isFinite(parsed) ? parsed : null,
-      priceLabel: String(item.price || '').trim(),
-      unitType: perGram ? 'g' : 'ea',
-      itemType: destType,
-      searchText: item.name,
-    });
+    onClose();
   };
 
   return (

@@ -378,7 +378,9 @@ export function TableFrame({
   children,
   extraData,
   fixedRowHeight = true,
+  variant,
 }) {
+  const buy = variant === 'buy';
   const { width } = useWindowDimensions();
   const [chromeHeight, setChromeHeight] = useState(
     HEADER_FALLBACK_HEIGHT +
@@ -397,20 +399,20 @@ export function TableFrame({
 
   const chrome = (
     <BlurView
-      intensity={60}
+      intensity={buy ? 0 : 60}
       tint="light"
-      style={styles.tableChrome}
+      style={[styles.tableChrome, buy && styles.tableChromeBuy]}
       onLayout={onChromeLayout}
       {...(Platform.OS === 'web' ? { className: 'cgold-triage-table-blur' } : null)}
     >
       {leading ? <View style={styles.tableLeading}>{leading}</View> : null}
       {toolbar ? <View style={styles.tableToolbarInner}>{toolbar}</View> : null}
-      <View style={styles.tableHeader}>{header}</View>
+      <View style={[styles.tableHeader, buy && styles.tableHeaderBuy]}>{header}</View>
     </BlurView>
   );
 
   const inner = (
-    <View style={[styles.tableCard, { minWidth }]}>
+    <View style={[styles.tableCard, buy && styles.tableCardBuy, { minWidth }]}>
       {Array.isArray(data) ? (
         <FlatList
           style={styles.tableBody}
@@ -740,6 +742,14 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
+  tableCardBuy: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e5e5ea',
+    ...Platform.select({
+      web: { boxShadow: 'none' },
+      default: { elevation: 0 },
+    }),
+  },
   tableChrome: {
     position: 'absolute',
     top: 0,
@@ -755,6 +765,10 @@ const styles = StyleSheet.create({
       web: { height: 'fit-content' },
       default: {},
     }),
+  },
+  tableChromeBuy: {
+    backgroundColor: '#f6f6f9',
+    borderBottomColor: '#ececef',
   },
   tableLeading: {
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -776,6 +790,10 @@ const styles = StyleSheet.create({
     alignItems: 'stretch',
     minHeight: 32,
     overflow: 'visible',
+  },
+  tableHeaderBuy: {
+    minHeight: 34,
+    paddingHorizontal: 4,
   },
   tableHead: {
     minHeight: 32,

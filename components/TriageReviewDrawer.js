@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
@@ -14,6 +15,8 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import {
   fetchTransactionDetail,
+  formatAmount,
+  formatPickerDate,
   resolvePosAuthForRow,
   withLineItems,
 } from '../lib/transactions';
@@ -25,6 +28,7 @@ import {
   fieldChanged,
   formatErrorAmount,
   isListedErrorType,
+  makeField,
   MAX_REVIEW_IMAGES,
   normalizeDraft,
   normalizeReviewImages,
@@ -32,11 +36,12 @@ import {
   VISIBLE_ERROR_TYPE_LIMIT,
   withItemPartUpdated,
   withSyncedHeaderTotal,
+  withSyncedTotalsFromItems,
 } from '../lib/triageDraft';
 import TriageCorrectionImages from './TriageCorrectionImages';
 import { FONT, T, TextAction, TriageDrawer, SearchField, StaffAvatar, useHeldValue } from './TriageKit';
 import { PoThumb } from './TriageTable';
-import { useIsMobile } from '../lib/mobileUi';
+import { mobileSafeTop, useIsMobile } from '../lib/mobileUi';
 import {
   fetchLookupLocations,
   fetchLookupUsers,
@@ -44,9 +49,19 @@ import {
   searchClients,
   searchProducts,
 } from '../lib/triageLookups';
-import { catalogProductOptions, fetchWebsitePrices, filterCatalogProductOptions } from '../lib/websitePrices';
+import { catalogProductOptions, fetchWebsitePrices } from '../lib/websitePrices';
 import { findStaffByEmployeeName, listStaffProfiles } from '../lib/permissions';
 import { useTransferWorkflow } from '../lib/transferWorkflow';
+import {
+  applyDate,
+  applyTime,
+  BuyItemsReviewTable,
+  BuyTicketBar,
+  emptyPayment,
+  normalizePayoutMethod,
+  parseTicketDate,
+  PaymentMethodModal,
+} from './BuyTicketKit';
 
 const fontFamily = FONT;
 const TEXT = T.text;
@@ -54,29 +69,39 @@ const SECONDARY = T.secondary;
 const HAIRLINE = T.hairline;
 const STRUCK = T.secondary;
 const MOBILE_BREAKPOINT = 768;
-
-const ITEM_COLUMNS = [
-  { key: 'name', label: 'Product' },
-  { key: 'qty', label: 'Qty' },
-  { key: 'unit', label: 'Unit cost' },
-  { key: 'amount', label: 'Amount' },
-];
-
-const PAYMENT_COLUMNS = [
-  { key: 'method', label: 'Method' },
-  { key: 'till', label: 'Till' },
-  { key: 'currency', label: 'Currency' },
-  { key: 'amount', label: 'Amount' },
-  { key: 'notes', label: 'Notes' },
-];
-
-const CURRENCY_OPTIONS = [
-  { id: 'CAD', label: 'CAD' },
-  { id: 'USD', label: 'USD' },
+const BUY_ACCENT = '#1F8A4E';
+const BUY_TINT = '#EAF6EE';
+const TRIAGE_STEPS = [
+  { id: 'details', label: 'Details' },
+  { id: 'reporting', label: 'Reporting' },
+  { id: 'finish', label: 'Finish' },
 ];
 
 function fieldHasText(field) {
   return Boolean(String(field?.value || field?.original || '').trim());
+}
+
+function parseMoneyLabel(value) {
+  const n = Number(String(value || '').replace(/[^0-9.-]/g, ''));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function stripMoney(value) {
+  return String(value || '').replace(/[^0-9.-]/g, '');
+}
+
+function toBuyPayments(payments) {
+  return (payments || []).map((payment) => {
+    const method = normalizePayoutMethod(payment.method?.value);
+    const notes = String(payment.notes?.value || '').trim();
+    const till = String(payment.till?.value || '').trim();
+    return {
+      id: payment.id,
+      method,
+      amount: stripMoney(payment.amount?.value),
+      notes: notes && till && notes !== till ? `${notes} · ${till}` : notes || till,
+    };
+  });
 }
 
 function paymentTypeLabel(payment) {
@@ -374,20 +399,6 @@ function AddOptionRow({ label, placeholder, value, onChange, onSubmit, onCancel,
   );
 }
 
-function EditButton({ label, onPress }) {
-  return (
-    <Pressable
-      style={styles.editBtn}
-      onPress={onPress}
-      hitSlop={8}
-      accessibilityRole="button"
-      accessibilityLabel={label}
-    >
-      <Ionicons name="pencil-outline" size={16} color={T.blue} />
-    </Pressable>
-  );
-}
-
 function ReadValue({ field, suffix }) {
   const changed = fieldChanged(field);
   const valueText = [field?.value || '—', suffix].filter(Boolean).join(' ');
@@ -410,68 +421,6 @@ function ReadValue({ field, suffix }) {
       <Text style={styles.readValueChanged} numberOfLines={2}>
         {valueText}
       </Text>
-    </View>
-  );
-}
-
-function MoneyPreviewRow({ label, field, last }) {
-  return (
-    <View style={[styles.iosRowWrap, last && styles.iosRowLast]}>
-      <View style={styles.iosRow}>
-        <Text style={styles.iosRowLabel} numberOfLines={1}>
-          {label}
-        </Text>
-        <ReadValue field={field} />
-      </View>
-    </View>
-  );
-}
-
-function ItemTotalsPreview({ item, headerTotal, payments, includeAmount }) {
-  const list = Array.isArray(payments) ? payments : [];
-  return (
-    <>
-      {includeAmount ? <MoneyPreviewRow label="Amount" field={item?.amount} /> : null}
-      <MoneyPreviewRow label="Total" field={headerTotal} last={!list.length} />
-      {list.map((payment, index) => (
-        <MoneyPreviewRow
-          key={payment.id}
-          label={paymentTypeLabel(payment)}
-          field={payment.amount}
-          last={index === list.length - 1}
-        />
-      ))}
-    </>
-  );
-}
-
-function ColumnChips({ columns, value, onChange }) {
-  return (
-    <View style={styles.columnChips}>
-      {columns.map((column) => {
-        const on = value === column.key;
-        return (
-          <Pressable
-            key={column.key}
-            style={[styles.columnChip, on && styles.columnChipOn]}
-            onPress={() => onChange(column.key)}
-            accessibilityRole="button"
-            accessibilityState={{ selected: on }}
-            accessibilityLabel={`Edit ${column.label}`}
-          >
-            <Text style={[styles.columnChipText, on && styles.columnChipTextOn]}>{column.label}</Text>
-          </Pressable>
-        );
-      })}
-    </View>
-  );
-}
-
-function CorrectionPair({ original, value }) {
-  return (
-    <View style={styles.correctionPair}>
-      <Text style={styles.struckText}>{original || '—'}</Text>
-      <Text style={styles.correctedText}>{value || '—'}</Text>
     </View>
   );
 }
@@ -505,39 +454,66 @@ function ChangedOriginal({ field, onReverse, compact }) {
   );
 }
 
-function CorrectableField({ label, field, onChange, keyboardType, last, suffix, compact, bare }) {
-  const stacked = useIsMobile() && !compact;
+function CorrectableField({ label, field, onChange, keyboardType, last, suffix, compact, bare, skin, boxed, right }) {
+  const ticket = skin === 'ticket';
+  const stacked = useIsMobile() && !compact && !ticket;
   const changed = fieldChanged(field);
   const reverse = () => onChange(field.original ?? '');
+  const input = (
+    <>
+      <ChangedOriginal field={field} onReverse={reverse} compact={compact || ticket} />
+      <View
+        style={[
+          boxed ? styles.qtyBox : styles.valueRow,
+          compact && styles.valueRowCompact,
+          ticket && !boxed && styles.ticketValueRow,
+        ]}
+      >
+        <TextInput
+          style={[
+            styles.iosRowInput,
+            stacked && styles.iosRowInputStacked,
+            compact && styles.compactInput,
+            compact && right && styles.compactInputRight,
+            ticket && styles.ticketInput,
+            boxed && styles.qtyBoxInput,
+            changed && styles.iosRowInputChanged,
+          ]}
+          value={String(field?.value ?? '')}
+          onChangeText={onChange}
+          placeholder="Edit"
+          placeholderTextColor="#c7c7cc"
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType={keyboardType || 'default'}
+        />
+        {suffix ? <Text style={[styles.unitLock, boxed && styles.qtyBoxSuffix]}>{suffix}</Text> : null}
+      </View>
+    </>
+  );
+  if (ticket) {
+    return (
+      <View style={[styles.ticketRow, last && styles.ticketRowLast]}>
+        {label ? <Text style={styles.ticketLabel}>{label}</Text> : null}
+        <View style={styles.ticketControl}>{input}</View>
+      </View>
+    );
+  }
   return (
-    <View style={[compact ? styles.cellWrap : styles.iosRowWrap, last && styles.iosRowLast, compact && !bare && !last && styles.compactDivider]}>
+    <View
+      style={[
+        compact ? styles.cellWrap : styles.iosRowWrap,
+        last && styles.iosRowLast,
+        compact && !bare && !last && styles.compactDivider,
+      ]}
+    >
       <View style={[compact ? styles.cellRow : styles.iosRow, stacked && styles.iosRowStacked]}>
         {label ? (
           <Text style={[compact ? styles.compactLabel : styles.iosRowLabel, stacked && styles.iosRowLabelStacked]}>
             {label}
           </Text>
         ) : null}
-        <View style={compact ? styles.cellControl : styles.iosRowControl}>
-          <ChangedOriginal field={field} onReverse={reverse} compact={compact} />
-          <View style={[styles.valueRow, compact && styles.valueRowCompact]}>
-            <TextInput
-              style={[
-                styles.iosRowInput,
-                stacked && styles.iosRowInputStacked,
-                compact && styles.compactInput,
-                changed && styles.iosRowInputChanged,
-              ]}
-              value={String(field?.value ?? '')}
-              onChangeText={onChange}
-              placeholder="Edit"
-              placeholderTextColor="#c7c7cc"
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType={keyboardType || 'default'}
-            />
-            {suffix ? <Text style={styles.unitLock}>{suffix}</Text> : null}
-          </View>
-        </View>
+        <View style={compact ? styles.cellControl : styles.iosRowControl}>{input}</View>
       </View>
     </View>
   );
@@ -554,11 +530,15 @@ function LookupField({
   pickOnly = false,
   placeholder,
   rightAction,
+  trailing,
   last,
   compact,
   bare,
+  skin,
+  wideMenu,
 }) {
-  const stacked = useIsMobile() && !compact;
+  const ticket = skin === 'ticket';
+  const stacked = useIsMobile() && !compact && !ticket;
   const changed = fieldChanged(field);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState(String(field?.value || ''));
@@ -676,105 +656,141 @@ function LookupField({
     setOpen(false);
   };
 
+  const control = (
+    <>
+      <ChangedOriginal field={field} onReverse={reverse} compact={compact || ticket} />
+      <View style={[styles.lookupRow, ticket && styles.ticketValueRow]}>
+        <View style={styles.lookupInputWrap}>
+          <TextInput
+            style={[
+              styles.iosRowInput,
+              stacked && styles.iosRowInputStacked,
+              compact && styles.compactInput,
+              ticket && styles.ticketInput,
+              changed && styles.iosRowInputChanged,
+            ]}
+            value={query}
+            onChangeText={(value) => {
+              setQuery(value);
+              setOpen(true);
+              if (!pickOnly && !onSearch) onChange(value);
+            }}
+            onFocus={() => setOpen(true)}
+            onBlur={() => {
+              setTimeout(() => {
+                commitTyped();
+                if (!picking.current) setOpen(false);
+              }, 180);
+            }}
+            placeholder={placeholder || 'Edit'}
+            placeholderTextColor="#c7c7cc"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          {busy ? <ActivityIndicator size="small" color={SECONDARY} style={styles.lookupSpinner} /> : null}
+        </View>
+        {trailing}
+        {compact || ticket ? null : <Ionicons name="chevron-forward" size={16} color="#c7c7cc" />}
+        {rightAction}
+      </View>
+    </>
+  );
+  const menu = open ? (
+    <ScrollView
+      style={[styles.lookupMenu, (ticket || compact) && styles.ticketMenu, wideMenu && styles.ticketMenuWide]}
+      keyboardShouldPersistTaps="handled"
+      nestedScrollEnabled
+    >
+      {showCustom ? (
+        <Pressable
+          style={styles.lookupOption}
+          onPress={() => select({ id: 'custom', label: query.trim(), custom: true })}
+          onPressIn={() => select({ id: 'custom', label: query.trim(), custom: true })}
+          {...(Platform.OS === 'web'
+            ? {
+                onMouseDown: (event) => {
+                  event?.preventDefault?.();
+                },
+              }
+            : null)}
+        >
+          <Text style={styles.lookupOptionLabel}>Use “{query.trim()}”</Text>
+          <Text style={styles.lookupOptionSub}>Custom product</Text>
+        </Pressable>
+      ) : null}
+      {results.length === 0 && !busy ? (
+        <Text style={styles.lookupEmpty}>
+          {onSearch && query.trim().length < 2 && localResults.length === 0
+            ? 'Type at least 2 characters'
+            : pickOnly
+              ? 'No matching value'
+              : 'No matches'}
+        </Text>
+      ) : (
+        results.map((option) => (
+          <Pressable
+            key={`${option.id}-${option.label}`}
+            style={[styles.lookupOption, option.avatarUrl != null && styles.lookupOptionPerson]}
+            onPress={() => select(option)}
+            onPressIn={() => select(option)}
+            {...(Platform.OS === 'web'
+              ? {
+                  onMouseDown: (event) => {
+                    event?.preventDefault?.();
+                  },
+                }
+              : null)}
+          >
+            {option.avatarUrl != null || option.person ? (
+              <StaffAvatar uri={option.avatarUrl || ''} name={option.label} size={22} />
+            ) : null}
+            <View style={styles.lookupOptionCopy}>
+              <Text style={styles.lookupOptionLabel} numberOfLines={1}>
+                {option.label}
+              </Text>
+              {option.sub ? (
+                <Text style={styles.lookupOptionSub} numberOfLines={1}>
+                  {option.sub}
+                </Text>
+              ) : null}
+            </View>
+          </Pressable>
+        ))
+      )}
+    </ScrollView>
+  ) : null;
+
+  if (ticket) {
+    return (
+      <View style={[styles.ticketRow, last && styles.ticketRowLast, open && styles.ticketRowRaised, styles.lookupBlock]}>
+        {label ? <Text style={styles.ticketLabel}>{label}</Text> : null}
+        <View style={styles.ticketControl}>
+          {control}
+          {menu}
+        </View>
+      </View>
+    );
+  }
+
   return (
-    <View style={[compact ? styles.cellWrap : styles.iosRowWrap, last && styles.iosRowLast, compact && !bare && !last && styles.compactDivider, styles.lookupBlock]}>
+    <View
+      style={[
+        compact ? styles.cellWrap : styles.iosRowWrap,
+        last && styles.iosRowLast,
+        compact && !bare && !last && styles.compactDivider,
+        styles.lookupBlock,
+        compact && open && styles.ticketRowRaised,
+      ]}
+    >
       <View style={[compact ? styles.cellRow : styles.iosRow, stacked && styles.iosRowStacked]}>
         {label ? (
           <Text style={[compact ? styles.compactLabel : styles.iosRowLabel, stacked && styles.iosRowLabelStacked]}>
             {label}
           </Text>
         ) : null}
-        <View style={compact ? styles.cellControl : styles.iosRowControl}>
-          <ChangedOriginal field={field} onReverse={reverse} compact={compact} />
-          <View style={styles.lookupRow}>
-            <View style={styles.lookupInputWrap}>
-              <TextInput
-                style={[
-                  styles.iosRowInput,
-                  stacked && styles.iosRowInputStacked,
-                  compact && styles.compactInput,
-                  changed && styles.iosRowInputChanged,
-                ]}
-                value={query}
-                onChangeText={(value) => {
-                  setQuery(value);
-                  setOpen(true);
-                  if (!pickOnly && !onSearch) onChange(value);
-                }}
-                onFocus={() => setOpen(true)}
-                onBlur={() => {
-                  setTimeout(() => {
-                    commitTyped();
-                    if (!picking.current) setOpen(false);
-                  }, 180);
-                }}
-                placeholder={placeholder || 'Edit'}
-                placeholderTextColor="#c7c7cc"
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-              {busy ? <ActivityIndicator size="small" color={SECONDARY} style={styles.lookupSpinner} /> : null}
-            </View>
-            {compact ? null : <Ionicons name="chevron-forward" size={16} color="#c7c7cc" />}
-            {rightAction}
-          </View>
-        </View>
+        <View style={compact ? styles.cellControl : styles.iosRowControl}>{control}</View>
       </View>
-      {open ? (
-        <ScrollView style={styles.lookupMenu} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
-          {showCustom ? (
-            <Pressable
-              style={styles.lookupOption}
-              onPress={() => select({ id: 'custom', label: query.trim(), custom: true })}
-              onPressIn={() => select({ id: 'custom', label: query.trim(), custom: true })}
-              {...(Platform.OS === 'web'
-                ? {
-                    onMouseDown: (event) => {
-                      event?.preventDefault?.();
-                    },
-                  }
-                : null)}
-            >
-              <Text style={styles.lookupOptionLabel}>Use “{query.trim()}”</Text>
-              <Text style={styles.lookupOptionSub}>Custom product</Text>
-            </Pressable>
-          ) : null}
-          {results.length === 0 && !busy ? (
-            <Text style={styles.lookupEmpty}>
-              {onSearch && query.trim().length < 2 && localResults.length === 0
-                ? 'Type at least 2 characters'
-                : pickOnly
-                  ? 'No matching value'
-                  : 'No matches'}
-            </Text>
-          ) : (
-            results.map((option) => (
-              <Pressable
-                key={`${option.id}-${option.label}`}
-                style={styles.lookupOption}
-                onPress={() => select(option)}
-                onPressIn={() => select(option)}
-                {...(Platform.OS === 'web'
-                  ? {
-                      onMouseDown: (event) => {
-                        event?.preventDefault?.();
-                      },
-                    }
-                  : null)}
-              >
-                <Text style={styles.lookupOptionLabel} numberOfLines={1}>
-                  {option.label}
-                </Text>
-                {option.sub ? (
-                  <Text style={styles.lookupOptionSub} numberOfLines={1}>
-                    {option.sub}
-                  </Text>
-                ) : null}
-              </Pressable>
-            ))
-          )}
-        </ScrollView>
-      ) : null}
+      {menu}
     </View>
   );
 }
@@ -870,7 +886,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
   const [mounted, setMounted] = useState(visible);
   if (visible && !mounted) setMounted(true);
 
-  const [step, setStep] = useState('edit');
+  const [stepIndex, setStepIndex] = useState(0);
   const [activeRow, setActiveRow] = useState(null);
   const [draft, setDraft] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -888,7 +904,13 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
   const [staffProfiles, setStaffProfiles] = useState([]);
   const [pricingOptions, setPricingOptions] = useState([]);
   const [addingCustomer, setAddingCustomer] = useState(false);
-  const [editTarget, setEditTarget] = useState(null);
+  const [openKey, setOpenKey] = useState('');
+  const [paymentModalOpen, setPaymentModalOpen] = useState(false);
+  const [orderType, setOrderType] = useState('Standard');
+  const [ticketStatus, setTicketStatus] = useState('Completed');
+  const [occurredAt, setOccurredAt] = useState(() => new Date());
+  const [customerHits, setCustomerHits] = useState([]);
+  const [customerBusy, setCustomerBusy] = useState(false);
   const imagesRef = useRef(null);
   const detailRequestId = useRef(0);
   const openedIdRef = useRef(null);
@@ -902,7 +924,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
   onHydrateRef.current = onHydrate;
 
   const reset = useCallback(() => {
-    setStep('edit');
+    setStepIndex(0);
     setActiveRow(null);
     setDraft(null);
     setDetailError('');
@@ -916,7 +938,6 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
     setTypeQuery('');
     setImages([]);
     setAddingCustomer(false);
-    setEditTarget(null);
   }, []);
 
   useEffect(() => {
@@ -940,8 +961,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
     openedIdRef.current = current.id;
     setActiveRow(current);
     setAddingCustomer(false);
-    setEditTarget(null);
-    setStep('edit');
+    setStepIndex(0);
     const id = ++detailRequestId.current;
     const existingReview = reviewRef.current || current.review;
     const safeDraft = (row, detail) => {
@@ -1017,6 +1037,15 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
   }, [visible]);
 
   useEffect(() => {
+    if (!visible || !activeRow) return;
+    setOpenKey('');
+    setPaymentModalOpen(false);
+    setOrderType('Standard');
+    setTicketStatus('Completed');
+    setOccurredAt(parseTicketDate(activeRow.dateLabel));
+  }, [activeRow?.id, visible]);
+
+  useEffect(() => {
     if (!visible || !session || !activeRow) return;
     const auth = resolvePosAuthForRow(session, activeRow);
     let cancelled = false;
@@ -1062,6 +1091,38 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
     },
     [activeRow, session],
   );
+
+  useEffect(() => {
+    if (openKey !== 'customer') {
+      setCustomerHits([]);
+      setCustomerBusy(false);
+      return undefined;
+    }
+    const query = String((draft?.header || []).find((field) => field.key === 'customer')?.value || '').trim();
+    if (query.length < 2) {
+      setCustomerHits([]);
+      setCustomerBusy(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setCustomerBusy(true);
+    const timer = setTimeout(() => {
+      searchCustomerOptions(query)
+        .then((rows) => {
+          if (!cancelled) setCustomerHits(rows || []);
+        })
+        .catch(() => {
+          if (!cancelled) setCustomerHits([]);
+        })
+        .finally(() => {
+          if (!cancelled) setCustomerBusy(false);
+        });
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [openKey, draft, searchCustomerOptions]);
 
   const searchProductOptions = useCallback(
     async (query) => {
@@ -1128,9 +1189,69 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
     });
   };
 
+  const applyBuyPayments = (updater) => {
+    setDraft((current) => {
+      if (!current) return current;
+      const currentBuy = toBuyPayments(current.payments);
+      const nextBuy = typeof updater === 'function' ? updater(currentBuy) : updater;
+      const prevById = new Map((current.payments || []).map((row) => [row.id, row]));
+      const payments = (nextBuy || []).map((row) => {
+        const prev = prevById.get(row.id);
+        if (!prev) {
+          return {
+            id: row.id,
+            method: makeField(row.method),
+            till: makeField(''),
+            currency: makeField('CAD'),
+            amount: makeField(row.amount),
+            notes: makeField(row.notes),
+          };
+        }
+        return {
+          ...prev,
+          method: { ...(prev.method || makeField('')), value: row.method },
+          amount: { ...(prev.amount || makeField('')), value: row.amount },
+          notes: { ...(prev.notes || makeField('')), value: row.notes },
+        };
+      });
+      return withSyncedHeaderTotal({ ...current, payments });
+    });
+  };
+
+  const addDraftItem = (name, option) => {
+    const label = String(name || option?.label || '').trim();
+    if (!label) return;
+    setDraft((current) => {
+      if (!current) return current;
+      const item = {
+        id: `item-${Date.now()}`,
+        name: makeField(label),
+        qty: makeField('1'),
+        unit: makeField(''),
+        unitType: 'ea',
+        itemType: option?.itemType || '',
+        amount: makeField(''),
+        imageUrls: [],
+        deliveredLabel: '',
+      };
+      return withSyncedTotalsFromItems({ ...current, items: [...(current.items || []), item] });
+    });
+  };
+
+  const removeDraftItem = (id) => {
+    setDraft((current) => {
+      if (!current) return current;
+      return withSyncedTotalsFromItems({
+        ...current,
+        items: (current.items || []).filter((item) => item.id !== id),
+      });
+    });
+  };
+
   const closeEdit = () => {
-    setEditTarget(null);
     setAddingCustomer(false);
+    setPaymentModalOpen(false);
+    setOpenKey('');
   };
 
   const addErrorType = () => {
@@ -1155,274 +1276,295 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
 
   if (!mounted || !heldRow) return null;
 
-  const title = step === 'note' ? 'Error' : heldRow.reference || 'Edit';
   const changedCount = corrections.length;
   const header = Array.isArray(draft?.header) ? draft.header : [];
   const items = Array.isArray(draft?.items) ? draft.items : [];
   const payments = Array.isArray(draft?.payments) ? draft.payments : [];
-  const editingItem =
-    editTarget?.type === 'item' ? items.find((item) => item.id === editTarget.id) : null;
-  const editingPayment =
-    editTarget?.type === 'payment'
-      ? payments.find((payment) => payment.id === editTarget.id)
-      : null;
-  const headerEditing = editTarget?.type === 'header' ? headerField(editTarget.key) : null;
+  const customerField = headerField('customer');
+  const storeField = headerField('store');
+  const employeeField = headerField('employee');
+  const dateField = headerField('date');
+  const totalField = headerField('total');
+  const employeePerson = findStaffByEmployeeName(staffProfiles, employeeField?.value);
+  const employeeOptions = (employees || []).map((option) => {
+    const person = findStaffByEmployeeName(staffProfiles, option.label);
+    return { ...option, avatarUrl: person?.avatarUrl || '' };
+  });
   const showPaymentTill = payments.some((payment) => fieldHasText(payment.till));
   const showPaymentNotes = payments.some((payment) => fieldHasText(payment.notes));
-  const editTitle =
-    editTarget?.type === 'header'
-      ? `Edit ${headerEditing?.label || 'field'}`
-      : editTarget?.type === 'item'
-        ? `Edit ${ITEM_COLUMNS.find((column) => column.key === editTarget.column)?.label || 'item'}`
-        : editTarget?.type === 'payment'
-          ? `Edit ${PAYMENT_COLUMNS.find((column) => column.key === editTarget.column)?.label || 'payment'}`
-          : 'Edit';
+  const subtotal = items.reduce((sum, item) => sum + parseMoneyLabel(item?.amount?.value), 0);
+  const ticketTotal = parseMoneyLabel(totalField?.value);
+  const buyPayments = toBuyPayments(payments);
+  const closeMenus = () => setOpenKey('');
+  const toggleMenu = (key) => setOpenKey((current) => (current === key ? '' : key));
+  const step = TRIAGE_STEPS[stepIndex] || TRIAGE_STEPS[0];
+  const nextStep = TRIAGE_STEPS[stepIndex + 1];
+  const goToStep = (index) => {
+    if (index < 0 || index >= TRIAGE_STEPS.length) return;
+    if (index > stepIndex) closeEdit();
+    setStepIndex(index);
+  };
+  const addImageDisabled = images.length >= MAX_REVIEW_IMAGES;
+
+  const stepsNode = (
+    <View
+      style={[styles.steps, isMobile && styles.stepsMobile]}
+      accessibilityRole="progressbar"
+      accessibilityLabel={`${step.label}, step ${stepIndex + 1} of ${TRIAGE_STEPS.length}`}
+    >
+      {TRIAGE_STEPS.map((entry, index) => {
+        const active = index === stepIndex;
+        const done = index < stepIndex;
+        return (
+          <View key={entry.id} style={styles.stepItem}>
+            {index ? <View style={[styles.stepRule, done && styles.stepRuleDone]} /> : null}
+            <Pressable
+              onPress={() => {
+                if (index <= stepIndex) goToStep(index);
+              }}
+              style={styles.stepHit}
+              accessibilityLabel={entry.label}
+              accessibilityState={{ selected: active }}
+            >
+              <View style={[styles.stepDot, (active || done) && styles.stepDotOn, active && styles.stepDotActive]}>
+                <Text style={[styles.stepNum, done && styles.stepNumOn, active && styles.stepNumActive]}>
+                  {index + 1}
+                </Text>
+              </View>
+              <Text
+                style={[styles.stepLabel, active && styles.stepLabelActive, done && styles.stepLabelDone]}
+                numberOfLines={1}
+              >
+                {entry.label}
+              </Text>
+            </Pressable>
+          </View>
+        );
+      })}
+    </View>
+  );
+  const nextNode = (
+    <Pressable
+      onPress={() => {
+        if (nextStep) {
+          goToStep(stepIndex + 1);
+          return;
+        }
+        finish();
+      }}
+      disabled={stepIndex === 0 && detailLoading}
+      style={[styles.nextBtn, stepIndex === 0 && detailLoading && styles.addImageBtnDisabled]}
+      accessibilityLabel={nextStep ? `Next, ${nextStep.label}` : 'Done'}
+    >
+      <Text style={styles.nextBtnText}>{nextStep ? nextStep.label : 'Done'}</Text>
+      {nextStep ? <Ionicons name="chevron-forward" size={16} color="#fff" /> : null}
+    </Pressable>
+  );
+  // Phones: the Details step scrolls as a whole (the ticket bar stacks vertically and
+  // the items card grows with its rows), and the keyboard pushes content up on iOS.
+  const DetailsPane = isMobile ? ScrollView : View;
+  const detailsPaneProps = isMobile
+    ? {
+        style: styles.stepBody,
+        contentContainerStyle: styles.editPaneMobile,
+        keyboardShouldPersistTaps: 'handled',
+        showsVerticalScrollIndicator: false,
+      }
+    : { style: styles.editPane };
+  const Body = isMobile && Platform.OS === 'ios' ? KeyboardAvoidingView : View;
+  const bodyProps = isMobile && Platform.OS === 'ios' ? { behavior: 'padding' } : null;
 
   return (
     <>
     <TriageDrawer
       visible={visible}
       onClose={onClose}
-      title={title}
-      subtitle={
-        step === 'edit'
-          ? changedCount
-            ? `${changedCount} ${changedCount === 1 ? 'change' : 'changes'}`
-            : [heldRow.storeName, heldRow.dateLabel].filter(Boolean).join(' · ')
-          : heldRow.reference
-      }
-      leftLabel={step === 'note' ? 'Back' : 'Cancel'}
-      onLeft={step === 'note' ? () => setStep('edit') : onClose}
-      rightLabel={step === 'edit' ? 'Next' : 'Done'}
-      onRight={
-        step === 'edit'
-          ? () => {
-              closeEdit();
-              setStep('note');
-            }
-          : finish
-      }
-      rightDisabled={step === 'edit' && detailLoading}
-      rightLeading={
-        <Pressable
-          style={[
-            styles.addImageBtn,
-            isMobile && styles.addImageBtnMobile,
-            images.length >= MAX_REVIEW_IMAGES && styles.addImageBtnDisabled,
-          ]}
-          onPress={() => imagesRef.current?.addImage?.()}
-          disabled={images.length >= MAX_REVIEW_IMAGES}
-          accessibilityRole="button"
-          accessibilityLabel="Add image"
-        >
-          <Ionicons name="image-outline" size={18} color="#C2410C" />
-          <Text style={styles.addImageBtnText}>Add image</Text>
-        </Pressable>
-      }
-      widthRatio={step === 'note' && !isMobile ? 0.88 : 0.78}
-      minWidth={step === 'note' && !isMobile ? 920 : 720}
-      coloredNav
+      flushToSidebar={!isMobile}
+      minWidth={720}
+      hideNav
     >
-          {detailLoading && step === 'edit' ? (
+      <Body style={styles.body} {...bodyProps}>
+        <View
+          style={[styles.ticketHeader, isMobile && styles.ticketHeaderCompact]}
+          {...(Platform.OS === 'web' && isMobile ? { className: 'cgold-mobile-sheet-top' } : null)}
+        >
+          <View style={styles.headerTitle}>
+            <Pressable
+              onPress={onClose}
+              hitSlop={8}
+              style={styles.headerClose}
+              accessibilityRole="button"
+              accessibilityLabel="Close"
+            >
+              <Ionicons name="close" size={20} color="#8e8e93" />
+            </Pressable>
+            <View style={[styles.mark, { backgroundColor: BUY_TINT }]}>
+              <Ionicons name="document-text-outline" size={18} color={BUY_ACCENT} />
+            </View>
+            <Text style={styles.headerName} numberOfLines={1}>
+              {heldRow.reference || 'Details'}
+            </Text>
+          </View>
+          {isMobile ? (
+            nextNode
+          ) : (
+            <View style={styles.headerTools}>
+              <Pressable
+                style={[styles.addImageBtn, addImageDisabled && styles.addImageBtnDisabled]}
+                onPress={() => imagesRef.current?.addImage?.()}
+                disabled={addImageDisabled}
+                accessibilityRole="button"
+                accessibilityLabel="Add image"
+              >
+                <Ionicons name="image-outline" size={18} color="#6e6e73" />
+                <Text style={styles.addImageBtnText}>Add image</Text>
+                {images.length ? <Text style={styles.addImageCount}>{images.length}</Text> : null}
+              </Pressable>
+              {stepsNode}
+              {nextNode}
+            </View>
+          )}
+        </View>
+        {isMobile ? <View style={styles.stepsRowMobile}>{stepsNode}</View> : null}
+
+          {detailLoading && stepIndex === 0 ? (
             <View style={styles.inlineBusy}>
               <ActivityIndicator color={TEXT} />
               <Text style={styles.metaText}>Loading document…</Text>
             </View>
           ) : null}
-          {detailError && step === 'edit' ? <Text style={styles.warnText}>{detailError}</Text> : null}
+          {detailError && stepIndex === 0 ? <Text style={styles.warnText}>{detailError}</Text> : null}
 
-          {step === 'edit' ? (
-            <ScrollView
-              style={styles.body}
-              contentContainerStyle={[styles.editContent, isMobile && styles.editContentMobile]}
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-            >
-              <Text style={[styles.groupHeader, styles.groupHeaderFirst]}>Details</Text>
-              <View style={styles.detailsCard}>
-                {header.map((field, index) => {
-                  const buyer =
-                    field.key === 'employee'
-                      ? findStaffByEmployeeName(staffProfiles, field.value)
-                      : null;
-                  return (
-                    <View
-                      key={field.key}
-                      style={[
-                        styles.detailReadRow,
-                        index === header.length - 1 && styles.detailReadRowLast,
-                      ]}
-                    >
-                      <Text style={styles.detailReadLabel} numberOfLines={1}>
-                        {field.label}
-                      </Text>
-                      {field.key === 'employee' ? (
-                        <View style={styles.detailPerson}>
-                          <StaffAvatar
-                            uri={buyer?.avatarUrl || ''}
-                            name={field.value || 'Employee'}
-                            size={24}
-                          />
-                          <ReadValue field={field} />
-                        </View>
-                      ) : (
-                        <ReadValue field={field} />
-                      )}
-                      <EditButton
-                        label={`Edit ${field.label}`}
-                        onPress={() => {
-                          setAddingCustomer(false);
-                          setEditTarget({ type: 'header', key: field.key });
-                        }}
-                      />
-                    </View>
-                  );
-                })}
-              </View>
-
-              <Text style={styles.groupHeader}>Items</Text>
-              {items.length === 0 ? (
-                <View style={[styles.dataTable, styles.itemsTable]}>
-                  <Text style={styles.emptyText}>No line items</Text>
-                </View>
-              ) : (
-                <View style={[styles.dataTable, styles.itemsTable]}>
-                    <View style={styles.dataTableHead}>
-                      <View style={styles.colPhoto} />
-                      <Text style={[styles.dataTableHeadText, styles.colProduct]}>Product</Text>
-                      <Text style={[styles.dataTableHeadText, styles.colQty]}>Qty</Text>
-                      <Text style={[styles.dataTableHeadText, styles.colDelivered]}>Delivered</Text>
-                      <Text style={[styles.dataTableHeadText, styles.colUnit]}>Unit cost</Text>
-                      <Text style={[styles.dataTableHeadText, styles.colAmount]}>Amount</Text>
-                      <View style={styles.colEdit} />
-                    </View>
-                    {items.map((item, index) => (
-                      <View
-                        key={item.id}
-                        style={[styles.dataTableRow, index === items.length - 1 && styles.dataTableRowLast]}
-                      >
-                        <View style={styles.colPhoto}>
-                          <PoThumb urls={item.imageUrls} label={item.name?.value || 'Item'} />
-                        </View>
-                        <View style={styles.colProduct}>
-                          <ReadValue field={item.name} />
-                        </View>
-                        <View style={styles.colQty}>
-                          <ReadValue field={item.qty} suffix={item.unitType || 'ea'} />
-                        </View>
-                        <View style={styles.colDelivered}>
-                          <Text style={styles.readValue} numberOfLines={1}>
-                            {item.deliveredLabel || '—'}
-                          </Text>
-                        </View>
-                        <View style={styles.colUnit}>
-                          <ReadValue
-                            field={item.unit}
-                            suffix={item.unitType && item.unitType !== 'ea' ? `/${item.unitType}` : null}
-                          />
-                        </View>
-                        <View style={styles.colAmount}>
-                          <ReadValue field={item.amount} />
-                        </View>
-                        <View style={styles.colEdit}>
-                          <EditButton
-                            label={`Edit ${item.name?.value || 'item'}`}
-                            onPress={() => setEditTarget({ type: 'item', id: item.id, column: 'name' })}
-                          />
-                        </View>
-                      </View>
-                    ))}
-                </View>
-              )}
-
-              <Text style={styles.groupHeader}>Payments</Text>
-              {payments.length === 0 ? (
-                <View style={styles.dataTable}>
-                  <Text style={styles.emptyText}>No payments</Text>
-                </View>
-              ) : (
-                <ScrollView
-                  horizontal
-                  style={styles.tableHScroll}
-                  contentContainerStyle={styles.tableHContent}
-                  showsHorizontalScrollIndicator={false}
-                >
-                  <View style={[styles.dataTable, styles.paymentsTable]}>
-                    <View style={styles.dataTableHead}>
-                      <Text style={[styles.dataTableHeadText, styles.colMethod]}>Method</Text>
-                      {showPaymentTill ? (
-                        <Text style={[styles.dataTableHeadText, styles.colTill]}>Till</Text>
-                      ) : null}
-                      <Text style={[styles.dataTableHeadText, styles.colCurrency]}>Currency</Text>
-                      <Text style={[styles.dataTableHeadText, styles.colPayAmount]}>Amount</Text>
-                      {showPaymentNotes ? (
-                        <Text style={[styles.dataTableHeadText, styles.colPayNotes]}>Notes</Text>
-                      ) : null}
-                      <View style={styles.colEdit} />
-                    </View>
-                    {payments.map((payment, index) => (
-                        <View
-                          key={payment.id}
-                          style={[
-                            styles.dataTableRow,
-                            index === payments.length - 1 && styles.dataTableRowLast,
-                          ]}
-                        >
-                          <View style={styles.colMethod}>
-                            <ReadValue field={payment.method} />
-                          </View>
-                          {showPaymentTill ? (
-                            <View style={styles.colTill}>
-                              <ReadValue field={payment.till} />
-                            </View>
-                          ) : null}
-                          <View style={styles.colCurrency}>
-                            <ReadValue field={payment.currency} />
-                          </View>
-                          <View style={styles.colPayAmount}>
-                            <ReadValue field={payment.amount} />
-                          </View>
-                          {showPaymentNotes ? (
-                            <View style={styles.colPayNotes}>
-                              <ReadValue field={payment.notes} />
-                            </View>
-                          ) : null}
-                          <View style={styles.colEdit}>
-                            <EditButton
-                              label={`Edit ${payment.method?.value || 'payment'}`}
-                              onPress={() =>
-                                setEditTarget({ type: 'payment', id: payment.id, column: 'method' })
-                              }
-                            />
-                          </View>
-                        </View>
-                    ))}
-                  </View>
-                </ScrollView>
-              )}
-            </ScrollView>
-          ) : isMobile ? (
-            <ScrollView
-              style={styles.body}
-              contentContainerStyle={[styles.editContent, styles.editContentMobile]}
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-            >
-              <PurchaseSummary
-                header={header}
-                items={items}
-                payments={payments}
-                staffProfiles={staffProfiles}
-                showPaymentTill={showPaymentTill}
-                showPaymentNotes={showPaymentNotes}
-                changedCount={changedCount}
+          {stepIndex === 0 ? (
+            <DetailsPane {...detailsPaneProps}>
+              <BuyTicketBar
+                compact={isMobile}
+                subtotal={subtotal}
+                total={ticketTotal}
+                customer={customerField?.value || ''}
+                onCustomerChange={(value, option) => {
+                  updateHeader('customer', value);
+                  if (option) closeMenus();
+                }}
+                customerOptions={customerHits}
+                customerLoading={customerBusy}
+                customerOpen={openKey === 'customer'}
+                onCustomerOpen={() => setOpenKey('customer')}
+                onAddCustomer={() => {
+                  closeMenus();
+                  setAddingCustomer(true);
+                }}
+                orderType={orderType}
+                orderTypeOpen={openKey === 'orderType'}
+                onToggleOrderType={() => toggleMenu('orderType')}
+                onSelectOrderType={(option) => {
+                  setOrderType(option.label);
+                  closeMenus();
+                }}
+                status={ticketStatus}
+                statusOpen={openKey === 'status'}
+                onToggleStatus={() => toggleMenu('status')}
+                onSelectStatus={(option) => {
+                  setTicketStatus(option.label);
+                  closeMenus();
+                }}
+                payments={buyPayments}
+                onOpenPayments={() => {
+                  closeMenus();
+                  if (!buyPayments.length) {
+                    applyBuyPayments([emptyPayment(stripMoney(totalField?.value))]);
+                  }
+                  setPaymentModalOpen(true);
+                }}
+                employee={employeeField?.value || ''}
+                employeeAvatar={employeePerson?.avatarUrl || ''}
+                employeeOpen={openKey === 'employee'}
+                onToggleEmployee={() => toggleMenu('employee')}
+                employeeOptions={employeeOptions}
+                onSelectEmployee={(option) => {
+                  updateHeader('employee', option.label);
+                  closeMenus();
+                }}
+                branch={storeField?.value || ''}
+                branchOpen={openKey === 'branch'}
+                onToggleBranch={() => toggleMenu('branch')}
+                branchOptions={locations}
+                onSelectBranch={(option) => {
+                  updateHeader('store', option.label);
+                  closeMenus();
+                }}
+                occurredAt={occurredAt}
+                onDateChange={(next) => {
+                  const dated = applyDate(occurredAt, next);
+                  setOccurredAt(dated);
+                  updateHeader('date', formatPickerDate(dated));
+                }}
+                onTimeChange={(hours, minutes) => {
+                  const timed = applyTime(occurredAt, hours, minutes);
+                  setOccurredAt(timed);
+                  updateHeader('date', formatPickerDate(timed));
+                }}
+                onCloseMenus={closeMenus}
               />
+              <BuyItemsReviewTable
+                compact={isMobile}
+                items={items}
+                catalogOptions={pricingOptions}
+                onUpdateName={(id, value) => updateItem(id, 'name', value)}
+                onUpdateQty={(id, value) => updateItem(id, 'qty', value)}
+                onUpdateUnit={(id, value) => updateItem(id, 'unit', value)}
+                onUpdateAmount={(id, value) => updateItem(id, 'amount', value)}
+                onAddItem={addDraftItem}
+                onRemoveItem={removeDraftItem}
+              />
+              {addingCustomer ? (
+                <View style={styles.buyCustomerWrap}>
+                  <NewCustomerPanel
+                    onCancel={() => setAddingCustomer(false)}
+                    onCreated={(created) => {
+                      updateHeader('customer', created.label);
+                      setAddingCustomer(false);
+                    }}
+                  />
+                </View>
+              ) : null}
+              {isMobile ? (
+                <View style={styles.mobilePhotos}>
+                  <View style={styles.itemsToolbar}>
+                    <Text style={styles.itemsTitle}>Photos</Text>
+                    <Text style={styles.summaryMetaInline}>
+                      {images.length ? `${images.length} of ${MAX_REVIEW_IMAGES}` : 'Snap the item, tag, or receipt'}
+                    </Text>
+                  </View>
+                  <View style={[styles.detailsCard, styles.photoCard, styles.paneCard, styles.mobilePhotoCard]}>
+                    <TriageCorrectionImages
+                      images={images}
+                      onChange={setImages}
+                      compact
+                      hideHeading
+                      hideActions
+                      showSourceButtons
+                    />
+                  </View>
+                </View>
+              ) : null}
+            </DetailsPane>
+          ) : null}
+
+          {stepIndex === 1 ? (
+            <ScrollView
+              style={styles.stepBody}
+              contentContainerStyle={[styles.reportContent, isMobile && styles.editContentMobile]}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
               <ErrorReportFields
                 note={note}
                 setNote={setNote}
                 images={images}
                 setImages={setImages}
-                isMobile
+                isMobile={isMobile}
+                firstHeader
                 typeQuery={typeQuery}
                 setTypeQuery={setTypeQuery}
                 visibleTypeOptions={visibleTypeOptions}
@@ -1435,51 +1577,51 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
                 setAddingType={setAddingType}
               />
             </ScrollView>
-          ) : (
-            <View style={styles.noteSplit}>
-              <ScrollView
-                style={styles.notePane}
-                contentContainerStyle={styles.notePaneContent}
-                keyboardShouldPersistTaps="handled"
-                showsVerticalScrollIndicator={false}
-              >
-                <PurchaseSummary
-                  header={header}
-                  items={items}
-                  payments={payments}
-                  staffProfiles={staffProfiles}
-                  showPaymentTill={showPaymentTill}
-                  showPaymentNotes={showPaymentNotes}
-                  changedCount={changedCount}
-                />
-              </ScrollView>
-              <View style={styles.noteSplitRule} />
-              <ScrollView
-                style={styles.notePane}
-                contentContainerStyle={styles.notePaneContent}
-                keyboardShouldPersistTaps="handled"
-                showsVerticalScrollIndicator={false}
-              >
-                <ErrorReportFields
-                  note={note}
-                  setNote={setNote}
-                  images={images}
-                  setImages={setImages}
-                  firstHeader
-                  typeQuery={typeQuery}
-                  setTypeQuery={setTypeQuery}
-                  visibleTypeOptions={visibleTypeOptions}
-                  errorType={errorType}
-                  setErrorType={setErrorType}
-                  addingType={addingType}
-                  newType={newType}
-                  setNewType={setNewType}
-                  addErrorType={addErrorType}
-                  setAddingType={setAddingType}
-                />
-              </ScrollView>
-            </View>
-          )}
+          ) : null}
+
+          {stepIndex === 2 ? (
+            <ScrollView
+              style={styles.stepBody}
+              contentContainerStyle={[styles.reportContent, isMobile && styles.editContentMobile]}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              <PurchaseSummary
+                header={header}
+                items={items}
+                payments={payments}
+                staffProfiles={staffProfiles}
+                showPaymentTill={showPaymentTill}
+                showPaymentNotes={showPaymentNotes}
+                changedCount={changedCount}
+              />
+              {note || errorType || images.length ? (
+                <View style={[styles.detailsCard, styles.paneCard, styles.finishNoteCard]}>
+                  {errorType ? (
+                    <View style={styles.detailReadRow}>
+                      <Text style={styles.detailReadLabel}>Type of error</Text>
+                      <Text style={styles.readValue}>{errorType}</Text>
+                    </View>
+                  ) : null}
+                  {note ? (
+                    <View style={[styles.detailReadRow, !images.length && styles.detailReadRowLast]}>
+                      <Text style={styles.detailReadLabel}>Note</Text>
+                      <Text style={styles.readValue}>{note}</Text>
+                    </View>
+                  ) : null}
+                  {images.length ? (
+                    <View style={[styles.detailReadRow, styles.detailReadRowLast]}>
+                      <Text style={styles.detailReadLabel}>Photos</Text>
+                      <Text style={styles.readValue}>
+                        {images.length} {images.length === 1 ? 'image' : 'images'}
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+              ) : null}
+            </ScrollView>
+          ) : null}
+      </Body>
     </TriageDrawer>
       <TriageCorrectionImages
         ref={imagesRef}
@@ -1487,262 +1629,13 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
         onChange={setImages}
         pickerOnly
       />
-      {editTarget ? (
-      <Modal visible transparent animationType="fade" onRequestClose={closeEdit}>
-        <View style={styles.editModalRoot}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={closeEdit} accessibilityLabel="Close editor" />
-          <View style={[styles.editModalSheet, isMobile && styles.editModalSheetMobile]}>
-            <View style={styles.editModalBar}>
-              <Pressable
-                onPress={closeEdit}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel="Cancel"
-                style={styles.editModalBarSide}
-              >
-                <Text style={styles.editModalCancel}>Cancel</Text>
-              </Pressable>
-              <Text style={styles.editModalTitle} numberOfLines={1}>
-                {editTitle}
-              </Text>
-              <Pressable
-                onPress={closeEdit}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel="Done"
-                style={[styles.editModalBarSide, styles.editModalBarSideRight]}
-              >
-                <Text style={styles.editModalDone}>Done</Text>
-              </Pressable>
-            </View>
-            {editTarget?.type === 'item' ? (
-              <ColumnChips
-                columns={ITEM_COLUMNS}
-                value={editTarget.column}
-                onChange={(column) => setEditTarget((current) => (current ? { ...current, column } : current))}
-              />
-            ) : null}
-            {editTarget?.type === 'payment' ? (
-              <ColumnChips
-                columns={PAYMENT_COLUMNS}
-                value={editTarget.column}
-                onChange={(column) => setEditTarget((current) => (current ? { ...current, column } : current))}
-              />
-            ) : null}
-            <ScrollView
-              style={styles.editModalBody}
-              contentContainerStyle={styles.editModalBodyContent}
-              keyboardShouldPersistTaps="handled"
-              nestedScrollEnabled
-            >
-              {editTarget?.type === 'header' && headerEditing ? (
-                addingCustomer && editTarget.key === 'customer' ? (
-                  <NewCustomerPanel
-                    onCancel={() => setAddingCustomer(false)}
-                    onCreated={(created) => {
-                      updateHeader('customer', created.label);
-                      setAddingCustomer(false);
-                    }}
-                  />
-                ) : editTarget.key === 'customer' ? (
-                  <LookupField
-                    label={headerEditing.label}
-                    field={headerEditing}
-                    onSearch={searchCustomerOptions}
-                    onChange={(value) => updateHeader('customer', value)}
-                    placeholder="Search customers"
-                    last
-                    rightAction={
-                      <Pressable
-                        style={styles.addIconButton}
-                        onPress={() => setAddingCustomer(true)}
-                        accessibilityLabel="New customer"
-                      >
-                        <Ionicons name="add-circle-outline" size={18} color={TEXT} />
-                      </Pressable>
-                    }
-                  />
-                ) : editTarget.key === 'store' ? (
-                  <LookupField
-                    label="Store"
-                    field={headerEditing}
-                    options={locations}
-                    pickOnly
-                    onChange={(value) => updateHeader('store', value)}
-                    placeholder="Select a store"
-                    last
-                  />
-                ) : editTarget.key === 'employee' ? (
-                  <LookupField
-                    label="Employee"
-                    field={headerEditing}
-                    options={employees}
-                    pickOnly
-                    onChange={(value) => updateHeader('employee', value)}
-                    placeholder="Select an employee"
-                    last
-                  />
-                ) : editTarget.key === 'total' ? (
-                  payments.length ? (
-                    <>
-                      {payments.map((payment, index) => (
-                        <CorrectableField
-                          key={payment.id}
-                          label={paymentTypeLabel(payment)}
-                          field={payment.amount}
-                          onChange={(value) => updatePayment(payment.id, 'amount', value)}
-                          keyboardType="decimal-pad"
-                          last={index === payments.length - 1 && payments.length === 1}
-                        />
-                      ))}
-                      {payments.length > 1 ? (
-                        <View style={[styles.iosRowWrap, styles.iosRowLast]}>
-                          <View style={styles.iosRow}>
-                            <Text style={styles.iosRowLabel}>Total</Text>
-                            <Text style={styles.totalPreviewValue} numberOfLines={1}>
-                              {headerField('total')?.value || '—'}
-                            </Text>
-                          </View>
-                        </View>
-                      ) : null}
-                    </>
-                  ) : (
-                    <CorrectableField
-                      label={headerEditing.label}
-                      field={headerEditing}
-                      onChange={(value) => updateHeader('total', value)}
-                      keyboardType="decimal-pad"
-                      last
-                    />
-                  )
-                ) : (
-                  <CorrectableField
-                    label={headerEditing.label}
-                    field={headerEditing}
-                    onChange={(value) => updateHeader(editTarget.key, value)}
-                    last
-                  />
-                )
-              ) : null}
-
-              {editTarget?.type === 'item' && editingItem && editTarget.column === 'name' ? (
-                <LookupField
-                  label="Product"
-                  field={editingItem.name}
-                  options={pricingOptions}
-                  filterOptions={(list, query) =>
-                    filterCatalogProductOptions(list, query, editingItem.name.original)
-                  }
-                  onSearch={searchProductOptions}
-                  allowCustom
-                  onChange={(value) => updateItem(editingItem.id, 'name', value)}
-                  placeholder="Search product"
-                  last
-                />
-              ) : null}
-              {editTarget?.type === 'item' && editingItem && editTarget.column === 'qty' ? (
-                <>
-                  <CorrectableField
-                    label="Qty"
-                    field={editingItem.qty}
-                    suffix={editingItem.unitType || 'ea'}
-                    onChange={(value) => updateItem(editingItem.id, 'qty', value)}
-                    keyboardType="decimal-pad"
-                  />
-                  <ItemTotalsPreview
-                    item={editingItem}
-                    headerTotal={headerField('total')}
-                    payments={payments}
-                    includeAmount
-                  />
-                </>
-              ) : null}
-              {editTarget?.type === 'item' && editingItem && editTarget.column === 'unit' ? (
-                <>
-                  <CorrectableField
-                    label="Unit cost"
-                    field={editingItem.unit}
-                    suffix={
-                      editingItem.unitType && editingItem.unitType !== 'ea'
-                        ? `/${editingItem.unitType}`
-                        : null
-                    }
-                    onChange={(value) => updateItem(editingItem.id, 'unit', value)}
-                    keyboardType="decimal-pad"
-                  />
-                  <ItemTotalsPreview
-                    item={editingItem}
-                    headerTotal={headerField('total')}
-                    payments={payments}
-                    includeAmount
-                  />
-                </>
-              ) : null}
-              {editTarget?.type === 'item' && editingItem && editTarget.column === 'amount' ? (
-                <>
-                  <CorrectableField
-                    label="Amount"
-                    field={editingItem.amount}
-                    onChange={(value) => updateItem(editingItem.id, 'amount', value)}
-                    keyboardType="decimal-pad"
-                  />
-                  <ItemTotalsPreview
-                    item={editingItem}
-                    headerTotal={headerField('total')}
-                    payments={payments}
-                  />
-                </>
-              ) : null}
-
-              {editTarget?.type === 'payment' && editingPayment && editTarget.column === 'method' ? (
-                <CorrectableField
-                  label="Method"
-                  field={editingPayment.method}
-                  onChange={(value) => updatePayment(editingPayment.id, 'method', value)}
-                  last
-                />
-              ) : null}
-              {editTarget?.type === 'payment' && editingPayment && editTarget.column === 'till' ? (
-                <CorrectableField
-                  label="Till"
-                  field={editingPayment.till || { original: '', value: '' }}
-                  onChange={(value) => updatePayment(editingPayment.id, 'till', value)}
-                  last
-                />
-              ) : null}
-              {editTarget?.type === 'payment' && editingPayment && editTarget.column === 'currency' ? (
-                <LookupField
-                  label="Currency"
-                  field={editingPayment.currency || { original: 'CAD', value: 'CAD' }}
-                  options={CURRENCY_OPTIONS}
-                  pickOnly
-                  onChange={(value) => updatePayment(editingPayment.id, 'currency', value)}
-                  placeholder="Select currency"
-                  last
-                />
-              ) : null}
-              {editTarget?.type === 'payment' && editingPayment && editTarget.column === 'amount' ? (
-                <CorrectableField
-                  label="Amount"
-                  field={editingPayment.amount}
-                  onChange={(value) => updatePayment(editingPayment.id, 'amount', value)}
-                  keyboardType="decimal-pad"
-                  last
-                />
-              ) : null}
-              {editTarget?.type === 'payment' && editingPayment && editTarget.column === 'notes' ? (
-                <CorrectableField
-                  label="Notes"
-                  field={editingPayment.notes || { original: '', value: '' }}
-                  onChange={(value) => updatePayment(editingPayment.id, 'notes', value)}
-                  last
-                />
-              ) : null}
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
-      ) : null}
+      <PaymentMethodModal
+        visible={paymentModalOpen}
+        payments={buyPayments}
+        total={ticketTotal}
+        onChange={applyBuyPayments}
+        onClose={() => setPaymentModalOpen(false)}
+      />
     </>
   );
 }
@@ -1751,18 +1644,202 @@ const styles = StyleSheet.create({
   body: {
     flex: 1,
     minHeight: 0,
+    backgroundColor: '#fff',
+  },
+  ticketHeader: {
+    width: '88%',
+    maxWidth: 980,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 16,
+    marginTop: 18,
+    marginBottom: 32,
+  },
+  ticketHeaderCompact: {
+    gap: 10,
+    width: '92%',
+    marginTop: 0,
+    marginBottom: 10,
+    // Web gets the safe-area padding from the cgold-mobile-sheet-top class.
+    paddingTop: Platform.OS === 'web' ? 0 : mobileSafeTop(),
+  },
+  stepsRowMobile: {
+    width: '92%',
+    alignSelf: 'center',
+    marginBottom: 14,
+  },
+  stepsMobile: {
+    justifyContent: 'space-between',
+    alignSelf: 'stretch',
+  },
+  mobilePhotos: {
+    width: '88%',
+    maxWidth: 980,
+    alignSelf: 'center',
+    marginTop: 18,
+  },
+  mobilePhotoCard: {
+    maxWidth: '100%',
+  },
+  summaryMetaInline: {
+    fontFamily,
+    fontSize: 12,
+    color: SECONDARY,
+    marginLeft: 'auto',
+  },
+  headerTitle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  headerClose: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  headerTools: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 12,
+    marginLeft: 'auto',
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  mark: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerName: {
+    fontFamily,
+    fontSize: 22,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    letterSpacing: -0.4,
+    flexShrink: 1,
+  },
+  steps: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  stepItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  stepHit: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  stepDot: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 1.5,
+    borderColor: '#d1d1d6',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#fff',
+  },
+  stepDotOn: {
+    borderColor: BUY_ACCENT,
+    backgroundColor: BUY_TINT,
+  },
+  stepDotActive: {
+    backgroundColor: BUY_ACCENT,
+  },
+  stepNum: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#8e8e93',
+  },
+  stepNumOn: {
+    color: BUY_ACCENT,
+  },
+  stepNumActive: {
+    color: '#fff',
+  },
+  stepLabel: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#8e8e93',
+  },
+  stepLabelActive: {
+    color: '#1d1d1f',
+    fontWeight: '600',
+  },
+  stepLabelDone: {
+    color: BUY_ACCENT,
+  },
+  stepRule: {
+    width: 14,
+    height: 1,
+    backgroundColor: '#d1d1d6',
+    marginHorizontal: 8,
+  },
+  stepRuleDone: {
+    backgroundColor: BUY_ACCENT,
+  },
+  nextBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    minHeight: 36,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: BUY_ACCENT,
+    flexShrink: 0,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  nextBtnText: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  stepBody: {
+    flex: 1,
+    minHeight: 0,
+  },
+  reportContent: {
+    width: '88%',
+    maxWidth: 980,
+    alignSelf: 'center',
+    paddingBottom: 40,
+  },
+  finishNoteCard: {
+    marginTop: 18,
   },
   addImageBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    minHeight: 34,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: '#fff',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(194,65,12,0.22)',
+    minHeight: 36,
+    paddingHorizontal: 8,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -1777,19 +1854,231 @@ const styles = StyleSheet.create({
   },
   addImageBtnText: {
     fontFamily,
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: '600',
-    color: '#C2410C',
+    color: '#6e6e73',
+  },
+  addImageCount: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: BUY_ACCENT,
   },
   editContent: {
-    paddingHorizontal: 28,
-    paddingTop: 16,
+    paddingHorizontal: 0,
+    paddingTop: 24,
+    paddingBottom: 40,
+    backgroundColor: '#fff',
+    flexGrow: 1,
+  },
+  editPane: {
+    flex: 1,
+    minHeight: 0,
+    paddingBottom: 16,
+  },
+  editPaneMobile: {
+    paddingTop: 4,
     paddingBottom: 40,
   },
   editContentMobile: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingHorizontal: 0,
+    paddingTop: 16,
     paddingBottom: 28,
+  },
+  buyCustomerWrap: {
+    width: '88%',
+    maxWidth: 980,
+    alignSelf: 'center',
+    marginTop: 16,
+  },
+  ticketBar: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 16,
+    marginBottom: 22,
+    zIndex: 14,
+  },
+  ticketBarStack: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+  },
+  ticketCard: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e5e5ea',
+    borderRadius: 12,
+    backgroundColor: '#fff',
+    overflow: 'visible',
+    ...Platform.select({
+      web: { boxShadow: '0 8px 24px rgba(0,0,0,0.04)' },
+      default: {},
+    }),
+  },
+  ticketCardFlush: {
+    width: '100%',
+    maxWidth: '100%',
+    alignSelf: 'stretch',
+  },
+  totalsCard: {
+    width: 220,
+    maxWidth: '100%',
+    flexShrink: 0,
+    overflow: 'hidden',
+  },
+  customerCard: {
+    flex: 1,
+    minWidth: 220,
+    zIndex: 16,
+  },
+  metaCard: {
+    flex: 1,
+    minWidth: 220,
+    zIndex: 15,
+  },
+  totalsRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: 16,
+    minHeight: 44,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  totalsRowGrand: {
+    alignItems: 'center',
+    minHeight: 58,
+    paddingVertical: 14,
+    backgroundColor: '#EAF6EE',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#d7eadc',
+  },
+  totalsLabel: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#6e6e73',
+  },
+  totalsAmount: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: TEXT,
+    fontVariant: ['tabular-nums'],
+  },
+  totalsGrandLabel: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: TEXT,
+  },
+  totalsGrandAmount: {
+    fontFamily,
+    fontSize: 22,
+    fontWeight: '700',
+    color: TEXT,
+    letterSpacing: -0.4,
+    fontVariant: ['tabular-nums'],
+  },
+  ticketRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 42,
+    paddingHorizontal: 14,
+    gap: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#ececef',
+    zIndex: 1,
+    overflow: 'visible',
+  },
+  ticketRowLast: {
+    borderBottomWidth: 0,
+  },
+  ticketRowRaised: {
+    zIndex: 20,
+  },
+  ticketLabel: {
+    fontFamily,
+    width: 86,
+    flexShrink: 0,
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#6e6e73',
+  },
+  ticketControl: {
+    flex: 1,
+    minWidth: 0,
+    position: 'relative',
+    zIndex: 2,
+    alignItems: 'stretch',
+  },
+  ticketValueRow: {
+    justifyContent: 'flex-end',
+  },
+  ticketInput: {
+    fontSize: 15,
+    textAlign: 'right',
+    paddingVertical: 8,
+  },
+  ticketMenu: {
+    position: 'absolute',
+    top: '100%',
+    right: 0,
+    width: 260,
+    marginTop: 6,
+    marginHorizontal: 0,
+    marginBottom: 0,
+    maxHeight: 220,
+    zIndex: 40,
+  },
+  ticketMenuWide: {
+    left: 0,
+    width: 'auto',
+    minWidth: 240,
+  },
+  lookupOptionPerson: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  lookupOptionCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  qtyBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 4,
+    minHeight: 34,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    backgroundColor: 'rgba(118, 118, 128, 0.08)',
+  },
+  qtyBoxInput: {
+    fontSize: 15,
+    textAlign: 'right',
+    paddingVertical: 6,
+  },
+  qtyBoxSuffix: {
+    fontSize: 12,
+    color: '#8e8e93',
+  },
+  itemsToolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+    marginTop: 4,
+  },
+  itemsTitle: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+  },
+  colRight: {
+    textAlign: 'right',
   },
   iosRowStacked: {
     flexDirection: 'column',
@@ -2024,6 +2313,7 @@ const styles = StyleSheet.create({
   },
   cellWrap: {
     minWidth: 0,
+    overflow: 'visible',
   },
   compactDivider: {
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -2055,6 +2345,9 @@ const styles = StyleSheet.create({
     textAlign: 'left',
     paddingVertical: 2,
   },
+  compactInputRight: {
+    textAlign: 'right',
+  },
   valueRowCompact: {
     justifyContent: 'flex-start',
   },
@@ -2075,8 +2368,8 @@ const styles = StyleSheet.create({
   },
   dataTable: {
     backgroundColor: '#fff',
-    borderRadius: 10,
-    overflow: 'hidden',
+    borderRadius: 12,
+    overflow: 'visible',
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: HAIRLINE,
   },
@@ -2094,13 +2387,13 @@ const styles = StyleSheet.create({
   dataTableHead: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 30,
+    minHeight: 34,
     paddingHorizontal: 8,
     backgroundColor: '#f6f6f9',
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: HAIRLINE,
-    borderTopLeftRadius: 10,
-    borderTopRightRadius: 10,
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
   },
   dataTableHeadText: {
     fontFamily,
@@ -2314,6 +2607,8 @@ const styles = StyleSheet.create({
   },
   lookupBlock: {
     zIndex: 4,
+    position: 'relative',
+    overflow: 'visible',
   },
   lookupRow: {
     flexDirection: 'row',

@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { BlurView } from 'expo-blur';
 import { Ionicons } from '@expo/vector-icons';
 import { Image, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -5,6 +6,50 @@ import { MOBILE, mobileSafeBottom, mobileSafeTop } from '../lib/mobileUi';
 
 const fontFamily = 'Sohne';
 const titleFontFamily = 'SohneLeicht';
+
+function initialsFromName(name) {
+  const parts = String(name || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!parts.length) return '';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+}
+
+function TabProfileAvatar({ uri, name, active }) {
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [uri]);
+
+  const showImage = Boolean(uri) && !failed;
+  const initials = initialsFromName(name);
+
+  return (
+    <View style={[styles.tabAvatarRing, active && styles.tabAvatarRingActive]}>
+      <View style={styles.tabAvatar}>
+        {showImage ? (
+          <Image
+            source={{ uri }}
+            style={styles.tabAvatarImage}
+            onError={() => setFailed(true)}
+            accessibilityIgnoresInvertColors
+          />
+        ) : initials ? (
+          <Text style={styles.tabAvatarInitials}>{initials}</Text>
+        ) : (
+          <Ionicons
+            name={active ? 'person' : 'person-outline'}
+            size={14}
+            color={active ? MOBILE.label : MOBILE.secondary}
+          />
+        )}
+      </View>
+    </View>
+  );
+}
 
 export function MobileSafeTop() {
   return (
@@ -83,7 +128,14 @@ export function MobileNavHeader({ title, subtitle, onBack, trailing }) {
   );
 }
 
-export function MobileTabBar({ tabs, activeKey, onSelect, messagesUnread = 0 }) {
+export function MobileTabBar({
+  tabs,
+  activeKey,
+  onSelect,
+  messagesUnread = 0,
+  profileAvatarUrl = '',
+  profileName = '',
+}) {
   return (
     <BlurView
       intensity={72}
@@ -96,6 +148,7 @@ export function MobileTabBar({ tabs, activeKey, onSelect, messagesUnread = 0 }) 
         const isActive = activeKey === tab.key;
         const unread = tab.key === 'messages' ? messagesUnread : 0;
         const badge = unread > 99 ? '99+' : unread > 0 ? String(unread) : '';
+        const isProfile = tab.key === 'profile';
         return (
           <Pressable
             key={tab.key}
@@ -106,11 +159,15 @@ export function MobileTabBar({ tabs, activeKey, onSelect, messagesUnread = 0 }) 
             accessibilityLabel={badge ? `${tab.label}, ${badge} unread` : tab.label}
           >
             <View style={styles.tabIconWrap}>
-              <Ionicons
-                name={isActive ? tab.iconActive : tab.icon}
-                size={26}
-                color={isActive ? MOBILE.label : MOBILE.secondary}
-              />
+              {isProfile ? (
+                <TabProfileAvatar uri={profileAvatarUrl} name={profileName} active={isActive} />
+              ) : (
+                <Ionicons
+                  name={isActive ? tab.iconActive : tab.icon}
+                  size={26}
+                  color={isActive ? MOBILE.label : MOBILE.secondary}
+                />
+              )}
               {badge ? (
                 <View style={styles.badge} pointerEvents="none">
                   <Text style={styles.badgeText}>{badge}</Text>
@@ -138,7 +195,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 10,
     gap: 8,
-    backgroundColor: MOBILE.feed,
+    backgroundColor: MOBILE.bg,
   },
   brandMark: {
     width: 28,
@@ -273,6 +330,38 @@ const styles = StyleSheet.create({
     height: 28,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  tabAvatarRing: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: 'transparent',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tabAvatarRingActive: {
+    borderColor: MOBILE.label,
+  },
+  tabAvatar: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#E5E5EA',
+  },
+  tabAvatarImage: {
+    width: 24,
+    height: 24,
+  },
+  tabAvatarInitials: {
+    fontFamily,
+    fontSize: 9,
+    fontWeight: '700',
+    color: MOBILE.label,
+    letterSpacing: -0.2,
   },
   tabLabel: {
     fontFamily,

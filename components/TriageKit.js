@@ -234,6 +234,38 @@ export function useRightDrawerAnimation(visible, slideDistance) {
  * Right-hand drawer shell with an iOS-style nav bar.
  * Renders children inside the panel; callers own scrolling.
  */
+const SIDEBAR_EXPANDED = 252;
+
+function useSidebarInset(enabled) {
+  const { width } = useWindowDimensions();
+  const [inset, setInset] = useState(SIDEBAR_EXPANDED);
+
+  useEffect(() => {
+    if (!enabled) return undefined;
+    if (Platform.OS !== 'web' || typeof document === 'undefined') {
+      setInset(width < 768 ? 0 : SIDEBAR_EXPANDED);
+      return undefined;
+    }
+    const el =
+      document.getElementById('cgold-sidebar') ||
+      document.querySelector('[data-testid="cgold-sidebar"]');
+    if (!el) {
+      setInset(SIDEBAR_EXPANDED);
+      return undefined;
+    }
+    const read = () => {
+      const next = Math.round(el.getBoundingClientRect().width);
+      if (Number.isFinite(next) && next > 0) setInset(next);
+    };
+    read();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(read) : null;
+    ro?.observe(el);
+    return () => ro?.disconnect();
+  }, [enabled, width]);
+
+  return enabled ? inset : 0;
+}
+
 export function TriageDrawer({
   visible,
   onClose,
@@ -249,14 +281,19 @@ export function TriageDrawer({
   widthRatio = 0.46,
   minWidth = 400,
   coloredNav = false,
+  hideNav = false,
+  flushToSidebar = false,
   children,
 }) {
   const { width: windowWidth } = useWindowDimensions();
   const width = Number(windowWidth) > 0 ? Number(windowWidth) : 1024;
   const isMobile = width < 768;
+  const sidebarInset = useSidebarInset(flushToSidebar && !isMobile);
   const panelWidth = isMobile
     ? Math.max(width, 240)
-    : Math.min(Math.max(Math.round(width * widthRatio), minWidth), Math.max(240, Math.round(width - 64)));
+    : flushToSidebar
+      ? Math.max(240, Math.round(width - sidebarInset))
+      : Math.min(Math.max(Math.round(width * widthRatio), minWidth), Math.max(240, Math.round(width - 64)));
   const { mounted, slide, backdrop } = useRightDrawerAnimation(visible, panelWidth);
 
   if (!mounted) return null;
@@ -275,77 +312,79 @@ export function TriageDrawer({
             { width: panelWidth, transform: [{ translateX: slide }] },
           ]}
         >
-          <View
-            style={[
-              styles.drawerNav,
-              coloredNav && styles.drawerNavColored,
-              isMobile && styles.drawerNavMobile,
-            ]}
-            {...(Platform.OS === 'web' && isMobile ? { className: 'cgold-mobile-sheet-top' } : null)}
-          >
-            <Pressable
-              onPress={onLeft || onClose}
-              hitSlop={coloredNav ? 0 : 8}
+          {hideNav ? null : (
+            <View
               style={[
-                styles.drawerNavSide,
-                isMobile && styles.drawerNavSideMobile,
-                coloredNav && styles.navBtn,
-                coloredNav && styles.navBtnNeutral,
+                styles.drawerNav,
+                coloredNav && styles.drawerNavColored,
+                isMobile && styles.drawerNavMobile,
               ]}
-              accessibilityRole="button"
-              accessibilityLabel={leftLabel}
+              {...(Platform.OS === 'web' && isMobile ? { className: 'cgold-mobile-sheet-top' } : null)}
             >
-              <Text style={coloredNav ? styles.navBtnNeutralText : styles.drawerNavAction}>{leftLabel}</Text>
-            </Pressable>
-            <View style={styles.drawerNavTitleBlock}>
-              <Text style={[styles.drawerNavTitle, coloredNav && styles.drawerNavTitleOnColor]} numberOfLines={1}>
-                {title}
-              </Text>
-              {subtitle ? (
-                <Text style={[styles.drawerNavSubtitle, coloredNav && styles.drawerNavSubtitleOnColor]} numberOfLines={1}>
-                  {subtitle}
-                </Text>
-              ) : null}
-            </View>
-            <View style={[styles.drawerNavSide, styles.drawerNavSideRight, isMobile && styles.drawerNavSideMobile]}>
-              {isMobile ? null : rightLeading}
               <Pressable
-                onPress={onRight}
+                onPress={onLeft || onClose}
                 hitSlop={coloredNav ? 0 : 8}
-                disabled={!onRight || rightDisabled}
-                style={
-                  coloredNav && rightLabel
-                    ? [
-                        styles.navBtn,
-                        rightLabel === 'Done' ? styles.navBtnDone : styles.navBtnPrimary,
-                        rightDisabled && styles.drawerNavActionDisabled,
-                      ]
-                    : null
-                }
+                style={[
+                  styles.drawerNavSide,
+                  isMobile && styles.drawerNavSideMobile,
+                  coloredNav && styles.navBtn,
+                  coloredNav && styles.navBtnNeutral,
+                ]}
                 accessibilityRole="button"
-                accessibilityLabel={rightLabel || ''}
+                accessibilityLabel={leftLabel}
               >
-                {rightLabel ? (
-                  <Text
-                    style={
-                      coloredNav
-                        ? styles.navBtnPrimaryText
-                        : [
-                            styles.drawerNavAction,
-                            rightEmphasis && styles.drawerNavActionStrong,
-                            rightDisabled && styles.drawerNavActionDisabled,
-                          ]
-                    }
-                  >
-                    {rightLabel}
+                <Text style={coloredNav ? styles.navBtnNeutralText : styles.drawerNavAction}>{leftLabel}</Text>
+              </Pressable>
+              <View style={styles.drawerNavTitleBlock}>
+                <Text style={[styles.drawerNavTitle, coloredNav && styles.drawerNavTitleOnColor]} numberOfLines={1}>
+                  {title}
+                </Text>
+                {subtitle ? (
+                  <Text style={[styles.drawerNavSubtitle, coloredNav && styles.drawerNavSubtitleOnColor]} numberOfLines={1}>
+                    {subtitle}
                   </Text>
                 ) : null}
-              </Pressable>
+              </View>
+              <View style={[styles.drawerNavSide, styles.drawerNavSideRight, isMobile && styles.drawerNavSideMobile]}>
+                {isMobile ? null : rightLeading}
+                <Pressable
+                  onPress={onRight}
+                  hitSlop={coloredNav ? 0 : 8}
+                  disabled={!onRight || rightDisabled}
+                  style={
+                    coloredNav && rightLabel
+                      ? [
+                          styles.navBtn,
+                          rightLabel === 'Done' ? styles.navBtnDone : styles.navBtnPrimary,
+                          rightDisabled && styles.drawerNavActionDisabled,
+                        ]
+                      : null
+                  }
+                  accessibilityRole="button"
+                  accessibilityLabel={rightLabel || ''}
+                >
+                  {rightLabel ? (
+                    <Text
+                      style={
+                        coloredNav
+                          ? styles.navBtnPrimaryText
+                          : [
+                              styles.drawerNavAction,
+                              rightEmphasis && styles.drawerNavActionStrong,
+                              rightDisabled && styles.drawerNavActionDisabled,
+                            ]
+                      }
+                    >
+                      {rightLabel}
+                    </Text>
+                  ) : null}
+                </Pressable>
+              </View>
             </View>
-          </View>
-          {isMobile && rightLeading ? (
+          )}
+          {hideNav || !isMobile || !rightLeading ? null : (
             <View style={[styles.drawerSubNav, coloredNav && styles.drawerSubNavColored]}>{rightLeading}</View>
-          ) : null}
+          )}
           <View style={styles.drawerBody}>{children}</View>
         </Animated.View>
       </View>
@@ -367,14 +406,20 @@ export function EmptyState({ icon, title, body, action }) {
 }
 
 /** Text-only tabs with a thin underline, used at every level of the app. */
-export function TextTabs({ options, value, onChange, leading, trailing, size = 'md', style }) {
+export function TextTabs({ options, value, onChange, leading, trailing, size = 'md', layout = 'bar', style }) {
   const isMobile = useIsMobile();
+  const inline = layout === 'inline';
   const tabs = options.map((option) => {
     const active = option.key === value;
     return (
       <Pressable
         key={option.key}
-        style={[styles.tab, size === 'lg' && styles.tabLg, isMobile && styles.tabMobile]}
+        style={[
+          styles.tab,
+          size === 'lg' && styles.tabLg,
+          isMobile && styles.tabMobile,
+          inline && styles.tabInline,
+        ]}
         onPress={() => onChange(option.key)}
         accessibilityRole="tab"
         accessibilityState={{ selected: active }}
@@ -395,12 +440,12 @@ export function TextTabs({ options, value, onChange, leading, trailing, size = '
             <Text style={[styles.tabCount, active && styles.tabCountActive]}>{option.count}</Text>
           ) : null}
         </View>
-        <View style={[styles.tabLine, size === 'lg' && styles.tabLineLg, active && styles.tabLineActive]} />
+        <View style={[styles.tabLine, size === 'lg' && styles.tabLineLg, inline && styles.tabLineInline, active && styles.tabLineActive]} />
       </Pressable>
     );
   });
 
-  const tabRow = isMobile ? (
+  const tabRow = isMobile && !inline ? (
     <ScrollView
       horizontal
       showsHorizontalScrollIndicator={false}
@@ -410,8 +455,19 @@ export function TextTabs({ options, value, onChange, leading, trailing, size = '
       {tabs}
     </ScrollView>
   ) : (
-    <View style={[styles.tabs, size === 'lg' && styles.tabsLg]}>{tabs}</View>
+    <View style={[styles.tabs, size === 'lg' && styles.tabsLg, inline && styles.tabsInline]}>{tabs}</View>
   );
+
+  if (inline) {
+    return (
+      <View
+        style={[styles.tabBarInline, size === 'lg' && styles.tabBarInlineLg, style]}
+        accessibilityRole="tablist"
+      >
+        {tabRow}
+      </View>
+    );
+  }
 
   const leadingNode = leading ? (
     <View
@@ -425,9 +481,16 @@ export function TextTabs({ options, value, onChange, leading, trailing, size = '
     </View>
   ) : null;
 
+  const stable = size === 'lg' && !isMobile;
+
   return (
     <View
-      style={[styles.tabBar, size === 'lg' && styles.tabBarLg, isMobile && styles.tabBarMobile, style]}
+      style={[
+        styles.tabBar,
+        size === 'lg' && styles.tabBarLg,
+        isMobile ? styles.tabBarMobile : stable && styles.tabBarStable,
+        style,
+      ]}
       accessibilityRole="tablist"
     >
       {isMobile ? (
@@ -435,22 +498,28 @@ export function TextTabs({ options, value, onChange, leading, trailing, size = '
           {leadingNode}
           {tabRow}
         </View>
+      ) : stable ? (
+        <View style={[styles.tabSlot, styles.tabSlotStart, styles.tabSlotLg]}>{leading}</View>
       ) : (
-        <>
-          {leadingNode}
-          {tabRow}
-        </>
+        leadingNode
       )}
-      {trailing ? (
-        <View
-          style={[
-            styles.tabTrailing,
-            size === 'lg' && styles.tabTrailingLg,
-            isMobile && styles.tabTrailingMobile,
-          ]}
-        >
-          {trailing}
-        </View>
+      {isMobile ? null : tabRow}
+      {isMobile ? (
+        trailing ? (
+          <View
+            style={[
+              styles.tabTrailing,
+              size === 'lg' && styles.tabTrailingLg,
+              styles.tabTrailingMobile,
+            ]}
+          >
+            {trailing}
+          </View>
+        ) : null
+      ) : stable ? (
+        <View style={[styles.tabSlot, styles.tabSlotEnd, styles.tabSlotLg]}>{trailing}</View>
+      ) : trailing ? (
+        <View style={[styles.tabTrailing, size === 'lg' && styles.tabTrailingLg]}>{trailing}</View>
       ) : null}
     </View>
   );
@@ -990,6 +1059,24 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingTop: 12,
   },
+  tabBarStable: {
+    alignItems: 'stretch',
+    gap: 16,
+  },
+  tabBarInline: {
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    paddingHorizontal: 0,
+    paddingTop: 0,
+    backgroundColor: 'transparent',
+    borderBottomWidth: 0,
+    gap: 0,
+  },
+  tabBarInlineLg: {
+    paddingHorizontal: 0,
+    paddingTop: 0,
+  },
   tabBarMobile: {
     flexDirection: 'column',
     alignItems: 'stretch',
@@ -1004,6 +1091,26 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-end',
     gap: 20,
+  },
+  tabSlot: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingBottom: 8,
+  },
+  tabSlotLg: {
+    paddingBottom: 10,
+  },
+  tabSlotStart: {
+    width: 268,
+    flexGrow: 0,
+    flexShrink: 0,
+    justifyContent: 'flex-start',
+  },
+  tabSlotEnd: {
+    flexGrow: 0,
+    flexShrink: 0,
+    justifyContent: 'flex-end',
+    gap: 8,
   },
   tabLeading: {
     flexShrink: 0,
@@ -1030,6 +1137,12 @@ const styles = StyleSheet.create({
   tabsLg: {
     gap: 28,
   },
+  tabsInline: {
+    flexGrow: 0,
+    flexShrink: 0,
+    flex: 0,
+    alignSelf: 'flex-end',
+  },
   tabsMobile: {
     flexDirection: 'row',
     alignItems: 'flex-end',
@@ -1048,6 +1161,10 @@ const styles = StyleSheet.create({
   },
   tabMobile: {
     paddingTop: 8,
+  },
+  tabInline: {
+    paddingTop: 2,
+    paddingHorizontal: 2,
   },
   tabLabelRow: {
     flexDirection: 'row',
@@ -1092,6 +1209,9 @@ const styles = StyleSheet.create({
   },
   tabLineLg: {
     marginTop: 12,
+  },
+  tabLineInline: {
+    marginTop: 6,
   },
   tabLineActive: {
     backgroundColor: T.text,

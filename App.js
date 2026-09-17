@@ -11,6 +11,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -102,6 +103,8 @@ import TransferScreen from './components/TransferScreen';
 import PricingScreen from './components/PricingScreen';
 import TrendsScreen from './components/TrendsScreen';
 import TriageScreen, { clearTriageCache } from './components/TriageScreen';
+import LogsScreen from './components/LogsScreen';
+import { flushNow as flushActionLog, setActionLogActor, setActionLogContext } from './lib/actionLog';
 import LoginScreen from './components/LoginScreen';
 import MessagesScreen from './components/MessagesScreen';
 import {
@@ -164,7 +167,7 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-dm-row:hover{background-color:#f5f5f7!important;}',
     '.cgold-dm-row-active,.cgold-dm-row-active:hover{background-color:#ececef!important;}',
     '.cgold-store-status{position:relative;width:48px;height:48px;flex-shrink:0;overflow:visible!important;display:flex;align-items:center;justify-content:center;}',
-    '.cgold-store-status-lg{width:56px;height:56px;}',
+    '.cgold-store-status-lg{width:48px;height:48px;}',
     '.cgold-store-status::before,.cgold-store-status::after{content:"";position:absolute;left:50%;top:50%;width:28px;height:28px;border-radius:50%;pointer-events:none;z-index:0;transform:translate(-50%,-50%) scale(.9);}',
     '.cgold-store-status-lg::before,.cgold-store-status-lg::after{width:40px;height:40px;}',
     '.cgold-store-status-open::before,.cgold-store-status-open::after{background:radial-gradient(circle,rgba(48,209,88,.42) 0%,rgba(48,209,88,.16) 38%,rgba(48,209,88,0) 70%);}',
@@ -549,6 +552,7 @@ const TOOL_CARDS = [
   { key: 'pmx', label: 'PMX', icon: 'diamond-outline', tint: '#F5F3FF', accent: '#6D28D9' },
   { key: 'shipping', label: 'Shipping', icon: 'airplane-outline', tint: '#ECFEFF', accent: '#0E7490' },
   { key: 'storage', label: 'Storage', icon: 'archive-outline', tint: '#F1F5F9', accent: '#334155' },
+  { key: 'logs', label: 'Logs', icon: 'reader-outline', tint: '#F1F5F9', accent: '#0F172A' },
   { key: 'settings', label: 'Settings', icon: 'settings-outline', tint: '#F4F4F5', accent: '#52525B' },
 ];
 
@@ -561,6 +565,7 @@ const STORE_DRAWER_TAB_KEYS = [
   'financials',
   'employees',
   'phone',
+  'emails',
   'audit',
   'supplies',
   'serphint',
@@ -980,14 +985,22 @@ function ToolsList({ tools, pinnedKeys, onOpen, onTogglePin }) {
   );
 }
 
-function DatePickerField({ label, value, onChange, minimumDate, maximumDate, plain = false, compact = false }) {
+function DatePickerField({
+  label,
+  value,
+  onChange,
+  minimumDate,
+  maximumDate,
+  plain = false,
+  compact = false,
+  fill = false,
+}) {
   const [open, setOpen] = useState(false);
   const dateValue = parseDateParam(value);
-  const chipStyle = compact
-    ? styles.homeDateFieldCompact
-    : plain
-      ? styles.homeDateField
-      : styles.dateChip;
+  const chipStyle = [
+    compact ? styles.homeDateFieldCompact : plain ? styles.homeDateField : styles.dateChip,
+    fill && styles.homeDateFieldFill,
+  ];
   const iconColor = plain || compact ? '#8e8e93' : '#6b6b6b';
   const valueSize = compact ? 13 : plain ? 16 : 13;
   const calendarSize = compact ? 13 : plain ? 16 : 14;
@@ -1029,7 +1042,7 @@ function DatePickerField({ label, value, onChange, minimumDate, maximumDate, pla
               margin: 0,
               outline: 'none',
               cursor: 'pointer',
-              minWidth: compact ? 92 : plain ? 108 : 118,
+              minWidth: compact ? 92 : fill ? 100 : plain ? 108 : 118,
             },
           })}
         </View>
@@ -2284,6 +2297,14 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
       setActiveTab(key);
     }
   }, [hasApp]);
+  // Point the embedded Emails app at this store and the drawer's period.
+  const emailsFocus = useMemo(
+    () =>
+      storeName
+        ? { key: `${storeName}|${startKey || ''}|${endKey || ''}`, storeName, startDate: startKey, endDate: endKey }
+        : null,
+    [endKey, startKey, storeName],
+  );
 
   useEffect(() => {
     const storeChanged = lastStoreNameRef.current !== store?.store;
@@ -2527,6 +2548,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
               activeTab === 'ai' ||
               activeTab === 'triage' ||
               activeTab === 'phone' ||
+              activeTab === 'emails' ||
               activeTab === 'settings' ? (
                 <View style={[styles.drawerBody, styles.drawerBodyFill]}>
                   {activeTab === 'overview' ? (
@@ -2602,6 +2624,20 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                         session={session}
                         storeFilter={heldStore.store}
                         embedded
+                      />
+                    ) : activeTab === 'emails' ? (
+                      <EmailsScreen
+                        session={session}
+                        focus={emailsFocus}
+                        storeFilter={heldStore.store}
+                        embedded
+                        capture={
+                          <EmailCaptureScreen
+                            session={session}
+                            focus={emailsFocus}
+                            storeFilter={heldStore.store}
+                          />
+                        }
                       />
                     ) : (
                       <StoreSettingsPanel
@@ -2970,15 +3006,29 @@ function HomeStoreStatusIcon({ accent, open, compact = false }) {
   );
 }
 
+function HomeStoreMetric({ icon, stats, label }) {
+  if (stats?.rate == null) return null;
+  const low = stats.rate < 80;
+  return (
+    <View style={styles.igStoreMetric} accessibilityLabel={`${label} ${stats.ratio}`}>
+      <Ionicons name={icon} size={12} color={low ? '#B91C1C' : '#15803D'} />
+      <Text style={[styles.igStoreMetricText, low ? styles.homeStorePhoneLow : styles.homeStorePhoneHigh]}>
+        {stats.ratio}
+      </Text>
+    </View>
+  );
+}
+
 function HomeStoreCard({ row, people, emailStats, phoneStats, selected, last, onOpenStore, onOpenPerson, open }) {
   const accent = storeAccent(row.store);
+  const hasActivity = Number(row.txCount) > 0;
+  const hasMetrics = emailStats?.rate != null || phoneStats?.rate != null;
 
   return (
     <Pressable
       onPress={() => onOpenStore(row)}
       style={({ hovered, pressed }) => [
         styles.igStoreCard,
-        last && styles.igStoreCardLast,
         selected && styles.igStoreCardSelected,
         (hovered || pressed) && styles.igStoreCardPressed,
       ]}
@@ -2986,16 +3036,31 @@ function HomeStoreCard({ row, people, emailStats, phoneStats, selected, last, on
       accessibilityLabel={`${row.store}, ${open ? 'open' : 'closed'}`}
     >
       <HomeStoreStatusIcon accent={accent} open={open} compact />
-      <View style={styles.igStoreCopy}>
-        <Text style={styles.igStoreName} numberOfLines={1}>
-          {row.store}
-        </Text>
-        <HomePeopleStack people={people} compact onOpenPerson={onOpenPerson} />
+      <View style={[styles.igStoreBody, !last && styles.igStoreBodyDivider]}>
+        <View style={styles.igStoreCopy}>
+          <Text style={styles.igStoreName} numberOfLines={1}>
+            {row.store}
+          </Text>
+          <View style={styles.igStoreMetaRow}>
+            <Text style={styles.igStoreMeta} numberOfLines={1}>
+              {hasActivity ? `${row.txCount} tx` : 'No transactions'}
+            </Text>
+            {hasMetrics ? (
+              <>
+                <HomeStoreMetric icon="mail" stats={emailStats} label="Email capture" />
+                <HomeStoreMetric icon="call" stats={phoneStats} label="Phone answer rate" />
+              </>
+            ) : null}
+          </View>
+        </View>
+        <View style={styles.igStoreTrailing}>
+          <HomeStoreAmount amount={row.totalAmount} count={row.txCount} breakdown={row} compact />
+          {people.length > 0 ? (
+            <HomePeopleStack people={people} compact onOpenPerson={onOpenPerson} />
+          ) : null}
+        </View>
+        <Ionicons name="chevron-forward" size={16} color="#c7c7cc" style={styles.igStoreChevron} />
       </View>
-      <HomeEmailRate stats={emailStats} compact />
-      <HomePhoneRate stats={phoneStats} compact />
-      <HomeStoreAmount amount={row.totalAmount} count={row.txCount} breakdown={row} compact />
-      <Ionicons name="chevron-forward" size={16} color="#c7c7cc" />
     </Pressable>
   );
 }
@@ -3372,18 +3437,29 @@ function HomeStoresTable({
         ))}
         {totals ? (
           <View style={[styles.igStoreCard, styles.igStoreTotalCard]}>
-            <View style={styles.igStoreCopy}>
-              <Text style={styles.igStoreTotalLabel}>Total</Text>
-              <HomePeopleStack people={totalPeople} compact onOpenPerson={onOpenPerson} />
+            <View style={styles.igStoreBody}>
+              <View style={styles.igStoreCopy}>
+                <Text style={styles.igStoreTotalLabel}>Total</Text>
+                <View style={styles.igStoreMetaRow}>
+                  <Text style={styles.igStoreMeta} numberOfLines={1}>
+                    {totals.txCount} tx
+                  </Text>
+                  <HomeStoreMetric icon="mail" stats={totalEmailStats} label="Email capture" />
+                  <HomeStoreMetric icon="call" stats={totalPhoneStats} label="Phone answer rate" />
+                </View>
+              </View>
+              <View style={styles.igStoreTrailing}>
+                <HomeStoreAmount
+                  amount={totals.totalAmount}
+                  count={totals.txCount}
+                  breakdown={totals}
+                  compact
+                />
+                {totalPeople.length > 0 ? (
+                  <HomePeopleStack people={totalPeople} compact onOpenPerson={onOpenPerson} />
+                ) : null}
+              </View>
             </View>
-            <HomeEmailRate stats={totalEmailStats} compact />
-            <HomePhoneRate stats={totalPhoneStats} compact />
-            <HomeStoreAmount
-              amount={totals.totalAmount}
-              count={totals.txCount}
-              breakdown={totals}
-              compact
-            />
           </View>
         ) : null}
       </View>
@@ -3473,6 +3549,7 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson }) {
   const [error, setError] = useState('');
   const [toolbarHeight, setToolbarHeight] = useState(0);
   const [staff, setStaff] = useState([]);
+  const [refreshing, setRefreshing] = useState(false);
   const requestId = useRef(0);
 
   const todayKey = formatDateParam(parseDateParam(new Date()));
@@ -3560,6 +3637,15 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson }) {
 
   const watchLive = Boolean(session?.token) && startKey <= todayKey && todayKey <= endKey;
   useLiveRefresh(load, AUREUS_TX_LIVE_MS, watchLive);
+
+  const refresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await load({ silent: true });
+    } finally {
+      setRefreshing(false);
+    }
+  }, [load]);
 
   const scopedRows = useMemo(() => {
     if (!storeRestricted) return storeRows;
@@ -3656,139 +3742,137 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson }) {
 
   const homeWidth = isMobile ? styles.igHomePad : sectionWidth;
   const compactControls = !isMobile;
+  // On mobile the segment sits beside the search field; when there is no search
+  // field it stretches across the row like a native iOS segmented control.
+  const segmentFills = isMobile && storeRestricted;
 
-  const dateFilters = dateRestricted ? (
-    <View style={[styles.homeSegment, compactControls && styles.homeSegmentCompact]}>
-      <View
-        style={[
-          styles.homeSegmentButton,
-          styles.homeSegmentButtonActive,
-          compactControls && styles.homeSegmentButtonCompact,
-        ]}
-      >
-        <Text
-          style={[
-            styles.homeSegmentText,
-            styles.homeSegmentTextActive,
-            compactControls && styles.homeSegmentTextCompact,
-          ]}
-        >
-          Today
-        </Text>
+  const segmentStyle = [
+    styles.homeSegment,
+    compactControls && styles.homeSegmentCompact,
+    isMobile && styles.igSegment,
+    segmentFills && styles.igSegmentFill,
+  ];
+  const segmentButtonStyle = [
+    styles.homeSegmentButton,
+    compactControls && styles.homeSegmentButtonCompact,
+    isMobile && styles.igSegmentButton,
+    segmentFills && styles.igSegmentButtonFill,
+  ];
+  const segmentTextStyle = [
+    styles.homeSegmentText,
+    compactControls && styles.homeSegmentTextCompact,
+    isMobile && styles.igSegmentText,
+  ];
+
+  const dateSegment = dateRestricted ? (
+    <View style={segmentStyle}>
+      <View style={[...segmentButtonStyle, styles.homeSegmentButtonActive]}>
+        <Text style={[...segmentTextStyle, styles.homeSegmentTextActive]}>Today</Text>
       </View>
     </View>
   ) : (
-    <>
-      <View
-        style={[styles.homeSegment, compactControls && styles.homeSegmentCompact]}
-        accessibilityRole="tablist"
+    <View style={segmentStyle} accessibilityRole="tablist">
+      <Pressable
+        style={[...segmentButtonStyle, dateMode === 'day' && isToday && styles.homeSegmentButtonActive]}
+        onPress={selectToday}
+        accessibilityRole="tab"
+        accessibilityState={{ selected: dateMode === 'day' && isToday }}
       >
-        <Pressable
-          style={[
-            styles.homeSegmentButton,
-            compactControls && styles.homeSegmentButtonCompact,
-            dateMode === 'day' && isToday && styles.homeSegmentButtonActive,
-          ]}
-          onPress={selectToday}
-          accessibilityRole="tab"
-          accessibilityState={{ selected: dateMode === 'day' && isToday }}
-        >
-          <Text
-            style={[
-              styles.homeSegmentText,
-              compactControls && styles.homeSegmentTextCompact,
-              dateMode === 'day' && isToday && styles.homeSegmentTextActive,
-            ]}
-          >
-            Today
-          </Text>
-        </Pressable>
-        <Pressable
-          style={[
-            styles.homeSegmentButton,
-            compactControls && styles.homeSegmentButtonCompact,
-            dateMode === 'range' && styles.homeSegmentButtonActive,
-          ]}
-          onPress={selectRange}
-          accessibilityRole="tab"
-          accessibilityState={{ selected: dateMode === 'range' }}
-        >
-          <Text
-            style={[
-              styles.homeSegmentText,
-              compactControls && styles.homeSegmentTextCompact,
-              dateMode === 'range' && styles.homeSegmentTextActive,
-            ]}
-          >
-            Range
-          </Text>
-        </Pressable>
-      </View>
-      {dateMode === 'day' ? (
-        <DatePickerField
-          label="Date"
-          value={startDate}
-          onChange={handleDayChange}
-          maximumDate={new Date()}
-          compact={compactControls}
-          plain={!compactControls}
-        />
-      ) : (
-        <>
-          <DatePickerField
-            label="From"
-            value={startDate}
-            onChange={handleStartChange}
-            maximumDate={endDate}
-            compact={compactControls}
-            plain={!compactControls}
-          />
-          <Text style={[styles.homeDateSep, compactControls && styles.homeDateSepCompact]}>–</Text>
-          <DatePickerField
-            label="To"
-            value={endDate}
-            onChange={handleEndChange}
-            minimumDate={startDate}
-            maximumDate={new Date()}
-            compact={compactControls}
-            plain={!compactControls}
-          />
-        </>
-      )}
+        <Text style={[...segmentTextStyle, dateMode === 'day' && isToday && styles.homeSegmentTextActive]}>
+          Today
+        </Text>
+      </Pressable>
+      <Pressable
+        style={[...segmentButtonStyle, dateMode === 'range' && styles.homeSegmentButtonActive]}
+        onPress={selectRange}
+        accessibilityRole="tab"
+        accessibilityState={{ selected: dateMode === 'range' }}
+      >
+        <Text style={[...segmentTextStyle, dateMode === 'range' && styles.homeSegmentTextActive]}>
+          Range
+        </Text>
+      </Pressable>
+    </View>
+  );
+
+  const datePickers = dateRestricted ? null : dateMode === 'day' ? (
+    <DatePickerField
+      label="Date"
+      value={startDate}
+      onChange={handleDayChange}
+      maximumDate={new Date()}
+      compact={compactControls}
+      plain={!compactControls}
+      fill={isMobile}
+    />
+  ) : (
+    <>
+      <DatePickerField
+        label="From"
+        value={startDate}
+        onChange={handleStartChange}
+        maximumDate={endDate}
+        compact={compactControls}
+        plain={!compactControls}
+        fill={isMobile}
+      />
+      <Text style={[styles.homeDateSep, compactControls && styles.homeDateSepCompact]}>–</Text>
+      <DatePickerField
+        label="To"
+        value={endDate}
+        onChange={handleEndChange}
+        minimumDate={startDate}
+        maximumDate={new Date()}
+        compact={compactControls}
+        plain={!compactControls}
+        fill={isMobile}
+      />
     </>
   );
 
-  const homeToolbar = (
-    <View style={[styles.homeToolbar, isMobile && styles.igHomeToolbar, !isMobile && sectionWidth]}>
-      {storeRestricted ? null : (
-        <View style={[styles.homeSearch, isMobile && styles.igSearchField]}>
-          <Ionicons
-            name="search"
-            size={compactControls ? 14 : 16}
-            color="#8e8e93"
-            style={styles.homeSearchIcon}
-          />
-          <TextInput
-            style={[styles.toolsSearchInput, compactControls && styles.homeSearchInput]}
-            value={query}
-            onChangeText={setQuery}
-            placeholder={isMobile ? 'Search stores' : 'Search'}
-            placeholderTextColor="#8e8e93"
-            autoCapitalize="none"
-            autoCorrect={false}
-            clearButtonMode="while-editing"
-          />
-          {query ? (
-            <Pressable onPress={() => setQuery('')} hitSlop={8}>
-              <Ionicons name="close-circle" size={compactControls ? 16 : 18} color="#c7c7cc" />
-            </Pressable>
-          ) : null}
-        </View>
-      )}
-      <View style={styles.homeToolbarFilters}>{dateFilters}</View>
-      {compactControls && loading && storeRows.length > 0 ? (
-        <ActivityIndicator size="small" color="#8e8e93" />
+  const searchField = storeRestricted ? null : (
+    <View style={[styles.homeSearch, isMobile && styles.igSearchField]}>
+      <Ionicons
+        name="search"
+        size={compactControls ? 14 : 16}
+        color="#8e8e93"
+        style={styles.homeSearchIcon}
+      />
+      <TextInput
+        style={[styles.toolsSearchInput, compactControls && styles.homeSearchInput, isMobile && styles.igSearchInput]}
+        value={query}
+        onChangeText={setQuery}
+        placeholder={isMobile ? 'Search stores' : 'Search'}
+        placeholderTextColor="#8e8e93"
+        autoCapitalize="none"
+        autoCorrect={false}
+        clearButtonMode="while-editing"
+        returnKeyType="search"
+      />
+      {query ? (
+        <Pressable onPress={() => setQuery('')} hitSlop={8} accessibilityLabel="Clear search">
+          <Ionicons name="close-circle" size={compactControls ? 16 : 18} color="#c7c7cc" />
+        </Pressable>
       ) : null}
+    </View>
+  );
+
+  const homeToolbar = isMobile ? (
+    <View style={styles.igHomeToolbar}>
+      <View style={styles.igHomeToolbarRow}>
+        {searchField}
+        {dateSegment}
+      </View>
+      {datePickers ? <View style={styles.igHomeToolbarRow}>{datePickers}</View> : null}
+    </View>
+  ) : (
+    <View style={[styles.homeToolbar, sectionWidth]}>
+      {searchField}
+      <View style={styles.homeToolbarFilters}>
+        {dateSegment}
+        {datePickers}
+      </View>
+      {loading && storeRows.length > 0 ? <ActivityIndicator size="small" color="#8e8e93" /> : null}
     </View>
   );
 
@@ -3806,16 +3890,47 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson }) {
         ]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        refreshControl={
+          isMobile ? (
+            <RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor="#8e8e93" />
+          ) : undefined
+        }
       >
         {error ? <Text style={[styles.errorText, styles.homeError, homeWidth]}>{error}</Text> : null}
         {isMobile && !(loading && storeRows.length === 0) && visibleRows.length > 0 ? (
           <View style={styles.igHomeHero}>
             <Text style={styles.igHomeHeroLabel}>{periodLabel}</Text>
-            <Text style={styles.igHomeHeroAmount}>{formatAmount(totals.totalAmount)}</Text>
-            <Text style={styles.igHomeHeroMeta}>
-              {totals.txCount} transaction{totals.txCount === 1 ? '' : 's'} · {visibleRows.length}{' '}
-              store{visibleRows.length === 1 ? '' : 's'}
-              {loading && storeRows.length > 0 ? ' · Updating' : ''}
+            <Text style={styles.igHomeHeroAmount} numberOfLines={1} adjustsFontSizeToFit>
+              {formatAmount(totals.totalAmount)}
+            </Text>
+            <View style={styles.igHomeHeroStats}>
+              <View style={styles.igHomeHeroStat}>
+                <Text style={styles.igHomeHeroStatValue}>{totals.txCount}</Text>
+                <Text style={styles.igHomeHeroStatLabel}>
+                  Transaction{totals.txCount === 1 ? '' : 's'}
+                </Text>
+              </View>
+              <View style={styles.igHomeHeroStatDivider} />
+              <View style={styles.igHomeHeroStat}>
+                <Text style={styles.igHomeHeroStatValue}>{totals.saleCount}</Text>
+                <Text style={styles.igHomeHeroStatLabel}>Sales</Text>
+              </View>
+              <View style={styles.igHomeHeroStatDivider} />
+              <View style={styles.igHomeHeroStat}>
+                <Text style={styles.igHomeHeroStatValue}>{totals.purchaseCount}</Text>
+                <Text style={styles.igHomeHeroStatLabel}>Purchases</Text>
+              </View>
+            </View>
+            {loading && storeRows.length > 0 ? (
+              <Text style={styles.igHomeHeroMeta}>Updating…</Text>
+            ) : null}
+          </View>
+        ) : null}
+        {isMobile && !(loading && storeRows.length === 0) && visibleRows.length > 0 ? (
+          <View style={styles.igSectionHeaderRow}>
+            <Text style={styles.igSectionHeader}>Stores</Text>
+            <Text style={styles.igSectionHeaderMeta}>
+              {visibleRows.length} store{visibleRows.length === 1 ? '' : 's'}
             </Text>
           </View>
         ) : null}
@@ -3931,84 +4046,7 @@ function EmailStoreDrawer({ visible, store, onClose }) {
             ]}
             showsVerticalScrollIndicator={false}
           >
-            <View style={styles.invoiceHeaderRow}>
-              <View style={styles.invoiceHeaderLeft}>
-                <Text style={styles.invoiceNumber}>{heldStore.store}</Text>
-                <Text style={styles.emailDrawerSubtitle}>
-                  {heldStore.customerCount} named + {heldStore.walkInCount} walk-in ={' '}
-                  {heldStore.totalTransactions} transactions
-                </Text>
-              </View>
-              <View style={styles.invoiceHeaderRight}>
-                <Text style={styles.invoiceTotalLabelTop}>Email rate</Text>
-                <Text style={styles.invoiceTotalHero}>{heldStore.rateLabel}</Text>
-                <Text style={styles.invoicePartyDetail}>
-                  {heldStore.withEmail} ÷ {heldStore.customerCount} named
-                </Text>
-              </View>
-            </View>
-
-            <Text style={[styles.emailDrawerSubtitle, { marginBottom: 12 }]}>
-              Rate = customers with a valid email ÷ named customers. Walk-ins are excluded from
-              the percentage.
-            </Text>
-
-            <View style={styles.invoiceInfoGrid}>
-              <View style={styles.invoiceInfoCard}>
-                <Text style={styles.invoiceSectionLabel}>Named customers</Text>
-                <Text style={styles.invoicePartyName}>{heldStore.customerCount}</Text>
-                <Text style={styles.invoicePartyDetail}>
-                  {heldStore.withEmail} with valid email · {heldStore.peopleFractionLabel} of txs
-                </Text>
-              </View>
-              <View style={styles.invoiceInfoCard}>
-                <Text style={styles.invoiceSectionLabel}>Walk-in</Text>
-                <Text style={styles.invoicePartyName}>{heldStore.walkInCount}</Text>
-                <Text style={styles.invoicePartyDetail}>
-                  Excluded from rate · {heldStore.walkInCount} of{' '}
-                  {heldStore.totalTransactions} transactions
-                </Text>
-              </View>
-            </View>
-
-            <View style={styles.invoiceSection}>
-              <Text style={styles.invoiceSectionLabel}>Named customer breakdown</Text>
-              <View style={styles.emailBreakdownHeader}>
-                <Text style={[styles.emailBreakdownHeaderText, styles.emailBreakdownColPerson]}>
-                  Person
-                </Text>
-                <Text style={[styles.emailBreakdownHeaderText, styles.emailBreakdownColEmail]}>
-                  Email
-                </Text>
-                <Text style={[styles.emailBreakdownHeaderText, styles.emailBreakdownColEmployee]}>
-                  Employee
-                </Text>
-              </View>
-
-              {heldStore.people.length === 0 ? (
-                <Text style={styles.invoiceEmptyLine}>No named customers in this period.</Text>
-              ) : (
-                heldStore.people.map((person) => (
-                  <View key={person.id} style={styles.emailBreakdownRow}>
-                    <Text style={styles.emailBreakdownPerson} numberOfLines={2}>
-                      {person.customerName}
-                    </Text>
-                    <Text
-                      style={[
-                        styles.emailBreakdownEmail,
-                        !person.hasEmail && styles.emailBreakdownEmailMissing,
-                      ]}
-                      numberOfLines={2}
-                    >
-                      {person.emailLabel}
-                    </Text>
-                    <Text style={styles.emailBreakdownEmployee} numberOfLines={2}>
-                      {person.employeeName}
-                    </Text>
-                  </View>
-                ))
-              )}
-            </View>
+            <EmailStoreSummary store={heldStore} />
           </ScrollView>
         </Animated.View>
       </View>
@@ -4016,7 +4054,101 @@ function EmailStoreDrawer({ visible, store, onClose }) {
   );
 }
 
-function EmailCaptureScreen({ session, onRequireLogin, focus = null, onFocusConsumed }) {
+// Email-capture breakdown for one store. Shared by the capture drawer and the
+// inline store-scoped view inside the store details drawer.
+function EmailStoreSummary({ store, showName = true }) {
+  if (!store) return null;
+  return (
+    <>
+      <View style={styles.invoiceHeaderRow}>
+        <View style={styles.invoiceHeaderLeft}>
+          {showName ? <Text style={styles.invoiceNumber}>{store.store}</Text> : null}
+          <Text style={styles.emailDrawerSubtitle}>
+            {store.customerCount} named + {store.walkInCount} walk-in ={' '}
+            {store.totalTransactions} transactions
+          </Text>
+        </View>
+        <View style={styles.invoiceHeaderRight}>
+          <Text style={styles.invoiceTotalLabelTop}>Email rate</Text>
+          <Text style={styles.invoiceTotalHero}>{store.rateLabel}</Text>
+          <Text style={styles.invoicePartyDetail}>
+            {store.withEmail} ÷ {store.customerCount} named
+          </Text>
+        </View>
+      </View>
+
+      <Text style={[styles.emailDrawerSubtitle, { marginBottom: 12 }]}>
+        Rate = customers with a valid email ÷ named customers. Walk-ins are excluded from
+        the percentage.
+      </Text>
+
+      <View style={styles.invoiceInfoGrid}>
+        <View style={styles.invoiceInfoCard}>
+          <Text style={styles.invoiceSectionLabel}>Named customers</Text>
+          <Text style={styles.invoicePartyName}>{store.customerCount}</Text>
+          <Text style={styles.invoicePartyDetail}>
+            {store.withEmail} with valid email · {store.peopleFractionLabel} of txs
+          </Text>
+        </View>
+        <View style={styles.invoiceInfoCard}>
+          <Text style={styles.invoiceSectionLabel}>Walk-in</Text>
+          <Text style={styles.invoicePartyName}>{store.walkInCount}</Text>
+          <Text style={styles.invoicePartyDetail}>
+            Excluded from rate · {store.walkInCount} of{' '}
+            {store.totalTransactions} transactions
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.invoiceSection}>
+        <Text style={styles.invoiceSectionLabel}>Named customer breakdown</Text>
+        <View style={styles.emailBreakdownHeader}>
+          <Text style={[styles.emailBreakdownHeaderText, styles.emailBreakdownColPerson]}>
+            Person
+          </Text>
+          <Text style={[styles.emailBreakdownHeaderText, styles.emailBreakdownColEmail]}>
+            Email
+          </Text>
+          <Text style={[styles.emailBreakdownHeaderText, styles.emailBreakdownColEmployee]}>
+            Employee
+          </Text>
+        </View>
+
+        {store.people.length === 0 ? (
+          <Text style={styles.invoiceEmptyLine}>No named customers in this period.</Text>
+        ) : (
+          store.people.map((person) => (
+            <View key={person.id} style={styles.emailBreakdownRow}>
+              <Text style={styles.emailBreakdownPerson} numberOfLines={2}>
+                {person.customerName}
+              </Text>
+              <Text
+                style={[
+                  styles.emailBreakdownEmail,
+                  !person.hasEmail && styles.emailBreakdownEmailMissing,
+                ]}
+                numberOfLines={2}
+              >
+                {person.emailLabel}
+              </Text>
+              <Text style={styles.emailBreakdownEmployee} numberOfLines={2}>
+                {person.employeeName}
+              </Text>
+            </View>
+          ))
+        )}
+      </View>
+    </>
+  );
+}
+
+function EmailCaptureScreen({
+  session,
+  onRequireLogin,
+  focus = null,
+  onFocusConsumed,
+  storeFilter = '',
+}) {
   const initialRange = useMemo(() => defaultDateRange(7), []);
   const [dateMode, setDateMode] = useState('day'); // 'day' | 'range'
   const [startDate, setStartDate] = useState(() => parseDateParam(new Date()));
@@ -4040,7 +4172,7 @@ function EmailCaptureScreen({ session, onRequireLogin, focus = null, onFocusCons
     const nextStart = parseDateParam(focus.startDate || new Date());
     const nextEnd = parseDateParam(focus.endDate || focus.startDate || new Date());
     pendingStoreRef.current = focus.storeName || null;
-    setDateMode('range');
+    setDateMode(formatDateParam(nextStart) === formatDateParam(nextEnd) ? 'day' : 'range');
     setStartDate(nextStart);
     setEndDate(nextEnd);
     onFocusConsumed?.();
@@ -4083,10 +4215,22 @@ function EmailCaptureScreen({ session, onRequireLogin, focus = null, onFocusCons
     load();
   }, [load]);
 
-  const storeRows = useMemo(() => buildEmailCaptureByStore(rows), [rows]);
+  const storeRows = useMemo(() => {
+    const all = buildEmailCaptureByStore(rows);
+    if (!storeFilter) return all;
+    return all.filter(
+      (row) => row.store.localeCompare(storeFilter, undefined, { sensitivity: 'base' }) === 0,
+    );
+  }, [rows, storeFilter]);
+  const scopedStoreRow = storeFilter ? storeRows[0] || null : null;
 
   useEffect(() => {
     const wanted = pendingStoreRef.current;
+    // Store-scoped: the summary renders inline, so never pop the store drawer.
+    if (storeFilter) {
+      pendingStoreRef.current = null;
+      return;
+    }
     if (!wanted || !storeRows.length) return;
     const match = storeRows.find(
       (row) => row.store.localeCompare(wanted, undefined, { sensitivity: 'base' }) === 0,
@@ -4095,7 +4239,7 @@ function EmailCaptureScreen({ session, onRequireLogin, focus = null, onFocusCons
       setSelectedStore(match);
       pendingStoreRef.current = null;
     }
-  }, [storeRows]);
+  }, [storeFilter, storeRows]);
 
   const totals = useMemo(() => {
     const customerCount = storeRows.reduce((sum, row) => sum + row.customerCount, 0);
@@ -4225,7 +4369,9 @@ function EmailCaptureScreen({ session, onRequireLogin, focus = null, onFocusCons
         <Text style={styles.transactionsMeta}>
           {loading && rows.length === 0
             ? 'Loading…'
-            : `${storeRows.length} store${storeRows.length === 1 ? '' : 's'} · ${totals.customerCount} named + ${totals.walkInCount} walk-in = ${totals.totalTransactions} txs · ${totals.rateLabel} email rate`}
+            : storeFilter
+              ? `${storeFilter} · ${totals.customerCount} named + ${totals.walkInCount} walk-in = ${totals.totalTransactions} txs · ${totals.rateLabel} email rate`
+              : `${storeRows.length} store${storeRows.length === 1 ? '' : 's'} · ${totals.customerCount} named + ${totals.walkInCount} walk-in = ${totals.totalTransactions} txs · ${totals.rateLabel} email rate`}
           {dateMode === 'day'
             ? isToday
               ? ' · today'
@@ -4236,6 +4382,27 @@ function EmailCaptureScreen({ session, onRequireLogin, focus = null, onFocusCons
 
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
+      {storeFilter ? (
+        <ScrollView
+          style={styles.homeTableScroll}
+          contentContainerStyle={styles.emailScopedContent}
+          showsVerticalScrollIndicator={false}
+        >
+          {loading && rows.length === 0 ? (
+            <View style={styles.homeTableEmpty}>
+              <ActivityIndicator color="#1a1a1a" />
+            </View>
+          ) : scopedStoreRow ? (
+            <EmailStoreSummary store={scopedStoreRow} showName={false} />
+          ) : (
+            <View style={styles.homeTableEmpty}>
+              <Text style={styles.tableEmptyText}>
+                No customers at {storeFilter} in this period.
+              </Text>
+            </View>
+          )}
+        </ScrollView>
+      ) : (
       <View style={styles.homeTableWrap}>
         <View style={styles.homeTableHeader}>
           <Text style={[styles.homeHeaderCell, styles.homeColStore]}>Store</Text>
@@ -4296,6 +4463,7 @@ function EmailCaptureScreen({ session, onRequireLogin, focus = null, onFocusCons
           </ScrollView>
         )}
       </View>
+      )}
 
       <EmailStoreDrawer
         visible={Boolean(selectedStore)}
@@ -5539,6 +5707,7 @@ export default function App() {
   const [activeTool, setActiveTool] = useState(null);
   const [triageStoreBack, setTriageStoreBack] = useState(null);
   const [triageBatch, setTriageBatch] = useState(null);
+  const [triageNav, setTriageNav] = useState(null);
   const [settingsPanel, setSettingsPanel] = useState(null);
   const [toolsQuery, setToolsQuery] = useState('');
   const [pinnedKeys, setPinnedKeys] = useState([]);
@@ -5690,6 +5859,20 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  // Tell the action ledger who is signed in and where they are so every
+  // button press (see lib/actionLog) is attributed and placed.
+  useEffect(() => {
+    setActionLogActor(session);
+  }, [session]);
+
+  useEffect(() => {
+    setActionLogContext({
+      tab: activeTab,
+      appKey: activeTab === 'tools' ? activeTool?.key || '' : '',
+      appLabel: activeTab === 'tools' ? activeTool?.label || '' : '',
+    });
+  }, [activeTab, activeTool?.key, activeTool?.label]);
 
   // If Supabase revokes the session (another tab signed out, refresh token
   // rejected) or Aureus rejects the POS token, drop straight to the login screen.
@@ -5984,6 +6167,9 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    // Land the sign-out press (and anything else still queued) in the ledger
+    // while this user's session can still vouch for it.
+    await flushActionLog().catch(() => {});
     await logoutRequest().catch(() => {});
     resetToSignedOut();
   };
@@ -6012,53 +6198,56 @@ export default function App() {
 
     return (
       <View style={styles.breadcrumb}>
-        <Pressable
-          onPress={() => {
-            setActiveTool(null);
-            setSettingsPanel(null);
-          }}
-          style={styles.breadcrumbLink}
-        >
-          <Text style={styles.breadcrumbLinkText}>Apps</Text>
-        </Pressable>
-        <Text style={styles.breadcrumbSep}>›</Text>
-        {settingsSubPanelLabel ? (
-          <>
-            <Pressable onPress={() => setSettingsPanel(null)} style={styles.breadcrumbLink}>
-              <Text style={styles.breadcrumbLinkText}>{activeTool.label}</Text>
-            </Pressable>
-            <Text style={styles.breadcrumbSep}>›</Text>
-            <Text style={styles.breadcrumbCurrent}>{settingsSubPanelLabel}</Text>
-          </>
-        ) : (activeTool.key === 'triage' || activeTool.key === 'phone') && triageStoreBack && triageBatch ? (
-          <>
-            <Pressable
-              onPress={triageStoreBack}
-              style={styles.breadcrumbLink}
-              accessibilityRole="button"
-              accessibilityLabel={activeTool.key === 'phone' ? 'Back to stores' : 'Back to triage dashboard'}
-            >
-              <Text style={styles.breadcrumbLinkText}>
-                {activeTool.key === 'phone' ? 'Stores' : activeTool.label}
-              </Text>
-            </Pressable>
-            <Text style={styles.breadcrumbSep}>›</Text>
-            <View style={styles.breadcrumbBatch}>
-              <Text style={styles.breadcrumbCurrent} numberOfLines={1}>
-                {activeTool.key === 'phone'
-                  ? triageBatch.storeName || triageBatch.dateLabel
-                  : triageBatch.dateLabel}
-              </Text>
-              {activeTool.key !== 'phone' && triageBatch.storeNames ? (
-                <Text style={styles.breadcrumbSub} numberOfLines={1}>
-                  {triageBatch.storeNames}
+        <View style={styles.breadcrumbTrail}>
+          <Pressable
+            onPress={() => {
+              setActiveTool(null);
+              setSettingsPanel(null);
+            }}
+            style={styles.breadcrumbLink}
+          >
+            <Text style={styles.breadcrumbLinkText}>Apps</Text>
+          </Pressable>
+          <Text style={styles.breadcrumbSep}>›</Text>
+          {settingsSubPanelLabel ? (
+            <>
+              <Pressable onPress={() => setSettingsPanel(null)} style={styles.breadcrumbLink}>
+                <Text style={styles.breadcrumbLinkText}>{activeTool.label}</Text>
+              </Pressable>
+              <Text style={styles.breadcrumbSep}>›</Text>
+              <Text style={styles.breadcrumbCurrent}>{settingsSubPanelLabel}</Text>
+            </>
+          ) : (activeTool.key === 'triage' || activeTool.key === 'phone') && triageStoreBack && triageBatch ? (
+            <>
+              <Pressable
+                onPress={triageStoreBack}
+                style={styles.breadcrumbLink}
+                accessibilityRole="button"
+                accessibilityLabel={activeTool.key === 'phone' ? 'Back to stores' : 'Back to triage dashboard'}
+              >
+                <Text style={styles.breadcrumbLinkText}>
+                  {activeTool.key === 'phone' ? 'Stores' : activeTool.label}
                 </Text>
-              ) : null}
-            </View>
-          </>
-        ) : (
-          <Text style={styles.breadcrumbCurrent}>{activeTool.label}</Text>
-        )}
+              </Pressable>
+              <Text style={styles.breadcrumbSep}>›</Text>
+              <View style={styles.breadcrumbBatch}>
+                <Text style={styles.breadcrumbCurrent} numberOfLines={1}>
+                  {activeTool.key === 'phone'
+                    ? triageBatch.storeName || triageBatch.dateLabel
+                    : triageBatch.dateLabel}
+                </Text>
+                {activeTool.key !== 'phone' && triageBatch.storeNames ? (
+                  <Text style={styles.breadcrumbSub} numberOfLines={1}>
+                    {triageBatch.storeNames}
+                  </Text>
+                ) : null}
+              </View>
+            </>
+          ) : (
+            <Text style={styles.breadcrumbCurrent}>{activeTool.label}</Text>
+          )}
+        </View>
+        {activeTool.key === 'triage' && triageNav ? <View style={styles.breadcrumbNav}>{triageNav}</View> : null}
       </View>
     );
   };
@@ -6275,6 +6464,8 @@ export default function App() {
               <MarketingScreen />
             ) : activeTool.key === 'shared-services' ? (
               <SharedServicesScreen />
+            ) : activeTool.key === 'logs' ? (
+              <LogsScreen session={session} />
             ) : activeTool.key === 'triage' ? (
               <TriageScreen
                 session={session}
@@ -6284,6 +6475,7 @@ export default function App() {
                   setTriageStoreBack(() => fn || null);
                   setTriageBatch(context || null);
                 }}
+                onNavTabs={setTriageNav}
               />
             ) : activeTool.key === 'messages' ? (
               <View style={styles.messagesHost}>
@@ -6533,7 +6725,7 @@ export default function App() {
   };
   const mobileToolTitle =
     activeTool?.key === 'settings' ? settingsSubPanels[settingsPanel] || activeTool?.label : activeTool?.label;
-  const groupedMobileTab = isMobile && activeTab === 'tools' && !activeTool;
+  const groupedMobileTab = isMobile && ((activeTab === 'tools' && !activeTool) || activeTab === 'home');
   const contentStyle = [
     styles.content,
     isMobile && styles.contentMobile,
@@ -6647,6 +6839,8 @@ export default function App() {
             activeKey={activeTab}
             onSelect={selectTab}
             messagesUnread={messagesUnread}
+            profileAvatarUrl={session?.profile?.avatarUrl || ''}
+            profileName={userLabel}
           />
         </View>
       </PhoneCallProvider>
@@ -6660,7 +6854,11 @@ export default function App() {
     <View style={styles.container}>
       <StatusBar style="auto" />
 
-      <View style={[styles.sidebar, sidebarCollapsed && styles.sidebarCollapsed]}>
+      <View
+        nativeID="cgold-sidebar"
+        testID="cgold-sidebar"
+        style={[styles.sidebar, sidebarCollapsed && styles.sidebarCollapsed]}
+      >
         <View style={[styles.sidebarHeader, sidebarCollapsed && styles.sidebarHeaderCollapsed]}>
           <Pressable
             onPress={() => selectTab('home')}
@@ -7778,7 +7976,8 @@ const styles = StyleSheet.create({
     width: 'auto',
     maxWidth: 140,
     height: 22,
-    marginTop: 4,
+    marginTop: 2,
+    paddingLeft: 0,
   },
   homePeopleAvatarWrap: {
     position: 'relative',
@@ -7855,6 +8054,10 @@ const styles = StyleSheet.create({
   },
   homeTableListContent: {
     paddingBottom: 8,
+  },
+  emailScopedContent: {
+    paddingTop: 4,
+    paddingBottom: 32,
   },
   homeTableHeader: {
     flexDirection: 'row',
@@ -8892,10 +9095,22 @@ const styles = StyleSheet.create({
 
   breadcrumb: {
     flexDirection: 'row',
+    alignItems: 'flex-end',
+    flexWrap: 'nowrap',
+    gap: 16,
+    alignSelf: 'stretch',
+  },
+  breadcrumbTrail: {
+    flexDirection: 'row',
     alignItems: 'center',
     flexWrap: 'wrap',
     gap: 8,
-    alignSelf: 'stretch',
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  breadcrumbNav: {
+    marginLeft: 'auto',
+    flexShrink: 0,
   },
   breadcrumbLink: {
     paddingVertical: 2,
@@ -10501,8 +10716,47 @@ const styles = StyleSheet.create({
   igHomeToolbar: {
     maxWidth: '100%',
     paddingHorizontal: 16,
-    paddingTop: 4,
-    paddingBottom: 8,
+    paddingTop: 2,
+    paddingBottom: 10,
+    gap: 8,
+  },
+  igHomeToolbarRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    width: '100%',
+  },
+  igSearchInput: {
+    fontSize: 16,
+    paddingVertical: 7,
+  },
+  igSegment: {
+    borderRadius: 10,
+    padding: 2,
+    backgroundColor: 'rgba(118,118,128,0.12)',
+  },
+  igSegmentFill: {
+    flex: 1,
+  },
+  igSegmentButton: {
+    height: 32,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+  },
+  igSegmentButtonFill: {
+    flex: 1,
+  },
+  igSegmentText: {
+    fontSize: 14,
+    fontWeight: '600',
+    letterSpacing: -0.15,
+  },
+  homeDateFieldFill: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 36,
+    borderRadius: 10,
+    backgroundColor: 'rgba(118,118,128,0.12)',
   },
   igHomeControls: {
     maxWidth: '100%',
@@ -10511,38 +10765,96 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   igHomeScroll: {
-    paddingTop: 8,
+    paddingTop: 4,
     paddingBottom: 32,
   },
   igHomeHero: {
     marginHorizontal: 16,
-    marginBottom: 16,
-    paddingVertical: 18,
-    paddingHorizontal: 18,
-    borderRadius: 16,
-    backgroundColor: '#1d1d1f',
+    marginBottom: 20,
+    paddingTop: 16,
+    paddingBottom: 14,
+    paddingHorizontal: 16,
+    borderRadius: 14,
+    backgroundColor: '#fff',
   },
   igHomeHeroLabel: {
     fontFamily,
     fontSize: 13,
     fontWeight: '600',
-    color: 'rgba(255,255,255,0.62)',
+    color: '#8e8e93',
     letterSpacing: -0.08,
   },
   igHomeHeroAmount: {
     fontFamily: titleFontFamily,
-    fontSize: 34,
+    fontSize: 40,
+    lineHeight: 46,
     fontWeight: '400',
-    color: '#fff',
-    letterSpacing: -1,
-    marginTop: 4,
+    color: '#1d1d1f',
+    letterSpacing: -1.2,
+    marginTop: 2,
+    fontVariant: ['tabular-nums'],
+  },
+  igHomeHeroStats: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(60,60,67,0.18)',
+  },
+  igHomeHeroStat: {
+    flex: 1,
+    minWidth: 0,
+    gap: 1,
+  },
+  igHomeHeroStatDivider: {
+    width: StyleSheet.hairlineWidth,
+    height: 28,
+    marginHorizontal: 12,
+    backgroundColor: 'rgba(60,60,67,0.18)',
+  },
+  igHomeHeroStatValue: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    letterSpacing: -0.3,
+    fontVariant: ['tabular-nums'],
+  },
+  igHomeHeroStatLabel: {
+    fontFamily,
+    fontSize: 12,
+    color: '#8e8e93',
+    letterSpacing: -0.05,
   },
   igHomeHeroMeta: {
     fontFamily,
     fontSize: 13,
-    color: 'rgba(255,255,255,0.62)',
-    marginTop: 6,
+    color: '#8e8e93',
+    marginTop: 10,
     letterSpacing: -0.08,
+  },
+  igSectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    paddingHorizontal: 32,
+    marginBottom: 6,
+  },
+  igSectionHeader: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+    textTransform: 'uppercase',
+  },
+  igSectionHeaderMeta: {
+    fontFamily,
+    fontSize: 13,
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+    fontVariant: ['tabular-nums'],
   },
   igHomeSection: {
     marginTop: 0,
@@ -10556,29 +10868,37 @@ const styles = StyleSheet.create({
   igStoreCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    minHeight: 64,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e5e5ea',
+    gap: 10,
+    minHeight: 68,
+    paddingLeft: 12,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
-  igStoreCardLast: {
-    borderBottomWidth: 0,
+  igStoreBody: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 11,
+    paddingRight: 12,
+    alignSelf: 'stretch',
+  },
+  igStoreBodyDivider: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(60,60,67,0.24)',
   },
   igStoreCardSelected: {
     backgroundColor: '#f2f2f7',
   },
   igStoreCardPressed: {
-    backgroundColor: '#f2f2f7',
+    backgroundColor: 'rgba(60,60,67,0.08)',
   },
   igStoreIconWrap: {
-    width: 56,
-    height: 56,
+    width: 48,
+    height: 48,
   },
   igStoreIcon: {
     width: 40,
@@ -10591,7 +10911,36 @@ const styles = StyleSheet.create({
   igStoreCopy: {
     flex: 1,
     minWidth: 0,
+    gap: 3,
+  },
+  igStoreMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minWidth: 0,
+  },
+  igStoreMetric: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    flexShrink: 0,
+  },
+  igStoreMetricText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    letterSpacing: -0.08,
+    fontVariant: ['tabular-nums'],
+  },
+  igStoreTrailing: {
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    flexShrink: 0,
     gap: 2,
+  },
+  igStoreChevron: {
+    flexShrink: 0,
+    marginLeft: -2,
   },
   igStoreName: {
     fontFamily,
@@ -10605,6 +10954,8 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#8e8e93',
     letterSpacing: -0.08,
+    flexShrink: 1,
+    minWidth: 0,
   },
   igStoreAmount: {
     fontFamily,
@@ -10616,7 +10967,6 @@ const styles = StyleSheet.create({
   },
   igStoreTotalCard: {
     backgroundColor: '#f2f2f7',
-    borderBottomWidth: 0,
     ...Platform.select({
       web: { cursor: 'default' },
       default: {},

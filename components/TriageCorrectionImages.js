@@ -44,6 +44,15 @@ const CAMERA_CONSTRAINTS = [
   { video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
 ];
 
+// Phones get the device camera app (native picker, or <input capture> on mobile web).
+// The in-page webcam modal is only for desktop browsers.
+function prefersDeviceCamera(isMobile) {
+  if (Platform.OS !== 'web') return true;
+  if (isMobile) return true;
+  const ua = typeof navigator !== 'undefined' ? String(navigator.userAgent || '') : '';
+  return /Android|iPhone|iPad|iPod/i.test(ua) || (navigator?.maxTouchPoints || 0) > 1;
+}
+
 function fromAsset(asset) {
   const mime = asset?.mimeType || 'image/jpeg';
   const uri = asset?.base64 ? `data:${mime};base64,${asset.base64}` : asset?.uri;
@@ -137,7 +146,11 @@ function TriageCorrectionImages({
         setError('Allow camera access to capture a photo.');
         return;
       }
-      const result = await ImagePicker.launchCameraAsync(PICKER_OPTIONS);
+      const result = await ImagePicker.launchCameraAsync({
+        ...PICKER_OPTIONS,
+        // Rear camera; on mobile web this becomes <input capture="environment">.
+        cameraType: ImagePicker.CameraType.back,
+      });
       if (result.canceled || !result.assets?.[0]) return;
       addAssets(result.assets);
     } catch (err) {
@@ -148,7 +161,7 @@ function TriageCorrectionImages({
   const takePhoto = () => {
     if (!canAdd) return;
     setError('');
-    if (webcamSupported()) {
+    if (!prefersDeviceCamera(isMobile) && webcamSupported()) {
       setCaptureOpen(true);
       void startCamera();
       return;
@@ -249,7 +262,7 @@ function TriageCorrectionImages({
       {showSourceButtons && !readOnly ? (
         <View style={styles.sourceActions}>
           <Pressable
-            style={[styles.sourceAction, !canAdd && styles.sourceActionDisabled]}
+            style={[styles.sourceAction, compact && styles.sourceActionCompact, !canAdd && styles.sourceActionDisabled]}
             onPress={takePhoto}
             disabled={!canAdd}
             accessibilityRole="button"
@@ -259,7 +272,7 @@ function TriageCorrectionImages({
             <Text style={[styles.sourceActionText, !canAdd && styles.sourceActionTextDisabled]}>Camera</Text>
           </Pressable>
           <Pressable
-            style={[styles.sourceAction, !canAdd && styles.sourceActionDisabled]}
+            style={[styles.sourceAction, compact && styles.sourceActionCompact, !canAdd && styles.sourceActionDisabled]}
             onPress={chooseFiles}
             disabled={!canAdd}
             accessibilityRole="button"
@@ -596,6 +609,9 @@ const styles = StyleSheet.create({
       web: { cursor: 'pointer' },
       default: {},
     }),
+  },
+  sourceActionCompact: {
+    minHeight: 44,
   },
   sourceActionDisabled: {
     opacity: 0.35,
