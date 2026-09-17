@@ -379,7 +379,7 @@ export default function EmailsScreen({
     }
     if (!oauthApp?.configured || !oauthApp.clientId) {
       setError(
-        'Google mail is not set up on the server yet. A system admin needs to add GOOGLE_MAIL_CLIENT_ID and GOOGLE_MAIL_CLIENT_SECRET, then deploy the proxy.',
+        'Google mail is not set up on the server yet. Ask a system admin to add the Gmail OAuth app on the server, then deploy the proxy.',
       );
       return;
     }
