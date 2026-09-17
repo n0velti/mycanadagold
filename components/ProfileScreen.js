@@ -600,81 +600,81 @@ export default function ProfileScreen({
             <>
               <View style={[styles.heroWrap, isMobile && styles.heroWrapMobile]}>
                 <View style={[styles.hero, isMobile && styles.heroMobile]}>
-            <View style={styles.avatarButton}>
-              <Pressable
-                onPress={handleViewAvatar}
-                disabled={avatarBusy}
-                style={styles.avatarTap}
-                accessibilityRole="button"
-                accessibilityLabel={avatarUrl ? `View ${name || 'profile'} photo` : 'View photo'}
-              >
-                <View style={[styles.avatarRing, { borderRadius: (avatarSize + 12) / 2 }]}>
-                  <ProfileAvatar uri={avatarUrl} name={name} size={avatarSize} style={styles.avatar} />
-                </View>
-              </Pressable>
-              {canEdit ? (
-                <Pressable
-                  onPress={handlePickAvatar}
-                  disabled={avatarBusy}
-                  style={styles.avatarEdit}
-                  accessibilityRole="button"
-                  accessibilityLabel={avatarUrl ? 'Edit profile photo' : 'Add a profile photo'}
-                  hitSlop={4}
-                >
-                  {avatarBusy ? (
-                    <ActivityIndicator size="small" color="#fff" />
-                  ) : (
-                    <Ionicons name="pencil" size={14} color="#fff" />
-                  )}
-                </Pressable>
-              ) : null}
-            </View>
+                  <View style={styles.avatarButton}>
+                    <Pressable
+                      onPress={handleViewAvatar}
+                      disabled={avatarBusy}
+                      style={styles.avatarTap}
+                      accessibilityRole="button"
+                      accessibilityLabel={avatarUrl ? `View ${name || 'profile'} photo` : 'View photo'}
+                    >
+                      <View style={[styles.avatarRing, { borderRadius: (avatarSize + 12) / 2 }]}>
+                        <ProfileAvatar uri={avatarUrl} name={name} size={avatarSize} style={styles.avatar} />
+                      </View>
+                    </Pressable>
+                    {canEdit ? (
+                      <Pressable
+                        onPress={handlePickAvatar}
+                        disabled={avatarBusy}
+                        style={styles.avatarEdit}
+                        accessibilityRole="button"
+                        accessibilityLabel={avatarUrl ? 'Edit profile photo' : 'Add a profile photo'}
+                        hitSlop={4}
+                      >
+                        {avatarBusy ? (
+                          <ActivityIndicator size="small" color="#fff" />
+                        ) : (
+                          <Ionicons name="pencil" size={14} color="#fff" />
+                        )}
+                      </Pressable>
+                    ) : null}
+                  </View>
 
-            <View style={[styles.heroCopy, isMobile && styles.heroCopyMobile]}>
-              <Text style={[styles.name, isMobile && styles.nameMobile]} numberOfLines={2}>
-                {name}
-              </Text>
-              {subtitle ? <Text style={styles.meta}>{subtitle}</Text> : null}
-              {email ? <Text style={styles.email}>{email}</Text> : null}
-
-              <View style={[styles.actions, isMobile && styles.actionsMobile]}>
-                <ActionIcon
-                  icon="paper-plane-outline"
-                  label="Direct message"
-                  onPress={() => onMessage?.(profileId)}
-                  disabled={!messageEnabled}
-                />
-                <ActionIcon
-                  icon="git-network-outline"
-                  label="Org chart"
-                  onPress={() => {
-                    setActionError('');
-                    setOrgOpen(true);
-                  }}
-                />
-                <ActionIcon
-                  icon="videocam-outline"
-                  label="Video call"
-                  onPress={() => void handleVideoCall()}
-                  disabled={!canPhone}
-                  busy={callBusy}
-                />
-                <ActionIcon
-                  icon="call-outline"
-                  label="Phone call"
-                  onPress={handlePhoneCall}
-                  disabled={!canPhone}
-                  busy={callBusy}
-                />
-                {canEdit ? (
-                  <ActionIcon
-                    icon="settings-outline"
-                    label="Settings"
-                    onPress={() => setSettingsOpen(true)}
-                  />
-                ) : null}
+                  <View style={[styles.heroCopy, isMobile && styles.heroCopyMobile]}>
+                    <Text style={[styles.name, isMobile && styles.nameMobile]} numberOfLines={2}>
+                      {name}
+                    </Text>
+                    {subtitle ? <Text style={styles.meta}>{subtitle}</Text> : null}
+                    {email ? <Text style={styles.email}>{email}</Text> : null}
                   </View>
                 </View>
+
+                <View style={[styles.actions, isMobile && styles.actionsMobile]}>
+                  <ActionIcon
+                    icon="paper-plane-outline"
+                    label="Direct message"
+                    onPress={() => onMessage?.(profileId)}
+                    disabled={!messageEnabled}
+                  />
+                  <ActionIcon
+                    icon="git-network-outline"
+                    label="Org chart"
+                    onPress={() => {
+                      setActionError('');
+                      setOrgOpen(true);
+                    }}
+                  />
+                  <ActionIcon
+                    icon="videocam-outline"
+                    label="Video call"
+                    onPress={() => void handleVideoCall()}
+                    disabled={!canPhone}
+                    busy={callBusy}
+                  />
+                  <ActionIcon
+                    icon="call-outline"
+                    label="Phone call"
+                    onPress={handlePhoneCall}
+                    disabled={!canPhone}
+                    busy={callBusy}
+                  />
+                  {canEdit ? (
+                    <ActionIcon
+                      icon="settings-outline"
+                      label="Settings"
+                      onPress={() => setSettingsOpen(true)}
+                    />
+                  ) : null}
                 </View>
               </View>
 
@@ -836,7 +836,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 28,
     paddingTop: 8,
-    paddingBottom: 28,
+    paddingBottom: 12,
   },
   heroWrap: {
     width: '100%',
@@ -851,7 +851,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 16,
     paddingTop: 12,
-    paddingBottom: 24,
+    paddingBottom: 8,
   },
   avatarButton: {
     position: 'relative',
@@ -928,16 +928,23 @@ const styles = StyleSheet.create({
   },
   actions: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexWrap: 'nowrap',
     alignItems: 'flex-start',
-    gap: 8,
-    marginTop: 16,
+    gap: 4,
+    marginTop: 8,
+    marginBottom: 20,
   },
   actionsMobile: {
     justifyContent: 'center',
+    width: '100%',
+    marginTop: 4,
   },
   actionItem: {
-    width: 76,
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: 0,
+    maxWidth: 76,
+    minWidth: 56,
     alignItems: 'center',
     gap: 6,
     ...Platform.select({

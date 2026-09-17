@@ -1,7 +1,6 @@
-import { createElement, useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
@@ -11,9 +10,8 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
-import { formatDateParam, formatPickerDate, parseDateParam } from '../lib/transactions';
+import { formatDateParam, parseDateParam } from '../lib/transactions';
 import {
   addProfileNote,
   deleteProfileNote,
@@ -28,6 +26,7 @@ import { useIsMobile } from '../lib/mobileUi';
 
 const fontFamily = 'Sohne';
 const GOLD = '#E8C36A';
+const WEEKDAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 
 const IMPORTANCE_COLOR = {
   low: '#8e8e93',
@@ -36,173 +35,289 @@ const IMPORTANCE_COLOR = {
   urgent: '#ff453a',
 };
 
-function DueDateField({ value, onChange }) {
-  const [open, setOpen] = useState(false);
-  const dateValue = parseDateParam(value || new Date());
+const EMPTY_DRAFT = {
+  body: '',
+  dueOn: '',
+  category: 'general',
+  importance: 'medium',
+};
 
-  if (Platform.OS === 'web') {
-    return createElement('input', {
-      type: 'date',
-      value: value || '',
-      onChange: (event) => onChange(event.target.value),
-      style: {
-        fontFamily,
-        fontSize: 15,
-        color: '#1d1d1f',
-        border: '1px solid #d1d1d6',
-        borderRadius: 10,
-        padding: '10px 12px',
-        background: '#fff',
-        width: '100%',
-        boxSizing: 'border-box',
-      },
-    });
-  }
-
-  return (
-    <>
-      <Pressable style={styles.dateChip} onPress={() => setOpen(true)}>
-        <Ionicons name="calendar-outline" size={16} color="#8e8e93" />
-        <Text style={styles.dateChipText}>{value ? formatPickerDate(dateValue) : 'None'}</Text>
-      </Pressable>
-      {Platform.OS === 'android' && open ? (
-        <DateTimePicker
-          value={dateValue}
-          mode="date"
-          display="default"
-          onChange={(event, selected) => {
-            setOpen(false);
-            if (event.type !== 'dismissed' && selected) onChange(formatDateParam(selected));
-          }}
-        />
-      ) : null}
-      {Platform.OS === 'ios' ? (
-        <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
-          <View style={styles.pickerBackdrop}>
-            <Pressable style={StyleSheet.absoluteFill} onPress={() => setOpen(false)} />
-            <View style={styles.pickerCard}>
-              <View style={styles.pickerHeader}>
-                <Pressable onPress={() => onChange('')} hitSlop={8}>
-                  <Text style={styles.pickerClear}>Clear</Text>
-                </Pressable>
-                <Text style={styles.pickerTitle}>Due</Text>
-                <Pressable onPress={() => setOpen(false)} hitSlop={8}>
-                  <Text style={styles.pickerDone}>Done</Text>
-                </Pressable>
-              </View>
-              <DateTimePicker
-                value={dateValue}
-                mode="date"
-                display="spinner"
-                onChange={(_, selected) => {
-                  if (selected) onChange(formatDateParam(selected));
-                }}
-              />
-            </View>
-          </View>
-        </Modal>
-      ) : null}
-    </>
-  );
+function startOfMonth(date) {
+  const value = parseDateParam(date);
+  return new Date(value.getFullYear(), value.getMonth(), 1);
 }
 
-function ChipRow({ options, value, onChange }) {
-  return (
-    <View style={styles.chipRow}>
-      {options.map((option) => {
-        const selected = option.key === value;
-        return (
-          <Pressable
-            key={option.key}
-            onPress={() => onChange(option.key)}
-            style={[styles.chip, selected && styles.chipSelected]}
-            accessibilityRole="button"
-            accessibilityState={{ selected }}
-          >
-            <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{option.label}</Text>
-          </Pressable>
-        );
-      })}
-    </View>
-  );
+function addMonths(date, delta) {
+  const value = startOfMonth(date);
+  return new Date(value.getFullYear(), value.getMonth() + delta, 1);
 }
 
-function AddNoteModal({ visible, onClose, onSave, saving, error }) {
-  const [body, setBody] = useState('');
-  const [dueOn, setDueOn] = useState('');
-  const [category, setCategory] = useState('general');
-  const [importance, setImportance] = useState('medium');
+function sameDay(left, right) {
+  if (!left || !right) return false;
+  return formatDateParam(left) === formatDateParam(right);
+}
+
+function CalendarModal({ visible, value, onChange, onClose }) {
+  const selected = value ? parseDateParam(value) : null;
+  const today = parseDateParam(new Date());
+  const [cursor, setCursor] = useState(() => startOfMonth(selected || today));
 
   useEffect(() => {
     if (!visible) return;
-    setBody('');
-    setDueOn('');
-    setCategory('general');
-    setImportance('medium');
-  }, [visible]);
+    setCursor(startOfMonth(value ? parseDateParam(value) : new Date()));
+  }, [visible, value]);
+
+  const cells = useMemo(() => {
+    const daysInMonth = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0).getDate();
+    const offset = cursor.getDay();
+    const next = [];
+    for (let i = 0; i < offset; i += 1) next.push(null);
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      next.push(new Date(cursor.getFullYear(), cursor.getMonth(), day));
+    }
+    while (next.length % 7 !== 0) next.push(null);
+    return next;
+  }, [cursor]);
+
+  const title = cursor.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        style={styles.modalRoot}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
-        <Pressable style={styles.orgBackdrop} onPress={onClose} accessibilityLabel="Close add note" />
-        <View style={styles.modalSheet} pointerEvents="box-none">
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Add note</Text>
-              <Pressable onPress={onClose} hitSlop={8} accessibilityLabel="Close">
-                <Ionicons name="close" size={22} color="#8e8e93" />
-              </Pressable>
-            </View>
-            <ScrollView
-              keyboardShouldPersistTaps="handled"
-              contentContainerStyle={styles.modalBody}
-            >
-              <Text style={styles.fieldLabel}>Note</Text>
-              <TextInput
-                value={body}
-                onChangeText={setBody}
-                placeholder="Write a note"
-                placeholderTextColor="#8e8e93"
-                multiline
-                style={styles.noteInput}
-              />
-              <Text style={styles.fieldLabel}>Due</Text>
-              <DueDateField value={dueOn} onChange={setDueOn} />
-              {dueOn && Platform.OS === 'web' ? (
-                <Pressable onPress={() => setDueOn('')} hitSlop={6} style={styles.clearDue}>
-                  <Text style={styles.clearDueText}>Clear due date</Text>
-                </Pressable>
-              ) : null}
-              <Text style={styles.fieldLabel}>Category</Text>
-              <ChipRow options={NOTE_CATEGORIES} value={category} onChange={setCategory} />
-              <Text style={styles.fieldLabel}>Importance</Text>
-              <ChipRow options={NOTE_IMPORTANCE} value={importance} onChange={setImportance} />
-              {error ? <Text style={styles.modalError}>{error}</Text> : null}
-            </ScrollView>
+      <View style={styles.pickerRoot}>
+        <Pressable style={styles.pickerBackdrop} onPress={onClose} accessibilityLabel="Close calendar" />
+        <View style={styles.calCard}>
+          <View style={styles.calHeader}>
             <Pressable
-              onPress={() => onSave({ body, dueOn, category, importance })}
-              disabled={saving || !body.trim()}
-              style={({ hovered, pressed }) => [
-                styles.saveButton,
-                (hovered || pressed) && !saving && styles.saveButtonPressed,
-                (saving || !body.trim()) && styles.saveButtonDisabled,
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel="Save note"
+              onPress={() => setCursor((current) => addMonths(current, -1))}
+              hitSlop={8}
+              accessibilityLabel="Previous month"
+              style={styles.calNav}
             >
-              {saving ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.saveButtonText}>Save note</Text>
-              )}
+              <Ionicons name="chevron-back" size={20} color="#1d1d1f" />
+            </Pressable>
+            <Text style={styles.calTitle}>{title}</Text>
+            <Pressable
+              onPress={() => setCursor((current) => addMonths(current, 1))}
+              hitSlop={8}
+              accessibilityLabel="Next month"
+              style={styles.calNav}
+            >
+              <Ionicons name="chevron-forward" size={20} color="#1d1d1f" />
+            </Pressable>
+          </View>
+          <View style={styles.calWeekRow}>
+            {WEEKDAYS.map((day) => (
+              <Text key={day} style={styles.calWeekday}>
+                {day}
+              </Text>
+            ))}
+          </View>
+          <View style={styles.calGrid}>
+            {cells.map((day, index) => {
+              if (!day) {
+                return <View key={`empty-${index}`} style={styles.calDay} />;
+              }
+              const key = formatDateParam(day);
+              const isSelected = selected && sameDay(day, selected);
+              const isToday = sameDay(day, today);
+              return (
+                <Pressable
+                  key={key}
+                  onPress={() => {
+                    onChange(key);
+                    onClose();
+                  }}
+                  style={styles.calDay}
+                  accessibilityRole="button"
+                  accessibilityLabel={day.toLocaleDateString()}
+                  accessibilityState={{ selected: isSelected }}
+                >
+                  <View
+                    style={[
+                      styles.calDayInner,
+                      isToday && styles.calDayToday,
+                      isSelected && styles.calDaySelected,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.calDayText,
+                        isToday && styles.calDayTextToday,
+                        isSelected && styles.calDayTextSelected,
+                      ]}
+                    >
+                      {day.getDate()}
+                    </Text>
+                  </View>
+                </Pressable>
+              );
+            })}
+          </View>
+          <View style={styles.calFooter}>
+            <Pressable
+              onPress={() => {
+                onChange('');
+                onClose();
+              }}
+              hitSlop={8}
+              accessibilityLabel="Clear due date"
+            >
+              <Text style={styles.calClear}>Clear</Text>
+            </Pressable>
+            <Pressable onPress={onClose} hitSlop={8} accessibilityLabel="Done">
+              <Text style={styles.calDone}>Done</Text>
             </Pressable>
           </View>
         </View>
-      </KeyboardAvoidingView>
+      </View>
     </Modal>
+  );
+}
+
+function ChoiceModal({ visible, title, options, value, onChange, onClose }) {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={styles.pickerRoot}>
+        <Pressable style={styles.pickerBackdrop} onPress={onClose} accessibilityLabel={`Close ${title}`} />
+        <View style={styles.choiceCard}>
+          <Text style={styles.choiceTitle}>{title}</Text>
+          {options.map((option) => {
+            const selected = option.key === value;
+            return (
+              <Pressable
+                key={option.key}
+                onPress={() => {
+                  onChange(option.key);
+                  onClose();
+                }}
+                style={({ hovered, pressed }) => [
+                  styles.choiceRow,
+                  selected && styles.choiceRowSelected,
+                  (hovered || pressed) && styles.choiceRowHover,
+                ]}
+                accessibilityRole="button"
+                accessibilityState={{ selected }}
+              >
+                <Text style={[styles.choiceText, selected && styles.choiceTextSelected]}>{option.label}</Text>
+                {selected ? <Ionicons name="checkmark" size={16} color="#1d1d1f" /> : null}
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function ComposerRow({ draft, onChange, onSave, onCancel, saving, canSave }) {
+  const [picker, setPicker] = useState(null);
+  const importanceColor = IMPORTANCE_COLOR[draft.importance] || IMPORTANCE_COLOR.medium;
+
+  return (
+    <View style={[styles.tableRow, styles.composerRow]}>
+      <Text style={[styles.cell, styles.colDate]} numberOfLines={1}>
+        {formatNoteDate(new Date())}
+      </Text>
+      <Text style={[styles.cell, styles.colFrom]} numberOfLines={1}>
+        You
+      </Text>
+      <TextInput
+        value={draft.body}
+        onChangeText={(body) => onChange({ ...draft, body })}
+        placeholder="Write a note"
+        placeholderTextColor="#8e8e93"
+        multiline
+        autoFocus
+        style={[styles.cell, styles.colNote, styles.noteField]}
+        onSubmitEditing={() => {
+          if (canSave) onSave();
+        }}
+      />
+      <Pressable
+        onPress={() => setPicker('due')}
+        style={[styles.colDue, styles.inlinePick]}
+        accessibilityRole="button"
+        accessibilityLabel={draft.dueOn ? `Due ${formatNoteDate(draft.dueOn)}` : 'Set due date'}
+      >
+        <Ionicons name="calendar-outline" size={14} color={draft.dueOn ? GOLD : '#8e8e93'} />
+        <Text style={[styles.cell, styles.inlinePickText, !draft.dueOn && styles.placeholder]} numberOfLines={1}>
+          {draft.dueOn ? formatNoteDate(draft.dueOn) : 'Due'}
+        </Text>
+      </Pressable>
+      <Pressable
+        onPress={() => setPicker('category')}
+        style={[styles.colCategory, styles.inlinePick]}
+        accessibilityRole="button"
+        accessibilityLabel={`Category ${noteCategoryLabel(draft.category)}`}
+      >
+        <Text style={[styles.cell, styles.inlinePickText]} numberOfLines={1}>
+          {noteCategoryLabel(draft.category)}
+        </Text>
+        <Ionicons name="chevron-down" size={12} color="#8e8e93" />
+      </Pressable>
+      <View style={styles.colImportance}>
+        <Pressable
+          onPress={() => setPicker('importance')}
+          style={[styles.inlinePick, styles.importancePick]}
+          accessibilityRole="button"
+          accessibilityLabel={`Importance ${noteImportanceLabel(draft.importance)}`}
+        >
+          <Text
+            style={[styles.cell, styles.inlinePickText, styles.importanceText, { color: importanceColor }]}
+            numberOfLines={1}
+          >
+            {noteImportanceLabel(draft.importance)}
+          </Text>
+          <Ionicons name="chevron-down" size={12} color="#8e8e93" />
+        </Pressable>
+        <Pressable
+          onPress={onSave}
+          disabled={saving || !canSave}
+          hitSlop={6}
+          accessibilityRole="button"
+          accessibilityLabel="Save note"
+          style={styles.rowAction}
+        >
+          {saving ? (
+            <ActivityIndicator size="small" color={GOLD} />
+          ) : (
+            <Ionicons name="checkmark" size={16} color={canSave ? GOLD : '#5c5c5c'} />
+          )}
+        </Pressable>
+        <Pressable
+          onPress={onCancel}
+          disabled={saving}
+          hitSlop={6}
+          accessibilityRole="button"
+          accessibilityLabel="Cancel note"
+          style={styles.rowAction}
+        >
+          <Ionicons name="close" size={16} color="#8e8e93" />
+        </Pressable>
+      </View>
+      <CalendarModal
+        visible={picker === 'due'}
+        value={draft.dueOn}
+        onChange={(dueOn) => onChange({ ...draft, dueOn })}
+        onClose={() => setPicker(null)}
+      />
+      <ChoiceModal
+        visible={picker === 'category'}
+        title="Category"
+        options={NOTE_CATEGORIES}
+        value={draft.category}
+        onChange={(category) => onChange({ ...draft, category })}
+        onClose={() => setPicker(null)}
+      />
+      <ChoiceModal
+        visible={picker === 'importance'}
+        title="Importance"
+        options={NOTE_IMPORTANCE}
+        value={draft.importance}
+        onChange={(importance) => onChange({ ...draft, importance })}
+        onClose={() => setPicker(null)}
+      />
+    </View>
   );
 }
 
@@ -259,13 +374,15 @@ export default function ProfileNotesTable({ profileId, myId }) {
   const [notes, setNotes] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [addOpen, setAddOpen] = useState(false);
+  const [draft, setDraft] = useState(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [deletingId, setDeletingId] = useState('');
 
   useEffect(() => {
     let cancelled = false;
+    setDraft(null);
+    setSaveError('');
     if (!profileId) {
       setNotes([]);
       setError('');
@@ -293,14 +410,20 @@ export default function ProfileNotesTable({ profileId, myId }) {
     };
   }, [profileId]);
 
-  const handleSave = async (fields) => {
-    if (saving) return;
+  const startAdd = () => {
+    if (!profileId || saving) return;
+    setSaveError('');
+    setDraft({ ...EMPTY_DRAFT });
+  };
+
+  const handleSave = async () => {
+    if (!draft || saving || !draft.body.trim()) return;
     setSaving(true);
     setSaveError('');
     try {
-      const row = await addProfileNote(profileId, fields);
+      const row = await addProfileNote(profileId, draft);
       setNotes((current) => [row, ...current.filter((note) => note.id !== row.id)]);
-      setAddOpen(false);
+      setDraft(null);
     } catch (err) {
       setSaveError(err?.message || 'Could not save that note.');
     } finally {
@@ -327,14 +450,12 @@ export default function ProfileNotesTable({ profileId, myId }) {
       <View style={styles.tableHead}>
         <Text style={styles.tableTitle}>Notes</Text>
         <Pressable
-          onPress={() => {
-            setSaveError('');
-            setAddOpen(true);
-          }}
-          disabled={!profileId}
+          onPress={startAdd}
+          disabled={!profileId || Boolean(draft)}
           style={({ hovered, pressed }) => [
             styles.addButton,
             (hovered || pressed) && styles.addButtonPressed,
+            (!profileId || draft) && styles.addButtonDisabled,
           ]}
           accessibilityRole="button"
           accessibilityLabel="Add note"
@@ -351,11 +472,26 @@ export default function ProfileNotesTable({ profileId, myId }) {
         <Text style={[styles.headerCell, styles.colCategory]}>Category</Text>
         <Text style={[styles.headerCell, styles.colImportance]}>Importance</Text>
       </View>
+      {draft ? (
+        <ComposerRow
+          draft={draft}
+          onChange={setDraft}
+          onSave={() => void handleSave()}
+          onCancel={() => {
+            if (!saving) {
+              setDraft(null);
+              setSaveError('');
+            }
+          }}
+          saving={saving}
+          canSave={Boolean(draft.body.trim())}
+        />
+      ) : null}
       {loading ? (
         <View style={styles.empty}>
           <ActivityIndicator color={GOLD} />
         </View>
-      ) : notes.length === 0 ? (
+      ) : notes.length === 0 && !draft ? (
         <View style={styles.empty}>
           <Text style={styles.emptyText}>
             {error || 'No notes yet. Add one to keep a record on this profile.'}
@@ -373,6 +509,7 @@ export default function ProfileNotesTable({ profileId, myId }) {
           />
         ))
       )}
+      {saveError ? <Text style={styles.tableError}>{saveError}</Text> : null}
       {error && notes.length > 0 ? <Text style={styles.tableError}>{error}</Text> : null}
     </View>
   );
@@ -386,15 +523,6 @@ export default function ProfileNotesTable({ profileId, myId }) {
       ) : (
         table
       )}
-      <AddNoteModal
-        visible={addOpen}
-        onClose={() => {
-          if (!saving) setAddOpen(false);
-        }}
-        onSave={(fields) => void handleSave(fields)}
-        saving={saving}
-        error={saveError}
-      />
     </View>
   );
 }
@@ -408,13 +536,13 @@ const styles = StyleSheet.create({
     marginTop: 20,
   },
   hScroll: {
-    minWidth: 760,
+    minWidth: 780,
   },
   table: {
     backgroundColor: '#111',
     borderRadius: 14,
     overflow: 'hidden',
-    minWidth: 760,
+    minWidth: 780,
   },
   tableHead: {
     flexDirection: 'row',
@@ -447,6 +575,9 @@ const styles = StyleSheet.create({
   },
   addButtonPressed: {
     opacity: 0.85,
+  },
+  addButtonDisabled: {
+    opacity: 0.45,
   },
   addButtonText: {
     fontFamily,
@@ -481,6 +612,10 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: 'rgba(255,255,255,0.06)',
   },
+  composerRow: {
+    alignItems: 'center',
+    backgroundColor: '#1c1c1e',
+  },
   cell: {
     fontFamily,
     fontSize: 13,
@@ -493,15 +628,60 @@ const styles = StyleSheet.create({
   colDue: { width: 108, flexShrink: 0 },
   colCategory: { width: 104, flexShrink: 0 },
   colImportance: {
-    width: 108,
+    width: 128,
     flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
   },
+  importancePick: {
+    flex: 1,
+    minWidth: 0,
+  },
   importanceText: {
     flex: 1,
     fontWeight: '600',
+  },
+  noteField: {
+    minHeight: 34,
+    maxHeight: 72,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    color: '#f2f2f7',
+    textAlignVertical: 'top',
+    ...Platform.select({
+      web: { outlineStyle: 'none' },
+      default: {},
+    }),
+  },
+  inlinePick: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    minHeight: 28,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  inlinePickText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  placeholder: {
+    color: '#8e8e93',
+  },
+  rowAction: {
+    width: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
   deleteButton: {
     width: 20,
@@ -535,201 +715,159 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 12,
   },
-  orgBackdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.35)',
-  },
-  modalRoot: {
+  pickerRoot: {
     flex: 1,
-  },
-  modalSheet: {
-    ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
   },
-  modalCard: {
+  pickerBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  calCard: {
     width: '100%',
-    maxWidth: 460,
-    maxHeight: '86%',
+    maxWidth: 340,
     backgroundColor: '#fff',
     borderRadius: 16,
-    overflow: 'hidden',
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 10,
   },
-  modalHeader: {
+  calHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e5e5ea',
+    marginBottom: 8,
   },
-  modalTitle: {
+  calNav: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  calTitle: {
     fontFamily,
     fontSize: 16,
     fontWeight: '600',
     color: '#1d1d1f',
     letterSpacing: -0.2,
   },
-  modalBody: {
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    gap: 10,
+  calWeekRow: {
+    flexDirection: 'row',
   },
-  fieldLabel: {
+  calWeekday: {
+    flex: 1,
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#8e8e93',
+    textAlign: 'center',
+    paddingVertical: 4,
+  },
+  calGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
+  calDay: {
+    width: '14.2857%',
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  calDayInner: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  calDayToday: {
+    borderWidth: 1,
+    borderColor: GOLD,
+  },
+  calDaySelected: {
+    backgroundColor: GOLD,
+    borderWidth: 0,
+  },
+  calDayText: {
+    fontFamily,
+    fontSize: 14,
+    color: '#1d1d1f',
+  },
+  calDayTextToday: {
+    fontWeight: '600',
+  },
+  calDayTextSelected: {
+    fontWeight: '700',
+    color: '#111',
+  },
+  calFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 8,
+    paddingHorizontal: 6,
+  },
+  calClear: {
+    fontFamily,
+    fontSize: 15,
+    color: '#8e8e93',
+  },
+  calDone: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#007AFF',
+  },
+  choiceCard: {
+    width: '100%',
+    maxWidth: 280,
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    overflow: 'hidden',
+    paddingVertical: 8,
+  },
+  choiceTitle: {
     fontFamily,
     fontSize: 13,
     fontWeight: '600',
     color: '#8e8e93',
     letterSpacing: -0.08,
-    marginTop: 4,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
   },
-  noteInput: {
-    fontFamily,
-    fontSize: 15,
-    color: '#1d1d1f',
-    minHeight: 96,
-    borderWidth: 1,
-    borderColor: '#d1d1d6',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    textAlignVertical: 'top',
-    ...Platform.select({
-      web: { outlineStyle: 'none' },
-      default: {},
-    }),
-  },
-  dateChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+  choiceRow: {
     minHeight: 44,
-    borderWidth: 1,
-    borderColor: '#d1d1d6',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  dateChipText: {
-    fontFamily,
-    fontSize: 15,
-    color: '#1d1d1f',
-  },
-  clearDue: {
-    alignSelf: 'flex-start',
-    marginTop: -4,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  clearDueText: {
-    fontFamily,
-    fontSize: 13,
-    color: '#007AFF',
-  },
-  chipRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
-  chip: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#d1d1d6',
-    borderRadius: 8,
-    paddingVertical: 7,
-    paddingHorizontal: 10,
-    backgroundColor: '#fff',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  chipSelected: {
-    backgroundColor: '#1d1d1f',
-    borderColor: '#1d1d1f',
-  },
-  chipText: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#1d1d1f',
-  },
-  chipTextSelected: {
-    color: '#fff',
-  },
-  modalError: {
-    fontFamily,
-    fontSize: 13,
-    color: '#b42318',
-  },
-  saveButton: {
-    margin: 16,
-    marginTop: 4,
-    minHeight: 44,
-    borderRadius: 10,
-    backgroundColor: '#1d1d1f',
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  saveButtonPressed: {
-    opacity: 0.88,
-  },
-  saveButtonDisabled: {
-    opacity: 0.45,
-  },
-  saveButtonText: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#fff',
-    letterSpacing: -0.2,
-  },
-  pickerBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.35)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 24,
-  },
-  pickerCard: {
-    width: '100%',
-    maxWidth: 360,
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    overflow: 'hidden',
-  },
-  pickerHeader: {
+    paddingHorizontal: 16,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
-  pickerTitle: {
+  choiceRowSelected: {
+    backgroundColor: '#f2f2f7',
+  },
+  choiceRowHover: {
+    backgroundColor: '#e8e8ed',
+  },
+  choiceText: {
     fontFamily,
     fontSize: 16,
-    fontWeight: '600',
     color: '#1d1d1f',
   },
-  pickerDone: {
-    fontFamily,
-    fontSize: 15,
+  choiceTextSelected: {
     fontWeight: '600',
-    color: '#007AFF',
-  },
-  pickerClear: {
-    fontFamily,
-    fontSize: 15,
-    color: '#8e8e93',
   },
 });

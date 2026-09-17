@@ -367,7 +367,7 @@ export function EmptyState({ icon, title, body, action }) {
 }
 
 /** Text-only tabs with a thin underline, used at every level of the app. */
-export function TextTabs({ options, value, onChange, trailing, size = 'md', style }) {
+export function TextTabs({ options, value, onChange, leading, trailing, size = 'md', style }) {
   const isMobile = useIsMobile();
   const tabs = options.map((option) => {
     const active = option.key === value;
@@ -400,21 +400,46 @@ export function TextTabs({ options, value, onChange, trailing, size = 'md', styl
     );
   });
 
+  const tabRow = isMobile ? (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={styles.tabsMobile}
+      style={styles.tabsMobileScroll}
+    >
+      {tabs}
+    </ScrollView>
+  ) : (
+    <View style={[styles.tabs, size === 'lg' && styles.tabsLg]}>{tabs}</View>
+  );
+
+  const leadingNode = leading ? (
+    <View
+      style={[
+        styles.tabLeading,
+        size === 'lg' && styles.tabLeadingLg,
+        isMobile && styles.tabLeadingMobile,
+      ]}
+    >
+      {leading}
+    </View>
+  ) : null;
+
   return (
     <View
       style={[styles.tabBar, size === 'lg' && styles.tabBarLg, isMobile && styles.tabBarMobile, style]}
       accessibilityRole="tablist"
     >
       {isMobile ? (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.tabsMobile}
-        >
-          {tabs}
-        </ScrollView>
+        <View style={styles.tabMainMobile}>
+          {leadingNode}
+          {tabRow}
+        </View>
       ) : (
-        <View style={[styles.tabs, size === 'lg' && styles.tabsLg]}>{tabs}</View>
+        <>
+          {leadingNode}
+          {tabRow}
+        </>
       )}
       {trailing ? (
         <View
@@ -427,6 +452,78 @@ export function TextTabs({ options, value, onChange, trailing, size = 'md', styl
           {trailing}
         </View>
       ) : null}
+    </View>
+  );
+}
+
+/** iOS segmented slider: gray track with a sliding white thumb. */
+export function SegmentedSlider({ options, value, onChange, style }) {
+  const isMobile = useIsMobile();
+  const keys = (options || []).map((option) => option.key);
+  const index = Math.max(0, keys.indexOf(value));
+  const [trackW, setTrackW] = useState(0);
+  const slide = useRef(new Animated.Value(index)).current;
+  const inset = 2;
+  const count = Math.max(keys.length, 1);
+  const segW = Math.max(0, (trackW - inset * 2) / count);
+
+  useEffect(() => {
+    Animated.spring(slide, {
+      toValue: index,
+      useNativeDriver: true,
+      damping: 26,
+      stiffness: 420,
+      mass: 0.72,
+    }).start();
+  }, [index, slide]);
+
+  return (
+    <View
+      style={[styles.segmentedSlider, style]}
+      onLayout={(event) => setTrackW(event.nativeEvent.layout.width)}
+      accessibilityRole="tablist"
+    >
+      {segW > 0 && keys.length > 1 ? (
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.segmentedThumb,
+            {
+              width: segW,
+              transform: [
+                {
+                  translateX: slide.interpolate({
+                    inputRange: keys.map((_, i) => i),
+                    outputRange: keys.map((_, i) => i * segW),
+                  }),
+                },
+              ],
+            },
+          ]}
+        />
+      ) : segW > 0 ? (
+        <View pointerEvents="none" style={[styles.segmentedThumb, { width: segW }]} />
+      ) : null}
+      {(options || []).map((option) => {
+        const active = option.key === value;
+        return (
+          <Pressable
+            key={option.key}
+            style={[styles.segmentedHit, isMobile && styles.segmentedHitMobile]}
+            onPress={() => onChange(option.key)}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: active }}
+            accessibilityLabel={option.label}
+          >
+            <Text style={[styles.segmentedLabel, active && styles.segmentedLabelActive]} numberOfLines={1}>
+              {option.label}
+            </Text>
+            {option.count != null ? (
+              <Text style={[styles.segmentedCount, active && styles.segmentedCountActive]}>{option.count}</Text>
+            ) : null}
+          </Pressable>
+        );
+      })}
     </View>
   );
 }
@@ -908,6 +1005,28 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
     gap: 20,
   },
+  tabLeading: {
+    flexShrink: 0,
+    alignSelf: 'center',
+    marginRight: 20,
+  },
+  tabLeadingLg: {
+    marginRight: 24,
+  },
+  tabLeadingMobile: {
+    marginRight: 12,
+    alignSelf: 'center',
+  },
+  tabMainMobile: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minWidth: 0,
+    width: '100%',
+  },
+  tabsMobileScroll: {
+    flex: 1,
+    minWidth: 0,
+  },
   tabsLg: {
     gap: 28,
   },
@@ -1265,6 +1384,67 @@ const styles = StyleSheet.create({
     minWidth: 0,
     fontFamily: FONT,
     fontSize: 14,
+    color: T.text,
+  },
+  segmentedSlider: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    alignSelf: 'center',
+    height: 32,
+    minWidth: 220,
+    padding: 2,
+    borderRadius: 9,
+    backgroundColor: T.fillSoft,
+  },
+  segmentedThumb: {
+    position: 'absolute',
+    top: 2,
+    bottom: 2,
+    left: 2,
+    borderRadius: 7,
+    backgroundColor: '#fff',
+    ...Platform.select({
+      web: { boxShadow: '0 1px 3px rgba(0,0,0,0.12), 0 1px 1px rgba(0,0,0,0.04)' },
+      default: {
+        shadowColor: '#000',
+        shadowOpacity: 0.12,
+        shadowRadius: 3,
+        shadowOffset: { width: 0, height: 1 },
+        elevation: 2,
+      },
+    }),
+  },
+  segmentedHit: {
+    flex: 1,
+    zIndex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingHorizontal: 14,
+    ...webCursor,
+  },
+  segmentedHitMobile: {
+    paddingHorizontal: 10,
+  },
+  segmentedLabel: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '500',
+    color: T.text,
+    letterSpacing: -0.2,
+  },
+  segmentedLabelActive: {
+    fontWeight: '600',
+  },
+  segmentedCount: {
+    fontFamily: FONT,
+    fontSize: 12,
+    fontWeight: '500',
+    color: T.secondary,
+    fontVariant: ['tabular-nums'],
+  },
+  segmentedCountActive: {
     color: T.text,
   },
 });

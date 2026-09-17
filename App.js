@@ -20,7 +20,7 @@ import {
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import {
   login as loginRequest,
   logout as logoutRequest,
@@ -125,6 +125,9 @@ import {
   storeKeyFromName,
 } from './lib/storeSettings';
 import TeamsScreen from './components/TeamsScreen';
+import TradeScreen from './components/TradeScreen';
+import LinePhotoCapturePage from './components/LinePhotoCapturePage';
+import { captureTokenFromLocation } from './lib/qrCode';
 import { fetchAureusEmployee } from './lib/aureusEmployees';
 import { useDirectMessages } from './lib/messages';
 
@@ -479,6 +482,24 @@ const MAIN_TABS = [
   { key: 'tools', label: 'Apps', icon: 'apps-outline' },
   { key: 'messages', label: 'Direct Messages', shortLabel: 'Messages', icon: 'chatbubbles-outline' },
 ];
+
+const TRADE_TABS = [
+  { key: 'buy', label: 'Buy' },
+  { key: 'sell', label: 'Sell' },
+];
+
+const TRADE_BUY = {
+  accent: '#1F8A4E',
+  icon: 'arrow-down-circle-outline',
+  fill: 'rgba(31, 138, 78, 0.10)',
+  fillHover: 'rgba(31, 138, 78, 0.16)',
+};
+const TRADE_SELL = {
+  accent: '#C0392B',
+  icon: 'arrow-up-circle-outline',
+  fill: 'rgba(192, 57, 43, 0.09)',
+  fillHover: 'rgba(192, 57, 43, 0.15)',
+};
 
 const PROFILE_TAB = { key: 'profile', label: 'Profile', icon: 'person-outline' };
 
@@ -2949,7 +2970,7 @@ function HomeStoreStatusIcon({ accent, open, compact = false }) {
   );
 }
 
-function HomeStoreCard({ row, people, phoneStats, selected, last, onOpenStore, onOpenPerson, open }) {
+function HomeStoreCard({ row, people, emailStats, phoneStats, selected, last, onOpenStore, onOpenPerson, open }) {
   const accent = storeAccent(row.store);
 
   return (
@@ -2971,6 +2992,7 @@ function HomeStoreCard({ row, people, phoneStats, selected, last, onOpenStore, o
         </Text>
         <HomePeopleStack people={people} compact onOpenPerson={onOpenPerson} />
       </View>
+      <HomeEmailRate stats={emailStats} compact />
       <HomePhoneRate stats={phoneStats} compact />
       <HomeStoreAmount amount={row.totalAmount} count={row.txCount} breakdown={row} compact />
       <Ionicons name="chevron-forward" size={16} color="#c7c7cc" />
@@ -2996,12 +3018,29 @@ function phoneRatioForStore(mergedCallsByStore, storeName, startKey, endKey) {
   return inboundCallRatio(callsInHomeRange(callsForStore(mergedCallsByStore, storeName), startKey, endKey));
 }
 
-function HomePhoneRate({ stats, compact = false }) {
+function emailRatioFromTransactions(transactions) {
+  const captures = buildEmailCaptureByStore(transactions || []);
+  let customerCount = 0;
+  let walkInCount = 0;
+  let withEmail = 0;
+  for (const entry of captures) {
+    customerCount += entry.customerCount;
+    walkInCount += entry.walkInCount;
+    withEmail += entry.withEmail;
+  }
+  const rate = customerCount > 0 ? (withEmail / customerCount) * 100 : null;
+  return {
+    rate,
+    ratio: rate == null ? '—' : `${Math.round(rate)}%`,
+    withEmail,
+    customerCount,
+    walkInCount,
+  };
+}
+
+function HomePercentRate({ stats, compact = false, columnStyle, emptyLabel, noun, tip }) {
   const [anchor, setAnchor] = useState(null);
   const empty = stats?.rate == null;
-  const tip = empty
-    ? ''
-    : `${stats.answered} of ${stats.total} inbound answered${stats.missed ? ` · ${stats.missed} missed` : ''}`;
   const hover =
     Platform.OS === 'web' && tip
       ? {
@@ -3012,9 +3051,9 @@ function HomePhoneRate({ stats, compact = false }) {
 
   return (
     <View
-      style={[compact ? styles.igStorePhoneWrap : styles.homeStoreColPhone, hover && styles.homeStoreAmountHover]}
+      style={[compact ? styles.igStorePhoneWrap : columnStyle, hover && styles.homeStoreAmountHover]}
       {...hover}
-      accessibilityLabel={empty ? 'No phone answer rate' : `Phone answer rate ${stats.ratio}. ${tip}`}
+      accessibilityLabel={empty ? emptyLabel : `${noun} ${stats.ratio}. ${tip}`}
     >
       <Text
         style={[
@@ -3029,6 +3068,42 @@ function HomePhoneRate({ stats, compact = false }) {
       </Text>
       <FloatingTooltip visible={Boolean(anchor && tip)} text={tip} anchorEl={anchor} align="end" />
     </View>
+  );
+}
+
+function HomeEmailRate({ stats, compact = false }) {
+  const empty = stats?.rate == null;
+  const tip = empty
+    ? ''
+    : `${stats.withEmail} of ${stats.customerCount} named with email${
+        stats.walkInCount ? ` · ${stats.walkInCount} walk-in excluded` : ''
+      }`;
+  return (
+    <HomePercentRate
+      stats={stats}
+      compact={compact}
+      columnStyle={styles.homeStoreColEmail}
+      emptyLabel="No email capture rate"
+      noun="Email capture rate"
+      tip={tip}
+    />
+  );
+}
+
+function HomePhoneRate({ stats, compact = false }) {
+  const empty = stats?.rate == null;
+  const tip = empty
+    ? ''
+    : `${stats.answered} of ${stats.total} inbound answered${stats.missed ? ` · ${stats.missed} missed` : ''}`;
+  return (
+    <HomePercentRate
+      stats={stats}
+      compact={compact}
+      columnStyle={styles.homeStoreColPhone}
+      emptyLabel="No phone answer rate"
+      noun="Phone answer rate"
+      tip={tip}
+    />
   );
 }
 
@@ -3163,7 +3238,7 @@ function HomeStoreAmount({ amount, count, strong = false, breakdown = null, comp
   );
 }
 
-function HomeStoreTableRow({ row, people, phoneStats, selected, last, onOpenStore, onOpenPerson, open }) {
+function HomeStoreTableRow({ row, people, emailStats, phoneStats, selected, last, onOpenStore, onOpenPerson, open }) {
   const accent = storeAccent(row.store);
 
   return (
@@ -3194,6 +3269,7 @@ function HomeStoreTableRow({ row, people, phoneStats, selected, last, onOpenStor
             {homeStoreMeta(row)}
           </Text>
         </View>
+        <HomeEmailRate stats={emailStats} />
         <HomePhoneRate stats={phoneStats} />
         <HomePeopleStack people={people} onOpenPerson={onOpenPerson} />
         <HomeStoreAmount amount={row.totalAmount} count={row.txCount} breakdown={row} strong />
@@ -3237,6 +3313,17 @@ function HomeStoresTable({
     );
     return inboundCallRatio(calls);
   }, [endKey, phone.mergedCallsByStore, rows, startKey]);
+  const emailByStore = useMemo(() => {
+    const next = new Map();
+    for (const row of rows) {
+      next.set(row.store, emailRatioFromTransactions(row.transactions));
+    }
+    return next;
+  }, [rows]);
+  const totalEmailStats = useMemo(
+    () => emailRatioFromTransactions(rows.flatMap((row) => row.transactions || [])),
+    [rows],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -3274,6 +3361,7 @@ function HomeStoresTable({
             key={row.store}
             row={row}
             people={peopleByStore.get(row.store) || []}
+            emailStats={emailByStore.get(row.store)}
             phoneStats={phoneByStore.get(row.store)}
             selected={selectedStore?.store === row.store}
             last={index === rows.length - 1 && !totals}
@@ -3288,6 +3376,7 @@ function HomeStoresTable({
               <Text style={styles.igStoreTotalLabel}>Total</Text>
               <HomePeopleStack people={totalPeople} compact onOpenPerson={onOpenPerson} />
             </View>
+            <HomeEmailRate stats={totalEmailStats} compact />
             <HomePhoneRate stats={totalPhoneStats} compact />
             <HomeStoreAmount
               amount={totals.totalAmount}
@@ -3315,6 +3404,7 @@ function HomeStoresTable({
             <View style={styles.homeStoreIconSpacer} />
             <View style={styles.homeStoreRowBody}>
               <Text style={[styles.homeStoreHeader, styles.homeStoreColStore]}>Store</Text>
+              <Text style={[styles.homeStoreHeader, styles.homeStoreColEmail]}>Email</Text>
               <Text style={[styles.homeStoreHeader, styles.homeStoreColPhone]}>Phone</Text>
               <Text style={[styles.homeStoreHeader, styles.homeStoreColPeople]}>People</Text>
               <Text style={[styles.homeStoreHeader, styles.homeStoreColMoney]}>Total</Text>
@@ -3326,6 +3416,7 @@ function HomeStoresTable({
               key={row.store}
               row={row}
               people={peopleByStore.get(row.store) || []}
+              emailStats={emailByStore.get(row.store)}
               phoneStats={phoneByStore.get(row.store)}
               selected={selectedStore?.store === row.store}
               last={index === rows.length - 1}
@@ -3346,6 +3437,7 @@ function HomeStoresTable({
                     {homeStoreMeta(totals)}
                   </Text>
                 </View>
+                <HomeEmailRate stats={totalEmailStats} />
                 <HomePhoneRate stats={totalPhoneStats} />
                 <HomePeopleStack people={totalPeople} onOpenPerson={onOpenPerson} />
                 <HomeStoreAmount
@@ -5018,6 +5110,74 @@ function ProfileQuickActions({
   );
 }
 
+function TradeActionButton({ kind, label, collapsed, active, onPress, position }) {
+  const palette = kind === 'sell' ? TRADE_SELL : TRADE_BUY;
+  const hint =
+    kind === 'sell' ? 'Sell metal to a customer' : 'Buy metal from a customer';
+  const [hovered, setHovered] = useState(false);
+  const labelColor = active ? palette.accent : hovered ? '#1d1d1f' : '#6e6e73';
+
+  return (
+    <Pressable
+      onPress={onPress}
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityHint={hint}
+      accessibilityState={{ selected: active }}
+      {...(Platform.OS === 'web' ? { title: `${label} — ${hint}` } : null)}
+      style={({ pressed, hovered: pressHovered }) => [
+        styles.tab,
+        collapsed && styles.tabCollapsed,
+        styles.tradeSegment,
+        position === 'top' && styles.tradeSegmentTop,
+        position === 'bottom' && styles.tradeSegmentBottom,
+        { backgroundColor: palette.fill },
+        (pressHovered || pressed || active) && { backgroundColor: palette.fillHover },
+      ]}
+    >
+      <Ionicons
+        name={active ? filledIonicon(palette.icon) : palette.icon}
+        size={20}
+        color={palette.accent}
+        style={!collapsed ? styles.tabIcon : undefined}
+      />
+      {!collapsed ? (
+        <Text
+          style={[styles.tabLabel, { color: labelColor }, active && { fontWeight: '600' }]}
+          numberOfLines={1}
+        >
+          {label}
+        </Text>
+      ) : null}
+    </Pressable>
+  );
+}
+
+function SidebarTradeActions({ collapsed, buyActive, sellActive, onSelectBuy, onSelectSell }) {
+  return (
+    <View style={styles.tradePair} accessibilityRole="toolbar" accessibilityLabel="Buy and sell">
+      <TradeActionButton
+        kind="buy"
+        label="Buy"
+        position="top"
+        collapsed={collapsed}
+        active={buyActive}
+        onPress={onSelectBuy}
+      />
+      <TradeActionButton
+        kind="sell"
+        label="Sell"
+        position="bottom"
+        collapsed={collapsed}
+        active={sellActive}
+        onPress={onSelectSell}
+      />
+    </View>
+  );
+}
+
 function SidebarNavGroup({
   collapsed,
   homeActive,
@@ -5409,6 +5569,7 @@ export default function App() {
           SohneMono: '/fonts/SohneMono-Buch.otf',
           ionicons: '/fonts/Ionicons.ttf',
           'material-community': '/fonts/MaterialCommunityIcons.ttf',
+          feather: '/fonts/Feather.ttf',
         }
       : {
           Sohne: require('./assets/sohne-font-family/TestSohne-Buch-BF663d89cd32e6a.otf'),
@@ -5416,6 +5577,7 @@ export default function App() {
           SohneMono: require('./assets/sohne-font-family/TestSohneMono-Buch-BF663d89cbcec64.otf'),
           ...Ionicons.font,
           ...MaterialCommunityIcons.font,
+          ...Feather.font,
         },
   );
 
@@ -5425,7 +5587,8 @@ export default function App() {
   const activeLabel =
     activeTab === 'profile'
       ? userLabel
-      : MAIN_TABS.find((tab) => tab.key === activeTab)?.label;
+      : TRADE_TABS.find((tab) => tab.key === activeTab)?.label ||
+        MAIN_TABS.find((tab) => tab.key === activeTab)?.label;
 
   // Always enforced. When role_app_access is unreadable the category defaults
   // apply; there is no "show everything" fallback.
@@ -6323,6 +6486,10 @@ export default function App() {
       );
     }
 
+    if (activeTab === 'buy' || activeTab === 'sell') {
+      return <TradeScreen mode={activeTab} hideHeader={isMobile} session={session} />;
+    }
+
     if (activeTab === 'home') {
       return (
         <HomeScreen
@@ -6397,6 +6564,11 @@ export default function App() {
     );
   }
 
+  const captureToken = captureTokenFromLocation();
+  if (captureToken) {
+    return <LinePhotoCapturePage token={captureToken} />;
+  }
+
   if (!isLoggedIn) {
     return (
       <View style={styles.loginShell}>
@@ -6428,7 +6600,18 @@ export default function App() {
         >
           <StatusBar style="dark" />
           <MobileSafeTop />
-          {activeTab === 'home' ? <MobileHomeHeader /> : null}
+          {activeTab === 'home' ? (
+            <MobileHomeHeader
+              onBuy={() => selectTab('buy')}
+              onSell={() => selectTab('sell')}
+            />
+          ) : null}
+          {activeTab === 'buy' || activeTab === 'sell' ? (
+            <MobileNavHeader
+              title={activeTab === 'buy' ? 'Buy' : 'Sell'}
+              onBack={() => selectTab('home')}
+            />
+          ) : null}
           {activeTab === 'tools' && activeTool ? (
             <MobileNavHeader
               title={
@@ -6495,11 +6678,13 @@ export default function App() {
                 resizeMode="cover"
               />
             </View>
-            {!sidebarCollapsed ? (
-              <Text style={styles.sidebarTitle} numberOfLines={1}>
-                MyCanadaGold
-              </Text>
-            ) : null}
+          </Pressable>
+          <Pressable
+            onPress={() => setSidebarCollapsed((current) => !current)}
+            style={[styles.sidebarToggle, sidebarCollapsed && styles.sidebarToggleCollapsed]}
+            accessibilityLabel={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            <Feather name="sidebar" size={16} color="#8e8e93" />
           </Pressable>
         </View>
 
@@ -6547,17 +6732,13 @@ export default function App() {
 
         <View style={[styles.sidebarFooter, sidebarCollapsed && styles.sidebarFooterCollapsed]}>
           <PhoneIncomingDock collapsed={sidebarCollapsed} />
-          <Pressable
-            onPress={() => setSidebarCollapsed((current) => !current)}
-            style={styles.sidebarToggle}
-            accessibilityLabel={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          >
-            <Ionicons
-              name={sidebarCollapsed ? 'chevron-forward' : 'chevron-back'}
-              size={16}
-              color="#6e6e73"
-            />
-          </Pressable>
+          <SidebarTradeActions
+            collapsed={sidebarCollapsed}
+            buyActive={activeTab === 'buy'}
+            sellActive={activeTab === 'sell'}
+            onSelectBuy={() => selectTab('buy')}
+            onSelectSell={() => selectTab('sell')}
+          />
         </View>
       </View>
 
@@ -6717,11 +6898,13 @@ const styles = StyleSheet.create({
   sidebarHeader: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     gap: 6,
     marginBottom: 32,
   },
   sidebarHeaderCollapsed: {
     flexDirection: 'column',
+    alignItems: 'stretch',
     marginBottom: 28,
   },
   sidebarBrand: {
@@ -6730,7 +6913,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 6,
-    paddingHorizontal: 8,
+    paddingLeft: 8,
+    paddingRight: 4,
     borderRadius: 10,
     ...Platform.select({
       web: { cursor: 'pointer' },
@@ -6742,28 +6926,23 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 6,
   },
-  sidebarTitle: {
-    fontFamily: titleFontFamily,
-    flex: 1,
-    minWidth: 0,
-    marginLeft: 10,
-    fontSize: 17,
-    fontWeight: '400',
-    color: '#1d1d1f',
-    letterSpacing: -0.4,
-  },
   sidebarToggle: {
-    width: 32,
-    height: 32,
+    width: 36,
+    height: 36,
     borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    alignSelf: 'flex-start',
-    backgroundColor: '#e8e8ed',
+    flexShrink: 0,
+    marginLeft: 'auto',
+    backgroundColor: 'transparent',
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
+  },
+  sidebarToggleCollapsed: {
+    alignSelf: 'flex-end',
+    marginLeft: 0,
   },
   sidebarNavStack: {
     gap: 8,
@@ -6889,6 +7068,22 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 0,
     overflow: 'visible',
+  },
+  tradePair: {
+    borderRadius: 14,
+    overflow: 'hidden',
+  },
+  tradeSegment: {
+    borderRadius: 0,
+    zIndex: 1,
+  },
+  tradeSegmentTop: {
+    borderTopLeftRadius: 14,
+    borderTopRightRadius: 14,
+  },
+  tradeSegmentBottom: {
+    borderBottomLeftRadius: 14,
+    borderBottomRightRadius: 14,
   },
   pinnedSection: {
     marginTop: 0,
@@ -7344,7 +7539,7 @@ const styles = StyleSheet.create({
   },
   homeStoreTable: {
     flexGrow: 1,
-    minWidth: 640,
+    minWidth: 728,
   },
   homeStoreRow: {
     flexDirection: 'row',
@@ -7513,8 +7708,20 @@ const styles = StyleSheet.create({
     flexShrink: 0,
     paddingLeft: 20,
   },
+  homeStoreColEmail: {
+    width: 72,
+    flexShrink: 0,
+    paddingRight: 8,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    textAlign: 'right',
+    ...Platform.select({
+      web: { whiteSpace: 'nowrap' },
+      default: {},
+    }),
+  },
   homeStoreColPhone: {
-    width: 88,
+    width: 72,
     flexShrink: 0,
     paddingRight: 12,
     marginRight: 8,
@@ -7542,7 +7749,7 @@ const styles = StyleSheet.create({
   },
   igStorePhoneWrap: {
     flexShrink: 0,
-    minWidth: 44,
+    minWidth: 40,
     alignItems: 'flex-end',
     justifyContent: 'center',
   },

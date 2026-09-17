@@ -1,7 +1,7 @@
 /**
- * Triage dashboard: date batches of stores shipping melt POs and bullion to the
- * Workshop. Batches live in Supabase via lib/transferWorkflow; this panel is
- * presentational and delegates every mutation to that store.
+ * Triage dashboard: Quick Add POs/SOs and date batches of stores shipping melt
+ * to the Workshop. Batches live in Supabase via lib/transferWorkflow; this panel
+ * is presentational and delegates every mutation to that store.
  */
 import { createElement, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -64,7 +64,6 @@ import {
   triageEditorFromSession,
   triagePoNeedsCorrection,
   triageReviewEditor,
-  latestTriageEditor,
   updateTriageTransfers,
   useTransferWorkflow,
 } from '../lib/transferWorkflow';
@@ -108,6 +107,7 @@ import {
   TableCell,
   TableEmpty,
   TableFrame,
+  TableHead,
   TableMeta,
   TableMuted,
   TablePhotoCell,
@@ -1041,7 +1041,7 @@ function QuickAddModal({ visible, session, existingIds, onClose, onAdd, error })
             <View style={styles.navSpacer} />
           </View>
           <Text style={styles.quickAddIntro}>
-            Search any store. The PO lands as its own dashboard line — not inside a date batch.
+            Search any store. The PO lands on the PO / SO tab — not inside a date batch.
           </Text>
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
           <SpecificDocSearch
@@ -2490,43 +2490,18 @@ function standalonePo(batch) {
   return flattenBatchPos(batch)[0] || null;
 }
 
-function dashboardType(batch, po) {
-  if (isStandaloneTriage(batch)) return parseDocReference(po?.reference || po)?.kind || 'PO';
-  return 'Batch';
+function dashboardType(po) {
+  return parseDocReference(po?.reference || po)?.kind || 'PO';
 }
 
-function dashboardEmployees(standalone, batch, po) {
-  if (standalone) {
-    const name = personLabel(po?.employeeName);
-    return name ? [name] : [];
-  }
-  const seen = new Set();
-  const names = [];
-  for (const item of flattenBatchPos(batch)) {
-    const name = personLabel(item.employeeName);
-    const key = name.toLowerCase();
-    if (!name || seen.has(key)) continue;
-    seen.add(key);
-    names.push(name);
-  }
-  return names;
+function poSoStatus(po, stats) {
+  if (stats?.flagged) return { label: 'Flagged', tone: 'orange' };
+  if (po?.received) return { label: 'Received', tone: 'green' };
+  if (poHoldsBullion(po)) return { label: 'Bullion', tone: 'orange' };
+  return { label: 'Open', tone: 'neutral' };
 }
 
-function dashboardDocument(standalone, batch, po, today) {
-  if (standalone) return po?.reference || dashboardType(batch, po);
-  const pos = flattenBatchPos(batch);
-  if (pos.length === 1 && personLabel(pos[0].reference)) return pos[0].reference;
-  if (pos.length > 1 && personLabel(pos[0].reference)) return `${pos[0].reference} +${pos.length - 1}`;
-  return today ? 'Today' : batch.dateLabel || 'Batch';
-}
-
-function dashboardStatus(standalone, stats, po) {
-  if (standalone) {
-    if (stats?.flagged) return { label: 'Flagged', tone: 'orange' };
-    if (po?.received) return { label: 'Received', tone: 'green' };
-    if (poHoldsBullion(po)) return { label: 'Bullion', tone: 'orange' };
-    return { label: 'Open', tone: 'neutral' };
-  }
+function batchDashStatus(stats) {
   if (stats?.flagged) return { label: `Flagged ${stats.flagged}`, tone: 'orange' };
   if (stats?.empty) return { label: 'Empty', tone: 'neutral' };
   if (stats?.complete) {
@@ -2536,10 +2511,16 @@ function dashboardStatus(standalone, stats, po) {
   return { label: 'Open', tone: 'neutral' };
 }
 
-function dashboardPhotoUrls(standalone, batch, po) {
-  if (standalone) return po?.imageUrls;
-  const withPhoto = flattenBatchPos(batch).find((row) => (row.imageUrls || []).some(Boolean));
-  return withPhoto?.imageUrls;
+function batchNumberMap(transfers) {
+  const batches = (transfers || [])
+    .filter((row) => !isStandaloneTriage(row))
+    .slice()
+    .sort((a, b) => {
+      const byDate = String(a.dateKey || '').localeCompare(String(b.dateKey || ''));
+      if (byDate) return byDate;
+      return String(a.id || '').localeCompare(String(b.id || ''));
+    });
+  return new Map(batches.map((row, index) => [row.id, index + 1]));
 }
 
 const DASH_COL = {
@@ -2554,13 +2535,46 @@ const DASH_SORTERS = {
   document: (row) => row.document,
   stores: (row) => (row.storeNames || []).join(', '),
   dateLabel: (row) => row.dateKey || row.dateLabel || '',
-  employee: (row) => row.employeeNames?.[0] || '',
   edited: (row) => Date.parse(row.editor?.at || '') || 0,
   value: (row) => row.valueNumber,
   status: (row) => row.status.label,
 };
 
-const DashboardTableRow = memo(function DashboardTableRow({ row, staffProfiles, last, onOpen, onOpenBatch, onDelete }) {
+const BATCH_COL = {
+  number: { flex: 0.55, minWidth: 64 },
+  date: { flex: 1, minWidth: 90 },
+  stores: { flex: 2.4, minWidth: 160 },
+  value: { flex: 0.8, minWidth: 80 },
+  status: { flex: 0.9, minWidth: 96 },
+};
+
+function DashRowActions({ openLabel, deleteLabel, onOpen, onDelete }) {
+  return (
+    <View style={styles.dashActions}>
+      <Pressable
+        style={styles.dashDelete}
+        onPress={onDelete}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel={deleteLabel}
+      >
+        <Ionicons name="trash-outline" size={18} color={T.red} />
+      </Pressable>
+      <Pressable
+        style={styles.dashOpen}
+        onPress={onOpen}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel={openLabel}
+      >
+        <Text style={styles.dashOpenText}>Open</Text>
+        <Ionicons name="chevron-forward" size={16} color={BLUE} />
+      </Pressable>
+    </View>
+  );
+}
+
+const PoSoTableRow = memo(function PoSoTableRow({ row, staffProfiles, last, onOpen, onDelete }) {
   return (
     <TableRow last={last} wrap>
       <TablePhotoCell>
@@ -2586,32 +2600,47 @@ const DashboardTableRow = memo(function DashboardTableRow({ row, staffProfiles, 
           <TableStatus label={row.status.label} tone={row.status.tone} sub={row.status.sub} />
         </TableCell>
       </TableRowMain>
-      <View style={styles.dashActions}>
-        <Pressable
-          style={styles.dashOpen}
-          onPress={onOpenBatch || onOpen}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel={row.standalone ? row.openLabel : `Open batch ${row.dateLabel}`}
-        >
-          <Text style={styles.dashOpenText}>Open</Text>
-        </Pressable>
-        <Pressable
-          style={styles.dashDelete}
-          onPress={onDelete}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel={row.deleteLabel}
-        >
-          <Ionicons name="trash-outline" size={18} color={T.red} />
-        </Pressable>
-      </View>
+      <DashRowActions
+        openLabel={row.openLabel}
+        deleteLabel={row.deleteLabel}
+        onOpen={onOpen}
+        onDelete={onDelete}
+      />
     </TableRow>
   );
 });
 
-function BatchList({ transfers, query = '', onOpen, onOpenPo, onDelete }) {
-  const todayKey = formatDateParam(new Date());
+const BatchDashTableRow = memo(function BatchDashTableRow({ row, last, onOpen, onDelete }) {
+  return (
+    <TableRow last={last} wrap>
+      <TableRowMain onPress={onOpen} accessibilityLabel={row.openLabel}>
+        <TableCell flex={BATCH_COL.number.flex} minWidth={BATCH_COL.number.minWidth} wrap>
+          <TableStrong>{row.numberLabel}</TableStrong>
+        </TableCell>
+        <TableCell flex={BATCH_COL.date.flex} minWidth={BATCH_COL.date.minWidth} wrap>
+          {row.dateLabel}
+        </TableCell>
+        <TableCell flex={BATCH_COL.stores.flex} minWidth={BATCH_COL.stores.minWidth} wrap>
+          {(row.storeNames || []).length ? (row.storeNames || []).join(', ') : '—'}
+        </TableCell>
+        <TableCell flex={BATCH_COL.value.flex} minWidth={BATCH_COL.value.minWidth} align="right" wrap>
+          {row.valueLabel}
+        </TableCell>
+        <TableCell flex={BATCH_COL.status.flex} minWidth={BATCH_COL.status.minWidth}>
+          <TableStatus label={row.status.label} tone={row.status.tone} sub={row.status.sub} />
+        </TableCell>
+      </TableRowMain>
+      <DashRowActions
+        openLabel={row.openLabel}
+        deleteLabel={row.deleteLabel}
+        onOpen={onOpen}
+        onDelete={onDelete}
+      />
+    </TableRow>
+  );
+});
+
+function PoSoList({ transfers, query = '', onOpenPo, onDelete }) {
   const [openFilter, setOpenFilter] = useState(null);
   const [filters, setFilters] = useState(EMPTY_DASH_FILTERS);
   const [sort, setSort] = useState(null);
@@ -2636,41 +2665,28 @@ function BatchList({ transfers, query = '', onOpen, onOpenPo, onDelete }) {
     return transfers
       .filter((row) => batchMatchesQuery(row, query))
       .map((batch) => {
-        const standalone = isStandaloneTriage(batch);
-        const pos = flattenBatchPos(batch);
-        const po = standalone ? pos[0] || null : null;
+        const po = standalonePo(batch);
         const stats = statsById.get(batch.id);
-        const today = !standalone && batch.dateKey === todayKey;
-        const type = dashboardType(batch, po);
-        const storeNames = standalone
-          ? [po?.storeName].filter(Boolean)
-          : (batch.stores || []).map((store) => store.name).filter(Boolean);
+        const type = dashboardType(po);
         return {
           id: batch.id,
           batch,
           po,
-          standalone,
           type,
-          document: dashboardDocument(standalone, batch, po, today),
-          title: standalone ? po?.reference || type : today ? 'Today' : batch.dateLabel || 'Batch',
-          dateLabel: standalone ? po?.dateLabel || batch.dateLabel || '' : batch.dateLabel || '',
+          document: po?.reference || type,
+          dateLabel: po?.dateLabel || batch.dateLabel || '',
           dateKey: batch.dateKey || '',
-          storeNames,
-          valueNumber: standalone ? rowAmountNumber(po) || 0 : stats?.amount || 0,
-          valueLabel: standalone
-            ? rowAmountLabel(po) || '—'
-            : stats?.amount
-              ? formatAmount(stats.amount)
-              : '—',
-          photoUrls: dashboardPhotoUrls(standalone, batch, po),
-          employeeNames: dashboardEmployees(standalone, batch, po),
-          editor: standalone ? triageReviewEditor(po?.review) : latestTriageEditor(pos),
-          status: dashboardStatus(standalone, stats, po),
-          openLabel: standalone ? `Open ${po?.reference || type}` : `Open batch ${batch.dateLabel}`,
-          deleteLabel: standalone ? `Remove ${po?.reference || type}` : `Delete batch ${batch.dateLabel}`,
+          storeNames: [po?.storeName].filter(Boolean),
+          valueNumber: rowAmountNumber(po) || 0,
+          valueLabel: rowAmountLabel(po) || '—',
+          photoUrls: po?.imageUrls,
+          editor: triageReviewEditor(po?.review),
+          status: poSoStatus(po, stats),
+          openLabel: `Open ${po?.reference || type}`,
+          deleteLabel: `Remove ${po?.reference || type}`,
         };
       });
-  }, [query, todayKey, transfers]);
+  }, [query, transfers]);
 
   const setFilter = useCallback((key, value) => {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -2718,32 +2734,17 @@ function BatchList({ transfers, query = '', onOpen, onOpenPo, onDelete }) {
       .sort((a, b) => String(b.dateKey || '').localeCompare(String(a.dateKey || '')));
   }, [entries, rowMatches, sort]);
 
-  const batchCount = visible.filter((row) => !row.standalone).length;
-  const poCount = visible.filter((row) => row.standalone).length;
-
   const renderRow = useCallback(
     ({ item, index }) => (
-      <DashboardTableRow
+      <PoSoTableRow
         row={item}
         staffProfiles={staffProfiles}
         last={index === visible.length - 1}
-        onOpen={() => {
-          if (item.standalone && item.po) {
-            onOpenPo(item.po);
-            return;
-          }
-          const only = flattenBatchPos(item.batch);
-          if (only.length === 1) {
-            onOpenPo(only[0]);
-            return;
-          }
-          onOpen(item.batch);
-        }}
-        onOpenBatch={() => (item.standalone && item.po ? onOpenPo(item.po) : onOpen(item.batch))}
+        onOpen={() => item.po && onOpenPo(item.po)}
         onDelete={() => onDelete(item.batch)}
       />
     ),
-    [onDelete, onOpen, onOpenPo, staffProfiles, visible.length],
+    [onDelete, onOpenPo, staffProfiles, visible.length],
   );
 
   return (
@@ -2758,15 +2759,14 @@ function BatchList({ transfers, query = '', onOpen, onOpenPo, onDelete }) {
         <TableEmpty>
           {query.trim() || filtersActive
             ? `No PO or SO matches ${query.trim() ? `“${query.trim()}”` : 'those filters'}.`
-            : 'No batches yet.'}
+            : 'No PO / SO yet.'}
         </TableEmpty>
       }
       toolbar={
         <>
           <TableMeta>
             {filtersActive ? `${visible.length} of ${entries.length}` : visible.length}
-            {batchCount ? `  ·  ${batchCount} ${batchCount === 1 ? 'batch' : 'batches'}` : ''}
-            {poCount ? `  ·  ${poCount} ${poCount === 1 ? 'PO' : 'POs'}` : ''}
+            {`  ·  ${docNoun(visible.map((row) => row.po).filter(Boolean), visible.length)}`}
           </TableMeta>
           {filtersActive || sort ? <TextAction label="Clear" onPress={clearFilters} /> : null}
         </>
@@ -2840,6 +2840,78 @@ function BatchList({ transfers, query = '', onOpen, onOpenPo, onDelete }) {
             style={DASH_COL.status}
             {...sortProps('status')}
           />
+          <View style={styles.dashActionsHead} />
+        </>
+      }
+    />
+  );
+}
+
+function BatchDashList({ transfers, query = '', onOpen, onDelete }) {
+  const todayKey = formatDateParam(new Date());
+  const numbers = useMemo(() => batchNumberMap(transfers), [transfers]);
+
+  const visible = useMemo(() => {
+    const statsById = new Map(transfers.map((row) => [row.id, batchStats(row)]));
+    return transfers
+      .filter((row) => batchMatchesQuery(row, query))
+      .map((batch) => {
+        const stats = statsById.get(batch.id);
+        const number = numbers.get(batch.id) || 0;
+        const today = batch.dateKey === todayKey;
+        return {
+          id: batch.id,
+          batch,
+          number,
+          numberLabel: number ? `#${number}` : '—',
+          dateLabel: today ? 'Today' : batch.dateLabel || '',
+          storeNames: (batch.stores || []).map((store) => store.name).filter(Boolean),
+          valueLabel: stats?.amount ? formatAmount(stats.amount) : '—',
+          status: batchDashStatus(stats),
+          openLabel: `Open batch ${batch.dateLabel || number}`,
+          deleteLabel: `Delete batch ${batch.dateLabel || number}`,
+        };
+      })
+      .sort((a, b) => (b.number || 0) - (a.number || 0));
+  }, [numbers, query, todayKey, transfers]);
+
+  const renderRow = useCallback(
+    ({ item, index }) => (
+      <BatchDashTableRow
+        row={item}
+        last={index === visible.length - 1}
+        onOpen={() => onOpen(item.batch)}
+        onDelete={() => onDelete(item.batch)}
+      />
+    ),
+    [onDelete, onOpen, visible.length],
+  );
+
+  return (
+    <TableFrame
+      minWidth={720}
+      data={visible}
+      renderItem={renderRow}
+      keyExtractor={meltKey}
+      extraData={visible.length}
+      fixedRowHeight={false}
+      ListEmptyComponent={
+        <TableEmpty>
+          {query.trim() ? `No batch matches “${query.trim()}”.` : 'No batches yet.'}
+        </TableEmpty>
+      }
+      header={
+        <>
+          <TableHead label="#" flex={BATCH_COL.number.flex} minWidth={BATCH_COL.number.minWidth} />
+          <TableHead label="Date" flex={BATCH_COL.date.flex} minWidth={BATCH_COL.date.minWidth} />
+          <TableHead label="Stores" flex={BATCH_COL.stores.flex} minWidth={BATCH_COL.stores.minWidth} />
+          <TableHead
+            label="Value"
+            flex={BATCH_COL.value.flex}
+            minWidth={BATCH_COL.value.minWidth}
+            align="right"
+          />
+          <TableHead label="Status" flex={BATCH_COL.status.flex} minWidth={BATCH_COL.status.minWidth} />
           <View style={styles.dashActionsHead} />
         </>
       }
@@ -3056,6 +3128,8 @@ export default function TriageTransfersPanel({
   onCreateOpenChange,
   quickAddOpen,
   onQuickAddOpenChange,
+  dashTab = 'poso',
+  onDashTabChange,
   onViewChange,
   onBackChange,
   listQuery = '',
@@ -3072,6 +3146,8 @@ export default function TriageTransfersPanel({
     () => transfers.find((row) => row.id === selectedId && !isStandaloneTriage(row)) || null,
     [selectedId, transfers],
   );
+  const poRows = useMemo(() => transfers.filter(isStandaloneTriage), [transfers]);
+  const batchRows = useMemo(() => transfers.filter((row) => !isStandaloneTriage(row)), [transfers]);
   const existingPoIds = useMemo(
     () => transfers.flatMap((row) => flattenBatchPos(row).map((item) => item.id)),
     [transfers],
@@ -3106,10 +3182,10 @@ export default function TriageTransfersPanel({
       if (item) setOpenStandalone(item);
       return;
     }
-    if (!row?.stores?.length) return;
     setSelectedId(row.id);
-    const hasBullion = row.stores.some((store) => plannedForTriageStore(row.dateKey, store.storeKey).length > 0);
-    const hasMelt = row.stores.some((store) => (store.meltPos || []).length > 0);
+    const stores = row.stores || [];
+    const hasBullion = stores.some((store) => plannedForTriageStore(row.dateKey, store.storeKey).length > 0);
+    const hasMelt = stores.some((store) => (store.meltPos || []).length > 0);
     setStoreTab(hasBullion && !hasMelt ? 'bullion' : 'melt');
   }, []);
 
@@ -3123,13 +3199,14 @@ export default function TriageTransfersPanel({
     const result = addStandaloneTriagePo(row);
     if (!result.ok) {
       const where = isStandaloneTriage(result.batch)
-        ? 'the dashboard'
+        ? 'PO / SO'
         : result.batch?.dateLabel || 'a batch';
       setQuickAddError(`${row.reference} is already on ${where}.`);
       return;
     }
     setQuickAddError('');
     onQuickAddOpenChange?.(false);
+    onDashTabChange?.('poso');
     const auth = resolvePosAuthForRow(session, { systemKey: row.systemKey });
     if (!auth.token) {
       persistTransferWorkflowNow().catch(() => {});
@@ -3153,7 +3230,7 @@ export default function TriageTransfersPanel({
       .finally(() => {
         persistTransferWorkflowNow().catch(() => {});
       });
-  }, [onQuickAddOpenChange, session]);
+  }, [onDashTabChange, onQuickAddOpenChange, session]);
 
   const saveStandaloneReview = useCallback((poId, review) => {
     const saved = saveTriagePoReview(poId, review, triageEditorFromSession(session));
@@ -3183,10 +3260,11 @@ export default function TriageTransfersPanel({
       }
       persistTransferWorkflowNow().catch(() => {});
       onCreateOpenChange(false);
+      onDashTabChange?.('batch');
       openBatch(nextRow);
       if (incoming.length) setAddMeltOpen(true);
     },
-    [onCreateOpenChange, openBatch, transfers],
+    [onCreateOpenChange, onDashTabChange, openBatch, transfers],
   );
 
   const deleteBatch = useCallback((row) => {
@@ -3251,27 +3329,29 @@ export default function TriageTransfersPanel({
 
   return (
     <View style={[styles.body, styles.bodyTinted]}>
-      {transfers.length === 0 ? (
-        <EmptyState
-          icon="calendar-outline"
-          title="No batches yet"
-          body="A batch is one date plus the stores shipping to the Workshop. Or Quick Add a single PO from any store."
-          action={
-            <View style={styles.emptyActions}>
-              <BarButton label="Quick Add" onPress={() => onQuickAddOpenChange?.(true)} />
-              <BarButton icon="add" label="Add Batch" onPress={() => onCreateOpenChange(true)} />
-            </View>
-          }
-        />
-      ) : (
-        <BatchList
-          transfers={transfers}
-          query={listQuery}
-          onOpen={openBatch}
-          onOpenPo={openStandalonePo}
-          onDelete={deleteBatch}
-        />
-      )}
+      <View style={styles.body}>
+        {dashTab === 'batch' ? (
+          batchRows.length === 0 && !listQuery.trim() ? (
+            <EmptyState
+              icon="calendar-outline"
+              title="No batches yet"
+              body="A batch is one date plus the stores shipping to the Workshop."
+              action={<BarButton icon="add" label="Add Batch" onPress={() => onCreateOpenChange(true)} />}
+            />
+          ) : (
+            <BatchDashList transfers={batchRows} query={listQuery} onOpen={openBatch} onDelete={deleteBatch} />
+          )
+        ) : poRows.length === 0 && !listQuery.trim() ? (
+          <EmptyState
+            icon="document-text-outline"
+            title="No PO / SO yet"
+            body="Quick Add a single PO or SO from any store. It lands here, not inside a date batch."
+            action={<BarButton label="Quick Add" onPress={() => onQuickAddOpenChange?.(true)} />}
+          />
+        ) : (
+          <PoSoList transfers={poRows} query={listQuery} onOpenPo={openStandalonePo} onDelete={deleteBatch} />
+        )}
+      </View>
 
       <TriageErrorBoundary
         resetKey={createOpen ? 'create-open' : 'create-closed'}
@@ -3333,12 +3413,6 @@ const styles = StyleSheet.create({
   bodyTinted: {
     backgroundColor: T.bg,
   },
-  emptyActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-  },
   quickAddIntro: {
     fontFamily,
     fontSize: 13,
@@ -3354,9 +3428,9 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     flexGrow: 0,
     flexShrink: 0,
-    width: 108,
-    paddingRight: 12,
-    gap: 12,
+    width: 124,
+    paddingRight: 10,
+    gap: 4,
   },
   lastEditedCell: {
     ...LAST_EDITED_COL,
@@ -3367,14 +3441,18 @@ const styles = StyleSheet.create({
     ...LAST_EDITED_COL,
   },
   dashActionsHead: {
-    width: 108,
+    width: 124,
     flexGrow: 0,
     flexShrink: 0,
   },
   dashOpen: {
     minHeight: 32,
-    justifyContent: 'center',
-    paddingHorizontal: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 1,
+    paddingLeft: 8,
+    paddingRight: 2,
     ...webCursor,
   },
   dashOpenText: {

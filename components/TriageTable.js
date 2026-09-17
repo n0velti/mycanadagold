@@ -29,7 +29,8 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
   style.textContent = [
     '.cgold-triage-table-blur{-webkit-backdrop-filter:saturate(180%) blur(18px);backdrop-filter:saturate(180%) blur(18px);background-color:rgba(246,246,249,0.78)!important;}',
     '.cgold-triage-table-row{cursor:pointer;background-color:#fff;}',
-    '.cgold-triage-table-row:hover,.cgold-triage-table-row:has(:hover){background-color:#f5f5f7!important;}',
+    '.cgold-triage-table-row:hover,.cgold-triage-table-row:has(:hover),.cgold-triage-table-row.is-hover{background-color:#f5f5f7!important;}',
+    '.cgold-triage-table-row:hover > *,.cgold-triage-table-row:has(:hover) > *,.cgold-triage-table-row.is-hover > *{background-color:transparent!important;}',
   ].join('');
 }
 
@@ -266,11 +267,20 @@ export function TableRowPressable({ last, onPress, accessibilityLabel, children 
 }
 
 export function TableRow({ last, children, style, webClassName, wrap = false }) {
+  const [hovered, setHovered] = useState(false);
   return (
     <View
-      style={[styles.tableRow, wrap && styles.tableRowWrap, last && styles.tableRowLast, style]}
+      style={[
+        styles.tableRow,
+        wrap && styles.tableRowWrap,
+        last && styles.tableRowLast,
+        hovered && styles.tableRowHover,
+        style,
+      ]}
+      onMouseEnter={Platform.OS === 'web' ? () => setHovered(true) : undefined}
+      onMouseLeave={Platform.OS === 'web' ? () => setHovered(false) : undefined}
       {...(Platform.OS === 'web'
-        ? { className: ['cgold-triage-table-row', webClassName].filter(Boolean).join(' ') }
+        ? { className: ['cgold-triage-table-row', hovered ? 'is-hover' : '', webClassName].filter(Boolean).join(' ') }
         : null)}
     >
       {children}
@@ -319,6 +329,23 @@ export function TableMuted({ children }) {
     <Text style={styles.tableCellMuted} numberOfLines={1}>
       {children}
     </Text>
+  );
+}
+
+export function TableHead({ label, flex = 1, minWidth = 88, align = 'left', style }) {
+  return (
+    <View
+      style={[
+        styles.tableHead,
+        align === 'right' && styles.tableHeadRight,
+        { flex, minWidth },
+        style,
+      ]}
+    >
+      <Text style={[styles.tableHeadLabel, align === 'right' && styles.tableHeadLabelRight]} numberOfLines={1}>
+        {label}
+      </Text>
+    </View>
   );
 }
 
@@ -749,6 +776,24 @@ const styles = StyleSheet.create({
     alignItems: 'stretch',
     minHeight: 32,
     overflow: 'visible',
+  },
+  tableHead: {
+    minHeight: 32,
+    paddingHorizontal: 8,
+    justifyContent: 'center',
+  },
+  tableHeadRight: {
+    alignItems: 'flex-end',
+  },
+  tableHeadLabel: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '500',
+    color: SECONDARY,
+    letterSpacing: -0.1,
+  },
+  tableHeadLabelRight: {
+    textAlign: 'right',
   },
   tableBody: {
     flex: 1,

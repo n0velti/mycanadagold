@@ -124,6 +124,7 @@ function collectEmployeeType(raw: AnyRecord, nestedRole: AnyRecord): string {
 /**
  * Map an Aureus POS role / employee type onto myCanadaGold app access.
  * Manager → Branch Manager apps. Admin / GM → General Manager apps.
+ * HR and triage titles are matched before generic manager.
  * System Admin is never inferred here; it is assigned in-app.
  */
 export function inferAppRole(role: string, employeeType = ''): string {
@@ -134,6 +135,12 @@ export function inferAppRole(role: string, employeeType = ''): string {
   }
   if (/system\s*admin|sysadmin|super\s*admin|\badministrators?\b|\badmins?\b/.test(value)) {
     return 'general_manager';
+  }
+  if (/human\s*resources|\bhr\b|people\s*ops|people\s*operations/.test(value)) {
+    return 'hr';
+  }
+  if (/\btriage\b|workshop|melt/.test(value)) {
+    return 'triage';
   }
   if (/branch\s*manager|store\s*manager|\bmanagers?\b|\bmgr\b/.test(value)) {
     return 'branch_manager';

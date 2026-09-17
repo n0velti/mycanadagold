@@ -121,6 +121,11 @@ public = true
 file_size_limit = "2MiB"
 allowed_mime_types = ["image/png", "image/jpeg", "image/webp", "image/gif"]
 
+[storage.buckets.trade-line-photos]
+public = true
+file_size_limit = "5MiB"
+allowed_mime_types = ["image/png", "image/jpeg", "image/webp"]
+
 # Allow connections via S3 compatible clients
 [storage.s3_protocol]
 enabled = true
@@ -386,6 +391,12 @@ entrypoint = "./functions/aureus-login/index.ts"
 enabled = true
 verify_jwt = false
 entrypoint = "./functions/proxy/index.ts"
+
+# Phone QR capture for buy-ticket line photos. Token is the credential.
+[functions.trade-capture]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/trade-capture/index.ts"
 
 [edge_runtime]
 enabled = true

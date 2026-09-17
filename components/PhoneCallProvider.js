@@ -8,6 +8,7 @@ import {
   fetchPhoneInbox,
   fetchPhonePresence,
   fetchSipProvision,
+  isCallGoneError,
   isLiveAnsweredStatus,
   isPhoneRateLimitMessage,
   isRingingCall,
@@ -24,11 +25,24 @@ import { listRingCentralAccounts, formatPhoneNumber } from '../lib/ringcentral';
 import { isStoreWatched, loadWatchStores, saveWatchStores } from '../lib/phoneWatch';
 import { startRingtone, stopRingtone, unlockPhoneAudio } from '../lib/phoneSound';
 import { storeKeyFromName } from '../lib/storeSettings';
-import { isWebPhoneSupported, startWebPhone } from '../lib/webPhone';
+import { isWebPhoneSupported, startWebPhone, withSipTimeout } from '../lib/webPhone';
 
 const SILENT_KEY = 'cgold.phone.silent';
 const SIP_CACHE_PREFIX = 'cgold.phone.sip.';
 const SIP_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * After RingCentral cancels the INVITE here (caller hung up, answered
+ * elsewhere, queue moved on), presence keeps reporting the call for up to two
+ * poll cycles. Hide those rows for this long so nobody acts on a dead party.
+ */
+const GONE_MS = 30_000;
+/** Answering waits on the microphone prompt, so give it longer than other SIP actions. */
+const ANSWER_TIMEOUT_MS = 30_000;
+const CALL_GONE_MESSAGE = 'That call already ended or was picked up elsewhere.';
+
+function callSessionKey(call) {
+  return String(call?.telephonySessionId || call?.id || '');
+}
 
 function readSipCache(storeKey) {
   if (Platform.OS !== 'web' || typeof window === 'undefined') return null;
@@ -55,6 +69,27 @@ function writeSipCache(storeKey, value) {
 function isMicrophoneError(err) {
   const text = `${err?.name || ''} ${err?.message || ''}`;
   return /NotAllowed|PermissionDenied|Permission denied|NotFound|getUserMedia|microphone|audio input/i.test(text);
+}
+
+/**
+ * Firefox and Safari report a microphone blocked by the site's
+ * Permissions-Policy header (or a non-HTTPS page) as a SecurityError whose
+ * message is just "The operation is insecure."
+ */
+function isMicrophoneBlockedError(err) {
+  const text = `${err?.name || ''} ${err?.message || ''}`;
+  return /SecurityError|operation is insecure|permissions policy|feature policy/i.test(text);
+}
+
+function answerErrorMessage(err) {
+  if (isMicrophoneBlockedError(err)) {
+    return 'The microphone is blocked for this site (open it over HTTPS and check the host’s Permissions-Policy header allows microphone=(self)). Pick up on the RingCentral app for now.';
+  }
+  if (isMicrophoneError(err)) return 'Allow microphone access for this site in the browser, then press Answer again.';
+  if (err?.code === 'sip_timeout') {
+    return 'RingCentral did not confirm the answer. The call may have ended; if it is still ringing, try again.';
+  }
+  return err?.message || 'Could not answer in the browser.';
 }
 
 function formatCallClock(ms) {
@@ -116,7 +151,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
   const active = Boolean(enabled && session?.token && hasApp('phone'));
   const [stores, setStores] = useState([]);
   const [selectedStoreKey, setSelectedStoreKey] = useState('');
-  const [liveCalls, setLiveCalls] = useState([]);
+  const [rawLiveCalls, setLiveCalls] = useState([]);
   const [watchPrefs, setWatchPrefs] = useState({ mode: 'all', keys: [] });
   const [recentAnswered, setRecentAnswered] = useState([]);
   const [inboxByStore, setInboxByStore] = useState({});
@@ -133,6 +168,12 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
   const [webPhoneStatus, setWebPhoneStatus] = useState({});
   const webPhonesRef = useRef(new Map());
   const webPhoneByExtensionRef = useRef(new Map());
+  // This browser's RingCentral device per store, so a server-side Answer can
+  // push the call to this tab instead of whatever device is listed first.
+  const webDeviceIdRef = useRef(new Map());
+  // Telephony sessions RingCentral already cancelled here → hidden until GONE_MS passes.
+  const goneRef = useRef(new Map());
+  const [goneVersion, setGoneVersion] = useState(0);
   const requestId = useRef(0);
   const storesRequestId = useRef(0);
   const skipUntil = useRef(new Map());
@@ -342,6 +383,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       setInboxFetching({});
       ringingRef.current.clear();
       settledRef.current.clear();
+      goneRef.current.clear();
       return undefined;
     }
     reloadStores();
@@ -570,24 +612,56 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     setWebPhoneStatus((current) => ({ ...current, [storeKey]: { ...(current[storeKey] || {}), ...next } }));
   }, []);
 
+  const markGone = useCallback((id) => {
+    const key = String(id || '');
+    if (!key) return;
+    goneRef.current.set(key, Date.now());
+    if (goneRef.current.size > 100) {
+      const cutoff = Date.now() - GONE_MS;
+      for (const [k, at] of goneRef.current.entries()) if (at < cutoff) goneRef.current.delete(k);
+    }
+    setGoneVersion((v) => v + 1);
+  }, []);
+
+  /** Drop a call from every local list: it is over as far as this browser is concerned. */
+  const dropCall = useCallback(
+    (call) => {
+      const id = callSessionKey(call);
+      if (!id) return;
+      markGone(id);
+      setWebCalls((current) => current.filter((row) => callSessionKey(row) !== id));
+      setLiveCalls((current) => current.filter((row) => callSessionKey(row) !== id));
+      setActiveCall((current) => (current && callSessionKey(current) === id ? null : current));
+      setMuted((current) => (current ? false : current));
+    },
+    [markGone],
+  );
+
   const onWebInbound = useCallback((snapshot) => {
+    // A fresh INVITE for a session we hid (queue re-ring) makes it live again.
+    if (goneRef.current.delete(snapshot.id)) setGoneVersion((v) => v + 1);
     setWebCalls((current) => [...current.filter((row) => row.id !== snapshot.id), snapshot]);
   }, []);
 
-  const onWebChange = useCallback((snapshot) => {
-    if (snapshot.ended) {
-      setWebCalls((current) => current.filter((row) => row.id !== snapshot.id));
-      setActiveCall((current) => (current && current.id === snapshot.id ? null : current));
-      setMuted((current) => (current ? false : current));
-      return;
-    }
-    setWebCalls((current) => current.map((row) => (row.id === snapshot.id ? { ...row, ...snapshot } : row)));
-    if (snapshot.status === 'CallConnected') {
-      setActiveCall((current) =>
-        current && current.id === snapshot.id ? current : { ...snapshot, answeredAt: Date.now() },
-      );
-    }
-  }, []);
+  const onWebChange = useCallback(
+    (snapshot) => {
+      if (snapshot.ended) {
+        markGone(snapshot.id);
+        setWebCalls((current) => current.filter((row) => row.id !== snapshot.id));
+        setActiveCall((current) => (current && current.id === snapshot.id ? null : current));
+        setMuted((current) => (current ? false : current));
+        return;
+      }
+      setWebCalls((current) => current.map((row) => (row.id === snapshot.id ? { ...row, ...snapshot } : row)));
+      if (snapshot.status === 'CallConnected') {
+        setActiveCall((current) =>
+          current && current.id === snapshot.id ? current : { ...snapshot, answeredAt: Date.now() },
+        );
+        setError('');
+      }
+    },
+    [markGone],
+  );
 
   useEffect(() => {
     if (Platform.OS !== 'web') return undefined;
@@ -595,6 +669,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       for (const handle of webPhonesRef.current.values()) handle.dispose().catch(() => {});
       webPhonesRef.current.clear();
       webPhoneByExtensionRef.current.clear();
+      webDeviceIdRef.current.clear();
     };
     if (!active || !connectedKeyList) {
       disposeAll();
@@ -622,6 +697,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       if (keys.includes(storeKey)) continue;
       handle.dispose().catch(() => {});
       webPhonesRef.current.delete(storeKey);
+      webDeviceIdRef.current.delete(storeKey);
       for (const [extId, owner] of [...webPhoneByExtensionRef.current.entries()]) {
         if (owner === storeKey) webPhoneByExtensionRef.current.delete(extId);
       }
@@ -638,23 +714,32 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
             writeSipCache(storeKey, provision);
           }
           if (cancelled) return;
+          if (provision.deviceId) webDeviceIdRef.current.set(storeKey, provision.deviceId);
           const owner = webPhoneByExtensionRef.current.get(provision.extensionId || '');
           if (owner && owner !== storeKey && webPhonesRef.current.has(owner)) {
             setStorePhoneStatus(storeKey, {
               state: 'shared',
+              sharedWith: owner,
               message: `Rings through ${connectedNamesRef.current[owner] || owner}’s line (same RingCentral user).`,
               extensionName: provision.extensionName,
             });
             return;
           }
           const storeName = connectedNamesRef.current[storeKey] || storeKey;
-          const handle = await startWebPhone({
+          let handle = null;
+          handle = await startWebPhone({
             sipInfo: provision.sipInfo,
             extensionId: provision.extensionId,
             storeKey,
             storeName,
             onInbound: onWebInbound,
             onChange: onWebChange,
+            onStatus: (state, message) => {
+              // Only the live registration for this store may report its state
+              // (handles outlive this effect run, so `cancelled` is not checked).
+              if (handle && webPhonesRef.current.get(storeKey) !== handle) return;
+              setStorePhoneStatus(storeKey, { state, message: message || '' });
+            },
           });
           if (cancelled) {
             handle.dispose().catch(() => {});
@@ -705,8 +790,16 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     [],
   );
 
-  // Presence (8 s poll) plus calls the softphone already knows about.
+  // Presence (8 s poll) plus calls the softphone already knows about. Presence
+  // rows for sessions RingCentral already cancelled here are hidden: acting on
+  // them only yields "Incorrect State" from the call-control API.
   const allLiveCalls = useMemo(() => {
+    const now = Date.now();
+    const gone = (call) => {
+      const at = goneRef.current.get(callSessionKey(call));
+      return Boolean(at) && now - at < GONE_MS;
+    };
+    const liveCalls = rawLiveCalls.filter((call) => !gone(call));
     if (!webCalls.length) return liveCalls;
     const merged = liveCalls.map((call) => {
       const web = webCalls.find(
@@ -727,13 +820,44 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       if (!known) merged.push(web);
     }
     return merged;
-  }, [liveCalls, webCalls]);
+    // goneVersion re-runs this when a session is hidden or re-rings.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawLiveCalls, webCalls, goneVersion]);
 
+  /**
+   * The SIP session for a call, whichever store's registration it rang on:
+   * stores sharing a RingCentral user share one registration.
+   */
   const webSessionFor = useCallback((call) => {
-    const handle = webPhonesRef.current.get(call?.storeKey);
-    if (!handle) return null;
-    return handle.session(call?.telephonySessionId || call?.id) || null;
+    if (!call) return null;
+    const ids = [call.telephonySessionId, call.id, call.partyId, call.callId].filter(Boolean);
+    if (!ids.length) return null;
+    const own = webPhonesRef.current.get(call.storeKey);
+    const handles = own
+      ? [own, ...[...webPhonesRef.current.values()].filter((h) => h !== own)]
+      : [...webPhonesRef.current.values()];
+    for (const handle of handles) {
+      for (const id of ids) {
+        const session = handle.session(id);
+        if (session) return session;
+      }
+    }
+    return null;
   }, []);
+
+  /** The registration that would ring for this store, and this browser's device on it. */
+  const webPhoneFor = useCallback(
+    (storeKey) => {
+      const status = webPhoneStatus[storeKey];
+      const owner = status?.state === 'shared' && status.sharedWith ? status.sharedWith : storeKey;
+      return {
+        handle: webPhonesRef.current.get(owner) || null,
+        deviceId: webDeviceIdRef.current.get(storeKey) || webDeviceIdRef.current.get(owner) || '',
+        state: status?.state || '',
+      };
+    },
+    [webPhoneStatus],
+  );
 
   const incoming = useMemo(() => {
     const ringing = allLiveCalls.filter((call) => {
@@ -820,156 +944,219 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
 
   useEffect(() => () => stopRingtone(), []);
 
-  const runControl = useCallback(async (action, call) => {
-    if (!call) throw new Error('That call is no longer available.');
+  /** One call action at a time; `busy` and `error` always settle, even on a lost SIP reply. */
+  const perform = useCallback(async (fn) => {
     setBusy(true);
     setError('');
     try {
-      const result = await controlPhoneCall(action, call);
-      setLiveCalls((current) => {
-        const others = current.filter((row) => row.storeKey !== call.storeKey);
-        return [...others, ...(result.liveCalls || [])];
-      });
-      return result;
+      return await fn();
     } catch (err) {
-      const message = err?.message || 'Could not update that call.';
-      setError(message);
+      setError(err?.message || 'Could not update that call.');
       throw err;
     } finally {
       setBusy(false);
     }
   }, []);
 
-  /** Why Answer has to fall back to a RingCentral device for this store. */
+  /**
+   * RingCentral call-control API. A party that is no longer in a controllable
+   * state is removed locally and surfaces as a `call_gone` error.
+   */
+  const runControl = useCallback(
+    async (action, call, extra) => {
+      if (!call) throw new Error('That call is no longer available.');
+      try {
+        const result = await controlPhoneCall(action, call, extra);
+        setLiveCalls((current) => {
+          const others = current.filter((row) => row.storeKey !== call.storeKey);
+          return [...others, ...(result.liveCalls || [])];
+        });
+        return result;
+      } catch (err) {
+        if (isCallGoneError(err)) {
+          dropCall(call);
+          const gone = new Error(CALL_GONE_MESSAGE);
+          gone.code = 'call_gone';
+          throw gone;
+        }
+        throw err;
+      }
+    },
+    [dropCall],
+  );
+
+  /** Why Answer could not take the call in this browser. */
   const webPhoneFallbackReason = useCallback(
-    (storeKey) => {
+    (storeKey, err) => {
       if (Platform.OS !== 'web') return 'Answering in the app works in the web version; pick up on the RingCentral app or desk phone.';
       const status = webPhoneStatus[storeKey];
+      const raw = String(err?.message || '');
+      const detail = raw && raw.length <= 90 ? ` (${raw.replace(/\.$/, '')})` : '';
       if (!status || status.state === 'connecting') {
         return 'This browser is still registering as the store phone. Try again in a moment, or pick up on the RingCentral app.';
       }
+      if (status.state === 'reconnecting') {
+        return 'This browser lost its connection to RingCentral and is reconnecting. Pick up on the RingCentral app, or try again in a moment.';
+      }
       if (status.state === 'ready' || status.state === 'shared') {
-        return 'That call is not ringing this browser. Pick up on the RingCentral app or desk phone, or send it to voicemail.';
+        return `That call is not ringing this browser${detail}. Pick up on the RingCentral app or desk phone, or send it to voicemail.`;
       }
       return status.message || 'This browser is not registered as the store phone.';
     },
     [webPhoneStatus],
   );
 
-  const answer = useCallback(
-    async (call) => {
+  /** Record the outcome of a ringing call once, whichever path settled it. */
+  const settleRinging = useCallback(
+    (call, result) => {
       const key = liveCallKey(call);
-      if (key) settledRef.current.add(key);
-      const session = webSessionFor(call);
-      if (session && session.state === 'ringing') {
-        setBusy(true);
-        setError('');
-        try {
-          await session.answer();
-          const connected = { ...call, status: 'CallConnected', web: true, answeredAt: Date.now() };
-          setActiveCall(connected);
+      if (key) {
+        settledRef.current.add(key);
+        ringingRef.current.delete(key);
+      }
+      appendLiveLog(liveLogEntry(call, result));
+      if (result === 'Accepted') rememberAnswered(call);
+    },
+    [appendLiveLog, rememberAnswered],
+  );
+
+  const answer = useCallback(
+    (call) =>
+      perform(async () => {
+        if (!call) throw new Error('That call is no longer available.');
+        const connected = () => ({ ...call, status: 'CallConnected', web: true, answeredAt: Date.now() });
+        const session = webSessionFor(call);
+
+        if (session?.state === 'answered') {
+          // RingCentral already pushed it here (auto-answer) while the card still showed Ringing.
+          setActiveCall((current) => current || connected());
+          settleRinging(call, 'Accepted');
+          return { ok: true, liveCalls: [] };
+        }
+
+        if (session?.state === 'ringing') {
+          try {
+            await withSipTimeout(session.answer(), 'answer', ANSWER_TIMEOUT_MS);
+          } catch (err) {
+            throw new Error(answerErrorMessage(err));
+          }
+          setActiveCall(connected());
           setMuted(false);
           setWebCalls((current) =>
-            current.map((row) => (row.id === (call.telephonySessionId || call.id) ? { ...row, status: 'CallConnected' } : row)),
+            current.map((row) => (callSessionKey(row) === callSessionKey(call) ? { ...row, status: 'CallConnected' } : row)),
           );
-          appendLiveLog(liveLogEntry(call, 'Accepted'));
-          rememberAnswered(call);
-          if (key) ringingRef.current.delete(key);
+          settleRinging(call, 'Accepted');
           return { ok: true, liveCalls: [] };
-        } catch (err) {
-          if (key) settledRef.current.delete(key);
-          const message = isMicrophoneError(err)
-            ? 'Allow microphone access for this site in the browser, then press Answer again.'
-            : err?.message || 'Could not answer in the browser.';
-          setError(message);
-          throw new Error(message);
-        } finally {
-          setBusy(false);
         }
-      }
-      try {
-        const result = await runControl('answer', call);
-        appendLiveLog(liveLogEntry(call, 'Accepted'));
-        rememberAnswered(call);
-        if (key) ringingRef.current.delete(key);
-        return result;
-      } catch {
-        // RingCentral could not ring a device for this line; explain what to do instead.
-        if (key) settledRef.current.delete(key);
-        const reason = webPhoneFallbackReason(call?.storeKey);
-        setError(reason);
-        throw new Error(reason);
-      }
-    },
-    [appendLiveLog, rememberAnswered, runControl, webPhoneFallbackReason, webSessionFor],
+
+        // Not ringing this tab's SIP registration. Ask RingCentral to hand the
+        // call to this browser's device (it arrives as an auto-answered INVITE);
+        // without one, the line's first device picks up.
+        const { deviceId, state } = webPhoneFor(call.storeKey);
+        try {
+          const result = await runControl('answer', call, {
+            deviceId: state === 'ready' || state === 'shared' ? deviceId : '',
+          });
+          settleRinging(call, 'Accepted');
+          return result;
+        } catch (err) {
+          if (err?.code === 'call_gone') throw err;
+          throw new Error(webPhoneFallbackReason(call.storeKey, err));
+        }
+      }),
+    [perform, runControl, settleRinging, webPhoneFallbackReason, webPhoneFor, webSessionFor],
   );
+
   const reject = useCallback(
-    async (call) => {
-      const key = liveCallKey(call);
-      if (key) settledRef.current.add(key);
-      const session = webSessionFor(call);
-      if (session && session.state === 'ringing') {
-        setBusy(true);
-        setError('');
-        try {
+    (call) =>
+      perform(async () => {
+        if (!call) throw new Error('That call is no longer available.');
+        const done = () => {
+          settleRinging(call, 'Rejected');
+          dropCall(call);
+          return { ok: true, liveCalls: [] };
+        };
+        const session = webSessionFor(call);
+        if (session?.state === 'ringing') {
           try {
-            await session.toVoicemail();
+            await withSipTimeout(session.toVoicemail(), 'send to voicemail');
+            return done();
           } catch {
-            await session.decline();
+            // Queue legs do not always honour the voicemail command; decline the INVITE instead.
           }
-          setWebCalls((current) => current.filter((row) => row.id !== (call.telephonySessionId || call.id)));
-          appendLiveLog(liveLogEntry(call, 'Rejected'));
-          if (key) ringingRef.current.delete(key);
-          return { ok: true, liveCalls: [] };
-        } catch (err) {
-          if (key) settledRef.current.delete(key);
-          setError(err?.message || 'Could not reject the call.');
-          throw err;
-        } finally {
-          setBusy(false);
+          try {
+            await withSipTimeout(session.decline(), 'decline');
+            return done();
+          } catch {
+            // Fall through to the call-control API.
+          }
         }
-      }
-      try {
-        const result = await runControl('reject', call);
-        appendLiveLog(liveLogEntry(call, 'Rejected'));
-        if (key) ringingRef.current.delete(key);
-        return result;
-      } catch (err) {
-        if (key) settledRef.current.delete(key);
-        throw err;
-      }
-    },
-    [appendLiveLog, runControl, webSessionFor],
-  );
-  const hangup = useCallback(
-    async (call) => {
-      const target = call || activeCall;
-      const session = webSessionFor(target);
-      if (session && session.state === 'answered') {
-        setBusy(true);
-        setError('');
         try {
-          await session.hangup();
-          setActiveCall((current) => (current && current.id === target.id ? null : current));
-          setMuted(false);
-          return { ok: true, liveCalls: [] };
+          await runControl('reject', call);
+          return done();
         } catch (err) {
-          setError(err?.message || 'Could not hang up.');
+          // Already over (answered elsewhere, voicemail, caller hung up), or the
+          // SIP leg here stopped ringing: either way there is nothing left to reject.
+          if (err?.code === 'call_gone' || session) return done();
           throw err;
-        } finally {
-          setBusy(false);
         }
-      }
-      return runControl('hangup', target);
-    },
-    [activeCall, runControl, webSessionFor],
+      }),
+    [dropCall, perform, runControl, settleRinging, webSessionFor],
   );
+
+  const hangup = useCallback(
+    (call) =>
+      perform(async () => {
+        const target = call || activeCall;
+        if (!target) throw new Error('There is no call to hang up.');
+        const id = callSessionKey(target);
+        const done = () => {
+          setActiveCall((current) => (current && callSessionKey(current) === id ? null : current));
+          setMuted(false);
+          markGone(id);
+          return { ok: true, liveCalls: [] };
+        };
+        const session = webSessionFor(target);
+        if (session) {
+          try {
+            if (session.state === 'answered') await withSipTimeout(session.hangup(), 'hang up');
+            else await withSipTimeout(session.decline(), 'decline');
+          } catch {
+            // No BYE reply (socket dropped mid-call): release the media here and
+            // ask RingCentral to drop the party so the caller is not left hanging.
+            try {
+              session.dispose();
+            } catch {
+              // Already released.
+            }
+            if (target.telephonySessionId && target.partyId) {
+              await runControl('hangup', target).catch(() => {});
+            }
+          }
+          return done();
+        }
+        if (target.web) return done(); // Browser call whose SIP leg already ended.
+        try {
+          await runControl('hangup', target);
+          return done();
+        } catch (err) {
+          if (err?.code === 'call_gone') return done();
+          throw err;
+        }
+      }),
+    [activeCall, markGone, perform, runControl, webSessionFor],
+  );
+
   const toggleMute = useCallback(() => {
     const session = webSessionFor(activeCall);
     if (!session || session.state !== 'answered') return;
-    if (muted) session.unmute();
-    else session.mute();
-    setMuted(!muted);
+    try {
+      if (muted) session.unmute();
+      else session.mute();
+      setMuted(!muted);
+    } catch {
+      // Media already released.
+    }
   }, [activeCall, muted, webSessionFor]);
 
   const ringOut = useCallback(

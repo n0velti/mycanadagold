@@ -3,11 +3,12 @@ import { Platform, StyleSheet, Text, View } from 'react-native';
 import TriageAccuracyPanel from './TriageAccuracyPanel';
 import TriageDeletedPanel from './TriageDeletedPanel';
 import TriageTransfersPanel from './TriageTransfersPanel';
-import { BarButton, EmptyState, FONT, SearchField, T, TextTabs } from './TriageKit';
+import { BarButton, EmptyState, FONT, SearchField, SegmentedSlider, T, TextTabs } from './TriageKit';
 import { useIsMobile } from '../lib/mobileUi';
 import {
   batchStats,
   collectAccuracyTriagePos,
+  isStandaloneTriage,
   syncTransferWorkflowRemote,
   triagePoNeedsCorrection,
   useTransferWorkflow,
@@ -23,7 +24,8 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
   }
   style.textContent = [
     '.cgold-triage-row{cursor:pointer;background-color:transparent;}',
-    '.cgold-triage-table-row:hover,.cgold-triage-table-row:has(:hover){background-color:#f5f5f7!important;}',
+    '.cgold-triage-table-row:hover,.cgold-triage-table-row:has(:hover),.cgold-triage-table-row.is-hover{background-color:#f5f5f7!important;}',
+    '.cgold-triage-table-row:hover > *,.cgold-triage-table-row:has(:hover) > *,.cgold-triage-table-row.is-hover > *{background-color:transparent!important;}',
     '.cgold-triage-row-selected,.cgold-triage-row-selected:hover{background-color:#EAF2FF!important;}',
   ].join('');
 }
@@ -48,6 +50,7 @@ export default function TriageScreen({
   const isMobile = useIsMobile();
   const { triage, deleted = [] } = useTransferWorkflow();
   const [activeTab, setActiveTab] = useState('transfers');
+  const [dashTab, setDashTab] = useState('poso');
   const [createTransferOpen, setCreateTransferOpen] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [listQuery, setListQuery] = useState('');
@@ -77,12 +80,32 @@ export default function TriageScreen({
     });
   }, [deleted.length, triage]);
 
+  const dashTabOptions = useMemo(() => {
+    let poCount = 0;
+    let batchCount = 0;
+    for (const row of triage) {
+      if (isStandaloneTriage(row)) poCount += 1;
+      else batchCount += 1;
+    }
+    return [
+      { key: 'poso', label: 'PO / SO', ...(poCount ? { count: poCount } : {}) },
+      { key: 'batch', label: 'Batch', ...(batchCount ? { count: batchCount } : {}) },
+    ];
+  }, [triage]);
+
   const changeTab = useCallback((key) => {
     leaveStoreRef.current?.();
     setActiveTab(key);
     setCreateTransferOpen(false);
     setQuickAddOpen(false);
     setListQuery('');
+  }, []);
+
+  const changeDashTab = useCallback((key) => {
+    setDashTab(key);
+    setListQuery('');
+    setCreateTransferOpen(false);
+    setQuickAddOpen(false);
   }, []);
 
   const handleBackChange = useCallback((fn, context) => {
@@ -99,18 +122,26 @@ export default function TriageScreen({
         <SearchField
           value={listQuery}
           onChangeText={setListQuery}
-          placeholder="PO / SO"
+          placeholder={dashTab === 'batch' ? 'Batch / store' : 'PO / SO'}
           style={[styles.tabSearch, isMobile && styles.tabSearchMobile]}
         />
         <BarButton
           label="Quick Add"
-          onPress={() => setQuickAddOpen(true)}
+          onPress={() => {
+            setDashTab('poso');
+            setListQuery('');
+            setQuickAddOpen(true);
+          }}
           accessibilityLabel="Quick Add a PO from any store"
         />
         <BarButton
           icon="add"
           label="Add Batch"
-          onPress={() => setCreateTransferOpen(true)}
+          onPress={() => {
+            setDashTab('batch');
+            setListQuery('');
+            setCreateTransferOpen(true);
+          }}
           accessibilityLabel="Add a new batch"
         />
       </>
@@ -127,9 +158,21 @@ export default function TriageScreen({
       </View>
     ) : null;
 
+  const leading =
+    session?.token && activeTab === 'transfers' && transferView === 'list' ? (
+      <SegmentedSlider options={dashTabOptions} value={dashTab} onChange={changeDashTab} />
+    ) : null;
+
   return (
     <View style={[styles.body, embedded && styles.bodyEmbedded]}>
-      <TextTabs options={tabOptions} value={activeTab} onChange={changeTab} trailing={trailing} size="lg" />
+      <TextTabs
+        options={tabOptions}
+        value={activeTab}
+        onChange={changeTab}
+        leading={leading}
+        trailing={trailing}
+        size="lg"
+      />
 
       <View style={activeTab === 'transfers' ? styles.pageVisible : styles.pageHidden}>
         <TriageTransfersPanel
@@ -139,6 +182,8 @@ export default function TriageScreen({
           onCreateOpenChange={setCreateTransferOpen}
           quickAddOpen={quickAddOpen}
           onQuickAddOpenChange={setQuickAddOpen}
+          dashTab={dashTab}
+          onDashTabChange={changeDashTab}
           onViewChange={setTransferView}
           onBackChange={handleBackChange}
           listQuery={listQuery}
