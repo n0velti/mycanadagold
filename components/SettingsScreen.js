@@ -15,6 +15,8 @@ import { AI_MODEL_PROVIDERS, canManageCompanyAiKeys, loadCompanyAiKeyState, save
 import {
   USER_CATEGORIES,
   USER_CATEGORY_KEYS,
+  accessListsEqual,
+  applyFilterablePatch,
   canManageAppAccess,
   clearUserAppAccess,
   defaultAccessByRole,
@@ -26,6 +28,7 @@ import {
   resolvedAccessForProfile,
   saveRoleAppAccess,
   saveUserAppAccess,
+  saveUserAppAccessBatch,
   updateStaffAccess,
   useAppAccess,
 } from '../lib/permissions';
@@ -236,6 +239,58 @@ function AccessToggle({ on, disabled, onPress }) {
   );
 }
 
+const stopRowToggleProps =
+  Platform.OS === 'web'
+    ? { onClick: (event) => event.stopPropagation() }
+    : { onStartShouldSetResponder: () => true };
+
+function StaffCheck({ checked, mixed, disabled, onPress }) {
+  const icon = checked ? 'checkbox' : mixed ? 'remove-outline' : 'square-outline';
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      hitSlop={8}
+      style={[styles.staffCheck, disabled && styles.toggleDisabled]}
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked: mixed ? 'mixed' : checked, disabled }}
+    >
+      <Ionicons name={icon} size={18} color={disabled ? '#c4c4c4' : checked || mixed ? '#1a1a1a' : '#c4c4c4'} />
+    </Pressable>
+  );
+}
+
+function FilterBulkState({ value, onChange, disabled }) {
+  const options = [
+    { key: '', label: 'Leave' },
+    { key: 'on', label: 'On' },
+    { key: 'off', label: 'Off' },
+  ];
+  return (
+    <View style={styles.bulkStateRow}>
+      {options.map((option) => {
+        const selected = (value || '') === option.key;
+        return (
+          <Pressable
+            key={option.key || 'leave'}
+            onPress={() => onChange(option.key)}
+            disabled={disabled}
+            style={[
+              styles.bulkStateChip,
+              selected && styles.bulkStateChipSelected,
+              disabled && styles.toggleDisabled,
+            ]}
+          >
+            <Text style={[styles.bulkStateChipText, selected && styles.bulkStateChipTextSelected]}>
+              {option.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
 function RoleBadge({ role, isSystemAdmin }) {
   const category = getCategory(role);
   const tint = category?.tint || '#F4F4F5';
@@ -339,6 +394,11 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
   const [saving, setSaving] = useState(false);
   const [personSaving, setPersonSaving] = useState(false);
   const [updatingId, setUpdatingId] = useState('');
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkTarget, setBulkTarget] = useState('matching');
+  const [bulkFilterDraft, setBulkFilterDraft] = useState({});
+  const [bulkSaving, setBulkSaving] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
@@ -381,6 +441,30 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
     });
   }, [staff, staffQuery, roleFilter]);
 
+  const selectableStaff = useMemo(
+    () => staff.filter((row) => !hasFullAppAccess(row)),
+    [staff],
+  );
+  const selectableVisible = useMemo(
+    () => visibleStaff.filter((row) => !hasFullAppAccess(row)),
+    [visibleStaff],
+  );
+  const selectedCount = selectedIds.size;
+  const allVisibleSelected =
+    selectableVisible.length > 0 && selectableVisible.every((row) => selectedIds.has(row.id));
+  const someVisibleSelected = selectableVisible.some((row) => selectedIds.has(row.id));
+  const bulkPatchCount = Object.values(bulkFilterDraft).filter(
+    (value) => value === 'on' || value === 'off',
+  ).length;
+  const bulkTargetPeople = useMemo(() => {
+    if (bulkTarget === 'selected') {
+      return staff.filter((row) => selectedIds.has(row.id) && !hasFullAppAccess(row));
+    }
+    if (bulkTarget === 'all') return selectableStaff;
+    return selectableVisible;
+  }, [bulkTarget, staff, selectedIds, selectableStaff, selectableVisible]);
+  const bulkTargetCount = bulkTargetPeople.length;
+
   useEffect(() => {
     let cancelled = false;
 
@@ -414,6 +498,19 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
       cancelled = true;
     };
   }, [catalogKeys]);
+
+  useEffect(() => {
+    const valid = new Set(staff.map((row) => row.id));
+    setSelectedIds((current) => {
+      let changed = false;
+      const next = new Set();
+      current.forEach((id) => {
+        if (valid.has(id)) next.add(id);
+        else changed = true;
+      });
+      return changed ? next : current;
+    });
+  }, [staff]);
 
   const toggleApp = (appKey) => {
     if (locked || saving) return;
@@ -563,6 +660,113 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
     }
   };
 
+  const toggleSelected = (row) => {
+    if (hasFullAppAccess(row) || bulkSaving) return;
+    const isSelected = selectedIds.has(row.id);
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (isSelected) next.delete(row.id);
+      else next.add(row.id);
+      return next;
+    });
+    if (!isSelected) {
+      setBulkOpen(true);
+      setBulkTarget('selected');
+    }
+    setMessage('');
+  };
+
+  const toggleVisibleSelection = () => {
+    if (bulkSaving || selectableVisible.length === 0) return;
+    const selecting = !allVisibleSelected;
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (selecting) {
+        selectableVisible.forEach((row) => next.add(row.id));
+      } else {
+        selectableVisible.forEach((row) => next.delete(row.id));
+      }
+      return next;
+    });
+    if (selecting) {
+      setBulkOpen(true);
+      setBulkTarget('selected');
+    }
+    setMessage('');
+  };
+
+  const setBulkFilterValue = (appKey, value) => {
+    if (bulkSaving) return;
+    setMessage('');
+    setBulkFilterDraft((current) => ({ ...current, [appKey]: value }));
+  };
+
+  const setAllBulkFilters = (value) => {
+    if (bulkSaving) return;
+    const next = {};
+    (apps || []).forEach((app) => {
+      next[app.key] = value;
+    });
+    setBulkFilterDraft(next);
+    setMessage('');
+  };
+
+  const handleBulkApplyFilters = async () => {
+    if (bulkSaving) return;
+    const patch = {};
+    Object.entries(bulkFilterDraft).forEach(([key, value]) => {
+      if (value === 'on') patch[key] = true;
+      else if (value === 'off') patch[key] = false;
+    });
+    setError('');
+    setMessage('');
+    if (Object.keys(patch).length === 0) {
+      setError('Choose On or Off for at least one app filter.');
+      return;
+    }
+    if (bulkTargetCount === 0) {
+      setError(
+        bulkTarget === 'selected'
+          ? 'Select at least one employee, or apply to this list / everyone.'
+          : 'No employees match that target.',
+      );
+      return;
+    }
+
+    setBulkSaving(true);
+    try {
+      const entries = [];
+      for (const row of bulkTargetPeople) {
+        const current = resolvedAccessForProfile(row, draft, catalogKeys, userAccessMap[row.id]);
+        if (current.locked) continue;
+        const next = applyFilterablePatch(current, patch, catalogKeys);
+        if (accessListsEqual(current, next)) continue;
+        entries.push({ userId: row.id, ...next });
+      }
+      if (entries.length === 0) {
+        setMessage('Those people already have that filter setting.');
+        return;
+      }
+      const saved = await saveUserAppAccessBatch(entries, catalogKeys, actorId);
+      const savedById = Object.fromEntries(saved.map((entry) => [entry.userId, entry]));
+      setUserAccessMap((current) => ({ ...current, ...savedById }));
+      saved.forEach((entry) => onUserAccessSaved?.(entry.userId, entry));
+      if (expandedRow && savedById[expandedRow.id] && !hasFullAppAccess(expandedRow)) {
+        setPersonDraft(personDraftFromResolved(savedById[expandedRow.id]));
+      }
+      const skipped = bulkTargetCount - saved.length;
+      setMessage(
+        skipped > 0
+          ? `Updated filters for ${saved.length} ${saved.length === 1 ? 'person' : 'people'}. ${skipped} already matched or were skipped.`
+          : `Updated filters for ${saved.length} ${saved.length === 1 ? 'person' : 'people'}.`,
+      );
+    } catch (nextError) {
+      setError(nextError?.message || 'Could not update those filters.');
+    } finally {
+      setBulkSaving(false);
+    }
+  };
+
   if (loading) {
     return (
       <View style={styles.centered}>
@@ -576,8 +780,9 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
       <Text style={styles.sectionTitle}>People and roles</Text>
       <Text style={styles.aiIntro}>
         Every signed-in employee and the role that controls their apps. Filter by role, then open
-        a row to customize apps. Role defaults apply until you save a custom set. System Admin
-        always has every app and can filter.
+        a row to customize apps, or bulk-change filters for a selection, this list, or everyone.
+        Role defaults apply until you save a custom set. System Admin always has every app and
+        can filter.
       </Text>
 
       {staff.length > 0 ? (
@@ -642,6 +847,136 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
               );
             })}
           </View>
+
+          <View style={styles.bulkBar}>
+            <Pressable
+              onPress={() => setBulkOpen((open) => !open)}
+              style={styles.bulkToggle}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: bulkOpen }}
+            >
+              <Ionicons name="funnel-outline" size={15} color="#1a1a1a" />
+              <Text style={styles.bulkToggleText}>Bulk change filters</Text>
+              {selectedCount > 0 ? (
+                <Text style={styles.bulkToggleCount}>{selectedCount} selected</Text>
+              ) : null}
+              <Ionicons name={bulkOpen ? 'chevron-up' : 'chevron-down'} size={15} color="#9a9a9a" />
+            </Pressable>
+            <Pressable
+              onPress={toggleVisibleSelection}
+              disabled={selectableVisible.length === 0 || bulkSaving}
+              hitSlop={8}
+            >
+              <Text style={[styles.bulkLink, (selectableVisible.length === 0 || bulkSaving) && styles.bulkLinkDisabled]}>
+                {allVisibleSelected ? 'Unselect this list' : 'Select this list'}
+              </Text>
+            </Pressable>
+            {selectedCount > 0 ? (
+              <Pressable onPress={() => setSelectedIds(new Set())} hitSlop={8}>
+                <Text style={styles.bulkLink}>Clear</Text>
+              </Pressable>
+            ) : null}
+          </View>
+
+          {bulkOpen ? (
+            <View style={styles.bulkPanel}>
+              <Text style={styles.menuHint}>
+                Turn Filter on or off for the same apps across many people. Apps they can open stay
+                the same. System Admins are skipped because they always keep filter access.
+              </Text>
+              <Text style={styles.bulkLabel}>Apply to</Text>
+              <View style={styles.roleFilters}>
+                {[
+                  { key: 'selected', label: `Selected ${selectedCount}` },
+                  {
+                    key: 'matching',
+                    label: `This list ${selectableVisible.length}`,
+                  },
+                  { key: 'all', label: `Everyone ${selectableStaff.length}` },
+                ].map((option) => {
+                  const selected = bulkTarget === option.key;
+                  return (
+                    <Pressable
+                      key={option.key}
+                      onPress={() => setBulkTarget(option.key)}
+                      disabled={bulkSaving}
+                      style={[styles.roleFilterChip, selected && styles.roleFilterChipSelected]}
+                    >
+                      <Text style={[styles.roleFilterText, selected && styles.roleFilterTextSelected]}>
+                        {option.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <View style={styles.bulkActions}>
+                <Pressable onPress={() => setAllBulkFilters('on')} disabled={bulkSaving}>
+                  <Text style={styles.bulkLink}>Allow all</Text>
+                </Pressable>
+                <Text style={styles.bulkActionSep}>·</Text>
+                <Pressable onPress={() => setAllBulkFilters('off')} disabled={bulkSaving}>
+                  <Text style={styles.bulkLink}>Remove all</Text>
+                </Pressable>
+                <Text style={styles.bulkActionSep}>·</Text>
+                <Pressable onPress={() => setBulkFilterDraft({})} disabled={bulkSaving}>
+                  <Text style={styles.bulkLink}>Reset</Text>
+                </Pressable>
+              </View>
+              <Pressable
+                style={[styles.saveButton, bulkSaving && styles.saveButtonDisabled]}
+                onPress={() => void handleBulkApplyFilters()}
+                disabled={bulkSaving}
+              >
+                {bulkSaving ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.saveButtonText}>
+                    {bulkPatchCount === 0
+                      ? 'Apply filters'
+                      : `Apply ${bulkPatchCount} filter${bulkPatchCount === 1 ? '' : 's'} to ${bulkTargetCount}`}
+                  </Text>
+                )}
+              </Pressable>
+              {error ? <Text style={styles.errorText}>{error}</Text> : null}
+              {message ? <Text style={styles.savedText}>{message}</Text> : null}
+              <View style={styles.appAccessHeader}>
+                <Text style={styles.appAccessHeaderLabel}>App</Text>
+                <Text style={styles.bulkStateHeader}>Filter</Text>
+              </View>
+              {(apps || []).map((app) => (
+                <View key={app.key} style={styles.appRow}>
+                  <View style={[styles.menuIcon, { backgroundColor: app.tint || '#F4F4F5' }]}>
+                    <Ionicons
+                      name={app.icon || 'apps-outline'}
+                      size={16}
+                      color={app.accent || '#52525B'}
+                    />
+                  </View>
+                  <Text style={styles.appRowLabel}>{app.label}</Text>
+                  <FilterBulkState
+                    value={bulkFilterDraft[app.key] || ''}
+                    disabled={bulkSaving}
+                    onChange={(value) => setBulkFilterValue(app.key, value)}
+                  />
+                </View>
+              ))}
+              <Pressable
+                style={[styles.saveButton, bulkSaving && styles.saveButtonDisabled]}
+                onPress={() => void handleBulkApplyFilters()}
+                disabled={bulkSaving}
+              >
+                {bulkSaving ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.saveButtonText}>
+                    {bulkPatchCount === 0
+                      ? 'Apply filters'
+                      : `Apply ${bulkPatchCount} filter${bulkPatchCount === 1 ? '' : 's'} to ${bulkTargetCount}`}
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+          ) : null}
         </>
       ) : null}
 
@@ -653,6 +988,14 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
         <View style={styles.staffTable}>
           {isMobile ? null : (
             <View style={styles.staffTableHeader}>
+              <View style={styles.staffColCheck}>
+                <StaffCheck
+                  checked={allVisibleSelected}
+                  mixed={someVisibleSelected && !allVisibleSelected}
+                  disabled={selectableVisible.length === 0 || bulkSaving}
+                  onPress={toggleVisibleSelection}
+                />
+              </View>
               <Text style={[styles.staffHeaderText, styles.staffColName]}>Employee</Text>
               <Text style={[styles.staffHeaderText, styles.staffColStore]}>Store</Text>
               <Text style={[styles.staffHeaderText, styles.staffColRole]}>Assigned role</Text>
@@ -668,6 +1011,8 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
             const expanded = expandedId === row.id;
             const summary = accessSummary(row, draft, userAccessMap, catalogKeys);
             const title = staffTitle(row);
+            const lockedPerson = hasFullAppAccess(row);
+            const selected = selectedIds.has(row.id);
             return (
               <View key={row.id} style={[styles.staffTableItem, !row.isActive && styles.staffRowDisabled]}>
                 <Pressable
@@ -676,6 +1021,13 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
                   accessibilityRole="button"
                   accessibilityState={{ expanded }}
                 >
+                  <View style={styles.staffColCheck} {...stopRowToggleProps}>
+                    <StaffCheck
+                      checked={selected}
+                      disabled={lockedPerson || bulkSaving}
+                      onPress={() => toggleSelected(row)}
+                    />
+                  </View>
                   <View style={[styles.menuTextWrap, !isMobile && styles.staffColName]}>
                     <View style={styles.staffNameLine}>
                       <Text style={styles.menuLabel} numberOfLines={1}>
@@ -802,8 +1154,8 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
                     ) : (
                       <Text style={styles.menuHint}>
                         {userAccessMap[row.id]
-                          ? 'Custom apps for this person. Filter is only available on apps they can open.'
-                          : `Using ${getCategory(row.appRole)?.label || 'role'} defaults until you save.`}
+                          ? 'Custom apps for this person. Filter is only available on apps they can open. Home Filter lets analysts and branch managers see store dollar totals and open other store details.'
+                          : `Using ${getCategory(row.appRole)?.label || 'role'} defaults until you save. Analysts and branch managers see every store on Home without dollar totals until Home Filter is on.`}
                       </Text>
                     )}
                     <View style={styles.appAccessHeader}>
@@ -828,7 +1180,7 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
                           <Text style={styles.appRowLabel}>{app.label}</Text>
                           <AccessToggle
                             on={visible}
-                            disabled={expandedLocked}
+                            disabled={expandedLocked || app.key === 'home'}
                             onPress={() => togglePersonApp(app.key)}
                           />
                           <View style={styles.filterToggleWrap}>
@@ -876,7 +1228,8 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
       <Text style={[styles.sectionTitle, styles.sectionTitleSpaced]}>Role defaults</Text>
       <Text style={styles.aiIntro}>
         Starting apps for each role when a person has no custom set. System Admin always has
-        every app. A General Manager can also be marked a System Admin.
+        every app. A General Manager can also be marked a System Admin. Home is always
+        visible; use each person's Home Filter for store totals and details.
       </Text>
 
       <View style={styles.categoryTabs}>
@@ -899,7 +1252,9 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
       {activeCategory ? <Text style={styles.menuHint}>{activeCategory.description}</Text> : null}
 
       <View style={styles.appList}>
-        {(apps || []).map((app) => {
+        {(apps || [])
+          .filter((app) => app.key !== 'home')
+          .map((app) => {
           const on = locked || (draft[activeRole] || []).includes(app.key);
           return (
             <View key={app.key} style={styles.appRow}>
@@ -1937,5 +2292,128 @@ const styles = StyleSheet.create({
   },
   feedbackSpaced: {
     marginTop: 16,
+  },
+  staffColCheck: {
+    width: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  staffCheck: {
+    width: 24,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  bulkBar: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 12,
+  },
+  bulkToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#d0d0d0',
+    borderRadius: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    backgroundColor: '#fff',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  bulkToggleText: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1a1a1a',
+  },
+  bulkToggleCount: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#6b6b6b',
+  },
+  bulkLink: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1a1a1a',
+  },
+  bulkLinkDisabled: {
+    color: '#b0b0b0',
+  },
+  bulkPanel: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e5e5e5',
+    borderRadius: 10,
+    backgroundColor: '#fff',
+    padding: 12,
+    marginBottom: 12,
+    gap: 8,
+  },
+  bulkLabel: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#8a8a8a',
+    marginTop: 4,
+  },
+  bulkActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8,
+  },
+  bulkActionSep: {
+    fontFamily,
+    fontSize: 12,
+    color: '#c4c4c4',
+  },
+  bulkStateHeader: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#8a8a8a',
+    width: 168,
+    textAlign: 'right',
+  },
+  bulkStateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  bulkStateChip: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#d0d0d0',
+    borderRadius: 6,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+    backgroundColor: '#fff',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  bulkStateChipSelected: {
+    backgroundColor: '#1a1a1a',
+    borderColor: '#1a1a1a',
+  },
+  bulkStateChipText: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#1a1a1a',
+  },
+  bulkStateChipTextSelected: {
+    color: '#fff',
   },
 });
