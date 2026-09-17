@@ -38,10 +38,8 @@ import {
   persistPinnedTools,
   storeLocationFromSession,
   isRestrictedHomeEmployee,
-  isStoreScopedProfile,
   allocatedStoreName,
   scopedStoreName,
-  filterRowsToAllocatedStore,
 } from './lib/profiles';
 import {
   AppAccessContext,
@@ -513,6 +511,14 @@ const MOBILE_TABS = [
   { key: 'profile', label: 'Profile', icon: 'person-outline', iconActive: 'person' },
 ];
 
+const HOME_APP = {
+  key: 'home',
+  label: 'Home',
+  icon: 'home-outline',
+  tint: '#EEF4FF',
+  accent: '#0A84FF',
+};
+
 const TOOL_CARDS = [
   { key: 'transactions', label: 'Transactions', icon: 'swap-horizontal-outline', tint: '#E8F1FF', accent: '#2F6FED' },
   { key: 'inventory', label: 'Inventory', icon: 'cube-outline', tint: '#FFF4E5', accent: '#C47A12' },
@@ -557,6 +563,8 @@ const TOOL_CARDS = [
 ];
 
 const TOOL_KEYS = new Set(TOOL_CARDS.map((tool) => tool.key));
+const PERMISSION_APPS = [HOME_APP, ...TOOL_CARDS];
+const ACCESS_CATALOG_KEYS = new Set(PERMISSION_APPS.map((app) => app.key));
 
 const STORE_DRAWER_TAB_KEYS = [
   'transactions',
@@ -606,19 +614,6 @@ function initialsFromName(name) {
   if (!parts.length) return '';
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
-}
-
-function emptyHomeStoreRow(store) {
-  return {
-    store,
-    saleCount: 0,
-    purchaseCount: 0,
-    soAmount: 0,
-    poAmount: 0,
-    txCount: 0,
-    totalAmount: 0,
-    transactions: [],
-  };
 }
 
 const HOME_PEOPLE_VISIBLE = 6;
@@ -3019,17 +3014,61 @@ function HomeStoreMetric({ icon, stats, label }) {
   );
 }
 
-function HomeStoreCard({ row, people, emailStats, phoneStats, selected, last, onOpenStore, onOpenPerson, open }) {
+function HomeStoreCard({
+  row,
+  people,
+  emailStats,
+  phoneStats,
+  selected,
+  last,
+  onOpenStore,
+  onOpenPerson,
+  open,
+  showAmounts = true,
+  canOpen = true,
+}) {
   const accent = storeAccent(row.store);
   const hasActivity = Number(row.txCount) > 0;
   const hasMetrics = emailStats?.rate != null || phoneStats?.rate != null;
+  const cardStyle = [styles.igStoreCard, selected && styles.igStoreCardSelected];
+
+  if (!canOpen) {
+    return (
+      <View style={[cardStyle, styles.igStoreCardStatic]} accessibilityLabel={`${row.store}, ${open ? 'open' : 'closed'}`}>
+        <HomeStoreStatusIcon accent={accent} open={open} compact />
+        <View style={[styles.igStoreBody, !last && styles.igStoreBodyDivider]}>
+          <View style={styles.igStoreCopy}>
+            <Text style={styles.igStoreName} numberOfLines={1}>
+              {row.store}
+            </Text>
+            <View style={styles.igStoreMetaRow}>
+              <Text style={styles.igStoreMeta} numberOfLines={1}>
+                {hasActivity ? `${row.txCount} tx` : 'No transactions'}
+              </Text>
+              {hasMetrics ? (
+                <>
+                  <HomeStoreMetric icon="mail" stats={emailStats} label="Email capture" />
+                  <HomeStoreMetric icon="call" stats={phoneStats} label="Phone answer rate" />
+                </>
+              ) : null}
+            </View>
+          </View>
+          <View style={styles.igStoreTrailing}>
+            {people.length > 0 ? (
+              <HomePeopleStack people={people} compact onOpenPerson={onOpenPerson} />
+            ) : null}
+          </View>
+          <View style={styles.igStoreChevron} />
+        </View>
+      </View>
+    );
+  }
 
   return (
     <Pressable
       onPress={() => onOpenStore(row)}
       style={({ hovered, pressed }) => [
-        styles.igStoreCard,
-        selected && styles.igStoreCardSelected,
+        ...cardStyle,
         (hovered || pressed) && styles.igStoreCardPressed,
       ]}
       accessibilityRole="button"
@@ -3054,7 +3093,9 @@ function HomeStoreCard({ row, people, emailStats, phoneStats, selected, last, on
           </View>
         </View>
         <View style={styles.igStoreTrailing}>
-          <HomeStoreAmount amount={row.totalAmount} count={row.txCount} breakdown={row} compact />
+          {showAmounts ? (
+            <HomeStoreAmount amount={row.totalAmount} count={row.txCount} breakdown={row} compact />
+          ) : null}
           {people.length > 0 ? (
             <HomePeopleStack people={people} compact onOpenPerson={onOpenPerson} />
           ) : null}
@@ -3172,7 +3213,7 @@ function HomePhoneRate({ stats, compact = false }) {
   );
 }
 
-function HomePeopleStack({ people = [], compact = false, onOpenPerson }) {
+function HomePeopleStack({ people = [], compact = false, onOpenPerson, trailing = false }) {
   const [tip, setTip] = useState({ text: '', el: null });
   const size = compact ? 22 : HOME_PEOPLE_SIZE;
   const overlap = compact ? 8 : HOME_PEOPLE_OVERLAP;
@@ -3194,7 +3235,7 @@ function HomePeopleStack({ people = [], compact = false, onOpenPerson }) {
   if (people.length === 0) {
     if (compact) return null;
     return (
-      <View style={styles.homePeopleStack}>
+      <View style={[styles.homePeopleStack, trailing && styles.homePeopleStackTrailing]}>
         <Text style={[styles.homeStoreMoney, styles.homeStoreMoneyEmpty]}>—</Text>
       </View>
     );
@@ -3202,7 +3243,11 @@ function HomePeopleStack({ people = [], compact = false, onOpenPerson }) {
 
   return (
     <View
-      style={[styles.homePeopleStack, compact && styles.homePeopleStackCompact]}
+      style={[
+        styles.homePeopleStack,
+        compact && styles.homePeopleStackCompact,
+        trailing && styles.homePeopleStackTrailing,
+      ]}
       pointerEvents="box-none"
       accessibilityLabel={people.map((person) => person.name).join(', ')}
     >
@@ -3303,8 +3348,62 @@ function HomeStoreAmount({ amount, count, strong = false, breakdown = null, comp
   );
 }
 
-function HomeStoreTableRow({ row, people, emailStats, phoneStats, selected, last, onOpenStore, onOpenPerson, open }) {
+function HomeStoreTableRow({
+  row,
+  people,
+  emailStats,
+  phoneStats,
+  selected,
+  last,
+  onOpenStore,
+  onOpenPerson,
+  open,
+  showAmounts = true,
+  canOpen = true,
+}) {
   const accent = storeAccent(row.store);
+  const peopleColumn = (
+    <HomePeopleStack
+      people={people}
+      onOpenPerson={onOpenPerson}
+      trailing={!showAmounts}
+    />
+  );
+  const rowBody = (
+    <View style={[styles.homeStoreRowBody, !last && styles.homeStoreRowDivider]}>
+      <View style={styles.homeStoreColStore}>
+        <Text style={styles.homeStoreName} numberOfLines={1}>
+          {row.store}
+        </Text>
+        <Text style={styles.homeStoreMeta} numberOfLines={1}>
+          {homeStoreMeta(row)}
+        </Text>
+      </View>
+      <HomeEmailRate stats={emailStats} />
+      <HomePhoneRate stats={phoneStats} />
+      {showAmounts ? peopleColumn : null}
+      {showAmounts ? (
+        <HomeStoreAmount amount={row.totalAmount} count={row.txCount} breakdown={row} strong />
+      ) : (
+        peopleColumn
+      )}
+      <View style={styles.homeStoreChevron}>
+        {canOpen ? <Ionicons name="chevron-forward" size={16} color="#c7c7cc" /> : null}
+      </View>
+    </View>
+  );
+
+  if (!canOpen) {
+    return (
+      <View
+        style={[styles.homeStoreRow, styles.homeStoreRowStatic]}
+        accessibilityLabel={`${row.store}, ${open ? 'open' : 'closed'}`}
+      >
+        <HomeStoreStatusIcon accent={accent} open={open} />
+        {rowBody}
+      </View>
+    );
+  }
 
   return (
     <Pressable
@@ -3325,23 +3424,7 @@ function HomeStoreTableRow({ row, people, emailStats, phoneStats, selected, last
       accessibilityLabel={`${row.store}, ${open ? 'open' : 'closed'}`}
     >
       <HomeStoreStatusIcon accent={accent} open={open} />
-      <View style={[styles.homeStoreRowBody, !last && styles.homeStoreRowDivider]}>
-        <View style={styles.homeStoreColStore}>
-          <Text style={styles.homeStoreName} numberOfLines={1}>
-            {row.store}
-          </Text>
-          <Text style={styles.homeStoreMeta} numberOfLines={1}>
-            {homeStoreMeta(row)}
-          </Text>
-        </View>
-        <HomeEmailRate stats={emailStats} />
-        <HomePhoneRate stats={phoneStats} />
-        <HomePeopleStack people={people} onOpenPerson={onOpenPerson} />
-        <HomeStoreAmount amount={row.totalAmount} count={row.txCount} breakdown={row} strong />
-        <View style={styles.homeStoreChevron}>
-          <Ionicons name="chevron-forward" size={16} color="#c7c7cc" />
-        </View>
-      </View>
+      {rowBody}
     </Pressable>
   );
 }
@@ -3356,6 +3439,8 @@ function HomeStoresTable({
   onOpenStore,
   onOpenPerson,
   compact = false,
+  showAmounts = true,
+  canOpenStore,
 }) {
   const phone = usePhoneCalls();
   const [hoursByKey, setHoursByKey] = useState(() => new Map());
@@ -3433,6 +3518,8 @@ function HomeStoresTable({
             onOpenStore={onOpenStore}
             onOpenPerson={onOpenPerson}
             open={openByStore.get(row.store) === true}
+            showAmounts={showAmounts}
+            canOpen={canOpenStore ? canOpenStore(row) : true}
           />
         ))}
         {totals ? (
@@ -3449,12 +3536,14 @@ function HomeStoresTable({
                 </View>
               </View>
               <View style={styles.igStoreTrailing}>
-                <HomeStoreAmount
-                  amount={totals.totalAmount}
-                  count={totals.txCount}
-                  breakdown={totals}
-                  compact
-                />
+                {showAmounts ? (
+                  <HomeStoreAmount
+                    amount={totals.totalAmount}
+                    count={totals.txCount}
+                    breakdown={totals}
+                    compact
+                  />
+                ) : null}
                 {totalPeople.length > 0 ? (
                   <HomePeopleStack people={totalPeople} compact onOpenPerson={onOpenPerson} />
                 ) : null}
@@ -3475,15 +3564,23 @@ function HomeStoresTable({
         style={styles.homeStoreTableScroll}
         contentContainerStyle={styles.homeStoreTableScrollContent}
       >
-        <View style={styles.homeStoreTable}>
+        <View style={[styles.homeStoreTable, !showAmounts && styles.homeStoreTableNoAmounts]}>
           <View style={[styles.homeStoreRow, styles.homeStoreHeaderRow]}>
             <View style={styles.homeStoreIconSpacer} />
             <View style={styles.homeStoreRowBody}>
               <Text style={[styles.homeStoreHeader, styles.homeStoreColStore]}>Store</Text>
               <Text style={[styles.homeStoreHeader, styles.homeStoreColEmail]}>Email</Text>
               <Text style={[styles.homeStoreHeader, styles.homeStoreColPhone]}>Phone</Text>
-              <Text style={[styles.homeStoreHeader, styles.homeStoreColPeople]}>People</Text>
-              <Text style={[styles.homeStoreHeader, styles.homeStoreColMoney]}>Total</Text>
+              {showAmounts ? (
+                <Text style={[styles.homeStoreHeader, styles.homeStoreColPeople]}>People</Text>
+              ) : null}
+              {showAmounts ? (
+                <Text style={[styles.homeStoreHeader, styles.homeStoreColMoney]}>Total</Text>
+              ) : (
+                <Text style={[styles.homeStoreHeader, styles.homeStoreColPeople, styles.homeStoreColPeopleTrailing]}>
+                  People
+                </Text>
+              )}
               <View style={styles.homeStoreChevron} />
             </View>
           </View>
@@ -3499,6 +3596,8 @@ function HomeStoresTable({
               onOpenStore={onOpenStore}
               onOpenPerson={onOpenPerson}
               open={openByStore.get(row.store) === true}
+              showAmounts={showAmounts}
+              canOpen={canOpenStore ? canOpenStore(row) : true}
             />
           ))}
           {totals ? (
@@ -3515,13 +3614,19 @@ function HomeStoresTable({
                 </View>
                 <HomeEmailRate stats={totalEmailStats} />
                 <HomePhoneRate stats={totalPhoneStats} />
-                <HomePeopleStack people={totalPeople} onOpenPerson={onOpenPerson} />
-                <HomeStoreAmount
-                  amount={totals.totalAmount}
-                  count={totals.txCount}
-                  breakdown={totals}
-                  strong
-                />
+                {showAmounts ? (
+                  <HomePeopleStack people={totalPeople} onOpenPerson={onOpenPerson} />
+                ) : null}
+                {showAmounts ? (
+                  <HomeStoreAmount
+                    amount={totals.totalAmount}
+                    count={totals.txCount}
+                    breakdown={totals}
+                    strong
+                  />
+                ) : (
+                  <HomePeopleStack people={totalPeople} onOpenPerson={onOpenPerson} trailing />
+                )}
                 <View style={styles.homeStoreChevron} />
               </View>
             </View>
@@ -3535,7 +3640,8 @@ function HomeStoresTable({
 function HomeScreen({ session, onRequireLogin, onOpenPerson }) {
   const isMobile = useIsMobile();
   const appGrid = useAppGridLayout();
-  const storeRestricted = isStoreScopedProfile(session?.profile);
+  const { canFilter } = useAppAccess();
+  const allowHomeFilters = canFilter('home');
   const dateRestricted = isRestrictedHomeEmployee(session?.profile);
   const assignedStore = allocatedStoreName(session?.profile);
   const initialRange = useMemo(() => defaultDateRange(7), []);
@@ -3614,11 +3720,6 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson }) {
   }, [dateRestricted]);
 
   useEffect(() => {
-    if (!storeRestricted) return;
-    setQuery('');
-  }, [storeRestricted]);
-
-  useEffect(() => {
     load();
   }, [load]);
 
@@ -3647,20 +3748,17 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson }) {
     }
   }, [load]);
 
-  const scopedRows = useMemo(() => {
-    if (!storeRestricted) return storeRows;
-    const matched = filterRowsToAllocatedStore(storeRows, session?.profile);
-    if (matched.length > 0) return matched;
-    if (assignedStore) return [emptyHomeStoreRow(assignedStore)];
-    return [];
-  }, [storeRestricted, storeRows, session?.profile, assignedStore]);
-
   const visibleRows = useMemo(() => {
-    if (storeRestricted) return scopedRows;
     const q = query.trim().toLowerCase();
-    if (!q) return scopedRows;
-    return scopedRows.filter((row) => row.store.toLowerCase().includes(q));
-  }, [scopedRows, query, storeRestricted]);
+    if (!q) return storeRows;
+    return storeRows.filter((row) => row.store.toLowerCase().includes(q));
+  }, [storeRows, query]);
+
+  const hideHomeAmounts = !allowHomeFilters;
+  const canOpenHomeStore = useCallback(
+    (row) => allowHomeFilters || rowMatchesAllocatedStore(row, assignedStore),
+    [allowHomeFilters, assignedStore],
+  );
 
   const totals = useMemo(() => {
     return visibleRows.reduce(
@@ -3718,9 +3816,19 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson }) {
     if (next < startDate) setStartDate(next);
   };
 
-  const openStore = useCallback((row) => {
-    setSelectedStore(row);
-  }, []);
+  const openStore = useCallback(
+    (row) => {
+      if (!allowHomeFilters && !rowMatchesAllocatedStore(row, assignedStore)) return;
+      setSelectedStore(row);
+    },
+    [allowHomeFilters, assignedStore],
+  );
+
+  useEffect(() => {
+    if (!selectedStore) return;
+    if (canOpenHomeStore(selectedStore)) return;
+    setSelectedStore(null);
+  }, [selectedStore, canOpenHomeStore]);
 
   const closeStore = useCallback(() => {
     setSelectedStore(null);
@@ -3742,9 +3850,7 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson }) {
 
   const homeWidth = isMobile ? styles.igHomePad : sectionWidth;
   const compactControls = !isMobile;
-  // On mobile the segment sits beside the search field; when there is no search
-  // field it stretches across the row like a native iOS segmented control.
-  const segmentFills = isMobile && storeRestricted;
+  const segmentFills = false;
 
   const segmentStyle = [
     styles.homeSegment,
@@ -3830,7 +3936,7 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson }) {
     </>
   );
 
-  const searchField = storeRestricted ? null : (
+  const searchField = (
     <View style={[styles.homeSearch, isMobile && styles.igSearchField]}>
       <Ionicons
         name="search"
@@ -3900,9 +4006,11 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson }) {
         {isMobile && !(loading && storeRows.length === 0) && visibleRows.length > 0 ? (
           <View style={styles.igHomeHero}>
             <Text style={styles.igHomeHeroLabel}>{periodLabel}</Text>
-            <Text style={styles.igHomeHeroAmount} numberOfLines={1} adjustsFontSizeToFit>
-              {formatAmount(totals.totalAmount)}
-            </Text>
+            {hideHomeAmounts ? null : (
+              <Text style={styles.igHomeHeroAmount} numberOfLines={1} adjustsFontSizeToFit>
+                {formatAmount(totals.totalAmount)}
+              </Text>
+            )}
             <View style={styles.igHomeHeroStats}>
               <View style={styles.igHomeHeroStat}>
                 <Text style={styles.igHomeHeroStatValue}>{totals.txCount}</Text>
@@ -3941,11 +4049,9 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson }) {
           </View>
         ) : visibleRows.length === 0 ? (
           <Text style={[styles.toolsEmpty, homeWidth]}>
-            {storeRestricted && !assignedStore
-              ? 'Your store is not set in Aureus.'
-              : query.trim()
-                ? `No stores match “${query.trim()}”.`
-                : 'No store activity in this period.'}
+            {query.trim()
+              ? `No stores match “${query.trim()}”.`
+              : 'No store activity in this period.'}
           </Text>
         ) : (
           <View
@@ -3967,6 +4073,8 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson }) {
               onOpenStore={openStore}
               onOpenPerson={onOpenPerson}
               compact={isMobile}
+              showAmounts={!hideHomeAmounts}
+              canOpenStore={canOpenHomeStore}
             />
           </View>
         )}
@@ -5762,7 +5870,7 @@ export default function App() {
   // Always enforced. When role_app_access is unreadable the category defaults
   // apply; there is no "show everything" fallback.
   const allowedToolKeys = useMemo(
-    () => new Set(visibleAppKeysForProfile(session?.profile, accessByRole, TOOL_KEYS, ownUserAccess)),
+    () => new Set(visibleAppKeysForProfile(session?.profile, accessByRole, ACCESS_CATALOG_KEYS, ownUserAccess)),
     [session?.profile, accessByRole, ownUserAccess],
   );
   const hasApp = useCallback((key) => allowedToolKeys.has(key), [allowedToolKeys]);
@@ -5833,9 +5941,9 @@ export default function App() {
       if (restored?.token) {
         const [pins, access, view, userAccess] = await Promise.all([
           loadPinnedTools(restored, TOOL_KEYS),
-          loadRoleAppAccess(TOOL_KEYS),
+          loadRoleAppAccess(ACCESS_CATALOG_KEYS),
           loadAppsView(restored),
-          loadOwnUserAppAccess(restored.supabaseUserId || restored.profile?.id, TOOL_KEYS),
+          loadOwnUserAppAccess(restored.supabaseUserId || restored.profile?.id, ACCESS_CATALOG_KEYS),
         ]);
         if (cancelled) return;
         setSession(restored);
@@ -6145,9 +6253,9 @@ export default function App() {
       const next = await loginRequest(loginId, password);
       const [pins, access, view, userAccess] = await Promise.all([
         loadPinnedTools(next, TOOL_KEYS),
-        loadRoleAppAccess(TOOL_KEYS),
+        loadRoleAppAccess(ACCESS_CATALOG_KEYS),
         loadAppsView(next),
-        loadOwnUserAppAccess(next.supabaseUserId || next.profile?.id, TOOL_KEYS),
+        loadOwnUserAppAccess(next.supabaseUserId || next.profile?.id, ACCESS_CATALOG_KEYS),
       ]);
       setSession(next);
       setPinnedKeys(pins);
@@ -6355,7 +6463,7 @@ export default function App() {
                 panel={settingsPanel}
                 onOpenPanel={setSettingsPanel}
                 session={session}
-                apps={TOOL_CARDS}
+                apps={PERMISSION_APPS}
                 onAccessSaved={(next) => {
                   setAccessByRole(next);
                 }}
@@ -7739,6 +7847,9 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     minWidth: 728,
   },
+  homeStoreTableNoAmounts: {
+    minWidth: 600,
+  },
   homeStoreRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -7757,6 +7868,12 @@ const styles = StyleSheet.create({
   },
   homeStoreRowHovered: {
     backgroundColor: '#e8e8ed',
+  },
+  homeStoreRowStatic: {
+    ...Platform.select({
+      web: { cursor: 'default' },
+      default: {},
+    }),
   },
   homeStoreRowSelected: {
     backgroundColor: '#e8e8ed',
@@ -7906,6 +8023,11 @@ const styles = StyleSheet.create({
     flexShrink: 0,
     paddingLeft: 20,
   },
+  homeStoreColPeopleTrailing: {
+    marginLeft: 'auto',
+    paddingLeft: 0,
+    textAlign: 'right',
+  },
   homeStoreColEmail: {
     width: 72,
     flexShrink: 0,
@@ -7971,6 +8093,11 @@ const styles = StyleSheet.create({
       web: { isolation: 'isolate' },
       default: {},
     }),
+  },
+  homePeopleStackTrailing: {
+    marginLeft: 'auto',
+    paddingLeft: 0,
+    justifyContent: 'flex-end',
   },
   homePeopleStackCompact: {
     width: 'auto',
@@ -10873,6 +11000,12 @@ const styles = StyleSheet.create({
     paddingLeft: 12,
     ...Platform.select({
       web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  igStoreCardStatic: {
+    ...Platform.select({
+      web: { cursor: 'default' },
       default: {},
     }),
   },
