@@ -10,7 +10,8 @@
  *     4. Upserts the staff profile with the service role.
  *     5. Refuses deactivated staff.
  *     6. Mints a Supabase session via a one-time token hash (never emailed).
- *     7. Signs in to linked POS systems with server-held shared credentials.
+ *     7. Signs in to linked GTA and PMX POS systems with server-held shared
+ *        credentials so every staff session can load those stores.
  *
  *   POST { action: "refresh-linked" }   Authorization: Bearer <user JWT>
  *     Re-issues linked POS tokens for an already signed-in, active staff member.
@@ -125,10 +126,6 @@ function randomPassword(): string {
     const set = i < PASSWORD_CLASSES.length ? PASSWORD_CLASSES[i] : PASSWORD_ALPHABET;
     return set[b % set.length];
   }).join('');
-}
-
-function isEmailLogin(login: string): boolean {
-  return login.includes('@');
 }
 
 async function throttleCheck(admin: SupabaseClient, ipHash: string, loginHash: string): Promise<boolean> {
@@ -507,7 +504,7 @@ async function handleLogin(req: Request, body: LoginBody): Promise<Response> {
     return error(req, 500, 'Could not start your session. Try again.', 'session_failed');
   }
 
-  const linked = isEmailLogin(aureus.login) ? await loginLinkedPosSystems() : {};
+  const linked = await loginLinkedPosSystems();
 
   await recordAttempt(admin, ipHash, loginHash, true);
 
@@ -555,7 +552,7 @@ async function handleRefreshLinked(req: Request): Promise<Response> {
     return error(req, 403, 'Your MyCanadaGold access has been disabled.', 'deactivated');
   }
 
-  const linked = isEmailLogin(String(profile.aureus_login || '')) ? await loginLinkedPosSystems() : {};
+  const linked = await loginLinkedPosSystems();
   return json(req, 200, { linked });
 }
 
