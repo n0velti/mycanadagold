@@ -17,6 +17,7 @@
     "expo-print": "~15.0.8",
     "expo-secure-store": "~15.0.8",
     "expo-status-bar": "~3.0.9",
+    "qrcode": "^1.5.4",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-native": "0.81.5",
@@ -34,7 +35,7 @@
     "supabase:release": "node scripts/supabase-release.js",
     "supabase:migrate": "node scripts/apply-migrations.js",
     "supabase:push": "npx --yes supabase db push",
-    "supabase:deploy": "npx --yes supabase functions deploy aureus-login && npx --yes supabase functions deploy proxy",
+    "supabase:deploy": "npx --yes supabase functions deploy aureus-login && npx --yes supabase functions deploy proxy && npx --yes supabase functions deploy trade-capture --no-verify-jwt",
     "supabase:deploy:token": "node scripts/supabase-release.js --skip-migrate --skip-auth --skip-secrets",
     "supabase:secrets": "npx --yes supabase secrets set --env-file supabase/.env.local"
   },

@@ -15,7 +15,7 @@ export function MobileSafeTop() {
   );
 }
 
-export function MobileHomeHeader() {
+export function MobileHomeHeader({ onBuy, onSell }) {
   return (
     <View style={styles.homeHeader}>
       <View style={styles.brandMark}>
@@ -27,6 +27,32 @@ export function MobileHomeHeader() {
         />
       </View>
       <Text style={styles.wordmark}>MyCanadaGold</Text>
+      {onBuy || onSell ? (
+        <View style={styles.tradePair}>
+          {onBuy ? (
+            <Pressable
+              onPress={onBuy}
+              style={[styles.tradeChip, styles.tradeChipBuy]}
+              accessibilityRole="button"
+              accessibilityLabel="Buy"
+              accessibilityHint="Buy metal from a customer"
+            >
+              <Text style={styles.tradeChipLabel}>Buy</Text>
+            </Pressable>
+          ) : null}
+          {onSell ? (
+            <Pressable
+              onPress={onSell}
+              style={[styles.tradeChip, styles.tradeChipSell]}
+              accessibilityRole="button"
+              accessibilityLabel="Sell"
+              accessibilityHint="Sell metal to a customer"
+            >
+              <Text style={styles.tradeChipLabel}>Sell</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -126,10 +152,43 @@ const styles = StyleSheet.create({
   },
   wordmark: {
     fontFamily: titleFontFamily,
+    flex: 1,
+    minWidth: 0,
     fontSize: 22,
     fontWeight: '400',
     color: MOBILE.label,
     letterSpacing: -0.7,
+  },
+  tradePair: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginLeft: 'auto',
+  },
+  tradeChip: {
+    minWidth: 52,
+    height: 30,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  tradeChipBuy: {
+    backgroundColor: '#1F8A4E',
+  },
+  tradeChipSell: {
+    backgroundColor: '#C0392B',
+  },
+  tradeChipLabel: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#fff',
+    letterSpacing: 0.2,
   },
   navHeader: {
     flexDirection: 'row',

@@ -636,6 +636,8 @@ function browserPhoneLabel(status) {
       return status.extensionName ? `Ready in this browser · ${status.extensionName}` : 'Ready in this browser';
     case 'connecting':
       return 'Registering this browser…';
+    case 'reconnecting':
+      return status.message || 'Reconnecting to RingCentral…';
     case 'shared':
       return status.message || 'Rings through another store’s line';
     case 'other':
@@ -1390,10 +1392,18 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
                   </Text>
                 </View>
                 <View style={styles.liveActions}>
-                  <Pressable style={[styles.callBtn, styles.rejectBtn]} onPress={() => phone.reject(call)} disabled={phone.busy}>
+                  <Pressable
+                    style={[styles.callBtn, styles.rejectBtn]}
+                    onPress={() => phone.reject(call).catch(() => {})}
+                    disabled={phone.busy}
+                  >
                     <Text style={styles.callBtnText}>Reject</Text>
                   </Pressable>
-                  <Pressable style={[styles.callBtn, styles.answerBtn]} onPress={() => phone.answer(call)} disabled={phone.busy}>
+                  <Pressable
+                    style={[styles.callBtn, styles.answerBtn]}
+                    onPress={() => phone.answer(call).catch(() => {})}
+                    disabled={phone.busy}
+                  >
                     <Text style={styles.callBtnText}>Answer</Text>
                   </Pressable>
                 </View>

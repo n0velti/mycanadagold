@@ -1509,6 +1509,17 @@ function describeRingCentralError(raw: string, fallback: string): string {
   return message || fallback;
 }
 
+/**
+ * Call control on a party that is no longer Setup/Proceeding (answered
+ * elsewhere, voicemail, caller hung up) or that RingCentral has already
+ * forgotten. "Incorrect State [WrongState]" is the usual text.
+ */
+function isRingCentralWrongState(result: RcJsonResult): boolean {
+  if (result.status === 404 || result.status === 409) return true;
+  const raw = `${rcErrorMessage(result.payload, '')} ${JSON.stringify(result.payload ?? '')}`;
+  return /WrongState|Incorrect State|CMN-102|Resource for parameter \[partyId\]|not found/i.test(raw);
+}
+
 function isRingCentralRateLimit(status: number, payload?: unknown, message = ''): boolean {
   if (status === 429) return true;
   const raw = `${message} ${rcErrorMessage(payload, '')}`;
@@ -3341,6 +3352,7 @@ async function handleRingCentralPhone(req: Request): Promise<Response> {
     from?: string;
     telephonySessionId?: string;
     partyId?: string;
+    deviceId?: string; // the browser's own WebRTC device from `sip`, so Answer lands in that tab
     storePhone?: string; // legacy hint from older web builds; attribution is by extension now
   }>(req);
   const action = String(body.action || 'presence').trim().toLowerCase();
@@ -3493,7 +3505,10 @@ async function handleRingCentralPhone(req: Request): Promise<Response> {
       const base = `${origin}/restapi/v1.0/account/~/telephony/sessions/${telephonySessionId}/parties/${partyId}`;
       let result;
       if (action === 'answer') {
-        const deviceId = await firstRingCentralDevice(origin, headers);
+        // Prefer the device the browser registered through `sip`: RingCentral
+        // then re-INVITEs that tab with Alert-Info: Auto Answer and the call
+        // lands where Answer was pressed.
+        const deviceId = rcSafeId(body.deviceId) || (await firstRingCentralDevice(origin, headers));
         result = await rcJson(`${base}/answer`, {
           method: 'POST',
           headers,
@@ -3513,6 +3528,19 @@ async function handleRingCentralPhone(req: Request): Promise<Response> {
         result = await rcJson(`${base}`, { method: 'DELETE', headers });
       }
       if (!result.ok) {
+        // Whatever happened, the cached presence for this line is now suspect.
+        rcPresenceCache.delete(storeKey);
+        account.live_calls_at = null;
+        if (isRingCentralWrongState(result)) {
+          return error(
+            req,
+            409,
+            action === 'hangup'
+              ? 'That call already ended.'
+              : 'That call already ended or was picked up elsewhere.',
+            'ringcentral_wrong_state',
+          );
+        }
         const fallbackMessage =
           action === 'answer'
             ? 'Could not answer on a RingCentral device. The line’s only device (the RingCentral app) is offline; the browser phone needs microphone access to take the call.'

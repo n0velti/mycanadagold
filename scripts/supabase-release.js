@@ -9,7 +9,7 @@
  *   migrate   apply pending supabase/migrations (delegates to apply-migrations.js)
  *   auth      disable signups + confirmation emails, raise OTP verify rate limit
  *   secrets   push supabase/.env.local as Edge Function secrets
- *   functions deploy aureus-login (verify_jwt off) and proxy
+ *   functions deploy aureus-login, proxy, and trade-capture (verify_jwt off)
  *
  * The Supabase CLI equivalents remain: `supabase db push`, `supabase config push`,
  * `supabase secrets set --env-file supabase/.env.local`, `supabase functions deploy`.
@@ -24,6 +24,7 @@ const API = `https://api.supabase.com/v1/projects/${PROJECT_REF}`;
 const FUNCTIONS = [
   { slug: 'aureus-login', verifyJwt: false },
   { slug: 'proxy', verifyJwt: false },
+  { slug: 'trade-capture', verifyJwt: false },
 ];
 const AUTH_CONFIG = {
   disable_signup: true, // accounts are created only by aureus-login
