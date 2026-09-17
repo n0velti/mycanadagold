@@ -37,18 +37,23 @@ const fontFamily = Platform.select({
   default: 'Sohne',
 });
 
+const ACCENT = '#1F8A4E';
+const TINT = '#EAF6EE';
 const BLUE = MOBILE.blue;
-const GREEN = '#34C759';
-const ACCENT = GREEN;
 const TEXT = '#1d1d1f';
-const SECONDARY = '#8e8e93';
+const SECONDARY = '#6e6e73';
 const FILL = 'rgba(118, 118, 128, 0.12)';
-const PAGE = MOBILE.bg;
+const PAGE = '#fff';
 const CARD = '#fff';
-const HAIRLINE = MOBILE.separator;
+const HAIRLINE = '#e5e5ea';
+const CHEVRON = '#c7c7cc';
 const MOBILE_BREAKPOINT = 768;
 const AMBER = '#FF9500';
 const RED = '#FF3B30';
+const TICKET_SHADOW = Platform.select({
+  web: { boxShadow: '0 8px 24px rgba(0,0,0,0.04)' },
+  default: {},
+});
 
 function useIsMobile() {
   const { width } = useWindowDimensions();
@@ -89,9 +94,19 @@ function eventQtyColor(event) {
   return TEXT;
 }
 
-function DateChip({ label, value, onChange, maximumDate, minimumDate }) {
+function TicketFieldRow({ label, last, children }) {
+  return (
+    <View style={[styles.ticketFieldRow, last && styles.ticketFieldRowLast]}>
+      <Text style={styles.ticketFieldLabel}>{label}</Text>
+      <View style={styles.ticketFieldControl}>{children}</View>
+    </View>
+  );
+}
+
+function DateChip({ label, value, onChange, maximumDate, minimumDate, variant = 'chip' }) {
   const [open, setOpen] = useState(false);
   const dateValue = parseDateParam(value);
+  const plain = variant === 'plain';
 
   const commit = (next) => {
     if (!next) return;
@@ -103,7 +118,7 @@ function DateChip({ label, value, onChange, maximumDate, minimumDate }) {
 
   const field = (
     <>
-      <Ionicons name="calendar-outline" size={16} color={SECONDARY} />
+      {plain ? null : <Ionicons name="calendar-outline" size={16} color={SECONDARY} />}
       {Platform.OS === 'web'
         ? createElement('input', {
             type: 'date',
@@ -117,27 +132,30 @@ function DateChip({ label, value, onChange, maximumDate, minimumDate }) {
               border: 'none',
               background: 'transparent',
               fontFamily,
-              fontSize: 16,
+              fontSize: plain ? 15 : 16,
               color: TEXT,
               padding: 0,
               margin: 0,
               outline: 'none',
               cursor: 'pointer',
-              minWidth: 118,
+              minWidth: plain ? 0 : 118,
+              width: plain ? '100%' : undefined,
+              textAlign: plain ? 'right' : 'left',
               letterSpacing: -0.2,
             },
           })
-        : <Text style={styles.dateValue}>{formatPickerDate(dateValue)}</Text>}
+        : <Text style={[styles.dateValue, plain && styles.ticketFieldValue]}>{formatPickerDate(dateValue)}</Text>}
+      {plain ? <Ionicons name="chevron-down" size={14} color={CHEVRON} /> : null}
     </>
   );
 
   if (Platform.OS === 'web') {
-    return <View style={styles.dateField}>{field}</View>;
+    return <View style={plain ? styles.dateChipPlain : styles.dateField}>{field}</View>;
   }
 
   return (
     <>
-      <Pressable style={styles.dateField} onPress={() => setOpen(true)}>
+      <Pressable style={plain ? styles.dateChipPlain : styles.dateField} onPress={() => setOpen(true)}>
         {field}
       </Pressable>
       {Platform.OS === 'android' && open ? (
@@ -182,25 +200,37 @@ function DateChip({ label, value, onChange, maximumDate, minimumDate }) {
   );
 }
 
-function PickerChip({ label, value, onPress, disabled = false, style }) {
+function PickerChip({ label, value, onPress, disabled = false, style, variant = 'chip' }) {
+  const plain = variant === 'plain';
   return (
     <Pressable
-      style={[styles.chip, disabled && styles.chipDisabled, style]}
+      style={[plain ? styles.pickerPlain : styles.chip, disabled && styles.chipDisabled, style]}
       onPress={onPress}
       disabled={disabled}
     >
-      <View style={styles.chipCopy}>
-        {label ? <Text style={styles.chipLabel}>{label}</Text> : null}
-        <Text style={styles.chipValue} numberOfLines={1}>
-          {value}
-        </Text>
-      </View>
-      <Ionicons name="chevron-down" size={14} color={SECONDARY} />
+      {plain ? (
+        <>
+          <Text style={styles.ticketFieldValue} numberOfLines={1}>
+            {value}
+          </Text>
+          <Ionicons name="chevron-down" size={14} color={CHEVRON} />
+        </>
+      ) : (
+        <>
+          <View style={styles.chipCopy}>
+            {label ? <Text style={styles.chipLabel}>{label}</Text> : null}
+            <Text style={styles.chipValue} numberOfLines={1}>
+              {value}
+            </Text>
+          </View>
+          <Ionicons name="chevron-down" size={14} color={SECONDARY} />
+        </>
+      )}
     </Pressable>
   );
 }
 
-function StoreLocationCard({ location, expanded, onToggle, onOpenRef }) {
+function StoreLocationCard({ location, expanded, onToggle, onOpenRef, compact }) {
   const off = Math.abs(location.countDiff) >= 0.0005;
   return (
     <View style={styles.group}>
@@ -225,12 +255,12 @@ function StoreLocationCard({ location, expanded, onToggle, onOpenRef }) {
         <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={16} color={SECONDARY} />
       </Pressable>
 
-      <View style={styles.statGrid}>
-        <View style={styles.statCell}>
+      <View style={[styles.statGrid, compact && styles.statGridCompact]}>
+        <View style={[styles.statCell, compact && styles.statCellCompact]}>
           <Text style={styles.statCaption}>System now</Text>
           <Text style={styles.statFigure}>{formatQty(location.systemNow)}</Text>
         </View>
-        <View style={styles.statCell}>
+        <View style={[styles.statCell, compact && styles.statCellCompact]}>
           <Text style={styles.statCaption}>Last count</Text>
           <Text style={styles.statFigure}>
             {location.physicalNow != null
@@ -240,11 +270,11 @@ function StoreLocationCard({ location, expanded, onToggle, onOpenRef }) {
                 : '—'}
           </Text>
         </View>
-        <View style={styles.statCell}>
+        <View style={[styles.statCell, compact && styles.statCellCompact]}>
           <Text style={styles.statCaption}>Expected</Text>
           <Text style={styles.statFigure}>{formatQty(location.expectedNow)}</Text>
         </View>
-        <View style={styles.statCell}>
+        <View style={[styles.statCell, compact && styles.statCellCompact]}>
           <Text style={styles.statCaption}>Opening</Text>
           <Text style={styles.statFigure}>{formatQty(location.openingSystem)}</Text>
         </View>
@@ -499,14 +529,53 @@ export default function ItemAuditPanel({
     );
   }
 
-  return (
-    <View style={[styles.body, embedded && styles.bodyEmbedded, isMobile && styles.bodyMobile]}>
-      <View style={[styles.toolbar, isMobile && styles.toolbarMobile]}>
+  const renderItemToolbar = () =>
+    isMobile ? (
+      <View style={styles.ticketCard}>
+        <TicketFieldRow label="Item">
+          <PickerChip
+            label="Item"
+            value={selectedItem?.name || 'Select item'}
+            onPress={() => setItemPickerOpen(true)}
+            variant="plain"
+          />
+        </TicketFieldRow>
+        <TicketFieldRow label="Stores">
+          <PickerChip
+            label="Stores"
+            value={storeChipLabel}
+            onPress={() => setStorePickerOpen(true)}
+            disabled={lockedStore}
+            variant="plain"
+          />
+        </TicketFieldRow>
+        <TicketFieldRow label="From">
+          <DateChip
+            label="From"
+            value={startDate}
+            onChange={setStartDate}
+            maximumDate={endKey}
+            variant="plain"
+          />
+        </TicketFieldRow>
+        <TicketFieldRow label="To" last>
+          <DateChip
+            label="To"
+            value={endDate}
+            onChange={setEndDate}
+            maximumDate={today}
+            minimumDate={startKey}
+            variant="plain"
+          />
+        </TicketFieldRow>
+      </View>
+    ) : (
+      <View style={styles.toolbar}>
         <PickerChip
           label="Item"
           value={selectedItem?.name || 'Select item'}
           onPress={() => setItemPickerOpen(true)}
-          style={isMobile ? styles.chipGrow : styles.itemChip}
+          style={styles.itemChip}
         />
         <PickerChip
           label="Stores"
@@ -528,8 +597,11 @@ export default function ItemAuditPanel({
           minimumDate={startKey}
         />
       </View>
+    );
 
-      <View style={styles.metaRow}>
+  const renderItemMeta = () => (
+    <>
+      <View style={[styles.metaRow, isMobile && styles.metaRowMobile]}>
         <Text style={styles.metaText} numberOfLines={2}>
           {loading
             ? progress || 'Loading…'
@@ -543,6 +615,17 @@ export default function ItemAuditPanel({
       {result?.warning || catalogWarning ? (
         <Text style={styles.warningText}>{[result?.warning, catalogWarning].filter(Boolean).join(' ')}</Text>
       ) : null}
+    </>
+  );
+
+  return (
+    <View style={[styles.body, embedded && styles.bodyEmbedded, isMobile && styles.bodyMobile]}>
+      {isMobile ? null : (
+        <>
+          {renderItemToolbar()}
+          {renderItemMeta()}
+        </>
+      )}
 
       <ScrollView
         style={styles.scroll}
@@ -550,6 +633,12 @@ export default function ItemAuditPanel({
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
+        {isMobile ? (
+          <>
+            {renderItemToolbar()}
+            {renderItemMeta()}
+          </>
+        ) : null}
         {!selectedItem ? (
           <Text style={styles.emptyText}>Select a bullion item to see why a store is off.</Text>
         ) : loading && !result ? (
@@ -562,6 +651,7 @@ export default function ItemAuditPanel({
               <StoreLocationCard
                 key={location.id}
                 location={location}
+                compact={isMobile}
                 expanded={Boolean(expanded[location.id])}
                 onToggle={() =>
                   setExpanded((prev) => ({ ...prev, [location.id]: !prev[location.id] }))
@@ -660,7 +750,7 @@ export default function ItemAuditPanel({
                         {[item.metal, item.sku].filter(Boolean).join(' · ')}
                       </Text>
                     </View>
-                    {active ? <Ionicons name="checkmark" size={20} color={BLUE} /> : null}
+                    {active ? <Ionicons name="checkmark" size={20} color={ACCENT} /> : null}
                   </Pressable>
                 );
               })}
@@ -708,7 +798,7 @@ export default function ItemAuditPanel({
                     disabled={lockedStore}
                   >
                     <Text style={styles.modalOptionTitle}>{store.name}</Text>
-                    {active ? <Ionicons name="checkmark" size={20} color={BLUE} /> : null}
+                    {active ? <Ionicons name="checkmark" size={20} color={ACCENT} /> : null}
                   </Pressable>
                 );
               })}
@@ -850,7 +940,7 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 17,
     fontWeight: '600',
-    color: BLUE,
+    color: ACCENT,
   },
   metaRow: {
     flexDirection: 'row',
@@ -858,6 +948,9 @@ const styles = StyleSheet.create({
     gap: 8,
     marginBottom: 8,
     minHeight: 20,
+  },
+  metaRowMobile: {
+    marginBottom: 0,
   },
   metaText: {
     fontFamily,
@@ -885,7 +978,7 @@ const styles = StyleSheet.create({
     color: SECONDARY,
   },
   link: {
-    color: BLUE,
+    color: ACCENT,
     fontWeight: '400',
   },
   scroll: {
@@ -928,6 +1021,9 @@ const styles = StyleSheet.create({
     backgroundColor: CARD,
     borderRadius: 12,
     overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: HAIRLINE,
+    ...TICKET_SHADOW,
   },
   storeHeader: {
     flexDirection: 'row',
@@ -977,6 +1073,13 @@ const styles = StyleSheet.create({
     minWidth: 72,
     paddingHorizontal: 8,
     paddingVertical: 8,
+  },
+  statGridCompact: {
+    paddingHorizontal: 4,
+  },
+  statCellCompact: {
+    width: '50%',
+    minWidth: 0,
   },
   statCaption: {
     fontFamily,
@@ -1101,7 +1204,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 14,
     paddingBottom: 10,
-    backgroundColor: 'rgba(242,242,247,0.94)',
+    backgroundColor: '#fff',
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: HAIRLINE,
   },
@@ -1157,7 +1260,7 @@ const styles = StyleSheet.create({
     borderBottomColor: HAIRLINE,
   },
   modalOptionActive: {
-    backgroundColor: CARD,
+    backgroundColor: TINT,
   },
   modalOptionCopy: {
     flex: 1,
@@ -1173,5 +1276,70 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 12,
     color: SECONDARY,
+  },
+  ticketCard: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: HAIRLINE,
+    borderRadius: 12,
+    backgroundColor: CARD,
+    overflow: 'hidden',
+    width: '100%',
+    marginBottom: 8,
+    ...TICKET_SHADOW,
+  },
+  ticketFieldRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 44,
+    paddingHorizontal: 14,
+    gap: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#ececef',
+  },
+  ticketFieldRowLast: {
+    borderBottomWidth: 0,
+  },
+  ticketFieldLabel: {
+    fontFamily,
+    width: 82,
+    flexShrink: 0,
+    fontSize: 13,
+    fontWeight: '500',
+    color: SECONDARY,
+  },
+  ticketFieldControl: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'stretch',
+  },
+  ticketFieldValue: {
+    fontFamily,
+    flex: 1,
+    fontSize: 15,
+    color: TEXT,
+    textAlign: 'right',
+    paddingVertical: 8,
+  },
+  pickerPlain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 6,
+    minHeight: 44,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  dateChipPlain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 6,
+    minHeight: 44,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
 });

@@ -176,6 +176,8 @@ export default function EmailsScreen({
   onOpenProfile,
   focus = null,
   capture = null,
+  storeFilter = '',
+  embedded = false,
 }) {
   const isMobile = useIsMobile();
   const myId = session?.supabaseUserId || session?.profile?.id || '';
@@ -204,7 +206,9 @@ export default function EmailsScreen({
     return rows;
   }, [capture]);
 
-  const [folder, setFolder] = useState('inbox');
+  // Inside a store drawer the store-scoped Customers folder is the point, so
+  // land there instead of the (personal) Gmail inbox.
+  const [folder, setFolder] = useState(capture && storeFilter ? 'customers' : 'inbox');
   const [inbox, setInbox] = useState([]);
   const [sent, setSent] = useState([]);
   const [contacts, setContacts] = useState([]);
@@ -758,7 +762,7 @@ export default function EmailsScreen({
   };
 
   return (
-    <View style={[styles.root, isMobile && styles.rootMobile]}>
+    <View style={[styles.root, isMobile && styles.rootMobile, embedded && styles.rootEmbedded]}>
       {showFolders ? (
         <View style={[styles.folders, isMobile && styles.foldersMobile]}>
           {!isMobile ? <Text style={styles.foldersTitle}>Mail</Text> : null}
@@ -961,6 +965,13 @@ const styles = StyleSheet.create({
   },
   rootMobile: {
     flexDirection: 'column',
+  },
+  rootEmbedded: {
+    borderTopWidth: 0,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e5e5ea',
+    borderRadius: 14,
+    overflow: 'hidden',
   },
   composeBodyMobile: {
     minHeight: 88,

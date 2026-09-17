@@ -4,6 +4,7 @@
  * is presentational and delegates every mutation to that store.
  */
 import { createElement, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ActivityIndicator,
   FlatList,
@@ -77,18 +78,14 @@ import {
   FONT,
   Group,
   GroupRow,
-  IconAction,
   ProgressBar,
   SearchField,
   SectionLabel,
-  Stat,
-  StatStrip,
   StatusPill,
   StaffAvatar,
   StaffPerson,
   T,
   TextAction,
-  TextTabs,
   TriageDrawer,
   TriageErrorBoundary,
   confirmDestructive,
@@ -133,16 +130,6 @@ const WORKSHOP_LOCATION = {
   systemKey: 'east',
   systemLabel: 'Canada Gold East',
   city: '',
-};
-
-const EMPTY_MELT_FILTERS = {
-  reference: [],
-  dateLabel: [],
-  customer: [],
-  employee: [],
-  edited: [],
-  store: [],
-  status: [],
 };
 
 const EMPTY_BULLION_FILTERS = {
@@ -206,6 +193,144 @@ function storeNamesLabel(stores) {
   if (names.length === 1) return names[0];
   if (names.length === 2) return `${names[0]} and ${names[1]}`;
   return names.join(', ');
+}
+
+const STORE_SHORT_CODES = {
+  montreal: 'MTL',
+  toronto: 'TOR',
+  ottawa: 'OTT',
+  quebec: 'QC',
+  'quebec city': 'QC',
+  laval: 'LVL',
+  mississauga: 'MIS',
+  hamilton: 'HAM',
+  calgary: 'CGY',
+  edmonton: 'EDM',
+  vancouver: 'VAN',
+  'richmond hill': 'RH',
+  workshop: 'WKS',
+};
+
+const STORE_MARK_COLORS = {
+  montreal: '#1D4ED8',
+  laval: '#C2410C',
+  quebec: '#0F766E',
+  'quebec city': '#0F766E',
+  workshop: '#6B4DE6',
+  toronto: '#2F8A4E',
+  mississauga: '#C47A12',
+  hamilton: '#2F6FED',
+  'richmond hill': '#6B4DE6',
+  ottawa: '#B91C1C',
+  calgary: '#0F766E',
+  edmonton: '#1D4ED8',
+  vancouver: '#1F8A4E',
+};
+
+const STORE_MARK_FALLBACKS = ['#1D4ED8', '#0F766E', '#B91C1C', '#C2410C', '#6B4DE6', '#2F8A4E'];
+
+function storeDisplayName(name) {
+  return String(name || '')
+    .replace(/^canada\s*gold(?:\s*[-–—:])?\s*/i, '')
+    .replace(/\s+canada\s*gold$/i, '')
+    .trim();
+}
+
+function storeLookupKey(name) {
+  return storeDisplayName(name).toLowerCase();
+}
+
+function storeShortCode(name) {
+  const cleaned = storeDisplayName(name);
+  if (!cleaned) return '';
+  const known = STORE_SHORT_CODES[cleaned.toLowerCase()];
+  if (known) return known;
+  const parts = cleaned.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return parts
+      .map((part) => part[0])
+      .join('')
+      .slice(0, 3)
+      .toUpperCase();
+  }
+  return cleaned.slice(0, 3).toUpperCase();
+}
+
+function storeMarkColor(name) {
+  const key = storeLookupKey(name);
+  if (STORE_MARK_COLORS[key]) return STORE_MARK_COLORS[key];
+  const value = String(name || '');
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+  }
+  return STORE_MARK_FALLBACKS[hash % STORE_MARK_FALLBACKS.length];
+}
+
+function StoreMark({ name }) {
+  const [tip, setTip] = useState(null);
+  const code = storeShortCode(name);
+
+  return (
+    <>
+      <View
+        style={[styles.storeMark, { backgroundColor: storeMarkColor(name) }]}
+        accessibilityLabel={name}
+        accessibilityRole="image"
+        onMouseEnter={
+          Platform.OS === 'web'
+            ? (event) => {
+                const rect = event?.currentTarget?.getBoundingClientRect?.();
+                if (!rect) return;
+                setTip({ left: rect.left + rect.width / 2, top: rect.bottom + 6 });
+              }
+            : undefined
+        }
+        onMouseLeave={Platform.OS === 'web' ? () => setTip(null) : undefined}
+      >
+        <Text style={styles.storeMarkText} numberOfLines={1}>
+          {code}
+        </Text>
+      </View>
+      {Platform.OS === 'web' && tip && typeof document !== 'undefined'
+        ? createPortal(
+            createElement(
+              'div',
+              {
+                className: 'cgold-floating-tip',
+                style: {
+                  left: tip.left,
+                  top: tip.top,
+                  transform: 'translateX(-50%)',
+                  minWidth: 'auto',
+                  whiteSpace: 'nowrap',
+                },
+              },
+              name,
+            ),
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+
+function StoreMarks({ names }) {
+  const list = (names || []).map((entry) => String(entry || '').trim()).filter(Boolean);
+  if (!list.length) {
+    return (
+      <Text style={styles.storeMarkEmpty} numberOfLines={1}>
+        —
+      </Text>
+    );
+  }
+  return (
+    <View style={styles.storeMarks}>
+      {list.map((name) => (
+        <StoreMark key={name} name={name} />
+      ))}
+    </View>
+  );
 }
 
 function storeInList(stores, name) {
@@ -346,16 +471,6 @@ function meltBullionKind(row) {
 
 function poHoldsBullion(row) {
   return Boolean(meltBullionKind(row));
-}
-
-function itemCountLabel(row) {
-  const count = Array.isArray(row?.pricedLines) && row.pricedLines.length
-    ? row.pricedLines.length
-    : Array.isArray(row?.itemNames)
-      ? row.itemNames.filter(Boolean).length
-      : 0;
-  if (!count) return '';
-  return `${count} ${count === 1 ? 'item' : 'items'}`;
 }
 
 function posTransferToRow(transfer) {
@@ -1318,69 +1433,61 @@ function MeltPoFeedModal({ visible, rows, onClose, onOpen, onToggleReceived }) {
 /* Melt tab                                                             */
 /* ------------------------------------------------------------------ */
 
-const MELT_SORTERS = {
-  reference: (row) => row.reference,
-  dateLabel: (row) => rowTime(row),
-  customer: (row) => personLabel(row.customerName),
-  employee: (row) => personLabel(row.employeeName),
-  edited: (row) => Date.parse(triageReviewEditor(row.review)?.at || '') || 0,
-  store: (row) => row.storeName,
-  amount: (row) => rowAmountNumber(row),
-  status: (row) => meltStatus(row).label,
+const MELT_COL = {
+  reference: { flex: 1.2, minWidth: 120 },
+  date: { flex: 0.85, minWidth: 92 },
+  store: { flex: 1.1, minWidth: 110 },
+  amount: { flex: 0.85, minWidth: 88 },
 };
+
+function MeltHead({ label, flex, minWidth, align = 'left' }) {
+  return (
+    <View
+      style={[
+        styles.meltHeadCell,
+        align === 'right' && styles.meltHeadCellRight,
+        { flex, minWidth },
+      ]}
+    >
+      <Text style={[styles.meltHeadLabel, align === 'right' && styles.meltHeadLabelRight]} numberOfLines={1}>
+        {label}
+      </Text>
+    </View>
+  );
+}
 
 const MeltTableRow = memo(function MeltTableRow({ row, staffProfiles, onOpen, onToggleReceived, onRemove, last }) {
   const received = Boolean(row.received);
-  const status = meltStatus(row);
-  const items = itemCountLabel(row);
-  const bullionKind = meltBullionKind(row);
-  const bullionOnly = bullionKind === 'only';
+  const employee = findStaffByEmployeeName(staffProfiles, row.employeeName);
   return (
-    <TableRow last={last}>
+    <TableRow last={last} wrap>
       <TablePhotoCell>
         <PoThumb urls={row.imageUrls} label={row.reference} />
       </TablePhotoCell>
       <TableRowMain onPress={() => onOpen(row)} accessibilityLabel={`Open ${row.reference}`}>
-        <TableCell flex={1.35} minWidth={148}>
-          <View style={styles.meltRefRow}>
-            <View style={styles.meltRefText}>
-              <TableStrong>{row.reference}</TableStrong>
-            </View>
-            {bullionOnly ? <StatusPill label="Bullion only" tone="red" compact /> : null}
-          </View>
-          {items ? <TableMuted>{items}</TableMuted> : null}
+        <TableCell flex={MELT_COL.reference.flex} minWidth={MELT_COL.reference.minWidth} wrap>
+          <TableStrong>{row.reference}</TableStrong>
         </TableCell>
-        <TableCell flex={0.9} minWidth={96}>
-          <Text style={styles.cellText} numberOfLines={1}>
-            {row.dateLabel || '—'}
-          </Text>
-          {row.timeLabel ? <TableMuted>{row.timeLabel}</TableMuted> : null}
+        <TableCell flex={MELT_COL.date.flex} minWidth={MELT_COL.date.minWidth} wrap>
+          {row.dateLabel || '—'}
         </TableCell>
-        <TableCell flex={1.15} minWidth={120}>
-          {personLabel(row.customerName)}
+        <TableCell flex={MELT_COL.store.flex} minWidth={MELT_COL.store.minWidth} wrap>
+          {row.storeName || '—'}
         </TableCell>
-        <TableCell flex={1} minWidth={140}>
-          <StaffPerson
-            name={personLabel(row.employeeName)}
-            avatarUrl={findStaffByEmployeeName(staffProfiles, row.employeeName)?.avatarUrl || ''}
-          />
-        </TableCell>
-        <View style={styles.lastEditedCell}>
-          <LastEditedAvatar editor={triageReviewEditor(row.review)} staffProfiles={staffProfiles} />
-        </View>
-        <TableCell flex={1} minWidth={110}>
-          {row.storeName}
-        </TableCell>
-        <TableCell flex={0.8} minWidth={92} align="right">
+        <TableCell flex={MELT_COL.amount.flex} minWidth={MELT_COL.amount.minWidth} align="right" wrap>
           {rowAmountLabel(row)}
         </TableCell>
-        <TableCell flex={1.05} minWidth={124}>
-          <TableStatus label={status.label} tone={status.tone} sub={status.sub} />
-        </TableCell>
+        <View style={styles.meltAvatarCell}>
+          <StaffAvatar
+            uri={employee?.avatarUrl || ''}
+            name={personLabel(row.employeeName)}
+            size={22}
+          />
+        </View>
       </TableRowMain>
       <View style={styles.meltActions}>
         <Pressable
-          style={[styles.receiveButton, received && styles.receiveButtonOn]}
+          style={[styles.receiveIconBtn, received && styles.receiveIconBtnOn]}
           onPress={() => onToggleReceived(row.id)}
           accessibilityRole="button"
           accessibilityLabel={received ? `Undo receive ${row.reference}` : `Receive ${row.reference}`}
@@ -1388,12 +1495,9 @@ const MeltTableRow = memo(function MeltTableRow({ row, staffProfiles, onOpen, on
         >
           <Ionicons
             name={received ? 'checkmark-circle' : 'ellipse-outline'}
-            size={16}
-            color={received ? '#fff' : TEXT}
+            size={18}
+            color={received ? GREEN : SECONDARY}
           />
-          <Text style={[styles.receiveButtonText, received && styles.receiveButtonTextOn]}>
-            {received ? 'Received' : 'Receive'}
-          </Text>
         </Pressable>
         <Pressable
           style={styles.removeButton}
@@ -1425,16 +1529,12 @@ function MeltTab({
   onSaveReview,
   feedOpen,
   onFeedOpenChange,
-  leading,
 }) {
   const storeList = useMemo(() => stores || [], [stores]);
   const batchLabel = storeNamesLabel(storeList) || 'the selected stores';
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [openRow, setOpenRow] = useState(null);
-  const [openFilter, setOpenFilter] = useState(null);
-  const [filters, setFilters] = useState(EMPTY_MELT_FILTERS);
-  const [sort, setSort] = useState(null);
   const [staffProfiles, setStaffProfiles] = useState([]);
   const existingIds = useMemo(() => (pos || []).map((row) => row.id), [pos]);
   const needsHydrate = useMemo(
@@ -1495,64 +1595,14 @@ function MeltTab({
     [pos, storeScope],
   );
 
-  const setFilter = useCallback((key, value) => {
-    setFilters((current) => ({ ...current, [key]: value }));
-  }, []);
-  const filtersActive = Object.values(filters).some((value) => selectedLabels(value).length > 0);
-  const clearFilters = useCallback(() => {
-    setFilters(EMPTY_MELT_FILTERS);
-    setSort(null);
-    setOpenFilter(null);
-  }, []);
-
-  const rowMatches = useCallback(
-    (row, skip) =>
-      (skip === 'reference' || matchesSelectedLabel(row.reference, filters.reference)) &&
-      (skip === 'dateLabel' || matchesSelectedLabel(row.dateLabel, filters.dateLabel)) &&
-      (skip === 'customer' || matchesSelectedLabel(personLabel(row.customerName), filters.customer)) &&
-      (skip === 'employee' || matchesSelectedLabel(personLabel(row.employeeName), filters.employee)) &&
-      (skip === 'edited' || matchesSelectedLabel(lastEditedName(triageReviewEditor(row.review)), filters.edited)) &&
-      (skip === 'store' || matchesSelectedLabel(row.storeName, filters.store)) &&
-      (skip === 'status' || matchesSelectedLabel(meltStatus(row).label, filters.status)),
-    [filters],
+  const visiblePos = useMemo(
+    () => scoped.filter((row) => meltBullionKind(row) !== 'only'),
+    [scoped],
   );
 
-  const optionsFor = useCallback(
-    (key, getValue) => uniqueLabels(scoped.filter((row) => rowMatches(row, key)).map(getValue)),
-    [rowMatches, scoped],
-  );
-  const referenceOptions = useMemo(() => optionsFor('reference', (row) => row.reference), [optionsFor]);
-  const dateOptions = useMemo(() => optionsFor('dateLabel', (row) => row.dateLabel), [optionsFor]);
-  const customerOptions = useMemo(
-    () => optionsFor('customer', (row) => personLabel(row.customerName)),
-    [optionsFor],
-  );
-  const employeeOptions = useMemo(
-    () => optionsFor('employee', (row) => personLabel(row.employeeName)),
-    [optionsFor],
-  );
-  const editedOptions = useMemo(
-    () => optionsFor('edited', (row) => lastEditedName(triageReviewEditor(row.review))),
-    [optionsFor],
-  );
-  const storeOptions = useMemo(() => optionsFor('store', (row) => row.storeName), [optionsFor]);
-  const statusOptions = useMemo(() => optionsFor('status', (row) => meltStatus(row).label), [optionsFor]);
-
-  const visiblePos = useMemo(() => {
-    const filtered = scoped.filter((row) => rowMatches(row));
-    return sort ? sortRows(filtered, MELT_SORTERS[sort.key], sort.dir) : filtered;
-  }, [rowMatches, scoped, sort]);
-
-  const expectedScoped = scoped.filter((row) => meltBullionKind(row) !== 'only');
-  const allReceived = expectedScoped.length > 0 && expectedScoped.every((row) => row.received);
-
-  const sortProps = (key) => ({
-    sortDir: sort?.key === key ? sort.dir : null,
-    onSort: (dir) => setSort(dir ? { key, dir } : null),
-  });
+  const allReceived = visiblePos.length > 0 && visiblePos.every((row) => row.received);
 
   const openRowFromTable = useCallback((item) => {
-    setOpenFilter(null);
     setOpenRow(item);
   }, []);
 
@@ -1655,11 +1705,12 @@ function MeltTab({
   return (
     <View style={styles.body}>
         <TableFrame
-          minWidth={1180}
-          leading={leading}
+          minWidth={780}
           data={visiblePos}
           renderItem={renderMeltRow}
           keyExtractor={meltKey}
+          extraData={staffProfiles}
+          fixedRowHeight={false}
           ListEmptyComponent={
             scoped.length === 0 ? (
               <EmptyState
@@ -1670,127 +1721,33 @@ function MeltTab({
                     ? 'Add a date range or a PO/SO number to bring in purchases for this store.'
                     : `Add a date range or a single PO/SO from ${batchLabel} to start checking the melt.`
                 }
-                action={<TextAction icon="add" label="Add PO / SO" strong onPress={() => onAddOpenChange(true)} />}
+                action={<TextAction icon="add" label="Quick Add" strong onPress={() => onAddOpenChange(true)} />}
               />
             ) : (
-              <TableEmpty>No PO or SO matches those filters.</TableEmpty>
+              <TableEmpty>Bullion-only purchases stay in store and are hidden from melt.</TableEmpty>
             )
-          }
-          toolbar={
-            filtersActive || sort ? (
-              <View style={styles.toolbarActions}>
-                <TextAction label="Clear" onPress={clearFilters} />
-              </View>
-            ) : null
           }
           header={
             <>
               <TablePhotoCell />
-              <ColumnFilter
-                columnKey="reference"
-                label="PO / SO"
-                value={filters.reference}
-                onChange={(value) => setFilter('reference', value)}
-                options={referenceOptions}
-                openKey={openFilter}
-                onOpenKey={setOpenFilter}
-                style={{ flex: 1.35, minWidth: 148 }}
-                {...sortProps('reference')}
-              />
-              <ColumnFilter
-                columnKey="dateLabel"
-                label="Date"
-                value={filters.dateLabel}
-                onChange={(value) => setFilter('dateLabel', value)}
-                options={dateOptions}
-                openKey={openFilter}
-                onOpenKey={setOpenFilter}
-                style={{ flex: 0.9, minWidth: 96 }}
-                {...sortProps('dateLabel')}
-              />
-              <ColumnFilter
-                columnKey="customer"
-                label="Customer"
-                value={filters.customer}
-                onChange={(value) => setFilter('customer', value)}
-                options={customerOptions}
-                openKey={openFilter}
-                onOpenKey={setOpenFilter}
-                style={{ flex: 1.15, minWidth: 120 }}
-                {...sortProps('customer')}
-              />
-              <ColumnFilter
-                columnKey="employee"
-                label="Employee"
-                value={filters.employee}
-                onChange={(value) => setFilter('employee', value)}
-                options={employeeOptions}
-                openKey={openFilter}
-                onOpenKey={setOpenFilter}
-                style={{ flex: 1, minWidth: 140 }}
-                {...sortProps('employee')}
-              />
-              <ColumnFilter
-                columnKey="edited"
-                label="Last edited"
-                value={filters.edited}
-                onChange={(value) => setFilter('edited', value)}
-                options={editedOptions}
-                openKey={openFilter}
-                onOpenKey={setOpenFilter}
-                style={styles.lastEditedHead}
-                {...sortProps('edited')}
-              />
-              <ColumnFilter
-                columnKey="store"
-                label="Store"
-                value={filters.store}
-                onChange={(value) => setFilter('store', value)}
-                options={storeOptions}
-                openKey={openFilter}
-                onOpenKey={setOpenFilter}
-                style={{ flex: 1, minWidth: 110 }}
-                {...sortProps('store')}
-              />
-              <ColumnFilter
-                columnKey="amount"
-                label="Amount"
-                value={[]}
-                sortOnly
-                openKey={openFilter}
-                onOpenKey={setOpenFilter}
-                align="end"
-                style={{ flex: 0.8, minWidth: 92, alignItems: 'flex-end' }}
-                {...sortProps('amount')}
-              />
-              <ColumnFilter
-                columnKey="status"
-                label="Status"
-                value={filters.status}
-                onChange={(value) => setFilter('status', value)}
-                options={statusOptions}
-                openKey={openFilter}
-                onOpenKey={setOpenFilter}
-                align="end"
-                style={{ flex: 1.05, minWidth: 124 }}
-                {...sortProps('status')}
-              />
+              <MeltHead label="PO / SO" {...MELT_COL.reference} />
+              <MeltHead label="Date" {...MELT_COL.date} />
+              <MeltHead label="Store" {...MELT_COL.store} />
+              <MeltHead label="Amount" {...MELT_COL.amount} align="right" />
+              <View style={styles.meltAvatarHead} />
               <View style={styles.meltActionsHead}>
                 <Pressable
-                  style={[styles.receiveButton, allReceived && styles.receiveButtonOn]}
+                  style={styles.receiveIconBtn}
                   onPress={() => onReceiveAll(storeScope)}
                   disabled={allReceived}
                   accessibilityRole="button"
                   accessibilityLabel={allReceived ? 'All received' : 'Receive all'}
                 >
                   <Ionicons
-                    name={allReceived ? 'checkmark-done' : 'checkmark-done-outline'}
-                    size={15}
-                    color={allReceived ? '#fff' : TEXT}
+                    name={allReceived ? 'checkmark-done-circle' : 'checkmark-done-outline'}
+                    size={18}
+                    color={allReceived ? GREEN : SECONDARY}
                   />
-                  <Text style={[styles.receiveButtonText, allReceived && styles.receiveButtonTextOn]}>
-                    {allReceived ? 'All received' : 'Receive all'}
-                  </Text>
                 </Pressable>
                 <View style={styles.removeButton} />
               </View>
@@ -1990,7 +1947,7 @@ const BullionTableRow = memo(function BullionTableRow({ row, onOpen, last }) {
   );
 });
 
-function BullionTab({ rows, busy, stores, storeScope, leading }) {
+function BullionTab({ rows, busy, stores, storeScope }) {
   const storeList = stores || [];
   const [openId, setOpenId] = useState(null);
   const [openFilter, setOpenFilter] = useState(null);
@@ -2057,7 +2014,6 @@ function BullionTab({ rows, busy, stores, storeScope, leading }) {
     <View style={styles.body}>
         <TableFrame
             minWidth={800}
-            leading={leading}
             data={visibleRows}
             renderItem={renderBullionRow}
             keyExtractor={meltKey}
@@ -2621,7 +2577,7 @@ const BatchDashTableRow = memo(function BatchDashTableRow({ row, last, onOpen, o
           {row.dateLabel}
         </TableCell>
         <TableCell flex={BATCH_COL.stores.flex} minWidth={BATCH_COL.stores.minWidth} wrap>
-          {(row.storeNames || []).length ? (row.storeNames || []).join(', ') : '—'}
+          <StoreMarks names={row.storeNames} />
         </TableCell>
         <TableCell flex={BATCH_COL.value.flex} minWidth={BATCH_COL.value.minWidth} align="right" wrap>
           {row.valueLabel}
@@ -2923,59 +2879,24 @@ function BatchDashList({ transfers, query = '', onOpen, onDelete }) {
 /* Batch detail                                                         */
 /* ------------------------------------------------------------------ */
 
-function BatchSummary({ stats, mobile }) {
-  const tone = stats.empty ? 'neutral' : stats.complete ? 'green' : 'blue';
-  const stripContent = (
-    <StatStrip style={[styles.statStripFlush, mobile && styles.statStripMobile]}>
-      <Stat
-        label="Expected"
-        value={stats.totalPurchases > stats.expected ? `${stats.expected}/${stats.totalPurchases}` : String(stats.expected)}
-        sub={
-          stats.bullionOnly
-            ? `${stats.bullionOnly} bullion only`
-            : stats.amount
-              ? formatAmount(stats.amount)
-              : 'No purchases'
-        }
-      />
-      <Stat
-        label="Received"
-        value={stats.expected ? `${stats.received}/${stats.expected}` : '0'}
-        sub={stats.expected ? `${stats.percent}%` : '—'}
-        tone={stats.complete ? 'green' : undefined}
-      />
-      <Stat label="Open" value={String(stats.open)} sub={stats.open ? 'to receive' : 'nothing left'} tone={stats.open ? 'orange' : undefined} />
-      <Stat label="Flagged" value={String(stats.flagged)} sub={stats.flagged ? 'need correction' : 'all clean'} tone={stats.flagged ? 'red' : undefined} />
-    </StatStrip>
-  );
-
-  return (
-    <View style={styles.summary}>
-      {mobile ? (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.statScroll}>
-          {stripContent}
-        </ScrollView>
-      ) : (
-        stripContent
-      )}
-      <ProgressBar value={stats.received} total={stats.expected} tone={tone} height={2} style={styles.summaryProgress} />
-    </View>
-  );
-}
-
-function BatchDetail({ session, batch, transfers, storeTab, onStoreTab, addMeltOpen, onAddMeltOpen, mobile }) {
+function BatchDetail({ session, batch, transfers, storeTab, addMeltOpen, onAddMeltOpen, feedOpen, onFeedOpenChange }) {
   const actor = actorNameOf(session);
   const stores = useMemo(() => batch.stores || [], [batch.stores]);
   const pos = useMemo(() => flattenBatchPos(batch), [batch]);
-  const stats = useMemo(() => batchStats(batch), [batch]);
   const bullion = useWorkshopTransfers(session, stores);
   const [storeScope, setStoreScope] = useState(null);
   const [addStoreOpen, setAddStoreOpen] = useState(false);
-  const [feedOpen, setFeedOpen] = useState(false);
 
   useEffect(() => {
     if (storeScope && !stores.some((store) => namesMatch(store.name, storeScope))) setStoreScope(null);
   }, [storeScope, stores]);
+
+  useEffect(() => {
+    if (storeTab === 'melt') return undefined;
+    onAddMeltOpen(false);
+    onFeedOpenChange(false);
+    return undefined;
+  }, [onAddMeltOpen, onFeedOpenChange, storeTab]);
 
   const mergePos = useCallback(
     (rows) => {
@@ -3036,43 +2957,6 @@ function BatchDetail({ session, batch, transfers, storeTab, onStoreTab, addMeltO
   );
 
   const addedKeys = useMemo(() => new Set(stores.map((store) => store.storeKey).filter(Boolean)), [stores]);
-  const tabOptions = useMemo(
-    () => [
-      { key: 'melt', label: 'Melt', count: storeScope ? stats.stores.find((s) => namesMatch(s.name, storeScope))?.documents ?? 0 : stats.documents },
-      { key: 'bullion', label: 'Bullion', count: storeScope ? bullion.rows.filter((row) => namesMatch(row.fromName, storeScope)).length : bullion.rows.length },
-    ],
-    [bullion.rows, stats, storeScope],
-  );
-
-  const batchChrome = (
-    <>
-      <BatchSummary stats={stats} mobile={mobile} />
-      <TextTabs
-        options={tabOptions}
-        value={storeTab}
-        onChange={(key) => {
-          onStoreTab(key);
-          if (key !== 'melt') {
-            onAddMeltOpen(false);
-            setFeedOpen(false);
-          }
-        }}
-        style={styles.detailTabs}
-        trailing={
-          storeTab === 'melt' ? (
-            <>
-              <IconAction
-                icon="phone-portrait-outline"
-                onPress={() => setFeedOpen(true)}
-                accessibilityLabel="Open feed view"
-              />
-              <TextAction icon="add" label="Add" onPress={() => onAddMeltOpen(true)} accessibilityLabel="Add PO / SO" />
-            </>
-          ) : null
-        }
-      />
-    </>
-  );
 
   return (
     <View style={styles.body}>
@@ -3092,8 +2976,7 @@ function BatchDetail({ session, batch, transfers, storeTab, onStoreTab, addMeltO
           onReceiveAll={receiveAll}
           onSaveReview={saveReview}
           feedOpen={feedOpen}
-          onFeedOpenChange={setFeedOpen}
-          leading={batchChrome}
+          onFeedOpenChange={onFeedOpenChange}
         />
       ) : (
         <BullionTab
@@ -3101,7 +2984,6 @@ function BatchDetail({ session, batch, transfers, storeTab, onStoreTab, addMeltO
           busy={bullion.busy}
           stores={stores}
           storeScope={storeScope}
-          leading={batchChrome}
         />
       )}
 
@@ -3133,12 +3015,14 @@ export default function TriageTransfersPanel({
   onViewChange,
   onBackChange,
   listQuery = '',
+  storeTab = 'melt',
+  onStoreTabChange,
 }) {
   const { triage: transfers } = useTransferWorkflow();
   const isMobile = useIsMobile();
   const [selectedId, setSelectedId] = useState(null);
-  const [storeTab, setStoreTab] = useState('melt');
   const [addMeltOpen, setAddMeltOpen] = useState(false);
+  const [feedOpen, setFeedOpen] = useState(false);
   const [openStandalone, setOpenStandalone] = useState(null);
   const [quickAddError, setQuickAddError] = useState('');
 
@@ -3152,18 +3036,26 @@ export default function TriageTransfersPanel({
     () => transfers.flatMap((row) => flattenBatchPos(row).map((item) => item.id)),
     [transfers],
   );
+  const openAddMelt = useCallback(() => setAddMeltOpen(true), []);
+  const openFeed = useCallback(() => setFeedOpen(true), []);
+
   const batchContext = useMemo(() => {
     if (!selected) return null;
     return {
+      batch: selected,
       dateLabel: selected.dateLabel || selected.dateKey || '',
       storeNames: storeNamesLabel(selected.stores || []),
+      stats: batchStats(selected),
+      onAddMelt: openAddMelt,
+      onOpenFeed: openFeed,
     };
-  }, [selected]);
+  }, [openAddMelt, openFeed, selected]);
 
   const view = selected ? 'store' : 'list';
 
   const goBackToList = useCallback(() => {
     setAddMeltOpen(false);
+    setFeedOpen(false);
     setSelectedId(null);
   }, []);
 
@@ -3186,8 +3078,8 @@ export default function TriageTransfersPanel({
     const stores = row.stores || [];
     const hasBullion = stores.some((store) => plannedForTriageStore(row.dateKey, store.storeKey).length > 0);
     const hasMelt = stores.some((store) => (store.meltPos || []).length > 0);
-    setStoreTab(hasBullion && !hasMelt ? 'bullion' : 'melt');
-  }, []);
+    onStoreTabChange?.(hasBullion && !hasMelt ? 'bullion' : 'melt');
+  }, [onStoreTabChange]);
 
   const openStandalonePo = useCallback((row) => {
     if (!row) return;
@@ -3317,10 +3209,10 @@ export default function TriageTransfersPanel({
           batch={selected}
           transfers={transfers}
           storeTab={storeTab}
-          onStoreTab={setStoreTab}
           addMeltOpen={addMeltOpen}
           onAddMeltOpen={setAddMeltOpen}
-          mobile={isMobile}
+          feedOpen={feedOpen}
+          onFeedOpenChange={setFeedOpen}
         />
       </TriageErrorBoundary>
       </View>
@@ -3440,6 +3332,37 @@ const styles = StyleSheet.create({
   lastEditedHead: {
     ...LAST_EDITED_COL,
   },
+  storeMarks: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 6,
+    overflow: 'visible',
+    zIndex: 8,
+  },
+  storeMark: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'default' },
+      default: {},
+    }),
+  },
+  storeMarkText: {
+    fontFamily,
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#fff',
+    letterSpacing: 0.3,
+  },
+  storeMarkEmpty: {
+    fontFamily,
+    fontSize: 13,
+    color: SECONDARY,
+  },
   dashActionsHead: {
     width: 124,
     flexGrow: 0,
@@ -3469,36 +3392,6 @@ const styles = StyleSheet.create({
     ...webCursor,
   },
 
-  /* batch detail summary */
-  summary: {
-    flexShrink: 0,
-    paddingHorizontal: 10,
-    paddingTop: 8,
-    paddingBottom: 2,
-    gap: 4,
-  },
-  statScroll: {
-    flexGrow: 1,
-  },
-  statStripMobile: {
-    minWidth: '100%',
-  },
-  statStripFlush: {
-    backgroundColor: 'transparent',
-    borderWidth: 0,
-    borderRadius: 0,
-  },
-  summaryProgress: {
-    marginHorizontal: 2,
-  },
-  detailTabs: {
-    marginTop: 0,
-    backgroundColor: 'transparent',
-    borderBottomWidth: 0,
-    paddingHorizontal: 10,
-    paddingTop: 0,
-  },
-
   /* tables */
   tableMeta: {
     flex: 1,
@@ -3512,15 +3405,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
   },
-  meltRefRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    minWidth: 0,
-  },
-  meltRefText: {
-    flexShrink: 1,
-    minWidth: 0,
+  toolbarEnd: {
+    marginLeft: 'auto',
   },
   cellText: {
     fontFamily,
@@ -3532,25 +3418,66 @@ const styles = StyleSheet.create({
     textAlign: 'right',
     fontVariant: ['tabular-nums'],
   },
+  meltHeadCell: {
+    minHeight: 34,
+    paddingHorizontal: 8,
+    justifyContent: 'center',
+  },
+  meltHeadCellRight: {
+    alignItems: 'flex-end',
+  },
+  meltHeadLabel: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#8e8e93',
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+  },
+  meltHeadLabelRight: {
+    textAlign: 'right',
+  },
+  meltAvatarCell: {
+    width: 36,
+    flexGrow: 0,
+    flexShrink: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  meltAvatarHead: {
+    width: 36,
+    flexGrow: 0,
+    flexShrink: 0,
+  },
   meltActions: {
-    width: 146,
+    width: 64,
     flexGrow: 0,
     flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
-    gap: 4,
+    gap: 2,
     paddingRight: 8,
   },
   meltActionsHead: {
-    width: 146,
+    width: 64,
     flexGrow: 0,
     flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
-    gap: 4,
+    gap: 2,
     paddingRight: 8,
+  },
+  receiveIconBtn: {
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...webCursor,
+  },
+  receiveIconBtnOn: {
+    opacity: 1,
   },
   receiveButton: {
     height: 26,

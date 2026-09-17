@@ -1,6 +1,7 @@
 import { createElement, Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
@@ -84,14 +85,16 @@ const fontFamily = Platform.select({
   default: 'Sohne',
 });
 
+const ACCENT = '#1F8A4E';
+const TINT = '#EAF6EE';
 const BLUE = MOBILE.blue;
-const GREEN = '#34C759';
+const GREEN = ACCENT;
 const TEXT = '#1d1d1f';
-const SECONDARY = '#8e8e93';
+const SECONDARY = '#6e6e73';
 const FILL = 'rgba(118, 118, 128, 0.12)';
-const PAGE = MOBILE.bg;
+const PAGE = '#fff';
 const CARD = '#fff';
-const HAIRLINE = MOBILE.separator;
+const HAIRLINE = '#e5e5ea';
 const CHEVRON = '#c7c7cc';
 const RED = '#FF3B30';
 const ORANGE = '#FF9500';
@@ -99,8 +102,12 @@ const MOBILE_BREAKPOINT = 768;
 const AUDIT_TABS = [
   { key: 'bullion', label: 'Bullion' },
   { key: 'cash', label: 'Cash' },
-  { key: 'item', label: 'Audit by Item' },
+  { key: 'item', label: 'Audit by Item', shortLabel: 'Item' },
 ];
+const TICKET_SHADOW = Platform.select({
+  web: { boxShadow: '0 8px 24px rgba(0,0,0,0.04)' },
+  default: {},
+});
 const METAL_ACCENTS = {
   Gold: '#D4A017',
   Silver: '#7A8494',
@@ -163,6 +170,15 @@ function resolveCashStoreName(name) {
   return normalizeHomeStoreName(trimmed) || trimmed;
 }
 
+function TicketFieldRow({ label, last, children }) {
+  return (
+    <View style={[styles.ticketFieldRow, last && styles.ticketFieldRowLast]}>
+      <Text style={styles.ticketFieldLabel}>{label}</Text>
+      <View style={styles.ticketFieldControl}>{children}</View>
+    </View>
+  );
+}
+
 function FilterSelect({
   label,
   value,
@@ -171,26 +187,35 @@ function FilterSelect({
   disabled = false,
   style,
   showLabel = false,
+  variant = 'chip',
 }) {
   const [open, setOpen] = useState(false);
   const selected = options.find((opt) => opt.value === value);
+  const plain = variant === 'plain';
 
   return (
     <>
       <Pressable
-        style={[styles.filterSelect, disabled && styles.filterSelectDisabled, style]}
+        style={[
+          plain ? styles.filterSelectPlain : styles.filterSelect,
+          disabled && styles.filterSelectDisabled,
+          style,
+        ]}
         onPress={() => {
           if (!disabled) setOpen(true);
         }}
         disabled={disabled}
       >
         <View style={styles.filterSelectCopy}>
-          {showLabel && label ? <Text style={styles.filterSelectLabel}>{label}</Text> : null}
-          <Text style={styles.filterSelectValue} numberOfLines={1}>
+          {showLabel && label && !plain ? <Text style={styles.filterSelectLabel}>{label}</Text> : null}
+          <Text
+            style={[styles.filterSelectValue, plain && styles.filterSelectValuePlain]}
+            numberOfLines={1}
+          >
             {selected?.label || label || 'Select'}
           </Text>
         </View>
-        <Ionicons name="chevron-down" size={14} color={SECONDARY} />
+        <Ionicons name="chevron-down" size={14} color={plain ? CHEVRON : SECONDARY} />
       </Pressable>
 
       <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
@@ -224,7 +249,7 @@ function FilterSelect({
                     >
                       {option.label}
                     </Text>
-                    {active ? <Ionicons name="checkmark" size={20} color={BLUE} /> : null}
+                    {active ? <Ionicons name="checkmark" size={20} color={ACCENT} /> : null}
                   </Pressable>
                 );
               })}
@@ -340,9 +365,10 @@ function draftShowsDiff(draft, confirmed) {
   );
 }
 
-function DateChip({ label, value, onChange, maximumDate }) {
+function DateChip({ label, value, onChange, maximumDate, variant = 'chip' }) {
   const [open, setOpen] = useState(false);
   const dateValue = parseDateParam(value);
+  const plain = variant === 'plain';
 
   const commit = (next) => {
     if (!next) return;
@@ -355,7 +381,7 @@ function DateChip({ label, value, onChange, maximumDate }) {
 
   const field = (
     <>
-      <Ionicons name="calendar-outline" size={16} color={SECONDARY} />
+      {plain ? null : <Ionicons name="calendar-outline" size={16} color={SECONDARY} />}
       {Platform.OS === 'web'
         ? createElement('input', {
             type: 'date',
@@ -368,27 +394,34 @@ function DateChip({ label, value, onChange, maximumDate }) {
               border: 'none',
               background: 'transparent',
               fontFamily,
-              fontSize: 16,
+              fontSize: plain ? 15 : 16,
               color: TEXT,
               padding: 0,
               margin: 0,
               outline: 'none',
               cursor: 'pointer',
-              minWidth: 118,
+              minWidth: plain ? 0 : 118,
+              width: plain ? '100%' : undefined,
+              textAlign: plain ? 'right' : 'left',
               letterSpacing: -0.2,
             },
           })
-        : <Text style={styles.appleDateValue}>{formatPickerDate(dateValue)}</Text>}
+        : (
+          <Text style={[styles.appleDateValue, plain && styles.ticketFieldValue]}>
+            {formatPickerDate(dateValue)}
+          </Text>
+        )}
+      {plain ? <Ionicons name="chevron-down" size={14} color={CHEVRON} /> : null}
     </>
   );
 
   if (Platform.OS === 'web') {
-    return <View style={styles.appleDateField}>{field}</View>;
+    return <View style={[plain ? styles.dateChipPlain : styles.appleDateField]}>{field}</View>;
   }
 
   return (
     <>
-      <Pressable style={styles.appleDateField} onPress={() => setOpen(true)}>
+      <Pressable style={plain ? styles.dateChipPlain : styles.appleDateField} onPress={() => setOpen(true)}>
         {field}
       </Pressable>
 
@@ -515,6 +548,7 @@ function BullionQtyInput({
   label,
   dense,
   large,
+  plain,
 }) {
   return (
     <TextInput
@@ -533,7 +567,12 @@ function BullionQtyInput({
       onSubmitEditing={onSubmitEditing}
       onBlur={onBlur}
       accessibilityLabel={label}
-      style={[styles.bInput, dense && !large && styles.bInputDense, large && styles.bInputLarge]}
+      style={[
+        styles.bInput,
+        dense && !large && !plain && styles.bInputDense,
+        large && !plain && styles.bInputLarge,
+        plain && styles.bInputPlain,
+      ]}
       onFocus={(event) => {
         const node = event?.target;
         if (node && typeof node.select === 'function') {
@@ -675,97 +714,87 @@ function BullionMobileCard({
   const accent = metalAccent(row.metal);
   const mismatch =
     showDiff && Math.abs(total - (Number(row.systemCount) || 0)) >= 0.0005;
+  const busy = isSaving || savingLocal || savingAll;
 
   return (
-    <View style={[styles.bMobileCard, mismatch && styles.bMobileCardOff]}>
-      <View style={[styles.bMobileAccent, { backgroundColor: accent }]} />
-      <View style={styles.bMobileInner}>
-        <View style={styles.bMobileHead}>
-          <View style={styles.bMobileTitleWrap}>
-            <Text style={styles.bMobileName}>{row.name}</Text>
-            {row.sku ? (
-              <Text style={styles.bMobileSku} numberOfLines={1}>
-                {row.sku}
-              </Text>
-            ) : null}
-          </View>
-          <DiffBadge total={total} systemCount={row.systemCount} confirmed={showDiff} />
-          <Pressable
-            style={[
-              styles.bMobileSave,
-              (isSaving || savingLocal || savingAll) && styles.rowActionDisabled,
-            ]}
-            onPress={onSave}
-            disabled={isSaving || savingLocal || savingAll}
-            accessibilityLabel="Save to database"
-          >
-            {savingLocal ? (
-              <ActivityIndicator size="small" color={TEXT} />
-            ) : (
-              <Ionicons name="save-outline" size={18} color={TEXT} />
-            )}
-          </Pressable>
-          <Pressable
-            style={[
-              styles.bMobileUpdate,
-              (isSaving || savingLocal || savingAll) && styles.rowActionDisabled,
-            ]}
-            onPress={onUpdate}
-            disabled={isSaving || savingLocal || savingAll}
-            accessibilityLabel="Update Aureus"
-          >
-            {isSaving ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <Ionicons name="checkmark" size={18} color="#fff" />
-            )}
-          </Pressable>
+    <View style={[styles.ticketCard, mismatch && styles.bMobileCardOff]}>
+      <View style={styles.bMobileHead}>
+        <View style={[styles.bullionMetalDot, { backgroundColor: accent }]} />
+        <View style={styles.bMobileTitleWrap}>
+          <Text style={styles.bMobileName}>{row.name}</Text>
+          {row.sku ? (
+            <Text style={styles.bMobileSku} numberOfLines={1}>
+              {row.sku}
+            </Text>
+          ) : null}
         </View>
+        <DiffBadge total={total} systemCount={row.systemCount} confirmed={showDiff} />
+      </View>
 
-        <View style={styles.bMobileStats}>
-          <View style={styles.bMobileStat}>
-            <Text style={styles.bMobileStatLabel}>System</Text>
-            <Text style={styles.bMobileStatValue}>{formatQty(row.systemCount)}</Text>
-          </View>
-          <View style={styles.bMobileStatDivider} />
-          <View style={styles.bMobileStat}>
-            <Text style={styles.bMobileStatLabel}>Physical</Text>
-            <Text style={styles.bMobileStatValue}>{formatQty(total)}</Text>
-          </View>
+      <TicketFieldRow label="System">
+        <Text style={styles.ticketFieldValue}>{formatQty(row.systemCount)}</Text>
+      </TicketFieldRow>
+      <TicketFieldRow label="Physical">
+        <Text style={[styles.ticketFieldValue, mismatch && (total < (Number(row.systemCount) || 0) ? styles.short : styles.over)]}>
+          {formatQty(total)}
+        </Text>
+      </TicketFieldRow>
+
+      {historyDates.length ? (
+        <View style={styles.bMobileHistory}>
+          {historyDates.map((day) => {
+            const value = row.history?.[day];
+            return (
+              <View key={day} style={styles.bMobileHistCell}>
+                <Text style={styles.bMobileHistLabel}>{formatHistoryWeekday(day)}</Text>
+                <Text style={styles.bMobileHistValue} numberOfLines={1}>
+                  {value == null ? '—' : formatQty(value)}
+                </Text>
+              </View>
+            );
+          })}
         </View>
+      ) : null}
 
-        {historyDates.length ? (
-          <View style={styles.bMobileHistory}>
-            {historyDates.map((day) => {
-              const value = row.history?.[day];
-              return (
-                <View key={day} style={styles.bMobileHistCell}>
-                  <Text style={styles.bMobileHistLabel}>{formatHistoryWeekday(day)}</Text>
-                  <Text style={styles.bMobileHistValue} numberOfLines={1}>
-                    {value == null ? '—' : formatQty(value)}
-                  </Text>
-                </View>
-              );
-            })}
-          </View>
-        ) : null}
+      {QTY_FIELDS.map((field, index) => (
+        <TicketFieldRow key={field} label={QTY_HEADER_LABELS[field]} last={index === QTY_FIELDS.length - 1}>
+          <BullionQtyInput
+            value={draft[field]}
+            onChangeText={(value) => onChangeField(field, value)}
+            onSubmitEditing={() => onSubmitField(field)}
+            onBlur={SHIFT_FIELDS.includes(field) ? () => onBlurField?.(field) : undefined}
+            inputRef={registerQtyInput(field)}
+            label={QTY_HEADER_LABELS[field]}
+            plain
+          />
+        </TicketFieldRow>
+      ))}
 
-        <View style={styles.bMobileFields}>
-          {QTY_FIELDS.map((field) => (
-            <View key={field} style={styles.bMobileField}>
-              <Text style={styles.bMobileFieldLabel}>{QTY_HEADER_LABELS[field]}</Text>
-              <BullionQtyInput
-                value={draft[field]}
-                onChangeText={(value) => onChangeField(field, value)}
-                onSubmitEditing={() => onSubmitField(field)}
-                onBlur={SHIFT_FIELDS.includes(field) ? () => onBlurField?.(field) : undefined}
-                inputRef={registerQtyInput(field)}
-                label={QTY_HEADER_LABELS[field]}
-                large
-              />
-            </View>
-          ))}
-        </View>
+      <View style={styles.bMobileActions}>
+        <Pressable
+          style={[styles.bMobileSave, busy && styles.rowActionDisabled]}
+          onPress={onSave}
+          disabled={busy}
+          accessibilityLabel="Save to database"
+        >
+          {savingLocal ? (
+            <ActivityIndicator size="small" color={ACCENT} />
+          ) : (
+            <Text style={styles.bMobileSaveText}>Save</Text>
+          )}
+        </Pressable>
+        <Pressable
+          style={[styles.bMobileUpdate, busy && styles.rowActionDisabled]}
+          onPress={onUpdate}
+          disabled={busy}
+          accessibilityLabel="Update Aureus"
+        >
+          {isSaving ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <Text style={styles.bMobileUpdateText}>Update</Text>
+          )}
+        </Pressable>
       </View>
     </View>
   );
@@ -1763,7 +1792,7 @@ function BullionAuditPanel({
                           <Text style={styles.modelOptionBlurb}>{option.blurb}</Text>
                         ) : null}
                       </View>
-                      {active ? <Ionicons name="checkmark" size={20} color={BLUE} /> : null}
+                      {active ? <Ionicons name="checkmark" size={20} color={ACCENT} /> : null}
                     </Pressable>
                   );
                 })}
@@ -1821,7 +1850,26 @@ function BullionAuditPanel({
     label: store.name,
   }));
 
-  const renderSearchField = (style) => (
+  const renderSearchField = (style, ticket = false) => (
+    ticket ? (
+      <View style={styles.ticketSearchWrap}>
+        <TextInput
+          style={styles.ticketSearchInput}
+          value={query}
+          onChangeText={setQuery}
+          placeholder="Item or SKU"
+          placeholderTextColor={CHEVRON}
+          autoCapitalize="none"
+          autoCorrect={false}
+          clearButtonMode="while-editing"
+        />
+        {query ? (
+          <Pressable onPress={() => setQuery('')} hitSlop={8}>
+            <Ionicons name="close-circle" size={18} color={CHEVRON} />
+          </Pressable>
+        ) : null}
+      </View>
+    ) : (
     <View style={[styles.appleSearch, style]}>
       <Ionicons name="search" size={16} color={SECONDARY} style={styles.appleSearchIcon} />
       <TextInput
@@ -1840,11 +1888,21 @@ function BullionAuditPanel({
         </Pressable>
       ) : null}
     </View>
+    )
   );
 
-  const renderZeroFilter = () =>
+  const renderZeroFilter = (ticket = false) =>
     allowFilters ? (
-      !isMobile ? (
+      ticket ? (
+        <Pressable
+          onPress={() => setHideZero((prev) => !prev)}
+          style={styles.ticketToggleHit}
+          accessibilityLabel={hideZero ? 'Showing non-zero' : 'Showing all'}
+        >
+          <Text style={styles.ticketFieldValue}>{hideZero ? 'Non-zero' : 'All'}</Text>
+          <Ionicons name="chevron-down" size={14} color={CHEVRON} />
+        </Pressable>
+      ) : !isMobile ? (
         <SegmentedControl
           options={[
             { key: 'nonzero', label: 'Non-zero' },
@@ -1868,18 +1926,25 @@ function BullionAuditPanel({
       )
     ) : null;
 
-  const renderStoreControl = (selectStyle) =>
+  const renderStoreControl = (selectStyle, ticket = false) =>
     lockedStore ? (
+      ticket ? (
+        <Text style={styles.ticketFieldValue} numberOfLines={1}>
+          {selectedStore?.name || storeFilter || 'Store'}
+        </Text>
+      ) : (
       <Text style={[styles.storeTitle, isMobile && styles.storeTitleMobile]} numberOfLines={1}>
         {selectedStore?.name || storeFilter || 'Store'}
       </Text>
+      )
     ) : (
       <FilterSelect
         label="Store"
         value={selectedStore?.name || selectedStoreName}
         options={storeSelectOptions}
         onChange={setSelectedStoreName}
-        style={[styles.storeSelect, selectStyle]}
+        variant={ticket ? 'plain' : 'chip'}
+        style={[!ticket && styles.storeSelect, ticket && styles.filterSelectPlainFill, selectStyle]}
       />
     );
 
@@ -1954,23 +2019,32 @@ function BullionAuditPanel({
   const renderBullionToolbar = () => {
     if (isMobile) {
       return (
-        <View style={styles.mobileToolbar}>
-          {renderSearchField(styles.appleSearchMobile)}
-          {renderStoreControl(styles.storeSelectMobile)}
-          <View style={styles.mobileToolbarRow}>
-            {renderZeroFilter()}
-            <SegmentedControl
-              options={[{ key: 'today', label: 'Today' }]}
-              value={isToday ? 'today' : ''}
-              onChange={() => setDate(parseDateParam(new Date()))}
-            />
-            <DateChip label="Date" value={date} onChange={setDate} maximumDate={new Date()} />
-            {renderRefreshButton()}
-          </View>
-          <View style={styles.mobileToolbarRow}>
-            {renderSaveAllButton(styles.fillButtonMobileFlex)}
-            {renderUpdateAllButton(styles.fillButtonMobileFlex)}
-          </View>
+        <View style={styles.ticketCard}>
+          <TicketFieldRow label="Store">
+            {renderStoreControl(undefined, true)}
+          </TicketFieldRow>
+          <TicketFieldRow label="Date">
+            <View style={styles.ticketFieldInline}>
+              {isToday ? null : (
+                <Pressable
+                  onPress={() => setDate(parseDateParam(new Date()))}
+                  hitSlop={8}
+                  accessibilityLabel="Jump to today"
+                >
+                  <Text style={styles.ticketToday}>Today</Text>
+                </Pressable>
+              )}
+              <DateChip label="Date" value={date} onChange={setDate} maximumDate={new Date()} variant="plain" />
+            </View>
+          </TicketFieldRow>
+          <TicketFieldRow label="Search" last={!allowFilters}>
+            {renderSearchField(undefined, true)}
+          </TicketFieldRow>
+          {allowFilters ? (
+            <TicketFieldRow label="Show" last>
+              {renderZeroFilter(true)}
+            </TicketFieldRow>
+          ) : null}
         </View>
       );
     }
@@ -2008,11 +2082,9 @@ function BullionAuditPanel({
     if (node && typeof node.focus === 'function') node.focus();
   };
 
-  return (
-    <View style={[styles.panelBody, embedded && styles.panelBodyEmbedded, isMobile && styles.panelBodyMobile]}>
-      {renderBullionToolbar()}
-
-      <View style={styles.metaRow}>
+  const renderBullionMeta = () => (
+    <>
+      <View style={[styles.metaRow, isMobile && styles.metaRowMobile]}>
         <Text style={styles.metaText} numberOfLines={1}>
           {loading && !rows.length
             ? 'Loading…'
@@ -2026,18 +2098,39 @@ function BullionAuditPanel({
         </Text>
         {loading && rows.length > 0 ? (
           <ActivityIndicator size="small" color={SECONDARY} />
-        ) : null}
+        ) : (
+          isMobile ? renderRefreshButton() : null
+        )}
       </View>
-
       {error ? <Text style={[styles.errorText, styles.metaError]}>{error}</Text> : null}
+    </>
+  );
+
+  return (
+    <KeyboardAvoidingView
+      style={[styles.panelBody, embedded && styles.panelBodyEmbedded, isMobile && styles.panelBodyMobile]}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
+      {isMobile ? null : (
+        <>
+          {renderBullionToolbar()}
+          {renderBullionMeta()}
+        </>
+      )}
 
       <ScrollView
         style={styles.appleScroll}
-        contentContainerStyle={styles.appleScrollContent}
+        contentContainerStyle={[styles.appleScrollContent, isMobile && styles.appleScrollContentMobile]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         automaticallyAdjustKeyboardInsets
       >
+        {isMobile ? (
+          <>
+            {renderBullionToolbar()}
+            {renderBullionMeta()}
+          </>
+        ) : null}
         {loading && !rows.length ? (
           <View style={[styles.centered, embedded && styles.centeredEmbedded]}>
             <ActivityIndicator color={TEXT} />
@@ -2186,6 +2279,13 @@ function BullionAuditPanel({
         {renderBullionAi()}
       </ScrollView>
 
+      {isMobile ? (
+        <View style={[styles.stickyBar, embedded && styles.stickyBarEmbedded]}>
+          {renderSaveAllButton(styles.fillButtonMobileFlex)}
+          {renderUpdateAllButton(styles.fillButtonMobileFlex)}
+        </View>
+      ) : null}
+
       <AuditTxnDrawer
         visible={txnDrawer.visible}
         summary={txnDrawer.summary}
@@ -2194,7 +2294,7 @@ function BullionAuditPanel({
         error={txnDrawer.error}
         onClose={txnDrawer.close}
       />
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -2842,21 +2942,28 @@ function CashAuditPanel({
 
   const renderCashToolbar = () => {
     const storeControl = lockedStore ? (
+      isMobile ? (
+        <Text style={styles.ticketFieldValue} numberOfLines={1}>
+          {selectedStore || 'Store'}
+        </Text>
+      ) : (
       <Text style={[styles.storeTitle, isMobile && styles.storeTitleMobile]} numberOfLines={1}>
         {selectedStore || 'Store'}
       </Text>
+      )
     ) : (
       <FilterSelect
         label="Store"
         value={selectedStore}
         options={storeOptions.map((name) => ({ value: name, label: name }))}
         onChange={setSelectedStore}
-        style={[styles.storeSelect, isMobile && styles.storeSelectMobile]}
+        variant={isMobile ? 'plain' : 'chip'}
+        style={[!isMobile && styles.storeSelect, isMobile && styles.filterSelectPlainFill]}
       />
     );
     const drawerControl = (
       <SegmentedControl
-        style={isMobile ? undefined : styles.drawerSegment}
+        style={isMobile ? styles.drawerSegmentMobile : styles.drawerSegment}
         stretch={isMobile}
         options={CASH_DRAWERS.map((drawer) => ({
           key: drawer.key,
@@ -2919,11 +3026,27 @@ function CashAuditPanel({
 
     if (isMobile) {
       return (
-        <View style={styles.mobileToolbar}>
-          {storeControl}
+        <View style={styles.cashMobileToolbar}>
+          <View style={styles.ticketCard}>
+            <TicketFieldRow label="Store">
+              {storeControl}
+            </TicketFieldRow>
+            <TicketFieldRow label="Date" last>
+              <View style={styles.ticketFieldInline}>
+                {isToday ? null : (
+                  <Pressable
+                    onPress={() => setDate(parseDateParam(new Date()))}
+                    hitSlop={8}
+                    accessibilityLabel="Jump to today"
+                  >
+                    <Text style={styles.ticketToday}>Today</Text>
+                  </Pressable>
+                )}
+                <DateChip label="Date" value={date} onChange={setDate} maximumDate={new Date()} variant="plain" />
+              </View>
+            </TicketFieldRow>
+          </View>
           {drawerControl}
-          <View style={styles.mobileToolbarRow}>{dateRow}</View>
-          {saveButton}
         </View>
       );
     }
@@ -2982,19 +3105,19 @@ function CashAuditPanel({
     if (isMobile) {
       return (
         <View style={styles.cashHeroBlock}>
-          <View style={styles.group}>
-            <View style={styles.cashMobileHeroRow}>
+          <View style={styles.ticketCard}>
+            <View style={styles.totalsRow}>
               <View style={styles.cashMobileHeroCopy}>
-                <Text style={styles.cashMobileHeroLabel}>Expected</Text>
+                <Text style={styles.totalsLabel}>Expected</Text>
                 <Text style={styles.cashMobileHeroMeta}>
                   {posPhysical > 0 ? `POS ${money(posPhysical)}` : 'POS not counted'}
                 </Text>
               </View>
-              <Text style={styles.cashMobileHeroValue}>{money(expectedOnHand)}</Text>
+              <Text style={styles.totalsAmount}>{money(expectedOnHand)}</Text>
             </View>
-            <View style={styles.cashMobileHeroRow}>
+            <View style={styles.totalsRow}>
               <View style={styles.cashMobileHeroCopy}>
-                <Text style={styles.cashMobileHeroLabel}>Counted</Text>
+                <Text style={styles.totalsLabel}>Counted</Text>
                 <Text style={styles.cashMobileHeroMeta}>
                   {hasCount
                     ? activeCountedManual
@@ -3003,24 +3126,32 @@ function CashAuditPanel({
                     : 'Count loose cash'}
                 </Text>
               </View>
-              <Text style={styles.cashMobileHeroValue}>{hasCount ? money(cashOnHand) : '—'}</Text>
+              <Text style={styles.totalsAmount}>{hasCount ? money(cashOnHand) : '—'}</Text>
             </View>
             <View
               style={[
-                styles.cashMobileHeroRow,
-                styles.cashMobileHeroRowLast,
+                styles.totalsRow,
+                styles.totalsRowGrand,
                 varianceTone === 'ok' && styles.cashHeroOk,
                 varianceTone === 'short' && styles.cashHeroShort,
                 varianceTone === 'over' && styles.cashHeroOver,
               ]}
             >
               <View style={styles.cashMobileHeroCopy}>
-                <Text style={styles.cashMobileHeroLabel}>Variance</Text>
+                <Text
+                  style={[
+                    styles.totalsGrandLabel,
+                    varianceTone === 'short' && styles.short,
+                    varianceTone === 'over' && styles.over,
+                  ]}
+                >
+                  Variance
+                </Text>
                 <Text style={styles.cashMobileHeroMeta}>{drawerLabel}</Text>
               </View>
               <Text
                 style={[
-                  styles.cashMobileHeroValue,
+                  styles.totalsGrandAmount,
                   varianceTone === 'ok' && styles.cashIn,
                   varianceTone === 'short' && styles.short,
                   varianceTone === 'over' && styles.over,
@@ -3253,6 +3384,7 @@ function CashAuditPanel({
         })}
         <View style={styles.cashSaveBar}>
           {cashSaveError ? <Text style={styles.cashSaveError}>{cashSaveError}</Text> : null}
+          {isMobile ? null : (
           <Pressable
             onPress={persistCashCounts}
             disabled={cashSaving}
@@ -3270,6 +3402,7 @@ function CashAuditPanel({
               <Text style={styles.cashSaveBtnText}>Save</Text>
             )}
           </Pressable>
+          )}
           <Text style={styles.cashSaveMeta}>
             {cashSavedAt
               ? `Saved ${cashSavedAt.toLocaleTimeString('en-CA', {
@@ -3383,7 +3516,7 @@ function CashAuditPanel({
                         {modelOptionMetaLine(option)}
                       </Text>
                     </View>
-                    {active ? <Ionicons name="checkmark" size={20} color={BLUE} /> : null}
+                    {active ? <Ionicons name="checkmark" size={20} color={ACCENT} /> : null}
                   </Pressable>
                 );
               })}
@@ -3413,11 +3546,9 @@ function CashAuditPanel({
     </GroupSection>
   );
 
-  return (
-    <View style={[styles.panelBody, embedded && styles.panelBodyEmbedded, isMobile && styles.panelBodyMobile]}>
-      {renderCashToolbar()}
-
-      <View style={styles.metaRow}>
+  const renderCashMeta = () => (
+    <>
+      <View style={[styles.metaRow, isMobile && styles.metaRowMobile]}>
         <Text style={styles.metaText} numberOfLines={1}>
           {loading && !position
             ? 'Loading…'
@@ -3425,24 +3556,91 @@ function CashAuditPanel({
                 isToday ? 'Today' : formatPickerDate(date)
               }`}
         </Text>
-        {loading && position ? <ActivityIndicator size="small" color={SECONDARY} /> : null}
+        {loading && position ? (
+          <ActivityIndicator size="small" color={SECONDARY} />
+        ) : isMobile ? (
+          <Pressable
+            style={styles.iconToggle}
+            onPress={load}
+            disabled={loading}
+            accessibilityLabel="Refresh"
+          >
+            <Ionicons name="refresh" size={16} color={TEXT} />
+          </Pressable>
+        ) : null}
       </View>
-
       {error ? <Text style={[styles.errorText, styles.metaError]}>{error}</Text> : null}
       {warning ? <Text style={styles.warningText}>{warning}</Text> : null}
+    </>
+  );
+
+  return (
+    <KeyboardAvoidingView
+      style={[styles.panelBody, embedded && styles.panelBodyEmbedded, isMobile && styles.panelBodyMobile]}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
+      {isMobile ? null : (
+        <>
+          {renderCashToolbar()}
+          {renderCashMeta()}
+        </>
+      )}
 
       <ScrollView
         style={styles.appleScroll}
-        contentContainerStyle={styles.appleScrollContent}
+        contentContainerStyle={[styles.appleScrollContent, isMobile && styles.appleScrollContentMobile]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         automaticallyAdjustKeyboardInsets
       >
+        {isMobile ? (
+          <>
+            {renderCashToolbar()}
+            {renderCashMeta()}
+          </>
+        ) : null}
         {renderCashHero()}
         {renderCashCount()}
         {renderCashActivity()}
         {renderFindWhy()}
       </ScrollView>
+
+      {isMobile ? (
+        <View style={[styles.stickyBar, embedded && styles.stickyBarEmbedded]}>
+          <Pressable
+            style={[
+              styles.fillButton,
+              styles.fillButtonSave,
+              styles.fillButtonMobile,
+              (cashSaving ||
+                !(
+                  cadDenom.hasDenomCount ||
+                  usdDenom.hasDenomCount ||
+                  String(countedTotalText || '').trim() !== '' ||
+                  String(usdCountedTotalText || '').trim() !== ''
+                )) &&
+                styles.fillButtonDisabled,
+            ]}
+            onPress={persistCashCounts}
+            disabled={
+              cashSaving ||
+              !(
+                cadDenom.hasDenomCount ||
+                usdDenom.hasDenomCount ||
+                String(countedTotalText || '').trim() !== '' ||
+                String(usdCountedTotalText || '').trim() !== ''
+              )
+            }
+            accessibilityLabel="Save cash to database"
+          >
+            {cashSaving ? (
+              <Text style={styles.fillButtonSaveText}>Saving…</Text>
+            ) : (
+              <Text style={styles.fillButtonSaveText}>Save</Text>
+            )}
+          </Pressable>
+        </View>
+      ) : null}
 
       <AuditTxnDrawer
         visible={txnDrawer.visible}
@@ -3460,7 +3658,7 @@ function CashAuditPanel({
         onClose={cashSlips.closeEditor}
         onSaved={cashSlips.onSaved}
       />
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -3476,15 +3674,40 @@ export default function AuditScreen({
   const [activeTab, setActiveTab] = useState('bullion');
 
   return (
-    <View style={[styles.body, embedded && styles.bodyEmbedded, isMobile && styles.panelBodyMobile]}>
-      <View style={[styles.tabBar, isMobile && styles.tabBarMobile]}>
-        <SegmentedControl
-          options={AUDIT_TABS}
-          value={activeTab}
-          onChange={setActiveTab}
-          style={[styles.tabSegment, isMobile && styles.tabSegmentMobile]}
-          stretch={isMobile}
-        />
+    <View
+      style={[
+        styles.body,
+        embedded && styles.bodyEmbedded,
+        isMobile && (embedded ? styles.panelBodyMobile : styles.auditPageMobile),
+      ]}
+    >
+      <View style={[styles.tabBar, isMobile && styles.auditTabBar]}>
+        {isMobile
+          ? AUDIT_TABS.map((tab) => {
+              const active = tab.key === activeTab;
+              return (
+                <Pressable
+                  key={tab.key}
+                  onPress={() => setActiveTab(tab.key)}
+                  style={[styles.auditTab, active && styles.auditTabActive]}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: active }}
+                  accessibilityLabel={tab.label}
+                >
+                  <Text style={[styles.auditTabLabel, active && styles.auditTabLabelActive]} numberOfLines={1}>
+                    {tab.shortLabel || tab.label}
+                  </Text>
+                </Pressable>
+              );
+            })
+          : (
+            <SegmentedControl
+              options={AUDIT_TABS}
+              value={activeTab}
+              onChange={setActiveTab}
+              style={styles.tabSegment}
+            />
+          )}
       </View>
 
       {activeTab === 'bullion' ? (
@@ -3669,13 +3892,19 @@ const styles = StyleSheet.create({
   },
   fillButtonMobile: {
     width: '100%',
+    height: 44,
+    minHeight: 44,
+    borderRadius: 12,
   },
   fillButtonMobileFlex: {
     flex: 1,
     minWidth: 0,
+    height: 44,
+    minHeight: 44,
+    borderRadius: 12,
   },
   fillButtonSave: {
-    backgroundColor: BLUE,
+    backgroundColor: ACCENT,
   },
   fillButtonSaveText: {
     fontFamily,
@@ -3740,6 +3969,11 @@ const styles = StyleSheet.create({
     paddingBottom: 48,
     paddingTop: 8,
     gap: 20,
+  },
+  appleScrollContentMobile: {
+    paddingTop: 0,
+    paddingBottom: 24,
+    gap: 16,
   },
   iconToggle: {
     width: 36,
@@ -3810,6 +4044,10 @@ const styles = StyleSheet.create({
     marginBottom: 2,
     minHeight: 18,
   },
+  metaRowMobile: {
+    marginTop: 0,
+    marginBottom: 0,
+  },
   metaText: {
     fontFamily,
     flex: 1,
@@ -3860,6 +4098,9 @@ const styles = StyleSheet.create({
     backgroundColor: CARD,
     borderRadius: 12,
     overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: HAIRLINE,
+    ...TICKET_SHADOW,
   },
   groupHeaderRow: {
     flexDirection: 'row',
@@ -4156,6 +4397,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 12,
     gap: 2,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: HAIRLINE,
+    ...TICKET_SHADOW,
   },
   cashHeroLabel: {
     fontFamily,
@@ -4183,7 +4427,7 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   cashHeroOk: {
-    backgroundColor: 'rgba(52, 199, 89, 0.12)',
+    backgroundColor: TINT,
   },
   cashHeroShort: {
     backgroundColor: 'rgba(255, 59, 48, 0.12)',
@@ -4306,6 +4550,8 @@ const styles = StyleSheet.create({
     minWidth: 110,
     backgroundColor: '#fff',
     borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: HAIRLINE,
     paddingTop: 12,
     paddingBottom: 12,
     paddingHorizontal: 10,
@@ -4600,7 +4846,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   cashSaveBtn: {
-    backgroundColor: BLUE,
+    backgroundColor: ACCENT,
     borderRadius: 12,
     minHeight: 44,
     alignItems: 'center',
@@ -5001,6 +5247,15 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: '100%',
     overflow: 'hidden',
+    backgroundColor: PAGE,
+  },
+  auditPageMobile: {
+    width: '100%',
+    maxWidth: '100%',
+    overflow: 'hidden',
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    backgroundColor: PAGE,
   },
   toolbar: {
     flexDirection: 'row',
@@ -5042,7 +5297,7 @@ const styles = StyleSheet.create({
     color: SECONDARY,
   },
   storeChipTextActive: {
-    color: BLUE,
+    color: ACCENT,
     fontWeight: '600',
   },
   dateFilters: {
@@ -5068,7 +5323,7 @@ const styles = StyleSheet.create({
     color: SECONDARY,
   },
   todayChipTextActive: {
-    color: BLUE,
+    color: ACCENT,
     fontWeight: '600',
   },
   dateChip: {
@@ -5133,7 +5388,7 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 17,
     fontWeight: '600',
-    color: BLUE,
+    color: ACCENT,
   },
   refresh: {
     width: 28,
@@ -5159,7 +5414,7 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 13,
     fontWeight: '600',
-    color: BLUE,
+    color: ACCENT,
   },
   storeToolbarTitle: {
     fontFamily,
@@ -5190,7 +5445,7 @@ const styles = StyleSheet.create({
     color: SECONDARY,
   },
   link: {
-    color: BLUE,
+    color: ACCENT,
     fontWeight: '400',
   },
   list: {
@@ -5675,7 +5930,7 @@ const styles = StyleSheet.create({
     color: '#1a1a1a',
   },
   modelOptionTextActive: {
-    color: BLUE,
+    color: ACCENT,
   },
   modelOptionStats: {
     fontFamily,
@@ -5692,7 +5947,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    backgroundColor: BLUE,
+    backgroundColor: ACCENT,
     borderRadius: 12,
     paddingHorizontal: 16,
     paddingVertical: 12,
@@ -6005,6 +6260,16 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderWidth: 0,
   },
+  bInputPlain: {
+    minHeight: 42,
+    fontSize: 17,
+    fontWeight: '600',
+    textAlign: 'right',
+    backgroundColor: 'transparent',
+    paddingHorizontal: 0,
+    paddingVertical: 8,
+    borderRadius: 0,
+  },
   bMobileStack: {
     gap: 12,
     width: '100%',
@@ -6024,32 +6289,13 @@ const styles = StyleSheet.create({
     letterSpacing: -0.08,
     textTransform: 'uppercase',
   },
-  bMobileCard: {
-    backgroundColor: CARD,
-    borderRadius: 12,
-    overflow: 'hidden',
-    flexDirection: 'row',
-    width: '100%',
-  },
-  bMobileCardOff: {
-    backgroundColor: 'rgba(255, 59, 48, 0.08)',
-  },
-  bMobileAccent: {
-    width: 4,
-    alignSelf: 'stretch',
-  },
-  bMobileInner: {
-    flex: 1,
-    minWidth: 0,
-    paddingHorizontal: 14,
-    paddingTop: 14,
-    paddingBottom: 12,
-    gap: 12,
-  },
   bMobileHead: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 10,
   },
   bMobileTitleWrap: {
     flex: 1,
@@ -6069,70 +6315,18 @@ const styles = StyleSheet.create({
     color: SECONDARY,
     letterSpacing: -0.08,
   },
-  bMobileSave: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: FILL,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  bMobileUpdate: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: BLUE,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  bMobileStats: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 4,
-  },
-  bMobileStat: {
-    flex: 1,
-    alignItems: 'center',
-    gap: 2,
-    minWidth: 0,
-  },
-  bMobileStatDivider: {
-    width: StyleSheet.hairlineWidth,
-    alignSelf: 'stretch',
-    backgroundColor: HAIRLINE,
-  },
-  bMobileStatLabel: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: SECONDARY,
-    letterSpacing: -0.08,
-  },
-  bMobileStatValue: {
-    fontFamily,
-    fontSize: 22,
-    fontWeight: '600',
-    color: TEXT,
-    letterSpacing: -0.4,
-    fontVariant: ['tabular-nums'],
+  bMobileCardOff: {
+    borderColor: 'rgba(255, 59, 48, 0.35)',
+    backgroundColor: 'rgba(255, 59, 48, 0.04)',
   },
   bMobileHistory: {
     flexDirection: 'row',
     alignItems: 'stretch',
     width: '100%',
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#ececef',
   },
   bMobileHistCell: {
     flex: 1,
@@ -6154,29 +6348,51 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
     letterSpacing: -0.08,
   },
-  bMobileFields: {
+  bMobileActions: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    marginHorizontal: -4,
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#ececef',
   },
-  bMobileField: {
-    width: '50%',
-    paddingHorizontal: 4,
-    paddingBottom: 8,
-    gap: 6,
-    minWidth: 0,
+  bMobileSave: {
+    flex: 1,
+    minHeight: 40,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: ACCENT,
+    backgroundColor: TINT,
+    alignItems: 'center',
+    justifyContent: 'center',
     ...Platform.select({
-      web: { boxSizing: 'border-box' },
+      web: { cursor: 'pointer' },
       default: {},
     }),
   },
-  bMobileFieldLabel: {
+  bMobileSaveText: {
     fontFamily,
-    fontSize: 12,
+    fontSize: 15,
     fontWeight: '600',
-    color: SECONDARY,
-    letterSpacing: -0.08,
-    paddingLeft: 2,
+    color: ACCENT,
+  },
+  bMobileUpdate: {
+    flex: 1,
+    minHeight: 40,
+    borderRadius: 10,
+    backgroundColor: ACCENT,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  bMobileUpdateText: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#fff',
   },
   bColDiff: {
     width: 52,
@@ -6208,7 +6424,7 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: BLUE,
+    backgroundColor: ACCENT,
     alignItems: 'center',
     justifyContent: 'center',
     ...Platform.select({
@@ -6268,7 +6484,7 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
   updateButton: {
-    backgroundColor: BLUE,
+    backgroundColor: ACCENT,
     borderRadius: 8,
     paddingHorizontal: 10,
     paddingVertical: 5,
@@ -6290,7 +6506,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: BLUE,
+    backgroundColor: ACCENT,
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 8,
@@ -6417,7 +6633,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 14,
     paddingBottom: 10,
-    backgroundColor: 'rgba(242,242,247,0.94)',
+    backgroundColor: '#fff',
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: HAIRLINE,
   },
@@ -6460,7 +6676,7 @@ const styles = StyleSheet.create({
   },
   filterModalOptionTextActive: {
     fontWeight: '600',
-    color: TEXT,
+    color: ACCENT,
   },
   compactDateButton: {
     flexDirection: 'row',
@@ -6490,5 +6706,232 @@ const styles = StyleSheet.create({
   findWhyButtonMobile: {
     width: '100%',
     justifyContent: 'center',
+  },
+  ticketCard: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: HAIRLINE,
+    borderRadius: 12,
+    backgroundColor: CARD,
+    overflow: 'hidden',
+    width: '100%',
+    ...TICKET_SHADOW,
+  },
+  ticketFieldRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 44,
+    paddingHorizontal: 14,
+    gap: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#ececef',
+  },
+  ticketFieldRowLast: {
+    borderBottomWidth: 0,
+  },
+  ticketFieldLabel: {
+    fontFamily,
+    width: 82,
+    flexShrink: 0,
+    fontSize: 13,
+    fontWeight: '500',
+    color: SECONDARY,
+  },
+  ticketFieldControl: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'stretch',
+  },
+  ticketFieldValue: {
+    fontFamily,
+    fontSize: 15,
+    color: TEXT,
+    textAlign: 'right',
+    paddingVertical: 8,
+    fontVariant: ['tabular-nums'],
+  },
+  ticketFieldInline: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 10,
+    minHeight: 44,
+  },
+  ticketToday: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: ACCENT,
+  },
+  ticketSearchWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 44,
+  },
+  ticketSearchInput: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily,
+    fontSize: 15,
+    color: TEXT,
+    textAlign: 'right',
+    paddingVertical: 8,
+    ...Platform.select({
+      web: { outlineStyle: 'none' },
+      default: {},
+    }),
+  },
+  ticketToggleHit: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 6,
+    minHeight: 44,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  filterSelectPlain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 6,
+    minHeight: 44,
+    backgroundColor: 'transparent',
+    paddingHorizontal: 0,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  filterSelectPlainFill: {
+    maxWidth: '100%',
+    width: '100%',
+    minWidth: 0,
+  },
+  filterSelectValuePlain: {
+    fontSize: 15,
+    textAlign: 'right',
+  },
+  dateChipPlain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 6,
+    minHeight: 44,
+    flex: 1,
+    minWidth: 0,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  auditTabBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 14,
+    alignSelf: 'stretch',
+  },
+  auditTab: {
+    flex: 1,
+    minHeight: 40,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: HAIRLINE,
+    backgroundColor: CARD,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  auditTabActive: {
+    backgroundColor: TINT,
+    borderColor: ACCENT,
+  },
+  auditTabLabel: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '500',
+    color: SECONDARY,
+    letterSpacing: -0.2,
+  },
+  auditTabLabelActive: {
+    color: ACCENT,
+    fontWeight: '600',
+  },
+  stickyBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingTop: 10,
+    paddingBottom: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: HAIRLINE,
+    backgroundColor: PAGE,
+  },
+  stickyBarEmbedded: {
+    paddingBottom: Math.max(12, mobileSafeBottom()),
+  },
+  cashMobileToolbar: {
+    gap: 10,
+    marginTop: 2,
+    marginBottom: 8,
+    width: '100%',
+  },
+  drawerSegmentMobile: {
+    alignSelf: 'stretch',
+    width: '100%',
+  },
+  totalsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 16,
+    minHeight: 52,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#ececef',
+  },
+  totalsRowGrand: {
+    minHeight: 62,
+    paddingVertical: 14,
+    backgroundColor: TINT,
+    borderBottomWidth: 0,
+  },
+  totalsLabel: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '500',
+    color: SECONDARY,
+  },
+  totalsAmount: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: -0.2,
+    fontVariant: ['tabular-nums'],
+    textAlign: 'right',
+  },
+  totalsGrandLabel: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: ACCENT,
+  },
+  totalsGrandAmount: {
+    fontFamily,
+    fontSize: 22,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: -0.4,
+    fontVariant: ['tabular-nums'],
+    textAlign: 'right',
   },
 });

@@ -15,6 +15,10 @@ alter table public.profiles
     )
   );
 
+-- Postgres renders `role in (...)` as `role = ANY (ARRAY[...])`, so match on
+-- the column rather than the original spelling. The inline check from the
+-- create table is auto-named role_app_access_role_check; drop it by name too.
+alter table public.role_app_access drop constraint if exists role_app_access_role_check;
 do $$
 declare
   constraint_name text;
@@ -27,7 +31,10 @@ begin
     where n.nspname = 'public'
       and t.relname = 'role_app_access'
       and c.contype = 'c'
-      and pg_get_constraintdef(c.oid) ilike '%role in%'
+      and (
+        pg_get_constraintdef(c.oid) ilike '%role in%'
+        or pg_get_constraintdef(c.oid) ilike '%role = any%'
+      )
   loop
     execute format('alter table public.role_app_access drop constraint if exists %I', constraint_name);
   end loop;

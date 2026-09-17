@@ -21,7 +21,12 @@ import { fetchInventoryMatrix, formatQty, peekInventoryMatrix } from '../lib/inv
 import { textMatchesQuery } from '../lib/itemSearch';
 import { findStaffByEmployeeName, listStaffProfiles, useAppAccess } from '../lib/permissions';
 import { initialsFor } from '../lib/rippling';
-import { formatAmount, formatDateParam, isCashTransaction } from '../lib/transactions';
+import {
+  buildEmailCaptureByStore,
+  formatAmount,
+  formatDateParam,
+  isCashTransaction,
+} from '../lib/transactions';
 import { useTxnCashBreakdowns } from '../lib/txnCashBreakdowns';
 import { callPartyLabel, callsForStore, inboundCallRatio, isPhoneRateLimitMessage } from '../lib/phoneCalls';
 import { formatPhoneNumber } from '../lib/ringcentral';
@@ -86,6 +91,7 @@ const SNAPSHOT_APPS = {
   inventory: { key: 'inventory', label: 'Inventory', icon: 'cube', accent: '#C47A12' },
   employees: { key: 'employees', label: 'Employees', icon: 'people', accent: '#1D4ED8' },
   phone: { key: 'phone', label: 'Phone', icon: 'call', accent: '#15803D' },
+  emails: { key: 'emails', label: 'Emails', icon: 'mail', accent: '#4338CA' },
   transactions: { key: 'transactions', label: 'Transactions', icon: 'swap-horizontal', accent: '#2F6FED' },
 };
 
@@ -870,6 +876,74 @@ function PhoneSnapshotBody({ storeName, startKey, endKey, periodLabel }) {
   );
 }
 
+function storeEmailCapture(txRows, storeName) {
+  const rows = buildEmailCaptureByStore(Array.isArray(txRows) ? txRows : []);
+  if (!rows.length) return null;
+  return rows.find((row) => namesMatch(row.store, storeName)) || (rows.length === 1 ? rows[0] : null);
+}
+
+function EmailsSnapshotBody({ storeName, txRows, periodLabel, ready }) {
+  const capture = useMemo(() => storeEmailCapture(txRows, storeName), [storeName, txRows]);
+  const missing = useMemo(
+    () => (capture?.people || []).filter((person) => !person.hasEmail),
+    [capture],
+  );
+  const periodText = periodLabel === 'Today' ? 'today' : 'in this period';
+
+  if (!ready && !capture) return <LoadingRow />;
+
+  if (!capture || capture.totalTransactions === 0) {
+    return <EmptyRow text={`No customers ${periodText}.`} />;
+  }
+
+  return (
+    <>
+      <View style={styles.emailHero}>
+        <Text style={styles.emailHeroLabel}>Email capture</Text>
+        <Text style={[styles.emailHeroValue, capture.customerCount === 0 && styles.rowValueMuted]}>
+          {capture.customerCount === 0 ? '—' : capture.rateLabel}
+        </Text>
+        <Text style={styles.emailHeroMeta}>
+          {capture.customerCount === 0
+            ? `${capture.walkInCount} walk-in · no named customers ${periodText}`
+            : `${capture.withEmail} of ${capture.customerCount} named with email · ${capture.walkInCount} walk-in`}
+        </Text>
+      </View>
+      {capture.customerCount > 0 ? (
+        missing.length === 0 ? (
+          <View style={[styles.row, styles.rowStatic, styles.rowLast]}>
+            <Ionicons name="checkmark-circle" size={16} color={GREEN} />
+            <Text style={styles.emptyText}>Every named customer left an email.</Text>
+          </View>
+        ) : (
+          <>
+            <Text style={styles.emailSectionLabel}>
+              Missing email · {missing.length}
+            </Text>
+            {missing.map((person, index) => (
+              <View
+                key={person.id || `${person.customerName}-${index}`}
+                style={[styles.row, styles.rowStatic, styles.emailRow, index === missing.length - 1 && styles.rowLast]}
+              >
+                <Ionicons name="mail-unread-outline" size={16} color={RED} />
+                <View style={styles.rowCopy}>
+                  <Text style={styles.rowTitle} numberOfLines={1}>
+                    {person.customerName}
+                  </Text>
+                  <Text style={styles.rowSubtitle} numberOfLines={1}>
+                    {[person.reference, person.employeeName].filter((part) => part && part !== '—').join(' · ') ||
+                      'No email on file'}
+                  </Text>
+                </View>
+              </View>
+            ))}
+          </>
+        )
+      ) : null}
+    </>
+  );
+}
+
 function employeePersonForTx(item, employeesByName, staff) {
   const name = String(item?.employeeName || '').trim();
   if (!name || name === '—') return { name: '—', photoUrl: '' };
@@ -900,6 +974,7 @@ function StoreSnapshotPanel({
   const isMobile = windowWidth < 768;
   const { hasApp } = useAppAccess();
   const showPhone = hasApp('phone');
+  const showEmails = hasApp('emails');
   const [inventoryQuery, setInventoryQuery] = useState('');
   const [inventoryLimit, setInventoryLimit] = useState(INVENTORY_PAGE);
   const [cash, setCash] = useState(null);
@@ -1313,6 +1388,39 @@ function StoreSnapshotPanel({
               endKey={endKey}
               periodLabel={periodLabel}
             />
+          </AppBox>
+        ) : null}
+        {showEmails ? (
+          <AppBox
+            app={SNAPSHOT_APPS.emails}
+            meta={periodLabel}
+            onOpen={onOpenApp}
+            style={[styles.appRowBox, !isMobile && styles.appRowBoxDesktop]}
+            bodyStyle={!isMobile ? styles.appBoxBodyFill : null}
+          >
+            {isMobile ? (
+              <EmailsSnapshotBody
+                storeName={storeName}
+                txRows={txRows}
+                periodLabel={periodLabel}
+                ready={ready}
+              />
+            ) : (
+              <ScrollView
+                style={styles.employeeList}
+                contentContainerStyle={styles.boxListContent}
+                nestedScrollEnabled
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={false}
+              >
+                <EmailsSnapshotBody
+                  storeName={storeName}
+                  txRows={txRows}
+                  periodLabel={periodLabel}
+                  ready={ready}
+                />
+              </ScrollView>
+            )}
           </AppBox>
         ) : null}
       </View>
@@ -2065,5 +2173,50 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingTop: 8,
     paddingBottom: 12,
+  },
+  emailHero: {
+    paddingHorizontal: 14,
+    paddingTop: 16,
+    paddingBottom: 12,
+    gap: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: SEPARATOR,
+  },
+  emailHeroLabel: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: SECONDARY,
+    letterSpacing: -0.04,
+    textTransform: 'uppercase',
+  },
+  emailHeroValue: {
+    fontFamily,
+    fontSize: 28,
+    fontWeight: '700',
+    color: LABEL,
+    letterSpacing: -0.6,
+    fontVariant: ['tabular-nums'],
+  },
+  emailHeroMeta: {
+    fontFamily,
+    fontSize: 12,
+    color: SECONDARY,
+    letterSpacing: -0.04,
+  },
+  emailSectionLabel: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#B91C1C',
+    letterSpacing: 0.2,
+    textTransform: 'uppercase',
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    paddingBottom: 4,
+  },
+  emailRow: {
+    minHeight: 44,
+    paddingVertical: 6,
   },
 });
