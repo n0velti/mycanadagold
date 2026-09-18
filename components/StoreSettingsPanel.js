@@ -12,6 +12,8 @@ import {
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
+import { useIsMobile } from '../lib/mobileUi';
+import { IosActionRow, IosGroup, IosPage, IosRow, IosSwitch } from './IosSettings';
 import {
   canManageStoreSettings,
   createHoliday,
@@ -44,6 +46,11 @@ function dateToTime(date) {
 }
 
 function AccessToggle({ on, disabled, onPress }) {
+  const isMobile = useIsMobile();
+  if (isMobile) {
+    return <IosSwitch on={on} disabled={disabled} onPress={onPress} />;
+  }
+
   return (
     <Pressable
       onPress={onPress}
@@ -59,10 +66,11 @@ function AccessToggle({ on, disabled, onPress }) {
 }
 
 function TimeField({ value, onChange, disabled }) {
+  const isMobile = useIsMobile();
   const [open, setOpen] = useState(false);
 
   if (disabled) {
-    return <Text style={styles.timeDisabled}>{formatClock(value)}</Text>;
+    return <Text style={[styles.timeDisabled, isMobile && styles.iosTimeSep]}>{formatClock(value)}</Text>;
   }
 
   if (Platform.OS === 'web') {
@@ -75,13 +83,14 @@ function TimeField({ value, onChange, disabled }) {
       },
       style: {
         fontFamily,
-        fontSize: 13,
-        color: '#1a1a1a',
-        border: '1px solid #d0d0d0',
-        borderRadius: 6,
-        padding: '6px 8px',
-        background: '#fff',
-        minWidth: 108,
+        fontSize: isMobile ? 17 : 13,
+        color: isMobile ? '#007AFF' : '#1a1a1a',
+        border: isMobile ? 'none' : '1px solid #d0d0d0',
+        borderRadius: isMobile ? 0 : 6,
+        padding: isMobile ? '0' : '6px 8px',
+        background: isMobile ? 'transparent' : '#fff',
+        minWidth: isMobile ? 86 : 108,
+        outline: 'none',
       },
     });
   }
@@ -200,6 +209,7 @@ function DateField({ value, onChange, disabled }) {
 }
 
 function StoreHoursEditor({ session, storeName, onBack, embedded = false }) {
+  const isMobile = useIsMobile();
   const canEdit = canManageStoreSettings(session?.profile);
   const [hours, setHours] = useState([]);
   const [holidays, setHolidays] = useState([]);
@@ -295,6 +305,151 @@ function StoreHoursEditor({ session, storeName, onBack, embedded = false }) {
       <View style={styles.centered}>
         <ActivityIndicator color="#1a1a1a" />
       </View>
+    );
+  }
+
+  if (isMobile) {
+    return (
+      <IosPage>
+        {onBack ? (
+          <IosGroup>
+            <IosRow label="All Stores" onPress={onBack} />
+          </IosGroup>
+        ) : null}
+        <IosGroup header="Hours" footer={`Regular weekly hours for ${storeName}.`}>
+          {hours.map((row) => (
+            <IosRow
+              key={row.day}
+              label={WEEKDAY_LABELS[row.day]}
+              value={row.closed ? 'Closed' : undefined}
+              accessory={
+                <IosSwitch
+                  on={!row.closed}
+                  disabled={!canEdit}
+                  onPress={canEdit ? () => updateDay(row.day, { closed: !row.closed }) : undefined}
+                />
+              }
+            >
+              {row.closed ? null : (
+                <View style={styles.iosTimePair}>
+                  <TimeField
+                    value={row.open}
+                    disabled={!canEdit}
+                    onChange={(open) => updateDay(row.day, { open })}
+                  />
+                  <Text style={styles.iosTimeSep}>–</Text>
+                  <TimeField
+                    value={row.close}
+                    disabled={!canEdit}
+                    onChange={(close) => updateDay(row.day, { close })}
+                  />
+                </View>
+              )}
+            </IosRow>
+          ))}
+        </IosGroup>
+
+        <IosGroup
+          header="Holidays"
+          footer={
+            holidays.length === 0
+              ? 'No holidays yet. Add statutory days or company closures.'
+              : 'Dates this store is closed or on a shortened schedule.'
+          }
+        >
+          {holidays.length === 0 ? (
+            <IosRow label="Holidays" value="None" />
+          ) : (
+            holidays.map((row) => (
+              <IosRow
+                key={row.id}
+                label={row.name}
+                value={
+                  row.closed
+                    ? formatPickerDate(row.date)
+                    : `${formatPickerDate(row.date)} · ${formatClock(row.open)}–${formatClock(row.close)}`
+                }
+                accessory={
+                  canEdit ? (
+                    <Pressable onPress={() => removeHoliday(row.id)} hitSlop={8} accessibilityLabel="Remove holiday">
+                      <Ionicons name="trash-outline" size={18} color="#FF3B30" />
+                    </Pressable>
+                  ) : null
+                }
+              />
+            ))
+          )}
+        </IosGroup>
+
+        {canEdit ? (
+          <IosGroup header="Add Holiday">
+            <View style={styles.iosFieldRow}>
+              <TextInput
+                style={styles.iosFieldInput}
+                value={draftHoliday.name}
+                onChangeText={(name) => setDraftHoliday((current) => ({ ...current, name }))}
+                placeholder="Christmas Day"
+                placeholderTextColor="#8E8E93"
+              />
+            </View>
+            <IosRow
+              label="Date"
+              accessory={
+                <DateField
+                  value={draftHoliday.date}
+                  onChange={(date) => setDraftHoliday((current) => ({ ...current, date }))}
+                />
+              }
+            />
+            <IosRow
+              label="Closed"
+              onPress={() => setDraftHoliday((current) => ({ ...current, closed: !current.closed }))}
+              accessory={<IosSwitch on={draftHoliday.closed} />}
+            />
+            {draftHoliday.closed ? null : (
+              <IosRow label="Hours">
+                <View style={styles.iosTimePair}>
+                  <TimeField
+                    value={draftHoliday.open}
+                    onChange={(open) => setDraftHoliday((current) => ({ ...current, open }))}
+                  />
+                  <Text style={styles.iosTimeSep}>–</Text>
+                  <TimeField
+                    value={draftHoliday.close}
+                    onChange={(close) => setDraftHoliday((current) => ({ ...current, close }))}
+                  />
+                </View>
+              </IosRow>
+            )}
+            <IosActionRow label="Add to List" onPress={addHoliday} />
+          </IosGroup>
+        ) : (
+          <IosGroup footer="A branch manager or admin can change hours for this store.">
+            <IosRow label="Editing" value="Restricted" />
+          </IosGroup>
+        )}
+
+        {error ? (
+          <IosGroup footer={error}>
+            <IosRow label="Status" value="Error" />
+          </IosGroup>
+        ) : null}
+        {message ? (
+          <IosGroup footer={message}>
+            <IosRow icon="checkmark-circle" iconColor="#34C759" label="Saved" />
+          </IosGroup>
+        ) : null}
+
+        {canEdit && !unavailable ? (
+          <IosGroup>
+            <IosActionRow
+              label={saving ? 'Saving…' : 'Save'}
+              onPress={handleSave}
+              disabled={saving}
+            />
+          </IosGroup>
+        ) : null}
+      </IosPage>
     );
   }
 
@@ -436,6 +591,7 @@ function StoreHoursEditor({ session, storeName, onBack, embedded = false }) {
 }
 
 export default function StoreSettingsPanel({ session, storeName, embedded = false }) {
+  const isMobile = useIsMobile();
   const [stores, setStores] = useState([]);
   const [selectedName, setSelectedName] = useState(storeName || '');
   const [loading, setLoading] = useState(!storeName);
@@ -498,6 +654,37 @@ export default function StoreSettingsPanel({ session, storeName, embedded = fals
       <View style={styles.centered}>
         <ActivityIndicator color="#1a1a1a" />
       </View>
+    );
+  }
+
+  if (isMobile) {
+    return (
+      <IosPage>
+        <IosGroup
+          header="Stores"
+          footer={
+            error ||
+            (unavailable
+              ? 'Hours will save after the database migration is applied.'
+              : 'Choose a branch to set weekly hours and holidays.')
+          }
+        >
+          {stores.length === 0 ? (
+            <IosRow label="Stores" value="None" />
+          ) : (
+            stores.map((store) => (
+              <IosRow
+                key={store.storeKey}
+                icon="storefront"
+                iconColor="#FF9500"
+                label={store.storeName}
+                value={store.exists ? summarizeHours(store.hours) : 'Not Set'}
+                onPress={() => setSelectedName(store.storeName)}
+              />
+            ))
+          )}
+        </IosGroup>
+      </IosPage>
     );
   }
 
@@ -819,6 +1006,33 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     color: '#fff',
+  },
+  iosTimePair: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 4,
+  },
+  iosTimeSep: {
+    fontFamily,
+    fontSize: 17,
+    color: '#8E8E93',
+  },
+  iosFieldRow: {
+    minHeight: 44,
+    paddingHorizontal: 16,
+    justifyContent: 'center',
+    backgroundColor: '#fff',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(60, 60, 67, 0.29)',
+  },
+  iosFieldInput: {
+    fontFamily,
+    fontSize: 17,
+    color: '#000',
+    paddingVertical: 10,
+    letterSpacing: -0.4,
+    outlineStyle: 'none',
   },
   toggleTrack: {
     width: 40,

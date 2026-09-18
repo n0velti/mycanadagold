@@ -273,6 +273,72 @@ export default function TriageDailyReceiptsDrawer({
             title="Nothing to check yet"
             body="Add stores and PO / SO to this batch first. Each day and store will show up here."
           />
+        ) : isMobile ? (
+          <View style={styles.mobileDays}>
+            {days.map((day) => {
+              let rowExpected = 0;
+              let rowReceived = 0;
+              let rowEntered = false;
+              for (const store of stores) {
+                const cell = dailyCellKey(day.key, store.key);
+                rowExpected += grid.expected[cell] || 0;
+                const received = parseCount(valueFor(cell));
+                if (received != null) {
+                  rowReceived += received;
+                  rowEntered = true;
+                }
+              }
+              const rowTone = rowEntered ? cellTone(rowExpected, rowReceived) : null;
+              return (
+                <View key={day.key} style={styles.mobileDayCard}>
+                  <View style={styles.mobileDayHead}>
+                    <View>
+                      <Text style={styles.dayWeekday}>{day.weekday}</Text>
+                      <Text style={styles.dayLabel}>{day.label}</Text>
+                    </View>
+                    <Fraction received={rowEntered ? rowReceived : null} expected={rowExpected} tone={rowTone} />
+                  </View>
+                  {stores.map((store, storeIndex) => {
+                    const cell = dailyCellKey(day.key, store.key);
+                    return (
+                      <View
+                        key={cell}
+                        style={[styles.mobileStoreRow, storeIndex === stores.length - 1 && styles.mobileStoreRowLast]}
+                      >
+                        <Text style={styles.mobileStoreName} numberOfLines={1}>
+                          {store.name}
+                        </Text>
+                        <CountCell
+                          expected={grid.expected[cell] || 0}
+                          value={valueFor(cell)}
+                          onChange={(text) => setCell(cell, text)}
+                          label={`${store.name} received on ${day.label}`}
+                        />
+                      </View>
+                    );
+                  })}
+                </View>
+              );
+            })}
+            <View style={styles.mobileDayCard}>
+              <Text style={styles.mobileAllLabel}>All days</Text>
+              {stores.map((store, storeIndex) => {
+                const total = storeTotals.get(store.key);
+                const tone = total.entered ? cellTone(total.expected, total.received) : null;
+                return (
+                  <View
+                    key={store.key}
+                    style={[styles.mobileStoreRow, storeIndex === stores.length - 1 && styles.mobileStoreRowLast]}
+                  >
+                    <Text style={styles.mobileStoreName} numberOfLines={1}>
+                      {store.name}
+                    </Text>
+                    <Fraction received={total.entered ? total.received : null} expected={total.expected} tone={tone} />
+                  </View>
+                );
+              })}
+            </View>
+          </View>
         ) : (
           <ScrollView horizontal showsHorizontalScrollIndicator={Platform.OS === 'web'} style={styles.tableScroll}>
             <View style={[styles.table, { width: tableWidth }]}>
@@ -422,6 +488,55 @@ const styles = StyleSheet.create({
   },
   contentMobile: {
     paddingHorizontal: 14,
+    gap: 12,
+  },
+  mobileDays: {
+    gap: 10,
+  },
+  mobileDayCard: {
+    backgroundColor: T.card,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingTop: 12,
+    paddingBottom: 4,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
+  },
+  mobileDayHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingBottom: 8,
+    marginBottom: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: T.hairline,
+  },
+  mobileAllLabel: {
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '600',
+    color: T.text,
+    paddingBottom: 8,
+  },
+  mobileStoreRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    minHeight: 64,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: T.hairline,
+  },
+  mobileStoreRowLast: {
+    borderBottomWidth: 0,
+  },
+  mobileStoreName: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: FONT,
+    fontSize: 16,
+    fontWeight: '500',
+    color: T.text,
   },
   hero: {
     paddingBottom: 16,

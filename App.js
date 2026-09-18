@@ -93,7 +93,7 @@ import InventoryScreen from './components/InventoryScreen';
 import SerphintScreen from './components/SerphintScreen';
 import SettingsScreen from './components/SettingsScreen';
 import StoreSettingsPanel from './components/StoreSettingsPanel';
-import StoreSnapshotPanel from './components/StoreSnapshotPanel';
+import StoreSnapshotPanel, { StoreTransactionRow, OverviewHero } from './components/StoreSnapshotPanel';
 import TxnCashBreakdownModal, { TxnCashIcon } from './components/TxnCashBreakdownModal';
 import { AUREUS_TX_LIVE_MS, useLiveRefresh } from './lib/liveRefresh';
 import { useTxnCashBreakdowns } from './lib/txnCashBreakdowns';
@@ -151,6 +151,11 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-home-row:hover{background-color:#e8e8ed!important;}',
     '.cgold-home-row:active{background-color:#e5e5ea!important;}',
     '.cgold-home-row-selected,.cgold-home-row-selected:hover{background-color:#e8e8ed!important;}',
+    '.cgold-home-live{display:inline-block;max-width:100%;vertical-align:baseline;transform:translateY(0) scale(1);transition-property:color,transform;transition-timing-function:ease-out;}',
+    '.cgold-home-live-hot-up{color:#34C759!important;transform:translateY(7px) scale(1.05);transition-duration:0ms;}',
+    '.cgold-home-live-hot-down{color:#FF3B30!important;transform:translateY(-7px) scale(1.05);transition-duration:0ms;}',
+    '.cgold-home-live-cool{transition-duration:820ms;}',
+    '@media (prefers-reduced-motion:reduce){.cgold-home-live,.cgold-home-live-hot-up,.cgold-home-live-hot-down,.cgold-home-live-cool{transition:none!important;transform:none!important;}}',
     '.cgold-filter-option{cursor:pointer;transition:none!important;}',
     '.cgold-filter-option:hover{background-color:#f5f5f5!important;}',
     '.cgold-floating-tip{position:fixed;z-index:100000;pointer-events:none;max-width:280px;min-width:160px;padding:8px 10px;border-radius:6px;background:#1a1a1a;box-shadow:0 4px 16px rgba(0,0,0,0.18);font:12px/16px Sohne,sans-serif;color:#fff;white-space:pre-wrap;}',
@@ -2253,10 +2258,10 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
     solid: true,
   };
   const tabStrip = [overviewTab, ...drawerTabs];
-  const appIconSize = isMobile ? 48 : 54;
-  const appItemWidth = appIconSize + (isMobile ? 24 : 30);
+  const appIconSize = isMobile ? 42 : 54;
+  const appItemWidth = appIconSize + (isMobile ? 36 : 30);
   const [headerHeight, setHeaderHeight] = useState(null);
-  const topInset = headerHeight ?? (isMobile ? 150 : 140);
+  const topInset = headerHeight ?? (isMobile ? 154 : 140);
   const onHeaderLayout = useCallback((event) => {
     const next = Math.round(event?.nativeEvent?.layout?.height || 0);
     if (next > 0) setHeaderHeight((current) => (current === next ? current : next));
@@ -2655,8 +2660,39 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                 showsVerticalScrollIndicator={false}
               >
                 {activeTab === 'transactions' ? (
+                  isMobile ? (
+                    <>
+                      <View style={styles.storeTxMobileStack}>
+                        <OverviewHero store={heldStore} periodLabel={periodLabel} />
+                        <View style={styles.appleGroup}>
+                        {txRows.length === 0 ? (
+                          <Text style={[styles.invoiceEmptyLine, styles.storeTxMobileEmpty]}>
+                            No transactions in this period.
+                          </Text>
+                        ) : (
+                          txRows.map((item, index) => (
+                            <StoreTransactionRow
+                              key={item.id}
+                              item={item}
+                              last={index === txRows.length - 1}
+                              onPress={openDetail}
+                              cashSaved={cashSlips.isSaved(item)}
+                              onCashPress={cashSlips.openEditor}
+                              employeePerson={{
+                                name: item.employeeName || '—',
+                                photoUrl: employeePhotos[item.employeeName] || '',
+                              }}
+                              onAmountHover={ensurePaymentBreakdown}
+                              stacked
+                            />
+                          ))
+                        )}
+                      </View>
+                      </View>
+                    </>
+                  ) : (
                   <>
-                    <View style={[styles.invoiceHeaderRow, isMobile && styles.invoiceHeaderRowMobile]}>
+                    <View style={styles.invoiceHeaderRow}>
                       <View style={styles.invoiceHeaderLeft}>
                         <Text style={styles.invoiceNumber}>Transactions</Text>
                         <Text style={styles.emailDrawerSubtitle}>
@@ -2672,7 +2708,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                       </View>
                     </View>
 
-                    <View style={[styles.invoiceInfoGrid, isMobile && styles.invoiceInfoGridMobile]}>
+                    <View style={styles.invoiceInfoGrid}>
                       <View style={styles.invoiceInfoCard}>
                         <Text style={styles.invoiceSectionLabel}>Sales</Text>
                         <Text style={styles.invoicePartyName}>{heldStore.saleCount}</Text>
@@ -2716,6 +2752,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                       </View>
                     </View>
                   </>
+                  )
                 ) : activeTool ? (
                   <View style={styles.storeDrawerPlaceholder}>
                     <View
@@ -2785,6 +2822,11 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                     >
                       {heldStore.store}
                     </Text>
+                    {isMobile ? (
+                      <Text style={styles.storeDrawerPeriod} numberOfLines={1}>
+                        {periodLabel}
+                      </Text>
+                    ) : null}
                   </Pressable>
                   <View style={isMobile ? styles.storeDrawerNavSide : null}>
                     <Pressable
@@ -3001,15 +3043,218 @@ function HomeStoreStatusIcon({ accent, open, compact = false }) {
   );
 }
 
+const HOME_LIVE_UP = '#34C759';
+const HOME_LIVE_DOWN = '#FF3B30';
+
+function parseHomeLiveNumber(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const text = String(value ?? '').trim();
+  if (!text || text === '—') return null;
+  const percent = text.match(/^(-?\d+(?:\.\d+)?)\s*%$/);
+  if (percent) return Number(percent[1]);
+  const plain = text.match(/^-?\d+(?:\.\d+)?$/);
+  if (plain) return Number(plain[0]);
+  if (/tx/i.test(text) || text.includes('·')) return null;
+  const stripped = text.replace(/[^\d,.\-]/g, '');
+  if (!/^-?[\d,]+(?:\.\d{1,2})?$/.test(stripped)) return null;
+  const n = Number(stripped.replace(/,/g, ''));
+  return Number.isFinite(n) ? n : null;
+}
+
+function formatHomeLiveTick(display, format, fromN, toN, t) {
+  const current = fromN + (toN - fromN) * t;
+  if (typeof format === 'function') return format(current);
+  if (/%\s*$/.test(String(display).trim())) return `${Math.round(current)}%`;
+  if (/^-?\d+$/.test(String(display).trim())) return String(Math.round(current));
+  if (parseHomeLiveNumber(display) != null) return formatAmount(current);
+  return display;
+}
+
+function formatHomePercentTick(n) {
+  return `${Math.round(n)}%`;
+}
+
+function formatHomeCountTick(n) {
+  return String(Math.round(n));
+}
+
+function HomeLiveValue({
+  children,
+  numeric,
+  format,
+  style,
+  numberOfLines = 1,
+  adjustsFontSizeToFit,
+  origin = 'start',
+  accessibilityLabel,
+}) {
+  const display = children == null ? '' : String(children);
+  const targetN =
+    numeric == null || numeric === ''
+      ? parseHomeLiveNumber(display)
+      : Number.isFinite(Number(numeric))
+        ? Number(numeric)
+        : parseHomeLiveNumber(display);
+  const flash = useRef(new Animated.Value(0)).current;
+  const slide = useRef(new Animated.Value(0)).current;
+  const scale = useRef(new Animated.Value(1)).current;
+  const primed = useRef(false);
+  const prevDisplay = useRef(display);
+  const currentN = useRef(Number.isFinite(targetN) ? targetN : null);
+  const rafRef = useRef(null);
+  const formatRef = useRef(format);
+  formatRef.current = format;
+  const targetNRef = useRef(targetN);
+  targetNRef.current = targetN;
+  const [shown, setShown] = useState(display);
+  const [flashColor, setFlashColor] = useState(HOME_LIVE_UP);
+  const [webFlash, setWebFlash] = useState('');
+  const baseColor = StyleSheet.flatten(style)?.color || '#1d1d1f';
+
+  useEffect(() => {
+    if (!primed.current) {
+      primed.current = true;
+      prevDisplay.current = display;
+      currentN.current = Number.isFinite(targetNRef.current) ? targetNRef.current : null;
+      setShown(display);
+      return undefined;
+    }
+    if (prevDisplay.current === display) return undefined;
+
+    const fromN = currentN.current;
+    const toN = Number.isFinite(targetNRef.current) ? targetNRef.current : null;
+    const dir =
+      fromN != null && toN != null ? Math.sign(toN - fromN) : toN == null && fromN ? -1 : 1;
+    setFlashColor(dir < 0 ? HOME_LIVE_DOWN : HOME_LIVE_UP);
+    prevDisplay.current = display;
+    currentN.current = toN;
+
+    if (rafRef.current != null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+
+    const tickFormat = formatRef.current;
+    const canTick =
+      fromN != null &&
+      toN != null &&
+      fromN !== toN &&
+      (typeof tickFormat === 'function' || parseHomeLiveNumber(display) != null);
+
+    if (!canTick) {
+      setShown(display);
+    } else {
+      const started = Date.now();
+      const duration = 520;
+      const tick = () => {
+        const t = Math.min(1, (Date.now() - started) / duration);
+        const eased = 1 - (1 - t) ** 3;
+        setShown(formatHomeLiveTick(display, tickFormat, fromN, toN, eased));
+        if (t < 1) {
+          rafRef.current = requestAnimationFrame(tick);
+        } else {
+          rafRef.current = null;
+          setShown(display);
+        }
+      };
+      rafRef.current = requestAnimationFrame(tick);
+    }
+
+    let cancelled = false;
+    let webCoolId = null;
+    if (Platform.OS === 'web') {
+      setWebFlash(dir < 0 ? 'down' : 'up');
+      webCoolId = requestAnimationFrame(() => {
+        webCoolId = requestAnimationFrame(() => {
+          if (!cancelled) setWebFlash('cool');
+        });
+      });
+    } else {
+      flash.stopAnimation();
+      slide.stopAnimation();
+      scale.stopAnimation();
+      flash.setValue(1);
+      slide.setValue(dir < 0 ? -8 : 8);
+      scale.setValue(1.05);
+      Animated.parallel([
+        Animated.timing(flash, {
+          toValue: 0,
+          duration: 980,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: false,
+        }),
+        Animated.spring(slide, {
+          toValue: 0,
+          friction: 7,
+          tension: 140,
+          useNativeDriver: false,
+        }),
+        Animated.spring(scale, {
+          toValue: 1,
+          friction: 7,
+          tension: 140,
+          useNativeDriver: false,
+        }),
+      ]).start();
+    }
+
+    return () => {
+      cancelled = true;
+      if (rafRef.current != null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      if (webCoolId != null) cancelAnimationFrame(webCoolId);
+    };
+  }, [display, flash, slide, scale]);
+
+  const color = flash.interpolate({
+    inputRange: [0, 1],
+    outputRange: [baseColor, flashColor],
+  });
+  const webClass =
+    webFlash === 'up' || webFlash === 'down'
+      ? `cgold-home-live cgold-home-live-hot-${webFlash}`
+      : webFlash === 'cool'
+        ? 'cgold-home-live cgold-home-live-cool'
+        : 'cgold-home-live';
+
+  return (
+    <Animated.Text
+      {...(Platform.OS === 'web' ? { className: webClass } : null)}
+      style={[
+        style,
+        Platform.OS === 'web'
+          ? {
+              transformOrigin: origin === 'end' ? 'right center' : 'left center',
+            }
+          : {
+              color,
+              transform: [{ translateY: slide }, { scale }],
+            },
+      ]}
+      numberOfLines={numberOfLines}
+      adjustsFontSizeToFit={adjustsFontSizeToFit}
+      accessibilityLabel={accessibilityLabel}
+    >
+      {shown}
+    </Animated.Text>
+  );
+}
+
 function HomeStoreMetric({ icon, stats, label }) {
   if (stats?.rate == null) return null;
   const low = stats.rate < 80;
   return (
     <View style={styles.igStoreMetric} accessibilityLabel={`${label} ${stats.ratio}`}>
       <Ionicons name={icon} size={12} color={low ? '#B91C1C' : '#15803D'} />
-      <Text style={[styles.igStoreMetricText, low ? styles.homeStorePhoneLow : styles.homeStorePhoneHigh]}>
+      <HomeLiveValue
+        style={[styles.igStoreMetricText, low ? styles.homeStorePhoneLow : styles.homeStorePhoneHigh]}
+        numeric={stats.rate}
+        format={formatHomePercentTick}
+      >
         {stats.ratio}
-      </Text>
+      </HomeLiveValue>
     </View>
   );
 }
@@ -3042,9 +3287,9 @@ function HomeStoreCard({
               {row.store}
             </Text>
             <View style={styles.igStoreMetaRow}>
-              <Text style={styles.igStoreMeta} numberOfLines={1}>
+              <HomeLiveValue style={styles.igStoreMeta} numeric={row.txCount} numberOfLines={1}>
                 {hasActivity ? `${row.txCount} tx` : 'No transactions'}
-              </Text>
+              </HomeLiveValue>
               {hasMetrics ? (
                 <>
                   <HomeStoreMetric icon="mail" stats={emailStats} label="Email capture" />
@@ -3081,9 +3326,9 @@ function HomeStoreCard({
             {row.store}
           </Text>
           <View style={styles.igStoreMetaRow}>
-            <Text style={styles.igStoreMeta} numberOfLines={1}>
+            <HomeLiveValue style={styles.igStoreMeta} numeric={row.txCount} numberOfLines={1}>
               {hasActivity ? `${row.txCount} tx` : 'No transactions'}
-            </Text>
+            </HomeLiveValue>
             {hasMetrics ? (
               <>
                 <HomeStoreMetric icon="mail" stats={emailStats} label="Email capture" />
@@ -3161,17 +3406,20 @@ function HomePercentRate({ stats, compact = false, columnStyle, emptyLabel, noun
       {...hover}
       accessibilityLabel={empty ? emptyLabel : `${noun} ${stats.ratio}. ${tip}`}
     >
-      <Text
+      <HomeLiveValue
         style={[
           compact ? styles.igStorePhone : styles.homeStorePhone,
           empty && styles.homeStoreMoneyEmpty,
           !empty && stats.rate < 80 && styles.homeStorePhoneLow,
           !empty && stats.rate >= 80 && styles.homeStorePhoneHigh,
         ]}
+        numeric={empty ? null : stats.rate}
+        format={formatHomePercentTick}
+        origin="end"
         numberOfLines={1}
       >
         {empty ? '—' : stats.ratio}
-      </Text>
+      </HomeLiveValue>
       <FloatingTooltip visible={Boolean(anchor && tip)} text={tip} anchorEl={anchor} align="end" />
     </View>
   );
@@ -3333,16 +3581,19 @@ function HomeStoreAmount({ amount, count, strong = false, breakdown = null, comp
             : formatAmount(amount)
       }
     >
-      <Text
+      <HomeLiveValue
         style={[
           compact ? styles.igStoreAmount : styles.homeStoreMoney,
           strong && styles.homeStoreMoneyStrong,
           empty && styles.homeStoreMoneyEmpty,
         ]}
+        numeric={Number(amount) || 0}
+        format={formatAmount}
+        origin="end"
         numberOfLines={1}
       >
         {empty ? '—' : formatAmount(amount)}
-      </Text>
+      </HomeLiveValue>
       <FloatingTooltip visible={Boolean(anchor && tip)} text={tip} anchorEl={anchor} align="end" />
     </View>
   );
@@ -3375,9 +3626,9 @@ function HomeStoreTableRow({
         <Text style={styles.homeStoreName} numberOfLines={1}>
           {row.store}
         </Text>
-        <Text style={styles.homeStoreMeta} numberOfLines={1}>
+        <HomeLiveValue style={styles.homeStoreMeta} numeric={row.txCount} numberOfLines={1}>
           {homeStoreMeta(row)}
-        </Text>
+        </HomeLiveValue>
       </View>
       <HomeEmailRate stats={emailStats} />
       <HomePhoneRate stats={phoneStats} />
@@ -3528,9 +3779,9 @@ function HomeStoresTable({
               <View style={styles.igStoreCopy}>
                 <Text style={styles.igStoreTotalLabel}>Total</Text>
                 <View style={styles.igStoreMetaRow}>
-                  <Text style={styles.igStoreMeta} numberOfLines={1}>
+                  <HomeLiveValue style={styles.igStoreMeta} numeric={totals.txCount} numberOfLines={1}>
                     {totals.txCount} tx
-                  </Text>
+                  </HomeLiveValue>
                   <HomeStoreMetric icon="mail" stats={totalEmailStats} label="Email capture" />
                   <HomeStoreMetric icon="call" stats={totalPhoneStats} label="Phone answer rate" />
                 </View>
@@ -3608,9 +3859,9 @@ function HomeStoresTable({
                   <Text style={styles.homeStoreTotalLabel} numberOfLines={1}>
                     Total
                   </Text>
-                  <Text style={styles.homeStoreMeta} numberOfLines={1}>
+                  <HomeLiveValue style={styles.homeStoreMeta} numeric={totals.txCount} numberOfLines={1}>
                     {homeStoreMeta(totals)}
-                  </Text>
+                  </HomeLiveValue>
                 </View>
                 <HomeEmailRate stats={totalEmailStats} />
                 <HomePhoneRate stats={totalPhoneStats} />
@@ -4007,25 +4258,49 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson }) {
           <View style={styles.igHomeHero}>
             <Text style={styles.igHomeHeroLabel}>{periodLabel}</Text>
             {hideHomeAmounts ? null : (
-              <Text style={styles.igHomeHeroAmount} numberOfLines={1} adjustsFontSizeToFit>
+              <HomeLiveValue
+                style={styles.igHomeHeroAmount}
+                numeric={totals.totalAmount}
+                format={formatAmount}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+              >
                 {formatAmount(totals.totalAmount)}
-              </Text>
+              </HomeLiveValue>
             )}
             <View style={styles.igHomeHeroStats}>
               <View style={styles.igHomeHeroStat}>
-                <Text style={styles.igHomeHeroStatValue}>{totals.txCount}</Text>
+                <HomeLiveValue
+                  style={styles.igHomeHeroStatValue}
+                  numeric={totals.txCount}
+                  format={formatHomeCountTick}
+                >
+                  {totals.txCount}
+                </HomeLiveValue>
                 <Text style={styles.igHomeHeroStatLabel}>
                   Transaction{totals.txCount === 1 ? '' : 's'}
                 </Text>
               </View>
               <View style={styles.igHomeHeroStatDivider} />
               <View style={styles.igHomeHeroStat}>
-                <Text style={styles.igHomeHeroStatValue}>{totals.saleCount}</Text>
+                <HomeLiveValue
+                  style={styles.igHomeHeroStatValue}
+                  numeric={totals.saleCount}
+                  format={formatHomeCountTick}
+                >
+                  {totals.saleCount}
+                </HomeLiveValue>
                 <Text style={styles.igHomeHeroStatLabel}>Sales</Text>
               </View>
               <View style={styles.igHomeHeroStatDivider} />
               <View style={styles.igHomeHeroStat}>
-                <Text style={styles.igHomeHeroStatValue}>{totals.purchaseCount}</Text>
+                <HomeLiveValue
+                  style={styles.igHomeHeroStatValue}
+                  numeric={totals.purchaseCount}
+                  format={formatHomeCountTick}
+                >
+                  {totals.purchaseCount}
+                </HomeLiveValue>
                 <Text style={styles.igHomeHeroStatLabel}>Purchases</Text>
               </View>
             </View>
@@ -6294,8 +6569,8 @@ export default function App() {
       'ai-models': 'AI models',
       permissions: 'Permissions',
       database: 'Database',
-      'store-settings': 'Store settings',
-      ringcentral: 'RingCentral',
+      'store-settings': 'Store Settings',
+      ringcentral: 'Phone',
     };
     const settingsSubPanelLabel =
       activeTool.key === 'settings' ? settingsSubPanels[settingsPanel] : null;
@@ -6828,15 +7103,17 @@ export default function App() {
 
   const isAppsLibrary = activeTab === 'tools' && !activeTool;
   const settingsSubPanels = {
-    'ai-models': 'AI models',
+    'ai-models': 'AI Models',
     permissions: 'Permissions',
     database: 'Database',
-    'store-settings': 'Store settings',
-    ringcentral: 'RingCentral',
+    'store-settings': 'Store Settings',
+    ringcentral: 'Phone',
   };
   const mobileToolTitle =
     activeTool?.key === 'settings' ? settingsSubPanels[settingsPanel] || activeTool?.label : activeTool?.label;
-  const groupedMobileTab = isMobile && ((activeTab === 'tools' && !activeTool) || activeTab === 'home');
+  const groupedMobileTab =
+    isMobile && ((activeTab === 'tools' && !activeTool) || activeTab === 'home' || activeTab === 'profile');
+  const showingSettings = isMobile && activeTab === 'tools' && activeTool?.key === 'settings';
   const contentStyle = [
     styles.content,
     isMobile && styles.contentMobile,
@@ -6846,13 +7123,14 @@ export default function App() {
     styles.contentScrollFix,
     isAppsLibrary && styles.contentAppsLibrary,
     !isMobile && activeTab === 'home' && styles.contentAppsLibrary,
-    groupedMobileTab && styles.contentMobileGrouped,
+    (groupedMobileTab || showingSettings) && styles.contentMobileGrouped,
     isMobile &&
       !isFullBleedTool &&
       !showingMessages &&
       !isAppsLibrary &&
       activeTab !== 'home' &&
       activeTab !== 'profile' &&
+      !showingSettings &&
       styles.contentMobilePadded,
   ];
 
@@ -6891,7 +7169,7 @@ export default function App() {
 
   if (isMobile) {
     const mobileTabs = MOBILE_TABS.filter((tab) => tab.key !== 'messages' || hasApp('messages'));
-    const groupedShell = groupedMobileTab;
+    const groupedShell = groupedMobileTab || showingSettings;
     return (
       <AppAccessContext.Provider value={appAccessValue}>
       <PhoneCallProvider session={session} storeFilter={scopedStore || undefined} enabled={hasApp('phone')}>
@@ -8501,6 +8779,15 @@ const styles = StyleSheet.create({
   storeDrawerTitleMobile: {
     textAlign: 'center',
   },
+  storeDrawerPeriod: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: '#8e8e93',
+    textAlign: 'center',
+    letterSpacing: -0.08,
+    marginTop: 1,
+  },
   storeDrawerAppsSection: {
     marginTop: 28,
   },
@@ -8640,6 +8927,13 @@ const styles = StyleSheet.create({
     color: '#8e8e93',
     textAlign: 'center',
     letterSpacing: -0.2,
+  },
+  storeTxMobileStack: {
+    gap: 12,
+  },
+  storeTxMobileEmpty: {
+    paddingHorizontal: 16,
+    paddingVertical: 18,
   },
   storeOverviewHero: {
     alignItems: 'center',

@@ -6,7 +6,7 @@ import TriageDailyReceiptsDrawer from './TriageDailyReceiptsDrawer';
 import TriageDeletedPanel from './TriageDeletedPanel';
 import TriageTransfersPanel from './TriageTransfersPanel';
 import { BarButton, EmptyState, FONT, IconAction, SearchField, SegmentedSlider, T, TextTabs } from './TriageKit';
-import { useIsMobile } from '../lib/mobileUi';
+import { MOBILE, useIsMobile } from '../lib/mobileUi';
 import {
   buildDailyReceiptGrid,
   dailyReceiptStatus,
@@ -224,6 +224,7 @@ export default function TriageScreen({
               ? 'Batch / store'
               : 'PO / SO'
       }
+      size={isMobile ? 'lg' : undefined}
       style={[styles.tabSearch, isMobile && styles.tabSearchMobile]}
     />
   ) : null;
@@ -353,10 +354,10 @@ export default function TriageScreen({
         value={activeTab}
         onChange={changeTab}
         size="lg"
-        layout="inline"
+        layout={isMobile ? 'bar' : 'inline'}
       />
     ),
-    [activeTab, changeTab, tabOptions],
+    [activeTab, changeTab, isMobile, tabOptions],
   );
 
   const portalNav = Boolean(onNavTabs) && !isMobile;
@@ -367,11 +368,117 @@ export default function TriageScreen({
     return () => onNavTabs(null);
   }, [navTabs, onNavTabs, portalNav]);
 
+  const mobileChrome =
+    !session?.token ? null : activeTab === 'transfers' && transferView === 'list' ? (
+      <View style={styles.mobileChrome}>
+        <SegmentedSlider fill options={dashTabOptions} value={dashTab} onChange={changeDashTab} />
+        {searchField}
+        <View style={styles.mobileActions}>
+          <BarButton
+            size="lg"
+            fill={dashTab === 'poso'}
+            label="Quick Add"
+            onPress={() => {
+              setDashTab('poso');
+              setListQuery('');
+              setQuickAddOpen(true);
+            }}
+            accessibilityLabel="Quick Add a PO from any store"
+          />
+          <BarButton
+            size="lg"
+            fill={dashTab === 'batch'}
+            icon="add"
+            label="Add Batch"
+            onPress={() => {
+              setDashTab('batch');
+              setListQuery('');
+              setCreateTransferOpen(true);
+            }}
+            accessibilityLabel="Add a new batch"
+          />
+        </View>
+      </View>
+    ) : inBatch ? (
+      <View style={styles.mobileChrome}>
+        <SegmentedSlider fill options={storeTabOptions} value={storeTab} onChange={changeStoreTab} />
+        <Pressable
+          style={[styles.mobileStatCard, !dailySummary.allChecked && dailySummary.cells > 0 && styles.mobileStatCardOn]}
+          onPress={() => setDailyOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Open the daily receipt check"
+        >
+          <View style={styles.mobileStatCopy}>
+            <Text style={styles.mobileStatKicker}>Daily check</Text>
+            <Text style={styles.mobileStatTitle}>
+              {batchContext.stats?.expected
+                ? `${batchContext.stats.received}/${batchContext.stats.expected} received`
+                : 'No PO / SO yet'}
+            </Text>
+            <Text style={styles.mobileStatMeta}>{dailyStatus.label}</Text>
+          </View>
+          <View style={styles.mobileStatCta}>
+            <Text style={styles.mobileStatAction}>{dailySummary.allChecked ? 'Open' : 'Check'}</Text>
+            <Ionicons name="chevron-forward" size={16} color={T.blue} />
+          </View>
+        </Pressable>
+        {storeTab === 'melt' ? (
+          <View style={styles.mobileActions}>
+            <BarButton
+              size="lg"
+              icon="phone-portrait-outline"
+              label="Feed"
+              onPress={() => batchContext.onOpenFeed?.()}
+              accessibilityLabel="Open feed view"
+            />
+            <BarButton
+              size="lg"
+              fill
+              label="Quick Add"
+              onPress={() => batchContext.onAddMelt?.()}
+              accessibilityLabel="Quick Add a PO / SO"
+            />
+          </View>
+        ) : null}
+      </View>
+    ) : activeTab === 'accuracy' ? (
+      <View style={styles.mobileChrome}>
+        <SegmentedSlider fill options={accuracyTabOptions} value={accuracyTab} onChange={changeAccuracyTab} />
+        {searchField}
+        <Pressable
+          style={styles.mobileStatCard}
+          onPress={() => setAccuracyBreakdownOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Open errors breakdown"
+        >
+          <View style={styles.mobileStatCopy}>
+            <Text style={styles.mobileStatKicker}>Accuracy</Text>
+            <Text style={styles.mobileStatTitle}>
+              {accuracyStats.total ? `${accuracyStats.percent}% correct` : 'No purchases yet'}
+            </Text>
+            <Text style={styles.mobileStatMeta}>
+              {accuracyStats.incorrect
+                ? `${accuracyStats.incorrect} incorrect · tap for details`
+                : `${accuracyStats.correct} correct`}
+            </Text>
+          </View>
+          <View style={styles.mobileStatCta}>
+            <Text style={styles.mobileStatAction}>Details</Text>
+            <Ionicons name="chevron-forward" size={16} color={T.blue} />
+          </View>
+        </Pressable>
+      </View>
+    ) : activeTab === 'deleted' ? (
+      <View style={styles.mobileChrome}>{searchField}</View>
+    ) : null;
+
   return (
-    <View style={[styles.body, embedded && styles.bodyEmbedded]}>
-      {portalNav ? null : <View style={styles.localNavRow}>{navTabs}</View>}
-      {leading || trailing ? (
-        <View style={[styles.pageChrome, isMobile && styles.pageChromeMobile]}>
+    <View style={[styles.body, embedded && styles.bodyEmbedded, isMobile && styles.bodyMobile]}>
+      {portalNav ? null : <View style={[styles.localNavRow, isMobile && styles.localNavRowMobile]}>{navTabs}</View>}
+      {isMobile ? (
+        mobileChrome
+      ) : leading || trailing ? (
+        <View style={styles.pageChrome}>
           <View style={styles.pageChromeStart}>{leading}</View>
           {trailing ? <View style={styles.pageChromeEnd}>{trailing}</View> : null}
         </View>
@@ -437,6 +544,9 @@ const styles = StyleSheet.create({
     minHeight: 0,
     backgroundColor: T.bg,
   },
+  bodyMobile: {
+    backgroundColor: MOBILE.bg,
+  },
   bodyEmbedded: {
     width: '100%',
     maxWidth: '100%',
@@ -450,11 +560,9 @@ const styles = StyleSheet.create({
     maxWidth: 320,
   },
   tabSearchMobile: {
-    flexGrow: 1,
-    flexBasis: 140,
-    width: 'auto',
+    width: '100%',
     maxWidth: '100%',
-    minWidth: 120,
+    minWidth: 0,
   },
   localNavRow: {
     flexShrink: 0,
@@ -462,6 +570,73 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     alignItems: 'flex-end',
     paddingBottom: 2,
+  },
+  localNavRowMobile: {
+    justifyContent: 'flex-start',
+    alignItems: 'stretch',
+    paddingBottom: 0,
+    backgroundColor: MOBILE.bg,
+  },
+  mobileChrome: {
+    flexShrink: 0,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 10,
+    gap: 10,
+  },
+  mobileActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  mobileStatCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minHeight: 72,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: T.card,
+  },
+  mobileStatCardOn: {
+    backgroundColor: 'rgba(0,122,255,0.10)',
+  },
+  mobileStatCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 1,
+  },
+  mobileStatKicker: {
+    fontFamily: FONT,
+    fontSize: 12,
+    fontWeight: '600',
+    color: T.secondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  mobileStatTitle: {
+    fontFamily: FONT,
+    fontSize: 18,
+    fontWeight: '600',
+    color: T.text,
+    letterSpacing: -0.3,
+  },
+  mobileStatMeta: {
+    fontFamily: FONT,
+    fontSize: 13,
+    color: T.secondary,
+  },
+  mobileStatCta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    flexShrink: 0,
+  },
+  mobileStatAction: {
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '600',
+    color: T.blue,
   },
   pageChrome: {
     flexShrink: 0,
@@ -472,11 +647,6 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: T.hairline,
-  },
-  pageChromeMobile: {
-    flexWrap: 'wrap',
-    gap: 8,
-    paddingTop: 18,
   },
   pageChromeStart: {
     flexShrink: 1,

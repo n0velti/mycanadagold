@@ -36,6 +36,7 @@ import { getSupabaseConnectionStatus } from '../lib/supabase';
 import StoreSettingsPanel from './StoreSettingsPanel';
 import RingCentralSettingsPanel from './RingCentralSettingsPanel';
 import { canManageRingCentral } from '../lib/ringcentral';
+import { IosActionRow, IosGroup, IosPage, IosRow, IosSwitch } from './IosSettings';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -78,16 +79,81 @@ function SettingsHome({
   }, []);
 
   const dbReady = Boolean(dbStatus?.configured && dbStatus?.reachable);
+  const dbValue = !dbStatus ? 'Checking…' : dbReady ? 'Connected' : 'Not Connected';
   const dbHint = !dbStatus
-    ? 'Checking HTTPS connection…'
+    ? 'Checking the HTTPS connection.'
     : dbReady
-      ? 'HTTPS · client key · row-level security'
+      ? 'Connected over HTTPS with a client key. Row-level security stays on.'
       : dbStatus.message || 'Not connected';
 
+  if (isMobile) {
+    return (
+      <IosPage>
+        <IosGroup
+          header="Store"
+          footer={
+            showRingCentral
+              ? canManagePhone
+                ? 'Hours, holidays, incoming lines, and RingCentral credentials for each branch.'
+                : 'Hours and holidays, plus which store lines ring on this screen.'
+              : 'Weekly hours and holidays for each branch.'
+          }
+        >
+          <IosRow
+            icon="storefront"
+            iconColor="#FF9500"
+            label="Store Settings"
+            value="Hours"
+            onPress={onOpenStoreSettings}
+          />
+          {showRingCentral ? (
+            <IosRow
+              icon="call"
+              iconColor="#34C759"
+              label="Phone"
+              value="RingCentral"
+              onPress={onOpenRingCentral}
+            />
+          ) : null}
+        </IosGroup>
+
+        <IosGroup
+          header="Company"
+          footer="Who can open each app, and the shared keys used for portraits, Serphint, and chat."
+        >
+          {canManageAiKeys ? (
+            <IosRow
+              icon="sparkles"
+              iconColor="#AF52DE"
+              label="AI Models"
+              onPress={onOpenAiModels}
+            />
+          ) : null}
+          <IosRow
+            icon="lock-closed"
+            iconColor="#007AFF"
+            label="Permissions"
+            onPress={onOpenPermissions}
+          />
+        </IosGroup>
+
+        <IosGroup header="Database" footer={dbHint}>
+          <IosRow
+            icon="server"
+            iconColor="#8E8E93"
+            label="Supabase"
+            value={dbValue}
+            onPress={onOpenDatabase}
+          />
+        </IosGroup>
+      </IosPage>
+    );
+  }
+
   return (
-    <View style={[styles.body, isMobile && styles.bodyMobile]}>
+    <View style={styles.body}>
       <View style={styles.menuList}>
-        <Pressable style={[styles.menuRow, isMobile && styles.menuRowMobile]} onPress={onOpenDatabase}>
+        <Pressable style={styles.menuRow} onPress={onOpenDatabase}>
           <View style={[styles.menuIcon, { backgroundColor: dbReady ? '#EAF6EE' : '#FFF6E8' }]}>
             <Ionicons
               name={dbReady ? 'server-outline' : 'cloud-offline-outline'}
@@ -102,7 +168,7 @@ function SettingsHome({
           <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
         </Pressable>
 
-        <Pressable style={[styles.menuRow, isMobile && styles.menuRowMobile]} onPress={onOpenStoreSettings}>
+        <Pressable style={styles.menuRow} onPress={onOpenStoreSettings}>
           <View style={[styles.menuIcon, { backgroundColor: '#FFF4E5' }]}>
             <Ionicons name="storefront-outline" size={16} color="#C47A12" />
           </View>
@@ -114,7 +180,7 @@ function SettingsHome({
         </Pressable>
 
         {showRingCentral ? (
-          <Pressable style={[styles.menuRow, isMobile && styles.menuRowMobile]} onPress={onOpenRingCentral}>
+          <Pressable style={styles.menuRow} onPress={onOpenRingCentral}>
             <View style={[styles.menuIcon, { backgroundColor: '#ECFDF5' }]}>
               <Ionicons name="call-outline" size={16} color="#15803D" />
             </View>
@@ -131,7 +197,7 @@ function SettingsHome({
         ) : null}
 
         {canManageAiKeys ? (
-          <Pressable style={[styles.menuRow, isMobile && styles.menuRowMobile]} onPress={onOpenAiModels}>
+          <Pressable style={styles.menuRow} onPress={onOpenAiModels}>
             <View style={[styles.menuIcon, { backgroundColor: '#F3EEFF' }]}>
               <Ionicons name="sparkles-outline" size={16} color="#6B4DE6" />
             </View>
@@ -145,7 +211,7 @@ function SettingsHome({
           </Pressable>
         ) : null}
 
-        <Pressable style={[styles.menuRow, isMobile && styles.menuRowMobile]} onPress={onOpenPermissions}>
+        <Pressable style={styles.menuRow} onPress={onOpenPermissions}>
           <View style={[styles.menuIcon, { backgroundColor: '#EEF4FF' }]}>
             <Ionicons name="shield-checkmark-outline" size={16} color="#3B6FE0" />
           </View>
@@ -225,6 +291,11 @@ async function queryMediaPermission(name) {
 }
 
 function AccessToggle({ on, disabled, onPress }) {
+  const isMobile = useIsMobile();
+  if (isMobile) {
+    return <IosSwitch on={on} disabled={disabled} onPress={onPress} />;
+  }
+
   return (
     <Pressable
       onPress={onPress}
@@ -777,19 +848,27 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
 
   return (
     <>
-      <Text style={styles.sectionTitle}>People and roles</Text>
-      <Text style={styles.aiIntro}>
-        Every signed-in employee and the role that controls their apps. Filter by role, then open
-        a row to customize apps, or bulk-change filters for a selection, this list, or everyone.
-        Role defaults apply until you save a custom set. System Admin always has every app and
-        can filter.
-      </Text>
+      {isMobile ? (
+        <IosGroup footer="Every signed-in employee and the role that controls their apps. Open a row to customize, or bulk-change filters. System Admin always has every app.">
+          <IosRow icon="person-circle" iconColor="#8E8E93" label="People" value={`${staff.length}`} />
+        </IosGroup>
+      ) : (
+        <>
+          <Text style={styles.sectionTitle}>People and roles</Text>
+          <Text style={styles.aiIntro}>
+            Every signed-in employee and the role that controls their apps. Filter by role, then open
+            a row to customize apps, or bulk-change filters for a selection, this list, or everyone.
+            Role defaults apply until you save a custom set. System Admin always has every app and
+            can filter.
+          </Text>
+        </>
+      )}
 
       {staff.length > 0 ? (
         <>
           <View style={styles.staffToolbar}>
-            <View style={[styles.staffSearch, styles.staffSearchInToolbar]}>
-              <Ionicons name="search-outline" size={15} color="#8a8a8a" />
+            <View style={[styles.staffSearch, styles.staffSearchInToolbar, isMobile && styles.staffSearchIos]}>
+              <Ionicons name="search" size={isMobile ? 16 : 15} color="#8E8E93" />
               <TextInput
                 style={styles.staffSearchInput}
                 value={staffQuery}
@@ -985,7 +1064,7 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
       ) : visibleStaff.length === 0 ? (
         <Text style={styles.menuHint}>No employees match that search.</Text>
       ) : (
-        <View style={styles.staffTable}>
+        <View style={[styles.staffTable, isMobile && styles.staffTableIos]}>
           {isMobile ? null : (
             <View style={styles.staffTableHeader}>
               <View style={styles.staffColCheck}>
@@ -1014,7 +1093,7 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
             const lockedPerson = hasFullAppAccess(row);
             const selected = selectedIds.has(row.id);
             return (
-              <View key={row.id} style={[styles.staffTableItem, !row.isActive && styles.staffRowDisabled]}>
+              <View key={row.id} style={[styles.staffTableItem, isMobile && styles.staffTableItemIos, !row.isActive && styles.staffRowDisabled]}>
                 <Pressable
                   onPress={() => openPersonApps(row)}
                   style={[styles.staffHeader, !isMobile && styles.staffTableRow]}
@@ -1030,13 +1109,13 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
                   </View>
                   <View style={[styles.menuTextWrap, !isMobile && styles.staffColName]}>
                     <View style={styles.staffNameLine}>
-                      <Text style={styles.menuLabel} numberOfLines={1}>
+                      <Text style={[styles.menuLabel, isMobile && styles.menuLabelIos]} numberOfLines={1}>
                         {staffName(row)}
                         {!row.isActive ? '  ·  Access disabled' : ''}
                       </Text>
                       <RoleBadge role={row.appRole} isSystemAdmin={row.isSystemAdmin} />
                     </View>
-                    <Text style={styles.menuHint} numberOfLines={1}>
+                    <Text style={[styles.menuHint, isMobile && styles.menuHintIos]} numberOfLines={1}>
                       {[title, row.email || row.aureusLogin].filter(Boolean).join(' · ')}
                     </Text>
                   </View>
@@ -1100,9 +1179,9 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
                   )}
                   <View style={styles.staffColChevron}>
                     <Ionicons
-                      name={expanded ? 'chevron-up' : 'chevron-down'}
-                      size={16}
-                      color="#9a9a9a"
+                      name={expanded ? 'chevron-up' : 'chevron-forward'}
+                      size={isMobile ? 18 : 16}
+                      color={isMobile ? '#C7C7CC' : '#9a9a9a'}
                     />
                   </View>
                 </Pressable>
@@ -1283,6 +1362,7 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
 }
 
 function DevicePermissionsPanel() {
+  const isMobile = useIsMobile();
   const [statuses, setStatuses] = useState({
     camera: 'loading',
     microphone: 'loading',
@@ -1342,6 +1422,34 @@ function DevicePermissionsPanel() {
     }
   };
 
+  if (isMobile) {
+    return (
+      <IosGroup
+        header="Privacy"
+        footer={
+          message ||
+          'Camera and microphone are used for portraits and Serphint. If a row says Blocked, allow access in this browser’s site settings.'
+        }
+      >
+        {PERMISSION_ITEMS.map((item) => {
+          const status = statuses[item.key];
+          const busy = requesting === item.key;
+          const canRequest = status !== 'unsupported' && status !== 'loading';
+          return (
+            <IosRow
+              key={item.key}
+              icon={item.key === 'camera' ? 'camera' : 'mic'}
+              iconColor={item.key === 'camera' ? '#007AFF' : '#AF52DE'}
+              label={item.label}
+              value={busy ? 'Checking…' : permissionStatusLabel(status)}
+              onPress={canRequest ? () => void requestPermission(item) : undefined}
+            />
+          );
+        })}
+      </IosGroup>
+    );
+  }
+
   return (
     <View>
       <Text style={[styles.sectionTitle, styles.sectionTitleSpaced]}>Device access</Text>
@@ -1392,8 +1500,9 @@ function DevicePermissionsPanel() {
 }
 
 function PermissionsPanel({ session, apps, canManageAccess, onAccessSaved, onStaffAccessSaved, onUserAccessSaved }) {
-  return (
-    <ScrollView style={styles.body} contentContainerStyle={styles.permissionsContent}>
+  const isMobile = useIsMobile();
+  const body = (
+    <>
       {canManageAccess ? (
         <AppAccessPanel
           session={session}
@@ -1402,6 +1511,10 @@ function PermissionsPanel({ session, apps, canManageAccess, onAccessSaved, onSta
           onStaffAccessSaved={onStaffAccessSaved}
           onUserAccessSaved={onUserAccessSaved}
         />
+      ) : isMobile ? (
+        <IosGroup footer="A System Admin sets which apps you can open and whether you can filter inside each one.">
+          <IosRow icon="lock-closed" iconColor="#007AFF" label="App visibility" value="Managed" />
+        </IosGroup>
       ) : (
         <>
           <Text style={styles.sectionTitle}>App visibility</Text>
@@ -1412,11 +1525,22 @@ function PermissionsPanel({ session, apps, canManageAccess, onAccessSaved, onSta
         </>
       )}
       <DevicePermissionsPanel />
+    </>
+  );
+
+  if (isMobile) {
+    return <IosPage>{body}</IosPage>;
+  }
+
+  return (
+    <ScrollView style={styles.body} contentContainerStyle={styles.permissionsContent}>
+      {body}
     </ScrollView>
   );
 }
 
 function AiModelsPanel() {
+  const isMobile = useIsMobile();
   const [keys, setKeys] = useState(emptyKeys);
   const [shared, setShared] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
@@ -1487,6 +1611,107 @@ function AiModelsPanel() {
     );
   }
 
+  const keyFields = AI_MODEL_PROVIDERS.map((provider) => (
+    <View key={provider.key} style={isMobile ? styles.iosKeyRow : styles.providerBlock}>
+      {isMobile ? null : (
+        <>
+          <Text style={styles.providerLabel}>{provider.label}</Text>
+          <Text style={styles.providerDescription}>{provider.description}</Text>
+        </>
+      )}
+      <View style={isMobile ? styles.iosKeyField : styles.keyField}>
+        <TextInput
+          style={isMobile ? styles.iosKeyInput : styles.keyInput}
+          value={keys[provider.key] || ''}
+          onChangeText={(value) => updateKey(provider.key, value)}
+          placeholder={isMobile ? provider.label : provider.placeholder}
+          placeholderTextColor="#8E8E93"
+          autoCapitalize="none"
+          autoCorrect={false}
+          autoComplete="off"
+          spellCheck={false}
+          secureTextEntry={!revealed[provider.key]}
+        />
+        <Pressable
+          onPress={() => toggleReveal(provider.key)}
+          hitSlop={8}
+          accessibilityLabel={revealed[provider.key] ? 'Hide API key' : 'Show API key'}
+        >
+          <Ionicons
+            name={revealed[provider.key] ? 'eye-off-outline' : 'eye-outline'}
+            size={isMobile ? 20 : 16}
+            color="#8E8E93"
+          />
+        </Pressable>
+      </View>
+    </View>
+  ));
+
+  if (isMobile) {
+    return (
+      <IosPage>
+        {unavailable ? (
+          <IosGroup footer="The company key table is not in the database yet. Run the latest Supabase migration, then save again.">
+            <IosRow label="Keys" value="Unavailable" />
+          </IosGroup>
+        ) : null}
+        {!shared && !unavailable && Object.values(keys).some(Boolean) ? (
+          <IosGroup footer="These keys are only on this device until you save. Saving shares them with everyone.">
+            <IosRow label="Status" value="This device" />
+          </IosGroup>
+        ) : null}
+        {AI_MODEL_PROVIDERS.map((provider, index) => (
+          <IosGroup
+            key={provider.key}
+            header={provider.label}
+            footer={index === 0 ? provider.description : provider.description}
+          >
+            <View style={styles.iosKeyRow}>
+              <View style={styles.iosKeyField}>
+                <TextInput
+                  style={styles.iosKeyInput}
+                  value={keys[provider.key] || ''}
+                  onChangeText={(value) => updateKey(provider.key, value)}
+                  placeholder={provider.placeholder}
+                  placeholderTextColor="#8E8E93"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoComplete="off"
+                  spellCheck={false}
+                  secureTextEntry={!revealed[provider.key]}
+                />
+                <Pressable
+                  onPress={() => toggleReveal(provider.key)}
+                  hitSlop={8}
+                  accessibilityLabel={revealed[provider.key] ? 'Hide API key' : 'Show API key'}
+                >
+                  <Ionicons
+                    name={revealed[provider.key] ? 'eye-off-outline' : 'eye-outline'}
+                    size={20}
+                    color="#8E8E93"
+                  />
+                </Pressable>
+              </View>
+            </View>
+          </IosGroup>
+        ))}
+        {error ? (
+          <IosGroup footer={error}>
+            <IosRow label="Save" value="Failed" />
+          </IosGroup>
+        ) : null}
+        {saved ? (
+          <IosGroup footer="API keys saved for everyone in the app.">
+            <IosRow icon="checkmark-circle" iconColor="#34C759" label="Saved" value="Everyone" />
+          </IosGroup>
+        ) : null}
+        <IosGroup footer="These keys are shared with every signed-in employee. Only a System Admin or General Manager can open this screen.">
+          <IosActionRow label={saving ? 'Saving…' : 'Save'} onPress={handleSave} disabled={saving} />
+        </IosGroup>
+      </IosPage>
+    );
+  }
+
   return (
     <ScrollView style={styles.body} contentContainerStyle={styles.aiContent}>
       <Text style={styles.aiIntro}>
@@ -1506,37 +1731,7 @@ function AiModelsPanel() {
         </Text>
       ) : null}
 
-      {AI_MODEL_PROVIDERS.map((provider) => (
-        <View key={provider.key} style={styles.providerBlock}>
-          <Text style={styles.providerLabel}>{provider.label}</Text>
-          <Text style={styles.providerDescription}>{provider.description}</Text>
-          <View style={styles.keyField}>
-            <TextInput
-              style={styles.keyInput}
-              value={keys[provider.key] || ''}
-              onChangeText={(value) => updateKey(provider.key, value)}
-              placeholder={provider.placeholder}
-              placeholderTextColor="#999"
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoComplete="off"
-              spellCheck={false}
-              secureTextEntry={!revealed[provider.key]}
-            />
-            <Pressable
-              onPress={() => toggleReveal(provider.key)}
-              hitSlop={8}
-              accessibilityLabel={revealed[provider.key] ? 'Hide API key' : 'Show API key'}
-            >
-              <Ionicons
-                name={revealed[provider.key] ? 'eye-off-outline' : 'eye-outline'}
-                size={16}
-                color="#8a8a8a"
-              />
-            </Pressable>
-          </View>
-        </View>
-      ))}
+      {keyFields}
 
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
       {saved ? <Text style={styles.savedText}>API keys saved for everyone in the app.</Text> : null}
@@ -1557,6 +1752,17 @@ function AiModelsPanel() {
 }
 
 function AiModelsDenied() {
+  const isMobile = useIsMobile();
+  if (isMobile) {
+    return (
+      <IosPage>
+        <IosGroup footer="Company AI keys are managed by a System Admin or General Manager. Ask them if portraits or AI chat are not working.">
+          <IosRow icon="sparkles" iconColor="#AF52DE" label="AI Models" value="Restricted" />
+        </IosGroup>
+      </IosPage>
+    );
+  }
+
   return (
     <ScrollView style={styles.body} contentContainerStyle={styles.aiContent}>
       <Text style={styles.sectionTitle}>AI models</Text>
@@ -1569,6 +1775,7 @@ function AiModelsDenied() {
 }
 
 function DatabasePanel() {
+  const isMobile = useIsMobile();
   const [status, setStatus] = useState(null);
 
   useEffect(() => {
@@ -1601,6 +1808,32 @@ function DatabasePanel() {
   }
 
   const ready = Boolean(status.configured && status.reachable);
+  const keyLabel =
+    status.keyKind === 'publishable' || status.keyKind === 'anon'
+      ? 'Publishable'
+      : 'Missing';
+
+  if (isMobile) {
+    return (
+      <IosPage>
+        <IosGroup header="Status" footer={status.message}>
+          <IosRow
+            icon={ready ? 'checkmark-circle' : 'warning'}
+            iconColor={ready ? '#34C759' : '#FF9500'}
+            label="Connection"
+            value={ready ? 'Connected' : 'Not Ready'}
+          />
+        </IosGroup>
+        <IosGroup
+          header="Client"
+          footer="The app talks to Supabase over HTTPS with a publishable key only. Secret and service_role keys are rejected. Row-level security must stay enabled on every table."
+        >
+          <IosRow label="Project URL" value={status.url || '—'} />
+          <IosRow label="Client key" value={keyLabel} />
+        </IosGroup>
+      </IosPage>
+    );
+  }
 
   return (
     <ScrollView style={styles.body} contentContainerStyle={styles.aiContent}>
@@ -1715,6 +1948,53 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     borderColor: 'rgba(60,60,67,0.12)',
     paddingVertical: 14,
+  },
+  menuLabelIos: {
+    fontSize: 17,
+    fontWeight: '400',
+    letterSpacing: -0.4,
+    color: '#000',
+  },
+  menuHintIos: {
+    fontSize: 13,
+    color: '#8E8E93',
+    marginTop: 1,
+  },
+  staffSearchIos: {
+    borderWidth: 0,
+    borderRadius: 10,
+    backgroundColor: 'rgba(118,118,128,0.12)',
+    minHeight: 36,
+  },
+  staffTableIos: {
+    borderWidth: 0,
+    borderRadius: 10,
+    overflow: 'hidden',
+  },
+  staffTableItemIos: {
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+  },
+  iosKeyRow: {
+    minHeight: 44,
+    paddingHorizontal: 16,
+    paddingVertical: 4,
+    justifyContent: 'center',
+    backgroundColor: '#fff',
+  },
+  iosKeyField: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  iosKeyInput: {
+    flex: 1,
+    fontFamily,
+    fontSize: 17,
+    color: '#000',
+    paddingVertical: 10,
+    letterSpacing: -0.4,
+    outlineStyle: 'none',
   },
   centered: {
     flex: 1,

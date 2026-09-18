@@ -21,7 +21,7 @@ import {
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
-import { mobileSafeBottom, mobileSafeTop, useIsMobile } from '../lib/mobileUi';
+import { mobileSafeBottom, mobileSafeTop, MOBILE, useIsMobile } from '../lib/mobileUi';
 import { fetchTransferStores } from '../lib/locations';
 import { findStaffByEmployeeName, listStaffProfiles } from '../lib/permissions';
 import {
@@ -78,6 +78,7 @@ import {
   FONT,
   Group,
   GroupRow,
+  MobileListRow,
   ProgressBar,
   SearchField,
   SectionLabel,
@@ -1702,8 +1703,79 @@ function MeltTab({
     [onToggleReceived, openRowFromTable, removeRow, staffProfiles, visiblePos.length],
   );
 
+  const isMobile = useIsMobile();
+
   return (
     <View style={styles.body}>
+        {isMobile ? (
+          <FlatList
+            style={styles.mobileList}
+            contentContainerStyle={styles.mobileListContent}
+            data={visiblePos}
+            keyExtractor={meltKey}
+            extraData={`${staffProfiles.length}:${visiblePos.length}`}
+            keyboardShouldPersistTaps="handled"
+            ListEmptyComponent={
+              scoped.length === 0 ? (
+                <EmptyState
+                  icon="flame-outline"
+                  title={storeScope ? `No PO / SO for ${storeScope}` : 'No PO / SO yet'}
+                  body={
+                    storeScope
+                      ? 'Add a date range or a PO/SO number to bring in purchases for this store.'
+                      : `Add a date range or a single PO/SO from ${batchLabel} to start checking the melt.`
+                  }
+                  action={<BarButton size="lg" fill label="Quick Add" onPress={() => onAddOpenChange(true)} />}
+                />
+              ) : (
+                <EmptyState
+                  icon="cube-outline"
+                  title="Bullion only"
+                  body="Bullion-only purchases stay in store and are hidden from melt."
+                />
+              )
+            }
+            renderItem={({ item, index }) => {
+              const received = Boolean(item.received);
+              return (
+                <View
+                  style={[
+                    index === 0 && styles.mobileGroupStart,
+                    index === visiblePos.length - 1 && styles.mobileGroupEnd,
+                  ]}
+                >
+                  <MobileListRow
+                    title={item.reference}
+                    subtitle={[item.storeName, item.dateLabel, personLabel(item.employeeName)].filter(Boolean).join(' · ')}
+                    meta={rowAmountLabel(item)}
+                    last={index === visiblePos.length - 1}
+                    onPress={() => openRowFromTable(item)}
+                    accessibilityLabel={`Open ${item.reference}`}
+                    leading={<PoThumb urls={item.imageUrls} label={item.reference} size={52} />}
+                    trailing={
+                      <Pressable
+                        style={[styles.mobileReceive, received && styles.mobileReceiveOn]}
+                        onPress={(event) => {
+                          event?.stopPropagation?.();
+                          onToggleReceived(item.id);
+                        }}
+                        accessibilityRole="button"
+                        accessibilityLabel={received ? `Undo receive ${item.reference}` : `Receive ${item.reference}`}
+                        accessibilityState={{ selected: received }}
+                      >
+                        <Ionicons
+                          name={received ? 'checkmark-circle' : 'ellipse-outline'}
+                          size={28}
+                          color={received ? GREEN : SECONDARY}
+                        />
+                      </Pressable>
+                    }
+                  />
+                </View>
+              );
+            }}
+          />
+        ) : (
         <TableFrame
           minWidth={780}
           data={visiblePos}
@@ -1754,6 +1826,7 @@ function MeltTab({
             </>
           }
         />
+        )}
 
       <AddDocumentsModal
         visible={addOpen}
@@ -2010,8 +2083,55 @@ function BullionTab({ rows, busy, stores, storeScope }) {
     [openFromTable, visibleRows.length],
   );
 
+  const isMobile = useIsMobile();
+
   return (
     <View style={styles.body}>
+        {isMobile ? (
+          <FlatList
+            style={styles.mobileList}
+            contentContainerStyle={styles.mobileListContent}
+            data={visibleRows}
+            keyExtractor={meltKey}
+            extraData={visibleRows.length}
+            keyboardShouldPersistTaps="handled"
+            ListEmptyComponent={
+              <EmptyState
+                icon="cube-outline"
+                title={busy ? 'Loading transfers…' : scoped.length === 0 ? 'No bullion transfers' : 'No matches'}
+                body={
+                  busy
+                    ? 'Checking POS for transfers headed to the Workshop.'
+                    : scoped.length === 0
+                      ? `Transfers from ${storeScope || storeNamesLabel(storeList) || 'these stores'} to the Workshop appear here automatically.`
+                      : 'No transfers match those filters.'
+                }
+              />
+            }
+            renderItem={({ item, index }) => {
+              const status = bullionStatus(item);
+              const items = bullionItemsLabel(item);
+              return (
+                <View
+                  style={[
+                    index === 0 && styles.mobileGroupStart,
+                    index === visibleRows.length - 1 && styles.mobileGroupEnd,
+                  ]}
+                >
+                  <MobileListRow
+                    title={item.reference}
+                    subtitle={[item.fromName, bullionToLabel(item)].filter(Boolean).join(' → ')}
+                    meta={[item.dateLabel, items.count ? `${items.count} items` : null].filter(Boolean).join(' · ')}
+                    last={index === visibleRows.length - 1}
+                    onPress={() => openFromTable(item)}
+                    accessibilityLabel={`Open ${item.reference}`}
+                    trailing={<StatusPill label={status.label} tone={status.tone} compact />}
+                  />
+                </View>
+              );
+            }}
+          />
+        ) : (
         <TableFrame
             minWidth={800}
             data={visibleRows}
@@ -2117,6 +2237,7 @@ function BullionTab({ rows, busy, stores, storeScope }) {
               </>
             }
           />
+        )}
       <BullionTransferDrawer visible={Boolean(openRow)} transfer={openRow} onClose={() => setOpenId(null)} />
     </View>
   );
@@ -2703,6 +2824,45 @@ function PoSoList({ transfers, query = '', onOpenPo, onDelete }) {
     [onDelete, onOpenPo, staffProfiles, visible.length],
   );
 
+  const isMobile = useIsMobile();
+  const emptyCopy =
+    query.trim() || filtersActive
+      ? `No PO or SO matches ${query.trim() ? `“${query.trim()}”` : 'those filters'}.`
+      : 'No PO / SO yet.';
+
+  if (isMobile) {
+    return (
+      <FlatList
+        style={styles.mobileList}
+        contentContainerStyle={styles.mobileListContent}
+        data={visible}
+        keyExtractor={meltKey}
+        extraData={`${visible.length}:${staffProfiles.length}`}
+        keyboardShouldPersistTaps="handled"
+        ListEmptyComponent={<EmptyState icon="document-text-outline" title="No PO / SO" body={emptyCopy} />}
+        renderItem={({ item, index }) => (
+          <View
+            style={[
+              index === 0 && styles.mobileGroupStart,
+              index === visible.length - 1 && styles.mobileGroupEnd,
+            ]}
+          >
+            <MobileListRow
+              title={item.document}
+              subtitle={[item.storeNames.join(', '), item.dateLabel].filter(Boolean).join(' · ')}
+              meta={item.valueLabel}
+              last={index === visible.length - 1}
+              onPress={() => item.po && onOpenPo(item.po)}
+              accessibilityLabel={item.openLabel}
+              leading={<PoThumb urls={item.photoUrls} label={item.document} size={52} />}
+              trailing={<StatusPill label={item.status.label} tone={item.status.tone} compact />}
+            />
+          </View>
+        )}
+      />
+    );
+  }
+
   return (
     <TableFrame
       minWidth={980}
@@ -2842,6 +3002,45 @@ function BatchDashList({ transfers, query = '', onOpen, onDelete }) {
     ),
     [onDelete, onOpen, visible.length],
   );
+
+  const isMobile = useIsMobile();
+  if (isMobile) {
+    return (
+      <FlatList
+        style={styles.mobileList}
+        contentContainerStyle={styles.mobileListContent}
+        data={visible}
+        keyExtractor={meltKey}
+        extraData={visible.length}
+        keyboardShouldPersistTaps="handled"
+        ListEmptyComponent={
+          <EmptyState
+            icon="calendar-outline"
+            title="No batches"
+            body={query.trim() ? `No batch matches “${query.trim()}”.` : 'No batches yet.'}
+          />
+        }
+        renderItem={({ item, index }) => (
+          <View
+            style={[
+              index === 0 && styles.mobileGroupStart,
+              index === visible.length - 1 && styles.mobileGroupEnd,
+            ]}
+          >
+            <MobileListRow
+              title={item.dateLabel}
+              subtitle={[item.numberLabel, item.storeNames.join(', ')].filter(Boolean).join(' · ')}
+              meta={item.valueLabel}
+              last={index === visible.length - 1}
+              onPress={() => onOpen(item.batch)}
+              accessibilityLabel={item.openLabel}
+              trailing={<StatusPill label={item.status.label} tone={item.status.tone} compact />}
+            />
+          </View>
+        )}
+      />
+    );
+  }
 
   return (
     <TableFrame
@@ -3188,7 +3387,7 @@ export default function TriageTransfersPanel({
 
   if (!session?.token) {
     return (
-      <View style={[styles.body, styles.bodyTinted]}>
+      <View style={[styles.body, styles.bodyTinted, isMobile && styles.bodyMobile]}>
         <EmptyState
           icon="lock-closed-outline"
           title="Sign in to triage"
@@ -3201,7 +3400,7 @@ export default function TriageTransfersPanel({
 
   if (selected) {
     return (
-      <View style={[styles.body, styles.bodyTinted]}>
+      <View style={[styles.body, styles.bodyTinted, isMobile && styles.bodyMobile]}>
       <TriageErrorBoundary resetKey={selected.id} onReset={goBackToList}>
         <BatchDetail
           key={selected.id}
@@ -3220,7 +3419,7 @@ export default function TriageTransfersPanel({
   }
 
   return (
-    <View style={[styles.body, styles.bodyTinted]}>
+    <View style={[styles.body, styles.bodyTinted, isMobile && styles.bodyMobile]}>
       <View style={styles.body}>
         {dashTab === 'batch' ? (
           batchRows.length === 0 && !listQuery.trim() ? (
@@ -3304,6 +3503,38 @@ const styles = StyleSheet.create({
   },
   bodyTinted: {
     backgroundColor: T.bg,
+  },
+  bodyMobile: {
+    backgroundColor: MOBILE.bg,
+  },
+  mobileList: {
+    flex: 1,
+    minHeight: 0,
+  },
+  mobileListContent: {
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 40,
+    flexGrow: 1,
+  },
+  mobileGroupStart: {
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+    overflow: 'hidden',
+  },
+  mobileGroupEnd: {
+    borderBottomLeftRadius: 12,
+    borderBottomRightRadius: 12,
+    overflow: 'hidden',
+  },
+  mobileReceive: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  mobileReceiveOn: {
+    transform: [{ scale: 1 }],
   },
   quickAddIntro: {
     fontFamily,

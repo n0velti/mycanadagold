@@ -41,7 +41,7 @@ import {
 import TriageCorrectionImages from './TriageCorrectionImages';
 import { FONT, T, TextAction, TriageDrawer, SearchField, StaffAvatar, useHeldValue } from './TriageKit';
 import { PoThumb } from './TriageTable';
-import { mobileSafeTop, useIsMobile } from '../lib/mobileUi';
+import { MOBILE, mobileSafeTop, useIsMobile } from '../lib/mobileUi';
 import {
   fetchLookupLocations,
   fetchLookupUsers,
@@ -1353,11 +1353,17 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
         finish();
       }}
       disabled={stepIndex === 0 && detailLoading}
-      style={[styles.nextBtn, stepIndex === 0 && detailLoading && styles.addImageBtnDisabled]}
+      style={[
+        styles.nextBtn,
+        isMobile && styles.nextBtnMobile,
+        stepIndex === 0 && detailLoading && styles.addImageBtnDisabled,
+      ]}
       accessibilityLabel={nextStep ? `Next, ${nextStep.label}` : 'Done'}
     >
-      <Text style={styles.nextBtnText}>{nextStep ? nextStep.label : 'Done'}</Text>
-      {nextStep ? <Ionicons name="chevron-forward" size={16} color="#fff" /> : null}
+      <Text style={[styles.nextBtnText, isMobile && styles.nextBtnTextMobile]}>
+        {nextStep ? nextStep.label : 'Done'}
+      </Text>
+      {nextStep ? <Ionicons name="chevron-forward" size={isMobile ? 18 : 16} color="#fff" /> : null}
     </Pressable>
   );
   // Phones: the Details step scrolls as a whole (the ticket bar stacks vertically and
@@ -1383,7 +1389,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
       minWidth={720}
       hideNav
     >
-      <Body style={styles.body} {...bodyProps}>
+      <Body style={[styles.body, isMobile && styles.bodyMobile]} {...bodyProps}>
         <View
           style={[styles.ticketHeader, isMobile && styles.ticketHeaderCompact]}
           {...(Platform.OS === 'web' && isMobile ? { className: 'cgold-mobile-sheet-top' } : null)}
@@ -1396,18 +1402,16 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
               accessibilityRole="button"
               accessibilityLabel="Close"
             >
-              <Ionicons name="close" size={20} color="#8e8e93" />
+              <Ionicons name="close" size={22} color="#8e8e93" />
             </Pressable>
             <View style={[styles.mark, { backgroundColor: BUY_TINT }]}>
               <Ionicons name="document-text-outline" size={18} color={BUY_ACCENT} />
             </View>
-            <Text style={styles.headerName} numberOfLines={1}>
+            <Text style={[styles.headerName, isMobile && styles.headerNameMobile]} numberOfLines={1}>
               {heldRow.reference || 'Details'}
             </Text>
           </View>
-          {isMobile ? (
-            nextNode
-          ) : (
+          {isMobile ? null : (
             <View style={styles.headerTools}>
               <Pressable
                 style={[styles.addImageBtn, addImageDisabled && styles.addImageBtnDisabled]}
@@ -1528,12 +1532,12 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
                   />
                 </View>
               ) : null}
-              {isMobile ? (
+              {isMobile && images.length ? (
                 <View style={styles.mobilePhotos}>
                   <View style={styles.itemsToolbar}>
                     <Text style={styles.itemsTitle}>Photos</Text>
                     <Text style={styles.summaryMetaInline}>
-                      {images.length ? `${images.length} of ${MAX_REVIEW_IMAGES}` : 'Snap the item, tag, or receipt'}
+                      {`${images.length} of ${MAX_REVIEW_IMAGES}`}
                     </Text>
                   </View>
                   <View style={[styles.detailsCard, styles.photoCard, styles.paneCard, styles.mobilePhotoCard]}>
@@ -1543,7 +1547,6 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
                       compact
                       hideHeading
                       hideActions
-                      showSourceButtons
                     />
                   </View>
                 </View>
@@ -1621,6 +1624,24 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
               ) : null}
             </ScrollView>
           ) : null}
+        {isMobile ? (
+          <View style={styles.mobileDock}>
+            <Pressable
+              style={[styles.mobileDockCamera, addImageDisabled && styles.addImageBtnDisabled]}
+              onPress={() => imagesRef.current?.takePhoto?.()}
+              disabled={addImageDisabled}
+              accessibilityRole="button"
+              accessibilityLabel="Take a photo of this PO"
+            >
+              <Ionicons name="camera" size={22} color={addImageDisabled ? SECONDARY : '#fff'} />
+              <Text style={[styles.mobileDockCameraText, addImageDisabled && styles.actionTextDisabled]}>
+                Take Photo
+              </Text>
+              {images.length ? <Text style={styles.mobileDockCount}>{images.length}</Text> : null}
+            </Pressable>
+            {nextNode}
+          </View>
+        ) : null}
       </Body>
     </TriageDrawer>
       <TriageCorrectionImages
@@ -1645,6 +1666,9 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
     backgroundColor: '#fff',
+  },
+  bodyMobile: {
+    backgroundColor: MOBILE.bg,
   },
   ticketHeader: {
     width: '88%',
@@ -1730,6 +1754,9 @@ const styles = StyleSheet.create({
     letterSpacing: -0.4,
     flexShrink: 1,
   },
+  headerNameMobile: {
+    fontSize: 18,
+  },
   steps: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1814,11 +1841,66 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
+  nextBtnMobile: {
+    minHeight: 52,
+    paddingHorizontal: 18,
+    borderRadius: 14,
+    flex: 1,
+    justifyContent: 'center',
+  },
   nextBtnText: {
     fontFamily,
     fontSize: 14,
     fontWeight: '600',
     color: '#fff',
+  },
+  nextBtnTextMobile: {
+    fontSize: 17,
+  },
+  mobileDock: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: HAIRLINE,
+    backgroundColor: MOBILE.bg,
+  },
+  mobileDockCamera: {
+    flex: 1.15,
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderRadius: 14,
+    backgroundColor: T.blue,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  mobileDockCameraText: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  mobileDockCount: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#fff',
+    backgroundColor: 'rgba(255,255,255,0.22)',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 10,
+    overflow: 'hidden',
+  },
+  actionTextDisabled: {
+    color: SECONDARY,
   },
   stepBody: {
     flex: 1,
@@ -1878,7 +1960,7 @@ const styles = StyleSheet.create({
   },
   editPaneMobile: {
     paddingTop: 4,
-    paddingBottom: 40,
+    paddingBottom: 24,
   },
   editContentMobile: {
     paddingHorizontal: 0,

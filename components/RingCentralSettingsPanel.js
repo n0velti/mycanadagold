@@ -28,6 +28,8 @@ import {
 import { storeKeyFromName } from '../lib/storeSettings';
 import { isStoreWatched } from '../lib/phoneWatch';
 import { usePhoneCalls } from './PhoneCallProvider';
+import { useIsMobile } from '../lib/mobileUi';
+import { IosGroup, IosPage, IosRow, IosSwitch } from './IosSettings';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -70,9 +72,34 @@ function Field({ label, value, onChangeText, placeholder, secure, multiline, hin
 }
 
 function IncomingWatchList({ stores }) {
+  const isMobile = useIsMobile();
   const { watchPrefs, setStoreWatched } = usePhoneCalls();
   const connected = (stores || []).filter((row) => row.account?.hasJwt);
   if (connected.length === 0) return null;
+
+  if (isMobile) {
+    return (
+      <IosGroup
+        header="Incoming On This Screen"
+        footer="Choose which store lines appear in the tab bar. You can watch more than one at a time."
+      >
+        {connected.map((row) => {
+          const on = isStoreWatched(watchPrefs, row.key);
+          return (
+            <IosRow
+              key={row.key}
+              icon="call"
+              iconColor="#34C759"
+              label={row.storeName}
+              value={on ? 'On' : 'Off'}
+              onPress={() => setStoreWatched(row.key, !on)}
+              accessory={<IosSwitch on={on} />}
+            />
+          );
+        })}
+      </IosGroup>
+    );
+  }
 
   return (
     <View style={styles.watchBlock}>
@@ -450,6 +477,7 @@ function StoreEditor({ session, storeName, account, onBack, onAccountChange, onR
 }
 
 export default function RingCentralSettingsPanel({ session, storeName }) {
+  const isMobile = useIsMobile();
   const canEdit = canManageRingCentral(session?.profile);
   const [stores, setStores] = useState([]);
   const [accounts, setAccounts] = useState([]);
@@ -578,6 +606,42 @@ export default function RingCentralSettingsPanel({ session, storeName }) {
       <View style={styles.centered}>
         <ActivityIndicator color="#1a1a1a" />
       </View>
+    );
+  }
+
+  if (isMobile) {
+    return (
+      <IosPage>
+        <IncomingWatchList stores={rows} />
+        {canEdit ? (
+          <IosGroup
+            header="Store Credentials"
+            footer={
+              error ||
+              'Each branch uses its own RingCentral JWT app. Assign that store’s numbers here so a call to one location does not also appear on another.'
+            }
+          >
+            {rows.length === 0 ? (
+              <IosRow label="Stores" value="None" />
+            ) : (
+              rows.map((row) => (
+                <IosRow
+                  key={row.key}
+                  icon="call"
+                  iconColor="#34C759"
+                  label={row.storeName}
+                  value={connectionLabel(row.account)}
+                  onPress={() => setSelectedName(row.storeName)}
+                />
+              ))
+            )}
+          </IosGroup>
+        ) : (
+          <IosGroup footer="RingCentral credentials are managed by a branch manager, general manager, or system admin.">
+            <IosRow icon="lock-closed" iconColor="#8E8E93" label="Credentials" value="Restricted" />
+          </IosGroup>
+        )}
+      </IosPage>
     );
   }
 
