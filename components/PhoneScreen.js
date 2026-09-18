@@ -1,6 +1,7 @@
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -9,10 +10,14 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
-import { usePhoneCalls } from './PhoneCallProvider';
+import { activeCallKicker, usePhoneCalls } from './PhoneCallProvider';
 import { fetchTransferStores } from '../lib/locations';
+import { formatDateParam, formatPickerDate, parseDateParam } from '../lib/transactions';
 import {
+  callPartyLabel,
+  fetchPhoneHistory,
   fetchVoicemailAudioUrl,
   formatCallWhen,
   formatDuration,
@@ -22,6 +27,7 @@ import {
   resultLabel,
   callsForStore,
 } from '../lib/phoneCalls';
+import { isConnectedStatus } from '../lib/callState';
 import {
   canManageRingCentral,
   connectionLabel,
@@ -49,11 +55,16 @@ const TABS = [
   { key: 'stats', label: 'Ratio' },
 ];
 const KEYPAD = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#'];
-const DATE_RANGES = [
+const DATE_MODES = [
   { key: 'today', label: 'Today' },
-  { key: '7d', label: '7 days' },
-  { key: '14d', label: '14 days' },
+  { key: 'day', label: 'Date' },
+  { key: 'range', label: 'Range' },
 ];
+// The provider's inbox is a rolling 14-day window; anything older is fetched
+// on demand for the chosen dates. 13 keeps a margin for the poll's own age.
+const ROLLING_INBOX_MS = 13 * 24 * 60 * 60 * 1000;
+const HISTORY_MAX_DAYS = 92;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 function statusTone(row) {
   const status = row?.lastStatus || connectionLabel(row);
@@ -62,25 +73,181 @@ function statusTone(row) {
   return styles.statusMuted;
 }
 
-function rangeSinceMs(key) {
-  if (key === 'today') {
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-    return start.getTime();
-  }
-  const days = key === '7d' ? 7 : 14;
-  return Date.now() - days * 24 * 60 * 60 * 1000;
+/** [start, end) in ms for a local calendar day span. */
+function dateWindow(startDate, endDate) {
+  const start = parseDateParam(startDate);
+  const end = parseDateParam(endDate);
+  end.setDate(end.getDate() + 1);
+  return { start: start.getTime(), end: end.getTime(), key: `${formatDateParam(start)}|${formatDateParam(endDate)}` };
 }
 
-function rangeCopy(key) {
-  if (key === 'today') return 'today';
-  if (key === '7d') return 'the last 7 days';
-  return 'the last 14 days';
+function todayWindow() {
+  const today = new Date();
+  return dateWindow(today, today);
 }
 
-function inDateRange(value, since) {
+function inWindow(value, span) {
   const time = Date.parse(value);
-  return Number.isFinite(time) && time >= since;
+  return Number.isFinite(time) && time >= span.start && time < span.end;
+}
+
+function windowCopy(mode, startDate, endDate, { sentence = true } = {}) {
+  if (mode === 'today') return 'today';
+  const startKey = formatDateParam(startDate);
+  if (mode === 'day' || startKey === formatDateParam(endDate)) {
+    if (startKey === formatDateParam(new Date())) return 'today';
+    return `${sentence ? 'on ' : ''}${formatPickerDate(startDate)}`;
+  }
+  return `${formatPickerDate(startDate)} – ${formatPickerDate(endDate)}`;
+}
+
+function CallTimer({ since, style }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!since) return undefined;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [since]);
+  if (!since) return null;
+  const total = Math.max(0, Math.floor((now - since) / 1000));
+  return (
+    <Text style={style}>
+      {Math.floor(total / 60)}:{String(total % 60).padStart(2, '0')}
+    </Text>
+  );
+}
+
+function DateChip({ label, value, onChange, minimumDate, maximumDate }) {
+  const [open, setOpen] = useState(false);
+  const dateValue = parseDateParam(value);
+
+  const commit = (next) => {
+    if (!next) return;
+    let date = parseDateParam(next);
+    if (minimumDate && date < parseDateParam(minimumDate)) date = parseDateParam(minimumDate);
+    if (maximumDate && date > parseDateParam(maximumDate)) date = parseDateParam(maximumDate);
+    onChange(date);
+  };
+
+  if (Platform.OS === 'web') {
+    return (
+      <View style={styles.pickChip}>
+        <Text style={styles.pickChipLabel}>{label}</Text>
+        <View style={styles.pickChipControl}>
+          <Ionicons name="calendar-outline" size={14} color="#6b6b6b" />
+          {createElement('input', {
+            type: 'date',
+            value: formatDateParam(dateValue),
+            min: minimumDate ? formatDateParam(minimumDate) : undefined,
+            max: maximumDate ? formatDateParam(maximumDate) : undefined,
+            'aria-label': label,
+            onChange: (event) => {
+              if (event.target.value) commit(event.target.value);
+            },
+            style: {
+              border: 'none',
+              background: 'transparent',
+              fontFamily,
+              fontSize: 13,
+              color: '#1a1a1a',
+              padding: 0,
+              margin: 0,
+              outline: 'none',
+              cursor: 'pointer',
+              minWidth: 118,
+            },
+          })}
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <>
+      <Pressable style={styles.pickChip} onPress={() => setOpen(true)} accessibilityRole="button" accessibilityLabel={label}>
+        <Text style={styles.pickChipLabel}>{label}</Text>
+        <View style={styles.pickChipControl}>
+          <Ionicons name="calendar-outline" size={14} color="#6b6b6b" />
+          <Text style={styles.pickChipValue}>{formatPickerDate(dateValue)}</Text>
+        </View>
+      </Pressable>
+
+      {Platform.OS === 'android' && open ? (
+        <DateTimePicker
+          value={dateValue}
+          mode="date"
+          display="default"
+          minimumDate={minimumDate ? parseDateParam(minimumDate) : undefined}
+          maximumDate={maximumDate ? parseDateParam(maximumDate) : undefined}
+          onChange={(event, selected) => {
+            setOpen(false);
+            if (event.type !== 'dismissed' && selected) commit(selected);
+          }}
+        />
+      ) : null}
+
+      {Platform.OS === 'ios' ? (
+        <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+          <View style={styles.pickModalBackdrop}>
+            <Pressable style={StyleSheet.absoluteFill} onPress={() => setOpen(false)} />
+            <View style={styles.pickModalCard}>
+              <View style={styles.pickModalHeader}>
+                <Text style={styles.pickModalTitle}>{label}</Text>
+                <Pressable onPress={() => setOpen(false)} hitSlop={8}>
+                  <Text style={styles.pickModalDone}>Done</Text>
+                </Pressable>
+              </View>
+              <DateTimePicker
+                value={dateValue}
+                mode="date"
+                display="spinner"
+                minimumDate={minimumDate ? parseDateParam(minimumDate) : undefined}
+                maximumDate={maximumDate ? parseDateParam(maximumDate) : undefined}
+                onChange={(_, selected) => {
+                  if (selected) commit(selected);
+                }}
+              />
+            </View>
+          </View>
+        </Modal>
+      ) : null}
+    </>
+  );
+}
+
+function DateFilter({ mode, startDate, endDate, onMode, onDay, onStart, onEnd }) {
+  const today = new Date();
+  const earliest = new Date(today.getTime() - (HISTORY_MAX_DAYS - 1) * DAY_MS);
+  return (
+    <View style={styles.dateRow}>
+      <View style={styles.dateModeGroup}>
+        {DATE_MODES.map((item) => {
+          const active = mode === item.key;
+          return (
+            <Pressable
+              key={item.key}
+              style={[styles.dateChip, active && styles.dateChipActive]}
+              onPress={() => onMode(item.key)}
+              accessibilityRole="button"
+              accessibilityState={{ selected: active }}
+            >
+              <Text style={[styles.dateChipText, active && styles.dateChipTextActive]}>{item.label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      {mode === 'day' ? (
+        <DateChip label="Date" value={startDate} onChange={onDay} minimumDate={earliest} maximumDate={today} />
+      ) : null}
+      {mode === 'range' ? (
+        <>
+          <DateChip label="From" value={startDate} onChange={onStart} minimumDate={earliest} maximumDate={endDate} />
+          <Text style={styles.dateRangeSep}>–</Text>
+          <DateChip label="To" value={endDate} onChange={onEnd} minimumDate={startDate} maximumDate={today} />
+        </>
+      ) : null}
+    </View>
+  );
 }
 
 function PhoneCrumb({ storeName, onStores }) {
@@ -164,7 +331,7 @@ function CallHistoryRow({ row, inbound = true, showDirection = false, onCallback
   );
 }
 
-function RatioStrip({ stats, compact = false, rangeLabel = 'the last 14 days' }) {
+function RatioStrip({ stats, compact = false, rangeLabel = 'today', rangeShort = rangeLabel }) {
   const empty = !stats?.total;
   return (
     <View style={[styles.ratioBlock, compact && styles.ratioBlockCompact]}>
@@ -205,7 +372,7 @@ function RatioStrip({ stats, compact = false, rangeLabel = 'the last 14 days' })
           ? `No inbound calls ${rangeLabel}.`
           : stats.rate == null
             ? `No inbound calls ${rangeLabel}.`
-            : `${stats.rate}% answered · ${stats.answered} of ${stats.total} · ${rangeLabel}`}
+            : `${stats.rate}% answered · ${stats.answered} of ${stats.total} · ${rangeShort}`}
       </Text>
     </View>
   );
@@ -320,11 +487,13 @@ function ChartLineSegment({ x1, y1, x2, y2, color, width = 2 }) {
   );
 }
 
-function RatioDayChart({ calls }) {
+function RatioDayChart({ calls, anchor = null, label = 'today' }) {
   const [width, setWidth] = useState(0);
   const [pickedHour, setPickedHour] = useState(null);
   const now = Date.now();
-  const day = useMemo(() => chartDay(calls, now), [calls, now]);
+  // `anchor` is any instant inside the day to draw; defaults to today.
+  const at = anchor ?? now;
+  const day = useMemo(() => chartDay(calls, at), [calls, at]);
   const inbound = useMemo(() => inboundToday(calls, day), [calls, day]);
   const callPoints = useMemo(() => runningAnswerPoints(inbound), [inbound]);
   const bins = useMemo(() => hourlyBins(inbound, day), [inbound, day]);
@@ -357,14 +526,14 @@ function RatioDayChart({ calls }) {
   const linePath = plotted.map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x} ${point.y}`).join(' ');
   const tooltipW = 172;
   const tooltipLeft = picked
-    ? Math.min(Math.max(0, xOf(hourMs(now, picked.hour)) + hourW / 2 - tooltipW / 2), Math.max(0, width - tooltipW))
+    ? Math.min(Math.max(0, xOf(hourMs(at, picked.hour)) + hourW / 2 - tooltipW / 2), Math.max(0, width - tooltipW))
     : 0;
 
   return (
     <View style={styles.ratioChart}>
       <View style={styles.ratioChartHead}>
         <View style={styles.ratioChartHeadText}>
-          <Text style={styles.summaryLabel}>Answer rate today</Text>
+          <Text style={styles.summaryLabel}>Answer rate {label}</Text>
           <Text style={styles.ratioChartSub}>
             {current
               ? `${current.answered} answered · ${current.total - current.answered} missed · ${formatHourLabel(day.openHour, { suffix: true })} to ${formatHourLabel(day.closeHour, { suffix: true })}`
@@ -387,8 +556,8 @@ function RatioDayChart({ calls }) {
         accessibilityRole="image"
         accessibilityLabel={
           current
-            ? `Answer rate today started at ${series[0].rate}% and is ${current.rate}% now from ${current.answered} of ${current.total} inbound calls between ${formatHourLabel(day.openHour, { suffix: true })} and ${formatHourLabel(day.closeHour, { suffix: true })}`
-            : 'No inbound calls yet today'
+            ? `Answer rate ${label} started at ${series[0].rate}% and ${afterClose ? 'ended' : 'is'} ${current.rate}% from ${current.answered} of ${current.total} inbound calls between ${formatHourLabel(day.openHour, { suffix: true })} and ${formatHourLabel(day.closeHour, { suffix: true })}`
+            : `No inbound calls ${label}`
         }
       >
         {width > 0 ? (
@@ -656,7 +825,14 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
   const isMobile = useIsMobile();
   const phone = usePhoneCalls();
   const [tab, setTab] = useState('incoming');
-  const [dateRange, setDateRange] = useState('14d');
+  const [dateMode, setDateMode] = useState('today');
+  const [startDate, setStartDate] = useState(() => parseDateParam(new Date()));
+  const [endDate, setEndDate] = useState(() => parseDateParam(new Date()));
+  const [historyByStore, setHistoryByStore] = useState({});
+  const [historyLoading, setHistoryLoading] = useState({});
+  const [historyError, setHistoryError] = useState('');
+  const [historyReload, setHistoryReload] = useState(0);
+  const historyRequest = useRef(0);
   const [stores, setStores] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -679,9 +855,35 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
   const refreshInbox = phone.refreshInbox;
   const applyStoreAccount = phone.applyStoreAccount;
   const syncStoreAccounts = phone.syncStoreAccounts;
-  const calls = callsForStore(phone.mergedCallsByStore, storeKey);
-  const voicemails = phone.inboxByStore?.[storeKey]?.voicemails || [];
-  const inboxLoading = Boolean(phone.inboxFetching?.[storeKey]);
+  const todayKey = formatDateParam(new Date());
+  const span = useMemo(() => {
+    if (dateMode === 'today') return todayWindow();
+    if (dateMode === 'day') return dateWindow(startDate, startDate);
+    return dateWindow(startDate, endDate);
+  }, [dateMode, endDate, startDate, todayKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const needsHistory = span.start < Date.now() - ROLLING_INBOX_MS;
+  const historyFor = useCallback(
+    (name) => {
+      const key = storeKeyFromName(name);
+      const entry = historyByStore[key];
+      return entry && entry.windowKey === span.key ? entry : null;
+    },
+    [historyByStore, span.key],
+  );
+  /** Calls for a store from whichever source covers the chosen dates. */
+  const sourceCalls = useCallback(
+    (name) => {
+      if (!needsHistory) return callsForStore(phone.mergedCallsByStore, name);
+      return historyFor(name)?.calls || [];
+    },
+    [historyFor, needsHistory, phone.mergedCallsByStore],
+  );
+  const calls = useMemo(() => sourceCalls(storeKey), [sourceCalls, storeKey]);
+  const voicemails = useMemo(
+    () => (needsHistory ? historyFor(storeKey)?.voicemails || [] : phone.inboxByStore?.[storeKey]?.voicemails || []),
+    [historyFor, needsHistory, phone.inboxByStore, storeKey],
+  );
+  const inboxLoading = Boolean(phone.inboxFetching?.[storeKey]) || (needsHistory && Boolean(historyLoading[storeKey]));
 
   const load = useCallback(async () => {
     if (!session?.token) {
@@ -727,6 +929,14 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
 
   const loadInbox = useCallback(async () => {
     if (!storeKey) return;
+    // Drop this store's cached history so the effect refetches the chosen dates.
+    setHistoryByStore((current) => {
+      if (!current[storeKey]) return current;
+      const next = { ...current };
+      delete next[storeKey];
+      return next;
+    });
+    setHistoryReload((n) => n + 1);
     try {
       await refreshInbox(storeKey, { force: true });
       setError('');
@@ -734,6 +944,44 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
       setError(err?.message || 'Could not load calls.');
     }
   }, [refreshInbox, storeKey]);
+
+  const selectDateMode = useCallback(
+    (mode) => {
+      setDateMode(mode);
+      const today = parseDateParam(new Date());
+      if (mode === 'today') {
+        setStartDate(today);
+        setEndDate(today);
+      } else if (mode === 'range' && formatDateParam(startDate) === formatDateParam(endDate)) {
+        // Open the range on the past week so the pickers start apart.
+        const weekAgo = new Date(today.getTime() - 6 * DAY_MS);
+        setStartDate(parseDateParam(weekAgo));
+        setEndDate(today);
+      }
+    },
+    [endDate, startDate],
+  );
+  const handleDayChange = useCallback((date) => {
+    const next = parseDateParam(date);
+    setStartDate(next);
+    setEndDate(next);
+  }, []);
+  const handleStartChange = useCallback(
+    (date) => {
+      const next = parseDateParam(date);
+      setStartDate(next);
+      if (next > endDate) setEndDate(next);
+    },
+    [endDate],
+  );
+  const handleEndChange = useCallback(
+    (date) => {
+      const next = parseDateParam(date);
+      setEndDate(next);
+      if (next < startDate) setStartDate(next);
+    },
+    [startDate],
+  );
 
   useEffect(() => {
     return () => {
@@ -823,26 +1071,86 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
   const activeAccount = phone.stores.find((row) => row.storeKey === storeKey) || accountByKey.get(storeKey) || null;
   const incomingLive = useMemo(() => {
     const all = phone.incoming || [];
-    if (!storeFilter) return all;
+    const activeId = phone.activeCall?.id;
+    const withoutActive = activeId ? all.filter((call) => call.id !== activeId) : all;
+    if (!storeFilter) return withoutActive;
     const locked = storeKeyFromName(storeFilter);
-    if (!locked) return all;
-    return all.filter((call) => call.storeKey === locked);
-  }, [phone.incoming, storeFilter]);
-  const rangeSince = useMemo(() => rangeSinceMs(dateRange), [dateRange]);
-  const rangeLabel = rangeCopy(dateRange);
+    if (!locked) return withoutActive;
+    return withoutActive.filter((call) => call.storeKey === locked);
+  }, [phone.activeCall?.id, phone.incoming, storeFilter]);
+  const rangeLabel = windowCopy(dateMode, startDate, endDate);
+  const rangeShort = windowCopy(dateMode, startDate, endDate, { sentence: false });
   const visibleCalls = useMemo(
-    () => (Array.isArray(calls) ? calls : []).filter((row) => inDateRange(row.startTime, rangeSince)),
-    [calls, rangeSince],
+    () => (Array.isArray(calls) ? calls : []).filter((row) => inWindow(row.startTime, span)),
+    [calls, span],
   );
   const visibleVoicemails = useMemo(
-    () => (Array.isArray(voicemails) ? voicemails : []).filter((row) => inDateRange(row.creationTime, rangeSince)),
-    [voicemails, rangeSince],
+    () => (Array.isArray(voicemails) ? voicemails : []).filter((row) => inWindow(row.creationTime, span)),
+    [voicemails, span],
   );
   const inboundCalls = useMemo(() => inboundCallsUnique(visibleCalls), [visibleCalls]);
-  const todayCalls = useMemo(
-    () => (Array.isArray(calls) ? calls : []).filter((row) => inDateRange(row.startTime, rangeSinceMs('today'))),
-    [calls],
-  );
+  const todayCalls = useMemo(() => {
+    const today = todayWindow();
+    return callsForStore(phone.mergedCallsByStore, storeKey).filter((row) => inWindow(row.startTime, today));
+  }, [phone.mergedCallsByStore, storeKey]);
+
+  // Stores whose history the chosen dates need: the open store first so its
+  // tabs fill quickly, then the rest for the store chips and ratio list.
+  const historyStoreKeys = useMemo(() => {
+    if (!needsHistory) return [];
+    const keys = [];
+    if (storeKey && !showStores) keys.push(storeKey);
+    for (const row of connectedStores) {
+      if (row?.storeKey && !keys.includes(row.storeKey)) keys.push(row.storeKey);
+    }
+    return keys;
+  }, [connectedStores, needsHistory, showStores, storeKey]);
+
+  useEffect(() => {
+    if (!historyStoreKeys.length) return undefined;
+    const id = ++historyRequest.current;
+    const windowKey = span.key;
+    const dateFrom = new Date(span.start);
+    const dateTo = new Date(span.end);
+    let cancelled = false;
+    (async () => {
+      setHistoryError('');
+      let firstError = '';
+      for (const key of historyStoreKeys) {
+        if (cancelled || id !== historyRequest.current) return;
+        const have = historyByStore[key];
+        if (have && have.windowKey === windowKey) continue;
+        // Store the request id so a superseded run can't clear a newer run's spinner.
+        setHistoryLoading((current) => ({ ...current, [key]: id }));
+        try {
+          const payload = await fetchPhoneHistory(key, { dateFrom, dateTo });
+          if (cancelled || id !== historyRequest.current) return;
+          setHistoryByStore((current) => ({
+            ...current,
+            [key]: {
+              windowKey,
+              calls: payload.calls || [],
+              voicemails: payload.voicemails || [],
+              callLogError: payload.callLogError || '',
+              voicemailError: payload.voicemailError || '',
+              at: Date.now(),
+            },
+          }));
+          if (!firstError && payload.callLogError && !(payload.calls || []).length) firstError = payload.callLogError;
+        } catch (err) {
+          if (cancelled || id !== historyRequest.current) return;
+          if (!firstError) firstError = err?.message || 'Could not load calls for those dates.';
+        } finally {
+          setHistoryLoading((current) => (current[key] === id ? { ...current, [key]: 0 } : current));
+        }
+      }
+      if (!cancelled && id === historyRequest.current && firstError) setHistoryError(firstError);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // historyByStore is read for cache hits only; re-running on its change would loop.
+  }, [historyReload, historyStoreKeys, span.end, span.key, span.start]); // eslint-disable-line react-hooks/exhaustive-deps
   const outboundCalls = visibleCalls.filter((row) => row.direction === 'Outbound');
   const ratio = useMemo(() => inboundCallRatio(visibleCalls), [visibleCalls]);
   const storeRatios = useMemo(() => {
@@ -857,13 +1165,11 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
       if (row?.storeName) names.add(row.storeName);
     }
     for (const name of names) {
-      const storeCalls = callsForStore(phone.mergedCallsByStore, name).filter((call) =>
-        inDateRange(call.startTime, rangeSince),
-      );
+      const storeCalls = sourceCalls(name).filter((call) => inWindow(call.startTime, span));
       next[storeKeyFromName(name)] = inboundCallRatio(storeCalls);
     }
     return next;
-  }, [connectedStores, phone.mergedCallsByStore, rangeSince, rows]);
+  }, [connectedStores, rows, sourceCalls, span]);
   const answeredCalls = inboundCalls.filter((row) => isAnsweredInbound(row));
   const missedCalls = inboundCalls.filter((row) => !isAnsweredInbound(row));
   const callLog = useMemo(() => {
@@ -881,13 +1187,14 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
         return;
       }
       try {
-        await phone.ringOut(number, activeAccount?.mainNumber);
+        await phone.dial(number, { storeKey, from: activeAccount?.mainNumber });
         setError('');
+        setTab('dial');
       } catch (err) {
         setError(err?.message || 'Could not start the call.');
       }
     },
-    [activeAccount?.mainNumber, phone],
+    [activeAccount?.mainNumber, phone, storeKey],
   );
 
   const goToStoreList = useCallback(() => {
@@ -976,21 +1283,41 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
     [applyStoreAccount],
   );
 
+  const activeCall = phone.activeCall || null;
+  const inBrowserCall = Boolean(activeCall?.web);
+  const browserDialing = Boolean(phone.canDialInBrowser?.(storeKey));
+
   const appendDigit = (value) => {
+    if (inBrowserCall && isConnectedStatus(activeCall?.status)) {
+      // During a call the keypad drives the far end (IVR menus, extensions).
+      phone.sendDtmf?.(value);
+      setDigits((current) => `${current}${value}`.slice(-16));
+      return;
+    }
     setDigits((current) => `${current}${value}`.replace(/[^\d*#]/g, '').slice(0, 16));
   };
 
   const placeCall = async () => {
-    const number = digits.replace(/[^\d+]/g, '');
+    const number = digits.replace(/[^\d+*#]/g, '');
     if (!number) {
       setError('Enter a number to call.');
       return;
     }
     try {
-      await phone.ringOut(number, activeAccount?.mainNumber);
+      await phone.dial(number, { storeKey, from: activeAccount?.mainNumber });
       setError('');
+      setDigits('');
     } catch (err) {
       setError(err?.message || 'Could not start the call.');
+    }
+  };
+
+  const endCall = async () => {
+    try {
+      await phone.hangup(activeCall);
+      setDigits('');
+    } catch (err) {
+      setError(err?.message || 'Could not hang up.');
     }
   };
 
@@ -1049,6 +1376,29 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
       </Pressable>
     </View>
   );
+
+  const dateFilter = (
+    <DateFilter
+      mode={dateMode}
+      startDate={startDate}
+      endDate={endDate}
+      onMode={selectDateMode}
+      onDay={handleDayChange}
+      onStart={handleStartChange}
+      onEnd={handleEndChange}
+    />
+  );
+  const historyBusy = needsHistory && historyStoreKeys.some((key) => historyLoading[key]);
+  const historyNote = needsHistory ? (
+    historyBusy ? (
+      <View style={styles.historyRow}>
+        <ActivityIndicator size="small" color={ACCENT} />
+        <Text style={styles.sectionMeta}>Loading calls {rangeShort}…</Text>
+      </View>
+    ) : historyError ? (
+      <Text style={styles.warningText}>{historyError}</Text>
+    ) : null
+  ) : null;
 
   if (!session?.token) {
     return (
@@ -1112,7 +1462,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
             {selected.key === storeKey ? (
               <>
                 <Text style={styles.detailLabel}>Answered to missed</Text>
-                <RatioStrip stats={ratio} compact rangeLabel={rangeLabel} />
+                <RatioStrip stats={ratio} compact rangeLabel={rangeLabel} rangeShort={rangeShort} />
               </>
             ) : null}
             {account?.lastError ? <Text style={styles.cellError}>{account.lastError}</Text> : null}
@@ -1213,6 +1563,8 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
               />
             </View>
           </View>
+          {dateFilter}
+          {historyNote}
           {warning ? <Text style={styles.warningText}>{warning}</Text> : null}
           {rows.map((row) => {
             const account = row.account;
@@ -1323,20 +1675,52 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
           </Pressable>
         ) : null}
 
-        <View style={styles.dateRow}>
-          {DATE_RANGES.map((item) => {
-            const active = dateRange === item.key;
-            return (
+        {dateFilter}
+        {historyNote}
+
+        {activeCall ? (
+          <View style={styles.onCallBanner} accessibilityLabel={`${activeCallKicker(activeCall)} ${callPartyLabel(activeCall, { formatPhone: formatPhoneNumber })}`}>
+            <View style={styles.itemText}>
+              <Text style={styles.liveKicker}>
+                {activeCallKicker(activeCall)} · {activeCall.storeName || 'Store'}
+              </Text>
+              <Text style={styles.inCallParty} numberOfLines={1}>
+                {callPartyLabel(activeCall, { formatPhone: formatPhoneNumber })}
+              </Text>
+              {isConnectedStatus(activeCall.status) ? (
+                <CallTimer since={activeCall.answeredAt || Date.parse(activeCall.startTime)} style={styles.inCallTimer} />
+              ) : (
+                <Text style={styles.sectionMeta}>
+                  {activeCall.direction === 'Outbound' ? 'Ringing the other party…' : 'Connecting…'}
+                </Text>
+              )}
+            </View>
+            <View style={styles.liveActions}>
+              {inBrowserCall ? (
+                <Pressable
+                  style={[styles.callBtn, styles.muteBtn, phone.muted && styles.muteBtnOn]}
+                  onPress={phone.toggleMute}
+                  disabled={!isConnectedStatus(activeCall.status)}
+                  accessibilityLabel={phone.muted ? 'Unmute microphone' : 'Mute microphone'}
+                >
+                  <Ionicons name={phone.muted ? 'mic-off' : 'mic'} size={14} color={phone.muted ? '#B45309' : '#1a1a1a'} />
+                </Pressable>
+              ) : null}
               <Pressable
-                key={item.key}
-                style={[styles.dateChip, active && styles.dateChipActive]}
-                onPress={() => setDateRange(item.key)}
+                style={[styles.callBtn, styles.rejectBtn, phone.busy && styles.placeCallDisabled]}
+                onPress={endCall}
+                disabled={phone.busy}
+                accessibilityLabel="Hang up"
               >
-                <Text style={[styles.dateChipText, active && styles.dateChipTextActive]}>{item.label}</Text>
+                {phone.busy ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={styles.callBtnText}>Hang up</Text>
+                )}
               </Pressable>
-            );
-          })}
-        </View>
+            </View>
+          </View>
+        ) : null}
 
         <View style={styles.tabs}>
           {TABS.map((item) => {
@@ -1466,14 +1850,26 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
 
         {tab === 'dial' ? (
           <View style={styles.section}>
+            {activeCall ? (
+              <View style={styles.inCallCard}>
+                <Text style={styles.sectionMeta}>
+                  {inBrowserCall && isConnectedStatus(activeCall.status)
+                    ? 'Keypad sends tones to the other side.'
+                    : inBrowserCall
+                      ? 'Connecting in this browser…'
+                      : 'This call is on the store phone.'}
+                </Text>
+              </View>
+            ) : null}
             <TextInput
               style={styles.dialInput}
               value={digits}
               onChangeText={(value) => setDigits(value.replace(/[^\d*#+]/g, '').slice(0, 16))}
-              placeholder="Enter number"
+              placeholder={activeCall ? '' : 'Enter number'}
               placeholderTextColor="#8e8e93"
               keyboardType="phone-pad"
               textAlign="center"
+              editable={!inBrowserCall}
             />
             <View style={styles.keypad}>
               {KEYPAD.map((key) => (
@@ -1483,19 +1879,52 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
               ))}
             </View>
             <View style={styles.dialActions}>
-              <Pressable style={styles.backspace} onPress={() => setDigits((current) => current.slice(0, -1))} disabled={!digits}>
-                <Ionicons name="backspace-outline" size={20} color={digits ? '#1a1a1a' : '#c4c4c4'} />
-              </Pressable>
-              <Pressable
-                style={[styles.placeCall, (!digits || phone.busy) && styles.placeCallDisabled]}
-                onPress={placeCall}
-                disabled={!digits || phone.busy}
-              >
-                {phone.busy ? <ActivityIndicator color="#fff" /> : <Ionicons name="call" size={22} color="#fff" />}
-              </Pressable>
+              {inBrowserCall ? (
+                <Pressable
+                  style={[styles.backspace, phone.muted && styles.muteActive]}
+                  onPress={phone.toggleMute}
+                  disabled={!isConnectedStatus(activeCall?.status)}
+                  accessibilityLabel={phone.muted ? 'Unmute microphone' : 'Mute microphone'}
+                >
+                  <Ionicons name={phone.muted ? 'mic-off' : 'mic'} size={20} color={phone.muted ? '#B45309' : '#1a1a1a'} />
+                </Pressable>
+              ) : (
+                <Pressable
+                  style={styles.backspace}
+                  onPress={() => setDigits((current) => current.slice(0, -1))}
+                  disabled={!digits}
+                >
+                  <Ionicons name="backspace-outline" size={20} color={digits ? '#1a1a1a' : '#c4c4c4'} />
+                </Pressable>
+              )}
+              {activeCall ? (
+                <Pressable
+                  style={[styles.placeCall, styles.hangupCall, phone.busy && styles.placeCallDisabled]}
+                  onPress={endCall}
+                  disabled={phone.busy}
+                  accessibilityLabel="Hang up"
+                >
+                  {phone.busy ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Ionicons name="call" size={22} color="#fff" style={styles.hangupIcon} />
+                  )}
+                </Pressable>
+              ) : (
+                <Pressable
+                  style={[styles.placeCall, (!digits || phone.busy) && styles.placeCallDisabled]}
+                  onPress={placeCall}
+                  disabled={!digits || phone.busy}
+                  accessibilityLabel="Call"
+                >
+                  {phone.busy ? <ActivityIndicator color="#fff" /> : <Ionicons name="call" size={22} color="#fff" />}
+                </Pressable>
+              )}
             </View>
             <Text style={styles.sectionMeta}>
-              This rings the store phone first, then connects the number you dialed.
+              {browserDialing
+                ? `Calls are placed from this browser${activeAccount?.mainNumber ? ` and show ${formatPhoneNumber(activeAccount.mainNumber)} to the person you call` : ''}.`
+                : 'This rings the store phone first, then connects the number you dialed.'}
             </Text>
             {outboundCalls.length === 0 ? (
               <Text style={styles.emptyText}>No outbound calls {rangeLabel}.</Text>
@@ -1586,8 +2015,14 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
                 })}
               </View>
             ) : null}
-            <RatioStrip stats={ratio} rangeLabel={rangeLabel} />
-            <RatioDayChart calls={todayCalls} />
+            <RatioStrip stats={ratio} rangeLabel={rangeLabel} rangeShort={rangeShort} />
+            {dateMode === 'range' && formatDateParam(startDate) !== formatDateParam(endDate) ? null : (
+              <RatioDayChart
+                calls={dateMode === 'today' ? todayCalls : visibleCalls}
+                anchor={span.start + 12 * 60 * 60 * 1000}
+                label={rangeLabel}
+              />
+            )}
             <View style={styles.ratioStats}>
               <View style={styles.ratioStat}>
                 <Text style={styles.summaryLabel}>Voicemail</Text>
@@ -1859,13 +2294,20 @@ const styles = StyleSheet.create({
   dateRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 6,
+    alignItems: 'center',
+    gap: 8,
+  },
+  dateModeGroup: {
+    flexDirection: 'row',
+    backgroundColor: '#f3f3f3',
+    borderRadius: 999,
+    padding: 2,
+    gap: 2,
   },
   dateChip: {
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 999,
-    backgroundColor: '#f3f3f3',
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -1873,6 +2315,78 @@ const styles = StyleSheet.create({
   },
   dateChipActive: {
     backgroundColor: '#ECFDF5',
+  },
+  dateRangeSep: {
+    fontFamily,
+    fontSize: 14,
+    color: '#8a8a8a',
+  },
+  pickChip: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e0e0e0',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: '#fff',
+    minHeight: 36,
+    justifyContent: 'center',
+    gap: 1,
+  },
+  pickChipLabel: {
+    fontFamily,
+    fontSize: 9,
+    fontWeight: '600',
+    color: '#8a8a8a',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  pickChipControl: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  pickChipValue: {
+    fontFamily,
+    fontSize: 13,
+    color: '#1a1a1a',
+    fontWeight: '500',
+  },
+  pickModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.28)',
+    justifyContent: 'flex-end',
+  },
+  pickModalCard: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingBottom: 24,
+  },
+  pickModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e6e6e6',
+  },
+  pickModalTitle: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1a1a1a',
+  },
+  pickModalDone: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: ACCENT,
+  },
+  historyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   dateChipText: {
     fontFamily,
@@ -2594,6 +3108,59 @@ const styles = StyleSheet.create({
   },
   placeCallDisabled: {
     opacity: 0.45,
+  },
+  hangupCall: {
+    backgroundColor: '#B91C1C',
+  },
+  hangupIcon: {
+    transform: [{ rotate: '135deg' }],
+  },
+  muteActive: {
+    borderRadius: 24,
+    backgroundColor: '#FEF3C7',
+  },
+  inCallCard: {
+    gap: 2,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: '#ECFDF5',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#BBF7D0',
+  },
+  inCallParty: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1a1a1a',
+  },
+  onCallBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: '#ECFDF5',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#BBF7D0',
+  },
+  inCallTimer: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '700',
+    color: ACCENT,
+    fontVariant: ['tabular-nums'],
+  },
+  muteBtn: {
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#d4d4d4',
+    minWidth: 36,
+  },
+  muteBtnOn: {
+    backgroundColor: '#FEF3C7',
+    borderColor: '#F59E0B',
   },
   playBtn: {
     width: 32,

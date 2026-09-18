@@ -6355,7 +6355,9 @@ export default function App() {
             <Text style={styles.breadcrumbCurrent}>{activeTool.label}</Text>
           )}
         </View>
-        {activeTool.key === 'triage' && triageNav ? <View style={styles.breadcrumbNav}>{triageNav}</View> : null}
+        {(activeTool.key === 'triage' || activeTool.key === 'audit') && triageNav ? (
+          <View style={styles.breadcrumbNav}>{triageNav}</View>
+        ) : null}
       </View>
     );
   };
@@ -6432,6 +6434,7 @@ export default function App() {
                 session={session}
                 onRequireLogin={() => selectTab('profile')}
                 storeFilter={scopedStore || undefined}
+                onNavTabs={setTriageNav}
               />
             ) : activeTool.key === 'emails' ? (
               <View style={styles.messagesHost}>

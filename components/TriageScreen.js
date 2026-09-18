@@ -36,6 +36,9 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-triage-table-row:hover > *,.cgold-triage-table-row:has(:hover) > *,.cgold-triage-table-row.is-hover > *{background-color:transparent!important;}',
     '.cgold-triage-row-selected,.cgold-triage-row-selected:hover{background-color:#EAF2FF!important;}',
     '.cgold-accuracy-row:hover{background-color:#f5f5f7!important;}',
+    '.cgold-chrome-stats-btn{cursor:pointer;transition:background-color .12s ease,border-color .12s ease;}',
+    '.cgold-chrome-stats-btn:hover{background-color:#f5f5f7;}',
+    '.cgold-chrome-stats-btn-attention:hover{background-color:rgba(0,122,255,0.16);}',
   ].join('');
 }
 
@@ -49,7 +52,7 @@ const TRIAGE_TABS = [
   { key: 'deleted', label: 'Deleted', icon: 'trash-outline' },
 ];
 
-function ChromeStats({ items, onPress, accessibilityLabel, wide = false }) {
+function ChromeStats({ items, onPress, accessibilityLabel, wide = false, actionLabel, attention = false }) {
   if (!items?.length) return null;
   const body = (
     <View style={[styles.chromeStats, wide && styles.chromeStatsWide]}>
@@ -74,13 +77,25 @@ function ChromeStats({ items, onPress, accessibilityLabel, wide = false }) {
   if (!onPress) return body;
   return (
     <Pressable
-      style={[styles.chromeStatsHit, wide && styles.chromeStatsHitWide]}
+      style={({ pressed }) => [
+        styles.chromeStatsHit,
+        wide && styles.chromeStatsHitWide,
+        attention && styles.chromeStatsHitAttention,
+        pressed && (attention ? styles.chromeStatsHitAttentionPressed : styles.chromeStatsHitPressed),
+      ]}
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel || 'Open details'}
+      accessibilityHint={actionLabel ? `Opens ${actionLabel.toLowerCase()}` : undefined}
+      {...(Platform.OS === 'web'
+        ? { className: attention ? 'cgold-chrome-stats-btn cgold-chrome-stats-btn-attention' : 'cgold-chrome-stats-btn' }
+        : null)}
     >
       {body}
-      <Ionicons name="chevron-forward" size={16} color={T.secondary} />
+      <View style={styles.chromeStatsCta}>
+        {actionLabel ? <Text style={styles.chromeStatsAction}>{actionLabel}</Text> : null}
+        <Ionicons name="chevron-forward" size={15} color={T.blue} />
+      </View>
     </Pressable>
   );
 }
@@ -254,6 +269,8 @@ export default function TriageScreen({
             { label: dailyStatus.label, value: dailyStatus.value, tone: dailyStatus.tone },
           ]}
           onPress={() => setDailyOpen(true)}
+          actionLabel={dailySummary.allChecked ? 'Open' : 'Check'}
+          attention={!dailySummary.allChecked && dailySummary.cells > 0}
           accessibilityLabel="Open the daily receipt check"
         />
         {storeTab === 'melt' ? (
@@ -287,6 +304,7 @@ export default function TriageScreen({
           },
         ]}
         onPress={() => setAccuracyBreakdownOpen(true)}
+        actionLabel="Details"
         accessibilityLabel="Open errors breakdown"
       />
     ) : session?.token && activeTab === 'deleted' ? (
@@ -488,26 +506,54 @@ const styles = StyleSheet.create({
     gap: 10,
     maxWidth: 268,
     rowGap: 2,
+    flexShrink: 1,
   },
   chromeStatsWide: {
     maxWidth: 520,
   },
   chromeStatsHit: {
+    minHeight: 32,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    maxWidth: 300,
+    gap: 8,
+    maxWidth: 360,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
+    backgroundColor: T.card,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
   chromeStatsHitWide: {
-    maxWidth: 560,
-    paddingVertical: 4,
-    paddingLeft: 8,
-    paddingRight: 4,
-    borderRadius: 8,
+    maxWidth: 640,
+  },
+  chromeStatsHitPressed: {
+    backgroundColor: '#f5f5f7',
+  },
+  chromeStatsHitAttention: {
+    backgroundColor: 'rgba(0,122,255,0.10)',
+    borderColor: 'rgba(0,122,255,0.38)',
+  },
+  chromeStatsHitAttentionPressed: {
+    backgroundColor: 'rgba(0,122,255,0.16)',
+  },
+  chromeStatsCta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    flexShrink: 0,
+    marginLeft: 2,
+  },
+  chromeStatsAction: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '600',
+    color: T.blue,
+    letterSpacing: -0.15,
   },
   chromeStat: {
     flexDirection: 'row',

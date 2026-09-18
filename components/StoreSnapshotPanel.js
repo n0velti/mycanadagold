@@ -100,6 +100,7 @@ function hasDrawerActivity(drawer) {
   return (
     Math.abs(drawer.openingBalance || 0) > 0 ||
     Math.abs(drawer.expectedOnHand || 0) > 0 ||
+    Math.abs(drawer.aureusOnHand || 0) > 0 ||
     Math.abs(drawer.movementNet || 0) > 0 ||
     (drawer.paymentRows || []).length > 0 ||
     (drawer.cashTransactions || []).length > 0
@@ -253,13 +254,23 @@ function EmployeeRow({ person, last }) {
   );
 }
 
-function ExpectedCash({ drawer }) {
-  if (!drawer) return null;
-  const currency = drawer.currency || 'CAD';
+function ExpectedCash({ cad, usd }) {
+  if (!cad && !usd) return null;
+  const cadAmt = cad?.aureusOnHand ?? cad?.expectedOnHand ?? 0;
+  const usdAmt = usd?.aureusOnHand ?? usd?.expectedOnHand ?? 0;
+  const showUsd = Math.abs(usdAmt) >= 0.005 || hasDrawerActivity(usd);
+  const cadMoved = Math.abs(cad?.movementNet || 0) >= 0.005;
   return (
     <View style={styles.cashHero}>
-      <Text style={styles.cashHeroLabel}>Expected {currency}</Text>
-      <Text style={styles.cashHeroValue}>{formatAmount(drawer.expectedOnHand, currency)}</Text>
+      <Text style={styles.cashHeroLabel}>CAD till</Text>
+      <Text style={styles.cashHeroValue}>{formatAmount(cadAmt, 'CAD')}</Text>
+      {showUsd ? (
+        <Text style={styles.cashHeroUsd}>USD {formatAmount(usdAmt, 'USD')}</Text>
+      ) : null}
+      <Text style={styles.cashHeroMeta}>
+        Open {formatAmount(cad?.openingBalance, 'CAD')}
+        {cadMoved ? ` · Today ${formatAmount(cad.movementNet, 'CAD')}` : ''}
+      </Text>
     </View>
   );
 }
@@ -1166,7 +1177,6 @@ function StoreSnapshotPanel({
   }, []);
 
   const cashSlips = useTxnCashBreakdowns(txRows);
-  const showUsd = hasDrawerActivity(cash?.usd);
   const txMeta = `${periodLabel} · ${txRows.length}`;
   const itemMeta = searching
     ? `${allItems.length} match${allItems.length === 1 ? '' : 'es'}`
@@ -1265,8 +1275,7 @@ function StoreSnapshotPanel({
     <LoadingRow />
   ) : cash ? (
     <View style={styles.cashHeroStack}>
-      <ExpectedCash drawer={cash.cad} />
-      {showUsd ? <ExpectedCash drawer={cash.usd} /> : null}
+      <ExpectedCash cad={cash.cad} usd={cash.usd} />
     </View>
   ) : (
     <EmptyRow text="No cash data for this store." />
@@ -1727,6 +1736,23 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: LABEL,
     letterSpacing: -0.6,
+    fontVariant: ['tabular-nums'],
+  },
+  cashHeroUsd: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: SECONDARY,
+    letterSpacing: -0.2,
+    fontVariant: ['tabular-nums'],
+    marginTop: -2,
+  },
+  cashHeroMeta: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '500',
+    color: SECONDARY,
+    letterSpacing: -0.08,
     fontVariant: ['tabular-nums'],
   },
   employeeAvatar: {
