@@ -13,8 +13,8 @@ import {
   restoreTriageDeleted,
   useTransferWorkflow,
 } from '../lib/transferWorkflow';
-import { confirmDestructive, EmptyState, FONT, Group, T } from './TriageKit';
-import { useIsMobile } from '../lib/mobileUi';
+import { confirmDestructive, EmptyState, FONT, Group, MobileListRow, T } from './TriageKit';
+import { MOBILE, useIsMobile } from '../lib/mobileUi';
 import { docNoun, PoThumb } from './TriageTable';
 
 const webCursor = Platform.select({ web: { cursor: 'pointer' }, default: {} });
@@ -32,6 +32,27 @@ function formatDeletedAt(iso) {
 
 function DeletedRow({ title, subtitle, meta, thumb, last, onRestore, onPurge }) {
   const isMobile = useIsMobile();
+  if (isMobile) {
+    return (
+      <MobileListRow
+        title={title}
+        subtitle={subtitle}
+        meta={meta}
+        last={last}
+        leading={thumb}
+        trailing={
+          <View style={styles.actionsMobile}>
+            <Pressable style={styles.action} onPress={onRestore} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Restore ${title}`}>
+              <Text style={styles.restoreText}>Restore</Text>
+            </Pressable>
+            <Pressable style={styles.action} onPress={onPurge} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Delete ${title}`}>
+              <Text style={styles.purgeText}>Delete</Text>
+            </Pressable>
+          </View>
+        }
+      />
+    );
+  }
   return (
     <View style={[styles.row, isMobile && styles.rowMobile, last && styles.rowLast]}>
       <View style={styles.rowMain}>
@@ -80,7 +101,7 @@ function deletedRowProps(entry) {
   if (entry.kind === 'doc') {
     const item = entry.item;
     return {
-      thumb: <PoThumb urls={item?.imageUrls} label={item?.reference} />,
+      thumb: <PoThumb urls={item?.imageUrls} label={item?.reference} size={52} />,
       title: item?.reference || 'Document',
       subtitle: [item?.storeName || entry.storeName, entry.sourceDateLabel, item?.customerName]
         .filter(Boolean)
@@ -90,7 +111,7 @@ function deletedRowProps(entry) {
   if (entry.kind === 'po') {
     const item = flattenBatchPos(entry.payload)[0];
     return {
-      thumb: <PoThumb urls={item?.imageUrls} label={item?.reference} />,
+      thumb: <PoThumb urls={item?.imageUrls} label={item?.reference} size={52} />,
       title: item?.reference || 'PO',
       subtitle: [item?.storeName, item?.dateLabel, item?.customerName].filter(Boolean).join(' · '),
     };
@@ -107,6 +128,7 @@ function deletedRowProps(entry) {
 
 export default function TriageDeletedPanel({ session, query = '' }) {
   const { deleted = [] } = useTransferWorkflow();
+  const isMobile = useIsMobile();
   const rows = useMemo(
     () =>
       deleted
@@ -159,7 +181,7 @@ export default function TriageDeletedPanel({ session, query = '' }) {
   }
 
   return (
-    <ScrollView style={styles.body} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+    <ScrollView style={[styles.body, isMobile && styles.bodyMobile]} contentContainerStyle={[styles.content, isMobile && styles.contentMobile]} showsVerticalScrollIndicator={false}>
       {visible.length === 0 ? (
         <EmptyState
           icon="trash-outline"
@@ -194,11 +216,17 @@ const styles = StyleSheet.create({
     minHeight: 0,
     backgroundColor: T.bg,
   },
+  bodyMobile: {
+    backgroundColor: MOBILE.bg,
+  },
   content: {
     paddingHorizontal: 16,
     paddingTop: 8,
     paddingBottom: 24,
     flexGrow: 1,
+  },
+  contentMobile: {
+    paddingBottom: 40,
   },
   row: {
     flexDirection: 'row',
@@ -253,10 +281,10 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
   actionsMobile: {
-    width: '100%',
-    justifyContent: 'flex-end',
-    paddingBottom: 8,
-    paddingRight: 8,
+    flexDirection: 'column',
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    gap: 2,
   },
   action: {
     paddingHorizontal: 10,

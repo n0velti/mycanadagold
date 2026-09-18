@@ -4,7 +4,6 @@ import {
   Modal,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -22,7 +21,7 @@ import {
   noteCategoryLabel,
   noteImportanceLabel,
 } from '../lib/profileNotes';
-import { useIsMobile } from '../lib/mobileUi';
+import { MOBILE, useIsMobile } from '../lib/mobileUi';
 
 const fontFamily = 'Sohne';
 const GOLD = '#E8C36A';
@@ -369,6 +368,136 @@ function NoteRow({ note, myId, canDelete, onDelete, deleting }) {
   );
 }
 
+function MobileComposer({ draft, onChange, onSave, onCancel, saving, canSave }) {
+  const [picker, setPicker] = useState(null);
+  const importanceColor = IMPORTANCE_COLOR[draft.importance] || IMPORTANCE_COLOR.medium;
+
+  return (
+    <View style={styles.mobileCard}>
+      <TextInput
+        value={draft.body}
+        onChangeText={(body) => onChange({ ...draft, body })}
+        placeholder="Write a note"
+        placeholderTextColor={MOBILE.secondary}
+        multiline
+        autoFocus
+        style={styles.mobileField}
+        textAlignVertical="top"
+      />
+      <View style={styles.mobileChipRow}>
+        <Pressable
+          onPress={() => setPicker('due')}
+          style={styles.mobileChip}
+          accessibilityRole="button"
+          accessibilityLabel={draft.dueOn ? `Due ${formatNoteDate(draft.dueOn)}` : 'Set due date'}
+        >
+          <Ionicons name="calendar-outline" size={15} color={draft.dueOn ? GOLD : MOBILE.secondary} />
+          <Text style={[styles.mobileChipText, !draft.dueOn && styles.mobilePlaceholder]} numberOfLines={1}>
+            {draft.dueOn ? formatNoteDate(draft.dueOn) : 'Due'}
+          </Text>
+        </Pressable>
+        <Pressable
+          onPress={() => setPicker('category')}
+          style={styles.mobileChip}
+          accessibilityRole="button"
+          accessibilityLabel={`Category ${noteCategoryLabel(draft.category)}`}
+        >
+          <Text style={styles.mobileChipText} numberOfLines={1}>
+            {noteCategoryLabel(draft.category)}
+          </Text>
+        </Pressable>
+        <Pressable
+          onPress={() => setPicker('importance')}
+          style={styles.mobileChip}
+          accessibilityRole="button"
+          accessibilityLabel={`Importance ${noteImportanceLabel(draft.importance)}`}
+        >
+          <Text style={[styles.mobileChipText, { color: importanceColor }]} numberOfLines={1}>
+            {noteImportanceLabel(draft.importance)}
+          </Text>
+        </Pressable>
+      </View>
+      <View style={styles.mobileComposerActions}>
+        <Pressable onPress={onCancel} disabled={saving} hitSlop={8} accessibilityRole="button" accessibilityLabel="Cancel note">
+          <Text style={styles.mobileCancel}>Cancel</Text>
+        </Pressable>
+        <Pressable
+          onPress={onSave}
+          disabled={saving || !canSave}
+          accessibilityRole="button"
+          accessibilityLabel="Save note"
+          style={[styles.mobileSave, (!canSave || saving) && styles.mobileSaveDisabled]}
+        >
+          {saving ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.mobileSaveText}>Save</Text>}
+        </Pressable>
+      </View>
+      <CalendarModal
+        visible={picker === 'due'}
+        value={draft.dueOn}
+        onChange={(dueOn) => onChange({ ...draft, dueOn })}
+        onClose={() => setPicker(null)}
+      />
+      <ChoiceModal
+        visible={picker === 'category'}
+        title="Category"
+        options={NOTE_CATEGORIES}
+        value={draft.category}
+        onChange={(category) => onChange({ ...draft, category })}
+        onClose={() => setPicker(null)}
+      />
+      <ChoiceModal
+        visible={picker === 'importance'}
+        title="Importance"
+        options={NOTE_IMPORTANCE}
+        value={draft.importance}
+        onChange={(importance) => onChange({ ...draft, importance })}
+        onClose={() => setPicker(null)}
+      />
+    </View>
+  );
+}
+
+function MobileNoteCard({ note, myId, canDelete, onDelete, deleting }) {
+  const fromLabel = note.authorId === myId ? 'You' : note.authorName;
+  const importanceColor = IMPORTANCE_COLOR[note.importance] || IMPORTANCE_COLOR.medium;
+  const meta = [
+    fromLabel,
+    formatNoteDate(note.createdAt),
+    note.dueOn ? `Due ${formatNoteDate(note.dueOn)}` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  return (
+    <View style={styles.mobileCard}>
+      <Text style={styles.mobileNoteBody}>{note.body}</Text>
+      <Text style={styles.mobileNoteMeta}>{meta}</Text>
+      <View style={styles.mobileNoteFooter}>
+        <Text style={styles.mobileNoteTag}>{noteCategoryLabel(note.category)}</Text>
+        <Text style={[styles.mobileNoteTag, styles.mobileNoteImportance, { color: importanceColor }]}>
+          {noteImportanceLabel(note.importance)}
+        </Text>
+        {canDelete ? (
+          <Pressable
+            onPress={onDelete}
+            disabled={deleting}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Delete note"
+            style={styles.mobileDelete}
+          >
+            {deleting ? (
+              <ActivityIndicator size="small" color={MOBILE.secondary} />
+            ) : (
+              <Ionicons name="trash-outline" size={16} color={MOBILE.secondary} />
+            )}
+          </Pressable>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
 export default function ProfileNotesTable({ profileId, myId }) {
   const isMobile = useIsMobile();
   const [notes, setNotes] = useState([]);
@@ -517,9 +646,64 @@ export default function ProfileNotesTable({ profileId, myId }) {
   return (
     <View style={[styles.wrap, isMobile && styles.wrapMobile]}>
       {isMobile ? (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.hScroll}>
-          {table}
-        </ScrollView>
+        <View style={styles.mobileWrap}>
+          <View style={styles.mobileHead}>
+            <Text style={styles.mobileTitle}>Notes</Text>
+            <Pressable
+              onPress={startAdd}
+              disabled={!profileId || Boolean(draft)}
+              style={({ pressed }) => [
+                styles.mobileAdd,
+                pressed && styles.addButtonPressed,
+                (!profileId || draft) && styles.addButtonDisabled,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Add note"
+            >
+              <Ionicons name="add" size={20} color="#007AFF" />
+              <Text style={styles.mobileAddText}>Add</Text>
+            </Pressable>
+          </View>
+          {draft ? (
+            <MobileComposer
+              draft={draft}
+              onChange={setDraft}
+              onSave={() => void handleSave()}
+              onCancel={() => {
+                if (!saving) {
+                  setDraft(null);
+                  setSaveError('');
+                }
+              }}
+              saving={saving}
+              canSave={Boolean(draft.body.trim())}
+            />
+          ) : null}
+          {loading ? (
+            <View style={styles.mobileEmpty}>
+              <ActivityIndicator color="#007AFF" />
+            </View>
+          ) : notes.length === 0 && !draft ? (
+            <View style={styles.mobileEmptyCard}>
+              <Text style={styles.mobileEmptyText}>
+                {error || 'No notes yet. Add one to keep a record on this profile.'}
+              </Text>
+            </View>
+          ) : (
+            notes.map((note) => (
+              <MobileNoteCard
+                key={note.id}
+                note={note}
+                myId={myId}
+                canDelete={note.authorId === myId || note.profileId === myId}
+                deleting={deletingId === note.id}
+                onDelete={() => void handleDelete(note.id)}
+              />
+            ))
+          )}
+          {saveError ? <Text style={styles.mobileError}>{saveError}</Text> : null}
+          {error && notes.length > 0 ? <Text style={styles.mobileError}>{error}</Text> : null}
+        </View>
       ) : (
         table
       )}
@@ -533,7 +717,7 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   wrapMobile: {
-    marginTop: 20,
+    marginTop: 0,
   },
   hScroll: {
     minWidth: 780,
@@ -714,6 +898,183 @@ const styles = StyleSheet.create({
     color: '#ff453a',
     paddingHorizontal: 16,
     paddingBottom: 12,
+  },
+  mobileWrap: {
+    width: '100%',
+    gap: 10,
+  },
+  mobileHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 22,
+    paddingBottom: 7,
+  },
+  mobileTitle: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: MOBILE.secondary,
+    letterSpacing: -0.08,
+  },
+  mobileAdd: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  mobileAddText: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '400',
+    color: '#007AFF',
+    letterSpacing: -0.2,
+  },
+  mobileCard: {
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 8,
+  },
+  mobileField: {
+    fontFamily,
+    fontSize: 17,
+    color: MOBILE.label,
+    letterSpacing: -0.3,
+    minHeight: 88,
+    padding: 0,
+    ...Platform.select({
+      web: { outlineStyle: 'none' },
+      default: {},
+    }),
+  },
+  mobileChipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  mobileChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 32,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: MOBILE.bg,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  mobileChipText: {
+    fontFamily,
+    fontSize: 14,
+    color: MOBILE.label,
+    letterSpacing: -0.2,
+  },
+  mobilePlaceholder: {
+    color: MOBILE.secondary,
+  },
+  mobileComposerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 16,
+    paddingTop: 4,
+  },
+  mobileCancel: {
+    fontFamily,
+    fontSize: 17,
+    color: MOBILE.secondary,
+    letterSpacing: -0.2,
+  },
+  mobileSave: {
+    minWidth: 72,
+    minHeight: 32,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    backgroundColor: '#007AFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  mobileSaveDisabled: {
+    opacity: 0.4,
+  },
+  mobileSaveText: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  mobileNoteBody: {
+    fontFamily,
+    fontSize: 17,
+    color: MOBILE.label,
+    letterSpacing: -0.3,
+    lineHeight: 22,
+  },
+  mobileNoteMeta: {
+    fontFamily,
+    fontSize: 13,
+    color: MOBILE.secondary,
+    letterSpacing: -0.08,
+  },
+  mobileNoteFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  mobileNoteTag: {
+    fontFamily,
+    fontSize: 13,
+    color: MOBILE.secondary,
+    letterSpacing: -0.08,
+  },
+  mobileNoteImportance: {
+    fontWeight: '600',
+  },
+  mobileDelete: {
+    marginLeft: 'auto',
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  mobileEmpty: {
+    paddingVertical: 28,
+    alignItems: 'center',
+  },
+  mobileEmptyCard: {
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 22,
+  },
+  mobileEmptyText: {
+    fontFamily,
+    fontSize: 15,
+    color: MOBILE.secondary,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  mobileError: {
+    fontFamily,
+    fontSize: 13,
+    color: '#ff3b30',
+    paddingHorizontal: 16,
   },
   pickerRoot: {
     flex: 1,

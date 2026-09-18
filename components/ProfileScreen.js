@@ -16,7 +16,9 @@ import { uploadOwnAvatar } from '../lib/profiles';
 import { categoryLabel, findStaffByEmployeeName, findStaffById, listStaffProfiles } from '../lib/permissions';
 import { listTeams, teamMemberName } from '../lib/teams';
 import { fetchAureusEmployee } from '../lib/aureusEmployees';
-import { useIsMobile } from '../lib/mobileUi';
+import { MOBILE, useIsMobile } from '../lib/mobileUi';
+import { IOS } from './IosSettings';
+import { formatPhoneNumber } from '../lib/ringcentral';
 import ProfilePhotoModal from './ProfilePhotoModal';
 import ProfilePhotoPicker from './ProfilePhotoPicker';
 import ProfileLocationPicker from './ProfileLocationPicker';
@@ -27,6 +29,11 @@ import { usePhoneCalls } from './PhoneCallProvider';
 const fontFamily = 'Sohne';
 const BLUE = '#007AFF';
 const GOLD = '#E8C36A';
+const PAGE = MOBILE.bg;
+const CARD = MOBILE.feed;
+const LABEL = MOBILE.label;
+const SECONDARY = MOBILE.secondary;
+const HAIRLINE = MOBILE.separator;
 
 export function profileTargetFromPerson(person) {
   if (!person) return null;
@@ -109,15 +116,16 @@ function ProfileAvatar({ uri, name, size = 24, style }) {
 }
 
 function DetailRow({ label, value, last, onPress }) {
+  const isMobile = useIsMobile();
   const content = (
     <>
-      <Text style={styles.detailLabel}>{label}</Text>
+      <Text style={[styles.detailLabel, isMobile && styles.detailLabelIos]}>{label}</Text>
       <View style={styles.detailValueWrap}>
-        <Text style={styles.detailValue} numberOfLines={2}>
+        <Text style={[styles.detailValue, isMobile && styles.detailValueIos]} numberOfLines={2}>
           {value || '—'}
         </Text>
       </View>
-      {onPress ? <Ionicons name="chevron-forward" size={16} color="#c7c7cc" /> : null}
+      {onPress ? <Ionicons name="chevron-forward" size={18} color={isMobile ? IOS.chevron : '#c7c7cc'} /> : null}
     </>
   );
 
@@ -166,6 +174,83 @@ function ActionIcon({ icon, label, onPress, disabled, busy }) {
   );
 }
 
+function ContactAction({ icon, label, onPress, disabled, busy }) {
+  const inactive = disabled || busy;
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={inactive}
+      style={({ pressed }) => [
+        styles.contactAction,
+        pressed && !inactive && styles.contactActionPressed,
+        inactive && styles.contactActionDisabled,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled: Boolean(inactive) }}
+    >
+      {busy ? (
+        <ActivityIndicator size="small" color={BLUE} />
+      ) : (
+        <Ionicons name={icon} size={22} color={inactive ? '#c7c7cc' : BLUE} />
+      )}
+      <Text style={[styles.contactActionLabel, inactive && styles.contactActionLabelDisabled]} numberOfLines={1}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function ContactRow({ caption, value, placeholder = 'None', last, onPress, link }) {
+  const empty = !String(value || '').trim();
+  const display = empty ? placeholder : value;
+  const rowStyle = [styles.contactRow, last && styles.contactRowLast];
+  const valueStyle = [
+    styles.contactValue,
+    empty && styles.contactValueEmpty,
+    !empty && (link || onPress) && styles.contactValueLink,
+  ];
+  const content = (
+    <>
+      <View style={styles.contactRowCopy}>
+        <Text style={styles.contactCaption}>{caption}</Text>
+        <Text style={valueStyle} numberOfLines={3}>
+          {display}
+        </Text>
+      </View>
+      {onPress ? <Ionicons name="chevron-forward" size={18} color="#c7c7cc" /> : null}
+    </>
+  );
+
+  if (onPress) {
+    return (
+      <Pressable
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityLabel={`${caption}, ${display}`}
+        style={({ pressed }) => [rowStyle, pressed && styles.contactRowPressed]}
+      >
+        {content}
+      </Pressable>
+    );
+  }
+
+  return <View style={rowStyle}>{content}</View>;
+}
+
+function Group({ children, style }) {
+  return <View style={[styles.mobileGroup, style]}>{children}</View>;
+}
+
+function GroupLabel({ title, trailing }) {
+  return (
+    <View style={styles.groupLabelRow}>
+      <Text style={styles.groupLabel}>{title}</Text>
+      {trailing}
+    </View>
+  );
+}
+
 function OrgPerson({ person, size = 52, current }) {
   const name = teamMemberName(person);
   return (
@@ -180,20 +265,26 @@ function OrgPerson({ person, size = 52, current }) {
   );
 }
 
-function OrgChartModal({ visible, onClose, team, profileId, onOpenTeams }) {
+function OrgChartModal({ visible, onClose, team, profileId, onOpenTeams, isMobile }) {
   const members = Array.isArray(team?.members) ? team.members : [];
   const leads = members.filter((row) => row.isTeamIntake);
   const rest = members.filter((row) => !row.isTeamIntake);
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType={isMobile ? 'slide' : 'fade'}
+      onRequestClose={onClose}
+    >
       <Pressable style={styles.orgBackdrop} onPress={onClose} accessibilityLabel="Close org chart" />
-      <View style={styles.orgSheet} pointerEvents="box-none">
-        <View style={styles.orgCard}>
+      <View style={[styles.orgSheet, isMobile && styles.orgSheetMobile]} pointerEvents="box-none">
+        <View style={[styles.orgCard, isMobile && styles.orgCardMobile]}>
+          {isMobile ? <View style={styles.orgGrabber} /> : null}
           <View style={styles.orgHeader}>
-            <Text style={styles.orgTitle}>Org chart</Text>
+            <Text style={styles.orgTitle}>Org Chart</Text>
             <Pressable onPress={onClose} hitSlop={8} accessibilityLabel="Close">
-              <Ionicons name="close" size={22} color="#8e8e93" />
+              <Ionicons name="close" size={22} color={SECONDARY} />
             </Pressable>
           </View>
           {team ? (
@@ -383,15 +474,27 @@ export default function ProfileScreen({
       [profile?.firstName, profile?.lastName].filter(Boolean).join(' ') ||
       session?.login ||
       'Profile';
-  const email = viewingOther ? '' : profile?.email || session?.login || '';
+  const email = (viewingOther ? profile?.email || person?.email : profile?.email || session?.login) || '';
   const locationName = profile?.locationName || '';
   const avatarUrl = profile?.avatarUrl || '';
   const profileId = viewingOther ? profile?.id || person?.profileId || '' : myId;
-  const accessLabel = viewingOther ? '' : categoryLabel(profile);
-  const avatarSize = isMobile ? 124 : 152;
+  const accessLabel = viewingOther ? categoryLabel(profile) : categoryLabel(profile);
+  const avatarSize = isMobile ? 100 : 152;
   const canEdit = !viewingOther;
   const canCall = canPhone && Boolean(phoneNumber);
   const messageEnabled = canMessage && Boolean(profileId) && viewingOther;
+  const canMail = Boolean(email);
+  const phoneLabel = phoneNumber ? formatPhoneNumber(phoneNumber) : '';
+  const jobTitle = profile?.employeeType || profile?.role || '';
+  const teamLabel = profile?.teamName
+    ? profile.isTeamIntake
+      ? `${profile.teamName} · Intake`
+      : profile.teamName
+    : profile?.teamId
+      ? profile.isTeamIntake
+        ? 'Assigned · Intake'
+        : 'Assigned'
+      : '';
 
   const accountRows = useMemo(() => {
     if (viewingOther) return [];
@@ -494,198 +597,404 @@ export default function ProfileScreen({
     void startCall();
   };
 
+  const handleMail = async () => {
+    if (!canMail) {
+      setActionError('No email on file.');
+      return;
+    }
+    const mailto = `mailto:${email}`;
+    setActionError('');
+    try {
+      if (await Linking.canOpenURL(mailto)) {
+        await Linking.openURL(mailto);
+        return;
+      }
+    } catch {
+      // Fall through.
+    }
+    setActionError('Could not open Mail.');
+  };
+
   const subtitle = viewingOther
     ? [locationName, profile?.employeeType, profile?.teamName].filter(Boolean).join(' · ')
     : '';
   const linkedSystems = viewingOther ? [] : Object.values(session?.linked || {});
+  const openOrgChart = () => {
+    setActionError('');
+    setOrgOpen(true);
+  };
+
+  const mobileHero = (
+    <View style={styles.mobileHero}>
+      <View style={styles.avatarButton}>
+        <Pressable
+          onPress={handleViewAvatar}
+          disabled={avatarBusy}
+          style={styles.avatarTap}
+          accessibilityRole="button"
+          accessibilityLabel={avatarUrl ? `View ${name || 'profile'} photo` : 'View photo'}
+        >
+          <ProfileAvatar uri={avatarUrl} name={name} size={avatarSize} style={styles.avatar} />
+        </Pressable>
+        {canEdit ? (
+          <Pressable
+            onPress={handlePickAvatar}
+            disabled={avatarBusy}
+            style={styles.avatarEditMobile}
+            accessibilityRole="button"
+            accessibilityLabel={avatarUrl ? 'Edit profile photo' : 'Add a profile photo'}
+            hitSlop={4}
+          >
+            {avatarBusy ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Ionicons name="camera" size={13} color="#fff" />
+            )}
+          </Pressable>
+        ) : null}
+      </View>
+      <Text style={styles.mobileName} numberOfLines={2}>
+        {name}
+      </Text>
+      {jobTitle ? (
+        <Text style={styles.mobileJob} numberOfLines={2}>
+          {jobTitle}
+        </Text>
+      ) : null}
+    </View>
+  );
+
+  const mobileActions = (
+    <View style={styles.contactActions}>
+      {viewingOther ? (
+        <ContactAction
+          icon="chatbubble"
+          label="message"
+          onPress={() => onMessage?.(profileId)}
+          disabled={!messageEnabled}
+        />
+      ) : null}
+      <ContactAction
+        icon="call"
+        label="call"
+        onPress={handlePhoneCall}
+        disabled={!canPhone}
+        busy={callBusy}
+      />
+      <ContactAction
+        icon="videocam"
+        label="video"
+        onPress={() => void handleVideoCall()}
+        disabled={!canPhone}
+        busy={callBusy}
+      />
+      <ContactAction
+        icon="mail"
+        label="mail"
+        onPress={() => void handleMail()}
+        disabled={!canMail}
+      />
+      {viewingOther ? null : (
+        <ContactAction icon="people" label="org" onPress={openOrgChart} />
+      )}
+    </View>
+  );
+
+  const mobileBody = (
+    <>
+      {viewingOther ? (
+        <View style={styles.mobileNav}>
+          <Pressable
+            onPress={onBack}
+            hitSlop={8}
+            style={styles.mobileNavSide}
+            accessibilityRole="button"
+            accessibilityLabel="Back"
+          >
+            <Ionicons name="chevron-back" size={28} color={BLUE} />
+          </Pressable>
+          <View style={styles.mobileNavSide} />
+        </View>
+      ) : null}
+
+      {mobileHero}
+      {mobileActions}
+
+      {actionError ? <Text style={styles.mobileError}>{actionError}</Text> : null}
+      {avatarError ? <Text style={styles.mobileError}>{avatarError}</Text> : null}
+
+      <Group style={styles.mobileGroupSpaced}>
+        <ContactRow
+          caption="phone"
+          value={phoneLabel}
+          placeholder={canPhone ? 'No number on file' : 'Phone isn’t available'}
+          onPress={canCall ? handlePhoneCall : undefined}
+          link={canCall}
+        />
+        <ContactRow
+          caption="email"
+          value={email}
+          placeholder="No email on file"
+          last
+          onPress={canMail ? () => void handleMail() : undefined}
+          link={canMail}
+        />
+      </Group>
+
+      <Group style={styles.mobileGroupSpaced}>
+        {[
+          {
+            key: 'location',
+            caption: 'location',
+            value: locationName,
+            placeholder: canEdit ? 'Not set in Aureus' : 'None',
+            onPress: canEdit ? () => setLocationPickerOpen(true) : undefined,
+          },
+          {
+            key: 'team',
+            caption: 'team',
+            value: teamLabel,
+            placeholder: 'Not on a team',
+            onPress: canEdit ? () => setTeamPickerOpen(true) : openOrgChart,
+          },
+          jobTitle ? { key: 'title', caption: 'title', value: jobTitle } : null,
+          profile?.role && profile.role !== profile.employeeType
+            ? { key: 'role', caption: 'Aureus role', value: profile.role }
+            : null,
+          accessLabel ? { key: 'category', caption: 'category', value: accessLabel } : null,
+        ]
+          .filter(Boolean)
+          .map((row, index, rows) => (
+            <ContactRow
+              key={row.key}
+              caption={row.caption}
+              value={row.value}
+              placeholder={row.placeholder}
+              onPress={row.onPress}
+              last={index === rows.length - 1}
+            />
+          ))}
+      </Group>
+
+      <ProfileNotesTable profileId={profileId} myId={myId} />
+
+      {linkedSystems.length > 0 ? (
+        <>
+          <GroupLabel title="Linked POS" />
+          <Group>
+            {linkedSystems.map((linked, index) => (
+              <ContactRow
+                key={linked.key}
+                caption={linked.label}
+                value={linked.token ? 'Connected' : linked.error || 'Not connected'}
+                last={index === linkedSystems.length - 1}
+              />
+            ))}
+          </Group>
+        </>
+      ) : null}
+
+      {canEdit ? (
+        <Group style={styles.logoutGroupMobile}>
+          <Pressable
+            onPress={onLogout}
+            style={({ pressed }) => [styles.logoutRow, pressed && styles.contactRowPressed]}
+            accessibilityRole="button"
+            accessibilityLabel="Log out"
+          >
+            <Text style={styles.logoutText}>Log Out</Text>
+          </Pressable>
+        </Group>
+      ) : null}
+    </>
+  );
+
+  const desktopBody = settingsOpen && canEdit ? (
+    <>
+              {accountRows.length > 0 ? (
+                <View style={[styles.group, isMobile && styles.groupIos]}>
+          {accountRows.map((row, index) => (
+            <DetailRow
+              key={row.key}
+              label={row.label}
+              value={row.value}
+              onPress={row.onPress}
+              last={index === accountRows.length - 1}
+            />
+          ))}
+        </View>
+      ) : null}
+
+      {linkedSystems.length > 0 ? (
+        <View style={styles.linkedBlock}>
+          <Text style={styles.sectionLabel}>Linked POS</Text>
+                  <View style={[styles.group, isMobile && styles.groupIos]}>
+            {linkedSystems.map((linked, index) => (
+              <DetailRow
+                key={linked.key}
+                label={linked.label}
+                value={linked.token ? 'Connected' : linked.error || 'Not connected'}
+                last={index === linkedSystems.length - 1}
+              />
+            ))}
+          </View>
+        </View>
+      ) : null}
+
+              <View style={[styles.group, styles.logoutGroup, isMobile && styles.groupIos]}>
+        <Pressable
+          onPress={onLogout}
+          style={({ hovered, pressed }) => [
+            styles.logoutRow,
+            (hovered || pressed) && styles.rowHovered,
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Log out"
+        >
+          <Text style={styles.logoutText}>Log Out</Text>
+        </Pressable>
+      </View>
+    </>
+  ) : (
+    <>
+      <View style={styles.heroWrap}>
+        <View style={styles.hero}>
+          <View style={styles.avatarButton}>
+            <Pressable
+              onPress={handleViewAvatar}
+              disabled={avatarBusy}
+              style={styles.avatarTap}
+              accessibilityRole="button"
+              accessibilityLabel={avatarUrl ? `View ${name || 'profile'} photo` : 'View photo'}
+            >
+              <View style={[styles.avatarRing, { borderRadius: (avatarSize + 12) / 2 }]}>
+                <ProfileAvatar uri={avatarUrl} name={name} size={avatarSize} style={styles.avatar} />
+              </View>
+            </Pressable>
+            {canEdit ? (
+              <Pressable
+                onPress={handlePickAvatar}
+                disabled={avatarBusy}
+                style={styles.avatarEdit}
+                accessibilityRole="button"
+                accessibilityLabel={avatarUrl ? 'Edit profile photo' : 'Add a profile photo'}
+                hitSlop={4}
+              >
+                {avatarBusy ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Ionicons name="pencil" size={14} color="#fff" />
+                )}
+              </Pressable>
+            ) : null}
+          </View>
+
+          <View style={styles.heroCopy}>
+            <Text style={styles.name} numberOfLines={2}>
+              {name}
+            </Text>
+            {subtitle ? <Text style={styles.meta}>{subtitle}</Text> : null}
+            {email ? <Text style={styles.email}>{email}</Text> : null}
+          </View>
+        </View>
+
+        <View style={styles.actions}>
+          <ActionIcon
+            icon="paper-plane-outline"
+            label="Direct message"
+            onPress={() => onMessage?.(profileId)}
+            disabled={!messageEnabled}
+          />
+          <ActionIcon
+            icon="git-network-outline"
+            label="Org chart"
+            onPress={openOrgChart}
+          />
+          <ActionIcon
+            icon="videocam-outline"
+            label="Video call"
+            onPress={() => void handleVideoCall()}
+            disabled={!canPhone}
+            busy={callBusy}
+          />
+          <ActionIcon
+            icon="call-outline"
+            label="Phone call"
+            onPress={handlePhoneCall}
+            disabled={!canPhone}
+            busy={callBusy}
+          />
+          {canEdit ? (
+            <ActionIcon
+              icon="settings-outline"
+              label="Settings"
+              onPress={() => setSettingsOpen(true)}
+            />
+          ) : null}
+        </View>
+      </View>
+
+      {actionError ? <Text style={styles.error}>{actionError}</Text> : null}
+      {avatarError ? <Text style={styles.error}>{avatarError}</Text> : null}
+      <ProfileNotesTable profileId={profileId} myId={myId} />
+    </>
+  );
 
   return (
-    <View style={[styles.screen, isMobile && styles.screenMobile]}>
+    <View style={[styles.screen, isMobile && (settingsOpen ? styles.screenMobileSettings : styles.screenMobile)]}>
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={[styles.scrollContent, isMobile && styles.scrollContentMobile]}
+        contentContainerStyle={[
+          styles.scrollContent,
+          isMobile && styles.scrollContentMobile,
+          isMobile && settingsOpen && styles.scrollContentMobileSettings,
+        ]}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
-        <View
-          style={[
-            styles.section,
-            !settingsOpen && styles.sectionWide,
-            isMobile && styles.sectionMobile,
-          ]}
-        >
-          {viewingOther ? (
-            <View style={styles.topBar}>
-              <Pressable
-                onPress={onBack}
-                hitSlop={8}
-                style={styles.backButton}
-                accessibilityRole="button"
-                accessibilityLabel="Back"
-              >
-                <Ionicons name="chevron-back" size={26} color={BLUE} />
-              </Pressable>
-              <Text style={styles.topTitle} numberOfLines={1}>
-                {name}
-              </Text>
-              <View style={styles.topSide} />
-            </View>
-          ) : settingsOpen ? (
-            <View style={styles.topBar}>
-              <Pressable
-                onPress={() => {
-                  setSettingsOpen(false);
-                  onSettingsClose?.();
-                }}
-                hitSlop={8}
-                style={styles.backButton}
-                accessibilityRole="button"
-                accessibilityLabel="Back to profile"
-              >
-                <Ionicons name="chevron-back" size={26} color={BLUE} />
-              </Pressable>
-              <Text style={styles.topTitle} numberOfLines={1}>
-                Settings
-              </Text>
-              <View style={styles.topSide} />
-            </View>
-          ) : null}
-
-          {settingsOpen && canEdit ? (
-            <>
-              {accountRows.length > 0 ? (
-                <View style={styles.group}>
-                  {accountRows.map((row, index) => (
-                    <DetailRow
-                      key={row.key}
-                      label={row.label}
-                      value={row.value}
-                      onPress={row.onPress}
-                      last={index === accountRows.length - 1}
-                    />
-                  ))}
-                </View>
-              ) : null}
-
-              {linkedSystems.length > 0 ? (
-                <View style={styles.linkedBlock}>
-                  <Text style={styles.sectionLabel}>Linked POS</Text>
-                  <View style={styles.group}>
-                    {linkedSystems.map((linked, index) => (
-                      <DetailRow
-                        key={linked.key}
-                        label={linked.label}
-                        value={linked.token ? 'Connected' : linked.error || 'Not connected'}
-                        last={index === linkedSystems.length - 1}
-                      />
-                    ))}
-                  </View>
-                </View>
-              ) : null}
-
-              <View style={[styles.group, styles.logoutGroup]}>
+        {isMobile ? (
+          mobileBody
+        ) : (
+          <View style={[styles.section, !settingsOpen && styles.sectionWide]}>
+            {viewingOther ? (
+              <View style={styles.topBar}>
                 <Pressable
-                  onPress={onLogout}
-                  style={({ hovered, pressed }) => [
-                    styles.logoutRow,
-                    (hovered || pressed) && styles.rowHovered,
-                  ]}
+                  onPress={onBack}
+                  hitSlop={8}
+                  style={styles.backButton}
                   accessibilityRole="button"
-                  accessibilityLabel="Log out"
+                  accessibilityLabel="Back"
                 >
-                  <Text style={styles.logoutText}>Log Out</Text>
+                  <Ionicons name="chevron-back" size={26} color={BLUE} />
                 </Pressable>
+                <Text style={styles.topTitle} numberOfLines={1}>
+                  {name}
+                </Text>
+                <View style={styles.topSide} />
               </View>
-            </>
-          ) : (
-            <>
-              <View style={[styles.heroWrap, isMobile && styles.heroWrapMobile]}>
-                <View style={[styles.hero, isMobile && styles.heroMobile]}>
-                  <View style={styles.avatarButton}>
-                    <Pressable
-                      onPress={handleViewAvatar}
-                      disabled={avatarBusy}
-                      style={styles.avatarTap}
-                      accessibilityRole="button"
-                      accessibilityLabel={avatarUrl ? `View ${name || 'profile'} photo` : 'View photo'}
-                    >
-                      <View style={[styles.avatarRing, { borderRadius: (avatarSize + 12) / 2 }]}>
-                        <ProfileAvatar uri={avatarUrl} name={name} size={avatarSize} style={styles.avatar} />
-                      </View>
-                    </Pressable>
-                    {canEdit ? (
-                      <Pressable
-                        onPress={handlePickAvatar}
-                        disabled={avatarBusy}
-                        style={styles.avatarEdit}
-                        accessibilityRole="button"
-                        accessibilityLabel={avatarUrl ? 'Edit profile photo' : 'Add a profile photo'}
-                        hitSlop={4}
-                      >
-                        {avatarBusy ? (
-                          <ActivityIndicator size="small" color="#fff" />
-                        ) : (
-                          <Ionicons name="pencil" size={14} color="#fff" />
-                        )}
-                      </Pressable>
-                    ) : null}
-                  </View>
-
-                  <View style={[styles.heroCopy, isMobile && styles.heroCopyMobile]}>
-                    <Text style={[styles.name, isMobile && styles.nameMobile]} numberOfLines={2}>
-                      {name}
-                    </Text>
-                    {subtitle ? <Text style={styles.meta}>{subtitle}</Text> : null}
-                    {email ? <Text style={styles.email}>{email}</Text> : null}
-                  </View>
-                </View>
-
-                <View style={[styles.actions, isMobile && styles.actionsMobile]}>
-                  <ActionIcon
-                    icon="paper-plane-outline"
-                    label="Direct message"
-                    onPress={() => onMessage?.(profileId)}
-                    disabled={!messageEnabled}
-                  />
-                  <ActionIcon
-                    icon="git-network-outline"
-                    label="Org chart"
-                    onPress={() => {
-                      setActionError('');
-                      setOrgOpen(true);
-                    }}
-                  />
-                  <ActionIcon
-                    icon="videocam-outline"
-                    label="Video call"
-                    onPress={() => void handleVideoCall()}
-                    disabled={!canPhone}
-                    busy={callBusy}
-                  />
-                  <ActionIcon
-                    icon="call-outline"
-                    label="Phone call"
-                    onPress={handlePhoneCall}
-                    disabled={!canPhone}
-                    busy={callBusy}
-                  />
-                  {canEdit ? (
-                    <ActionIcon
-                      icon="settings-outline"
-                      label="Settings"
-                      onPress={() => setSettingsOpen(true)}
-                    />
-                  ) : null}
-                </View>
+            ) : settingsOpen ? (
+              <View style={styles.topBar}>
+                <Pressable
+                  onPress={() => {
+                    setSettingsOpen(false);
+                    onSettingsClose?.();
+                  }}
+                  hitSlop={8}
+                  style={styles.backButton}
+                  accessibilityRole="button"
+                  accessibilityLabel="Back to profile"
+                >
+                  <Ionicons name="chevron-back" size={26} color={BLUE} />
+                </Pressable>
+                <Text style={styles.topTitle} numberOfLines={1}>
+                  Settings
+                </Text>
+                <View style={styles.topSide} />
               </View>
-
-              {actionError ? <Text style={styles.error}>{actionError}</Text> : null}
-
-              {avatarError ? <Text style={styles.error}>{avatarError}</Text> : null}
-
-              <ProfileNotesTable profileId={profileId} myId={myId} />
-            </>
-          )}
-        </View>
+            ) : null}
+            {desktopBody}
+          </View>
+        )}
       </ScrollView>
 
       <OrgChartModal
@@ -693,6 +1002,7 @@ export default function ProfileScreen({
         onClose={() => setOrgOpen(false)}
         team={team}
         profileId={profileId}
+        isMobile={isMobile}
         onOpenTeams={
           canTeams
             ? (teamId) => {
@@ -766,7 +1076,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   screenMobile: {
-    backgroundColor: '#fff',
+    backgroundColor: PAGE,
+  },
+  screenMobileSettings: {
+    backgroundColor: PAGE,
   },
   scroll: {
     flex: 1,
@@ -787,9 +1100,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 32,
   },
   scrollContentMobile: {
-    paddingTop: 8,
+    paddingTop: 4,
     paddingHorizontal: 16,
-    paddingBottom: 40,
+    paddingBottom: 48,
+  },
+  scrollContentMobileSettings: {
+    paddingTop: 4,
   },
   section: {
     width: '100%',
@@ -988,6 +1304,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: 24,
   },
+  orgSheetMobile: {
+    justifyContent: 'flex-end',
+    padding: 0,
+  },
   orgCard: {
     width: '100%',
     maxWidth: 420,
@@ -995,6 +1315,22 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderRadius: 16,
     overflow: 'hidden',
+  },
+  orgCardMobile: {
+    maxWidth: '100%',
+    maxHeight: '88%',
+    borderRadius: 16,
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
+  },
+  orgGrabber: {
+    alignSelf: 'center',
+    width: 36,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: '#d1d1d6',
+    marginTop: 8,
+    marginBottom: 2,
   },
   orgHeader: {
     flexDirection: 'row',
@@ -1105,6 +1441,40 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     overflow: 'hidden',
   },
+  groupIos: {
+    backgroundColor: CARD,
+    borderRadius: 10,
+  },
+  detailLabel: {
+    fontFamily,
+    width: 108,
+    flexShrink: 0,
+    fontSize: 15,
+    color: '#8e8e93',
+    letterSpacing: -0.2,
+  },
+  detailLabelIos: {
+    width: 'auto',
+    flex: 1,
+    flexShrink: 1,
+    fontSize: 17,
+    fontWeight: '400',
+    color: '#000',
+    letterSpacing: -0.4,
+  },
+  detailValue: {
+    fontFamily,
+    fontSize: 15,
+    color: '#1d1d1f',
+    letterSpacing: -0.2,
+    textAlign: 'right',
+  },
+  detailValueIos: {
+    fontSize: 17,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.4,
+  },
   sectionLabel: {
     fontFamily,
     fontSize: 13,
@@ -1133,25 +1503,10 @@ const styles = StyleSheet.create({
   detailRowLast: {
     borderBottomWidth: 0,
   },
-  detailLabel: {
-    fontFamily,
-    width: 108,
-    flexShrink: 0,
-    fontSize: 15,
-    color: '#8e8e93',
-    letterSpacing: -0.2,
-  },
   detailValueWrap: {
     flex: 1,
     minWidth: 0,
     alignItems: 'flex-end',
-  },
-  detailValue: {
-    fontFamily,
-    fontSize: 15,
-    color: '#1d1d1f',
-    letterSpacing: -0.2,
-    textAlign: 'right',
   },
   rowHovered: {
     backgroundColor: '#e8e8ed',
@@ -1177,5 +1532,175 @@ const styles = StyleSheet.create({
     fontSize: 17,
     color: '#ff3b30',
     letterSpacing: -0.2,
+  },
+  mobileNav: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 44,
+    marginHorizontal: -6,
+    marginBottom: 4,
+  },
+  mobileNavSide: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  mobileHero: {
+    alignItems: 'center',
+    paddingTop: 8,
+    paddingBottom: 18,
+    gap: 6,
+  },
+  mobileName: {
+    fontFamily,
+    fontSize: 28,
+    fontWeight: '700',
+    color: LABEL,
+    letterSpacing: -0.5,
+    textAlign: 'center',
+    marginTop: 10,
+    paddingHorizontal: 8,
+  },
+  mobileJob: {
+    fontFamily,
+    fontSize: 17,
+    color: SECONDARY,
+    letterSpacing: -0.2,
+    textAlign: 'center',
+    paddingHorizontal: 12,
+  },
+  avatarEditMobile: {
+    position: 'absolute',
+    right: 0,
+    bottom: 0,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: BLUE,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: PAGE,
+    zIndex: 2,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  contactActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 8,
+  },
+  contactAction: {
+    flex: 1,
+    minHeight: 62,
+    borderRadius: 10,
+    backgroundColor: CARD,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  contactActionPressed: {
+    backgroundColor: '#e5e5ea',
+  },
+  contactActionDisabled: {
+    opacity: 0.45,
+  },
+  contactActionLabel: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '500',
+    color: BLUE,
+    letterSpacing: -0.1,
+  },
+  contactActionLabelDisabled: {
+    color: SECONDARY,
+  },
+  mobileError: {
+    fontFamily,
+    fontSize: 13,
+    color: '#ff3b30',
+    textAlign: 'center',
+    marginTop: 10,
+    marginBottom: 2,
+    paddingHorizontal: 8,
+  },
+  groupLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 22,
+    paddingBottom: 7,
+  },
+  groupLabel: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.08,
+  },
+  mobileGroup: {
+    backgroundColor: CARD,
+    borderRadius: 10,
+    overflow: 'hidden',
+  },
+  mobileGroupSpaced: {
+    marginTop: 20,
+  },
+  contactRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 54,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    gap: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
+  },
+  contactRowLast: {
+    borderBottomWidth: 0,
+  },
+  contactRowPressed: {
+    backgroundColor: '#e5e5ea',
+  },
+  contactRowCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 1,
+  },
+  contactCaption: {
+    fontFamily,
+    fontSize: 12,
+    color: SECONDARY,
+    letterSpacing: -0.08,
+  },
+  contactValue: {
+    fontFamily,
+    fontSize: 17,
+    color: LABEL,
+    letterSpacing: -0.3,
+  },
+  contactValueEmpty: {
+    color: SECONDARY,
+  },
+  contactValueLink: {
+    color: BLUE,
+  },
+  logoutGroupMobile: {
+    marginTop: 28,
   },
 });

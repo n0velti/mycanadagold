@@ -526,7 +526,7 @@ export function TextTabs({ options, value, onChange, leading, trailing, size = '
 }
 
 /** iOS segmented slider: gray track with a sliding white thumb. */
-export function SegmentedSlider({ options, value, onChange, style }) {
+export function SegmentedSlider({ options, value, onChange, style, fill = false }) {
   const isMobile = useIsMobile();
   const keys = (options || []).map((option) => option.key);
   const index = Math.max(0, keys.indexOf(value));
@@ -548,7 +548,12 @@ export function SegmentedSlider({ options, value, onChange, style }) {
 
   return (
     <View
-      style={[styles.segmentedSlider, style]}
+      style={[
+        styles.segmentedSlider,
+        fill && styles.segmentedSliderFill,
+        isMobile && styles.segmentedSliderMobile,
+        style,
+      ]}
       onLayout={(event) => setTrackW(event.nativeEvent.layout.width)}
       accessibilityRole="tablist"
     >
@@ -598,18 +603,27 @@ export function SegmentedSlider({ options, value, onChange, style }) {
 }
 
 /** Neutral outlined toolbar button — same treatment for every action, no colour coding. */
-export function BarButton({ label, icon, onPress, disabled, accessibilityLabel }) {
+export function BarButton({ label, icon, onPress, disabled, accessibilityLabel, size, fill }) {
+  const large = size === 'lg';
+  const iconColor = fill ? '#fff' : T.text;
   return (
     <Pressable
-      style={[styles.barButton, disabled && styles.textActionDisabled]}
+      style={[
+        styles.barButton,
+        large && styles.barButtonLg,
+        fill && styles.barButtonFill,
+        disabled && styles.textActionDisabled,
+      ]}
       onPress={onPress}
       disabled={disabled}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel || label}
       {...(Platform.OS === 'web' ? { className: 'cgold-triage-btn' } : null)}
     >
-      {icon ? <Ionicons name={icon} size={15} color={T.text} /> : null}
-      <Text style={styles.barButtonLabel}>{label}</Text>
+      {icon ? <Ionicons name={icon} size={large ? 18 : 15} color={iconColor} /> : null}
+      <Text style={[styles.barButtonLabel, large && styles.barButtonLabelLg, fill && styles.barButtonLabelFill]}>
+        {label}
+      </Text>
     </Pressable>
   );
 }
@@ -826,12 +840,13 @@ export function GroupRow({ label, value, valueTone, last, onPress, children }) {
   );
 }
 
-export function SearchField({ value, onChangeText, placeholder = 'Search', style, autoFocus }) {
+export function SearchField({ value, onChangeText, placeholder = 'Search', style, autoFocus, size }) {
+  const large = size === 'lg';
   return (
-    <View style={[styles.search, style]}>
-      <Ionicons name="search" size={15} color={T.secondary} />
+    <View style={[styles.search, large && styles.searchLg, style]}>
+      <Ionicons name="search" size={large ? 18 : 15} color={T.secondary} />
       <TextInput
-        style={styles.searchInput}
+        style={[styles.searchInput, large && styles.searchInputLg]}
         value={value}
         onChangeText={onChangeText}
         placeholder={placeholder}
@@ -843,10 +858,83 @@ export function SearchField({ value, onChangeText, placeholder = 'Search', style
       />
       {value ? (
         <Pressable onPress={() => onChangeText('')} hitSlop={8} accessibilityLabel="Clear search">
-          <Ionicons name="close-circle" size={16} color={T.tertiary} />
+          <Ionicons name="close-circle" size={large ? 18 : 16} color={T.tertiary} />
         </Pressable>
       ) : null}
     </View>
+  );
+}
+
+/** Full-width camera control — primary way to attach a photo on a phone. */
+export function MobileCameraButton({ count = 0, busy = false, disabled = false, onPress, accessibilityLabel }) {
+  return (
+    <Pressable
+      onPress={(event) => {
+        event?.stopPropagation?.();
+        onPress?.();
+      }}
+      disabled={disabled || busy}
+      hitSlop={4}
+      style={[styles.mobileCam, (disabled || busy) && styles.mobileCamOff]}
+      accessibilityRole="button"
+      accessibilityLabel={
+        accessibilityLabel || (count ? `Take a photo, ${count} attached` : 'Take a photo')
+      }
+    >
+      <Ionicons name={busy ? 'ellipsis-horizontal' : 'camera'} size={22} color={disabled ? T.secondary : T.blue} />
+      {count > 0 ? (
+        <View style={styles.mobileCamBadge} pointerEvents="none">
+          <Text style={styles.mobileCamBadgeText}>{count > 9 ? '9+' : count}</Text>
+        </View>
+      ) : null}
+    </Pressable>
+  );
+}
+
+/** Inset grouped list used on every triage phone screen. */
+export function MobileList({ children, style }) {
+  return <View style={[styles.mobileList, style]}>{children}</View>;
+}
+
+export function MobileListRow({
+  title,
+  subtitle,
+  meta,
+  leading,
+  trailing,
+  onPress,
+  last,
+  accessibilityLabel,
+}) {
+  const Row = onPress ? Pressable : View;
+  return (
+    <Row
+      style={[styles.mobileListRow, last && styles.mobileListRowLast]}
+      onPress={onPress}
+      accessibilityRole={onPress ? 'button' : undefined}
+      accessibilityLabel={accessibilityLabel || title}
+    >
+      {leading ? <View style={styles.mobileListLead}>{leading}</View> : null}
+      <View style={styles.mobileListCopy}>
+        <Text style={styles.mobileListTitle} numberOfLines={1}>
+          {title}
+        </Text>
+        {subtitle ? (
+          <Text style={styles.mobileListSub} numberOfLines={2}>
+            {subtitle}
+          </Text>
+        ) : null}
+        {meta ? (
+          <Text style={styles.mobileListMeta} numberOfLines={1}>
+            {meta}
+          </Text>
+        ) : null}
+      </View>
+      <View style={styles.mobileListTrail}>
+        {trailing}
+        {onPress ? <Ionicons name="chevron-forward" size={18} color={T.tertiary} /> : null}
+      </View>
+    </Row>
   );
 }
 
@@ -1245,12 +1333,30 @@ const styles = StyleSheet.create({
     backgroundColor: T.card,
     ...webCursor,
   },
+  barButtonLg: {
+    minHeight: 44,
+    flex: 1,
+    justifyContent: 'center',
+    borderRadius: 12,
+    paddingVertical: 10,
+  },
+  barButtonFill: {
+    backgroundColor: T.blue,
+    borderColor: T.blue,
+  },
   barButtonLabel: {
     fontFamily: FONT,
     fontSize: 13,
     fontWeight: '500',
     color: T.text,
     letterSpacing: -0.15,
+  },
+  barButtonLabelLg: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  barButtonLabelFill: {
+    color: '#fff',
   },
   textAction: {
     minHeight: 26,
@@ -1455,6 +1561,12 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     backgroundColor: T.fillSoft,
   },
+  searchLg: {
+    minHeight: 44,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    gap: 8,
+  },
   searchInput: {
     flex: 1,
     minWidth: 0,
@@ -1463,6 +1575,96 @@ const styles = StyleSheet.create({
     color: T.text,
     paddingVertical: 4,
     outlineStyle: 'none',
+  },
+  searchInputLg: {
+    fontSize: 17,
+    paddingVertical: 8,
+  },
+  mobileCam: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(0,122,255,0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    ...webCursor,
+  },
+  mobileCamOff: {
+    opacity: 0.35,
+  },
+  mobileCamBadge: {
+    position: 'absolute',
+    top: -3,
+    right: -3,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    borderRadius: 9,
+    backgroundColor: T.blue,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: T.card,
+  },
+  mobileCamBadgeText: {
+    fontFamily: FONT,
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  mobileList: {
+    backgroundColor: T.card,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  mobileListRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    minHeight: 72,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: T.card,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: T.hairline,
+    ...webCursor,
+  },
+  mobileListRowLast: {
+    borderBottomWidth: 0,
+  },
+  mobileListLead: {
+    flexShrink: 0,
+  },
+  mobileListCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  mobileListTitle: {
+    fontFamily: FONT,
+    fontSize: 17,
+    fontWeight: '600',
+    color: T.text,
+    letterSpacing: -0.3,
+  },
+  mobileListSub: {
+    fontFamily: FONT,
+    fontSize: 14,
+    lineHeight: 18,
+    color: T.secondary,
+  },
+  mobileListMeta: {
+    fontFamily: FONT,
+    fontSize: 13,
+    color: T.secondary,
+    fontVariant: ['tabular-nums'],
+  },
+  mobileListTrail: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 0,
   },
   notice: {
     flexDirection: 'row',
@@ -1515,6 +1717,15 @@ const styles = StyleSheet.create({
     padding: 2,
     borderRadius: 9,
     backgroundColor: T.fillSoft,
+  },
+  segmentedSliderFill: {
+    alignSelf: 'stretch',
+    width: '100%',
+    minWidth: 0,
+  },
+  segmentedSliderMobile: {
+    height: 36,
+    borderRadius: 10,
   },
   segmentedThumb: {
     position: 'absolute',

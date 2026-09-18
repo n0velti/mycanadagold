@@ -635,11 +635,12 @@ export function ColumnFilter({
   );
 }
 
-export const PoThumb = memo(function PoThumb({ urls, label }) {
+export const PoThumb = memo(function PoThumb({ urls, label, size = 36 }) {
   const [open, setOpen] = useState(false);
   const [failed, setFailed] = useState(false);
   const photos = Array.isArray(urls) ? urls.filter(Boolean) : [];
   const firstPhoto = photos[0];
+  const dim = { width: size, height: size, borderRadius: Math.max(8, Math.round(size * 0.22)) };
 
   useEffect(() => {
     setFailed(false);
@@ -647,8 +648,8 @@ export const PoThumb = memo(function PoThumb({ urls, label }) {
 
   if (!photos.length || failed) {
     return (
-      <View style={styles.poThumbSlot}>
-        <Ionicons name="image-outline" size={16} color={SECONDARY} />
+      <View style={[styles.poThumbSlot, dim]}>
+        <Ionicons name="image-outline" size={size > 40 ? 20 : 16} color={SECONDARY} />
       </View>
     );
   }
@@ -658,7 +659,7 @@ export const PoThumb = memo(function PoThumb({ urls, label }) {
       <View
         accessibilityRole="image"
         accessibilityLabel={`View photo for ${label}`}
-        style={styles.poThumbPress}
+        style={[styles.poThumbPress, dim]}
         {...(Platform.OS === 'web'
           ? {
               onClick: (event) => {
@@ -675,7 +676,7 @@ export const PoThumb = memo(function PoThumb({ urls, label }) {
       >
         <Image
           source={{ uri: photos[0] }}
-          style={styles.poThumb}
+          style={[styles.poThumb, dim]}
           resizeMode="cover"
           onError={() => setFailed(true)}
         />
@@ -1172,8 +1173,6 @@ const styles = StyleSheet.create({
     }),
   },
   poThumb: {
-    width: 36,
-    height: 36,
     backgroundColor: FILL,
   },
   photoViewerRoot: {

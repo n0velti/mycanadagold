@@ -10,7 +10,6 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  useWindowDimensions,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -31,6 +30,7 @@ import { useTxnCashBreakdowns } from '../lib/txnCashBreakdowns';
 import { callPartyLabel, callsForStore, inboundCallRatio, isPhoneRateLimitMessage } from '../lib/phoneCalls';
 import { formatPhoneNumber } from '../lib/ringcentral';
 import { storeKeyFromName } from '../lib/storeSettings';
+import { useIsMobile } from '../lib/mobileUi';
 import { usePhoneCalls } from './PhoneCallProvider';
 import snapshot from '../lib/websitePriceSnapshot.json';
 import { fetchWebsitePrices, reconcileCatalog } from '../lib/websitePrices';
@@ -205,7 +205,109 @@ function AppBox({ app, meta, onOpen, children, style, bodyStyle }) {
   );
 }
 
-function EmployeeAvatar({ person, size = 32 }) {
+function OverviewHero({ store, periodLabel }) {
+  const total = Number(store?.totalAmount) || 0;
+  const txCount = Number(store?.txCount) || 0;
+  const saleCount = Number(store?.saleCount) || 0;
+  const purchaseCount = Number(store?.purchaseCount) || 0;
+  const empty = !total && !txCount;
+  const txLabel = `${txCount} transaction${txCount === 1 ? '' : 's'}`;
+
+  return (
+    <View style={styles.heroCard} accessibilityLabel={`${periodLabel}, ${empty ? 'No total' : formatAmount(total)}, ${txLabel}`}>
+      <Text style={styles.heroKicker}>{periodLabel}</Text>
+      <Text style={[styles.heroAmount, empty && styles.heroAmountEmpty]} numberOfLines={1}>
+        {empty ? '—' : formatAmount(total)}
+      </Text>
+      <Text style={styles.heroMeta}>{txLabel}</Text>
+      <View style={styles.heroSplit}>
+        <View style={styles.heroSplitCol}>
+          <Text style={styles.heroSplitLabel}>Sales</Text>
+          <Text style={styles.heroSplitValue} numberOfLines={1}>
+            {formatAmount(store?.soAmount)}
+          </Text>
+          <Text style={styles.heroSplitMeta}>
+            {saleCount} SO
+          </Text>
+        </View>
+        <View style={styles.heroSplitRule} />
+        <View style={styles.heroSplitCol}>
+          <Text style={[styles.heroSplitLabel, styles.heroSplitLabelBuy]}>Purchases</Text>
+          <Text style={styles.heroSplitValue} numberOfLines={1}>
+            {formatAmount(store?.poAmount)}
+          </Text>
+          <Text style={styles.heroSplitMeta}>
+            {purchaseCount} PO
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function MetricTile({ app, value, meta, tone, onOpen, accessory, loading }) {
+  const valueColor =
+    tone === 'low' ? styles.phoneRateLow : tone === 'high' ? styles.phoneRateHigh : null;
+
+  return (
+    <Pressable
+      onPress={() => onOpen?.(app.key)}
+      style={({ hovered, pressed }) => [
+        styles.metricTile,
+        (hovered || pressed) && styles.metricTilePressed,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={`${app.label}, ${value || ''}${meta ? `, ${meta}` : ''}`}
+    >
+      <View style={styles.metricHead}>
+        <View style={[styles.metricIcon, { backgroundColor: app.accent }]}>
+          <Ionicons name={app.icon} size={13} color="#fff" />
+        </View>
+        <Text style={styles.metricTitle} numberOfLines={1}>
+          {app.label}
+        </Text>
+        <Ionicons name="chevron-forward" size={12} color={SECONDARY} />
+      </View>
+      {loading ? (
+        <ActivityIndicator style={styles.metricSpinner} size="small" color={BLUE} />
+      ) : (
+        <Text style={[styles.metricValue, valueColor]} numberOfLines={1}>
+          {value || '—'}
+        </Text>
+      )}
+      {accessory}
+      {meta ? (
+        <Text style={styles.metricMeta} numberOfLines={2}>
+          {meta}
+        </Text>
+      ) : null}
+    </Pressable>
+  );
+}
+
+function PeopleStack({ people = [], size = 28 }) {
+  const visible = people.slice(0, 4);
+  const extra = people.length - visible.length;
+  if (!visible.length) return null;
+  return (
+    <View style={styles.peopleStack}>
+      {visible.map((person, index) => (
+        <View
+          key={`${person.name}-${index}`}
+          style={[
+            styles.peopleStackItem,
+            { marginLeft: index === 0 ? 0 : -10, zIndex: visible.length - index },
+          ]}
+        >
+          <EmployeeAvatar person={person} size={size} ring />
+        </View>
+      ))}
+      {extra > 0 ? <Text style={styles.peopleExtra}>+{extra}</Text> : null}
+    </View>
+  );
+}
+
+function EmployeeAvatar({ person, size = 32, ring = false }) {
   const [failed, setFailed] = useState(false);
   const photoUrl = person?.photoUrl || '';
   useEffect(() => {
@@ -218,6 +320,7 @@ function EmployeeAvatar({ person, size = 32 }) {
         styles.employeeAvatar,
         { width: size, height: size, borderRadius: size / 2 },
         !showImage && styles.employeeAvatarFallback,
+        ring && styles.employeeAvatarRing,
       ]}
     >
       {showImage ? (
@@ -424,11 +527,12 @@ function PriceCheckModal({ check, onClose }) {
   );
 }
 
-function TxnPhotoThumb({ urls, label }) {
+function TxnPhotoThumb({ urls, label, size = 32 }) {
   const [open, setOpen] = useState(false);
   const [index, setIndex] = useState(0);
   const [failed, setFailed] = useState(false);
   const photos = Array.isArray(urls) ? urls.filter(Boolean) : [];
+  const radius = Math.max(7, Math.round(size * 0.22));
 
   useEffect(() => {
     setFailed(false);
@@ -447,7 +551,7 @@ function TxnPhotoThumb({ urls, label }) {
           setIndex(0);
           setOpen(true);
         }}
-        style={styles.txThumbPress}
+        style={[styles.txThumbPress, { width: size, height: size }]}
         accessibilityRole="button"
         accessibilityLabel={
           hasMany ? `View ${photos.length} photos for ${label}` : `View photo for ${label}`
@@ -455,7 +559,7 @@ function TxnPhotoThumb({ urls, label }) {
       >
         <Image
           source={{ uri: photos[0] }}
-          style={styles.txThumb}
+          style={[styles.txThumb, { width: size, height: size, borderRadius: radius }]}
           resizeMode="cover"
           onError={() => setFailed(true)}
         />
@@ -598,6 +702,7 @@ const TransactionRow = memo(function TransactionRow({
   onPricePress,
   employeePerson,
   onAmountHover,
+  stacked = false,
 }) {
   const [splitTip, setSplitTip] = useState('');
   const [splitAnchor, setSplitAnchor] = useState(null);
@@ -606,6 +711,15 @@ const TransactionRow = memo(function TransactionRow({
   const employee = String(item.employeeName || employeePerson?.name || '').trim();
   const showCash = typeof onCashPress === 'function' && isCashTransaction(item);
   const hoverPerson = employeePerson || { name: employee || '—', photoUrl: '' };
+  const photos = Array.isArray(item.imageUrls) ? item.imageUrls.filter(Boolean) : [];
+  const when = [item.dateLabel, item.timeLabel].filter(Boolean).join(' · ');
+  const reference = String(item.reference || '').trim();
+  const refLabel = /\b(SO|PO)\b/i.test(reference)
+    ? reference
+    : `${isBuy ? 'PO' : 'SO'}${reference ? ` ${reference}` : ''}`;
+  const meta = [refLabel, when, item.paymentMethodLabel]
+    .filter((part) => part && part !== '—')
+    .join(' · ');
 
   const handleSplitEnter = async (event) => {
     setSplitAnchor(event?.currentTarget || null);
@@ -628,6 +742,69 @@ const TransactionRow = memo(function TransactionRow({
           onMouseLeave: () => setSplitAnchor(null),
         }
       : null;
+
+  if (stacked) {
+    return (
+      <Pressable
+        onPress={() => onPress?.(item)}
+        style={({ hovered, pressed }) => [
+          styles.mobileTxRow,
+          last && styles.rowLast,
+          (hovered || pressed) && styles.rowHovered,
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel={`${isBuy ? 'PO' : 'SO'} ${item.customerName || ''} ${item.amountLabel || ''}`}
+      >
+        <View style={styles.mobileTxThumb}>
+          {photos.length ? (
+            <TxnPhotoThumb urls={photos} label={item.reference || (isBuy ? 'PO' : 'SO')} size={44} />
+          ) : (
+            <View style={[styles.mobileTxKind, isBuy && styles.mobileTxKindBuy]}>
+              <Text style={[styles.mobileTxKindText, isBuy && styles.mobileTxKindTextBuy]}>
+                {isBuy ? 'PO' : 'SO'}
+              </Text>
+            </View>
+          )}
+        </View>
+        <View style={styles.mobileTxCopy}>
+          <View style={styles.mobileTxTop}>
+            <Text style={styles.mobileTxCustomer} numberOfLines={1}>
+              {item.customerName || '—'}
+            </Text>
+            <View style={styles.mobileTxAmount} {...splitHover}>
+              {showCash ? (
+                <TxnCashIcon saved={cashSaved} onPress={() => onCashPress(item)} />
+              ) : null}
+              <Text style={styles.mobileTxAmountText} numberOfLines={1}>
+                {item.amountLabel || '—'}
+              </Text>
+            </View>
+          </View>
+          {meta ? (
+            <Text style={styles.mobileTxMeta} numberOfLines={1}>
+              {meta}
+            </Text>
+          ) : null}
+          {items ? (
+            <Text style={styles.mobileTxItems} numberOfLines={2}>
+              {items}
+            </Text>
+          ) : null}
+          <View style={styles.mobileTxFooter}>
+            <PriceCheckBadge check={priceCheck} onPress={() => onPricePress?.(priceCheck)} />
+            {employee && employee !== '—' ? (
+              <View style={styles.mobileTxEmployee}>
+                <EmployeeAvatar person={hoverPerson} size={18} />
+                <Text style={styles.mobileTxEmployeeName} numberOfLines={1}>
+                  {employee}
+                </Text>
+              </View>
+            ) : null}
+          </View>
+        </View>
+      </Pressable>
+    );
+  }
 
   return (
     <Pressable
@@ -981,9 +1158,9 @@ function StoreSnapshotPanel({
   ready = true,
 }) {
   const storeName = store?.store || '';
-  const { width: windowWidth } = useWindowDimensions();
-  const isMobile = windowWidth < 768;
+  const isMobile = useIsMobile();
   const { hasApp } = useAppAccess();
+  const phone = usePhoneCalls();
   const showPhone = hasApp('phone');
   const showEmails = hasApp('emails');
   const [inventoryQuery, setInventoryQuery] = useState('');
@@ -1241,6 +1418,45 @@ function StoreSnapshotPanel({
     ? `${presentEmployees.length} here`
     : 'Now';
 
+  const storeKey = storeKeyFromName(storeName);
+  const incomingCalls = useMemo(
+    () => (phone.incoming || []).filter((call) => call.storeKey === storeKey),
+    [phone.incoming, storeKey],
+  );
+  const phoneRatio = useMemo(
+    () =>
+      inboundCallRatio(
+        callsInRange(callsForStore(phone.mergedCallsByStore, storeName), startKey, endKey),
+      ),
+    [endKey, phone.mergedCallsByStore, startKey, storeName],
+  );
+  const emailCapture = useMemo(
+    () => storeEmailCapture(txRows, storeName),
+    [storeName, txRows],
+  );
+  const missingEmails = useMemo(
+    () => (emailCapture?.people || []).filter((person) => !person.hasEmail),
+    [emailCapture],
+  );
+  const cadAmt = cash?.cad?.aureusOnHand ?? cash?.cad?.expectedOnHand ?? 0;
+  const usdAmt = cash?.usd?.aureusOnHand ?? cash?.usd?.expectedOnHand ?? 0;
+  const showUsd = Math.abs(usdAmt) >= 0.005 || hasDrawerActivity(cash?.usd);
+  const cadMoved = Math.abs(cash?.cad?.movementNet || 0) >= 0.005;
+  const cashMeta = cash
+    ? [
+        showUsd ? `USD ${formatAmount(usdAmt, 'USD')}` : 'CAD till',
+        `Open ${formatAmount(cash.cad?.openingBalance, 'CAD')}`,
+        cadMoved ? `Today ${formatAmount(cash.cad.movementNet, 'CAD')}` : '',
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : cashError || 'Till';
+  const emailMeta = !emailCapture || emailCapture.customerCount === 0
+    ? `${emailCapture?.walkInCount || 0} walk-in`
+    : `${emailCapture.withEmail} of ${emailCapture.customerCount} named`;
+  const visibleMissing = missingEmails.slice(0, 4);
+  const hiddenMissing = missingEmails.length - visibleMissing.length;
+
   const inventoryBody = inventoryError && !hasInventoryRef.current ? (
     <Pressable onPress={loadInventory}>
       <EmptyRow text={`${inventoryError} · Tap to retry`} />
@@ -1295,7 +1511,32 @@ function StoreSnapshotPanel({
     ))
   );
 
-  const transactionsBody = (
+  const mappedTxRows =
+    txRows.length === 0 ? (
+      <EmptyRow
+        text={`No transactions ${periodLabel === 'Today' ? 'today' : 'in this period'}.`}
+      />
+    ) : (
+      txRows.map((item, index) => (
+        <TransactionRow
+          key={item.id}
+          item={item}
+          last={index === txRows.length - 1}
+          onPress={onOpenTransaction}
+          cashSaved={cashSlips.isSaved(item)}
+          onCashPress={cashSlips.openEditor}
+          priceCheck={priceChecks.get(item.id)}
+          onPricePress={setPriceReview}
+          employeePerson={employeePersonForTx(item, employeesByName, staff)}
+          onAmountHover={onAmountHover}
+          stacked={isMobile}
+        />
+      ))
+    );
+
+  const transactionsBody = isMobile ? (
+    mappedTxRows
+  ) : (
     <ScrollView
       horizontal
       nestedScrollEnabled
@@ -1305,38 +1546,142 @@ function StoreSnapshotPanel({
     >
       <View style={styles.txTable}>
         <TxTableHeader />
-        {txRows.length === 0 ? (
-          <EmptyRow
-            text={`No transactions ${periodLabel === 'Today' ? 'today' : 'in this period'}.`}
-          />
-        ) : (
-          txRows.map((item, index) => (
-            <TransactionRow
-              key={item.id}
-              item={item}
-              last={index === txRows.length - 1}
-              onPress={onOpenTransaction}
-              cashSaved={cashSlips.isSaved(item)}
-              onCashPress={cashSlips.openEditor}
-              priceCheck={priceChecks.get(item.id)}
-              onPricePress={setPriceReview}
-              employeePerson={employeePersonForTx(item, employeesByName, staff)}
-              onAmountHover={onAmountHover}
-            />
-          ))
-        )}
+        {mappedTxRows}
       </View>
     </ScrollView>
   );
 
-  const content = (
+  const mobileContent = (
     <>
-      <View style={[styles.appRow, isMobile && styles.appRowMobile]}>
+      <OverviewHero store={store} periodLabel={periodLabel} />
+
+      {showPhone && incomingCalls.length ? (
+        <AppBox app={SNAPSHOT_APPS.phone} meta="Incoming" onOpen={onOpenApp}>
+          <PhoneSnapshotBody
+            storeName={storeName}
+            startKey={startKey}
+            endKey={endKey}
+            periodLabel={periodLabel}
+          />
+        </AppBox>
+      ) : null}
+
+      <View style={styles.metricGrid}>
+        <MetricTile
+          app={SNAPSHOT_APPS.financials}
+          value={cash ? formatAmount(cadAmt, 'CAD') : '—'}
+          meta={cashMeta}
+          loading={cashLoading && !cash}
+          onOpen={onOpenApp}
+        />
+        {showPhone ? (
+          <MetricTile
+            app={SNAPSHOT_APPS.phone}
+            value={phoneRatio.ratio}
+            meta={
+              phoneRatio.total
+                ? `${phoneRatio.answered} answered · ${phoneRatio.missed} missed`
+                : `No inbound calls ${periodLabel === 'Today' ? 'today' : 'in this period'}`
+            }
+            tone={
+              phoneRatio.rate == null
+                ? null
+                : phoneRatio.rate < 80
+                  ? 'low'
+                  : 'high'
+            }
+            onOpen={onOpenApp}
+          />
+        ) : null}
+        {showEmails ? (
+          <MetricTile
+            app={SNAPSHOT_APPS.emails}
+            value={
+              !emailCapture || emailCapture.customerCount === 0
+                ? '—'
+                : emailCapture.rateLabel
+            }
+            meta={emailMeta}
+            tone={
+              emailCapture?.customerCount > 0 && emailCapture.rate < 80
+                ? 'low'
+                : emailCapture?.customerCount > 0 && emailCapture.rate >= 80
+                  ? 'high'
+                  : null
+            }
+            onOpen={onOpenApp}
+          />
+        ) : null}
+        <MetricTile
+          app={SNAPSHOT_APPS.employees}
+          value={
+            presentEmployees.length
+              ? `${presentEmployees.length}`
+              : '—'
+          }
+          meta={presentEmployees.length ? employeeMeta : 'No one assigned'}
+          accessory={<PeopleStack people={presentEmployees} />}
+          onOpen={onOpenApp}
+        />
+      </View>
+
+      {showEmails && missingEmails.length ? (
+        <AppBox
+          app={SNAPSHOT_APPS.emails}
+          meta={`${missingEmails.length} missing`}
+          onOpen={onOpenApp}
+        >
+          <Text style={styles.emailSectionLabel}>
+            Missing email · {missingEmails.length}
+          </Text>
+          {visibleMissing.map((person, index) => (
+            <View
+              key={person.id || `${person.customerName}-${index}`}
+              style={[
+                styles.row,
+                styles.rowStatic,
+                styles.emailRow,
+                hiddenMissing === 0 && index === visibleMissing.length - 1 && styles.rowLast,
+              ]}
+            >
+              <Ionicons name="mail-unread-outline" size={16} color={RED} />
+              <View style={styles.rowCopy}>
+                <Text style={styles.rowTitle} numberOfLines={1}>
+                  {person.customerName}
+                </Text>
+                <Text style={styles.rowSubtitle} numberOfLines={1}>
+                  {[person.reference, person.employeeName]
+                    .filter((part) => part && part !== '—')
+                    .join(' · ') || 'No email on file'}
+                </Text>
+              </View>
+            </View>
+          ))}
+          {hiddenMissing > 0 ? (
+            <ShowMoreRow remaining={hiddenMissing} onPress={() => onOpenApp?.('emails')} />
+          ) : null}
+        </AppBox>
+      ) : null}
+
+      <AppBox app={SNAPSHOT_APPS.transactions} meta={txMeta} onOpen={onOpenApp}>
+        {transactionsBody}
+      </AppBox>
+
+      <AppBox app={SNAPSHOT_APPS.inventory} meta={itemMeta} onOpen={onOpenApp}>
+        <InventorySearch value={inventoryQuery} onChangeText={setInventoryQuery} />
+        {inventoryBody}
+      </AppBox>
+    </>
+  );
+
+  const desktopContent = (
+    <>
+      <View style={styles.appRow}>
         <AppBox
           app={SNAPSHOT_APPS.financials}
           meta="Now"
           onOpen={onOpenApp}
-          style={[styles.appRowBox, !isMobile && styles.appRowBoxDesktop]}
+          style={[styles.appRowBox, styles.appRowBoxDesktop]}
         >
           {financialsBody}
         </AppBox>
@@ -1344,52 +1689,44 @@ function StoreSnapshotPanel({
           app={SNAPSHOT_APPS.inventory}
           meta={itemMeta}
           onOpen={onOpenApp}
-          style={[styles.appRowBox, !isMobile && styles.appRowBoxDesktop]}
-          bodyStyle={!isMobile ? styles.inventoryBoxBody : null}
+          style={[styles.appRowBox, styles.appRowBoxDesktop]}
+          bodyStyle={styles.inventoryBoxBody}
         >
           <InventorySearch value={inventoryQuery} onChangeText={setInventoryQuery} />
-          {isMobile ? (
-            inventoryBody
-          ) : (
-            <ScrollView
-              style={styles.inventoryList}
-              contentContainerStyle={styles.boxListContent}
-              nestedScrollEnabled
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-            >
-              {inventoryBody}
-            </ScrollView>
-          )}
+          <ScrollView
+            style={styles.inventoryList}
+            contentContainerStyle={styles.boxListContent}
+            nestedScrollEnabled
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {inventoryBody}
+          </ScrollView>
         </AppBox>
         <AppBox
           app={SNAPSHOT_APPS.employees}
           meta={employeeMeta}
           onOpen={onOpenApp}
-          style={[styles.appRowBox, !isMobile && styles.appRowBoxDesktop]}
-          bodyStyle={!isMobile ? styles.appBoxBodyFill : null}
+          style={[styles.appRowBox, styles.appRowBoxDesktop]}
+          bodyStyle={styles.appBoxBodyFill}
         >
-          {isMobile ? (
-            employeesBody
-          ) : (
-            <ScrollView
-              style={styles.employeeList}
-              contentContainerStyle={styles.boxListContent}
-              nestedScrollEnabled
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-            >
-              {employeesBody}
-            </ScrollView>
-          )}
+          <ScrollView
+            style={styles.employeeList}
+            contentContainerStyle={styles.boxListContent}
+            nestedScrollEnabled
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {employeesBody}
+          </ScrollView>
         </AppBox>
         {showPhone ? (
           <AppBox
             app={SNAPSHOT_APPS.phone}
             meta={periodLabel}
             onOpen={onOpenApp}
-            style={[styles.appRowBox, !isMobile && styles.appRowBoxDesktop]}
-            bodyStyle={!isMobile ? styles.appBoxBodyFill : null}
+            style={[styles.appRowBox, styles.appRowBoxDesktop]}
+            bodyStyle={styles.appBoxBodyFill}
           >
             <PhoneSnapshotBody
               storeName={storeName}
@@ -1404,32 +1741,23 @@ function StoreSnapshotPanel({
             app={SNAPSHOT_APPS.emails}
             meta={periodLabel}
             onOpen={onOpenApp}
-            style={[styles.appRowBox, !isMobile && styles.appRowBoxDesktop]}
-            bodyStyle={!isMobile ? styles.appBoxBodyFill : null}
+            style={[styles.appRowBox, styles.appRowBoxDesktop]}
+            bodyStyle={styles.appBoxBodyFill}
           >
-            {isMobile ? (
+            <ScrollView
+              style={styles.employeeList}
+              contentContainerStyle={styles.boxListContent}
+              nestedScrollEnabled
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
               <EmailsSnapshotBody
                 storeName={storeName}
                 txRows={txRows}
                 periodLabel={periodLabel}
                 ready={ready}
               />
-            ) : (
-              <ScrollView
-                style={styles.employeeList}
-                contentContainerStyle={styles.boxListContent}
-                nestedScrollEnabled
-                keyboardShouldPersistTaps="handled"
-                showsVerticalScrollIndicator={false}
-              >
-                <EmailsSnapshotBody
-                  storeName={storeName}
-                  txRows={txRows}
-                  periodLabel={periodLabel}
-                  ready={ready}
-                />
-              </ScrollView>
-            )}
+            </ScrollView>
           </AppBox>
         ) : null}
       </View>
@@ -1449,12 +1777,15 @@ function StoreSnapshotPanel({
     <View style={[styles.body, isMobile && styles.bodyMobile]}>
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={[styles.scrollContent, { paddingTop: topInset + 10 }]}
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingTop: topInset + 10, paddingBottom: isMobile ? 48 : 32 },
+        ]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
       >
-        {content}
+        {isMobile ? mobileContent : desktopContent}
       </ScrollView>
       <TxnCashBreakdownModal
         visible={Boolean(cashSlips.editorRow)}
@@ -1471,11 +1802,19 @@ function StoreSnapshotPanel({
 
 // The home screen hands us a fresh `store` object on every live refresh; only
 // its name matters here, so compare that instead of the object identity.
+export { TransactionRow as StoreTransactionRow, OverviewHero };
+
 export default memo(
   StoreSnapshotPanel,
   (prev, next) =>
     prev.session === next.session &&
     (prev.store?.store || '') === (next.store?.store || '') &&
+    prev.store?.totalAmount === next.store?.totalAmount &&
+    prev.store?.txCount === next.store?.txCount &&
+    prev.store?.soAmount === next.store?.soAmount &&
+    prev.store?.poAmount === next.store?.poAmount &&
+    prev.store?.saleCount === next.store?.saleCount &&
+    prev.store?.purchaseCount === next.store?.purchaseCount &&
     prev.periodLabel === next.periodLabel &&
     prev.startKey === next.startKey &&
     prev.endKey === next.endKey &&
@@ -1495,7 +1834,272 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   bodyMobile: {
+    paddingHorizontal: 16,
+  },
+  heroCard: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 16,
+  },
+  heroKicker: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: SECONDARY,
+    letterSpacing: -0.08,
+  },
+  heroAmount: {
+    fontFamily,
+    fontSize: 34,
+    fontWeight: '700',
+    color: LABEL,
+    letterSpacing: -0.8,
+    fontVariant: ['tabular-nums'],
+    marginTop: 2,
+  },
+  heroAmountEmpty: {
+    color: SECONDARY,
+  },
+  heroMeta: {
+    fontFamily,
+    fontSize: 15,
+    color: SECONDARY,
+    letterSpacing: -0.2,
+    marginTop: 2,
+  },
+  heroSplit: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    marginTop: 16,
+    paddingTop: 14,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: SEPARATOR,
+  },
+  heroSplitCol: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  heroSplitRule: {
+    width: StyleSheet.hairlineWidth,
+    backgroundColor: SEPARATOR,
+    marginHorizontal: 14,
+  },
+  heroSplitLabel: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: SO_BLUE,
+    letterSpacing: -0.04,
+  },
+  heroSplitLabelBuy: {
+    color: PO_AMBER,
+  },
+  heroSplitValue: {
+    fontFamily,
+    fontSize: 20,
+    fontWeight: '700',
+    color: LABEL,
+    letterSpacing: -0.4,
+    fontVariant: ['tabular-nums'],
+  },
+  heroSplitMeta: {
+    fontFamily,
+    fontSize: 13,
+    color: SECONDARY,
+    letterSpacing: -0.08,
+    fontVariant: ['tabular-nums'],
+  },
+  metricGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  metricTile: {
+    flexGrow: 1,
+    flexBasis: '47%',
+    minWidth: 148,
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    overflow: 'hidden',
     paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 14,
+    gap: 6,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  metricTilePressed: {
+    backgroundColor: '#f7f7f8',
+  },
+  metricHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  metricIcon: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  metricTitle: {
+    fontFamily,
+    flex: 1,
+    minWidth: 0,
+    fontSize: 13,
+    fontWeight: '600',
+    color: LABEL,
+    letterSpacing: -0.08,
+  },
+  metricValue: {
+    fontFamily,
+    fontSize: 26,
+    fontWeight: '700',
+    color: LABEL,
+    letterSpacing: -0.6,
+    fontVariant: ['tabular-nums'],
+  },
+  metricMeta: {
+    fontFamily,
+    fontSize: 12,
+    lineHeight: 16,
+    color: SECONDARY,
+    letterSpacing: -0.04,
+  },
+  metricSpinner: {
+    alignSelf: 'flex-start',
+    marginVertical: 8,
+  },
+  peopleStack: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 2,
+  },
+  peopleStackItem: {
+    borderRadius: 16,
+  },
+  peopleExtra: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: SECONDARY,
+    marginLeft: 6,
+  },
+  employeeAvatarRing: {
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
+  mobileTxRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: SEPARATOR,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  mobileTxThumb: {
+    width: 44,
+    height: 44,
+    flexShrink: 0,
+  },
+  mobileTxKind: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#EEF3FF',
+  },
+  mobileTxKindBuy: {
+    backgroundColor: '#FFF6E8',
+  },
+  mobileTxKindText: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '700',
+    color: SO_BLUE,
+    letterSpacing: 0.2,
+  },
+  mobileTxKindTextBuy: {
+    color: PO_AMBER,
+  },
+  mobileTxCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  mobileTxTop: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  mobileTxCustomer: {
+    fontFamily,
+    flex: 1,
+    minWidth: 0,
+    fontSize: 17,
+    fontWeight: '600',
+    color: LABEL,
+    letterSpacing: -0.3,
+  },
+  mobileTxAmount: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    flexShrink: 0,
+  },
+  mobileTxAmountText: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: LABEL,
+    letterSpacing: -0.3,
+    fontVariant: ['tabular-nums'],
+  },
+  mobileTxMeta: {
+    fontFamily,
+    fontSize: 13,
+    color: SECONDARY,
+    letterSpacing: -0.08,
+  },
+  mobileTxItems: {
+    fontFamily,
+    fontSize: 13,
+    lineHeight: 18,
+    color: SECONDARY,
+    letterSpacing: -0.08,
+  },
+  mobileTxFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginTop: 4,
+  },
+  mobileTxEmployee: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  mobileTxEmployeeName: {
+    fontFamily,
+    fontSize: 12,
+    color: SECONDARY,
+    letterSpacing: -0.04,
+    flexShrink: 1,
   },
   appRow: {
     flexDirection: 'row',

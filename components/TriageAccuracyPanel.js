@@ -1,6 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { FlatList, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import {
   applyTriageReviewToPo,
   collectAccuracyTriagePos,
@@ -9,6 +8,8 @@ import {
   triagePoNeedsCorrection,
   useTransferWorkflow,
 } from '../lib/transferWorkflow';
+import { MAX_REVIEW_IMAGES, normalizeReviewImages } from '../lib/triageDraft';
+import { captureTriagePhoto } from './TriageCorrectionImages';
 import {
   ColumnFilter,
   matchesSelectedLabel,
@@ -25,7 +26,19 @@ import {
   uniqueLabels,
 } from './TriageTable';
 import TriageReviewDrawer from './TriageReviewDrawer';
-import { EmptyState, FONT, ProgressBar, SectionLabel, T, TextAction, TriageDrawer } from './TriageKit';
+import {
+  EmptyState,
+  FONT,
+  MobileCameraButton,
+  MobileListRow,
+  ProgressBar,
+  SectionLabel,
+  StatusPill,
+  T,
+  TextAction,
+  TriageDrawer,
+} from './TriageKit';
+import { MOBILE, useIsMobile } from '../lib/mobileUi';
 
 const fontFamily = FONT;
 
@@ -204,10 +217,13 @@ export default function TriageAccuracyPanel({
   onBreakdownOpenChange,
 }) {
   const { triage } = useTransferWorkflow();
+  const isMobile = useIsMobile();
   const [openRow, setOpenRow] = useState(null);
   const [openFilter, setOpenFilter] = useState(null);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [sort, setSort] = useState(null);
+  const [photoBusyId, setPhotoBusyId] = useState('');
+  const [photoError, setPhotoError] = useState('');
   const showError = accuracyTab === 'incorrect';
 
   const accuracyRows = useMemo(() => {
@@ -348,6 +364,31 @@ export default function TriageAccuracyPanel({
     [session],
   );
 
+  const addPhotoToRow = useCallback(
+    async (row) => {
+      const attached = normalizeReviewImages(row?.review?.images);
+      if (attached.length >= MAX_REVIEW_IMAGES) {
+        setOpenFilter(null);
+        setOpenRow(row);
+        return;
+      }
+      setPhotoError('');
+      setPhotoBusyId(row.id);
+      const result = await captureTriagePhoto();
+      setPhotoBusyId('');
+      if (result.error) {
+        setPhotoError(result.error);
+        return;
+      }
+      if (result.cancelled || !result.image) return;
+      saveReview(row.id, {
+        ...(row.review || {}),
+        images: normalizeReviewImages([...(row.review?.images || []), result.image]),
+      });
+    },
+    [saveReview],
+  );
+
   const openFromTable = useCallback((item) => {
     setOpenFilter(null);
     setOpenRow(item);
@@ -367,7 +408,7 @@ export default function TriageAccuracyPanel({
 
   if (accuracyRows.length === 0) {
     return (
-      <View style={styles.body}>
+      <View style={[styles.body, isMobile && styles.bodyMobile]}>
         <EmptyState
           icon="checkmark-done-outline"
           title="Accuracy"
@@ -377,8 +418,84 @@ export default function TriageAccuracyPanel({
     );
   }
 
+  const mobileEmpty = (
+    <EmptyState
+      icon={showError ? 'alert-circle-outline' : 'checkmark-done-outline'}
+      title={
+        listQuery.trim() || filtersActive
+          ? 'No matches'
+          : showError
+            ? 'No incorrect purchases'
+            : 'No correct purchases'
+      }
+      body={
+        listQuery.trim() || filtersActive
+          ? `Nothing matches ${listQuery.trim() ? `“${listQuery.trim()}”` : 'those filters'}.`
+          : showError
+            ? 'POs with a correction, note, or error type land here.'
+            : 'Received POs with no corrections land here.'
+      }
+    />
+  );
+
   return (
-    <View style={styles.body}>
+    <View style={[styles.body, isMobile && styles.bodyMobile]}>
+      {isMobile ? (
+        <FlatList
+          style={styles.mobileList}
+          contentContainerStyle={styles.mobileListContent}
+          data={visible}
+          keyExtractor={accuracyKey}
+          extraData={`${showError}-${photoBusyId}-${visible.length}`}
+          keyboardShouldPersistTaps="handled"
+          ListHeaderComponent={
+            photoError ? (
+              <Text style={styles.mobilePhotoError}>{photoError}</Text>
+            ) : showError && visible.length ? (
+              <Text style={styles.mobileHint}>Tap the camera to attach a photo. Tap the row to open the ticket.</Text>
+            ) : null
+          }
+          ListEmptyComponent={mobileEmpty}
+          renderItem={({ item, index }) => {
+            const photos = normalizeReviewImages(item.review?.images);
+            const atMax = photos.length >= MAX_REVIEW_IMAGES;
+            return (
+              <View style={[index === 0 && styles.mobileGroupStart, index === visible.length - 1 && styles.mobileGroupEnd]}>
+                <MobileListRow
+                  title={item.reference || 'Document'}
+                  subtitle={[staffName(item) || null, item.storeName, item.dateLabel].filter(Boolean).join(' · ')}
+                  meta={
+                    showError
+                      ? [errorPlace(item), item.review?.errorAmount].filter(Boolean).join(' · ')
+                      : item.triageDateLabel || item.amountLabel || ''
+                  }
+                  last={index === visible.length - 1}
+                  onPress={() => openFromTable(item)}
+                  accessibilityLabel={`Open ${item.reference || 'document'}`}
+                  leading={<PoThumb urls={item.imageUrls} label={item.reference} size={52} />}
+                  trailing={
+                    showError ? (
+                      <MobileCameraButton
+                        count={photos.length}
+                        busy={photoBusyId === item.id}
+                        disabled={atMax && photoBusyId !== item.id}
+                        onPress={() => addPhotoToRow(item)}
+                        accessibilityLabel={
+                          atMax
+                            ? `View photos for ${item.reference}`
+                            : `Take a photo of ${item.reference}`
+                        }
+                      />
+                    ) : (
+                      <StatusPill label="Correct" tone="green" compact />
+                    )
+                  }
+                />
+              </View>
+            );
+          }}
+        />
+      ) : (
       <TableFrame
         minWidth={showError ? 920 : 780}
         data={visible}
@@ -491,6 +608,7 @@ export default function TriageAccuracyPanel({
           </>
         }
       />
+      )}
 
       <TriageReviewDrawer
         visible={Boolean(openRow)}
@@ -582,6 +700,44 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
     backgroundColor: T.bg,
+  },
+  bodyMobile: {
+    backgroundColor: MOBILE.bg,
+  },
+  mobileList: {
+    flex: 1,
+    minHeight: 0,
+  },
+  mobileListContent: {
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 40,
+    flexGrow: 1,
+  },
+  mobileHint: {
+    fontFamily,
+    fontSize: 13,
+    lineHeight: 18,
+    color: T.secondary,
+    paddingHorizontal: 4,
+    paddingBottom: 10,
+  },
+  mobilePhotoError: {
+    fontFamily,
+    fontSize: 13,
+    color: T.red,
+    paddingHorizontal: 4,
+    paddingBottom: 10,
+  },
+  mobileGroupStart: {
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+    overflow: 'hidden',
+  },
+  mobileGroupEnd: {
+    borderBottomLeftRadius: 12,
+    borderBottomRightRadius: 12,
+    overflow: 'hidden',
   },
   toolbarEnd: {
     marginLeft: 'auto',

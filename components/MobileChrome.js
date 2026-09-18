@@ -102,9 +102,9 @@ export function MobileHomeHeader({ onBuy, onSell }) {
   );
 }
 
-export function MobileNavHeader({ title, subtitle, onBack, trailing }) {
+export function MobileNavHeader({ title, subtitle, onBack, trailing, grouped = false }) {
   return (
-    <View style={styles.navHeader}>
+    <View style={[styles.navHeader, grouped && styles.navHeaderGrouped]}>
       <Pressable
         onPress={onBack}
         style={styles.navSide}
@@ -256,6 +256,10 @@ const styles = StyleSheet.create({
     backgroundColor: MOBILE.feed,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: MOBILE.separator,
+  },
+  navHeaderGrouped: {
+    backgroundColor: MOBILE.bg,
+    borderBottomColor: 'rgba(60, 60, 67, 0.12)',
   },
   navTrailing: {
     width: 'auto',

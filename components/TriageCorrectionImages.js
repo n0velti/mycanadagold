@@ -62,6 +62,49 @@ function fromAsset(asset) {
   };
 }
 
+export async function captureTriagePhoto() {
+  try {
+    if (Platform.OS !== 'web') {
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) return { error: 'Allow camera access to capture a photo.' };
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      ...PICKER_OPTIONS,
+      cameraType: ImagePicker.CameraType.back,
+    });
+    if (result.canceled || !result.assets?.[0]) return { cancelled: true };
+    const image = fromAsset(result.assets[0]);
+    if (!image.uri) return { error: 'Could not read that photo.' };
+    return { image };
+  } catch (err) {
+    return { error: err?.message || 'Could not open the camera.' };
+  }
+}
+
+export async function pickTriagePhotos({ remaining = MAX_REVIEW_IMAGES } = {}) {
+  try {
+    if (Platform.OS !== 'web') {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) return { error: 'Allow photo access to attach an image.' };
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      ...PICKER_OPTIONS,
+      allowsMultipleSelection: true,
+      selectionLimit: Math.max(1, remaining),
+    });
+    if (result.canceled || !result.assets?.length) return { cancelled: true };
+    const images = [];
+    for (const asset of result.assets) {
+      const image = fromAsset(asset);
+      if (image.uri) images.push(image);
+    }
+    if (!images.length) return { error: 'Could not read those photos.' };
+    return { images };
+  } catch (err) {
+    return { error: err?.message || 'Could not open the photo library.' };
+  }
+}
+
 function captureFrame(video) {
   if (!video || !video.videoWidth || !video.videoHeight) return null;
   const maxW = 1600;
@@ -99,16 +142,6 @@ function TriageCorrectionImages({
   });
   const canAdd = !readOnly && list.length < MAX_REVIEW_IMAGES;
 
-  const addAssets = (assets) => {
-    const next = [...list];
-    for (const asset of assets || []) {
-      if (next.length >= MAX_REVIEW_IMAGES) break;
-      const image = fromAsset(asset);
-      if (image.uri) next.push(image);
-    }
-    onChange?.(next);
-  };
-
   const addDataUrl = (uri) => {
     if (!uri || !canAdd) return;
     onChange?.([...list, { id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, uri }]);
@@ -117,45 +150,30 @@ function TriageCorrectionImages({
   const pickFromLibrary = async () => {
     if (!canAdd) return;
     setError('');
-    try {
-      if (Platform.OS !== 'web') {
-        const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-        if (!permission.granted) {
-          setError('Allow photo access to attach an image.');
-          return;
-        }
-      }
-      const result = await ImagePicker.launchImageLibraryAsync({
-        ...PICKER_OPTIONS,
-        allowsMultipleSelection: true,
-        selectionLimit: MAX_REVIEW_IMAGES - list.length,
-      });
-      if (result.canceled || !result.assets?.length) return;
-      addAssets(result.assets);
-    } catch (err) {
-      setError(err?.message || 'Could not open the photo library.');
+    const result = await pickTriagePhotos({ remaining: MAX_REVIEW_IMAGES - list.length });
+    if (result.error) {
+      setError(result.error);
+      return;
     }
+    if (result.cancelled || !result.images?.length) return;
+    const next = [...list];
+    for (const image of result.images) {
+      if (next.length >= MAX_REVIEW_IMAGES) break;
+      next.push(image);
+    }
+    onChange?.(next);
   };
 
   const takeNativePhoto = async () => {
     if (!canAdd) return;
     setError('');
-    try {
-      const permission = await ImagePicker.requestCameraPermissionsAsync();
-      if (!permission.granted) {
-        setError('Allow camera access to capture a photo.');
-        return;
-      }
-      const result = await ImagePicker.launchCameraAsync({
-        ...PICKER_OPTIONS,
-        // Rear camera; on mobile web this becomes <input capture="environment">.
-        cameraType: ImagePicker.CameraType.back,
-      });
-      if (result.canceled || !result.assets?.[0]) return;
-      addAssets(result.assets);
-    } catch (err) {
-      setError(err?.message || 'Could not open the camera.');
+    const result = await captureTriagePhoto();
+    if (result.error) {
+      setError(result.error);
+      return;
     }
+    if (result.cancelled || !result.image) return;
+    onChange?.([...list, result.image].slice(0, MAX_REVIEW_IMAGES));
   };
 
   const takePhoto = () => {
@@ -187,6 +205,8 @@ function TriageCorrectionImages({
 
   useImperativeHandle(ref, () => ({
     addImage: openAddMenu,
+    takePhoto,
+    pickFromLibrary,
     canAdd,
   }));
 
@@ -221,16 +241,16 @@ function TriageCorrectionImages({
       )}
       {list.length === 0 && readOnly ? (
         <Text style={styles.empty}>No photos attached</Text>
-      ) : list.length > 0 || (canAdd && !showSourceButtons) ? (
-        <View style={styles.grid}>
+      ) : list.length > 0 || (canAdd && !showSourceButtons && !isMobile) ? (
+        <View style={[styles.grid, isMobile && styles.gridMobile]}>
           {list.map((item) => (
-            <View key={item.id} style={styles.thumbWrap}>
+            <View key={item.id} style={[styles.thumbWrap, isMobile && styles.thumbWrapMobile]}>
               <Pressable
                 onPress={() => setViewerUri(item.uri)}
                 accessibilityRole="button"
                 accessibilityLabel="View correction photo"
               >
-                <Image source={{ uri: item.uri }} style={styles.thumb} />
+                <Image source={{ uri: item.uri }} style={[styles.thumb, isMobile && styles.thumbMobile]} />
               </Pressable>
               {readOnly ? null : (
                 <Pressable
@@ -245,7 +265,7 @@ function TriageCorrectionImages({
               )}
             </View>
           ))}
-          {canAdd && !showSourceButtons ? (
+          {canAdd && !showSourceButtons && !isMobile ? (
             <Pressable
               style={styles.addTile}
               onPress={openAddMenu}
@@ -260,41 +280,72 @@ function TriageCorrectionImages({
       ) : null}
 
       {showSourceButtons && !readOnly ? (
-        <View style={styles.sourceActions}>
-          <Pressable
-            style={[styles.sourceAction, compact && styles.sourceActionCompact, !canAdd && styles.sourceActionDisabled]}
-            onPress={takePhoto}
-            disabled={!canAdd}
-            accessibilityRole="button"
-            accessibilityLabel="Take a photo"
-          >
-            <Ionicons name="camera-outline" size={18} color={canAdd ? '#C2410C' : SECONDARY} />
-            <Text style={[styles.sourceActionText, !canAdd && styles.sourceActionTextDisabled]}>Camera</Text>
-          </Pressable>
-          <Pressable
-            style={[styles.sourceAction, compact && styles.sourceActionCompact, !canAdd && styles.sourceActionDisabled]}
-            onPress={chooseFiles}
-            disabled={!canAdd}
-            accessibilityRole="button"
-            accessibilityLabel="Upload from files"
-          >
-            <Ionicons name="folder-open-outline" size={18} color={canAdd ? '#C2410C' : SECONDARY} />
-            <Text style={[styles.sourceActionText, !canAdd && styles.sourceActionTextDisabled]}>Files</Text>
-          </Pressable>
-        </View>
+        isMobile ? (
+          <View style={styles.mobileCaptureStack}>
+            <Pressable
+              style={[styles.mobileCapturePrimary, !canAdd && styles.actionDisabled]}
+              onPress={takePhoto}
+              disabled={!canAdd}
+              accessibilityRole="button"
+              accessibilityLabel="Take a photo"
+            >
+              <Ionicons name="camera" size={22} color={canAdd ? '#fff' : SECONDARY} />
+              <Text style={[styles.mobileCapturePrimaryText, !canAdd && styles.actionTextDisabled]}>
+                Take Photo
+              </Text>
+            </Pressable>
+            <Pressable
+              style={[styles.mobileCaptureSecondary, !canAdd && styles.sourceActionDisabled]}
+              onPress={chooseFiles}
+              disabled={!canAdd}
+              accessibilityRole="button"
+              accessibilityLabel="Choose from photo library"
+            >
+              <Ionicons name="images-outline" size={18} color={canAdd ? ACCENT : SECONDARY} />
+              <Text style={[styles.mobileCaptureSecondaryText, !canAdd && styles.sourceActionTextDisabled]}>
+                Photo Library
+              </Text>
+            </Pressable>
+          </View>
+        ) : (
+          <View style={styles.sourceActions}>
+            <Pressable
+              style={[styles.sourceAction, compact && styles.sourceActionCompact, !canAdd && styles.sourceActionDisabled]}
+              onPress={takePhoto}
+              disabled={!canAdd}
+              accessibilityRole="button"
+              accessibilityLabel="Take a photo"
+            >
+              <Ionicons name="camera-outline" size={18} color={canAdd ? ACCENT : SECONDARY} />
+              <Text style={[styles.sourceActionText, !canAdd && styles.sourceActionTextDisabled]}>Camera</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.sourceAction, compact && styles.sourceActionCompact, !canAdd && styles.sourceActionDisabled]}
+              onPress={chooseFiles}
+              disabled={!canAdd}
+              accessibilityRole="button"
+              accessibilityLabel="Upload from files"
+            >
+              <Ionicons name="folder-open-outline" size={18} color={canAdd ? ACCENT : SECONDARY} />
+              <Text style={[styles.sourceActionText, !canAdd && styles.sourceActionTextDisabled]}>Files</Text>
+            </Pressable>
+          </View>
+        )
       ) : null}
 
       {readOnly || hideActions ? null : (
         <View style={[styles.actions, compact && styles.actionsColumn]}>
           <Pressable
             style={[styles.captureButton, !canAdd && styles.actionDisabled]}
-            onPress={openAddMenu}
+            onPress={isMobile ? takePhoto : openAddMenu}
             disabled={!canAdd}
             accessibilityRole="button"
-            accessibilityLabel="Add image"
+            accessibilityLabel="Take a photo"
           >
-            <Ionicons name="image-outline" size={18} color={canAdd ? '#fff' : SECONDARY} />
-            <Text style={[styles.captureText, !canAdd && styles.actionTextDisabled]}>Add image</Text>
+            <Ionicons name="camera" size={18} color={canAdd ? '#fff' : SECONDARY} />
+            <Text style={[styles.captureText, !canAdd && styles.actionTextDisabled]}>
+              {isMobile ? 'Take Photo' : 'Add image'}
+            </Text>
           </Pressable>
         </View>
       )}
@@ -310,8 +361,10 @@ function TriageCorrectionImages({
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setSourceOpen(false)} accessibilityLabel="Close" />
           <View style={[styles.sourceCard, isMobile && styles.sourceCardMobile]}>
             {isMobile ? <View style={styles.sourceGrabber} /> : null}
-            <Text style={styles.sourceTitle}>Add image</Text>
-            <Text style={styles.sourceSub}>Take a photo or attach a file of the item, tag, or receipt.</Text>
+            <Text style={styles.sourceTitle}>{isMobile ? 'Add a photo' : 'Add image'}</Text>
+            <Text style={styles.sourceSub}>
+              {isMobile ? 'Take a photo of the item, tag, or receipt.' : 'Take a photo or attach a file of the item, tag, or receipt.'}
+            </Text>
             <Pressable
               style={styles.sourceOption}
               onPress={chooseCamera}
@@ -337,8 +390,10 @@ function TriageCorrectionImages({
                 <Ionicons name="folder-open-outline" size={22} color={TEXT} />
               </View>
               <View style={styles.sourceCopy}>
-                <Text style={styles.sourceOptionTitle}>Files</Text>
-                <Text style={styles.sourceOptionSub}>Choose from photos or files</Text>
+                <Text style={styles.sourceOptionTitle}>{isMobile ? 'Photo Library' : 'Files'}</Text>
+                <Text style={styles.sourceOptionSub}>
+                  {isMobile ? 'Choose from your photos' : 'Choose from photos or files'}
+                </Text>
               </View>
               <Ionicons name="chevron-forward" size={18} color={SECONDARY} />
             </Pressable>
@@ -589,6 +644,59 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: TEXT,
   },
+  gridMobile: {
+    gap: 10,
+  },
+  thumbWrapMobile: {
+    width: 104,
+    height: 104,
+  },
+  thumbMobile: {
+    width: 104,
+    height: 104,
+    borderRadius: 12,
+  },
+  mobileCaptureStack: {
+    gap: 8,
+  },
+  mobileCapturePrimary: {
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderRadius: 14,
+    backgroundColor: ACCENT,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  mobileCapturePrimaryText: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  mobileCaptureSecondary: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderRadius: 12,
+    backgroundColor: FILL,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  mobileCaptureSecondaryText: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '600',
+    color: ACCENT,
+  },
   sourceActions: {
     flexDirection: 'row',
     gap: 8,
@@ -620,7 +728,7 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 15,
     fontWeight: '600',
-    color: '#C2410C',
+    color: ACCENT,
   },
   sourceActionTextDisabled: {
     color: SECONDARY,
