@@ -1,4 +1,4 @@
-import { createElement, Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createElement, Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -9,7 +9,6 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  useWindowDimensions,
   View,
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -75,9 +74,11 @@ import {
   getModelMeta,
   OPENROUTER_MODELS,
 } from '../lib/openrouter';
-import { MOBILE, mobileSafeBottom } from '../lib/mobileUi';
+import { mobileSafeBottom, useIsMobile } from '../lib/mobileUi';
+import { AUREUS_CASH_LIVE_MS, useLiveRefresh } from '../lib/liveRefresh';
 import { AuditAiChat, AuditTxnDrawer, useAuditTxnDrawer } from './AuditAiOutput';
 import ItemAuditPanel from './ItemAuditPanel';
+import { BarButton, IconAction, SearchField, SegmentedSlider, T, TextTabs } from './TriageKit';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -87,18 +88,17 @@ const fontFamily = Platform.select({
 
 const ACCENT = '#1F8A4E';
 const TINT = '#EAF6EE';
-const BLUE = MOBILE.blue;
+const BLUE = T.blue;
 const GREEN = ACCENT;
-const TEXT = '#1d1d1f';
-const SECONDARY = '#6e6e73';
-const FILL = 'rgba(118, 118, 128, 0.12)';
-const PAGE = '#fff';
-const CARD = '#fff';
+const TEXT = T.text;
+const SECONDARY = T.secondary;
+const FILL = T.fillSoft;
+const PAGE = T.bg;
+const CARD = T.card;
 const HAIRLINE = '#e5e5ea';
-const CHEVRON = '#c7c7cc';
-const RED = '#FF3B30';
-const ORANGE = '#FF9500';
-const MOBILE_BREAKPOINT = 768;
+const CHEVRON = T.tertiary;
+const RED = T.red;
+const ORANGE = T.orange;
 const AUDIT_TABS = [
   { key: 'bullion', label: 'Bullion' },
   { key: 'cash', label: 'Cash' },
@@ -123,9 +123,14 @@ function metalAccent(name) {
   return METAL_ACCENTS[hit] || '#8e8e93';
 }
 
-function useIsMobile() {
-  const { width } = useWindowDimensions();
-  return width < MOBILE_BREAKPOINT;
+function sameJson(a, b) {
+  if (a === b) return true;
+  if (a == null || b == null) return false;
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
 }
 
 function namesMatch(a, b) {
@@ -258,47 +263,6 @@ function FilterSelect({
         </View>
       </Modal>
     </>
-  );
-}
-
-function SegmentedControl({ options, value, onChange, style, stretch = false }) {
-  return (
-    <View style={[styles.segment, stretch && styles.segmentStretch, style]} accessibilityRole="tablist">
-      {options.map((option) => {
-        const active = option.key === value;
-        return (
-          <Pressable
-            key={option.key}
-            style={[
-              styles.segmentButton,
-              stretch && styles.segmentButtonStretch,
-              active && styles.segmentButtonActive,
-            ]}
-            onPress={() => onChange(option.key)}
-            accessibilityRole="tab"
-            accessibilityState={{ selected: active }}
-          >
-            <Text style={[styles.segmentText, active && styles.segmentTextActive]} numberOfLines={1}>
-              {option.label}
-            </Text>
-          </Pressable>
-        );
-      })}
-    </View>
-  );
-}
-
-function FilterBar({ children, style }) {
-  return (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      keyboardShouldPersistTaps="handled"
-      style={[styles.filterBar, style]}
-      contentContainerStyle={styles.filterBarContent}
-    >
-      {children}
-    </ScrollView>
   );
 }
 
@@ -1870,24 +1834,12 @@ function BullionAuditPanel({
         ) : null}
       </View>
     ) : (
-    <View style={[styles.appleSearch, style]}>
-      <Ionicons name="search" size={16} color={SECONDARY} style={styles.appleSearchIcon} />
-      <TextInput
-        style={styles.appleSearchInput}
+      <SearchField
         value={query}
         onChangeText={setQuery}
-        placeholder="Search"
-        placeholderTextColor={SECONDARY}
-        autoCapitalize="none"
-        autoCorrect={false}
-        clearButtonMode="while-editing"
+        placeholder="Item or SKU"
+        style={[styles.chromeSearch, style]}
       />
-      {query ? (
-        <Pressable onPress={() => setQuery('')} hitSlop={8}>
-          <Ionicons name="close-circle" size={18} color={CHEVRON} />
-        </Pressable>
-      ) : null}
-    </View>
     )
   );
 
@@ -1902,27 +1854,16 @@ function BullionAuditPanel({
           <Text style={styles.ticketFieldValue}>{hideZero ? 'Non-zero' : 'All'}</Text>
           <Ionicons name="chevron-down" size={14} color={CHEVRON} />
         </Pressable>
-      ) : !isMobile ? (
-        <SegmentedControl
+      ) : (
+        <SegmentedSlider
           options={[
             { key: 'nonzero', label: 'Non-zero' },
             { key: 'all', label: 'All' },
           ]}
           value={hideZero ? 'nonzero' : 'all'}
           onChange={(next) => setHideZero(next === 'nonzero')}
+          style={styles.zeroSlider}
         />
-      ) : (
-        <Pressable
-          style={[styles.iconToggle, hideZero && styles.iconToggleActive]}
-          onPress={() => setHideZero((prev) => !prev)}
-          accessibilityLabel={hideZero ? 'Showing non-zero' : 'Showing all'}
-        >
-          <Ionicons
-            name={hideZero ? 'filter' : 'filter-outline'}
-            size={16}
-            color={hideZero ? TEXT : SECONDARY}
-          />
-        </Pressable>
       )
     ) : null;
 
@@ -1949,18 +1890,11 @@ function BullionAuditPanel({
     );
 
   const renderRefreshButton = () => (
-    <Pressable
-      style={styles.iconToggle}
+    <IconAction
+      icon="refresh"
       onPress={load}
-      disabled={loading}
       accessibilityLabel="Refresh"
-    >
-      {loading ? (
-        <ActivityIndicator size="small" color={SECONDARY} />
-      ) : (
-        <Ionicons name="refresh" size={16} color={TEXT} />
-      )}
-    </Pressable>
+    />
   );
 
   const renderSaveAllButton = (style) => {
@@ -1993,26 +1927,36 @@ function BullionAuditPanel({
   const renderUpdateAllButton = (style) => {
     const canUpdateAll = visibleRows.some(rowHasDraftCounts);
     const aureusBusy = savingAll && savingKind === 'aureus';
+    if (style) {
+      return (
+        <Pressable
+          style={[
+            styles.fillButton,
+            style,
+            (savingAll || savingId || !canUpdateAll) && styles.fillButtonDisabled,
+          ]}
+          onPress={updateAll}
+          disabled={savingAll || Boolean(savingId) || !canUpdateAll}
+        >
+          {aureusBusy ? (
+            <Text style={styles.fillButtonText} numberOfLines={1}>
+              {saveAllProgress || 'Updating…'}
+            </Text>
+          ) : (
+            <Text style={styles.fillButtonText} numberOfLines={1}>
+              Update all
+            </Text>
+          )}
+        </Pressable>
+      );
+    }
     return (
-      <Pressable
-        style={[
-          styles.fillButton,
-          style,
-          (savingAll || savingId || !canUpdateAll) && styles.fillButtonDisabled,
-        ]}
+      <BarButton
+        label={aureusBusy ? saveAllProgress || 'Updating…' : 'Update all'}
         onPress={updateAll}
         disabled={savingAll || Boolean(savingId) || !canUpdateAll}
-      >
-        {aureusBusy ? (
-          <Text style={styles.fillButtonText} numberOfLines={1}>
-            {saveAllProgress || 'Updating…'}
-          </Text>
-        ) : (
-          <Text style={styles.fillButtonText} numberOfLines={1}>
-            Update all
-          </Text>
-        )}
-      </Pressable>
+        accessibilityLabel="Update all counts in Aureus"
+      />
     );
   };
 
@@ -2049,20 +1993,26 @@ function BullionAuditPanel({
       );
     }
     return (
-      <FilterBar>
-        {renderSearchField()}
-        {renderZeroFilter()}
-        {renderStoreControl()}
-        <SegmentedControl
-          options={[{ key: 'today', label: 'Today' }]}
-          value={isToday ? 'today' : ''}
-          onChange={() => setDate(parseDateParam(new Date()))}
-        />
-        <DateChip label="Date" value={date} onChange={setDate} maximumDate={new Date()} />
-        {renderRefreshButton()}
-        {renderSaveAllButton()}
-        {renderUpdateAllButton()}
-      </FilterBar>
+      <View style={styles.pageChrome}>
+        <View style={styles.pageChromeStart}>
+          {renderSearchField()}
+          {renderZeroFilter()}
+        </View>
+        <View style={styles.pageChromeEnd}>
+          {renderStoreControl()}
+          {isToday ? null : (
+            <BarButton
+              label="Today"
+              onPress={() => setDate(parseDateParam(new Date()))}
+              accessibilityLabel="Jump to today"
+            />
+          )}
+          <DateChip label="Date" value={date} onChange={setDate} maximumDate={new Date()} />
+          {renderRefreshButton()}
+          {renderUpdateAllButton()}
+          {renderSaveAllButton()}
+        </View>
+      </View>
     );
   };
 
@@ -2390,7 +2340,7 @@ function CashAuditPanel({
     if (initialDate) setDate(parseDateParam(initialDate));
   }, [initialDate]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async ({ silent = false } = {}) => {
     if (!session?.token) {
       setPosition(null);
       setError('');
@@ -2404,9 +2354,11 @@ function CashAuditPanel({
     }
 
     const id = ++requestId.current;
-    setLoading(true);
-    setError('');
-    setWarning('');
+    if (!silent) {
+      setLoading(true);
+      setError('');
+      setWarning('');
+    }
 
     try {
       const result = await fetchStoreCashPosition(session, {
@@ -2414,21 +2366,25 @@ function CashAuditPanel({
         storeName: selectedStore,
       });
       if (id !== requestId.current) return;
-      setPosition(result);
+      setPosition((current) => (sameJson(current, result) ? current : result));
       setWarning(result.warning || '');
+      setError('');
     } catch (err) {
       if (id !== requestId.current) return;
+      if (silent) return;
       setPosition(null);
       setError(err?.message || 'Failed to load cash position.');
       setWarning('');
     } finally {
-      if (id === requestId.current) setLoading(false);
+      if (id === requestId.current && !silent) setLoading(false);
     }
   }, [session, dateKey, selectedStore]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  useLiveRefresh(load, AUREUS_CASH_LIVE_MS, Boolean(session?.token && selectedStore));
 
   useEffect(() => {
     let cancelled = false;
@@ -2516,7 +2472,10 @@ function CashAuditPanel({
   const yesterdayClosing = activeDrawer?.yesterdayClosing ?? 0;
   const openingBalance = activeDrawer?.openingBalance ?? 0;
   const expectedOnHand = activeDrawer?.expectedOnHand ?? 0;
+  const aureusOnHand = activeDrawer?.aureusOnHand ?? expectedOnHand;
   const posPhysical = activeDrawer?.todayPhysical ?? 0;
+  const usdAureusOnHand = position?.usd?.aureusOnHand ?? position?.usd?.expectedOnHand ?? 0;
+  const showUsdAside = !isUsdDrawer && Math.abs(usdAureusOnHand) >= 0.005;
   const previousDateLabel = position?.previousDate
     ? formatPickerDate(parseDateParam(position.previousDate))
     : 'Yesterday';
@@ -2962,37 +2921,27 @@ function CashAuditPanel({
       />
     );
     const drawerControl = (
-      <SegmentedControl
-        style={isMobile ? styles.drawerSegmentMobile : styles.drawerSegment}
-        stretch={isMobile}
+      <SegmentedSlider
         options={CASH_DRAWERS.map((drawer) => ({
           key: drawer.key,
           label: drawer.key === 'usd' ? 'USD' : 'CAD',
         }))}
         value={cashDrawer}
         onChange={setCashDrawer}
+        style={isMobile ? styles.drawerSliderMobile : styles.drawerSlider}
       />
     );
     const dateRow = (
       <>
-        <SegmentedControl
-          options={[{ key: 'today', label: 'Today' }]}
-          value={isToday ? 'today' : ''}
-          onChange={() => setDate(parseDateParam(new Date()))}
-        />
+        {isToday ? null : (
+          <BarButton
+            label="Today"
+            onPress={() => setDate(parseDateParam(new Date()))}
+            accessibilityLabel="Jump to today"
+          />
+        )}
         <DateChip label="Date" value={date} onChange={setDate} maximumDate={new Date()} />
-        <Pressable
-          style={styles.iconToggle}
-          onPress={load}
-          disabled={loading}
-          accessibilityLabel="Refresh"
-        >
-          {loading ? (
-            <ActivityIndicator size="small" color={SECONDARY} />
-          ) : (
-            <Ionicons name="refresh" size={16} color={TEXT} />
-          )}
-        </Pressable>
+        <IconAction icon="refresh" onPress={load} accessibilityLabel="Refresh" />
       </>
     );
     const canSaveCash =
@@ -3052,12 +3001,14 @@ function CashAuditPanel({
     }
 
     return (
-      <FilterBar>
-        {storeControl}
-        {drawerControl}
-        {dateRow}
-        {saveButton}
-      </FilterBar>
+      <View style={styles.pageChrome}>
+        <View style={styles.pageChromeStart}>{drawerControl}</View>
+        <View style={styles.pageChromeEnd}>
+          {storeControl}
+          {dateRow}
+          {saveButton}
+        </View>
+      </View>
     );
   };
 
@@ -3074,149 +3025,101 @@ function CashAuditPanel({
       : balanced
         ? 'Balanced'
         : `${variance > 0 ? 'Over' : 'Short'} ${money(Math.abs(variance))}`;
-    const trail = (
-      <View style={styles.cashTrail}>
-        <Text style={styles.cashTrailText}>Open {money(openingBalance)}</Text>
-        <Text style={styles.cashTrailDot}>·</Text>
-        <Text
-          style={[
-            styles.cashTrailText,
-            paymentTotals.net >= 0 ? styles.cashIn : styles.cashOut,
-          ]}
-        >
-          Pay {money(paymentTotals.net)}
-        </Text>
-        <Text style={styles.cashTrailDot}>·</Text>
-        <Text
-          style={[
-            styles.cashTrailText,
-            cashTxnTotals.net >= 0 ? styles.cashIn : styles.cashOut,
-          ]}
-        >
-          Till {money(cashTxnTotals.net)}
-        </Text>
-        <Text style={styles.cashTrailDot}>·</Text>
-        <Text style={styles.cashTrailText}>
-          {previousDateLabel} {money(yesterdayClosing)}
-        </Text>
-      </View>
-    );
-
-    if (isMobile) {
-      return (
-        <View style={styles.cashHeroBlock}>
-          <View style={styles.ticketCard}>
-            <View style={styles.totalsRow}>
-              <View style={styles.cashMobileHeroCopy}>
-                <Text style={styles.totalsLabel}>Expected</Text>
-                <Text style={styles.cashMobileHeroMeta}>
-                  {posPhysical > 0 ? `POS ${money(posPhysical)}` : 'POS not counted'}
-                </Text>
-              </View>
-              <Text style={styles.totalsAmount}>{money(expectedOnHand)}</Text>
-            </View>
-            <View style={styles.totalsRow}>
-              <View style={styles.cashMobileHeroCopy}>
-                <Text style={styles.totalsLabel}>Counted</Text>
-                <Text style={styles.cashMobileHeroMeta}>
-                  {hasCount
-                    ? activeCountedManual
-                      ? 'Manual total'
-                      : 'From worksheet'
-                    : 'Count loose cash'}
-                </Text>
-              </View>
-              <Text style={styles.totalsAmount}>{hasCount ? money(cashOnHand) : '—'}</Text>
-            </View>
-            <View
-              style={[
-                styles.totalsRow,
-                styles.totalsRowGrand,
-                varianceTone === 'ok' && styles.cashHeroOk,
-                varianceTone === 'short' && styles.cashHeroShort,
-                varianceTone === 'over' && styles.cashHeroOver,
-              ]}
-            >
-              <View style={styles.cashMobileHeroCopy}>
-                <Text
-                  style={[
-                    styles.totalsGrandLabel,
-                    varianceTone === 'short' && styles.short,
-                    varianceTone === 'over' && styles.over,
-                  ]}
-                >
-                  Variance
-                </Text>
-                <Text style={styles.cashMobileHeroMeta}>{drawerLabel}</Text>
-              </View>
-              <Text
-                style={[
-                  styles.totalsGrandAmount,
-                  varianceTone === 'ok' && styles.cashIn,
-                  varianceTone === 'short' && styles.short,
-                  varianceTone === 'over' && styles.over,
-                ]}
-              >
-                {varianceLabel}
-              </Text>
-            </View>
-          </View>
-          {trail}
-        </View>
-      );
-    }
+    const aureusHint =
+      posPhysical > 0
+        ? `POS counted ${money(posPhysical)}`
+        : `Open ${money(openingBalance)} + today’s cash`;
 
     return (
       <View style={styles.cashHeroBlock}>
-        <View style={styles.cashHero}>
-          <View style={styles.cashHeroCard}>
-            <Text style={styles.cashHeroLabel}>Expected</Text>
-            <Text style={styles.cashHeroValue} numberOfLines={1}>
-              {money(expectedOnHand)}
-            </Text>
-            <Text style={styles.cashHeroMeta} numberOfLines={1}>
-              {posPhysical > 0 ? `POS ${money(posPhysical)}` : 'POS not counted'}
-            </Text>
+        <View style={[styles.ticketCard, isMobile ? null : styles.cashTotalsCard]}>
+          <View style={styles.totalsRow}>
+            <View style={styles.cashMobileHeroCopy}>
+              <Text style={styles.totalsLabel}>{isUsdDrawer ? 'Aureus USD' : 'Aureus CAD'}</Text>
+              <Text style={styles.cashMobileHeroMeta}>{aureusHint}</Text>
+            </View>
+            <View style={styles.cashAureusAmounts}>
+              <Text style={[styles.totalsAmount, !isUsdDrawer && styles.cashCadAmount]}>
+                {money(aureusOnHand)}
+              </Text>
+              {showUsdAside ? (
+                <Text style={styles.cashUsdAside}>
+                  {formatAmount(usdAureusOnHand, 'USD')}
+                </Text>
+              ) : null}
+            </View>
           </View>
-          <View style={styles.cashHeroCard}>
-            <Text style={styles.cashHeroLabel}>Counted</Text>
-            <Text style={styles.cashHeroValue} numberOfLines={1}>
-              {hasCount ? money(cashOnHand) : '—'}
-            </Text>
-            <Text style={styles.cashHeroMeta} numberOfLines={1}>
-              {hasCount
-                ? activeCountedManual
-                  ? 'Manual total'
-                  : 'From worksheet'
-                : 'Count loose cash'}
-            </Text>
+          <View style={styles.totalsRow}>
+            <View style={styles.cashMobileHeroCopy}>
+              <Text style={styles.totalsLabel}>Counted</Text>
+              <Text style={styles.cashMobileHeroMeta}>
+                {hasCount
+                  ? activeCountedManual
+                    ? 'Manual total'
+                    : 'From worksheet'
+                  : 'Count loose cash'}
+              </Text>
+            </View>
+            <Text style={styles.totalsAmount}>{hasCount ? money(cashOnHand) : '—'}</Text>
           </View>
           <View
             style={[
-              styles.cashHeroCard,
+              styles.totalsRow,
+              styles.totalsRowGrand,
               varianceTone === 'ok' && styles.cashHeroOk,
               varianceTone === 'short' && styles.cashHeroShort,
               varianceTone === 'over' && styles.cashHeroOver,
             ]}
           >
-            <Text style={styles.cashHeroLabel}>Variance</Text>
+            <View style={styles.cashMobileHeroCopy}>
+              <Text
+                style={[
+                  styles.totalsGrandLabel,
+                  varianceTone === 'short' && styles.short,
+                  varianceTone === 'over' && styles.over,
+                ]}
+              >
+                Variance
+              </Text>
+              <Text style={styles.cashMobileHeroMeta}>{drawerLabel}</Text>
+            </View>
             <Text
               style={[
-                styles.cashHeroValue,
+                styles.totalsGrandAmount,
                 varianceTone === 'ok' && styles.cashIn,
                 varianceTone === 'short' && styles.short,
                 varianceTone === 'over' && styles.over,
               ]}
-              numberOfLines={1}
             >
               {varianceLabel}
             </Text>
-            <Text style={styles.cashHeroMeta} numberOfLines={1}>
-              {drawerLabel}
-            </Text>
           </View>
         </View>
-        {trail}
+        <View style={styles.cashTrail}>
+          <Text style={styles.cashTrailText}>Open {money(openingBalance)}</Text>
+          <Text style={styles.cashTrailDot}>·</Text>
+          <Text
+            style={[
+              styles.cashTrailText,
+              paymentTotals.net >= 0 ? styles.cashIn : styles.cashOut,
+            ]}
+          >
+            Pay {money(paymentTotals.net)}
+          </Text>
+          <Text style={styles.cashTrailDot}>·</Text>
+          <Text
+            style={[
+              styles.cashTrailText,
+              cashTxnTotals.net >= 0 ? styles.cashIn : styles.cashOut,
+            ]}
+          >
+            Till {money(cashTxnTotals.net)}
+          </Text>
+          <Text style={styles.cashTrailDot}>·</Text>
+          <Text style={styles.cashTrailText}>
+            {previousDateLabel} {money(yesterdayClosing)}
+          </Text>
+        </View>
       </View>
     );
   };
@@ -3669,9 +3572,34 @@ export default function AuditScreen({
   storeFilter,
   initialDate,
   embedded = false,
+  onNavTabs,
 }) {
   const isMobile = useIsMobile();
   const [activeTab, setActiveTab] = useState('bullion');
+
+  const navTabs = useMemo(
+    () => (
+      <TextTabs
+        options={AUDIT_TABS.map((tab) => ({
+          key: tab.key,
+          label: isMobile ? tab.shortLabel || tab.label : tab.label,
+        }))}
+        value={activeTab}
+        onChange={setActiveTab}
+        size="lg"
+        layout="inline"
+      />
+    ),
+    [activeTab, isMobile],
+  );
+
+  const portalNav = Boolean(onNavTabs) && !isMobile;
+
+  useLayoutEffect(() => {
+    if (!portalNav) return undefined;
+    onNavTabs(navTabs);
+    return () => onNavTabs(null);
+  }, [navTabs, onNavTabs, portalNav]);
 
   return (
     <View
@@ -3681,34 +3609,9 @@ export default function AuditScreen({
         isMobile && (embedded ? styles.panelBodyMobile : styles.auditPageMobile),
       ]}
     >
-      <View style={[styles.tabBar, isMobile && styles.auditTabBar]}>
-        {isMobile
-          ? AUDIT_TABS.map((tab) => {
-              const active = tab.key === activeTab;
-              return (
-                <Pressable
-                  key={tab.key}
-                  onPress={() => setActiveTab(tab.key)}
-                  style={[styles.auditTab, active && styles.auditTabActive]}
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected: active }}
-                  accessibilityLabel={tab.label}
-                >
-                  <Text style={[styles.auditTabLabel, active && styles.auditTabLabelActive]} numberOfLines={1}>
-                    {tab.shortLabel || tab.label}
-                  </Text>
-                </Pressable>
-              );
-            })
-          : (
-            <SegmentedControl
-              options={AUDIT_TABS}
-              value={activeTab}
-              onChange={setActiveTab}
-              style={styles.tabSegment}
-            />
-          )}
-      </View>
+      {portalNav ? null : (
+        <View style={[styles.localNavRow, isMobile && styles.localNavRowMobile]}>{navTabs}</View>
+      )}
 
       {activeTab === 'bullion' ? (
         <BullionAuditPanel
@@ -3755,6 +3658,80 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: '100%',
     backgroundColor: PAGE,
+  },
+  localNavRow: {
+    flexShrink: 0,
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'flex-end',
+    paddingBottom: 2,
+  },
+  localNavRowMobile: {
+    justifyContent: 'flex-start',
+    paddingBottom: 0,
+  },
+  pageChrome: {
+    flexShrink: 0,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 12,
+    paddingTop: 18,
+    paddingBottom: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: T.hairline,
+  },
+  pageChromeStart: {
+    flexShrink: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  pageChromeEnd: {
+    marginLeft: 'auto',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 0,
+  },
+  chromeSearch: {
+    width: 220,
+    maxWidth: 220,
+  },
+  zeroSlider: {
+    minWidth: 168,
+    maxWidth: 200,
+  },
+  drawerSlider: {
+    minWidth: 168,
+    maxWidth: 220,
+  },
+  drawerSliderMobile: {
+    width: '100%',
+    maxWidth: '100%',
+    minWidth: 0,
+    alignSelf: 'stretch',
+  },
+  cashTotalsCard: {
+    width: '100%',
+    maxWidth: 420,
+  },
+  cashAureusAmounts: {
+    alignItems: 'flex-end',
+    gap: 2,
+  },
+  cashCadAmount: {
+    fontSize: 22,
+    letterSpacing: -0.4,
+  },
+  cashUsdAside: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: SECONDARY,
+    letterSpacing: -0.2,
+    fontVariant: ['tabular-nums'],
   },
   tabBar: {
     flexShrink: 0,

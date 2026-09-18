@@ -2359,6 +2359,7 @@ async function handleRingCentralSave(req: Request, staff: StaffContext): Promise
     rcPresenceCache.delete(storeKey);
     rcVoicemailCache.delete(storeKey);
     rcOwnExtensionCache.delete(storeKey);
+    rcCallerIdCache.delete(storeKey);
     rcStoreExtensionCache.delete(storeKey);
     row.access_token = '';
     row.refresh_token = '';
@@ -2422,6 +2423,7 @@ async function handleRingCentralDelete(req: Request, staff: StaffContext): Promi
     rcPresenceCache.delete(storeKey);
     rcVoicemailCache.delete(storeKey);
     rcOwnExtensionCache.delete(storeKey);
+    rcCallerIdCache.delete(storeKey);
     rcStoreExtensionCache.delete(storeKey);
   }
   return json(req, 200, { ok: true });
@@ -3015,6 +3017,172 @@ const rcCallLogCache = new Map<string, RcCallLogSnapshot>();
 const rcCallLogInflight = new Map<string, Promise<RcCallLogSnapshot>>();
 
 /**
+ * One call-log GET, preferring the company log and falling back to the JWT
+ * user's own log when the app lacks ReadCompanyCallLog. Remembers which one
+ * worked for this account so later requests skip the failed attempt.
+ */
+async function rcCallLogRequest(
+  scope: string,
+  origin: string,
+  headers: Record<string, string>,
+  query: string,
+): Promise<{ result: RcJsonResult; logScope: 'company' | 'extension' }> {
+  const preferExtension = rcCallLogScope.get(scope) === 'extension';
+  let logScope: 'company' | 'extension' = preferExtension ? 'extension' : 'company';
+  let result: RcJsonResult;
+  if (!preferExtension) {
+    result = await rcJson(`${origin}/restapi/v1.0/account/~/call-log?${query}`, { method: 'GET', headers });
+    noteRcRateHeaders(scope, result);
+    if (!result.ok && isCompanyCallLogForbidden(result) && rcTakeHeavy(scope)) {
+      rcCallLogScope.set(scope, 'extension');
+      logScope = 'extension';
+      result = await rcJson(`${origin}/restapi/v1.0/account/~/extension/~/call-log?${query}`, {
+        method: 'GET',
+        headers,
+      });
+      noteRcRateHeaders(scope, result);
+    }
+  } else {
+    result = await rcJson(`${origin}/restapi/v1.0/account/~/extension/~/call-log?${query}`, {
+      method: 'GET',
+      headers,
+    });
+    noteRcRateHeaders(scope, result);
+  }
+  if (result.ok && logScope === 'company') rcCallLogScope.set(scope, 'company');
+  return { result, logScope };
+}
+
+const RC_HISTORY_MAX_DAYS = 92; // RingCentral keeps ~90 days of call log online
+const RC_HISTORY_PAGES = 8; // 8 × 250 rows per window
+const RC_HISTORY_TTL_MS = 5 * 60_000; // window that still includes now
+const RC_HISTORY_CLOSED_TTL_MS = 60 * 60_000; // window entirely in the past
+const rcHistoryCache = new Map<string, RcCallLogSnapshot>();
+const rcHistoryInflight = new Map<string, Promise<RcCallLogSnapshot>>();
+
+type RcHistoryWindow = { from: Date; to: Date; closed: boolean };
+
+/** Validate a client-supplied [dateFrom, dateTo] window; `null` when unusable. */
+function rcHistoryWindow(dateFrom: unknown, dateTo: unknown): RcHistoryWindow | null {
+  const from = new Date(String(dateFrom || ''));
+  const to = new Date(String(dateTo || ''));
+  if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime())) return null;
+  if (to <= from) return null;
+  const now = Date.now();
+  if (from.getTime() > now) return null;
+  if (to.getTime() - from.getTime() > RC_HISTORY_MAX_DAYS * 24 * 60 * 60 * 1000) return null;
+  const capped = new Date(Math.min(to.getTime(), now + 60_000));
+  return { from, to: capped, closed: to.getTime() < now };
+}
+
+/**
+ * Call log for an arbitrary window (Heavy, paged). Shared by every store on
+ * the same account like `accountCallLog`; cached for longer when the window
+ * is entirely in the past because it can no longer change.
+ */
+async function accountCallLogWindow(
+  account: RingCentralAccount,
+  origin: string,
+  headers: Record<string, string>,
+  window: RcHistoryWindow,
+): Promise<RcCallLogSnapshot> {
+  const scope = rcScope(account);
+  const preferExtension = rcCallLogScope.get(scope) === 'extension';
+  const base = preferExtension ? `${scope}:${account.store_key}` : scope;
+  const cacheKey = `${base}|${window.from.toISOString()}|${window.to.toISOString()}`;
+  const ttl = window.closed ? RC_HISTORY_CLOSED_TTL_MS : RC_HISTORY_TTL_MS;
+  const cached = rcHistoryCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < ttl) return cached;
+  const inflight = rcHistoryInflight.get(cacheKey);
+  if (inflight) return inflight;
+
+  const stale = (message: string): RcCallLogSnapshot =>
+    cached ? { ...cached, error: cached.rows.length ? '' : message } : { at: 0, scope: 'company', rows: [], error: message };
+
+  if (rcGroupBlocked(scope, 'heavy') || !rcTakeHeavy(scope)) return stale(RC_RATE_LIMIT_MESSAGE);
+
+  const pending = (async (): Promise<RcCallLogSnapshot> => {
+    const rows: RcCallLogRow[] = [];
+    let logScope: 'company' | 'extension' = preferExtension ? 'extension' : 'company';
+    let message = '';
+    for (let page = 1; page <= RC_HISTORY_PAGES; page++) {
+      if (page > 1 && !rcTakeHeavy(scope)) {
+        message = RC_RATE_LIMIT_MESSAGE;
+        break;
+      }
+      const query =
+        `view=Simple&type=Voice&perPage=250&page=${page}` +
+        `&dateFrom=${encodeURIComponent(window.from.toISOString())}` +
+        `&dateTo=${encodeURIComponent(window.to.toISOString())}`;
+      const { result, logScope: usedScope } = await rcCallLogRequest(scope, origin, headers, query);
+      logScope = usedScope;
+      if (!result.ok) {
+        message = isRingCentralRateLimit(result.status, result.payload)
+          ? RC_RATE_LIMIT_MESSAGE
+          : rcErrorMessage(result.payload, 'Could not load the call log.');
+        break;
+      }
+      rows.push(...mapCallLog(account, result.payload));
+      const nav = (result.payload || {}) as { navigation?: { nextPage?: unknown } };
+      if (!nav.navigation?.nextPage) break;
+    }
+    if (!rows.length && message) return stale(message);
+    const snapshot: RcCallLogSnapshot = { at: Date.now(), scope: logScope, rows, error: rows.length ? '' : message };
+    rcHistoryCache.set(cacheKey, snapshot);
+    if (rcHistoryCache.size > 64) {
+      const oldest = [...rcHistoryCache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+      if (oldest) rcHistoryCache.delete(oldest[0]);
+    }
+    return snapshot;
+  })();
+  rcHistoryInflight.set(cacheKey, pending);
+  try {
+    return await pending;
+  } finally {
+    rcHistoryInflight.delete(cacheKey);
+  }
+}
+
+const rcVoicemailWindowCache = new Map<string, { at: number; rows: ReturnType<typeof mapVoicemails>; error: string }>();
+
+/** Voicemail for the JWT's extension inside a window (Light group). */
+async function storeVoicemailsWindow(
+  account: RingCentralAccount,
+  origin: string,
+  headers: Record<string, string>,
+  window: RcHistoryWindow,
+): Promise<{ rows: ReturnType<typeof mapVoicemails>; error: string }> {
+  const key = `${account.store_key}|${window.from.toISOString()}|${window.to.toISOString()}`;
+  const ttl = window.closed ? RC_HISTORY_CLOSED_TTL_MS : RC_HISTORY_TTL_MS;
+  const cached = rcVoicemailWindowCache.get(key);
+  if (cached && Date.now() - cached.at < ttl) return cached;
+  const scope = rcScope(account);
+  if (rcGroupBlocked(scope, 'light')) return cached || { rows: [], error: RC_RATE_LIMIT_MESSAGE };
+  const query =
+    `messageType=VoiceMail&perPage=250` +
+    `&dateFrom=${encodeURIComponent(window.from.toISOString())}` +
+    `&dateTo=${encodeURIComponent(window.to.toISOString())}`;
+  const result = await rcJson(`${origin}/restapi/v1.0/account/~/extension/~/message-store?${query}`, {
+    method: 'GET',
+    headers,
+  });
+  noteRcRateHeaders(scope, result);
+  if (!result.ok) {
+    const message = isRingCentralRateLimit(result.status, result.payload)
+      ? RC_RATE_LIMIT_MESSAGE
+      : rcErrorMessage(result.payload, 'Could not load voicemail.');
+    return cached ? { ...cached, error: cached.rows.length ? '' : message } : { rows: [], error: message };
+  }
+  const next = { at: Date.now(), rows: mapVoicemails(account, result.payload), error: '' };
+  rcVoicemailWindowCache.set(key, next);
+  if (rcVoicemailWindowCache.size > 64) {
+    const oldest = [...rcVoicemailWindowCache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+    if (oldest) rcVoicemailWindowCache.delete(oldest[0]);
+  }
+  return next;
+}
+
+/**
  * The company call log (Heavy, 10/min) is fetched once per account per minute
  * and shared by every store; each store then keeps its own extensions' rows.
  * When the JWT may not read the company log, the user's own log is used and
@@ -3041,34 +3209,13 @@ async function accountCallLog(
   const pending = (async (): Promise<RcCallLogSnapshot> => {
     const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
     const query = `view=Simple&type=Voice&perPage=250&dateFrom=${encodeURIComponent(since)}`;
-    let result: RcJsonResult;
-    let logScope: 'company' | 'extension' = preferExtension ? 'extension' : 'company';
-    if (!preferExtension) {
-      result = await rcJson(`${origin}/restapi/v1.0/account/~/call-log?${query}`, { method: 'GET', headers });
-      noteRcRateHeaders(scope, result);
-      if (!result.ok && isCompanyCallLogForbidden(result) && rcTakeHeavy(scope)) {
-        rcCallLogScope.set(scope, 'extension');
-        logScope = 'extension';
-        result = await rcJson(`${origin}/restapi/v1.0/account/~/extension/~/call-log?${query}`, {
-          method: 'GET',
-          headers,
-        });
-        noteRcRateHeaders(scope, result);
-      }
-    } else {
-      result = await rcJson(`${origin}/restapi/v1.0/account/~/extension/~/call-log?${query}`, {
-        method: 'GET',
-        headers,
-      });
-      noteRcRateHeaders(scope, result);
-    }
+    const { result, logScope } = await rcCallLogRequest(scope, origin, headers, query);
     if (!result.ok) {
       const message = isRingCentralRateLimit(result.status, result.payload)
         ? RC_RATE_LIMIT_MESSAGE
         : rcErrorMessage(result.payload, 'Could not load the call log.');
       return stale(message);
     }
-    if (logScope === 'company') rcCallLogScope.set(scope, 'company');
     const snapshot: RcCallLogSnapshot = {
       at: Date.now(),
       scope: logScope,
@@ -3256,6 +3403,206 @@ async function extensionLiveCalls(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Call-session verification.
+//
+// Extension presence (`activeCalls`) is a cache on RingCentral's side and is
+// known to keep a "Ringing" leg around after the caller hung up or someone
+// else picked up, sometimes for minutes. Presence is therefore only used to
+// discover candidate sessions; every candidate is confirmed against the Call
+// Control API (Light group) before it is reported, and sessions that are over
+// are remembered so they can never come back as a phantom call.
+// ---------------------------------------------------------------------------
+
+type RcPartySnapshot = {
+  partyId: string;
+  status: string;
+  reason: string;
+  direction: string;
+  /** The extension this party belongs to (callee for inbound, caller for outbound). */
+  extensionId: string;
+  from: { phoneNumber: string; name: string };
+  to: { phoneNumber: string; name: string };
+};
+type RcSessionSnapshot = { at: number; gone: boolean; parties: RcPartySnapshot[] };
+
+const RC_SESSION_TTL_MS = 4_000;
+const RC_DEAD_SESSION_MS = 15 * 60_000;
+const rcSessionCache = new Map<string, RcSessionSnapshot>();
+const rcSessionInflight = new Map<string, Promise<RcSessionSnapshot | null>>();
+const rcDeadSessions = new Map<string, number>();
+
+function rcMarkSessionDead(sessionId: string): void {
+  if (!sessionId) return;
+  rcDeadSessions.set(sessionId, Date.now());
+  rcSessionCache.delete(sessionId);
+  if (rcDeadSessions.size > 500) {
+    const cutoff = Date.now() - RC_DEAD_SESSION_MS;
+    for (const [id, at] of rcDeadSessions.entries()) if (at < cutoff) rcDeadSessions.delete(id);
+  }
+}
+
+function rcSessionIsDead(sessionId: string): boolean {
+  const at = rcDeadSessions.get(sessionId);
+  return Boolean(at) && Date.now() - (at as number) < RC_DEAD_SESSION_MS;
+}
+
+/** Party states in which the leg is still on the phone (ringing, talking, held, parked). */
+function rcPartyIsLive(status: string): boolean {
+  return /^(Setup|Proceeding|Answered|Hold|Parked)$/i.test(status);
+}
+
+function rcPartyIsRinging(status: string): boolean {
+  return /^(Setup|Proceeding)$/i.test(status);
+}
+
+/** Call Control party status → the presence vocabulary the app already speaks. */
+function rcPresenceStatusFor(status: string): string {
+  if (/^(Setup|Proceeding)$/i.test(status)) return 'Ringing';
+  if (/^Answered$/i.test(status)) return 'CallConnected';
+  if (/^Hold$/i.test(status)) return 'OnHold';
+  if (/^Parked$/i.test(status)) return 'ParkedCall';
+  return 'NoCall';
+}
+
+function rcPartySnapshot(raw: unknown): RcPartySnapshot | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const row = raw as Record<string, unknown>;
+  const partyId = String(row.id || '');
+  if (!partyId) return null;
+  const status = (row.status || {}) as Record<string, unknown>;
+  const from = (row.from || {}) as Record<string, unknown>;
+  const to = (row.to || {}) as Record<string, unknown>;
+  const owner = (row.owner || {}) as Record<string, unknown>;
+  const direction = String(row.direction || '');
+  const extensionId =
+    String((direction === 'Outbound' ? from.extensionId : to.extensionId) || '') ||
+    String(to.extensionId || from.extensionId || owner.extensionId || '');
+  return {
+    partyId,
+    status: String(status.code || ''),
+    reason: String(status.reason || ''),
+    direction,
+    extensionId,
+    from: { phoneNumber: String(from.phoneNumber || ''), name: String(from.name || '') },
+    to: { phoneNumber: String(to.phoneNumber || ''), name: String(to.name || '') },
+  };
+}
+
+/**
+ * Current state of one telephony session (Light group, cached 4 s per account
+ * so stores sharing a phone verify it once). `null` means "could not check";
+ * callers keep the presence row in that case.
+ */
+async function rcTelephonySession(
+  account: RingCentralAccount,
+  origin: string,
+  headers: Record<string, string>,
+  sessionId: string,
+): Promise<RcSessionSnapshot | null> {
+  const id = rcSafeId(sessionId);
+  if (!id) return null;
+  if (rcSessionIsDead(id)) return { at: Date.now(), gone: true, parties: [] };
+  const cached = rcSessionCache.get(id);
+  if (cached && Date.now() - cached.at < RC_SESSION_TTL_MS) return cached;
+  const inflight = rcSessionInflight.get(id);
+  if (inflight) return inflight;
+  const scope = rcScope(account);
+  if (rcGroupBlocked(scope, 'light')) return cached || null;
+
+  const pending = (async (): Promise<RcSessionSnapshot | null> => {
+    const result = await rcJson(`${origin}/restapi/v1.0/account/~/telephony/sessions/${id}`, {
+      method: 'GET',
+      headers,
+    });
+    noteRcRateHeaders(scope, result);
+    if (result.status === 404) {
+      rcMarkSessionDead(id);
+      return { at: Date.now(), gone: true, parties: [] };
+    }
+    if (!result.ok) return cached || null;
+    const payload = (result.payload || {}) as { parties?: unknown[] };
+    const parties = (Array.isArray(payload.parties) ? payload.parties : [])
+      .map(rcPartySnapshot)
+      .filter((row): row is RcPartySnapshot => Boolean(row));
+    const gone = parties.length > 0 && parties.every((row) => !rcPartyIsLive(row.status));
+    const snapshot: RcSessionSnapshot = { at: Date.now(), gone, parties };
+    if (gone) rcMarkSessionDead(id);
+    else rcSessionCache.set(id, snapshot);
+    return snapshot;
+  })();
+  rcSessionInflight.set(id, pending);
+  try {
+    return await pending;
+  } finally {
+    rcSessionInflight.delete(id);
+  }
+}
+
+/** The store's own leg of a session: prefer the party presence named, then a ringing one. */
+function rcPickStoreParty(
+  parties: RcPartySnapshot[],
+  ext: StoreExtensions,
+  preferredPartyId = '',
+): RcPartySnapshot | null {
+  const mine = parties.filter((row) => !row.extensionId || ext.ids.has(row.extensionId));
+  const pool = mine.length ? mine : parties;
+  const live = pool.filter((row) => rcPartyIsLive(row.status));
+  if (!live.length) return null;
+  return (
+    live.find((row) => preferredPartyId && row.partyId === preferredPartyId) ||
+    live.find((row) => rcPartyIsRinging(row.status)) ||
+    live[0]
+  );
+}
+
+/**
+ * Drop presence rows whose session is over and correct the status / party id
+ * of the rest from the Call Control API.
+ */
+async function verifyLiveCalls(
+  account: RingCentralAccount,
+  origin: string,
+  headers: Record<string, string>,
+  calls: LivePhoneCall[],
+  ext: StoreExtensions,
+): Promise<LivePhoneCall[]> {
+  const checked = await Promise.all(
+    calls.map(async (call): Promise<LivePhoneCall | null> => {
+      const sessionId = rcSafeId(call.telephonySessionId || call.id);
+      if (!sessionId) return call;
+      if (rcSessionIsDead(sessionId)) return null;
+      let snapshot: RcSessionSnapshot | null = null;
+      try {
+        snapshot = await rcTelephonySession(account, origin, headers, sessionId);
+      } catch {
+        snapshot = null;
+      }
+      if (!snapshot) return call; // Could not check: trust presence for this poll.
+      if (snapshot.gone) return null;
+      const party = rcPickStoreParty(snapshot.parties, ext, call.partyId);
+      if (!party) {
+        // The session is alive for someone else (answered elsewhere, voicemail);
+        // our leg is not. Nothing here is ringing this store any more.
+        return null;
+      }
+      return {
+        ...call,
+        id: sessionId,
+        telephonySessionId: sessionId,
+        partyId: party.partyId || call.partyId,
+        status: rcPresenceStatusFor(party.status) || call.status,
+        direction: party.direction === 'Outbound' ? 'Outbound' : party.direction === 'Inbound' ? 'Inbound' : call.direction,
+        from: call.from || party.from.phoneNumber,
+        fromName: call.fromName || party.from.name,
+        to: call.to || party.to.phoneNumber,
+        toName: call.toName || party.to.name,
+      };
+    }),
+  );
+  return checked.filter((row): row is LivePhoneCall => Boolean(row));
+}
+
 /** Every live call on the store's phones, already attributed to the store. */
 async function collectLiveCalls(
   account: RingCentralAccount,
@@ -3297,11 +3644,12 @@ async function collectLiveCalls(
       if (cached?.calls) return cached.calls;
       throw new Error(RC_RATE_LIMIT_MESSAGE);
     }
-    const calls = mergeLiveCalls(found).map((call) => ({
+    const merged = mergeLiveCalls(found).map((call) => ({
       ...call,
       storeKey: account.store_key,
       storeName: account.store_name,
     }));
+    const calls = await verifyLiveCalls(account, origin, headers, merged, ext);
     rememberLiveCalls(account, calls);
     void persistRingCentralCache(account, {
       live_calls: calls,
@@ -3316,6 +3664,87 @@ async function collectLiveCalls(
   } finally {
     rcPresenceInflight.delete(storeKey);
   }
+}
+
+const rcCallerIdCache = new Map<string, { at: number; numbers: StorePhoneNumber[] }>();
+
+/**
+ * Numbers the JWT's extension may present as caller ID (Light group, cached
+ * 10 min per store). The browser softphone passes one of these to `call()`.
+ */
+async function rcOwnCallerIds(
+  account: RingCentralAccount,
+  origin: string,
+  headers: Record<string, string>,
+): Promise<StorePhoneNumber[]> {
+  const key = account.store_key;
+  const cached = rcCallerIdCache.get(key);
+  if (cached && Date.now() - cached.at < RC_DIRECTORY_TTL_MS) return cached.numbers;
+  const scope = rcScope(account);
+  if (rcGroupBlocked(scope, 'light')) return cached?.numbers || [];
+  const result = await rcJson(`${origin}/restapi/v1.0/account/~/extension/~/phone-number?perPage=100`, {
+    method: 'GET',
+    headers,
+  });
+  noteRcRateHeaders(scope, result);
+  if (!result.ok) return cached?.numbers || [];
+  const payload = (result.payload || {}) as { records?: (RingCentralNumber & { features?: string[] })[] };
+  const numbers: StorePhoneNumber[] = [];
+  for (const raw of Array.isArray(payload.records) ? payload.records : []) {
+    const phoneNumber = String(raw?.phoneNumber || '').trim();
+    if (!phoneNumber) continue;
+    const features = Array.isArray(raw.features) ? raw.features.map(String) : [];
+    if (features.length && !features.includes('CallerId')) continue;
+    numbers.push({
+      phoneNumber,
+      usageType: String(raw.usageType || ''),
+      type: String(raw.type || ''),
+      label: String(raw.label || ''),
+      primary: Boolean(raw.primary),
+      extensionNumber: String(raw.extension?.extensionNumber || ''),
+      extensionName: String(raw.extension?.name || ''),
+      siteName: String(raw.site?.name || ''),
+    });
+  }
+  rcCallerIdCache.set(key, { at: Date.now(), numbers });
+  return numbers;
+}
+
+/** The caller ID a store should present: its own DID when allowed, else the line's direct number. */
+function rcDefaultCallerId(account: RingCentralAccount, allowed: StorePhoneNumber[]): string {
+  const main = rcLast10(account.main_number);
+  const byMain = main ? allowed.find((row) => rcLast10(row.phoneNumber) === main) : undefined;
+  if (byMain) return byMain.phoneNumber;
+  const assigned = parseStoredPhoneNumbers(account.phone_numbers);
+  for (const row of assigned) {
+    const hit = allowed.find((item) => rcLast10(item.phoneNumber) === rcLast10(row.phoneNumber));
+    if (hit) return hit.phoneNumber;
+  }
+  return (
+    allowed.find((row) => row.usageType === 'DirectNumber')?.phoneNumber ||
+    allowed.find((row) => row.primary)?.phoneNumber ||
+    allowed[0]?.phoneNumber ||
+    ''
+  );
+}
+
+/**
+ * The party the store controls in a session, verified against Call Control.
+ * Presence sometimes omits `partyId` or names a leg that already ended.
+ */
+async function rcResolveStoreParty(
+  account: RingCentralAccount,
+  origin: string,
+  headers: Record<string, string>,
+  telephonySessionId: string,
+  partyId: string,
+): Promise<{ party: RcPartySnapshot | null; gone: boolean }> {
+  const ext = await resolveStoreExtensions(account, origin, headers);
+  rcSessionCache.delete(telephonySessionId); // Always read fresh before acting.
+  const snapshot = await rcTelephonySession(account, origin, headers, telephonySessionId);
+  if (!snapshot) return { party: null, gone: false };
+  if (snapshot.gone) return { party: null, gone: true };
+  return { party: rcPickStoreParty(snapshot.parties, ext, partyId), gone: false };
 }
 
 async function firstRingCentralDevice(
@@ -3354,6 +3783,8 @@ async function handleRingCentralPhone(req: Request): Promise<Response> {
     partyId?: string;
     deviceId?: string; // the browser's own WebRTC device from `sip`, so Answer lands in that tab
     storePhone?: string; // legacy hint from older web builds; attribution is by extension now
+    dateFrom?: string; // `history`: ISO window start
+    dateTo?: string; // `history`: ISO window end (exclusive)
   }>(req);
   const action = String(body.action || 'presence').trim().toLowerCase();
   const storeKey = storeKeyOf(body.storeKey || body.storeName || '');
@@ -3410,6 +3841,34 @@ async function handleRingCentralPhone(req: Request): Promise<Response> {
       });
     }
 
+    if (action === 'history') {
+      // Call log + voicemail for a chosen day or date range, beyond the rolling
+      // 14-day inbox. Heavy group, so windows are bounded and cached.
+      const window = rcHistoryWindow(body.dateFrom, body.dateTo);
+      if (!window) {
+        return error(req, 400, `Pick a date range within the last ${RC_HISTORY_MAX_DAYS} days.`, 'bad_request');
+      }
+      const ext = await resolveStoreExtensions(account, origin, headers);
+      const log = await accountCallLogWindow(account, origin, headers, window);
+      const ownsVoicemail = !ext.ownId || ext.ids.has(ext.ownId);
+      const voicemail = ownsVoicemail
+        ? await storeVoicemailsWindow(account, origin, headers, window)
+        : {
+            rows: [],
+            error:
+              'Voicemail needs this store’s own RingCentral user. Connect its JWT in Settings → RingCentral.',
+          };
+      return json(req, 200, {
+        store: publicRingCentralAccount(account),
+        dateFrom: window.from.toISOString(),
+        dateTo: window.to.toISOString(),
+        calls: callLogForStore(account, log.rows, ext, log.scope),
+        voicemails: voicemail.rows,
+        callLogError: log.error,
+        voicemailError: voicemail.error,
+      });
+    }
+
     if (action === 'sip') {
       // Register this browser as a WebRTC phone for the JWT's extension so the
       // app can answer with real audio. sipInfo is reusable for days; the
@@ -3449,6 +3908,7 @@ async function handleRingCentralPhone(req: Request): Promise<Response> {
       };
       const sipInfo = Array.isArray(payload.sipInfo) ? payload.sipInfo[0] || null : null;
       if (!sipInfo) return error(req, 400, 'RingCentral returned no SIP details for this line.', 'bad_request');
+      const callerIds = await rcOwnCallerIds(account, origin, headers).catch(() => [] as StorePhoneNumber[]);
       return json(req, 200, {
         store: publicRingCentralAccount(account),
         sipInfo,
@@ -3456,14 +3916,34 @@ async function handleRingCentralPhone(req: Request): Promise<Response> {
         deviceId: String(payload.device?.id || ''),
         extensionId: ext.ownId,
         extensionName: ext.info.get(ext.ownId)?.name || '',
+        callerIds: callerIds.map((row) => row.phoneNumber),
+        defaultCallerId: rcDefaultCallerId(account, callerIds),
       });
     }
 
     if (action === 'ringout') {
+      // Two-legged call: RingCentral rings `from` first (the store's phone),
+      // then dials `to`. Used where the browser cannot be the phone.
       const to = rcE164(body.to);
       if (!to) return error(req, 400, 'Enter a number to call.', 'bad_request');
-      const from = rcE164(body.from || account.main_number);
-      if (!from) return error(req, 400, 'This store has no caller number yet.', 'bad_request');
+      const allowed = await rcOwnCallerIds(account, origin, headers).catch(() => [] as StorePhoneNumber[]);
+      const from =
+        rcE164(body.from) ||
+        rcE164(account.main_number) ||
+        rcE164(parseStoredPhoneNumbers(account.phone_numbers)[0]?.phoneNumber) ||
+        rcE164(rcDefaultCallerId(account, allowed));
+      if (!from) {
+        return error(
+          req,
+          400,
+          'This store has no phone number to ring first. Assign its number in Settings → RingCentral.',
+          'bad_request',
+        );
+      }
+      // Caller ID must be a number this extension may present; otherwise let RingCentral pick.
+      const callerId = allowed.some((row) => rcLast10(row.phoneNumber) === rcLast10(from))
+        ? from
+        : rcE164(rcDefaultCallerId(account, allowed));
       const result = await rcJson(`${origin}/restapi/v1.0/account/~/extension/~/ring-out`, {
         method: 'POST',
         headers,
@@ -3471,7 +3951,7 @@ async function handleRingCentralPhone(req: Request): Promise<Response> {
           from: { phoneNumber: from },
           to: { phoneNumber: to },
           playPrompt: false,
-          callerId: { phoneNumber: from },
+          ...(callerId ? { callerId: { phoneNumber: callerId } } : {}),
         }),
       });
       if (!result.ok) {
@@ -3498,10 +3978,34 @@ async function handleRingCentralPhone(req: Request): Promise<Response> {
 
     if (action === 'answer' || action === 'reject' || action === 'hangup') {
       const telephonySessionId = rcSafeId(body.telephonySessionId);
-      const partyId = rcSafeId(body.partyId);
-      if (!telephonySessionId || !partyId) {
+      if (!telephonySessionId) {
         return error(req, 400, 'That call is no longer available.', 'bad_request');
       }
+      const goneMessage =
+        action === 'hangup' ? 'That call already ended.' : 'That call already ended or was picked up elsewhere.';
+      const gone = () => {
+        rcPresenceCache.delete(storeKey);
+        account.live_calls_at = null;
+        return error(req, 409, goneMessage, 'ringcentral_wrong_state');
+      };
+
+      // Confirm the leg with Call Control first: presence may name a party
+      // that already ended, or omit the id altogether.
+      const resolved = await rcResolveStoreParty(
+        account,
+        origin,
+        headers,
+        telephonySessionId,
+        rcSafeId(body.partyId),
+      );
+      if (resolved.gone) return gone();
+      const party = resolved.party;
+      const partyId = party?.partyId || rcSafeId(body.partyId);
+      if (!partyId) return gone();
+      if (party && (action === 'answer' || action === 'reject') && !rcPartyIsRinging(party.status)) {
+        return gone();
+      }
+
       const base = `${origin}/restapi/v1.0/account/~/telephony/sessions/${telephonySessionId}/parties/${partyId}`;
       let result;
       if (action === 'answer') {
@@ -3509,12 +4013,7 @@ async function handleRingCentralPhone(req: Request): Promise<Response> {
         // then re-INVITEs that tab with Alert-Info: Auto Answer and the call
         // lands where Answer was pressed.
         const deviceId = rcSafeId(body.deviceId) || (await firstRingCentralDevice(origin, headers));
-        result = await rcJson(`${base}/answer`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(deviceId ? { deviceId } : {}),
-        });
-        if (!result.ok && !deviceId) {
+        if (!deviceId) {
           return error(
             req,
             400,
@@ -3522,25 +4021,26 @@ async function handleRingCentralPhone(req: Request): Promise<Response> {
             'bad_request',
           );
         }
+        result = await rcJson(`${base}/answer`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ deviceId }),
+        });
       } else if (action === 'reject') {
         result = await rcJson(`${base}/reject`, { method: 'POST', headers, body: '{}' });
       } else {
         result = await rcJson(`${base}`, { method: 'DELETE', headers });
+        if (!result.ok && isRingCentralWrongState(result) && (!party || rcPartyIsRinging(party.status))) {
+          // A leg that is still ringing cannot be dropped, only rejected.
+          result = await rcJson(`${base}/reject`, { method: 'POST', headers, body: '{}' });
+        }
       }
+      rcSessionCache.delete(telephonySessionId);
       if (!result.ok) {
         // Whatever happened, the cached presence for this line is now suspect.
         rcPresenceCache.delete(storeKey);
         account.live_calls_at = null;
-        if (isRingCentralWrongState(result)) {
-          return error(
-            req,
-            409,
-            action === 'hangup'
-              ? 'That call already ended.'
-              : 'That call already ended or was picked up elsewhere.',
-            'ringcentral_wrong_state',
-          );
-        }
+        if (isRingCentralWrongState(result)) return gone();
         const fallbackMessage =
           action === 'answer'
             ? 'Could not answer on a RingCentral device. The line’s only device (the RingCentral app) is offline; the browser phone needs microphone access to take the call.'

@@ -9,15 +9,31 @@ import {
   fetchPhonePresence,
   fetchSipProvision,
   isCallGoneError,
-  isLiveAnsweredStatus,
   isPhoneRateLimitMessage,
-  isRingingCall,
-  incomingCallBelongsToStore,
   liveLogEntry,
   mergeCallLog,
   sameInboundCall,
   startRingOut,
 } from '../lib/phoneCalls';
+import {
+  applyPresence,
+  applySipCall,
+  browserCalls,
+  callKey,
+  clearStore,
+  createCallState,
+  endCall,
+  expirePresence,
+  isConnectedStatus,
+  isDialingStatus,
+  isRingingStatus,
+  listCalls,
+  markAnswered,
+  patchCall,
+  pruneEnded,
+  rekeyCall,
+  ringingCalls,
+} from '../lib/callState';
 import { PHONE_INBOX_MS, PHONE_LIVE_MS, useLiveRefresh } from '../lib/liveRefresh';
 import { fetchTransferStores } from '../lib/locations';
 import { useAppAccess } from '../lib/permissions';
@@ -25,24 +41,19 @@ import { listRingCentralAccounts, formatPhoneNumber } from '../lib/ringcentral';
 import { isStoreWatched, loadWatchStores, saveWatchStores } from '../lib/phoneWatch';
 import { startRingtone, stopRingtone, unlockPhoneAudio } from '../lib/phoneSound';
 import { storeKeyFromName } from '../lib/storeSettings';
-import { isWebPhoneSupported, startWebPhone, withSipTimeout } from '../lib/webPhone';
+import { ensureMicrophone, isWebPhoneSupported, startWebPhone } from '../lib/webPhone';
 
 const SILENT_KEY = 'cgold.phone.silent';
 const SIP_CACHE_PREFIX = 'cgold.phone.sip.';
 const SIP_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
-/**
- * After RingCentral cancels the INVITE here (caller hung up, answered
- * elsewhere, queue moved on), presence keeps reporting the call for up to two
- * poll cycles. Hide those rows for this long so nobody acts on a dead party.
- */
-const GONE_MS = 30_000;
-/** Answering waits on the microphone prompt, so give it longer than other SIP actions. */
-const ANSWER_TIMEOUT_MS = 30_000;
 const CALL_GONE_MESSAGE = 'That call already ended or was picked up elsewhere.';
-
-function callSessionKey(call) {
-  return String(call?.telephonySessionId || call?.id || '');
-}
+const ANSWERED_MS = 1_000;
+const ACCENT = '#15803D';
+const fontFamily = Platform.select({
+  ios: 'Sohne',
+  android: 'Sohne',
+  default: 'Sohne',
+});
 
 function readSipCache(storeKey) {
   if (Platform.OS !== 'web' || typeof window === 'undefined') return null;
@@ -68,7 +79,7 @@ function writeSipCache(storeKey, value) {
 
 function isMicrophoneError(err) {
   const text = `${err?.name || ''} ${err?.message || ''}`;
-  return /NotAllowed|PermissionDenied|Permission denied|NotFound|getUserMedia|microphone|audio input/i.test(text);
+  return /NotAllowed|PermissionDenied|Permission denied|NotFound|NotReadable|getUserMedia|microphone|audio input/i.test(text);
 }
 
 /**
@@ -81,15 +92,34 @@ function isMicrophoneBlockedError(err) {
   return /SecurityError|operation is insecure|permissions policy|feature policy/i.test(text);
 }
 
-function answerErrorMessage(err) {
+function microphoneMessage(err, action = 'answer') {
   if (isMicrophoneBlockedError(err)) {
     return 'The microphone is blocked for this site (open it over HTTPS and check the host’s Permissions-Policy header allows microphone=(self)). Pick up on the RingCentral app for now.';
   }
-  if (isMicrophoneError(err)) return 'Allow microphone access for this site in the browser, then press Answer again.';
+  if (isMicrophoneError(err)) {
+    return `Allow microphone access for this site in the browser, then press ${action === 'call' ? 'Call' : 'Answer'} again.`;
+  }
+  return '';
+}
+
+function answerErrorMessage(err) {
+  const mic = microphoneMessage(err, 'answer');
+  if (mic) return mic;
   if (err?.code === 'sip_timeout') {
     return 'RingCentral did not confirm the answer. The call may have ended; if it is still ringing, try again.';
   }
   return err?.message || 'Could not answer in the browser.';
+}
+
+/** RingCentral's SIP side wants `16505550100`, never `+1 (650) …`. */
+function sipCallee(value) {
+  const raw = String(value || '').trim();
+  const digits = raw.replace(/\D/g, '');
+  if (!digits) return '';
+  if (digits.length === 10) return `1${digits}`;
+  if (digits.length === 11 && digits.startsWith('1')) return digits;
+  if (digits.length <= 6) return digits; // extension or short code
+  return digits;
 }
 
 function formatCallClock(ms) {
@@ -98,26 +128,26 @@ function formatCallClock(ms) {
   const secs = total % 60;
   return `${mins}:${String(secs).padStart(2, '0')}`;
 }
-const ANSWERED_MS = 1_000;
-const ACCENT = '#15803D';
-const fontFamily = Platform.select({
-  ios: 'Sohne',
-  android: 'Sohne',
-  default: 'Sohne',
-});
 
 function liveCallKey(call) {
   if (!call?.storeKey) return '';
-  return `${call.storeKey}:${call.telephonySessionId || call.id}`;
+  return `${call.storeKey}:${callKey(call)}`;
 }
 
 const PhoneCallContext = createContext({
   stores: [],
+  allStores: [],
   selectedStoreKey: '',
   setSelectedStoreKey: () => {},
   liveCalls: [],
   incoming: [],
   recentAnswered: [],
+  activeCall: null,
+  muted: false,
+  toggleMute: () => {},
+  sendDtmf: () => {},
+  webPhoneStatus: {},
+  canDialInBrowser: () => false,
   inboxByStore: {},
   mergedCallsByStore: {},
   inboxFetching: {},
@@ -128,18 +158,18 @@ const PhoneCallContext = createContext({
   removeStoreAccount: () => {},
   watchPrefs: { mode: 'all', keys: [] },
   setStoreWatched: async () => {},
+  watchedStores: [],
   silent: false,
   setSilent: () => {},
   busy: false,
   error: '',
+  setError: () => {},
   answer: async () => {},
   reject: async () => {},
   hangup: async () => {},
+  dial: async () => {},
   ringOut: async () => {},
-  activeCall: null,
-  muted: false,
-  toggleMute: () => {},
-  webPhoneStatus: {},
+  refreshPresence: async () => {},
 });
 
 export function usePhoneCalls() {
@@ -151,7 +181,6 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
   const active = Boolean(enabled && session?.token && hasApp('phone'));
   const [stores, setStores] = useState([]);
   const [selectedStoreKey, setSelectedStoreKey] = useState('');
-  const [rawLiveCalls, setLiveCalls] = useState([]);
   const [watchPrefs, setWatchPrefs] = useState({ mode: 'all', keys: [] });
   const [recentAnswered, setRecentAnswered] = useState([]);
   const [inboxByStore, setInboxByStore] = useState({});
@@ -160,36 +189,45 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
   const [silent, setSilentState] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  // Browser softphone: calls ringing on this tab's SIP registration, the call
-  // in progress here, and each store's registration state.
-  const [webCalls, setWebCalls] = useState([]);
-  const [activeCall, setActiveCall] = useState(null);
   const [muted, setMuted] = useState(false);
   const [webPhoneStatus, setWebPhoneStatus] = useState({});
+
+  // The one registry of live calls (softphone + verified presence).
+  const [callState, setCallState] = useState(createCallState);
+  const callStateRef = useRef(callState);
+  const updateCalls = useCallback((fn) => {
+    const next = fn(callStateRef.current);
+    if (next !== callStateRef.current) {
+      callStateRef.current = next;
+      setCallState(next);
+    }
+  }, []);
+
+  // Browser softphone per store, plus what the proxy told us about each line.
   const webPhonesRef = useRef(new Map());
   const webPhoneByExtensionRef = useRef(new Map());
-  // This browser's RingCentral device per store, so a server-side Answer can
-  // push the call to this tab instead of whatever device is listed first.
   const webDeviceIdRef = useRef(new Map());
-  // Telephony sessions RingCentral already cancelled here → hidden until GONE_MS passes.
-  const goneRef = useRef(new Map());
-  const [goneVersion, setGoneVersion] = useState(0);
+  const webCallerIdRef = useRef(new Map());
+  // Keys of calls this tab is in the middle of answering. Call Control cancels
+  // the ringing INVITE and replaces it; that CANCEL must not close the live card.
+  const answeringRef = useRef(new Map());
   const requestId = useRef(0);
   const storesRequestId = useRef(0);
   const skipUntil = useRef(new Map());
   const inboxSkipUntil = useRef(new Map());
   const inboxInFlight = useRef(new Set());
   const inboxCursor = useRef(0);
-  const ringingRef = useRef(new Map());
-  const settledRef = useRef(new Set());
   const inboxByStoreRef = useRef(inboxByStore);
   inboxByStoreRef.current = inboxByStore;
-  // Each store's published phone from the POS: the number that rings there.
   const [posPhones, setPosPhones] = useState({});
   const posPhonesRef = useRef(posPhones);
   posPhonesRef.current = posPhones;
   const sessionRef = useRef(session);
   sessionRef.current = session;
+
+  // ---------------------------------------------------------------------
+  // Stores, preferences
+  // ---------------------------------------------------------------------
 
   useEffect(() => {
     if (!active) {
@@ -220,10 +258,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     let cancelled = false;
     (async () => {
       try {
-        const [silentRaw, watch] = await Promise.all([
-          AsyncStorage.getItem(SILENT_KEY),
-          loadWatchStores(),
-        ]);
+        const [silentRaw, watch] = await Promise.all([AsyncStorage.getItem(SILENT_KEY), loadWatchStores()]);
         if (cancelled) return;
         setSilentState(silentRaw === '1');
         setWatchPrefs(watch);
@@ -325,25 +360,29 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     });
   }, []);
 
-  const removeStoreAccount = useCallback((storeKey) => {
-    const key = storeKeyFromName(storeKey);
-    if (!key) return;
-    setStores((current) => current.filter((row) => row.storeKey !== key));
-    setInboxByStore((current) => {
-      if (!current[key]) return current;
-      const next = { ...current };
-      delete next[key];
-      return next;
-    });
-    setLiveLogByStore((current) => {
-      if (!current[key]) return current;
-      const next = { ...current };
-      delete next[key];
-      return next;
-    });
-    setLiveCalls((current) => current.filter((call) => call.storeKey !== key));
-    setSelectedStoreKey((current) => (current === key ? '' : current));
-  }, []);
+  const removeStoreAccount = useCallback(
+    (storeKey) => {
+      const key = storeKeyFromName(storeKey);
+      if (!key) return;
+      setStores((current) => current.filter((row) => row.storeKey !== key));
+      setInboxByStore((current) => {
+        if (!current[key]) return current;
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+      setLiveLogByStore((current) => {
+        if (!current[key]) return current;
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+      updateCalls((state) => clearStore(state, key));
+      writeSipCache(key, null);
+      setSelectedStoreKey((current) => (current === key ? '' : current));
+    },
+    [updateCalls],
+  );
 
   const reloadStores = useCallback(
     async ({ selectKey, watch = false } = {}) => {
@@ -358,9 +397,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
         const list = rows || [];
         setStores(list);
         const preferred = storeKeyFromName(selectKey);
-        const chosen = preferred
-          ? list.find((row) => row.storeKey === preferred && row.hasJwt)
-          : null;
+        const chosen = preferred ? list.find((row) => row.storeKey === preferred && row.hasJwt) : null;
         if (chosen) {
           setSelectedStoreKey(chosen.storeKey);
           if (watch) watchStoreKey(chosen.storeKey);
@@ -377,88 +414,76 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     if (!active) {
       storesRequestId.current += 1;
       setStores([]);
-      setLiveCalls([]);
       setInboxByStore({});
       setLiveLogByStore({});
       setInboxFetching({});
-      ringingRef.current.clear();
-      settledRef.current.clear();
-      goneRef.current.clear();
+      updateCalls(() => createCallState());
       return undefined;
     }
     reloadStores();
     return undefined;
-  }, [active, reloadStores, session?.token]);
+  }, [active, reloadStores, session?.token, updateCalls]);
 
   useEffect(() => {
     if (selectedStoreKey && connectedStores.some((row) => row.storeKey === selectedStoreKey)) return;
     const preferred = storeFilter ? storeKeyFromName(storeFilter) : '';
     const next =
-      connectedStores.find((row) => row.storeKey === preferred)?.storeKey ||
-      connectedStores[0]?.storeKey ||
-      '';
+      connectedStores.find((row) => row.storeKey === preferred)?.storeKey || connectedStores[0]?.storeKey || '';
     if (next !== selectedStoreKey) setSelectedStoreKey(next);
   }, [connectedStores, selectedStoreKey, storeFilter]);
 
-  const refreshPresence = useCallback(
-    async () => {
-      if (!active || connectedStores.length === 0) {
-        setLiveCalls([]);
-        return;
-      }
-      const id = ++requestId.current;
-      const now = Date.now();
-      const preferred = selectedStoreKey || watchedStores[0]?.storeKey || connectedStores[0]?.storeKey;
-      const watchKeys = new Set(watchedStores.map((row) => row.storeKey));
-      if (preferred) watchKeys.add(preferred);
-      const targets = connectedStores.filter(
-        (row) => watchKeys.has(row.storeKey) && (skipUntil.current.get(row.storeKey) || 0) <= now,
-      );
-      const settled = await Promise.allSettled(
-        targets.map(async (row) => {
-          try {
-            return await fetchPhonePresence(row.storeKey, { storePhone: row.posPhone });
-          } catch (err) {
-            if (err?.status === 429 || isPhoneRateLimitMessage(err?.message)) {
-              skipUntil.current.set(row.storeKey, Date.now() + 60_000);
-            }
-            throw err;
+  // ---------------------------------------------------------------------
+  // Presence poll (server-verified live calls)
+  // ---------------------------------------------------------------------
+
+  const refreshPresence = useCallback(async () => {
+    if (!active || connectedStores.length === 0) return;
+    const id = ++requestId.current;
+    const now = Date.now();
+    const preferred = selectedStoreKey || watchedStores[0]?.storeKey || connectedStores[0]?.storeKey;
+    const watchKeys = new Set(watchedStores.map((row) => row.storeKey));
+    if (preferred) watchKeys.add(preferred);
+    const targets = connectedStores.filter(
+      (row) => watchKeys.has(row.storeKey) && (skipUntil.current.get(row.storeKey) || 0) <= now,
+    );
+    const settled = await Promise.allSettled(
+      targets.map(async (row) => {
+        try {
+          return await fetchPhonePresence(row.storeKey, { storePhone: row.posPhone });
+        } catch (err) {
+          if (err?.status === 429 || isPhoneRateLimitMessage(err?.message)) {
+            skipUntil.current.set(row.storeKey, Date.now() + 60_000);
           }
-        }),
-      );
-      if (id !== requestId.current) return;
-      const succeeded = new Set();
-      const next = [];
+          throw err;
+        }
+      }),
+    );
+    if (id !== requestId.current) return;
+    const succeeded = new Set();
+    updateCalls((state) => {
+      let next = state;
       for (const item of settled) {
         if (item.status !== 'fulfilled') continue;
         const key = item.value.store?.storeKey;
-        if (key) succeeded.add(key);
-        next.push(...(item.value.liveCalls || []));
-        if (item.value.incoming) {
-          const extras = item.value.incoming.filter(
-            (call) => !next.some((row) => row.id === call.id && row.storeKey === call.storeKey),
-          );
-          next.push(...extras);
-        }
+        if (!key) continue;
+        succeeded.add(key);
+        next = applyPresence(next, key, item.value.liveCalls || []);
       }
-      setLiveCalls((current) => {
-        const kept = current.filter((call) => !succeeded.has(call.storeKey));
-        return [...kept, ...next];
-      });
-      if (succeeded.size) {
-        setStores((current) => {
-          let changed = false;
-          const mapped = current.map((row) => {
-            if (!succeeded.has(row.storeKey) || row.lastStatus === 'connected') return row;
-            changed = true;
-            return { ...row, lastStatus: 'connected', lastError: '' };
-          });
-          return changed ? mapped : current;
+      next = expirePresence(next);
+      return pruneEnded(next);
+    });
+    if (succeeded.size) {
+      setStores((current) => {
+        let changed = false;
+        const mapped = current.map((row) => {
+          if (!succeeded.has(row.storeKey) || row.lastStatus === 'connected') return row;
+          changed = true;
+          return { ...row, lastStatus: 'connected', lastError: '' };
         });
-      }
-    },
-    [active, connectedStores, selectedStoreKey, watchedStores],
-  );
+        return changed ? mapped : current;
+      });
+    }
+  }, [active, connectedStores, selectedStoreKey, updateCalls, watchedStores]);
 
   useLiveRefresh(refreshPresence, PHONE_LIVE_MS, active && connectedStores.length > 0);
 
@@ -467,6 +492,10 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     refreshPresence();
     return undefined;
   }, [active, connectedStores, refreshPresence]);
+
+  // ---------------------------------------------------------------------
+  // Call log / voicemail inbox
+  // ---------------------------------------------------------------------
 
   const appendLiveLog = useCallback((entry) => {
     if (!entry?.storeKey || !entry?.id) return;
@@ -477,79 +506,70 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     });
   }, []);
 
-  const refreshInbox = useCallback(
-    async (storeKey, { silent = false, force = false } = {}) => {
-      const key = storeKeyFromName(storeKey);
-      if (!key) return null;
-      if (!force && (inboxSkipUntil.current.get(key) || 0) > Date.now()) {
-        return inboxByStoreRef.current[key] || null;
+  const refreshInbox = useCallback(async (storeKey, { silent: quiet = false, force = false } = {}) => {
+    const key = storeKeyFromName(storeKey);
+    if (!key) return null;
+    if (!force && (inboxSkipUntil.current.get(key) || 0) > Date.now()) {
+      return inboxByStoreRef.current[key] || null;
+    }
+    if (!force) {
+      const cached = inboxByStoreRef.current[key];
+      if (cached && Date.now() - (cached.at || 0) < PHONE_INBOX_MS) return cached;
+    }
+    if (inboxInFlight.current.has(key)) return inboxByStoreRef.current[key] || null;
+    inboxInFlight.current.add(key);
+    if (!quiet) setInboxFetching((current) => ({ ...current, [key]: true }));
+    try {
+      const payload = await fetchPhoneInbox(key, { storePhone: posPhonesRef.current[key] || '' });
+      const rateLimited =
+        isPhoneRateLimitMessage(payload.callLogError) || isPhoneRateLimitMessage(payload.voicemailError);
+      if (rateLimited) {
+        inboxSkipUntil.current.set(key, Date.now() + 60_000);
+        setError((current) => (isPhoneRateLimitMessage(current) ? '' : current));
+        const existing = inboxByStoreRef.current[key];
+        if (existing || !(payload.calls || []).length) return existing || null;
       }
-      if (!force) {
-        const cached = inboxByStoreRef.current[key];
-        if (cached && Date.now() - (cached.at || 0) < PHONE_INBOX_MS) {
-          return cached;
-        }
+      setInboxByStore((current) => ({
+        ...current,
+        [key]: {
+          calls: payload.calls || [],
+          voicemails: payload.voicemails || [],
+          callLogError: payload.callLogError || '',
+          voicemailError: payload.voicemailError || '',
+          at: Date.now(),
+        },
+      }));
+      setLiveLogByStore((current) => {
+        const live = current[key] || [];
+        if (!live.length) return current;
+        const kept = live.filter((row) => !(payload.calls || []).some((call) => sameInboundCall(call, row)));
+        if (kept.length === live.length) return current;
+        return { ...current, [key]: kept };
+      });
+      const notes = [payload.callLogError, payload.voicemailError].filter(
+        (note) => note && !isPhoneRateLimitMessage(note),
+      );
+      if (notes.length && !quiet) setError(notes.join(' '));
+      return payload;
+    } catch (err) {
+      if (err?.status === 429 || isPhoneRateLimitMessage(err?.message)) {
+        inboxSkipUntil.current.set(key, Date.now() + 60_000);
+        setError((current) => (isPhoneRateLimitMessage(current) ? '' : current));
       }
-      if (inboxInFlight.current.has(key)) return inboxByStoreRef.current[key] || null;
-      inboxInFlight.current.add(key);
-      if (!silent) {
-        setInboxFetching((current) => ({ ...current, [key]: true }));
-      }
-      try {
-        const payload = await fetchPhoneInbox(key, { storePhone: posPhonesRef.current[key] || '' });
-        const rateLimited =
-          isPhoneRateLimitMessage(payload.callLogError) || isPhoneRateLimitMessage(payload.voicemailError);
-        if (rateLimited) {
-          inboxSkipUntil.current.set(key, Date.now() + 60_000);
-          setError((current) => (isPhoneRateLimitMessage(current) ? '' : current));
-          const existing = inboxByStoreRef.current[key];
-          if (existing || !(payload.calls || []).length) return existing || null;
-        }
-        setInboxByStore((current) => ({
-          ...current,
-          [key]: {
-            calls: payload.calls || [],
-            voicemails: payload.voicemails || [],
-            callLogError: payload.callLogError || '',
-            voicemailError: payload.voicemailError || '',
-            at: Date.now(),
-          },
-        }));
-        setLiveLogByStore((current) => {
-          const live = current[key] || [];
-          if (!live.length) return current;
-          const kept = live.filter((row) => !(payload.calls || []).some((call) => sameInboundCall(call, row)));
-          if (kept.length === live.length) return current;
-          return { ...current, [key]: kept };
+      if (!quiet && !isPhoneRateLimitMessage(err?.message)) setError(err?.message || 'Could not load calls.');
+      throw err;
+    } finally {
+      inboxInFlight.current.delete(key);
+      if (!quiet) {
+        setInboxFetching((current) => {
+          if (!current[key]) return current;
+          const next = { ...current };
+          delete next[key];
+          return next;
         });
-        const notes = [payload.callLogError, payload.voicemailError].filter(
-          (note) => note && !isPhoneRateLimitMessage(note),
-        );
-        if (notes.length && !silent) setError(notes.join(' '));
-        return payload;
-      } catch (err) {
-        if (err?.status === 429 || isPhoneRateLimitMessage(err?.message)) {
-          inboxSkipUntil.current.set(key, Date.now() + 60_000);
-          setError((current) => (isPhoneRateLimitMessage(current) ? '' : current));
-        }
-        if (!silent && !isPhoneRateLimitMessage(err?.message)) {
-          setError(err?.message || 'Could not load calls.');
-        }
-        throw err;
-      } finally {
-        inboxInFlight.current.delete(key);
-        if (!silent) {
-          setInboxFetching((current) => {
-            if (!current[key]) return current;
-            const next = { ...current };
-            delete next[key];
-            return next;
-          });
-        }
       }
-    },
-    [],
-  );
+    }
+  }, []);
 
   const refreshInboxRound = useCallback(async () => {
     const preferred = selectedStoreKey;
@@ -599,8 +619,10 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     };
   }, [active, connectedKeyList, refreshInbox]);
 
-  // Register this tab as each connected store's phone (web only). One
-  // registration per RingCentral extension: stores that share a JWT share it.
+  // ---------------------------------------------------------------------
+  // Browser softphone registration (web only)
+  // ---------------------------------------------------------------------
+
   const connectedNames = useMemo(
     () => Object.fromEntries(connectedStores.map((row) => [row.storeKey, row.storeName || row.storeKey])),
     [connectedStores],
@@ -612,55 +634,70 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     setWebPhoneStatus((current) => ({ ...current, [storeKey]: { ...(current[storeKey] || {}), ...next } }));
   }, []);
 
-  const markGone = useCallback((id) => {
-    const key = String(id || '');
-    if (!key) return;
-    goneRef.current.set(key, Date.now());
-    if (goneRef.current.size > 100) {
-      const cutoff = Date.now() - GONE_MS;
-      for (const [k, at] of goneRef.current.entries()) if (at < cutoff) goneRef.current.delete(k);
-    }
-    setGoneVersion((v) => v + 1);
-  }, []);
-
-  /** Drop a call from every local list: it is over as far as this browser is concerned. */
-  const dropCall = useCallback(
-    (call) => {
-      const id = callSessionKey(call);
-      if (!id) return;
-      markGone(id);
-      setWebCalls((current) => current.filter((row) => callSessionKey(row) !== id));
-      setLiveCalls((current) => current.filter((row) => callSessionKey(row) !== id));
-      setActiveCall((current) => (current && callSessionKey(current) === id ? null : current));
-      setMuted((current) => (current ? false : current));
+  const onSipCall = useCallback(
+    (snapshot) => {
+      answeringRef.current.delete(callKey(snapshot));
+      updateCalls((state) => {
+        const key = callKey(snapshot);
+        const existing = state.calls[key];
+        const next = applySipCall(state, snapshot);
+        // A call-control Answer lands here as a fresh auto-answered INVITE: the
+        // card already says connected, so do not flash back to "ringing".
+        if (existing && existing.answeredAt && isConnectedStatus(existing.status) && snapshot.direction !== 'Outbound') {
+          return patchCall(next, key, { status: existing.status, answeredAt: existing.answeredAt, web: true });
+        }
+        return next;
+      });
     },
-    [markGone],
+    [updateCalls],
   );
 
-  const onWebInbound = useCallback((snapshot) => {
-    // A fresh INVITE for a session we hid (queue re-ring) makes it live again.
-    if (goneRef.current.delete(snapshot.id)) setGoneVersion((v) => v + 1);
-    setWebCalls((current) => [...current.filter((row) => row.id !== snapshot.id), snapshot]);
-  }, []);
-
-  const onWebChange = useCallback(
-    (snapshot) => {
-      if (snapshot.ended) {
-        markGone(snapshot.id);
-        setWebCalls((current) => current.filter((row) => row.id !== snapshot.id));
-        setActiveCall((current) => (current && current.id === snapshot.id ? null : current));
-        setMuted((current) => (current ? false : current));
-        return;
-      }
-      setWebCalls((current) => current.map((row) => (row.id === snapshot.id ? { ...row, ...snapshot } : row)));
-      if (snapshot.status === 'CallConnected') {
-        setActiveCall((current) =>
-          current && current.id === snapshot.id ? current : { ...snapshot, answeredAt: Date.now() },
-        );
+  const onSipChange = useCallback(
+    (snapshot, meta = {}) => {
+      updateCalls((state) => {
+        let next = state;
+        let key = callKey(snapshot);
+        if (meta.previousId && meta.previousId !== key) {
+          next = rekeyCall(next, meta.previousId, snapshot);
+        }
+        if (snapshot.ended) {
+          const existing = next.calls[key] || next.calls[meta.previousId || ''];
+          const holding =
+            answeringRef.current.has(key) ||
+            answeringRef.current.has(meta.previousId || '') ||
+            (existing && existing.web && isConnectedStatus(existing.status) && !snapshot.answered);
+          if (holding) {
+            return next;
+          }
+          const wasAnswered = snapshot.answered || (existing && isConnectedStatus(existing.status) && existing.web);
+          const reason = wasAnswered ? 'hangup' : existing?.direction === 'Outbound' ? 'hangup' : 'missed';
+          next = endCall(next, key, reason);
+          if (meta.previousId) next = endCall(next, meta.previousId, reason);
+          return next;
+        }
+        if (!next.calls[key]) {
+          // Ids learned before we tracked the call (auto-answered INVITE).
+          next = applySipCall(next, snapshot);
+        }
+        if (snapshot.status === 'CallConnected') {
+          answeringRef.current.delete(key);
+          // Outbound: the SIP server accepts the INVITE right away, so this is
+          // not the callee picking up. Presence flips it to connected later.
+          if (snapshot.direction === 'Outbound') return patchCall(next, key, { web: true });
+          return markAnswered(next, key);
+        }
+        return patchCall(next, key, {
+          partyId: snapshot.partyId || next.calls[key]?.partyId || '',
+          telephonySessionId: snapshot.telephonySessionId || next.calls[key]?.telephonySessionId || key,
+          callId: snapshot.callId || next.calls[key]?.callId || '',
+        });
+      });
+      if (snapshot.status === 'CallConnected' && snapshot.direction !== 'Outbound') {
         setError('');
+        setMuted(false);
       }
     },
-    [markGone],
+    [updateCalls],
   );
 
   useEffect(() => {
@@ -670,12 +707,11 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       webPhonesRef.current.clear();
       webPhoneByExtensionRef.current.clear();
       webDeviceIdRef.current.clear();
+      webCallerIdRef.current.clear();
     };
     if (!active || !connectedKeyList) {
       disposeAll();
       setWebPhoneStatus({});
-      setWebCalls([]);
-      setActiveCall(null);
       return undefined;
     }
     if (!isWebPhoneSupported) {
@@ -698,6 +734,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       handle.dispose().catch(() => {});
       webPhonesRef.current.delete(storeKey);
       webDeviceIdRef.current.delete(storeKey);
+      webCallerIdRef.current.delete(storeKey);
       for (const [extId, owner] of [...webPhoneByExtensionRef.current.entries()]) {
         if (owner === storeKey) webPhoneByExtensionRef.current.delete(extId);
       }
@@ -715,6 +752,10 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
           }
           if (cancelled) return;
           if (provision.deviceId) webDeviceIdRef.current.set(storeKey, provision.deviceId);
+          webCallerIdRef.current.set(storeKey, {
+            callerIds: provision.callerIds || [],
+            defaultCallerId: provision.defaultCallerId || '',
+          });
           const owner = webPhoneByExtensionRef.current.get(provision.extensionId || '');
           if (owner && owner !== storeKey && webPhonesRef.current.has(owner)) {
             setStorePhoneStatus(storeKey, {
@@ -732,8 +773,9 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
             extensionId: provision.extensionId,
             storeKey,
             storeName,
-            onInbound: onWebInbound,
-            onChange: onWebChange,
+            onInbound: onSipCall,
+            onOutbound: onSipCall,
+            onChange: onSipChange,
             onStatus: (state, message) => {
               // Only the live registration for this store may report its state
               // (handles outlive this effect run, so `cancelled` is not checked).
@@ -780,7 +822,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       cancelled = true;
       window.removeEventListener('pagehide', onHide);
     };
-  }, [active, connectedKeyList, onWebChange, onWebInbound, setStorePhoneStatus]);
+  }, [active, connectedKeyList, onSipCall, onSipChange, setStorePhoneStatus]);
 
   useEffect(
     () => () => {
@@ -790,91 +832,69 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     [],
   );
 
-  // Presence (8 s poll) plus calls the softphone already knows about. Presence
-  // rows for sessions RingCentral already cancelled here are hidden: acting on
-  // them only yields "Incorrect State" from the call-control API.
-  const allLiveCalls = useMemo(() => {
-    const now = Date.now();
-    const gone = (call) => {
-      const at = goneRef.current.get(callSessionKey(call));
-      return Boolean(at) && now - at < GONE_MS;
-    };
-    const liveCalls = rawLiveCalls.filter((call) => !gone(call));
-    if (!webCalls.length) return liveCalls;
-    const merged = liveCalls.map((call) => {
-      const web = webCalls.find(
-        (row) => row.storeKey === call.storeKey && (row.telephonySessionId || row.id) === (call.telephonySessionId || call.id),
-      );
-      if (!web) return call;
-      return {
-        ...call,
-        partyId: call.partyId || web.partyId,
-        status: web.status === 'CallConnected' ? web.status : call.status,
-        web: true,
-      };
-    });
-    for (const web of webCalls) {
-      const known = merged.some(
-        (call) => call.storeKey === web.storeKey && (call.telephonySessionId || call.id) === (web.telephonySessionId || web.id),
-      );
-      if (!known) merged.push(web);
-    }
-    return merged;
-    // goneVersion re-runs this when a session is hidden or re-rings.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawLiveCalls, webCalls, goneVersion]);
+  // ---------------------------------------------------------------------
+  // Derived views
+  // ---------------------------------------------------------------------
 
-  /**
-   * The SIP session for a call, whichever store's registration it rang on:
-   * stores sharing a RingCentral user share one registration.
-   */
-  const webSessionFor = useCallback((call) => {
-    if (!call) return null;
-    const ids = [call.telephonySessionId, call.id, call.partyId, call.callId].filter(Boolean);
-    if (!ids.length) return null;
+  const allLiveCalls = useMemo(() => listCalls(callState), [callState]);
+
+  const incoming = useMemo(() => {
+    const ringing = ringingCalls(callState).filter((call) => isStoreWatched(watchPrefs, call.storeKey));
+    ringing.sort((a, b) => (a.seenAt || 0) - (b.seenAt || 0));
+    return ringing;
+  }, [callState, watchPrefs]);
+
+  const activeCall = useMemo(() => {
+    const mine = browserCalls(callState);
+    if (!mine.length) return null;
+    mine.sort((a, b) => (b.answeredAt || b.seenAt || 0) - (a.answeredAt || a.seenAt || 0));
+    return mine[0];
+  }, [callState]);
+
+  /** The handle holding the SIP leg of this call, whichever store registered it. */
+  const webHandleFor = useCallback((call) => {
+    if (!call) return { handle: null, id: '' };
     const own = webPhonesRef.current.get(call.storeKey);
     const handles = own
       ? [own, ...[...webPhonesRef.current.values()].filter((h) => h !== own)]
       : [...webPhonesRef.current.values()];
     for (const handle of handles) {
+      if (handle.sessionFor?.(call) || handle.stateOf?.(call)) return { handle, id: call };
+      const ids = [call.telephonySessionId, call.id, call.partyId, call.callId].filter(Boolean);
       for (const id of ids) {
-        const session = handle.session(id);
-        if (session) return session;
+        if (handle.session(id)) return { handle, id };
       }
     }
-    return null;
+    return { handle: null, id: '' };
   }, []);
 
-  /** The registration that would ring for this store, and this browser's device on it. */
+  /** The registration that rings for this store, and this browser's device on it. */
   const webPhoneFor = useCallback(
     (storeKey) => {
       const status = webPhoneStatus[storeKey];
       const owner = status?.state === 'shared' && status.sharedWith ? status.sharedWith : storeKey;
+      const handle = webPhonesRef.current.get(owner) || null;
+      const ids = webCallerIdRef.current.get(storeKey) || webCallerIdRef.current.get(owner) || {};
       return {
-        handle: webPhonesRef.current.get(owner) || null,
+        handle,
         deviceId: webDeviceIdRef.current.get(storeKey) || webDeviceIdRef.current.get(owner) || '',
         state: status?.state || '',
+        callerId: ids.defaultCallerId || '',
+        callerIds: ids.callerIds || [],
+        ready: Boolean(handle && handle.isConnected() && (status?.state === 'ready' || status?.state === 'shared')),
       };
     },
     [webPhoneStatus],
   );
 
-  const incoming = useMemo(() => {
-    const ringing = allLiveCalls.filter((call) => {
-      if (!isRingingCall(call) || !isStoreWatched(watchPrefs, call.storeKey)) return false;
-      const store = connectedStores.find((row) => row.storeKey === call.storeKey);
-      return incomingCallBelongsToStore(call, store);
-    });
-    const seen = new Set();
-    const unique = [];
-    for (const call of ringing) {
-      const key = `${call.telephonySessionId || call.id}:${call.from || ''}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      unique.push(call);
-    }
-    return unique;
-  }, [allLiveCalls, connectedStores, watchPrefs]);
+  const canDialInBrowser = useCallback(
+    (storeKey) => Platform.OS === 'web' && webPhoneFor(storeKey || selectedStoreKey).ready,
+    [selectedStoreKey, webPhoneFor],
+  );
+
+  // ---------------------------------------------------------------------
+  // Local call log: outcome of every call seen ringing here
+  // ---------------------------------------------------------------------
 
   const rememberAnswered = useCallback((call) => {
     if (!call) return;
@@ -889,39 +909,37 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     setRecentAnswered((current) => [...current.filter((row) => row.callId !== call.id), item]);
   }, []);
 
+  const ringingRef = useRef(new Map());
+  const settledRef = useRef(new Set());
+
   useEffect(() => {
-    if (!active || connectedStores.length === 0) {
+    if (!active) {
       ringingRef.current.clear();
       return;
     }
-    const ringing = allLiveCalls.filter((call) => isRingingCall(call));
-    const currentKeys = new Set(ringing.map(liveCallKey).filter(Boolean));
-
+    const ringing = new Map(ringingCalls(callState).map((call) => [liveCallKey(call), call]));
     for (const [key, prev] of [...ringingRef.current.entries()]) {
-      if (currentKeys.has(key) || settledRef.current.has(key)) {
-        if (currentKeys.has(key)) {
-          ringingRef.current.set(key, ringing.find((call) => liveCallKey(call) === key) || prev);
-        }
+      if (ringing.has(key)) {
+        ringingRef.current.set(key, ringing.get(key));
         continue;
       }
-      const still = allLiveCalls.find((call) => liveCallKey(call) === key);
-      const answered = still ? isLiveAnsweredStatus(still.status) : false;
-      settledRef.current.add(key);
       ringingRef.current.delete(key);
-      const source = still || prev;
-      appendLiveLog(liveLogEntry(source, answered ? 'Accepted' : 'Missed'));
-      if (answered) rememberAnswered(source);
+      if (settledRef.current.has(key)) continue;
+      settledRef.current.add(key);
+      const still = callState.calls[callKey(prev)];
+      const reason = callState.ended[callKey(prev)]?.reason || '';
+      let result = 'Missed';
+      if (still && isConnectedStatus(still.status)) result = 'Accepted';
+      else if (reason === 'answered' || reason === 'hangup') result = 'Accepted';
+      else if (reason === 'rejected') result = 'Rejected';
+      appendLiveLog(liveLogEntry(still || prev, result));
+      if (result === 'Accepted') rememberAnswered(still || prev);
     }
-
-    for (const call of ringing) {
-      const key = liveCallKey(call);
-      if (key && !settledRef.current.has(key)) ringingRef.current.set(key, call);
+    for (const [key, call] of ringing.entries()) {
+      if (!settledRef.current.has(key)) ringingRef.current.set(key, call);
     }
-
-    if (settledRef.current.size > 200) {
-      settledRef.current = new Set([...settledRef.current].slice(-100));
-    }
-  }, [active, allLiveCalls, appendLiveLog, connectedStores.length, rememberAnswered]);
+    if (settledRef.current.size > 200) settledRef.current = new Set([...settledRef.current].slice(-100));
+  }, [active, appendLiveLog, callState, rememberAnswered]);
 
   useEffect(() => {
     if (!recentAnswered.length) return undefined;
@@ -933,16 +951,21 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     return () => clearTimeout(timer);
   }, [recentAnswered]);
 
+  // Ringtone: only for verified inbound calls, and never over a live conversation.
   useEffect(() => {
-    if (!active || silent || incoming.length === 0) {
+    if (!active || silent || incoming.length === 0 || activeCall) {
       stopRingtone();
       return undefined;
     }
     startRingtone();
     return () => stopRingtone();
-  }, [active, incoming.length, silent]);
+  }, [active, activeCall, incoming.length, silent]);
 
   useEffect(() => () => stopRingtone(), []);
+
+  // ---------------------------------------------------------------------
+  // Actions
+  // ---------------------------------------------------------------------
 
   /** One call action at a time; `busy` and `error` always settle, even on a lost SIP reply. */
   const perform = useCallback(async (fn) => {
@@ -958,23 +981,17 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     }
   }, []);
 
-  /**
-   * RingCentral call-control API. A party that is no longer in a controllable
-   * state is removed locally and surfaces as a `call_gone` error.
-   */
+  /** RingCentral call-control. A party that is over is dropped locally and surfaces as `call_gone`. */
   const runControl = useCallback(
     async (action, call, extra) => {
       if (!call) throw new Error('That call is no longer available.');
       try {
         const result = await controlPhoneCall(action, call, extra);
-        setLiveCalls((current) => {
-          const others = current.filter((row) => row.storeKey !== call.storeKey);
-          return [...others, ...(result.liveCalls || [])];
-        });
+        updateCalls((state) => applyPresence(state, call.storeKey, result.liveCalls || []));
         return result;
       } catch (err) {
         if (isCallGoneError(err)) {
-          dropCall(call);
+          updateCalls((state) => endCall(state, callKey(call), 'gone'));
           const gone = new Error(CALL_GONE_MESSAGE);
           gone.code = 'call_gone';
           throw gone;
@@ -982,13 +999,15 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
         throw err;
       }
     },
-    [dropCall],
+    [updateCalls],
   );
 
   /** Why Answer could not take the call in this browser. */
   const webPhoneFallbackReason = useCallback(
     (storeKey, err) => {
-      if (Platform.OS !== 'web') return 'Answering in the app works in the web version; pick up on the RingCentral app or desk phone.';
+      if (Platform.OS !== 'web') {
+        return 'Answering in the app works in the web version; pick up on the RingCentral app or desk phone.';
+      }
       const status = webPhoneStatus[storeKey];
       const raw = String(err?.message || '');
       const detail = raw && raw.length <= 90 ? ` (${raw.replace(/\.$/, '')})` : '';
@@ -999,95 +1018,113 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
         return 'This browser lost its connection to RingCentral and is reconnecting. Pick up on the RingCentral app, or try again in a moment.';
       }
       if (status.state === 'ready' || status.state === 'shared') {
-        return `That call is not ringing this browser${detail}. Pick up on the RingCentral app or desk phone, or send it to voicemail.`;
+        return `That call could not be moved to this browser${detail}. Pick up on the RingCentral app or desk phone, or send it to voicemail.`;
       }
       return status.message || 'This browser is not registered as the store phone.';
     },
     [webPhoneStatus],
   );
 
-  /** Record the outcome of a ringing call once, whichever path settled it. */
-  const settleRinging = useCallback(
-    (call, result) => {
-      const key = liveCallKey(call);
-      if (key) {
-        settledRef.current.add(key);
-        ringingRef.current.delete(key);
-      }
-      appendLiveLog(liveLogEntry(call, result));
-      if (result === 'Accepted') rememberAnswered(call);
-    },
-    [appendLiveLog, rememberAnswered],
-  );
-
   const answer = useCallback(
     (call) =>
       perform(async () => {
         if (!call) throw new Error('That call is no longer available.');
-        const connected = () => ({ ...call, status: 'CallConnected', web: true, answeredAt: Date.now() });
-        const session = webSessionFor(call);
+        const key = callKey(call);
+        answeringRef.current.set(key, Date.now());
+        updateCalls((state) => markAnswered(state, key));
+        setMuted(false);
 
-        if (session?.state === 'answered') {
-          // RingCentral already pushed it here (auto-answer) while the card still showed Ringing.
-          setActiveCall((current) => current || connected());
-          settleRinging(call, 'Accepted');
-          return { ok: true, liveCalls: [] };
+        const revert = () => {
+          answeringRef.current.delete(key);
+          updateCalls((state) => {
+            const existing = state.calls[key];
+            if (!existing) return state;
+            return patchCall(state, key, { status: 'Ringing', web: false, answeredAt: null });
+          });
+        };
+
+        const { handle, id } = webHandleFor(call);
+        const sipState = handle ? handle.stateOf(id) : '';
+
+        if (sipState === 'answered') {
+          answeringRef.current.delete(key);
+          return { ok: true };
         }
 
-        if (session?.state === 'ringing') {
+        if (sipState === 'ringing' || sipState === 'init') {
           try {
-            await withSipTimeout(session.answer(), 'answer', ANSWER_TIMEOUT_MS);
+            await ensureMicrophone();
+            await handle.answer(id);
+            updateCalls((state) => markAnswered(state, key));
+            answeringRef.current.delete(key);
+            setMuted(false);
+            return { ok: true };
           } catch (err) {
+            if (isMicrophoneError(err) || isMicrophoneBlockedError(err) || err?.code === 'sip_timeout') {
+              revert();
+              throw new Error(answerErrorMessage(err));
+            }
+            // No session / SIP rejected: Call Control can still park the audio
+            // on this browser's device via a replacement auto-answered INVITE.
+          }
+        }
+
+        const line = webPhoneFor(call.storeKey);
+        const useBrowser = line.ready && Boolean(line.deviceId);
+        if (useBrowser) {
+          try {
+            await ensureMicrophone();
+          } catch (err) {
+            revert();
             throw new Error(answerErrorMessage(err));
           }
-          setActiveCall(connected());
-          setMuted(false);
-          setWebCalls((current) =>
-            current.map((row) => (callSessionKey(row) === callSessionKey(call) ? { ...row, status: 'CallConnected' } : row)),
-          );
-          settleRinging(call, 'Accepted');
-          return { ok: true, liveCalls: [] };
         }
-
-        // Not ringing this tab's SIP registration. Ask RingCentral to hand the
-        // call to this browser's device (it arrives as an auto-answered INVITE);
-        // without one, the line's first device picks up.
-        const { deviceId, state } = webPhoneFor(call.storeKey);
         try {
-          const result = await runControl('answer', call, {
-            deviceId: state === 'ready' || state === 'shared' ? deviceId : '',
-          });
-          settleRinging(call, 'Accepted');
-          return result;
+          await runControl('answer', call, { deviceId: useBrowser ? line.deviceId : '' });
         } catch (err) {
-          if (err?.code === 'call_gone') throw err;
+          if (err?.code === 'call_gone') {
+            answeringRef.current.delete(key);
+            throw err;
+          }
+          revert();
           throw new Error(webPhoneFallbackReason(call.storeKey, err));
         }
+        updateCalls((state) =>
+          patchCall(state, key, {
+            status: 'CallConnected',
+            web: true,
+            answeredAt: Date.now(),
+          }),
+        );
+        return { ok: true };
       }),
-    [perform, runControl, settleRinging, webPhoneFallbackReason, webPhoneFor, webSessionFor],
+    [perform, runControl, updateCalls, webHandleFor, webPhoneFallbackReason, webPhoneFor],
   );
 
   const reject = useCallback(
     (call) =>
       perform(async () => {
         if (!call) throw new Error('That call is no longer available.');
+        const key = callKey(call);
         const done = () => {
-          settleRinging(call, 'Rejected');
-          dropCall(call);
-          return { ok: true, liveCalls: [] };
+          updateCalls((state) => endCall(state, key, 'rejected'));
+          return { ok: true };
         };
-        const session = webSessionFor(call);
-        if (session?.state === 'ringing') {
+        const { handle, id } = webHandleFor(call);
+        if (handle && handle.stateOf(id) === 'ringing') {
           try {
-            await withSipTimeout(session.toVoicemail(), 'send to voicemail');
+            await handle.toVoicemail(id);
+            handle.release(id);
             return done();
           } catch {
             // Queue legs do not always honour the voicemail command; decline the INVITE instead.
           }
           try {
-            await withSipTimeout(session.decline(), 'decline');
+            await handle.decline(id);
+            handle.release(id);
             return done();
           } catch {
+            handle.release(id);
             // Fall through to the call-control API.
           }
         }
@@ -1097,11 +1134,11 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
         } catch (err) {
           // Already over (answered elsewhere, voicemail, caller hung up), or the
           // SIP leg here stopped ringing: either way there is nothing left to reject.
-          if (err?.code === 'call_gone' || session) return done();
+          if (err?.code === 'call_gone' || handle) return done();
           throw err;
         }
       }),
-    [dropCall, perform, runControl, settleRinging, webSessionFor],
+    [perform, runControl, updateCalls, webHandleFor],
   );
 
   const hangup = useCallback(
@@ -1109,33 +1146,25 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       perform(async () => {
         const target = call || activeCall;
         if (!target) throw new Error('There is no call to hang up.');
-        const id = callSessionKey(target);
+        const key = callKey(target);
+        const wasAnswered = isConnectedStatus(target.status);
         const done = () => {
-          setActiveCall((current) => (current && callSessionKey(current) === id ? null : current));
+          updateCalls((state) => endCall(state, key, wasAnswered ? 'hangup' : 'rejected'));
           setMuted(false);
-          markGone(id);
-          return { ok: true, liveCalls: [] };
+          return { ok: true };
         };
-        const session = webSessionFor(target);
-        if (session) {
+        const { handle, id } = webHandleFor(target);
+        if (handle) {
           try {
-            if (session.state === 'answered') await withSipTimeout(session.hangup(), 'hang up');
-            else await withSipTimeout(session.decline(), 'decline');
+            await handle.hangup(id);
           } catch {
-            // No BYE reply (socket dropped mid-call): release the media here and
+            // No BYE reply (socket dropped mid-call): media is already released;
             // ask RingCentral to drop the party so the caller is not left hanging.
-            try {
-              session.dispose();
-            } catch {
-              // Already released.
-            }
-            if (target.telephonySessionId && target.partyId) {
-              await runControl('hangup', target).catch(() => {});
-            }
+            if (target.telephonySessionId) await runControl('hangup', target).catch(() => {});
           }
           return done();
         }
-        if (target.web) return done(); // Browser call whose SIP leg already ended.
+        if (target.web && !target.telephonySessionId) return done(); // Browser call whose SIP leg already ended.
         try {
           await runControl('hangup', target);
           return done();
@@ -1144,44 +1173,67 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
           throw err;
         }
       }),
-    [activeCall, markGone, perform, runControl, webSessionFor],
+    [activeCall, perform, runControl, updateCalls, webHandleFor],
   );
 
   const toggleMute = useCallback(() => {
-    const session = webSessionFor(activeCall);
-    if (!session || session.state !== 'answered') return;
-    try {
-      if (muted) session.unmute();
-      else session.mute();
-      setMuted(!muted);
-    } catch {
-      // Media already released.
-    }
-  }, [activeCall, muted, webSessionFor]);
+    const { handle, id } = webHandleFor(activeCall);
+    if (!handle) return;
+    if (handle.setMuted(id, !muted)) setMuted(!muted);
+  }, [activeCall, muted, webHandleFor]);
 
-  const ringOut = useCallback(
-    async (to, from) => {
-      const storeKey = selectedStoreKey || connectedStores[0]?.storeKey;
-      if (!storeKey) throw new Error('Connect a store in Settings → RingCentral first.');
-      setBusy(true);
-      setError('');
-      try {
-        const result = await startRingOut(storeKey, to, from);
-        setLiveCalls((current) => {
-          const others = current.filter((row) => row.storeKey !== storeKey);
-          return [...others, ...(result.liveCalls || [])];
-        });
-        return result;
-      } catch (err) {
-        const message = err?.message || 'Could not start the call.';
-        setError(message);
-        throw err;
-      } finally {
-        setBusy(false);
-      }
+  const sendDtmf = useCallback(
+    (tones) => {
+      const { handle, id } = webHandleFor(activeCall);
+      if (!handle) return false;
+      return handle.sendDtmf(id, tones);
     },
-    [connectedStores, selectedStoreKey],
+    [activeCall, webHandleFor],
   );
+
+  /**
+   * Place a call. From a browser registered as the store phone the call is
+   * made here with audio; elsewhere RingOut rings the store phone first and
+   * then dials the number.
+   */
+  const dial = useCallback(
+    (to, { storeKey: wanted = '', from = '' } = {}) =>
+      perform(async () => {
+        const storeKey = storeKeyFromName(wanted) || selectedStoreKey || connectedStores[0]?.storeKey;
+        if (!storeKey) throw new Error('Connect a store in Settings → RingCentral first.');
+        const callee = sipCallee(to);
+        if (!callee) throw new Error('Enter a number to call.');
+        if (activeCall) throw new Error('Finish the current call before placing another.');
+
+        const line = webPhoneFor(storeKey);
+        if (Platform.OS === 'web' && line.ready) {
+          const callerId = sipCallee(from) && line.callerIds.some((n) => sipCallee(n) === sipCallee(from))
+            ? sipCallee(from)
+            : sipCallee(line.callerId);
+          try {
+            const snapshot = await line.handle.call(callee, callerId || undefined);
+            updateCalls((state) => applySipCall(state, { ...snapshot, storeKey, to: snapshot.to || callee }));
+            setMuted(false);
+            return { web: true, call: snapshot };
+          } catch (err) {
+            const mic = microphoneMessage(err, 'call');
+            if (mic) throw new Error(mic);
+            if (err?.code === 'sip_offline') {
+              // Registration dropped between polls: fall back to RingOut below.
+            } else {
+              throw new Error(err?.message || 'Could not start the call from this browser.');
+            }
+          }
+        }
+
+        const result = await startRingOut(storeKey, to, from);
+        updateCalls((state) => applyPresence(state, storeKey, result.liveCalls || []));
+        return { web: false, ringOut: result.ringOut };
+      }),
+    [activeCall, connectedStores, perform, selectedStoreKey, updateCalls, webPhoneFor],
+  );
+
+  const ringOut = useCallback((to, from) => dial(to, { from }), [dial]);
 
   const mergedCallsByStore = useMemo(() => {
     const keys = new Set([...Object.keys(inboxByStore), ...Object.keys(liveLogByStore)]);
@@ -1204,7 +1256,9 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       activeCall,
       muted,
       toggleMute,
+      sendDtmf,
       webPhoneStatus,
+      canDialInBrowser,
       inboxByStore,
       mergedCallsByStore,
       inboxFetching,
@@ -1220,6 +1274,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       answer,
       reject,
       hangup,
+      dial,
       ringOut,
       refreshPresence,
       reloadStores,
@@ -1232,9 +1287,10 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       allLiveCalls,
       answer,
       applyStoreAccount,
-      syncStoreAccounts,
       busy,
+      canDialInBrowser,
       connectedStores,
+      dial,
       error,
       hangup,
       inboxByStore,
@@ -1242,8 +1298,6 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       incoming,
       mergedCallsByStore,
       muted,
-      toggleMute,
-      webPhoneStatus,
       recentAnswered,
       refreshInbox,
       refreshPresence,
@@ -1252,17 +1306,25 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       removeStoreAccount,
       ringOut,
       selectedStoreKey,
+      sendDtmf,
       setSilent,
       setStoreWatched,
       silent,
       stores,
+      syncStoreAccounts,
+      toggleMute,
       watchPrefs,
       watchedStores,
+      webPhoneStatus,
     ],
   );
 
   return <PhoneCallContext.Provider value={value}>{children}</PhoneCallContext.Provider>;
 }
+
+// ---------------------------------------------------------------------------
+// UI: incoming dock, active call row, ringer toggle
+// ---------------------------------------------------------------------------
 
 function IncomingActions({ call, compact, busy, onAnswer, onReject }) {
   return (
@@ -1325,42 +1387,60 @@ function CallClock({ since }) {
   );
 }
 
+/** "Calling…" while an outbound leg is being set up; a running clock once connected. */
+export function activeCallKicker(call) {
+  if (!call) return '';
+  if (call.direction === 'Outbound' && (isDialingStatus(call.status) || isRingingStatus(call.status))) return 'Calling';
+  if (/hold/i.test(call.status || '')) return 'On hold';
+  return 'On call';
+}
+
 function ActiveCallRow({ call, collapsed, busy, muted, onMute, onHangup }) {
   const label = callPartyLabel(call, { formatPhone: formatPhoneNumber });
+  const kicker = activeCallKicker(call);
+  const connected = isConnectedStatus(call.status);
   return (
     <View
       style={[styles.dockRow, styles.dockRowActive, collapsed && styles.dockRowCollapsed]}
-      accessibilityLabel={`On a call with ${label} at ${call.storeName || 'store'}`}
+      accessibilityLabel={`${kicker} ${label} at ${call.storeName || 'store'}`}
     >
       <View style={styles.dockCopy}>
         <Text style={styles.kicker} numberOfLines={1}>
-          On call · {call.storeName || 'Store'}
+          {kicker} · {call.storeName || 'Store'}
         </Text>
-        {collapsed ? null : (
+        {collapsed ? (
+          connected && call.answeredAt ? <CallClock since={call.answeredAt} /> : null
+        ) : (
           <View style={styles.activeLine}>
             <Text style={styles.caller} numberOfLines={1}>
               {label}
             </Text>
-            <CallClock since={call.answeredAt} />
+            {connected && call.answeredAt ? <CallClock since={call.answeredAt} /> : null}
           </View>
         )}
       </View>
       <View style={styles.actionsCompact}>
-        <Pressable
-          style={[styles.action, styles.actionCompact, muted ? styles.muteOn : styles.mute]}
-          onPress={onMute}
-          disabled={busy}
-          accessibilityLabel={muted ? 'Unmute microphone' : 'Mute microphone'}
-        >
-          <Ionicons name={muted ? 'mic-off' : 'mic'} size={14} color="#fff" />
-        </Pressable>
+        {call.web ? (
+          <Pressable
+            style={[styles.action, styles.actionCompact, muted ? styles.muteOn : styles.mute]}
+            onPress={onMute}
+            disabled={busy || !connected}
+            accessibilityLabel={muted ? 'Unmute microphone' : 'Mute microphone'}
+          >
+            <Ionicons name={muted ? 'mic-off' : 'mic'} size={14} color="#fff" />
+          </Pressable>
+        ) : null}
         <Pressable
           style={[styles.action, styles.reject, styles.actionCompact]}
           onPress={onHangup}
           disabled={busy}
           accessibilityLabel="Hang up"
         >
-          {busy ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="call" size={14} color="#fff" style={styles.hangupIcon} />}
+          {busy ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <Ionicons name="call" size={14} color="#fff" style={styles.hangupIcon} />
+          )}
         </Pressable>
       </View>
     </View>
@@ -1380,7 +1460,6 @@ export function PhoneIncomingDock({ collapsed = false, variant = 'sidebar' }) {
       // Error is shown below.
     }
   };
-
   const onAnswer = async (row) => {
     try {
       await answer(row);
@@ -1408,7 +1487,9 @@ export function PhoneIncomingDock({ collapsed = false, variant = 'sidebar' }) {
           onHangup={onHangup}
         />
       ) : null}
-      {incoming.map((call) => {
+      {incoming
+        .filter((call) => call.id !== activeCall?.id)
+        .map((call) => {
         const label = callPartyLabel(call, { formatPhone: formatPhoneNumber });
         return (
           <View
@@ -1419,6 +1500,7 @@ export function PhoneIncomingDock({ collapsed = false, variant = 'sidebar' }) {
             <View style={styles.dockCopy}>
               <Text style={styles.kicker} numberOfLines={1}>
                 {call.storeName || 'Incoming'}
+                {call.queueName ? ` · ${call.queueName}` : ''}
               </Text>
               {collapsed ? null : (
                 <Text style={styles.caller} numberOfLines={1}>
@@ -1430,7 +1512,9 @@ export function PhoneIncomingDock({ collapsed = false, variant = 'sidebar' }) {
           </View>
         );
       })}
-      {recentAnswered.map((row) => (
+      {recentAnswered
+        .filter((row) => row.callId !== activeCall?.id)
+        .map((row) => (
         <View key={row.id} style={[styles.dockRow, styles.dockRowAnswered, collapsed && styles.dockRowCollapsed]}>
           <View style={styles.dockCopy}>
             <Text style={styles.answeredKicker}>Answered</Text>
@@ -1545,19 +1629,12 @@ const styles = StyleSheet.create({
     color: '#FECACA',
     paddingHorizontal: 4,
   },
-  pulse: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: ACCENT,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   actions: {
     flexDirection: 'row',
     gap: 8,
   },
   actionsCompact: {
+    flexDirection: 'row',
     gap: 6,
     alignItems: 'center',
   },
