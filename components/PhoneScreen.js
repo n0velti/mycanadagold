@@ -1694,8 +1694,20 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
                   {activeCall.direction === 'Outbound' ? 'Ringing the other party…' : 'Connecting…'}
                 </Text>
               )}
+              {phone.audioState === 'blocked' ? (
+                <Text style={styles.inCallWarning}>The browser blocked the call audio. Tap the speaker to hear the caller.</Text>
+              ) : null}
             </View>
             <View style={styles.liveActions}>
+              {phone.audioState === 'blocked' ? (
+                <Pressable
+                  style={[styles.callBtn, styles.soundBtn]}
+                  onPress={() => phone.resumeAudio?.().catch?.(() => {})}
+                  accessibilityLabel="Enable sound for this call"
+                >
+                  <Ionicons name="volume-high" size={14} color="#1a1a1a" />
+                </Pressable>
+              ) : null}
               {inBrowserCall ? (
                 <Pressable
                   style={[styles.callBtn, styles.muteBtn, phone.muted && styles.muteBtnOn]}
@@ -3161,6 +3173,17 @@ const styles = StyleSheet.create({
   muteBtnOn: {
     backgroundColor: '#FEF3C7',
     borderColor: '#F59E0B',
+  },
+  soundBtn: {
+    backgroundColor: '#FCD34D',
+    borderWidth: 1,
+    borderColor: '#F59E0B',
+  },
+  inCallWarning: {
+    fontFamily,
+    fontSize: 12,
+    color: '#B45309',
+    marginTop: 2,
   },
   playBtn: {
     width: 32,
