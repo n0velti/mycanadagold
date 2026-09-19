@@ -41,7 +41,7 @@ import { listRingCentralAccounts, formatPhoneNumber } from '../lib/ringcentral';
 import { isStoreWatched, loadWatchStores, saveWatchStores } from '../lib/phoneWatch';
 import { startRingtone, stopRingtone, unlockPhoneAudio } from '../lib/phoneSound';
 import { storeKeyFromName } from '../lib/storeSettings';
-import { ensureMicrophone, isWebPhoneSupported, startWebPhone } from '../lib/webPhone';
+import { ensureMicrophone, isWebPhoneSupported, primeCallAudio, startWebPhone } from '../lib/webPhone';
 
 const SILENT_KEY = 'cgold.phone.silent';
 const SIP_CACHE_PREFIX = 'cgold.phone.sip.';
@@ -79,7 +79,18 @@ function writeSipCache(storeKey, value) {
 
 function isMicrophoneError(err) {
   const text = `${err?.name || ''} ${err?.message || ''}`;
-  return /NotAllowed|PermissionDenied|Permission denied|NotFound|NotReadable|getUserMedia|microphone|audio input/i.test(text);
+  return /NotAllowed|PermissionDenied|Permission denied|NotFound|NotReadable|Overconstrained|getUserMedia|microphone|audio input/i.test(
+    text,
+  );
+}
+
+/** How long Call Control may take to land the replacement INVITE in this tab. */
+const ANSWER_SETTLE_MS = 20_000;
+/** A call that ends this soon after answering almost always means no audio path. */
+const EARLY_DROP_MS = 12_000;
+
+function earlyDropMessage(seconds) {
+  return `The call ended ${seconds}s after answering. If the caller did not hang up, audio between this browser and RingCentral is not getting through: check the microphone is allowed for this site and that the network lets WebRTC (UDP) out.`;
 }
 
 /**
@@ -122,7 +133,7 @@ function sipCallee(value) {
   return digits;
 }
 
-function formatCallClock(ms) {
+export function formatCallClock(ms) {
   const total = Math.max(0, Math.floor(ms / 1000));
   const mins = Math.floor(total / 60);
   const secs = total % 60;
@@ -211,6 +222,10 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
   // Keys of calls this tab is in the middle of answering. Call Control cancels
   // the ringing INVITE and replaces it; that CANCEL must not close the live card.
   const answeringRef = useRef(new Map());
+  // Keys of calls this tab is hanging up itself (their SIP end is expected).
+  const hangingUpRef = useRef(new Set());
+  // Remote-audio state per call key: 'playing' | 'blocked' | 'none'.
+  const [audioState, setAudioState] = useState({});
   const requestId = useRef(0);
   const storesRequestId = useRef(0);
   const skipUntil = useRef(new Map());
@@ -652,8 +667,14 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     [updateCalls],
   );
 
+  const onSipAudio = useCallback((snapshot, state) => {
+    const key = callKey(snapshot);
+    setAudioState((current) => (current[key] === state ? current : { ...current, [key]: state }));
+  }, []);
+
   const onSipChange = useCallback(
     (snapshot, meta = {}) => {
+      let earlyDrop = 0;
       updateCalls((state) => {
         let next = state;
         let key = callKey(snapshot);
@@ -662,15 +683,30 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
         }
         if (snapshot.ended) {
           const existing = next.calls[key] || next.calls[meta.previousId || ''];
+          // Call Control's Answer cancels the ringing INVITE and sends a
+          // replacement with the same telephony session id. Ignore the end of
+          // a leg while we are mid-answer, or while the SDK still has another
+          // live leg under the same key (the replacement arrived first).
+          const stillLive = [...webPhonesRef.current.values()].some(
+            (handle) => handle.session(key) || (meta.previousId && handle.session(meta.previousId)),
+          );
           const holding =
-            answeringRef.current.has(key) ||
-            answeringRef.current.has(meta.previousId || '') ||
-            (existing && existing.web && isConnectedStatus(existing.status) && !snapshot.answered);
+            stillLive || answeringRef.current.has(key) || answeringRef.current.has(meta.previousId || '');
           if (holding) {
             return next;
           }
           const wasAnswered = snapshot.answered || (existing && isConnectedStatus(existing.status) && existing.web);
           const reason = wasAnswered ? 'hangup' : existing?.direction === 'Outbound' ? 'hangup' : 'missed';
+          if (
+            wasAnswered &&
+            existing?.web &&
+            existing?.answeredAt &&
+            existing.direction !== 'Outbound' &&
+            !hangingUpRef.current.has(key) &&
+            Date.now() - existing.answeredAt < EARLY_DROP_MS
+          ) {
+            earlyDrop = Math.max(1, Math.round((Date.now() - existing.answeredAt) / 1000));
+          }
           next = endCall(next, key, reason);
           if (meta.previousId) next = endCall(next, meta.previousId, reason);
           return next;
@@ -695,6 +731,17 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       if (snapshot.status === 'CallConnected' && snapshot.direction !== 'Outbound') {
         setError('');
         setMuted(false);
+      }
+      if (snapshot.ended) {
+        const key = callKey(snapshot);
+        setAudioState((current) => {
+          if (!(key in current) && !(meta.previousId in current)) return current;
+          const next = { ...current };
+          delete next[key];
+          if (meta.previousId) delete next[meta.previousId];
+          return next;
+        });
+        if (earlyDrop) setError(earlyDropMessage(earlyDrop));
       }
     },
     [updateCalls],
@@ -776,6 +823,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
             onInbound: onSipCall,
             onOutbound: onSipCall,
             onChange: onSipChange,
+            onAudio: onSipAudio,
             onStatus: (state, message) => {
               // Only the live registration for this store may report its state
               // (handles outlive this effect run, so `cancelled` is not checked).
@@ -822,7 +870,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       cancelled = true;
       window.removeEventListener('pagehide', onHide);
     };
-  }, [active, connectedKeyList, onSipCall, onSipChange, setStorePhoneStatus]);
+  }, [active, connectedKeyList, onSipAudio, onSipCall, onSipChange, setStorePhoneStatus]);
 
   useEffect(
     () => () => {
@@ -1030,6 +1078,8 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       perform(async () => {
         if (!call) throw new Error('That call is no longer available.');
         const key = callKey(call);
+        // Still inside the click: unlock the speaker path before any await.
+        primeCallAudio();
         answeringRef.current.set(key, Date.now());
         updateCalls((state) => markAnswered(state, key));
         setMuted(false);
@@ -1055,11 +1105,19 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
           try {
             await ensureMicrophone();
             await handle.answer(id);
-            updateCalls((state) => markAnswered(state, key));
             answeringRef.current.delete(key);
+            if (!handle.stateOf(id)) {
+              // The caller hung up (CANCEL) while we were answering.
+              updateCalls((state) => endCall(state, key, 'missed'));
+              const gone = new Error('The caller hung up before the call connected.');
+              gone.code = 'call_gone';
+              throw gone;
+            }
+            updateCalls((state) => markAnswered(state, key));
             setMuted(false);
             return { ok: true };
           } catch (err) {
+            if (err?.code === 'call_gone') throw err;
             if (isMicrophoneError(err) || isMicrophoneBlockedError(err) || err?.code === 'sip_timeout') {
               revert();
               throw new Error(answerErrorMessage(err));
@@ -1096,10 +1154,36 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
             answeredAt: Date.now(),
           }),
         );
+        if (!useBrowser) {
+          // Answered on the store's RingCentral device; nothing more lands here.
+          answeringRef.current.delete(key);
+          return { ok: true };
+        }
+        // The replacement INVITE normally lands within a second or two. If it
+        // never does, stop shielding the card and say where the call went.
+        setTimeout(() => {
+          if (!answeringRef.current.has(key)) return;
+          answeringRef.current.delete(key);
+          const { handle: sipHandle } = webHandleFor(call);
+          if (sipHandle) return;
+          updateCalls((state) => (state.calls[key] ? patchCall(state, key, { web: false }) : state));
+          setError(
+            'RingCentral accepted the answer but never sent the audio to this browser. The call may be on the store’s RingCentral app or phone; if nobody is on it, hang up and ask the caller to ring back.',
+          );
+        }, ANSWER_SETTLE_MS);
         return { ok: true };
       }),
     [perform, runControl, updateCalls, webHandleFor, webPhoneFallbackReason, webPhoneFor],
   );
+
+  /** Re-try playing the far end after the browser blocked autoplay (call from a click). */
+  const resumeAudio = useCallback(async () => {
+    const { handle, id } = webHandleFor(activeCall);
+    if (!handle || typeof handle.resumeAudio !== 'function') return 'none';
+    const result = await handle.resumeAudio(id);
+    if (activeCall) onSipAudio(activeCall, result);
+    return result;
+  }, [activeCall, onSipAudio, webHandleFor]);
 
   const reject = useCallback(
     (call) =>
@@ -1148,7 +1232,10 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
         if (!target) throw new Error('There is no call to hang up.');
         const key = callKey(target);
         const wasAnswered = isConnectedStatus(target.status);
+        answeringRef.current.delete(key);
+        hangingUpRef.current.add(key);
         const done = () => {
+          hangingUpRef.current.delete(key);
           updateCalls((state) => endCall(state, key, wasAnswered ? 'hangup' : 'rejected'));
           setMuted(false);
           return { ok: true };
@@ -1170,6 +1257,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
           return done();
         } catch (err) {
           if (err?.code === 'call_gone') return done();
+          hangingUpRef.current.delete(key);
           throw err;
         }
       }),
@@ -1257,6 +1345,9 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       muted,
       toggleMute,
       sendDtmf,
+      /** Remote audio for the active call: 'playing' | 'blocked' | 'none' | '' */
+      audioState: activeCall ? audioState[activeCall.id] || '' : '',
+      resumeAudio,
       webPhoneStatus,
       canDialInBrowser,
       inboxByStore,
@@ -1287,6 +1378,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       allLiveCalls,
       answer,
       applyStoreAccount,
+      audioState,
       busy,
       canDialInBrowser,
       connectedStores,
@@ -1304,6 +1396,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       reject,
       reloadStores,
       removeStoreAccount,
+      resumeAudio,
       ringOut,
       selectedStoreKey,
       sendDtmf,
@@ -1395,10 +1488,11 @@ export function activeCallKicker(call) {
   return 'On call';
 }
 
-function ActiveCallRow({ call, collapsed, busy, muted, onMute, onHangup }) {
+function ActiveCallRow({ call, collapsed, busy, muted, audioState, onMute, onHangup, onEnableSound }) {
   const label = callPartyLabel(call, { formatPhone: formatPhoneNumber });
   const kicker = activeCallKicker(call);
   const connected = isConnectedStatus(call.status);
+  const soundBlocked = audioState === 'blocked';
   return (
     <View
       style={[styles.dockRow, styles.dockRowActive, collapsed && styles.dockRowCollapsed]}
@@ -1420,6 +1514,15 @@ function ActiveCallRow({ call, collapsed, busy, muted, onMute, onHangup }) {
         )}
       </View>
       <View style={styles.actionsCompact}>
+        {soundBlocked ? (
+          <Pressable
+            style={[styles.action, styles.actionCompact, styles.sound]}
+            onPress={onEnableSound}
+            accessibilityLabel="Enable sound for this call"
+          >
+            <Ionicons name="volume-high" size={14} color="#1a1a1a" />
+          </Pressable>
+        ) : null}
         {call.web ? (
           <Pressable
             style={[styles.action, styles.actionCompact, muted ? styles.muteOn : styles.mute]}
@@ -1448,8 +1551,20 @@ function ActiveCallRow({ call, collapsed, busy, muted, onMute, onHangup }) {
 }
 
 export function PhoneIncomingDock({ collapsed = false, variant = 'sidebar' }) {
-  const { incoming, recentAnswered, activeCall, muted, toggleMute, busy, error, answer, reject, hangup } =
-    usePhoneCalls();
+  const {
+    incoming,
+    recentAnswered,
+    activeCall,
+    muted,
+    toggleMute,
+    audioState,
+    resumeAudio,
+    busy,
+    error,
+    answer,
+    reject,
+    hangup,
+  } = usePhoneCalls();
   if (!incoming.length && !recentAnswered.length && !activeCall) return null;
 
   const banner = variant === 'banner';
@@ -1459,6 +1574,9 @@ export function PhoneIncomingDock({ collapsed = false, variant = 'sidebar' }) {
     } catch {
       // Error is shown below.
     }
+  };
+  const onEnableSound = () => {
+    resumeAudio().catch(() => {});
   };
   const onAnswer = async (row) => {
     try {
@@ -1483,9 +1601,16 @@ export function PhoneIncomingDock({ collapsed = false, variant = 'sidebar' }) {
           collapsed={collapsed}
           busy={busy}
           muted={muted}
+          audioState={audioState}
           onMute={toggleMute}
           onHangup={onHangup}
+          onEnableSound={onEnableSound}
         />
+      ) : null}
+      {activeCall && audioState === 'blocked' ? (
+        <Text style={styles.error} numberOfLines={2}>
+          The browser blocked the call audio. Tap the speaker button to hear the caller.
+        </Text>
       ) : null}
       {incoming
         .filter((call) => call.id !== activeCall?.id)
@@ -1587,6 +1712,9 @@ const styles = StyleSheet.create({
   },
   muteOn: {
     backgroundColor: '#B45309',
+  },
+  sound: {
+    backgroundColor: '#FCD34D',
   },
   hangupIcon: {
     transform: [{ rotate: '135deg' }],

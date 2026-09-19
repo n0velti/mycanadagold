@@ -31,7 +31,8 @@ import { callPartyLabel, callsForStore, inboundCallRatio, isPhoneRateLimitMessag
 import { formatPhoneNumber } from '../lib/ringcentral';
 import { storeKeyFromName } from '../lib/storeSettings';
 import { useIsMobile } from '../lib/mobileUi';
-import { usePhoneCalls } from './PhoneCallProvider';
+import { activeCallKicker, formatCallClock, usePhoneCalls } from './PhoneCallProvider';
+import { isConnectedStatus } from '../lib/callState';
 import snapshot from '../lib/websitePriceSnapshot.json';
 import { fetchWebsitePrices, reconcileCatalog } from '../lib/websitePrices';
 import TxnCashBreakdownModal, { TxnCashIcon } from './TxnCashBreakdownModal';
@@ -976,12 +977,75 @@ function PhoneIncomingRow({ call, busy, onAnswer, onReject, last }) {
   );
 }
 
+function PhoneActiveRow({ call, busy, muted, audioState, onMute, onHangup, onEnableSound, last }) {
+  const label = callPartyLabel(call, { formatPhone: formatPhoneNumber });
+  const connected = isConnectedStatus(call.status);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!connected) return undefined;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [connected]);
+  const since = call.answeredAt || Date.parse(call.startTime) || now;
+  return (
+    <View style={[styles.phoneLiveRow, styles.phoneActiveRow, last && styles.rowLast]}>
+      <View style={styles.rowCopy}>
+        <Text style={styles.phoneLiveKicker}>
+          {activeCallKicker(call)}
+          {connected ? ` · ${formatCallClock(now - since)}` : ' · Connecting…'}
+        </Text>
+        <Text style={styles.rowTitle} numberOfLines={1}>
+          {label}
+        </Text>
+        {audioState === 'blocked' ? (
+          <Text style={styles.phoneError}>The browser blocked the call audio. Tap Sound to hear the caller.</Text>
+        ) : null}
+      </View>
+      <View style={styles.phoneLiveActions}>
+        {audioState === 'blocked' ? (
+          <Pressable
+            onPress={onEnableSound}
+            style={[styles.phoneLiveBtn, styles.phoneSoundBtn]}
+            accessibilityRole="button"
+            accessibilityLabel="Enable sound for this call"
+          >
+            <Text style={[styles.phoneLiveBtnText, styles.phoneSoundBtnText]}>Sound</Text>
+          </Pressable>
+        ) : call.web ? (
+          <Pressable
+            onPress={onMute}
+            disabled={busy || !connected}
+            style={[styles.phoneLiveBtn, styles.phoneMuteBtn, muted && styles.phoneMuteBtnOn]}
+            accessibilityRole="button"
+            accessibilityLabel={muted ? 'Unmute microphone' : 'Mute microphone'}
+          >
+            <Text style={[styles.phoneLiveBtnText, styles.phoneMuteBtnText]}>{muted ? 'Unmute' : 'Mute'}</Text>
+          </Pressable>
+        ) : null}
+        <Pressable
+          onPress={onHangup}
+          disabled={busy}
+          style={[styles.phoneLiveBtn, styles.phoneRejectBtn]}
+          accessibilityRole="button"
+          accessibilityLabel="Hang up"
+        >
+          {busy ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.phoneLiveBtnText}>Hang up</Text>}
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
 function PhoneSnapshotBody({ storeName, startKey, endKey, periodLabel }) {
   const phone = usePhoneCalls();
   const storeKey = storeKeyFromName(storeName);
+  const activeCall = phone.activeCall && phone.activeCall.storeKey === storeKey ? phone.activeCall : null;
   const incoming = useMemo(
-    () => (phone.incoming || []).filter((call) => call.storeKey === storeKey),
-    [phone.incoming, storeKey],
+    () =>
+      (phone.incoming || []).filter(
+        (call) => call.storeKey === storeKey && call.id !== phone.activeCall?.id,
+      ),
+    [phone.activeCall?.id, phone.incoming, storeKey],
   );
   const recentAnswered = useMemo(
     () => (phone.recentAnswered || []).filter((row) => row.storeKey === storeKey),
@@ -1008,10 +1072,32 @@ function PhoneSnapshotBody({ storeName, startKey, endKey, periodLabel }) {
       // Keep the live row so they can retry.
     }
   };
+  const hangUp = async () => {
+    try {
+      await phone.hangup(activeCall);
+    } catch {
+      // Error is shown from phone context.
+    }
+  };
+  const enableSound = () => {
+    phone.resumeAudio?.().catch?.(() => {});
+  };
 
-  if (incoming.length) {
+  if (incoming.length || activeCall) {
     return (
       <>
+        {activeCall ? (
+          <PhoneActiveRow
+            call={activeCall}
+            busy={phone.busy}
+            muted={phone.muted}
+            audioState={phone.audioState}
+            onMute={phone.toggleMute}
+            onHangup={hangUp}
+            onEnableSound={enableSound}
+            last={!incoming.length && !ratio.total && !phoneError}
+          />
+        ) : null}
         {incoming.map((call, index) => (
           <PhoneIncomingRow
             key={`${call.storeKey}-${call.id}`}
@@ -2754,6 +2840,24 @@ const styles = StyleSheet.create({
   },
   phoneAnswerBtn: {
     backgroundColor: '#15803D',
+  },
+  phoneActiveRow: {
+    backgroundColor: '#F0FDF4',
+  },
+  phoneMuteBtn: {
+    backgroundColor: '#E5E7EB',
+  },
+  phoneMuteBtnOn: {
+    backgroundColor: '#FDE68A',
+  },
+  phoneMuteBtnText: {
+    color: '#1a1a1a',
+  },
+  phoneSoundBtn: {
+    backgroundColor: '#FCD34D',
+  },
+  phoneSoundBtnText: {
+    color: '#1a1a1a',
   },
   phoneLiveBtnText: {
     fontFamily,
