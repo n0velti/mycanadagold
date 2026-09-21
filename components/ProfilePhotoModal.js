@@ -16,6 +16,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { AvatarRing } from '../lib/clockedIn';
 import {
   avatarColorForId,
   contactName,
@@ -49,6 +50,7 @@ function MiniAvatar({ uri, name, id, size = 32 }) {
   }, [uri]);
 
   return (
+    <AvatarRing name={name} size={size}>
     <View
       style={{
         width: size,
@@ -72,6 +74,7 @@ function MiniAvatar({ uri, name, id, size = 32 }) {
         </Text>
       )}
     </View>
+    </AvatarRing>
   );
 }
 

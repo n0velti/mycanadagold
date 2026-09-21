@@ -15,6 +15,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { AvatarRing } from '../lib/clockedIn';
 import {
   addDmGroupMembers,
   avatarColorForId,
@@ -104,6 +105,7 @@ function PersonAvatar({ person, size = 40, showOnline = false }) {
 
   return (
     <View style={{ width: size, height: size }}>
+      <AvatarRing name={name} size={size}>
       <View
         style={[
           styles.avatar,
@@ -127,6 +129,7 @@ function PersonAvatar({ person, size = 40, showOnline = false }) {
           </Text>
         )}
       </View>
+      </AvatarRing>
       {showOnline && person?.isOnline ? (
         <View
           style={[

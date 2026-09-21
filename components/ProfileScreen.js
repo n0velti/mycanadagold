@@ -25,6 +25,7 @@ import ProfileLocationPicker from './ProfileLocationPicker';
 import ProfileTeamPicker from './ProfileTeamPicker';
 import ProfileNotesTable from './ProfileNotesTable';
 import { usePhoneCalls } from './PhoneCallProvider';
+import { AvatarRing } from '../lib/clockedIn';
 
 const fontFamily = 'Sohne';
 const BLUE = '#007AFF';
@@ -77,6 +78,7 @@ function ProfileAvatar({ uri, name, size = 24, style }) {
   const showImage = Boolean(uri) && !failed;
 
   return (
+    <AvatarRing name={name} size={size}>
     <View
       style={[
         {
@@ -101,7 +103,7 @@ function ProfileAvatar({ uri, name, size = 24, style }) {
         <Text
           style={{
             fontFamily,
-            fontSize: Math.max(10, Math.round(size * 0.36)),
+            fontSize: Math.max(10, Math.round(size * 0.38)),
             fontWeight: '600',
             color: '#1d1d1f',
           }}
@@ -112,6 +114,7 @@ function ProfileAvatar({ uri, name, size = 24, style }) {
         <Ionicons name="person" size={Math.round(size * 0.5)} color="#8e8e93" />
       )}
     </View>
+    </AvatarRing>
   );
 }
 
