@@ -140,7 +140,7 @@ export function formatCallClock(ms) {
   return `${mins}:${String(secs).padStart(2, '0')}`;
 }
 
-function liveCallKey(call) {
+export function liveCallKey(call) {
   if (!call?.storeKey) return '';
   return `${call.storeKey}:${callKey(call)}`;
 }
@@ -152,6 +152,9 @@ const PhoneCallContext = createContext({
   setSelectedStoreKey: () => {},
   liveCalls: [],
   incoming: [],
+  ignoredCallKeys: {},
+  ignoreCall: () => {},
+  isCallIgnored: () => false,
   recentAnswered: [],
   activeCall: null,
   muted: false,
@@ -892,6 +895,29 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     return ringing;
   }, [callState, watchPrefs]);
 
+  // Calls the user swiped away on this device: still ringing elsewhere and still
+  // listed on the Phone screen, but no bar, ringtone or vibration here.
+  const [ignoredCallKeys, setIgnoredCallKeys] = useState({});
+  const ignoreCall = useCallback((call) => {
+    const key = liveCallKey(call);
+    if (!key) return;
+    setIgnoredCallKeys((current) => (current[key] ? current : { ...current, [key]: Date.now() }));
+  }, []);
+  const isCallIgnored = useCallback((call) => Boolean(ignoredCallKeys[liveCallKey(call)]), [ignoredCallKeys]);
+  useEffect(() => {
+    // Forget an ignored call once it stops ringing so a later call from the
+    // same session (rare, but possible) rings again.
+    const ringingKeys = new Set(incoming.map(liveCallKey));
+    setIgnoredCallKeys((current) => {
+      const kept = Object.fromEntries(Object.entries(current).filter(([key]) => ringingKeys.has(key)));
+      return Object.keys(kept).length === Object.keys(current).length ? current : kept;
+    });
+  }, [incoming]);
+  const audibleIncoming = useMemo(
+    () => incoming.filter((call) => !ignoredCallKeys[liveCallKey(call)]),
+    [ignoredCallKeys, incoming],
+  );
+
   const activeCall = useMemo(() => {
     const mine = browserCalls(callState);
     if (!mine.length) return null;
@@ -999,15 +1025,16 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     return () => clearTimeout(timer);
   }, [recentAnswered]);
 
-  // Ringtone: only for verified inbound calls, and never over a live conversation.
+  // Ringtone: only for verified inbound calls the user has not swiped away, and
+  // never over a live conversation.
   useEffect(() => {
-    if (!active || silent || incoming.length === 0 || activeCall) {
+    if (!active || silent || audibleIncoming.length === 0 || activeCall) {
       stopRingtone();
       return undefined;
     }
     startRingtone();
     return () => stopRingtone();
-  }, [active, activeCall, incoming.length, silent]);
+  }, [active, activeCall, audibleIncoming.length, silent]);
 
   useEffect(() => () => stopRingtone(), []);
 
@@ -1093,15 +1120,19 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
           });
         };
 
-        const { handle, id } = webHandleFor(call);
-        const sipState = handle ? handle.stateOf(id) : '';
-
-        if (sipState === 'answered') {
-          answeringRef.current.delete(key);
-          return { ok: true };
-        }
-
-        if (sipState === 'ringing' || sipState === 'init') {
+        /**
+         * The SDK's recommended answer: reply to the INVITE this tab received
+         * (`inboundCallSession.answer()`). Returns the result, or null when the
+         * SIP leg here cannot be used and Call Control should pull the call in.
+         */
+        const answerSipLeg = async () => {
+          const { handle, id } = webHandleFor(call);
+          const sipState = handle ? handle.stateOf(id) : '';
+          if (sipState === 'answered') {
+            answeringRef.current.delete(key);
+            return { ok: true };
+          }
+          if (sipState !== 'ringing' && sipState !== 'init') return null;
           try {
             await ensureMicrophone();
             await handle.answer(id);
@@ -1122,13 +1153,24 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
               revert();
               throw new Error(answerErrorMessage(err));
             }
-            // No session / SIP rejected: Call Control can still park the audio
-            // on this browser's device via a replacement auto-answered INVITE.
+            // sip_offline (socket died under the INVITE) or SIP rejected: Call
+            // Control can still land the audio here via a replacement INVITE.
+            return null;
           }
-        }
+        };
 
+        const direct = await answerSipLeg();
+        if (direct) return direct;
+
+        // The INVITE never reached this tab, or reached it over a socket that
+        // has since died: on a phone the OS suspends the page the moment the
+        // screen locks, the SIP registration lapses, and presence is the only
+        // thing that still knows the call is ringing. Call Control's Answer
+        // moves the party to a device id: RingCentral cancels the ringing leg
+        // and sends a new INVITE with "Alert-Info: Auto Answer" to that device.
+        // That only works if the device is registered *now*, so prove it first.
         const line = webPhoneFor(call.storeKey);
-        const useBrowser = line.ready && Boolean(line.deviceId);
+        const useBrowser = Platform.OS === 'web' && Boolean(line.handle && line.deviceId);
         if (useBrowser) {
           try {
             await ensureMicrophone();
@@ -1136,6 +1178,17 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
             revert();
             throw new Error(answerErrorMessage(err));
           }
+          try {
+            await line.handle.ensureConnected({ verify: true });
+          } catch {
+            revert();
+            throw new Error(
+              'This phone lost its connection to RingCentral and could not reconnect. Check the network and press Answer again, or pick up on the RingCentral app.',
+            );
+          }
+          // Re-registering can deliver the INVITE after all; prefer answering it.
+          const late = await answerSipLeg();
+          if (late) return late;
         }
         try {
           await runControl('answer', call, { deviceId: useBrowser ? line.deviceId : '' });
@@ -1340,6 +1393,9 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       setSelectedStoreKey,
       liveCalls: allLiveCalls,
       incoming,
+      ignoredCallKeys,
+      ignoreCall,
+      isCallIgnored,
       recentAnswered,
       activeCall,
       muted,
@@ -1385,9 +1441,12 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       dial,
       error,
       hangup,
+      ignoreCall,
+      ignoredCallKeys,
       inboxByStore,
       inboxFetching,
       incoming,
+      isCallIgnored,
       mergedCallsByStore,
       muted,
       recentAnswered,

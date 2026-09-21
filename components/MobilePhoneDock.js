@@ -3,7 +3,7 @@ import {
   ActivityIndicator,
   Animated,
   Easing,
-  Modal,
+  PanResponder,
   Platform,
   Pressable,
   StyleSheet,
@@ -11,23 +11,22 @@ import {
   Vibration,
   View,
 } from 'react-native';
-import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { isConnectedStatus } from '../lib/callState';
-import { mobileSafeBottom, mobileSafeTop } from '../lib/mobileUi';
 import { callPartyLabel } from '../lib/phoneCalls';
 import { formatPhoneNumber } from '../lib/ringcentral';
-import { activeCallKicker, formatCallClock, usePhoneCalls } from './PhoneCallProvider';
+import { activeCallKicker, formatCallClock, liveCallKey, usePhoneCalls } from './PhoneCallProvider';
 
 const fontFamily = 'Sohne';
-const titleFontFamily = 'SohneLeicht';
 const GREEN = '#34C759';
 const RED = '#FF3B30';
-const SHEET_BG = '#0F2E1D';
-const SHEET_BG_DEEP = '#081C11';
-const ANSWER_HINT_NATIVE = 'Picks up on the store’s RingCentral phone.';
+const BAR_BG = '#0F2E1D';
+const DOCK_BG = '#081C11';
+const ANSWER_HINT_NATIVE = 'Answer picks up on the store’s RingCentral phone.';
 /** Vibrate 0.7s, pause 0.7s, repeat while ringing (iOS ignores durations but keeps the cadence). */
 const VIBRATE_PATTERN = [0, 700, 700];
+/** Drag the bar down this far to swipe it away. */
+const DISMISS_DISTANCE = 44;
 
 function initialsFromName(name) {
   const parts = String(name || '')
@@ -75,12 +74,12 @@ function PulseRing({ delay }) {
     loop.start();
     return () => loop.stop();
   }, [delay, progress]);
-  const scale = progress.interpolate({ inputRange: [0, 1], outputRange: [1, 1.9] });
+  const scale = progress.interpolate({ inputRange: [0, 1], outputRange: [1, 1.7] });
   const opacity = progress.interpolate({ inputRange: [0, 0.15, 1], outputRange: [0, 0.45, 0] });
   return <Animated.View pointerEvents="none" style={[styles.pulseRing, { opacity, transform: [{ scale }] }]} />;
 }
 
-function CallerAvatar({ name, size = 96 }) {
+function CallerAvatar({ name, size = 44 }) {
   const initials = initialsFromName(name);
   const radius = size / 2;
   return (
@@ -91,59 +90,33 @@ function CallerAvatar({ name, size = 96 }) {
         {initials ? (
           <Text style={[styles.avatarInitials, { fontSize: Math.round(size * 0.36) }]}>{initials}</Text>
         ) : (
-          <Ionicons name="person" size={Math.round(size * 0.46)} color="#DCFCE7" />
+          <Ionicons name="person" size={Math.round(size * 0.5)} color="#DCFCE7" />
         )}
       </View>
     </View>
   );
 }
 
-function RoundAction({ icon, label, color, onPress, disabled, busy, rotate, accessibilityLabel }) {
-  return (
-    <View style={styles.roundActionWrap}>
-      <Pressable
-        onPress={onPress}
-        disabled={disabled}
-        accessibilityRole="button"
-        accessibilityLabel={accessibilityLabel || label}
-        style={({ pressed }) => [
-          styles.roundAction,
-          { backgroundColor: color },
-          pressed && styles.roundActionPressed,
-          disabled && !busy && styles.roundActionDisabled,
-        ]}
-      >
-        {busy ? (
-          <ActivityIndicator color="#fff" />
-        ) : (
-          <Ionicons name={icon} size={34} color="#fff" style={rotate ? styles.hangupIcon : null} />
-        )}
-      </Pressable>
-      <Text style={styles.roundActionLabel}>{label}</Text>
-    </View>
-  );
-}
-
-function PillAction({ icon, label, color, onPress, disabled, busy, rotate, accessibilityLabel }) {
+function RoundButton({ icon, color, onPress, disabled, busy, rotate, accessibilityLabel, size = 48 }) {
   return (
     <Pressable
       onPress={onPress}
       disabled={disabled}
+      hitSlop={6}
       accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel || label}
+      accessibilityLabel={accessibilityLabel}
       style={({ pressed }) => [
-        styles.pill,
-        { backgroundColor: color },
-        pressed && styles.roundActionPressed,
-        disabled && !busy && styles.roundActionDisabled,
+        styles.roundBtn,
+        { width: size, height: size, borderRadius: size / 2, backgroundColor: color },
+        pressed && styles.pressed,
+        disabled && !busy && styles.disabled,
       ]}
     >
       {busy ? (
         <ActivityIndicator size="small" color="#fff" />
       ) : (
-        <Ionicons name={icon} size={18} color="#fff" style={rotate ? styles.hangupIcon : null} />
+        <Ionicons name={icon} size={Math.round(size * 0.5)} color="#fff" style={rotate ? styles.hangupIcon : null} />
       )}
-      <Text style={styles.pillText}>{label}</Text>
     </Pressable>
   );
 }
@@ -171,133 +144,115 @@ function useRingVibration(on) {
 }
 
 /**
- * Full-screen incoming call, modelled on the native phone UI: who is calling
- * and for which store, one big green Answer and one big red Decline.
+ * One ringing call as a bar above the tab bar. The rest of the app stays
+ * usable: Answer and Decline are right there, and dragging the bar down (or
+ * tapping the chevron) swipes it away without touching the call.
  */
-function IncomingCallSheet({ calls, busy, error, silent, onSilent, onAnswer, onReject }) {
-  const primary = calls[0];
-  const others = calls.slice(1);
-  const { title, subtitle } = callerLines(primary);
-  const name = primary.direction !== 'Outbound' ? primary.fromName : primary.toName;
+function IncomingCallBar({ call, busy, error, showHint, onAnswer, onReject, onIgnore }) {
+  const { title, subtitle } = callerLines(call);
+  const name = call.direction !== 'Outbound' ? call.fromName : call.toName;
+  const slide = useRef(new Animated.Value(80)).current;
+  const drag = useRef(new Animated.Value(0)).current;
+  const dismissed = useRef(false);
+
+  useEffect(() => {
+    Animated.spring(slide, { toValue: 0, damping: 18, stiffness: 180, mass: 0.8, useNativeDriver: true }).start();
+  }, [slide]);
+
+  const dismiss = () => {
+    if (dismissed.current) return;
+    dismissed.current = true;
+    Animated.timing(drag, { toValue: 160, duration: 180, easing: Easing.in(Easing.quad), useNativeDriver: true }).start(
+      () => onIgnore(call),
+    );
+  };
+
+  const pan = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_, gesture) =>
+        Math.abs(gesture.dy) > 6 && Math.abs(gesture.dy) > Math.abs(gesture.dx),
+      onPanResponderMove: (_, gesture) => {
+        drag.setValue(Math.max(0, gesture.dy));
+      },
+      onPanResponderRelease: (_, gesture) => {
+        if (gesture.dy > DISMISS_DISTANCE || gesture.vy > 0.8) {
+          dismiss();
+          return;
+        }
+        Animated.spring(drag, { toValue: 0, damping: 20, stiffness: 220, useNativeDriver: true }).start();
+      },
+      onPanResponderTerminate: () => {
+        Animated.spring(drag, { toValue: 0, damping: 20, stiffness: 220, useNativeDriver: true }).start();
+      },
+    }),
+  ).current;
+
+  const opacity = drag.interpolate({ inputRange: [0, 120], outputRange: [1, 0.2], extrapolate: 'clamp' });
 
   return (
-    <Modal
-      visible
-      animationType="slide"
-      presentationStyle="fullScreen"
-      statusBarTranslucent
-      onRequestClose={() => {}}
+    <Animated.View
+      {...pan.panHandlers}
+      style={[styles.incomingBar, { opacity, transform: [{ translateY: Animated.add(slide, drag) }] }]}
+      accessibilityLabel={`Incoming call from ${title} at ${call.storeName || 'store'}`}
     >
-      <StatusBar style="light" />
-      <View style={styles.sheet}>
-        <View style={[styles.sheetGlow, styles.sheetGlowOuter]} pointerEvents="none" />
-        <View style={[styles.sheetGlow, styles.sheetGlowInner]} pointerEvents="none" />
-        <View
-          style={[styles.sheetTop, { paddingTop: mobileSafeTop() + 8 }]}
-          {...(Platform.OS === 'web' ? { className: 'cgold-mobile-sheet-top' } : null)}
-        >
-          <View style={styles.sheetTopCopy}>
-            <View style={styles.kickerRow}>
-              <View style={styles.liveDot} />
-              <Text style={styles.kicker}>Incoming call</Text>
-            </View>
-            <Text style={styles.storeLine} numberOfLines={1}>
-              {storeLine(primary)}
+      <View style={styles.grabberRow}>
+        <View style={styles.grabber} />
+      </View>
+      <View style={styles.incomingRow}>
+        <CallerAvatar name={name} />
+        <View style={styles.incomingCopy}>
+          <View style={styles.kickerRow}>
+            <View style={styles.liveDot} />
+            <Text style={styles.kicker} numberOfLines={1}>
+              {storeLine(call)}
             </Text>
           </View>
-          <Pressable
-            onPress={onSilent}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel={silent ? 'Turn ringtone on' : 'Silence ringtone'}
-            style={({ pressed }) => [styles.silence, pressed && styles.roundActionPressed]}
-          >
-            <Ionicons name={silent ? 'volume-mute' : 'volume-high'} size={20} color="#fff" />
-          </Pressable>
-        </View>
-
-        <View style={styles.sheetBody}>
-          <CallerAvatar name={name} />
-          <Text style={styles.callerTitle} numberOfLines={3} adjustsFontSizeToFit minimumFontScale={0.7}>
+          <Text style={styles.incomingTitle} numberOfLines={1}>
             {title}
           </Text>
           {subtitle ? (
-            <Text style={styles.callerSubtitle} numberOfLines={1}>
+            <Text style={styles.incomingSubtitle} numberOfLines={1}>
               {subtitle}
             </Text>
           ) : null}
         </View>
-
-        {others.length ? (
-          <View style={styles.others}>
-            <Text style={styles.othersKicker}>
-              {others.length === 1 ? 'Also ringing' : `${others.length} more ringing`}
-            </Text>
-            {others.map((call) => {
-              const lines = callerLines(call);
-              return (
-                <View key={`${call.storeKey}-${call.id}`} style={styles.otherRow}>
-                  <View style={styles.otherCopy}>
-                    <Text style={styles.otherTitle} numberOfLines={1}>
-                      {lines.title}
-                    </Text>
-                    <Text style={styles.otherMeta} numberOfLines={1}>
-                      {[lines.subtitle, storeLine(call)].filter(Boolean).join(' · ')}
-                    </Text>
-                  </View>
-                  <Pressable
-                    onPress={() => onReject(call)}
-                    disabled={busy}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Decline call from ${lines.title}`}
-                    style={({ pressed }) => [styles.otherBtn, { backgroundColor: RED }, pressed && styles.roundActionPressed]}
-                  >
-                    <Ionicons name="close" size={20} color="#fff" />
-                  </Pressable>
-                  <Pressable
-                    onPress={() => onAnswer(call)}
-                    disabled={busy}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Answer call from ${lines.title}`}
-                    style={({ pressed }) => [styles.otherBtn, { backgroundColor: GREEN }, pressed && styles.roundActionPressed]}
-                  >
-                    <Ionicons name="call" size={20} color="#fff" />
-                  </Pressable>
-                </View>
-              );
-            })}
-          </View>
-        ) : null}
-
-        <View style={[styles.sheetActions, { paddingBottom: mobileSafeBottom() + 28 }]}>
-          {error ? (
-            <Text style={styles.sheetError} numberOfLines={3}>
-              {error}
-            </Text>
-          ) : null}
-          <View style={styles.roundActions}>
-            <RoundAction
-              icon="close"
-              label="Decline"
-              color={RED}
-              disabled={busy}
-              onPress={() => onReject(primary)}
-              accessibilityLabel={`Decline call from ${title}`}
-            />
-            <RoundAction
-              icon="call"
-              label="Answer"
-              color={GREEN}
-              disabled={busy}
-              busy={busy}
-              onPress={() => onAnswer(primary)}
-              accessibilityLabel={`Answer call from ${title}`}
-            />
-          </View>
-          {Platform.OS !== 'web' ? <Text style={styles.answerHint}>{ANSWER_HINT_NATIVE}</Text> : null}
+        <View style={styles.incomingActions}>
+          <RoundButton
+            icon="close"
+            color={RED}
+            disabled={busy}
+            onPress={() => onReject(call)}
+            accessibilityLabel={`Decline call from ${title}`}
+          />
+          <RoundButton
+            icon="call"
+            color={GREEN}
+            disabled={busy}
+            busy={busy}
+            onPress={() => onAnswer(call)}
+            accessibilityLabel={`Answer call from ${title}`}
+          />
         </View>
+        <Pressable
+          onPress={dismiss}
+          hitSlop={10}
+          accessibilityRole="button"
+          accessibilityLabel="Hide this call"
+          style={({ pressed }) => [styles.hideBtn, pressed && styles.pressed]}
+        >
+          <Ionicons name="chevron-down" size={18} color="rgba(255,255,255,0.7)" />
+        </Pressable>
       </View>
-    </Modal>
+      {error ? (
+        <Text style={styles.barError} numberOfLines={3}>
+          {error}
+        </Text>
+      ) : showHint ? (
+        <Text style={styles.barHint} numberOfLines={1}>
+          {ANSWER_HINT_NATIVE}
+        </Text>
+      ) : null}
+    </Animated.View>
   );
 }
 
@@ -313,7 +268,7 @@ function ActiveCallBar({ call, busy, muted, audioState, onMute, onHangup, onEnab
       <View style={styles.activeCopy}>
         <View style={styles.kickerRow}>
           <View style={[styles.liveDot, connected && styles.liveDotConnected]} />
-          <Text style={styles.barKicker} numberOfLines={1}>
+          <Text style={styles.kicker} numberOfLines={1}>
             {kicker} · {call.storeName || 'Store'}
           </Text>
           {connected && call.answeredAt ? <CallClock since={call.answeredAt} style={styles.barClock} /> : null}
@@ -329,82 +284,50 @@ function ActiveCallBar({ call, busy, muted, audioState, onMute, onHangup, onEnab
       </View>
       <View style={styles.barActions}>
         {soundBlocked ? (
-          <Pressable
+          <RoundButton
+            icon="volume-high"
+            color="#FCD34D"
+            size={44}
             onPress={onEnableSound}
-            accessibilityRole="button"
             accessibilityLabel="Enable sound for this call"
-            style={({ pressed }) => [styles.barBtn, styles.barBtnSound, pressed && styles.roundActionPressed]}
-          >
-            <Ionicons name="volume-high" size={22} color="#1a1a1a" />
-          </Pressable>
+          />
         ) : null}
         {canMute ? (
-          <Pressable
-            onPress={onMute}
+          <RoundButton
+            icon={muted ? 'mic-off' : 'mic'}
+            color={muted ? '#B45309' : 'rgba(255,255,255,0.2)'}
+            size={44}
             disabled={busy || !connected}
-            accessibilityRole="button"
+            onPress={onMute}
             accessibilityLabel={muted ? 'Unmute microphone' : 'Mute microphone'}
-            style={({ pressed }) => [
-              styles.barBtn,
-              muted ? styles.barBtnMuteOn : styles.barBtnMute,
-              pressed && styles.roundActionPressed,
-            ]}
-          >
-            <Ionicons name={muted ? 'mic-off' : 'mic'} size={22} color="#fff" />
-          </Pressable>
+          />
         ) : null}
-        <Pressable
-          onPress={onHangup}
+        <RoundButton
+          icon="call"
+          color={RED}
+          size={44}
+          rotate
           disabled={busy}
-          accessibilityRole="button"
+          busy={busy}
+          onPress={onHangup}
           accessibilityLabel="Hang up"
-          style={({ pressed }) => [styles.barBtn, { backgroundColor: RED }, pressed && styles.roundActionPressed]}
-        >
-          {busy ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <Ionicons name="call" size={22} color="#fff" style={styles.hangupIcon} />
-          )}
-        </Pressable>
-      </View>
-    </View>
-  );
-}
-
-/** A second call ringing while one is live: compact, but still thumb-sized. */
-function WaitingCallRow({ call, busy, onAnswer, onReject }) {
-  const { title, subtitle } = callerLines(call);
-  return (
-    <View style={styles.waitingRow} accessibilityLabel={`Incoming call from ${title} at ${call.storeName || 'store'}`}>
-      <View style={styles.activeCopy}>
-        <Text style={styles.barKicker} numberOfLines={1}>
-          Ringing · {storeLine(call)}
-        </Text>
-        <Text style={styles.barTitle} numberOfLines={1}>
-          {title}
-        </Text>
-        {subtitle ? (
-          <Text style={styles.barSubtitle} numberOfLines={1}>
-            {subtitle}
-          </Text>
-        ) : null}
-      </View>
-      <View style={styles.barActions}>
-        <PillAction icon="close" label="Decline" color={RED} disabled={busy} onPress={() => onReject(call)} />
-        <PillAction icon="call" label="Answer" color={GREEN} disabled={busy} busy={busy} onPress={() => onAnswer(call)} />
+        />
       </View>
     </View>
   );
 }
 
 /**
- * Phone UI for the mobile shell. A ringing call with nothing else live takes
- * the whole screen; a live call (and anything ringing over it) sits in a bar
- * above the tab bar.
+ * Phone UI for the mobile shell: everything sits in a dock above the tab bar,
+ * so a ringing call never takes over the screen. Ringing calls are bars with
+ * Answer / Decline that can be swiped away; a live call is a bar with mute and
+ * hang up.
  */
 export default function MobilePhoneDock() {
   const {
     incoming,
+    ignoredCallKeys,
+    ignoreCall,
     recentAnswered,
     activeCall,
     muted,
@@ -414,15 +337,15 @@ export default function MobilePhoneDock() {
     busy,
     error,
     silent,
-    setSilent,
     answer,
     reject,
     hangup,
   } = usePhoneCalls();
 
-  const ringing = (incoming || []).filter((call) => call.id !== activeCall?.id);
-  const showSheet = ringing.length > 0 && !activeCall;
-  useRingVibration(showSheet && !silent);
+  const ringing = (incoming || []).filter(
+    (call) => call.id !== activeCall?.id && !ignoredCallKeys?.[liveCallKey(call)],
+  );
+  useRingVibration(ringing.length > 0 && !activeCall && !silent);
 
   if (!ringing.length && !recentAnswered.length && !activeCall) return null;
 
@@ -431,43 +354,44 @@ export default function MobilePhoneDock() {
   const onReject = (call) => swallow(reject(call));
   const onHangup = () => swallow(hangup(activeCall));
   const onEnableSound = () => swallow(resumeAudio());
-  const onSilent = () => setSilent(!silent);
-
-  if (showSheet) {
-    return (
-      <IncomingCallSheet
-        calls={ringing}
-        busy={busy}
-        error={error}
-        silent={silent}
-        onSilent={onSilent}
-        onAnswer={onAnswer}
-        onReject={onReject}
-      />
-    );
-  }
 
   const answered = recentAnswered.filter((row) => row.callId !== activeCall?.id);
   return (
     <View style={styles.dock}>
       {activeCall ? (
-        <ActiveCallBar
-          call={activeCall}
+        <View style={styles.dockCard}>
+          <ActiveCallBar
+            call={activeCall}
+            busy={busy}
+            muted={muted}
+            audioState={audioState}
+            onMute={toggleMute}
+            onHangup={onHangup}
+            onEnableSound={onEnableSound}
+          />
+          {audioState === 'blocked' ? (
+            <Text style={styles.dockNote} numberOfLines={2}>
+              The browser blocked the call audio. Tap the speaker button to hear the caller.
+            </Text>
+          ) : null}
+          {error ? (
+            <Text style={styles.dockError} numberOfLines={3}>
+              {error}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+      {ringing.map((call, index) => (
+        <IncomingCallBar
+          key={liveCallKey(call)}
+          call={call}
           busy={busy}
-          muted={muted}
-          audioState={audioState}
-          onMute={toggleMute}
-          onHangup={onHangup}
-          onEnableSound={onEnableSound}
+          error={index === 0 && !activeCall ? error : ''}
+          showHint={Platform.OS !== 'web' && index === 0}
+          onAnswer={onAnswer}
+          onReject={onReject}
+          onIgnore={ignoreCall}
         />
-      ) : null}
-      {activeCall && audioState === 'blocked' ? (
-        <Text style={styles.dockNote} numberOfLines={2}>
-          The browser blocked the call audio. Tap the speaker button to hear the caller.
-        </Text>
-      ) : null}
-      {ringing.map((call) => (
-        <WaitingCallRow key={`${call.storeKey}-${call.id}`} call={call} busy={busy} onAnswer={onAnswer} onReject={onReject} />
       ))}
       {answered.map((row) => (
         <View key={row.id} style={styles.answeredRow}>
@@ -478,55 +402,115 @@ export default function MobilePhoneDock() {
           </Text>
         </View>
       ))}
-      {error && (ringing.length || activeCall) ? (
-        <Text style={styles.dockError} numberOfLines={3}>
-          {error}
-        </Text>
-      ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  // --- Full-screen incoming sheet -------------------------------------------
-  sheet: {
-    flex: 1,
-    backgroundColor: SHEET_BG,
-    justifyContent: 'space-between',
-    overflow: 'hidden',
+  dock: {
+    marginHorizontal: 10,
+    marginBottom: 8,
+    gap: 6,
   },
-  sheetGlow: {
-    position: 'absolute',
-    left: '50%',
-    backgroundColor: '#1F5A38',
+  dockCard: {
+    padding: 8,
+    borderRadius: 18,
+    backgroundColor: DOCK_BG,
+    gap: 6,
+    ...Platform.select({
+      web: {},
+      default: {
+        shadowColor: '#000',
+        shadowOpacity: 0.22,
+        shadowRadius: 12,
+        shadowOffset: { width: 0, height: 4 },
+        elevation: 6,
+      },
+    }),
   },
-  sheetGlowOuter: {
-    top: -520,
-    marginLeft: -420,
-    width: 840,
-    height: 840,
-    borderRadius: 420,
-    opacity: 0.22,
+
+  // --- Incoming call bar -----------------------------------------------------
+  incomingBar: {
+    borderRadius: 20,
+    backgroundColor: BAR_BG,
+    paddingHorizontal: 12,
+    paddingBottom: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(134, 239, 172, 0.25)',
+    ...Platform.select({
+      web: { boxShadow: '0 8px 24px rgba(0,0,0,0.28)', touchAction: 'none', userSelect: 'none' },
+      default: {
+        shadowColor: '#000',
+        shadowOpacity: 0.28,
+        shadowRadius: 14,
+        shadowOffset: { width: 0, height: 6 },
+        elevation: 8,
+      },
+    }),
   },
-  sheetGlowInner: {
-    top: -380,
-    marginLeft: -300,
-    width: 600,
-    height: 600,
-    borderRadius: 300,
-    opacity: 0.22,
+  grabberRow: {
+    alignItems: 'center',
+    paddingTop: 6,
+    paddingBottom: 4,
   },
-  sheetTop: {
+  grabber: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255,255,255,0.28)',
+  },
+  incomingRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    paddingHorizontal: 20,
-    gap: 12,
+    alignItems: 'center',
+    gap: 10,
   },
-  sheetTopCopy: {
+  incomingCopy: {
     flex: 1,
     minWidth: 0,
-    gap: 4,
+    gap: 1,
   },
+  incomingTitle: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#fff',
+    letterSpacing: -0.3,
+  },
+  incomingSubtitle: {
+    fontFamily,
+    fontSize: 13,
+    color: '#BBF7D0',
+    fontVariant: ['tabular-nums'],
+  },
+  incomingActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  hideBtn: {
+    width: 28,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: -4,
+    marginRight: -6,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  barHint: {
+    fontFamily,
+    fontSize: 11,
+    color: 'rgba(187, 247, 208, 0.75)',
+    marginTop: 6,
+  },
+  barError: {
+    fontFamily,
+    fontSize: 12,
+    lineHeight: 16,
+    color: '#FECACA',
+    marginTop: 6,
+  },
+
+  // --- Shared bits -----------------------------------------------------------
   kickerRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -534,8 +518,8 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   liveDot: {
-    width: 8,
-    height: 8,
+    width: 7,
+    height: 7,
     borderRadius: 4,
     backgroundColor: GREEN,
   },
@@ -544,38 +528,16 @@ const styles = StyleSheet.create({
   },
   kicker: {
     fontFamily,
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: '700',
     color: '#BBF7D0',
     textTransform: 'uppercase',
-    letterSpacing: 0.8,
-  },
-  storeLine: {
-    fontFamily,
-    fontSize: 17,
-    fontWeight: '600',
-    color: '#fff',
-    letterSpacing: -0.2,
-  },
-  silence: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.14)',
-  },
-  sheetBody: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 28,
-    gap: 6,
+    letterSpacing: 0.5,
+    flexShrink: 1,
   },
   avatarWrap: {
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 22,
   },
   pulseRing: {
     position: 'absolute',
@@ -590,7 +552,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#1F7A44',
-    borderWidth: 2,
+    borderWidth: 1.5,
     borderColor: 'rgba(255,255,255,0.22)',
   },
   avatarInitials: {
@@ -599,146 +561,32 @@ const styles = StyleSheet.create({
     color: '#fff',
     letterSpacing: 0.5,
   },
-  callerTitle: {
-    fontFamily: titleFontFamily,
-    fontSize: 30,
-    lineHeight: 36,
-    color: '#fff',
-    textAlign: 'center',
-    letterSpacing: -0.6,
-  },
-  callerSubtitle: {
-    fontFamily,
-    fontSize: 19,
-    color: '#BBF7D0',
-    textAlign: 'center',
-    letterSpacing: -0.2,
-    fontVariant: ['tabular-nums'],
-  },
-  others: {
-    marginHorizontal: 16,
-    marginBottom: 22,
-    padding: 12,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    gap: 8,
-  },
-  othersKicker: {
-    fontFamily,
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#BBF7D0',
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
-  },
-  otherRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    minHeight: 44,
-  },
-  otherCopy: {
-    flex: 1,
-    minWidth: 0,
-  },
-  otherTitle: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#fff',
-  },
-  otherMeta: {
-    fontFamily,
-    fontSize: 12,
-    color: '#BBF7D0',
-  },
-  otherBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  sheetActions: {
-    paddingHorizontal: 24,
-    gap: 16,
-  },
-  sheetError: {
-    fontFamily,
-    fontSize: 13,
-    lineHeight: 18,
-    color: '#FECACA',
-    textAlign: 'center',
-    paddingHorizontal: 8,
-  },
-  roundActions: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: 24,
-  },
-  roundActionWrap: {
-    alignItems: 'center',
-    gap: 10,
-  },
-  roundAction: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
+  roundBtn: {
     alignItems: 'center',
     justifyContent: 'center',
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {
         shadowColor: '#000',
-        shadowOpacity: 0.3,
-        shadowRadius: 10,
-        shadowOffset: { width: 0, height: 6 },
-        elevation: 6,
+        shadowOpacity: 0.25,
+        shadowRadius: 6,
+        shadowOffset: { width: 0, height: 3 },
+        elevation: 4,
       },
     }),
   },
-  roundActionPressed: {
+  pressed: {
     opacity: 0.78,
     transform: [{ scale: 0.96 }],
   },
-  roundActionDisabled: {
+  disabled: {
     opacity: 0.5,
-  },
-  roundActionLabel: {
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#fff',
   },
   hangupIcon: {
     transform: [{ rotate: '135deg' }],
   },
-  answerHint: {
-    fontFamily,
-    fontSize: 12,
-    color: 'rgba(187, 247, 208, 0.75)',
-    textAlign: 'center',
-  },
 
-  // --- Dock above the tab bar ----------------------------------------------
-  dock: {
-    marginHorizontal: 10,
-    marginBottom: 8,
-    padding: 8,
-    borderRadius: 18,
-    backgroundColor: SHEET_BG_DEEP,
-    gap: 6,
-    ...Platform.select({
-      web: {},
-      default: {
-        shadowColor: '#000',
-        shadowOpacity: 0.22,
-        shadowRadius: 12,
-        shadowOffset: { width: 0, height: 4 },
-        elevation: 6,
-      },
-    }),
-  },
+  // --- Active call bar -------------------------------------------------------
   activeBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -748,26 +596,10 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     backgroundColor: 'rgba(255,255,255,0.07)',
   },
-  waitingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-  },
   activeCopy: {
     flex: 1,
     minWidth: 0,
     gap: 1,
-  },
-  barKicker: {
-    fontFamily,
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#BBF7D0',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    flexShrink: 1,
   },
   barClock: {
     marginLeft: 2,
@@ -797,51 +629,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
-  barBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  barBtnMute: {
-    backgroundColor: 'rgba(255,255,255,0.2)',
-  },
-  barBtnMuteOn: {
-    backgroundColor: '#B45309',
-  },
-  barBtnSound: {
-    backgroundColor: '#FCD34D',
-  },
-  pill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    height: 42,
-    paddingHorizontal: 14,
-    borderRadius: 21,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  pillText: {
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#fff',
-  },
   answeredRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     minHeight: 36,
-    paddingHorizontal: 8,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    backgroundColor: DOCK_BG,
   },
   answeredText: {
     fontFamily,

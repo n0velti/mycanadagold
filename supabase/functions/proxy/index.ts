@@ -4306,12 +4306,17 @@ async function firstRingCentralDevice(
   const records = Array.isArray((devices.payload as { records?: unknown[] })?.records)
     ? ((devices.payload as { records: Record<string, unknown>[] }).records)
     : [];
-  const ranked = [...records].sort((a, b) => {
+  // Answer lands on the device RingCentral re-INVITEs, so it has to be one
+  // that is registered right now. A browser tab that provisioned a WebPhone
+  // device days ago and has since been closed still appears in this list as
+  // Offline; sending the call there loses it.
+  const online = records.filter((row) => String(row.status || '').toLowerCase() !== 'offline');
+  const ranked = [...online].sort((a, b) => {
     const rank = (row: Record<string, unknown>) => {
       const type = String(row.type || '');
-      if (type === 'WebPhone' || type === 'WebRTC') return 0;
-      if (type === 'SoftPhone') return 1;
-      if (type === 'HardPhone') return 2;
+      if (type === 'SoftPhone') return 0; // the RingCentral desktop/mobile app
+      if (type === 'HardPhone') return 1;
+      if (type === 'WebPhone' || type === 'WebRTC') return 2; // some other browser tab
       return 3;
     };
     return rank(a) - rank(b);
