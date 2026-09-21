@@ -23,6 +23,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { MOBILE, mobileSafeBottom, mobileSafeTop, useIsMobile } from '../lib/mobileUi';
+import { useIsClockedIn } from '../lib/clockedIn';
 
 export const FONT = Platform.select({
   ios: 'Sohne',
@@ -779,11 +780,13 @@ function initialsFromName(name) {
  */
 export function StaffAvatar({ uri, name, size = 24, ring }) {
   const [failed, setFailed] = useState(false);
+  const clockedIn = useIsClockedIn(name);
   useEffect(() => {
     setFailed(false);
   }, [uri]);
   const showImage = Boolean(uri) && !failed;
   const label = String(name || '').trim();
+  const tone = ring || (clockedIn ? 'green' : '');
   const avatar = (
     <View
       accessibilityLabel={label || 'Employee'}
@@ -808,8 +811,8 @@ export function StaffAvatar({ uri, name, size = 24, ring }) {
       )}
     </View>
   );
-  if (!ring) return avatar;
-  const ringColor = TONES[ring]?.fg || T[ring] || ring;
+  if (!tone) return avatar;
+  const ringColor = TONES[tone]?.fg || T[tone] || tone;
   const ringWidth = size >= 56 ? 3 : 2;
   const gap = size >= 56 ? 3 : 2;
   const outer = size + 2 * (ringWidth + gap);

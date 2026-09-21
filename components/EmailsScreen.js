@@ -754,6 +754,15 @@ export default function EmailsScreen({
             />
           ))}
           <View style={styles.mailBodyCard}>
+            {Array.isArray(activeMail.attachments) && activeMail.attachments.length ? (
+              <View style={styles.attachmentRow}>
+                {activeMail.attachments.map((file, index) => (
+                  <Text key={`${file.filename || file.mimeType}-${index}`} style={styles.attachmentName}>
+                    {file.filename || file.mimeType || 'Attachment'}
+                  </Text>
+                ))}
+              </View>
+            ) : null}
             <Text style={styles.mailBodyText}>{activeMail.body}</Text>
           </View>
         </ScrollView>
@@ -1350,6 +1359,23 @@ const styles = StyleSheet.create({
     paddingTop: 16,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: '#e5e5ea',
+    gap: 12,
+  },
+  attachmentRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  attachmentName: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    backgroundColor: '#f2f2f7',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    overflow: 'hidden',
   },
   mailBodyText: {
     fontFamily,

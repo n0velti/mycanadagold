@@ -19,6 +19,7 @@
  *   /proxy/rippling/time/connect           POST  → store Gmail refresh token for the hours inbox (admin)
  *   /proxy/rippling/time/disconnect        POST  → forget the hours inbox (admin)
  *   /proxy/rippling/time/sync              POST  → pull the newest Rippling time CSV (rate-limited)
+ *   /proxy/rippling/time/ingest            POST  → same import, using the caller's Gmail token
  *   /proxy/rippling/<path>                 GET   → rest.ripplingapis.com
  *   /proxy/gmail/oauth/config              GET   → { clientId, configured, hostedDomain }
  *   /proxy/gmail/oauth/token               POST  → oauth2.googleapis.com/token (client secret held here)
@@ -1112,7 +1113,9 @@ function decodeGmailBody(data: string): string {
 
 type GmailPart = {
   mimeType?: string;
-  body?: { data?: string };
+  filename?: string;
+  headers?: { name?: string; value?: string }[];
+  body?: { data?: string; attachmentId?: string; size?: number };
   parts?: GmailPart[];
 };
 
@@ -1368,11 +1371,26 @@ async function handleGmailMessage(req: Request, query: URLSearchParams): Promise
   }
 
   const mapped = mapGmailListMessage(detail.payload);
-  const body = extractGmailText(detail.payload.payload as GmailPart | undefined);
+  const root = detail.payload.payload as GmailPart | undefined;
+  const body = extractGmailText(root);
   return json(req, 200, {
     ...mapped,
     body: body || mapped.snippet,
+    attachments: listGmailAttachments(root),
   });
+}
+
+function listGmailAttachments(part: GmailPart | undefined, out: { filename: string; mimeType: string; size: number }[] = []) {
+  if (!part) return out;
+  const mime = String(part.mimeType || '').toLowerCase();
+  const filename = gmailPartFilename(part);
+  const attachmentId = String(part.body?.attachmentId || '');
+  const isContainer = mime.startsWith('multipart/');
+  if (!isContainer && (filename || attachmentId) && mime !== 'text/plain' && mime !== 'text/html') {
+    out.push({ filename, mimeType: mime, size: Number(part.body?.size) || 0 });
+  }
+  for (const child of part.parts || []) listGmailAttachments(child, out);
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1383,8 +1401,12 @@ async function handleGmailMessage(req: Request, query: URLSearchParams): Promise
 // ---------------------------------------------------------------------------
 
 const TIME_SYNC_COOLDOWN_MS = 10 * 60_000;
-const TIME_SYNC_SEARCH = 'has:attachment filename:csv newer_than:7d';
-const TIME_SYNC_MAX_MESSAGES = 12;
+// Rippling's scheduled mail is "Scheduled Report — Clock In report". Gmail often
+// does not index that attachment under filename:csv (octet-stream, inline, or a
+// name only present on Content-Disposition), so match the subject and then
+// inspect every file on the message.
+const TIME_SYNC_SEARCH = 'newer_than:3d subject:Scheduled subject:Report';
+const TIME_SYNC_MAX_MESSAGES = 16;
 const TIME_SYNC_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
 type TimeSyncRow = {
@@ -1677,16 +1699,36 @@ function parseClockReport(csv: string): ClockReport | null {
   return { rows, clockedIn };
 }
 
-type GmailAttachmentPart = GmailPart & { filename?: string; body?: { data?: string; attachmentId?: string; size?: number } };
+function gmailPartFilename(part: GmailPart | undefined): string {
+  const direct = String(part?.filename || '').trim();
+  if (direct) return direct;
+  const headers = part?.headers;
+  const named = (value: string) => {
+    const star = value.match(/filename\*\s*=\s*(?:UTF-8'')?([^;]+)/i);
+    if (star) {
+      try {
+        return decodeURIComponent(star[1].trim().replace(/^"|"$/g, ''));
+      } catch {
+        return star[1].trim().replace(/^"|"$/g, '');
+      }
+    }
+    const plain = value.match(/filename\s*=\s*"?([^";]+)"?/i) || value.match(/name\s*=\s*"?([^";]+)"?/i);
+    return plain ? plain[1].trim() : '';
+  };
+  return named(gmailHeader(headers, 'Content-Disposition')) || named(gmailHeader(headers, 'Content-Type'));
+}
 
-function collectCsvParts(part: GmailAttachmentPart | undefined, out: GmailAttachmentPart[] = []): GmailAttachmentPart[] {
+/** Any attached file that might be a Rippling CSV, plus a text body fallback. */
+function collectReportParts(part: GmailPart | undefined, out: GmailPart[] = []): GmailPart[] {
   if (!part) return out;
-  const filename = String(part.filename || '').trim();
+  const filename = gmailPartFilename(part);
   const mime = String(part.mimeType || '').toLowerCase();
-  if ((filename && /\.csv$/i.test(filename)) || mime === 'text/csv') {
-    if (part.body?.attachmentId || part.body?.data) out.push(part);
-  }
-  for (const child of part.parts || []) collectCsvParts(child as GmailAttachmentPart, out);
+  const hasBytes = Boolean(part.body?.attachmentId || part.body?.data);
+  const csvName = /\.csv$/i.test(filename);
+  const csvMime = mime === 'text/csv' || mime === 'application/csv' || mime.includes('comma-separated');
+  const sheet = /spreadsheet|excel|octet-stream/.test(mime) && Boolean(filename || part.body?.attachmentId);
+  if (hasBytes && !mime.startsWith('multipart/') && (csvName || csvMime || sheet)) out.push(part);
+  for (const child of part.parts || []) collectReportParts(child, out);
   return out;
 }
 
@@ -1698,7 +1740,7 @@ function decodeBase64UrlBytes(data: string): Uint8Array {
   return bytes;
 }
 
-async function gmailAttachmentText(token: string, messageId: string, part: GmailAttachmentPart): Promise<string> {
+async function gmailAttachmentText(token: string, messageId: string, part: GmailPart): Promise<string> {
   let data = String(part.body?.data || '');
   if (!data && part.body?.attachmentId) {
     const size = Number(part.body?.size) || 0;
@@ -1719,8 +1761,14 @@ type TimeSyncResult = { skipped: boolean; imported: boolean; message: string };
  * swaps its date window into `rippling_time_entries`. Every file is a full
  * snapshot of its window, so only the newest one matters.
  */
-async function runTimeSync(row: TimeSyncRow, { force, userId }: { force: boolean; userId?: string }): Promise<TimeSyncResult> {
-  if (!row.gmail_refresh_token) return { skipped: true, imported: false, message: 'Hours mailbox is not connected.' };
+async function runTimeSync(
+  row: TimeSyncRow,
+  { force, userId, accessToken }: { force: boolean; userId?: string; accessToken?: string },
+): Promise<TimeSyncResult> {
+  const bearer = String(accessToken || '').trim();
+  if (!bearer && !row.gmail_refresh_token) {
+    return { skipped: true, imported: false, message: 'Hours mailbox is not connected.' };
+  }
 
   const nowIso = new Date().toISOString();
   if (force) {
@@ -1738,43 +1786,46 @@ async function runTimeSync(row: TimeSyncRow, { force, userId }: { force: boolean
   }
 
   try {
-    const token = await timeSyncAccessToken(row);
+    const token = bearer || await timeSyncAccessToken(row);
     const params = new URLSearchParams({ q: TIME_SYNC_SEARCH, maxResults: String(TIME_SYNC_MAX_MESSAGES) });
     const list = await googleJson(`${GMAIL_API}/messages?${params.toString()}`, `Bearer ${token}`);
     if (!list.ok) throw new Error(googleErrorMessage(list.payload, 'Could not search the hours mailbox.'));
     const refs = Array.isArray(list.payload?.messages) ? (list.payload.messages as { id?: string }[]) : [];
 
-    const lastAt = row.last_message_at ? Date.parse(row.last_message_at) : 0;
     const candidates: { id: string; internalDate: number; payload: Record<string, unknown> }[] = [];
     for (const ref of refs) {
       const id = String(ref?.id || '').trim();
-      if (!id || id === row.last_message_id) continue;
+      if (!id) continue;
       const detail = await googleJson(`${GMAIL_API}/messages/${encodeURIComponent(id)}?format=full`, `Bearer ${token}`, 45_000);
       if (!detail.ok || !detail.payload) continue;
-      const internalDate = Number(detail.payload.internalDate) || 0;
-      if (internalDate && internalDate <= lastAt) continue;
-      candidates.push({ id, internalDate, payload: detail.payload });
+      candidates.push({
+        id,
+        internalDate: Number(detail.payload.internalDate) || 0,
+        payload: detail.payload,
+      });
     }
     candidates.sort((a, b) => b.internalDate - a.internalDate);
 
-    // Newest message first. Each report type is imported once (from the newest
-    // message that carries it); usually both CSVs ride in the same email.
+    // Newest message first. Each report type is taken from the newest message
+    // that actually contains it — the two reports arrive as separate emails.
     let timeDone = false;
     let clockDone = false;
     let newestId = '';
     let newestAt = 0;
     const notes: string[] = [];
+    const inspected: string[] = [];
 
     for (const candidate of candidates) {
       if (timeDone && clockDone) break;
-      const parts = collectCsvParts(candidate.payload.payload as GmailAttachmentPart | undefined);
+      const root = candidate.payload.payload as GmailPart | undefined;
+      const headers = (root as { headers?: { name?: string; value?: string }[] } | undefined)?.headers;
+      const subject = gmailHeader(headers, 'Subject');
+      const parts = collectReportParts(root);
       let usedThisMessage = false;
-      for (const part of parts) {
-        if (timeDone && clockDone) break;
-        const text = await gmailAttachmentText(token, candidate.id, part);
-        if (!text) continue;
-        const messageAt = candidate.internalDate ? new Date(candidate.internalDate).toISOString() : nowIso;
+      const messageAt = candidate.internalDate ? new Date(candidate.internalDate).toISOString() : nowIso;
 
+      const tryText = async (text: string, label: string) => {
+        if (!text || (timeDone && clockDone)) return;
         if (!timeDone) {
           const report = parseTimeReport(text);
           if (report) {
@@ -1787,7 +1838,7 @@ async function runTimeSync(row: TimeSyncRow, { force, userId }: { force: boolean
             if (rpcError) throw new Error(rpcError.message);
             await saveTimeSync({
               last_synced_at: new Date().toISOString(),
-              last_attachment_name: String(part.filename || '').slice(0, 200),
+              last_attachment_name: label.slice(0, 200),
               last_row_count: Number(inserted) || report.rows.length,
               last_range_start: report.rangeStart,
               last_range_end: report.rangeEnd,
@@ -1795,10 +1846,8 @@ async function runTimeSync(row: TimeSyncRow, { force, userId }: { force: boolean
             notes.push(`${report.rows.length} time entries (${report.rangeStart} → ${report.rangeEnd})`);
             timeDone = true;
             usedThisMessage = true;
-            continue;
           }
         }
-
         if (!clockDone) {
           const clock = parseClockReport(text);
           if (clock) {
@@ -1814,6 +1863,19 @@ async function runTimeSync(row: TimeSyncRow, { force, userId }: { force: boolean
             usedThisMessage = true;
           }
         }
+      };
+
+      for (const part of parts) {
+        if (timeDone && clockDone) break;
+        const text = await gmailAttachmentText(token, candidate.id, part);
+        await tryText(text, gmailPartFilename(part) || subject);
+      }
+      if (!timeDone || !clockDone) {
+        await tryText(extractGmailText(root), subject);
+      }
+      if (!usedThisMessage) {
+        const named = parts.map((part) => gmailPartFilename(part) || String(part.mimeType || 'file'));
+        inspected.push(`${subject || 'email'}: ${named.length ? named.join(', ') : 'no file'}`);
       }
       if (usedThisMessage && candidate.internalDate >= newestAt) {
         newestAt = candidate.internalDate;
@@ -1822,16 +1884,20 @@ async function runTimeSync(row: TimeSyncRow, { force, userId }: { force: boolean
     }
 
     if (timeDone || clockDone) {
+      const missing = !timeDone ? 'Time report not in these emails.' : !clockDone ? 'Clock-in report not in these emails.' : '';
       await saveTimeSync({
         last_message_id: newestId,
         last_message_at: newestAt ? new Date(newestAt).toISOString() : nowIso,
-        last_error: '',
+        last_error: missing,
       }, userId);
       return { skipped: false, imported: true, message: `Imported ${notes.join(' · ')}.` };
     }
 
-    await saveTimeSync({ last_error: '' }, userId);
-    return { skipped: false, imported: false, message: 'No new hours report in the mailbox.' };
+    const detail = candidates.length
+      ? `Found ${candidates.length} scheduled report email${candidates.length === 1 ? '' : 's'} but no CSV. ${inspected.slice(0, 4).join(' | ')}`
+      : 'No scheduled report email in the mailbox.';
+    await saveTimeSync({ last_error: detail.slice(0, 2000) }, userId);
+    return { skipped: false, imported: false, message: detail };
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Hours sync failed.';
     await saveTimeSync({ last_error: message.slice(0, 2000) }, userId).catch(() => {});
@@ -1952,6 +2018,21 @@ async function handleRipplingTimeSync(req: Request, staff: StaffContext, body: A
   }
   try {
     const result = await runTimeSync(row, { force, userId: staff.userId });
+    return json(req, 200, { ...timeSyncPublic(await loadTimeSync(), staff), sync: result });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Hours sync failed.';
+    return json(req, 200, { ...timeSyncPublic(await loadTimeSync(), staff), sync: null, syncError: message });
+  }
+}
+
+// The same import, but reading the mailbox of whoever is signed into Gmail in
+// the app. The report is emailed to a person, not to a shared inbox.
+async function handleRipplingTimeIngest(req: Request, staff: StaffContext): Promise<Response> {
+  const token = upstreamAuthorization(req).replace(/^Bearer\s+/i, '').trim();
+  if (!token) return error(req, 401, 'Sign in to Google mail first.', 'gmail_unauthenticated');
+  const row = await loadTimeSync();
+  try {
+    const result = await runTimeSync(row, { force: false, userId: staff.userId, accessToken: token });
     return json(req, 200, { ...timeSyncPublic(await loadTimeSync(), staff), sync: result });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Hours sync failed.';
@@ -5308,6 +5389,9 @@ Deno.serve(async (req) => {
     }
     if (path === '/rippling/time/sync' && req.method === 'POST') {
       return await handleRipplingTimeSync(req, staff, await readBody(req));
+    }
+    if (path === '/rippling/time/ingest' && req.method === 'POST') {
+      return await handleRipplingTimeIngest(req, staff);
     }
     if (path.startsWith('/rippling/')) {
       return await handleRippling(req, path.slice('/rippling'.length), search);

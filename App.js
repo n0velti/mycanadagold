@@ -80,6 +80,7 @@ import {
 import { readRipplingOAuthCallback, readRipplingOAuthState } from './lib/rippling';
 import { readHoursOAuthCallback } from './lib/ripplingTime';
 import { readGmailOAuthCallback } from './lib/gmail';
+import { AvatarRing, clearClockedIn, startClockedInSync } from './lib/clockedIn';
 import AiScreen from './components/AiScreen';
 import AnalyticsScreen from './components/AnalyticsScreen';
 import AccountingScreen from './components/AccountingScreen';
@@ -728,6 +729,7 @@ function ProfileAvatar({ uri, name, size = 24, style }) {
   const showImage = Boolean(uri) && !failed;
 
   return (
+    <AvatarRing name={name} size={size}>
     <View
       style={[
         {
@@ -763,6 +765,7 @@ function ProfileAvatar({ uri, name, size = 24, style }) {
         <Ionicons name="person" size={Math.round(size * 0.5)} color="#8e8e93" />
       )}
     </View>
+    </AvatarRing>
   );
 }
 
@@ -6117,6 +6120,14 @@ export default function App() {
   const [profileReturnTo, setProfileReturnTo] = useState(null);
   const [locationPickerOpen, setLocationPickerOpen] = useState(false);
   const emailsFocusSeq = useRef(0);
+
+  useEffect(() => {
+    if (!session?.token) {
+      clearClockedIn();
+      return undefined;
+    }
+    return startClockedInSync();
+  }, [session?.token]);
 
   const [fontsLoaded, fontsError] = useFonts(
     Platform.OS === 'web'
