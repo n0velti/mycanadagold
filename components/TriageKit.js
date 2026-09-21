@@ -773,14 +773,18 @@ function initialsFromName(name) {
   return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
 }
 
-export function StaffAvatar({ uri, name, size = 24 }) {
+/**
+ * `ring` draws a coloured halo around the portrait (e.g. `ring="green"` for
+ * staff currently clocked in). Pass a tone name or any colour string.
+ */
+export function StaffAvatar({ uri, name, size = 24, ring }) {
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     setFailed(false);
   }, [uri]);
   const showImage = Boolean(uri) && !failed;
   const label = String(name || '').trim();
-  return (
+  const avatar = (
     <View
       accessibilityLabel={label || 'Employee'}
       style={[
@@ -802,6 +806,29 @@ export function StaffAvatar({ uri, name, size = 24 }) {
           {initialsFromName(name)}
         </Text>
       )}
+    </View>
+  );
+  if (!ring) return avatar;
+  const ringColor = TONES[ring]?.fg || T[ring] || ring;
+  const ringWidth = size >= 56 ? 3 : 2;
+  const gap = size >= 56 ? 3 : 2;
+  const outer = size + 2 * (ringWidth + gap);
+  return (
+    <View
+      style={[
+        styles.staffAvatarRing,
+        {
+          width: outer,
+          height: outer,
+          borderRadius: outer / 2,
+          borderWidth: ringWidth,
+          borderColor: ringColor,
+          padding: gap,
+        },
+      ]}
+      accessibilityLabel={label ? `${label}, clocked in` : 'Clocked in'}
+    >
+      {avatar}
     </View>
   );
 }
@@ -1697,6 +1724,11 @@ const styles = StyleSheet.create({
   staffAvatarFallback: {
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  staffAvatarRing: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
   },
   staffAvatarInitials: {
     fontFamily: FONT,

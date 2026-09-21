@@ -38,7 +38,26 @@ import {
 } from '../lib/rippling';
 import { syncStaffRoles } from '../lib/auth';
 import { mergeEmployeesWithProfiles } from '../lib/aureusEmployees';
+import { getGmailRedirectUri, loadGmailOAuthApp } from '../lib/gmail';
 import { categoryLabel, listStaffProfiles, useAppAccess } from '../lib/permissions';
+import {
+  buildHoursAuthorizeUrl,
+  canManageHoursFeed,
+  clearHoursOAuthCallbackFromUrl,
+  clearHoursOAuthState,
+  connectHoursMailbox,
+  disconnectHoursMailbox,
+  fetchHoursSummary,
+  formatClock,
+  formatMinutes,
+  formatRelativeTime,
+  formatShiftDate,
+  hoursForPerson,
+  loadHoursFeedStatus,
+  readHoursOAuthCallback,
+  syncHoursFeed,
+} from '../lib/ripplingTime';
+import { useLiveRefresh } from '../lib/liveRefresh';
 import { useIsMobile } from '../lib/mobileUi';
 import ProfilePhotoModal from './ProfilePhotoModal';
 import {
@@ -103,7 +122,292 @@ function FieldGroup({ title, fields }) {
   );
 }
 
-function PersonHero({ name, title, photoUrl, statusLabel, statusTone: tone, onOpenPhoto, compact, onClose, heading }) {
+/**
+ * Hours imported from the emailed Rippling report. Asks the proxy to check the
+ * inbox (it skips when it looked recently), then reads the per-person summary.
+ */
+function useHoursSummary(enabled) {
+  const [summary, setSummary] = useState(null);
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const requestId = useRef(0);
+
+  const refresh = useCallback(
+    async ({ force = false, sync = true } = {}) => {
+      const id = ++requestId.current;
+      setLoading(true);
+      try {
+        let nextStatus = null;
+        if (sync) {
+          nextStatus = await syncHoursFeed({ force }).catch(() => null);
+        }
+        if (!nextStatus) nextStatus = await loadHoursFeedStatus().catch(() => null);
+        const nextSummary = await fetchHoursSummary().catch(() => null);
+        if (id !== requestId.current) return nextStatus;
+        setStatus(nextStatus);
+        setSummary(nextSummary);
+        return nextStatus;
+      } finally {
+        if (id === requestId.current) setLoading(false);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!enabled) return;
+    refresh();
+  }, [enabled, refresh]);
+
+  // The report lands hourly; re-check while the screen is open so the
+  // clocked-in rings follow it without a manual refresh.
+  useLiveRefresh(() => refresh(), HOURS_LIVE_MS, enabled);
+
+  return { summary, status, loading, refresh, setStatus };
+}
+
+const RECENT_SHIFT_LIMIT = 10;
+/** Re-poll the hours feed while Employees is open (server checks Gmail at most every 10 min). */
+const HOURS_LIVE_MS = 5 * 60_000;
+
+function HoursSection({ hours, status }) {
+  if (!hours) {
+    if (!status?.connected) return null;
+    return (
+      <View style={styles.cardBlock}>
+        <SectionLabel>Hours</SectionLabel>
+        <Group>
+          <GroupRow label="Last 30 days" value="No time entries" last />
+        </Group>
+      </View>
+    );
+  }
+
+  const shifts = hours.entries.slice(0, RECENT_SHIFT_LIMIT);
+  const updated = status?.lastSyncedAt ? formatRelativeTime(status.lastSyncedAt) : '';
+
+  return (
+    <>
+      <View style={styles.cardBlock}>
+        <SectionLabel trailing={updated ? <Text style={styles.hoursUpdated}>{`Updated ${updated}`}</Text> : null}>
+          Hours
+        </SectionLabel>
+        <Group>
+          {hours.clockedIn || hours.openSince ? (
+            <GroupRow label="Now">
+              <StatusPill
+                label={hours.openSince ? `Clocked in · since ${formatClock(hours.openSince)}` : 'Clocked in'}
+                tone="green"
+                compact
+              />
+            </GroupRow>
+          ) : null}
+          {hours.todayMinutes ? <GroupRow label="Today" value={formatMinutes(hours.todayMinutes)} /> : null}
+          <GroupRow label="This week" value={formatMinutes(hours.weekMinutes)} />
+          <GroupRow label="Last week" value={formatMinutes(hours.lastWeekMinutes)} />
+          <GroupRow
+            label="Last 30 days"
+            value={
+              hours.monthShifts
+                ? `${formatMinutes(hours.monthMinutes)} · ${hours.monthShifts} shift${hours.monthShifts === 1 ? '' : 's'}`
+                : formatMinutes(hours.monthMinutes)
+            }
+            last
+          />
+        </Group>
+      </View>
+      {shifts.length ? (
+        <View style={styles.cardBlock}>
+          <SectionLabel>Recent shifts</SectionLabel>
+          <Group>
+            {shifts.map((shift, index) => {
+              const range = `${formatClock(shift.start)} – ${shift.end ? formatClock(shift.end) : 'now'}`;
+              const duration = shift.minutes != null ? ` · ${formatMinutes(shift.minutes)}` : '';
+              return (
+                <GroupRow
+                  key={shift.key || `${shift.date}-${index}`}
+                  label={formatShiftDate(shift.date)}
+                  value={`${range}${duration}`}
+                  last={index === shifts.length - 1}
+                />
+              );
+            })}
+          </Group>
+        </View>
+      ) : null}
+    </>
+  );
+}
+
+function hoursForStaff(summary, person) {
+  if (!summary || !person) return null;
+  return hoursForPerson(summary, {
+    ripplingId: person.ripplingId,
+    names: [person.fullName, [person.firstName, person.lastName].filter(Boolean).join(' ')],
+  });
+}
+
+/**
+ * HR / GM / System Admin card: connect the inbox that receives the scheduled
+ * Rippling time report, see the last import, force a check, or disconnect.
+ */
+function HoursFeedCard({ profile, status, onStatusChange, onRefresh, loading }) {
+  const [gmailApp, setGmailApp] = useState(null);
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    loadGmailOAuthApp()
+      .then((app) => {
+        if (!cancelled) setGmailApp(app);
+      })
+      .catch(() => {
+        if (!cancelled) setGmailApp({ clientId: '', configured: false, hostedDomain: 'canadagold.ca' });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const callback = readHoursOAuthCallback();
+    if (!callback) return undefined;
+    let cancelled = false;
+    (async () => {
+      setBusy('connect');
+      setError('');
+      try {
+        if (callback.error) {
+          throw new Error(callback.errorDescription || callback.error || 'Google sign-in was cancelled.');
+        }
+        const next = await connectHoursMailbox({ code: callback.code, redirectUri: getGmailRedirectUri() });
+        clearHoursOAuthState();
+        clearHoursOAuthCallbackFromUrl();
+        if (cancelled) return;
+        onStatusChange?.(next);
+        if (next.syncError) setError(next.syncError);
+        else if (next.sync?.message) setNotice(next.sync.message);
+        onRefresh?.({ sync: false });
+      } catch (err) {
+        clearHoursOAuthState();
+        clearHoursOAuthCallbackFromUrl();
+        if (!cancelled) setError(err?.message || 'Could not connect the hours mailbox.');
+      } finally {
+        if (!cancelled) setBusy('');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [onRefresh, onStatusChange]);
+
+  const connect = () => {
+    setError('');
+    setNotice('');
+    if (!gmailApp?.configured || !gmailApp.clientId) {
+      setError('Google mail sign-in is not configured. Add the Google OAuth app secrets first.');
+      return;
+    }
+    try {
+      const url = buildHoursAuthorizeUrl({
+        clientId: gmailApp.clientId,
+        hostedDomain: gmailApp.hostedDomain,
+        loginHint: profile?.email || '',
+      });
+      if (typeof window !== 'undefined') {
+        window.location.assign(url);
+        return;
+      }
+      Linking.openURL(url);
+    } catch (err) {
+      setError(err?.message || 'Could not start Google sign-in.');
+    }
+  };
+
+  const checkNow = async () => {
+    setBusy('sync');
+    setError('');
+    setNotice('');
+    try {
+      const next = await onRefresh?.({ force: true });
+      if (next?.syncError) setError(next.syncError);
+      else if (next?.sync?.message) setNotice(next.sync.message);
+    } catch (err) {
+      setError(err?.message || 'Could not check the mailbox.');
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const disconnect = async () => {
+    setBusy('disconnect');
+    setError('');
+    setNotice('');
+    try {
+      const next = await disconnectHoursMailbox();
+      onStatusChange?.(next);
+    } catch (err) {
+      setError(err?.message || 'Could not disconnect the hours mailbox.');
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const connected = Boolean(status?.connected);
+  const lastImport = status?.lastSyncedAt
+    ? [
+        `${status.rowCount} entries · ${status.rangeStart || '?'} → ${status.rangeEnd || '?'} · ${formatRelativeTime(status.lastSyncedAt)}`,
+        status.clockReportedAt
+          ? `${status.clockedInCount} clocked in as of ${formatRelativeTime(status.clockReportedAt)}`
+          : '',
+      ]
+        .filter(Boolean)
+        .join('\n')
+    : 'Nothing imported yet';
+
+  return (
+    <View style={styles.connectBar}>
+      <View style={styles.connectInfo}>
+        <Ionicons
+          name={connected ? 'time-outline' : 'mail-unread-outline'}
+          size={18}
+          color={connected ? T.green : T.secondary}
+        />
+        <View style={styles.connectCopy}>
+          <Text style={styles.connectTitle}>
+            {connected ? `Hours report · ${status.email}` : 'Hours report mailbox'}
+          </Text>
+          <Text style={styles.connectHint}>
+            {connected
+              ? lastImport
+              : 'Connect the inbox that receives the scheduled Rippling “Time & Attendance” CSV. Hours then import automatically — nobody needs to stay signed in.'}
+          </Text>
+          {status?.lastError ? <Text style={styles.errorText}>{status.lastError}</Text> : null}
+          {error ? <Text style={styles.errorText}>{error}</Text> : null}
+          {notice ? <Text style={styles.noticeText}>{notice}</Text> : null}
+        </View>
+      </View>
+      <View style={styles.connectActions}>
+        {connected ? (
+          <>
+            <BarButton label={busy === 'sync' || loading ? 'Checking…' : 'Check now'} onPress={checkNow} disabled={Boolean(busy) || loading} />
+            <BarButton label="Disconnect" onPress={disconnect} disabled={Boolean(busy)} />
+          </>
+        ) : (
+          <BarButton
+            label={busy === 'connect' ? 'Connecting…' : 'Connect mailbox'}
+            onPress={connect}
+            disabled={Boolean(busy) || !gmailApp || !status}
+          />
+        )}
+      </View>
+    </View>
+  );
+}
+
+function PersonHero({ name, title, photoUrl, statusLabel, statusTone: tone, onOpenPhoto, compact, onClose, heading, clockedIn }) {
   return (
     <View style={styles.heroCard}>
       {compact ? (
@@ -120,11 +424,14 @@ function PersonHero({ name, title, photoUrl, statusLabel, statusTone: tone, onOp
         accessibilityRole={onOpenPhoto ? 'button' : undefined}
         accessibilityLabel={onOpenPhoto ? `View ${name}'s portrait` : undefined}
       >
-        <StaffAvatar uri={photoUrl} name={name} size={72} />
+        <StaffAvatar uri={photoUrl} name={name} size={72} ring={clockedIn ? 'green' : undefined} />
       </Pressable>
       <Text style={styles.heroName}>{name}</Text>
       {title ? <Text style={styles.heroTitle}>{title}</Text> : null}
-      {statusLabel ? <StatusPill label={statusLabel} tone={tone || 'neutral'} /> : null}
+      <View style={styles.heroPills}>
+        {statusLabel ? <StatusPill label={statusLabel} tone={tone || 'neutral'} /> : null}
+        {clockedIn ? <StatusPill label="Clocked in" tone="green" /> : null}
+      </View>
     </View>
   );
 }
@@ -148,13 +455,14 @@ function permissionLabel(person) {
   return categoryLabel(person) || '—';
 }
 
-function StaffEmployeeRow({ person, selected, onPress, last }) {
+function StaffEmployeeRow({ person, selected, onPress, last, hours }) {
   const name = staffDisplayName(person);
   const permission = permissionLabel(person);
   const location = person.locationName || '';
   const type = employeeTypeLabel(person);
   const inactive = person.isActive === false || person.profileActive === false;
-  const subtitle = [location, type !== '—' ? type : '', permission !== '—' ? permission : '']
+  const weekHours = hours?.weekMinutes ? `${formatMinutes(hours.weekMinutes)} this wk` : '';
+  const subtitle = [location, type !== '—' ? type : '', permission !== '—' ? permission : '', weekHours]
     .filter(Boolean)
     .join(' · ');
 
@@ -163,7 +471,14 @@ function StaffEmployeeRow({ person, selected, onPress, last }) {
       <MobileListRow
         title={inactive ? `${name} · Inactive` : name}
         subtitle={subtitle || person.email || person.aureusLogin}
-        leading={<StaffAvatar uri={person.avatarUrl || person.photoUrl} name={name} size={44} />}
+        leading={
+          <StaffAvatar
+            uri={person.avatarUrl || person.photoUrl}
+            name={name}
+            size={44}
+            ring={hours?.clockedIn ? 'green' : undefined}
+          />
+        }
         selected={selected}
         last={last}
         onPress={onPress}
@@ -172,7 +487,7 @@ function StaffEmployeeRow({ person, selected, onPress, last }) {
   );
 }
 
-function StaffEmployeeDetail({ person, onClose, compact, onOpenPhoto }) {
+function StaffEmployeeDetail({ person, onClose, compact, onOpenPhoto, hours, hoursStatus }) {
   if (!person) {
     return (
       <EmptyState icon="people-outline" title="Employee" body="Select someone to see their profile." />
@@ -198,6 +513,7 @@ function StaffEmployeeDetail({ person, onClose, compact, onOpenPhoto }) {
         onOpenPhoto={onOpenPhoto}
         compact={compact}
         onClose={onClose}
+        clockedIn={Boolean(hours?.clockedIn)}
       />
       <FieldGroup
         title="Work"
@@ -222,6 +538,7 @@ function StaffEmployeeDetail({ person, onClose, compact, onOpenPhoto }) {
           { label: 'Phone', value: person.phone },
         ]}
       />
+      <HoursSection hours={hours} status={hoursStatus} />
     </ScrollView>
   );
 }
@@ -244,8 +561,10 @@ function groupRows(rows, keyFor) {
   return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
 }
 
-function AppEmployeesPanel({ session, onProfileUpdated, storeFilter }) {
+function AppEmployeesPanel({ session, onProfileUpdated, storeFilter, hours }) {
   const isMobile = useIsMobile();
+  const hoursSummary = hours?.summary || null;
+  const hoursStatus = hours?.status || null;
   const { canFilter } = useAppAccess();
   const lockedLocation = String(storeFilter || '').trim();
   const allowFilters = canFilter('employees') && !lockedLocation;
@@ -357,7 +676,14 @@ function AppEmployeesPanel({ session, onProfileUpdated, storeFilter }) {
           size={isMobile ? 'lg' : undefined}
           style={styles.searchField}
         />
-        <BarButton label="Refresh" onPress={load} disabled={loading} />
+        <BarButton
+          label="Refresh"
+          onPress={() => {
+            load();
+            hours?.refresh?.();
+          }}
+          disabled={loading}
+        />
       </View>
 
       {allowFilters && locations.length > 1 ? (
@@ -406,6 +732,7 @@ function AppEmployeesPanel({ session, onProfileUpdated, storeFilter }) {
                         <StaffEmployeeRow
                           key={person.id}
                           person={person}
+                          hours={hoursForStaff(hoursSummary, person)}
                           last={index === rows.length - 1}
                           selected={!isMobile && selectedId === person.id}
                           onPress={() => setSelectedId(person.id)}
@@ -422,6 +749,8 @@ function AppEmployeesPanel({ session, onProfileUpdated, storeFilter }) {
             <View style={styles.detailPane}>
               <StaffEmployeeDetail
                 person={selected}
+                hours={hoursForStaff(hoursSummary, selected)}
+                hoursStatus={hoursStatus}
                 onOpenPhoto={() => selected && setPhotoPerson(selected)}
               />
             </View>
@@ -441,6 +770,8 @@ function AppEmployeesPanel({ session, onProfileUpdated, storeFilter }) {
           >
             <StaffEmployeeDetail
               person={selected}
+              hours={hoursForStaff(hoursSummary, selected)}
+              hoursStatus={hoursStatus}
               compact
               onClose={() => setSelectedId(null)}
               onOpenPhoto={() => selected && setPhotoPerson(selected)}
@@ -828,7 +1159,7 @@ function ConnectModal({ visible, onClose, onSaved, canManage }) {
   );
 }
 
-function EmployeeDetail({ employee, onClose, compact }) {
+function EmployeeDetail({ employee, onClose, compact, hours, hoursStatus }) {
   if (!employee) {
     return (
       <EmptyState
@@ -854,6 +1185,7 @@ function EmployeeDetail({ employee, onClose, compact }) {
         compact={compact}
         onClose={onClose}
         heading="Profile"
+        clockedIn={Boolean(hours?.clockedIn)}
       />
       <FieldGroup
         title="Contact"
@@ -888,17 +1220,25 @@ function EmployeeDetail({ employee, onClose, compact }) {
           { label: 'Hourly', value: employee.hourlyWage },
         ]}
       />
+      <HoursSection hours={hours} status={hoursStatus} />
     </ScrollView>
   );
 }
 
-function EmployeeRow({ employee, selected, onPress, last }) {
+function EmployeeRow({ employee, selected, onPress, last, hours }) {
   const subtitle = [employee.title, employee.department, employee.location].filter(Boolean).join(' · ');
   return (
     <MobileListRow
       title={employee.name}
       subtitle={subtitle || employee.workEmail}
-      leading={<StaffAvatar uri={employee.photoUrl} name={employee.name} size={44} />}
+      leading={
+        <StaffAvatar
+          uri={employee.photoUrl}
+          name={employee.name}
+          size={44}
+          ring={hours?.clockedIn ? 'green' : undefined}
+        />
+      }
       trailing={<StatusPill label={employee.statusLabel} tone={statusTone(employee.status)} compact />}
       selected={selected}
       last={last}
@@ -907,10 +1247,23 @@ function EmployeeRow({ employee, selected, onPress, last }) {
   );
 }
 
-function RipplingPanel({ profile }) {
+function RipplingPanel({ profile, hours }) {
   const isMobile = useIsMobile();
   const { canFilter } = useAppAccess();
   const allowFilters = canFilter('employees');
+  const hoursSummary = hours?.summary || null;
+  const hoursStatus = hours?.status || null;
+  const hoursCard = canManageHoursFeed(profile) ? (
+    <HoursFeedCard
+      profile={profile}
+      status={hoursStatus}
+      loading={Boolean(hours?.loading)}
+      onStatusChange={hours?.setStatus}
+      onRefresh={hours?.refresh}
+    />
+  ) : null;
+  const hoursFor = (employee) =>
+    employee ? hoursForPerson(hoursSummary, { ripplingId: employee.id, names: [employee.name] }) : null;
   const [session, setSession] = useState(null);
   const [employees, setEmployees] = useState([]);
   const [company, setCompany] = useState(null);
@@ -1079,6 +1432,7 @@ function RipplingPanel({ profile }) {
   if (!connected) {
     return (
       <View style={styles.body}>
+        {hoursCard}
         <SignInCard onConnected={handleConnected} profile={profile} />
       </View>
     );
@@ -1086,6 +1440,7 @@ function RipplingPanel({ profile }) {
 
   return (
     <View style={styles.body}>
+      {hoursCard}
       <View style={styles.connectBar}>
         <View style={styles.connectInfo}>
           <Ionicons name="shield-checkmark-outline" size={18} color={T.green} />
@@ -1187,6 +1542,7 @@ function RipplingPanel({ profile }) {
                         <EmployeeRow
                           key={employee.id}
                           employee={employee}
+                          hours={hoursFor(employee)}
                           last={index === rows.length - 1}
                           selected={!isMobile && selectedId === employee.id}
                           onPress={() => setSelectedId(employee.id)}
@@ -1201,7 +1557,7 @@ function RipplingPanel({ profile }) {
 
           {!isMobile ? (
             <View style={styles.detailPane}>
-              <EmployeeDetail employee={selected} />
+              <EmployeeDetail employee={selected} hours={hoursFor(selected)} hoursStatus={hoursStatus} />
             </View>
           ) : null}
         </View>
@@ -1219,6 +1575,8 @@ function RipplingPanel({ profile }) {
           >
             <EmployeeDetail
               employee={selected}
+              hours={hoursFor(selected)}
+              hoursStatus={hoursStatus}
               compact
               onClose={() => setSelectedId(null)}
             />
@@ -1246,8 +1604,9 @@ export default function EmployeesScreen({
   embedded = false,
 }) {
   const [activeTab, setActiveTab] = useState(() =>
-    !embedded && readRipplingOAuthCallback() ? 'rippling' : 'employees',
+    !embedded && (readRipplingOAuthCallback() || readHoursOAuthCallback()) ? 'rippling' : 'employees',
   );
+  const hours = useHoursSummary(true);
 
   return (
     <View style={styles.screen}>
@@ -1259,9 +1618,10 @@ export default function EmployeesScreen({
           session={session}
           onProfileUpdated={onProfileUpdated}
           storeFilter={storeFilter}
+          hours={hours}
         />
       ) : (
-        <RipplingPanel profile={session?.profile} />
+        <RipplingPanel profile={session?.profile} hours={hours} />
       )}
     </View>
   );
@@ -1474,6 +1834,12 @@ const styles = StyleSheet.create({
     color: T.secondary,
     textAlign: 'center',
   },
+  heroPills: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 6,
+  },
   detailMobileHeader: {
     alignSelf: 'stretch',
     flexDirection: 'row',
@@ -1504,6 +1870,16 @@ const styles = StyleSheet.create({
     fontFamily: FONT,
     fontSize: 13,
     color: T.red,
+  },
+  noticeText: {
+    fontFamily: FONT,
+    fontSize: 13,
+    color: T.green,
+  },
+  hoursUpdated: {
+    fontFamily: FONT,
+    fontSize: 12,
+    color: T.tertiary,
   },
   primaryButton: {
     backgroundColor: T.blue,

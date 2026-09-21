@@ -78,6 +78,7 @@ import {
   withPaymentBreakdown,
 } from './lib/transactions';
 import { readRipplingOAuthCallback, readRipplingOAuthState } from './lib/rippling';
+import { readHoursOAuthCallback } from './lib/ripplingTime';
 import { readGmailOAuthCallback } from './lib/gmail';
 import AiScreen from './components/AiScreen';
 import AnalyticsScreen from './components/AnalyticsScreen';
@@ -6354,8 +6355,9 @@ export default function App() {
     }
     const callback = readRipplingOAuthCallback();
     if (!callback) return;
+    const hoursCallback = readHoursOAuthCallback();
     const expected = readRipplingOAuthState();
-    if (!expected || expected !== callback.state) return;
+    if (!hoursCallback && (!expected || expected !== callback.state)) return;
     if (!hasApp('employees')) return;
     const employeesTool = TOOL_CARDS.find((tool) => tool.key === 'employees');
     setActiveTab('tools');
