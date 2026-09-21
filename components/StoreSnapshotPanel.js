@@ -14,7 +14,13 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { fetchStoreCashPosition } from '../lib/cashTill';
-import { checkTransactionPrices } from '../lib/priceCheck';
+import { checkTransactionPrices, formatPriceTolerance } from '../lib/priceCheck';
+import {
+  capturePurchasePriceCatalog,
+  loadTransactionPriceSnapshots,
+  peekPriceCatalogSnapshot,
+  usePriceCheckTolerance,
+} from '../lib/priceCheckSettings';
 import { AUREUS_CASH_LIVE_MS, useLiveRefresh } from '../lib/liveRefresh';
 import { fetchInventoryMatrix, formatQty, peekInventoryMatrix } from '../lib/inventory';
 import { textMatchesQuery } from '../lib/itemSearch';
@@ -33,8 +39,6 @@ import { storeKeyFromName } from '../lib/storeSettings';
 import { useIsMobile } from '../lib/mobileUi';
 import { activeCallKicker, formatCallClock, usePhoneCalls } from './PhoneCallProvider';
 import { isConnectedStatus } from '../lib/callState';
-import snapshot from '../lib/websitePriceSnapshot.json';
-import { fetchWebsitePrices, reconcileCatalog } from '../lib/websitePrices';
 import TxnCashBreakdownModal, { TxnCashIcon } from './TxnCashBreakdownModal';
 
 const fontFamily = Platform.select({
@@ -437,23 +441,36 @@ function PriceCheckBadge({ check, onPress }) {
   );
 }
 
+function priceCheckIntro(check) {
+  const tol = formatPriceTolerance(check?.tolerance);
+  const when = check?.isPurchase ? 'this purchase came in' : 'this sale came in';
+  const basis = check?.frozen
+    ? `website prices from when ${when}`
+    : check?.catalogUpdated
+      ? `website prices from ${check.catalogUpdated}`
+      : 'website prices';
+  if (check?.status === 'off') {
+    return check.isPurchase
+      ? `This purchase does not match ${basis} (${tol} tolerance).`
+      : `This sale does not match ${basis} (${tol} tolerance).`;
+  }
+  if (check?.status === 'unknown' || check?.status === 'loading') {
+    const scrapUnknown = (check.lines || []).some((line) => line.kind === 'scrap' && line.status === 'unknown');
+    return scrapUnknown
+      ? 'Scrap is checked by karat and premium vs standard: website $/g × the recorded weight.'
+      : 'We need a website match and a unit price on each line to check this transaction.';
+  }
+  return check?.isPurchase
+    ? `These purchase prices are within ${tol} of ${basis}.`
+    : `These sale prices are within ${tol} of ${basis}.`;
+}
+
 function PriceCheckModal({ check, onClose }) {
   if (!check) return null;
   const off = check.status === 'off';
   const unknown = check.status === 'unknown' || check.status === 'loading';
   const title = off ? "Something's off" : unknown ? "Can't check yet" : 'Makes sense';
-  const scrapUnknown = (check.lines || []).some((line) => line.kind === 'scrap' && line.status === 'unknown');
-  const intro = off
-    ? check.isPurchase
-      ? 'This purchase does not match website we-buy prices (1% tolerance).'
-      : 'This sale does not match website we-sell prices (1% tolerance).'
-    : unknown
-      ? scrapUnknown
-        ? 'Scrap is checked by karat and premium vs standard: website $/g × the recorded weight.'
-        : 'We need a website match and a unit price on each line to check this transaction.'
-      : check.isPurchase
-        ? 'These purchase prices are within 1% of website we-buy prices.'
-        : 'These sale prices are within 1% of website we-sell prices.';
+  const intro = priceCheckIntro(check);
 
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
@@ -1260,14 +1277,9 @@ function StoreSnapshotPanel({
   const [inventoryError, setInventoryError] = useState('');
   const [staff, setStaff] = useState([]);
   const [staffLoading, setStaffLoading] = useState(false);
-  const [priceCatalog, setPriceCatalog] = useState(() => {
-    try {
-      return { ...snapshot, ...reconcileCatalog(snapshot.buy, snapshot.sell) };
-    } catch {
-      return null;
-    }
-  });
+  const [txCatalogs, setTxCatalogs] = useState(() => new Map());
   const [priceReview, setPriceReview] = useState(null);
+  const tolerance = usePriceCheckTolerance();
   const cashRequestId = useRef(0);
   const inventoryRequestId = useRef(0);
   const hasInventoryRef = useRef(false);
@@ -1391,38 +1403,91 @@ function StoreSnapshotPanel({
     setInventoryLimit(INVENTORY_PAGE);
   }, [inventoryQuery]);
 
+  const txIdKey = txRows.map((row) => row.id).join('\n');
+  const pricedKey = txRows
+    .map((row) => `${row.id}:${row.lineItemsLoaded ? 1 : 0}:${(row.pricedLines || []).length}`)
+    .join('\n');
+  const txRowsRef = useRef(txRows);
+  const txCatalogsRef = useRef(txCatalogs);
+  txRowsRef.current = txRows;
+  txCatalogsRef.current = txCatalogs;
+
   useEffect(() => {
+    const ids = txIdKey ? txIdKey.split('\n').filter(Boolean) : [];
+    if (!ids.length) return undefined;
     let cancelled = false;
-    fetchWebsitePrices({ force: true })
-      .then((catalog) => {
-        if (!cancelled && catalog) setPriceCatalog(catalog);
+    loadTransactionPriceSnapshots(ids)
+      .then((found) => {
+        if (cancelled || !found.size) return;
+        setTxCatalogs((current) => {
+          let changed = false;
+          const next = new Map(current);
+          for (const [id, snap] of found) {
+            if (!next.has(id)) {
+              next.set(id, snap);
+              changed = true;
+            }
+          }
+          return changed ? next : current;
+        });
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [txIdKey]);
 
-  // Reuse a row's price check while the row object and catalog are unchanged,
-  // so unchanged rows keep the same `priceCheck` prop and stay memoized.
-  const priceCheckCache = useRef({ catalog: null, byRow: new WeakMap() });
+  useEffect(() => {
+    const need = txRowsRef.current.filter((row) => {
+      if (txCatalogsRef.current.has(row.id) || peekPriceCatalogSnapshot(row.id)) return false;
+      return Array.isArray(row.pricedLines) && row.pricedLines.length > 0;
+    });
+    if (!need.length) return undefined;
+    let cancelled = false;
+    (async () => {
+      for (const row of need) {
+        if (cancelled) return;
+        try {
+          const snap = await capturePurchasePriceCatalog(row);
+          if (cancelled || !snap) continue;
+          setTxCatalogs((current) => {
+            if (current.has(row.id)) return current;
+            const next = new Map(current);
+            next.set(row.id, snap);
+            return next;
+          });
+        } catch {
+          // Retry when this row's priced lines change.
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pricedKey]);
+
+  // Reuse a row's price check while the row, frozen catalog, and tolerance
+  // are unchanged, so unchanged rows keep the same `priceCheck` prop.
+  const priceCheckCache = useRef({ tolerance: null, byRow: new WeakMap() });
   const priceChecks = useMemo(() => {
     const cache = priceCheckCache.current;
-    if (cache.catalog !== priceCatalog) {
-      cache.catalog = priceCatalog;
+    if (cache.tolerance !== tolerance) {
+      cache.tolerance = tolerance;
       cache.byRow = new WeakMap();
     }
     const map = new Map();
     for (const row of txRows) {
+      const catalog = txCatalogs.get(row.id) || peekPriceCatalogSnapshot(row.id) || null;
       let check = cache.byRow.get(row);
-      if (!check) {
-        check = checkTransactionPrices(row, priceCatalog);
+      if (!check || check._catalog !== catalog) {
+        check = checkTransactionPrices(row, catalog, { tolerance });
+        check._catalog = catalog;
         cache.byRow.set(row, check);
       }
       map.set(row.id, check);
     }
     return map;
-  }, [priceCatalog, txRows]);
+  }, [txCatalogs, txRows, tolerance]);
 
   const allItems = useMemo(() => {
     if (!storeId) return [];
