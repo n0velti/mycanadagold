@@ -19,6 +19,13 @@ import RingCentralSettingsPanel from './RingCentralSettingsPanel';
 import PermissionsPanel from './PermissionsPanel';
 import { canManageRingCentral } from '../lib/ringcentral';
 import { IosActionRow, IosGroup, IosPage, IosRow } from './IosSettings';
+import {
+  MAX_PRICE_TOLERANCE,
+  MIN_PRICE_TOLERANCE,
+  normalizePriceTolerance,
+  PRICE_TOLERANCE,
+} from '../lib/priceCheck';
+import { loadPriceCheckSettings, savePriceCheckSettings } from '../lib/priceCheckSettings';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -36,6 +43,7 @@ function SettingsHome({
   onOpenPermissions,
   onOpenDatabase,
   onOpenStoreSettings,
+  onOpenPriceCheck,
   onOpenRingCentral,
   canManageAiKeys,
   canManagePhone,
@@ -101,7 +109,7 @@ function SettingsHome({
 
         <IosGroup
           header="Company"
-          footer="Who can open each app, and the shared keys used for portraits, Serphint, and chat."
+          footer="Who can open each app, purchase price-check tolerance, and the shared keys used for portraits, Serphint, and chat."
         >
           {canManageAiKeys ? (
             <IosRow
@@ -116,6 +124,12 @@ function SettingsHome({
             iconColor="#007AFF"
             label="Permissions"
             onPress={onOpenPermissions}
+          />
+          <IosRow
+            icon="pricetag"
+            iconColor="#C47A12"
+            label="Price Check"
+            onPress={onOpenPriceCheck}
           />
         </IosGroup>
 
@@ -157,6 +171,19 @@ function SettingsHome({
           <View style={styles.menuTextWrap}>
             <Text style={styles.menuLabel}>Store settings</Text>
             <Text style={styles.menuHint}>Weekly hours and holidays for each branch</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
+        </Pressable>
+
+        <Pressable style={styles.menuRow} onPress={onOpenPriceCheck}>
+          <View style={[styles.menuIcon, { backgroundColor: '#FFF8E8' }]}>
+            <Ionicons name="pricetag-outline" size={16} color="#C47A12" />
+          </View>
+          <View style={styles.menuTextWrap}>
+            <Text style={styles.menuLabel}>Price check</Text>
+            <Text style={styles.menuHint}>
+              How close a purchase must be to website we-buy prices when the ticket arrives
+            </Text>
           </View>
           <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
         </Pressable>
@@ -546,6 +573,192 @@ function DatabasePanel() {
   );
 }
 
+function percentTextFromTolerance(tolerance) {
+  const pct = Math.round(normalizePriceTolerance(tolerance) * 1000) / 10;
+  return String(pct).replace(/\.0$/, '');
+}
+
+function parsePercentInput(value) {
+  const n = Number(String(value || '').replace(/[^0-9.]/g, ''));
+  if (!Number.isFinite(n)) return null;
+  return normalizePriceTolerance(n / 100);
+}
+
+function PriceCheckPanel() {
+  const isMobile = useIsMobile();
+  const [percentText, setPercentText] = useState(percentTextFromTolerance(PRICE_TOLERANCE));
+  const [unavailable, setUnavailable] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const state = await loadPriceCheckSettings();
+        if (cancelled) return;
+        setPercentText(percentTextFromTolerance(state.tolerance));
+        setUnavailable(Boolean(state.unavailable));
+      } catch (nextError) {
+        if (cancelled) return;
+        setError(nextError?.message || 'Could not load price-check settings.');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const bump = (delta) => {
+    const current = parsePercentInput(percentText) ?? PRICE_TOLERANCE;
+    const next = normalizePriceTolerance(current + delta / 100);
+    setPercentText(percentTextFromTolerance(next));
+    setSaved(false);
+    setError('');
+  };
+
+  const handleSave = async () => {
+    if (saving) return;
+    const next = parsePercentInput(percentText);
+    if (next == null) {
+      setError('Enter a tolerance between 0.1% and 20%.');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      const state = await savePriceCheckSettings(next);
+      setPercentText(percentTextFromTolerance(state.tolerance));
+      setUnavailable(Boolean(state.unavailable));
+      setSaved(true);
+    } catch (nextError) {
+      setError(nextError?.message || 'Could not save price-check settings.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <View style={styles.centered}>
+        <ActivityIndicator color="#1a1a1a" />
+      </View>
+    );
+  }
+
+  const minPct = percentTextFromTolerance(MIN_PRICE_TOLERANCE);
+  const maxPct = percentTextFromTolerance(MAX_PRICE_TOLERANCE);
+  const footer =
+    'Purchases are compared to website we-buy prices from the moment the ticket arrives from Aureus, not later in the day when spot may have moved.';
+
+  if (isMobile) {
+    return (
+      <IosPage>
+        {unavailable ? (
+          <IosGroup footer="The price-check table is not in the database yet. Run the latest Supabase migration, then save again.">
+            <IosRow label="Settings" value="Unavailable" />
+          </IosGroup>
+        ) : null}
+        <IosGroup header="Tolerance" footer={`${footer} ${minPct}–${maxPct}.`}>
+          <View style={styles.iosKeyRow}>
+            <View style={styles.iosKeyField}>
+              <Pressable onPress={() => bump(-0.5)} hitSlop={8} accessibilityLabel="Decrease tolerance">
+                <Ionicons name="remove-circle-outline" size={22} color="#8E8E93" />
+              </Pressable>
+              <TextInput
+                style={styles.iosKeyInput}
+                value={percentText}
+                onChangeText={(value) => {
+                  setPercentText(value);
+                  setSaved(false);
+                  setError('');
+                }}
+                keyboardType="decimal-pad"
+                placeholder="1"
+                placeholderTextColor="#8E8E93"
+              />
+              <Text style={styles.percentSuffix}>%</Text>
+              <Pressable onPress={() => bump(0.5)} hitSlop={8} accessibilityLabel="Increase tolerance">
+                <Ionicons name="add-circle-outline" size={22} color="#8E8E93" />
+              </Pressable>
+            </View>
+          </View>
+        </IosGroup>
+        {error ? (
+          <IosGroup footer={error}>
+            <IosRow label="Save" value="Failed" />
+          </IosGroup>
+        ) : null}
+        {saved ? (
+          <IosGroup footer={`Now matching within ${percentText}% of the website price at purchase time.`}>
+            <IosRow icon="checkmark-circle" iconColor="#34C759" label="Saved" />
+          </IosGroup>
+        ) : null}
+        <IosGroup>
+          <IosActionRow label={saving ? 'Saving…' : 'Save'} onPress={handleSave} disabled={saving} />
+        </IosGroup>
+      </IosPage>
+    );
+  }
+
+  return (
+    <ScrollView style={styles.body} contentContainerStyle={styles.aiContent}>
+      <Text style={styles.aiIntro}>{footer}</Text>
+      {unavailable ? (
+        <Text style={styles.errorText}>
+          The price-check table is not in the database yet. Run the latest Supabase migration, then
+          save again.
+        </Text>
+      ) : null}
+      <View style={styles.providerBlock}>
+        <Text style={styles.providerLabel}>Tolerance</Text>
+        <Text style={styles.providerDescription}>
+          Allowed gap versus website we-buy (or we-sell) at the moment the POS ticket arrives. {minPct}–
+          {maxPct}.
+        </Text>
+        <View style={styles.keyField}>
+          <Pressable onPress={() => bump(-0.5)} hitSlop={8} accessibilityLabel="Decrease tolerance">
+            <Ionicons name="remove-circle-outline" size={20} color="#8E8E93" />
+          </Pressable>
+          <TextInput
+            style={styles.keyInput}
+            value={percentText}
+            onChangeText={(value) => {
+              setPercentText(value);
+              setSaved(false);
+              setError('');
+            }}
+            keyboardType="decimal-pad"
+            placeholder="1"
+            placeholderTextColor="#8E8E93"
+          />
+          <Text style={styles.percentSuffixDesktop}>%</Text>
+          <Pressable onPress={() => bump(0.5)} hitSlop={8} accessibilityLabel="Increase tolerance">
+            <Ionicons name="add-circle-outline" size={20} color="#8E8E93" />
+          </Pressable>
+        </View>
+      </View>
+      {error ? <Text style={styles.errorText}>{error}</Text> : null}
+      {saved ? (
+        <Text style={styles.savedText}>
+          Now matching within {percentText}% of the website price at purchase time.
+        </Text>
+      ) : null}
+      <Pressable
+        onPress={handleSave}
+        disabled={saving}
+        style={[styles.saveButton, saving && styles.saveButtonDisabled]}
+      >
+        {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveButtonText}>Save</Text>}
+      </Pressable>
+    </ScrollView>
+  );
+}
+
 export default function SettingsScreen({
   panel,
   onOpenPanel,
@@ -587,6 +800,10 @@ export default function SettingsScreen({
     return <StoreSettingsPanel session={session} storeName={storeName} />;
   }
 
+  if (panel === 'price-check') {
+    return <PriceCheckPanel />;
+  }
+
   if (panel === 'ringcentral') {
     return <RingCentralSettingsPanel session={session} storeName={storeName} />;
   }
@@ -597,6 +814,7 @@ export default function SettingsScreen({
       onOpenPermissions={() => onOpenPanel('permissions')}
       onOpenDatabase={() => onOpenPanel('database')}
       onOpenStoreSettings={() => onOpenPanel('store-settings')}
+      onOpenPriceCheck={() => onOpenPanel('price-check')}
       onOpenRingCentral={() => onOpenPanel('ringcentral')}
       canManageAiKeys={canManageAiKeys}
       canManagePhone={canManagePhone}
@@ -806,6 +1024,17 @@ const styles = StyleSheet.create({
     color: '#1a1a1a',
     paddingVertical: 10,
     outlineStyle: 'none',
+  },
+  percentSuffix: {
+    fontFamily,
+    fontSize: 17,
+    color: '#8E8E93',
+    letterSpacing: -0.4,
+  },
+  percentSuffixDesktop: {
+    fontFamily,
+    fontSize: 13,
+    color: '#8E8E93',
   },
   errorText: {
     fontFamily,

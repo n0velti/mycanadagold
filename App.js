@@ -97,6 +97,7 @@ import StoreSettingsPanel from './components/StoreSettingsPanel';
 import StoreSnapshotPanel, { StoreTransactionRow, OverviewHero } from './components/StoreSnapshotPanel';
 import TxnCashBreakdownModal, { TxnCashIcon } from './components/TxnCashBreakdownModal';
 import { AUREUS_TX_LIVE_MS, useLiveRefresh } from './lib/liveRefresh';
+import { capturePurchasePriceCatalog } from './lib/priceCheckSettings';
 import { useTxnCashBreakdowns } from './lib/txnCashBreakdowns';
 import TransferScreen from './components/TransferScreen';
 import PricingScreen from './components/PricingScreen';
@@ -2415,6 +2416,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
             if (cancelled) return;
             const enriched = withLineItems(row, detailPayload);
             paymentCache.current[row.id] = { ...enriched, lineItemsLoaded: true };
+            capturePurchasePriceCatalog(enriched).catch(() => {});
             setTxRows((current) =>
               current.map((entry) => (entry.id === row.id ? enriched : entry)),
             );
@@ -4977,6 +4979,7 @@ function TransactionsScreen({ session, onRequireLogin, storeFilter }) {
               ? withPaymentBreakdown(row, detailPayload)
               : withLineItems(row, detailPayload);
             paymentCache.current[row.id] = enriched;
+            capturePurchasePriceCatalog(enriched).catch(() => {});
             setRows((current) =>
               current.map((entry) => (entry.id === row.id ? enriched : entry)),
             );
@@ -6576,6 +6579,7 @@ export default function App() {
       permissions: 'Permissions',
       database: 'Database',
       'store-settings': 'Store Settings',
+      'price-check': 'Price Check',
       ringcentral: 'Phone',
     };
     const settingsSubPanelLabel =
@@ -7123,6 +7127,7 @@ export default function App() {
     permissions: 'Permissions',
     database: 'Database',
     'store-settings': 'Store Settings',
+    'price-check': 'Price Check',
     ringcentral: 'Phone',
   };
   const mobileToolTitle =
