@@ -289,16 +289,27 @@ function partyLine(entry, inbound) {
   return [name, number ? formatPhoneNumber(number) : ''].filter(Boolean).join(' · ') || 'Unknown';
 }
 
-function CallHistoryRow({ row, inbound = true, showDirection = false, onCallback, callbackBusy }) {
+function historyRowKey(row) {
+  return [row?.id, row?.startTime, row?.from, row?.to].filter(Boolean).join(':');
+}
+
+/** Number Call back should dial: the other party, not this store. */
+function callbackNumber(row) {
+  const inbound = String(row?.direction || '') !== 'Outbound';
+  return String((inbound ? row?.from : row?.to) || '').trim();
+}
+
+function CallHistoryRow({ row, inbound = true, showDirection = false, onCallback, callbackBusy, callbackDisabled }) {
   const missed = inbound && !isAnsweredInbound(row);
   const icon = !inbound ? 'arrow-up' : missed ? 'call-outline' : 'arrow-down';
+  const label = partyLine(row, inbound);
   return (
     <View style={styles.itemRow}>
       <View style={styles.callIcon}>
         <Ionicons name={icon} size={14} color={missed ? '#B91C1C' : ACCENT} />
       </View>
       <View style={styles.itemText}>
-        <Text style={styles.itemTitle}>{partyLine(row, inbound)}</Text>
+        <Text style={styles.itemTitle}>{label}</Text>
         <Text style={styles.itemMeta}>
           {[
             showDirection ? (inbound ? 'Inbound' : 'Outbound') : '',
@@ -312,10 +323,13 @@ function CallHistoryRow({ row, inbound = true, showDirection = false, onCallback
       </View>
       {onCallback ? (
         <Pressable
-          style={[styles.callbackBtn, callbackBusy && styles.callbackBtnDisabled]}
-          onPress={() => onCallback(row)}
-          disabled={callbackBusy}
-          accessibilityLabel="Call back"
+          style={[styles.callbackBtn, (callbackBusy || callbackDisabled) && styles.callbackBtnDisabled]}
+          onPress={(event) => {
+            event?.stopPropagation?.();
+            onCallback(row);
+          }}
+          disabled={callbackBusy || callbackDisabled}
+          accessibilityLabel={`Call back ${label}`}
         >
           {callbackBusy ? (
             <ActivityIndicator size="small" color="#fff" />
@@ -844,6 +858,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [showStores, setShowStores] = useState(!storeFilter);
   const [digits, setDigits] = useState('');
+  const [callingId, setCallingId] = useState('');
   const [playingId, setPlayingId] = useState('');
   const [playError, setPlayError] = useState('');
   const audioRef = useRef(null);
@@ -1180,21 +1195,25 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
 
   const callBack = useCallback(
     async (row) => {
-      const inbound = row?.direction !== 'Outbound';
-      const number = inbound ? row.from : row.to;
-      if (!String(number || '').replace(/\D/g, '')) {
+      const number = callbackNumber(row);
+      if (!String(number).replace(/\D/g, '')) {
         setError('That call has no number to return.');
         return;
       }
+      const id = historyRowKey(row);
+      setCallingId(id);
+      setDigits(String(number).replace(/[^\d*#+]/g, '').slice(0, 16));
+      setTab('dial');
+      setError('');
       try {
-        await phone.dial(number, { storeKey, from: activeAccount?.mainNumber });
-        setError('');
-        setTab('dial');
+        await phone.dial(number, { storeKey: row.storeKey || storeKey, from: activeAccount?.mainNumber });
       } catch (err) {
         setError(err?.message || 'Could not start the call.');
+      } finally {
+        setCallingId((current) => (current === id ? '' : current));
       }
     },
-    [activeAccount?.mainNumber, phone, storeKey],
+    [activeAccount?.mainNumber, phone.dial, storeKey],
   );
 
   const goToStoreList = useCallback(() => {
@@ -1826,15 +1845,19 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
             ) : missedCalls.length === 0 ? (
               <Text style={styles.emptyText}>No missed calls {rangeLabel}.</Text>
             ) : (
-              missedCalls.map((row) => (
-                <CallHistoryRow
-                  key={row.id}
-                  row={row}
-                  inbound
-                  onCallback={callBack}
-                  callbackBusy={phone.busy}
-                />
-              ))
+              missedCalls.map((row) => {
+                const id = historyRowKey(row);
+                return (
+                  <CallHistoryRow
+                    key={id}
+                    row={row}
+                    inbound
+                    onCallback={callBack}
+                    callbackBusy={callingId === id}
+                    callbackDisabled={Boolean(callingId) && callingId !== id}
+                  />
+                );
+              })
             )}
           </View>
         ) : null}
