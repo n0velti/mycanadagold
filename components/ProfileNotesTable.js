@@ -21,7 +21,7 @@ import {
   noteCategoryLabel,
   noteImportanceLabel,
 } from '../lib/profileNotes';
-import { MOBILE, useIsMobile } from '../lib/mobileUi';
+import { MOBILE } from '../lib/mobileUi';
 
 const fontFamily = 'Sohne';
 const GOLD = '#E8C36A';
@@ -499,7 +499,6 @@ function MobileNoteCard({ note, myId, canDelete, onDelete, deleting }) {
 }
 
 export default function ProfileNotesTable({ profileId, myId }) {
-  const isMobile = useIsMobile();
   const [notes, setNotes] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -574,139 +573,66 @@ export default function ProfileNotesTable({ profileId, myId }) {
     }
   };
 
-  const table = (
-    <View style={styles.table}>
-      <View style={styles.tableHead}>
-        <Text style={styles.tableTitle}>Notes</Text>
-        <Pressable
-          onPress={startAdd}
-          disabled={!profileId || Boolean(draft)}
-          style={({ hovered, pressed }) => [
-            styles.addButton,
-            (hovered || pressed) && styles.addButtonPressed,
-            (!profileId || draft) && styles.addButtonDisabled,
-          ]}
-          accessibilityRole="button"
-          accessibilityLabel="Add note"
-        >
-          <Ionicons name="add" size={16} color="#111" />
-          <Text style={styles.addButtonText}>Add note</Text>
-        </Pressable>
-      </View>
-      <View style={styles.headerRow}>
-        <Text style={[styles.headerCell, styles.colDate]}>Date</Text>
-        <Text style={[styles.headerCell, styles.colFrom]}>From</Text>
-        <Text style={[styles.headerCell, styles.colNote]}>Note</Text>
-        <Text style={[styles.headerCell, styles.colDue]}>Due</Text>
-        <Text style={[styles.headerCell, styles.colCategory]}>Category</Text>
-        <Text style={[styles.headerCell, styles.colImportance]}>Importance</Text>
-      </View>
-      {draft ? (
-        <ComposerRow
-          draft={draft}
-          onChange={setDraft}
-          onSave={() => void handleSave()}
-          onCancel={() => {
-            if (!saving) {
-              setDraft(null);
-              setSaveError('');
-            }
-          }}
-          saving={saving}
-          canSave={Boolean(draft.body.trim())}
-        />
-      ) : null}
-      {loading ? (
-        <View style={styles.empty}>
-          <ActivityIndicator color={GOLD} />
-        </View>
-      ) : notes.length === 0 && !draft ? (
-        <View style={styles.empty}>
-          <Text style={styles.emptyText}>
-            {error || 'No notes yet. Add one to keep a record on this profile.'}
-          </Text>
-        </View>
-      ) : (
-        notes.map((note) => (
-          <NoteRow
-            key={note.id}
-            note={note}
-            myId={myId}
-            canDelete={note.authorId === myId || note.profileId === myId}
-            deleting={deletingId === note.id}
-            onDelete={() => void handleDelete(note.id)}
-          />
-        ))
-      )}
-      {saveError ? <Text style={styles.tableError}>{saveError}</Text> : null}
-      {error && notes.length > 0 ? <Text style={styles.tableError}>{error}</Text> : null}
-    </View>
-  );
-
   return (
-    <View style={[styles.wrap, isMobile && styles.wrapMobile]}>
-      {isMobile ? (
-        <View style={styles.mobileWrap}>
-          <View style={styles.mobileHead}>
-            <Text style={styles.mobileTitle}>Notes</Text>
-            <Pressable
-              onPress={startAdd}
-              disabled={!profileId || Boolean(draft)}
-              style={({ pressed }) => [
-                styles.mobileAdd,
-                pressed && styles.addButtonPressed,
-                (!profileId || draft) && styles.addButtonDisabled,
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel="Add note"
-            >
-              <Ionicons name="add" size={20} color="#007AFF" />
-              <Text style={styles.mobileAddText}>Add</Text>
-            </Pressable>
-          </View>
-          {draft ? (
-            <MobileComposer
-              draft={draft}
-              onChange={setDraft}
-              onSave={() => void handleSave()}
-              onCancel={() => {
-                if (!saving) {
-                  setDraft(null);
-                  setSaveError('');
-                }
-              }}
-              saving={saving}
-              canSave={Boolean(draft.body.trim())}
-            />
-          ) : null}
-          {loading ? (
-            <View style={styles.mobileEmpty}>
-              <ActivityIndicator color="#007AFF" />
-            </View>
-          ) : notes.length === 0 && !draft ? (
-            <View style={styles.mobileEmptyCard}>
-              <Text style={styles.mobileEmptyText}>
-                {error || 'No notes yet. Add one to keep a record on this profile.'}
-              </Text>
-            </View>
-          ) : (
-            notes.map((note) => (
-              <MobileNoteCard
-                key={note.id}
-                note={note}
-                myId={myId}
-                canDelete={note.authorId === myId || note.profileId === myId}
-                deleting={deletingId === note.id}
-                onDelete={() => void handleDelete(note.id)}
-              />
-            ))
-          )}
-          {saveError ? <Text style={styles.mobileError}>{saveError}</Text> : null}
-          {error && notes.length > 0 ? <Text style={styles.mobileError}>{error}</Text> : null}
+    <View style={[styles.wrap, styles.wrapMobile]}>
+      <View style={styles.mobileWrap}>
+        <View style={styles.mobileHead}>
+          <Text style={styles.mobileTitle}>Notes</Text>
+          <Pressable
+            onPress={startAdd}
+            disabled={!profileId || Boolean(draft)}
+            style={({ pressed }) => [
+              styles.mobileAdd,
+              pressed && styles.addButtonPressed,
+              (!profileId || draft) && styles.addButtonDisabled,
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="Add note"
+          >
+            <Ionicons name="add" size={20} color="#007AFF" />
+            <Text style={styles.mobileAddText}>Add</Text>
+          </Pressable>
         </View>
-      ) : (
-        table
-      )}
+        {draft ? (
+          <MobileComposer
+            draft={draft}
+            onChange={setDraft}
+            onSave={() => void handleSave()}
+            onCancel={() => {
+              if (!saving) {
+                setDraft(null);
+                setSaveError('');
+              }
+            }}
+            saving={saving}
+            canSave={Boolean(draft.body.trim())}
+          />
+        ) : null}
+        {loading ? (
+          <View style={styles.mobileEmpty}>
+            <ActivityIndicator color="#007AFF" />
+          </View>
+        ) : notes.length === 0 && !draft ? (
+          <View style={styles.mobileEmptyCard}>
+            <Text style={styles.mobileEmptyText}>
+              {error || 'No notes yet. Add one to keep a record on this profile.'}
+            </Text>
+          </View>
+        ) : (
+          notes.map((note) => (
+            <MobileNoteCard
+              key={note.id}
+              note={note}
+              myId={myId}
+              canDelete={note.authorId === myId || note.profileId === myId}
+              deleting={deletingId === note.id}
+              onDelete={() => void handleDelete(note.id)}
+            />
+          ))
+        )}
+        {saveError ? <Text style={styles.mobileError}>{saveError}</Text> : null}
+        {error && notes.length > 0 ? <Text style={styles.mobileError}>{error}</Text> : null}
+      </View>
     </View>
   );
 }

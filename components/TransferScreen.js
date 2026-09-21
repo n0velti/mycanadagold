@@ -17,8 +17,20 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
 import { persistOwnLocation } from '../lib/auth';
 import { fetchTransferStores } from '../lib/locations';
+import { useIsMobile } from '../lib/mobileUi';
 import { formatDateParam, formatPickerDate, parseDateParam } from '../lib/transactions';
-import { fetchTransferDetail, fetchDashboardTransfers, mergeTransferDetail, createPosTransfersFromGroups, receivePlannedPosItems } from '../lib/transfers';
+import {
+  fetchTransferDetail,
+  fetchDashboardTransfers,
+  mergeTransferDetail,
+  createPosTransfersFromGroups,
+  receivePlannedPosItems,
+  unreceivePlannedPosItems,
+  deletePlannedPosItems,
+  receivePosTransferItems,
+  unreceivePosTransferItems,
+  deletePosTransferItems,
+} from '../lib/transfers';
 import {
   RECEIVE_STATUS,
   RECEIVE_STATUS_LABELS,
@@ -27,10 +39,12 @@ import {
   fillPlannedItemReceivedQty,
   itemsFromPlan,
   posTransferGroupsFromPlan,
+  removePlannedItems,
   setPlannedItemReceivedQty,
   triageDatesForStore,
   useTransferWorkflow,
 } from '../lib/transferWorkflow';
+import { confirmDestructive, T, TextAction, TextTabs } from './TriageKit';
 import {
   TERRITORY_KEYS,
   TERRITORY_LABELS,
@@ -482,28 +496,17 @@ function SplitsEditor({
   );
 }
 
-function TabBar({ options, value, onChange }) {
-  return (
-    <View style={styles.tabBar} accessibilityRole="tablist">
-      {options.map((option) => {
-        const active = option.key === value;
-        return (
-          <Pressable
-            key={option.key}
-            style={[styles.tab, active && styles.tabActive]}
-            onPress={() => onChange(option.key)}
-            accessibilityRole="tab"
-            accessibilityState={{ selected: active }}
-            accessibilityLabel={option.label}
-          >
-            <Text style={[styles.tabLabel, active && styles.tabLabelActive]} numberOfLines={1}>
-              {option.label}
-            </Text>
-          </Pressable>
-        );
-      })}
-    </View>
-  );
+function posEmployeeId(session) {
+  return session?.profile?.aureusUserId || session?.user?.id;
+}
+
+async function persistSwitchedLocation(session, onLocationChanged, { locationId, locationName }) {
+  try {
+    await persistOwnLocation(session, { locationId, locationName });
+  } catch {
+    // POS already has the store; profile sync can catch up later.
+  }
+  onLocationChanged?.({ locationId, locationName });
 }
 
 function EmptyTab({ tab }) {
@@ -830,7 +833,18 @@ function DetailRow({ label, value, last }) {
   );
 }
 
-function TransferDetailDrawer({ visible, transfer, stores, loading, error, onClose }) {
+function TransferDetailDrawer({
+  visible,
+  transfer,
+  stores,
+  loading,
+  error,
+  session,
+  onClose,
+  onUpdated,
+  onDeleted,
+  onLocationChanged,
+}) {
   const { width: windowWidth } = useWindowDimensions();
   const isMobile = windowWidth < MOBILE_BREAKPOINT;
   const panelWidth = isMobile
@@ -838,6 +852,32 @@ function TransferDetailDrawer({ visible, transfer, stores, loading, error, onClo
     : Math.min(Math.max(Math.round(windowWidth * 0.46), 420), 560);
   const { mounted, slide, backdrop } = useRightDrawerAnimation(visible, panelWidth);
   const held = useHeldValue(transfer);
+  const [busy, setBusy] = useState(null);
+  const [actionError, setActionError] = useState('');
+
+  useEffect(() => {
+    setBusy(null);
+    setActionError('');
+  }, [visible, transfer?.id]);
+
+  const runPos = async (key, work) => {
+    if (!session?.token) throw new Error('Sign in required.');
+    const employeeId = posEmployeeId(session);
+    if (!employeeId) {
+      throw new Error('Your POS user is missing, so this transfer cannot be updated.');
+    }
+    setActionError('');
+    setBusy(key);
+    try {
+      const next = await work(employeeId);
+      if (next) onUpdated?.(next);
+      else onDeleted?.();
+    } catch (err) {
+      setActionError(err?.message || 'Failed to update transfer in POS.');
+    } finally {
+      setBusy(null);
+    }
+  };
 
   if (!mounted || !held) return null;
 
@@ -845,6 +885,13 @@ function TransferDetailDrawer({ visible, transfer, stores, loading, error, onClo
   const to = locationLabel(held.to, stores);
   const items = Array.isArray(held.items) ? held.items : [];
   const received = held.status === 'received';
+  const anyReceived = received || items.some((item) => (Number(item.receivedQuantity) || 0) > 0);
+  const anyOpen = items.some((item) => {
+    const sent = Number(item.quantity) || 0;
+    const got = Number(item.receivedQuantity) || 0;
+    return sent > 0 && got + 0.0005 < sent;
+  });
+  const working = Boolean(busy);
 
   return (
     <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose}>
@@ -929,17 +976,66 @@ function TransferDetailDrawer({ visible, transfer, stores, loading, error, onClo
               <DetailRow label="Comments" value={held.comments || '—'} last />
             </View>
 
-            <Text style={styles.drawerSectionLabel}>
-              Items{items.length ? ` · ${items.length}` : ''}
-              {held.totalQty ? ` · ${formatQty(held.totalQty)} sent` : ''}
-            </Text>
+            <View style={styles.receiveAllRow}>
+              <Text style={styles.drawerSectionLabel}>
+                Items{items.length ? ` · ${items.length}` : ''}
+                {held.totalQty ? ` · ${formatQty(held.totalQty)} sent` : ''}
+              </Text>
+              <View style={styles.itemActions}>
+                {anyOpen ? (
+                  <TextAction
+                    label="Receive all"
+                    icon="checkmark-done-outline"
+                    disabled={working || items.length === 0}
+                    onPress={() =>
+                      runPos('all-receive', (employeeId) =>
+                        receivePosTransferItems(session.token, held, null, {
+                          employeeId,
+                          baseUrl: session.baseUrl,
+                          onLocationEnsured: (next) =>
+                            persistSwitchedLocation(session, onLocationChanged, next),
+                        }),
+                      )
+                    }
+                  />
+                ) : null}
+                {anyReceived ? (
+                  <TextAction
+                    label="Unreceive"
+                    icon="return-up-back-outline"
+                    disabled={working || items.length === 0}
+                    onPress={() =>
+                      confirmDestructive(
+                        'Unreceive transfer',
+                        'This returns received quantities to the sending store in Aureus.',
+                        () =>
+                          runPos('all-unreceive', (employeeId) =>
+                            unreceivePosTransferItems(session.token, held, null, {
+                              employeeId,
+                              baseUrl: session.baseUrl,
+                              onLocationEnsured: (next) =>
+                                persistSwitchedLocation(session, onLocationChanged, next),
+                            }),
+                          ),
+                        'Unreceive',
+                      )
+                    }
+                  />
+                ) : null}
+              </View>
+            </View>
 
+            <Text style={styles.finishHint}>
+              Receive and unreceive switch you to the destination store in POS if needed. Deleting
+              an item removes it from Aureus.
+            </Text>
             {loading ? (
               <View style={styles.drawerLoading}>
-                <ActivityIndicator color={ACCENT} />
+                <ActivityIndicator color={T.blue} />
               </View>
             ) : null}
             {error ? <Text style={styles.errorText}>{error}</Text> : null}
+            {actionError ? <Text style={styles.receiveError}>{actionError}</Text> : null}
 
             <View style={styles.drawerGroup}>
               <View style={styles.itemHead}>
@@ -953,38 +1049,105 @@ function TransferDetailDrawer({ visible, transfer, stores, loading, error, onClo
                 items.map((item, index) => {
                   const name = item.name || item.sku || item.productId || 'Untitled item';
                   const short = item.shortfall != null && item.shortfall > 0;
+                  const itemReceived = (Number(item.receivedQuantity) || 0) > 0;
+                  const itemOpen =
+                    (Number(item.quantity) || 0) > 0 &&
+                    (Number(item.receivedQuantity) || 0) + 0.0005 < (Number(item.quantity) || 0);
                   return (
                     <View
-                      key={item.productId || `${name}-${index}`}
+                      key={item.id || item.productId || `${name}-${index}`}
                       style={[
                         styles.itemRow,
+                        styles.itemRowStack,
                         index === items.length - 1 && !held.totalQty && styles.itemRowLast,
                       ]}
                     >
-                      <View style={styles.itemColName}>
-                        <Text style={styles.itemName} numberOfLines={2}>
-                          {name}
-                        </Text>
-                        {item.sku && item.sku !== name ? (
-                          <Text style={styles.itemSku} numberOfLines={1}>
-                            {item.sku}
+                      <View style={styles.plannedItemTop}>
+                        <View style={styles.itemColName}>
+                          <Text style={styles.itemName} numberOfLines={2}>
+                            {name}
                           </Text>
-                        ) : null}
+                          {item.sku && item.sku !== name ? (
+                            <Text style={styles.itemSku} numberOfLines={1}>
+                              {item.sku}
+                            </Text>
+                          ) : null}
+                        </View>
+                        <Text style={[styles.itemQty, styles.itemColQty]}>
+                          {item.quantity == null ? '—' : formatQty(item.quantity)}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.itemQty,
+                            styles.itemColQty,
+                            short && styles.itemQtyShort,
+                          ]}
+                        >
+                          {item.receivedQuantity == null
+                            ? '—'
+                            : formatQty(item.receivedQuantity)}
+                        </Text>
                       </View>
-                      <Text style={[styles.itemQty, styles.itemColQty]}>
-                        {item.quantity == null ? '—' : formatQty(item.quantity)}
-                      </Text>
-                      <Text
-                        style={[
-                          styles.itemQty,
-                          styles.itemColQty,
-                          short && styles.itemQtyShort,
-                        ]}
-                      >
-                        {item.receivedQuantity == null
-                          ? '—'
-                          : formatQty(item.receivedQuantity)}
-                      </Text>
+                      <View style={styles.itemActions}>
+                        {itemOpen ? (
+                          <TextAction
+                            label={busy === `recv-${item.id}` ? 'Receiving…' : 'Receive'}
+                            disabled={working}
+                            onPress={() =>
+                              runPos(`recv-${item.id}`, (employeeId) =>
+                                receivePosTransferItems(session.token, held, [item.id], {
+                                  employeeId,
+                                  baseUrl: session.baseUrl,
+                                  onLocationEnsured: (next) =>
+                                    persistSwitchedLocation(session, onLocationChanged, next),
+                                }),
+                              )
+                            }
+                          />
+                        ) : null}
+                        {itemReceived ? (
+                          <TextAction
+                            label={busy === `unrecv-${item.id}` ? 'Unreceiving…' : 'Unreceive'}
+                            disabled={working}
+                            onPress={() =>
+                              runPos(`unrecv-${item.id}`, (employeeId) =>
+                                unreceivePosTransferItems(session.token, held, [item.id], {
+                                  employeeId,
+                                  baseUrl: session.baseUrl,
+                                  onLocationEnsured: (next) =>
+                                    persistSwitchedLocation(session, onLocationChanged, next),
+                                }),
+                              )
+                            }
+                          />
+                        ) : null}
+                        <TextAction
+                          label="Delete"
+                          destructive
+                          disabled={working || !item.id}
+                          onPress={() =>
+                            confirmDestructive(
+                              'Delete item',
+                              `Remove ${name} from this transfer in Aureus?`,
+                              () =>
+                                runPos(`del-${item.id}`, async (employeeId) => {
+                                  const result = await deletePosTransferItems(
+                                    session.token,
+                                    held,
+                                    [item.id],
+                                    {
+                                      employeeId,
+                                      baseUrl: session.baseUrl,
+                                      onLocationEnsured: (next) =>
+                                        persistSwitchedLocation(session, onLocationChanged, next),
+                                    },
+                                  );
+                                  return result.transfer;
+                                }),
+                            )
+                          }
+                        />
+                      </View>
                     </View>
                   );
                 })
@@ -1008,7 +1171,14 @@ function TransferDetailDrawer({ visible, transfer, stores, loading, error, onClo
   );
 }
 
-function DashboardPanel({ session, stores, onRequireLogin }) {
+function recountDashboard(rows) {
+  return {
+    pendingCount: rows.filter((row) => row.status === 'pending').length,
+    receivedCount: rows.filter((row) => row.status === 'received').length,
+  };
+}
+
+function DashboardPanel({ session, stores, onRequireLogin, onLocationChanged }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -1456,7 +1626,35 @@ function DashboardPanel({ session, stores, onRequireLogin }) {
           stores={stores}
           loading={detailLoading}
           error={detailError}
+          session={session}
           onClose={closeDetail}
+          onLocationChanged={onLocationChanged}
+          onUpdated={(next) => {
+            const merged = mergeTransferDetail(selectedRow, next);
+            setRows((current) => {
+              const rowsNext = current.map((entry) =>
+                entry.id === merged.id ? merged : entry,
+              );
+              const counts = recountDashboard(rowsNext);
+              setPendingCount(counts.pendingCount);
+              setReceivedCount(counts.receivedCount);
+              return rowsNext;
+            });
+            setSelectedRow(merged);
+            setDetailError('');
+          }}
+          onDeleted={() => {
+            const removedId = selectedRow?.id;
+            setRows((current) => {
+              const rowsNext = current.filter((entry) => entry.id !== removedId);
+              const counts = recountDashboard(rowsNext);
+              setPendingCount(counts.pendingCount);
+              setReceivedCount(counts.receivedCount);
+              setTotal((value) => (value != null ? Math.max(0, value - 1) : value));
+              return rowsNext;
+            });
+            closeDetail();
+          }}
         />
       </View>
     </View>
@@ -1744,33 +1942,49 @@ function PlannedTransferDrawer({ visible, transfer, session, onClose, onLocation
     setBusy(null);
   }, [visible, transfer?.id]);
 
-  const receiveInPos = async (itemIds) => {
-    if (!live) return;
+  const withPosEmployee = () => {
+    if (!live) throw new Error('Transfer is missing.');
     if (!session?.token) throw new Error('Sign in required.');
-    const employeeId = session?.profile?.aureusUserId || session?.user?.id;
+    const employeeId = posEmployeeId(session);
     if (!employeeId) {
-      throw new Error('Your POS user is missing, so the transfer cannot be received.');
+      throw new Error('Your POS user is missing, so the transfer cannot be updated.');
     }
-    const updates = await receivePlannedPosItems(session.token, live, {
-      itemIds,
+    return {
       employeeId,
-      baseUrl: session.baseUrl,
-      onLocationEnsured: async ({ locationId, locationName }) => {
-        try {
-          await persistOwnLocation(session, { locationId, locationName });
-        } catch {
-          // POS already has the receiving store; profile sync can catch up later.
-        }
-        onLocationChanged?.({ locationId, locationName });
+      options: {
+        employeeId,
+        baseUrl: session.baseUrl,
+        onLocationEnsured: (next) => persistSwitchedLocation(session, onLocationChanged, next),
       },
-    });
+    };
+  };
+
+  const receiveInPos = async (itemIds) => {
+    const { options } = withPosEmployee();
+    const updates = await receivePlannedPosItems(session.token, live, { itemIds, ...options });
     applyPlannedReceive(live.id, updates);
+  };
+
+  const unreceiveInPos = async (itemIds) => {
+    const { options } = withPosEmployee();
+    const updates = await unreceivePlannedPosItems(session.token, live, { itemIds, ...options });
+    applyPlannedReceive(live.id, updates);
+  };
+
+  const deleteInPos = async (itemIds) => {
+    const { options } = withPosEmployee();
+    const result = await deletePlannedPosItems(session.token, live, { itemIds, ...options });
+    removePlannedItems(live.id, result.removedIds, result);
+    if (result.deletedTransfer) onClose();
   };
 
   if (!mounted || !live) return null;
 
   const items = Array.isArray(live.items) ? live.items : [];
   const allReceived = live.receiveStatus === RECEIVE_STATUS.all_received;
+  const anyReceived =
+    live.receiveStatus !== RECEIVE_STATUS.not_received ||
+    items.some((item) => item.received || (Number(item.receivedQty) || 0) > 0);
   const receiving = Boolean(busy);
   const path = (live.pathLabels || []).filter(Boolean).join(' → ')
     || `${live.fromName || '—'} → ${live.toName || '—'}`;
@@ -1848,51 +2062,56 @@ function PlannedTransferDrawer({ visible, transfer, session, onClose, onLocation
               <Text style={styles.drawerSectionLabel}>
                 Items{items.length ? ` · ${items.length}` : ''}
               </Text>
-              <Pressable
-                style={[
-                  styles.receiveAllButton,
-                  allReceived && styles.receiveAllButtonDone,
-                  receiving && styles.transferButtonDisabled,
-                ]}
-                onPress={async () => {
-                  if (receiving || allReceived || items.length === 0) return;
-                  setError('');
-                  setBusy('all');
-                  try {
-                    await receiveInPos(null);
-                  } catch (err) {
-                    setError(err?.message || 'Failed to receive transfer in POS.');
-                  } finally {
-                    setBusy(null);
-                  }
-                }}
-                disabled={allReceived || items.length === 0 || receiving}
-              >
-                {busy === 'all' ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <>
-                    <Ionicons
-                      name="checkmark-done-outline"
-                      size={16}
-                      color={allReceived ? '#2F8A4E' : '#fff'}
-                    />
-                    <Text
-                      style={[
-                        styles.receiveAllButtonText,
-                        allReceived && styles.receiveAllButtonTextDone,
-                      ]}
-                    >
-                      {allReceived ? 'All received' : 'Receive all'}
-                    </Text>
-                  </>
+              <View style={styles.itemActions}>
+                {allReceived ? null : (
+                  <TextAction
+                    label={busy === 'all' ? 'Receiving…' : 'Receive all'}
+                    icon="checkmark-done-outline"
+                    disabled={receiving || items.length === 0}
+                    onPress={async () => {
+                      setError('');
+                      setBusy('all');
+                      try {
+                        await receiveInPos(null);
+                      } catch (err) {
+                        setError(err?.message || 'Failed to receive transfer in POS.');
+                      } finally {
+                        setBusy(null);
+                      }
+                    }}
+                  />
                 )}
-              </Pressable>
+                {anyReceived ? (
+                  <TextAction
+                    label={busy === 'unall' ? 'Unreceiving…' : 'Unreceive'}
+                    icon="return-up-back-outline"
+                    disabled={receiving || items.length === 0}
+                    onPress={() =>
+                      confirmDestructive(
+                        'Unreceive transfer',
+                        'This returns received quantities to the sending store in Aureus.',
+                        async () => {
+                          setError('');
+                          setBusy('unall');
+                          try {
+                            await unreceiveInPos(null);
+                          } catch (err) {
+                            setError(err?.message || 'Failed to unreceive transfer in POS.');
+                          } finally {
+                            setBusy(null);
+                          }
+                        },
+                        'Unreceive',
+                      )
+                    }
+                  />
+                ) : null}
+              </View>
             </View>
 
             <Text style={styles.finishHint}>
-              POS only receives a transfer when you are currently at the destination store. We’ll
-              switch you there if needed.
+              POS only receives or unreceives when you are at the destination store. We’ll switch
+              you there if needed. Deleting an item removes it from Aureus too.
             </Text>
             {error ? <Text style={styles.receiveError}>{error}</Text> : null}
 
@@ -1936,42 +2155,65 @@ function PlannedTransferDrawer({ visible, transfer, session, onClose, onLocation
                         accessibilityLabel="Fill with sent quantity"
                         disabled={receiving || item.received}
                       >
-                        <Ionicons name="copy-outline" size={15} color={ACCENT} />
+                        <Ionicons name="copy-outline" size={15} color={T.blue} />
                         <Text style={styles.fillButtonText}>Fill</Text>
                       </Pressable>
-                      <Pressable
-                        style={[
-                          styles.itemReceivedButton,
-                          item.received && styles.itemReceivedButtonDone,
-                          receiving && styles.transferButtonDisabled,
-                        ]}
-                        onPress={async () => {
-                          if (receiving || item.received) return;
-                          setError('');
-                          setBusy(item.id);
-                          try {
-                            await receiveInPos([item.id]);
-                          } catch (err) {
-                            setError(err?.message || 'Failed to receive this item in POS.');
-                          } finally {
-                            setBusy(null);
-                          }
-                        }}
-                        disabled={item.received || receiving}
-                      >
-                        {busy === item.id ? (
-                          <ActivityIndicator color="#fff" />
-                        ) : (
-                          <Text
-                            style={[
-                              styles.itemReceivedButtonText,
-                              item.received && styles.itemReceivedButtonTextDone,
-                            ]}
-                          >
-                            {item.received ? 'Received' : 'Received'}
-                          </Text>
-                        )}
-                      </Pressable>
+                      {item.received ? null : (
+                        <TextAction
+                          label={busy === item.id ? 'Receiving…' : 'Receive'}
+                          disabled={receiving}
+                          onPress={async () => {
+                            setError('');
+                            setBusy(item.id);
+                            try {
+                              await receiveInPos([item.id]);
+                            } catch (err) {
+                              setError(err?.message || 'Failed to receive this item in POS.');
+                            } finally {
+                              setBusy(null);
+                            }
+                          }}
+                        />
+                      )}
+                      {item.received || (Number(item.receivedQty) || 0) > 0 ? (
+                        <TextAction
+                          label={busy === `un-${item.id}` ? 'Unreceiving…' : 'Unreceive'}
+                          disabled={receiving}
+                          onPress={async () => {
+                            setError('');
+                            setBusy(`un-${item.id}`);
+                            try {
+                              await unreceiveInPos([item.id]);
+                            } catch (err) {
+                              setError(err?.message || 'Failed to unreceive this item in POS.');
+                            } finally {
+                              setBusy(null);
+                            }
+                          }}
+                        />
+                      ) : null}
+                      <TextAction
+                        label="Delete"
+                        destructive
+                        disabled={receiving}
+                        onPress={() =>
+                          confirmDestructive(
+                            'Delete item',
+                            `Remove ${item.productName || 'this item'} from this transfer in Aureus?`,
+                            async () => {
+                              setError('');
+                              setBusy(`del-${item.id}`);
+                              try {
+                                await deleteInPos([item.id]);
+                              } catch (err) {
+                                setError(err?.message || 'Failed to delete this item in POS.');
+                              } finally {
+                                setBusy(null);
+                              }
+                            },
+                          )
+                        }
+                      />
                     </View>
                   </View>
                 ))
@@ -2053,7 +2295,9 @@ function ActivePanel({ onRequireLogin, session, onLocationChanged }) {
   );
 }
 
-export default function TransferScreen({ session, onRequireLogin, onLocationChanged }) {
+export default function TransferScreen({ session, onRequireLogin, onLocationChanged, onNavTabs }) {
+  const isMobile = useIsMobile();
+  const { planned } = useTransferWorkflow();
   const [activeTab, setActiveTab] = useState('dashboard');
   const [stores, setStores] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -2076,6 +2320,35 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
   const [pdfBusy, setPdfBusy] = useState(false);
   const [showPlan, setShowPlan] = useState(false);
   const [finishOpen, setFinishOpen] = useState(false);
+
+  const tabOptions = useMemo(
+    () =>
+      TRANSFER_TABS.map((tab) =>
+        tab.key === 'active' && planned.length > 0 ? { ...tab, count: planned.length } : tab,
+      ),
+    [planned.length],
+  );
+
+  const navTabs = useMemo(
+    () => (
+      <TextTabs
+        options={tabOptions}
+        value={activeTab}
+        onChange={setActiveTab}
+        size="lg"
+        layout={isMobile ? 'bar' : 'inline'}
+      />
+    ),
+    [activeTab, isMobile, tabOptions],
+  );
+
+  const portalNav = Boolean(onNavTabs) && !isMobile;
+
+  useLayoutEffect(() => {
+    if (!portalNav) return undefined;
+    onNavTabs(navTabs);
+    return () => onNavTabs(null);
+  }, [navTabs, onNavTabs, portalNav]);
 
   const requestId = useRef(0);
   const planRequestId = useRef(0);
@@ -2876,7 +3149,9 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
 
   return (
     <View style={styles.screen}>
-      <TabBar options={TRANSFER_TABS} value={activeTab} onChange={setActiveTab} />
+      {portalNav ? null : (
+        <View style={[styles.localNavRow, isMobile && styles.localNavRowMobile]}>{navTabs}</View>
+      )}
       {activeTab === 'create' ? (
         createBody
       ) : activeTab === 'dashboard' ? (
@@ -2884,6 +3159,7 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
           session={session}
           stores={stores}
           onRequireLogin={onRequireLogin}
+          onLocationChanged={onLocationChanged}
         />
       ) : (
         <ActivePanel
@@ -2912,46 +3188,19 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
   },
-  tabBar: {
+  localNavRow: {
     flexShrink: 0,
     flexDirection: 'row',
-    alignItems: 'stretch',
+    justifyContent: 'flex-end',
+    alignItems: 'flex-end',
     paddingHorizontal: 20,
-    marginTop: 8,
-    marginBottom: 8,
-    maxWidth: 860,
-    width: '100%',
-    alignSelf: 'center',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
+    paddingBottom: 2,
   },
-  tab: {
-    paddingHorizontal: 14,
-    paddingTop: 6,
-    paddingBottom: 11,
-    borderBottomWidth: 2,
-    borderBottomColor: 'transparent',
-    marginBottom: -StyleSheet.hairlineWidth,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  tabActive: {
-    borderBottomColor: ACCENT,
-  },
-  tabLabel: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '500',
-    color: '#6b6b6b',
-    letterSpacing: -0.2,
-  },
-  tabLabelActive: {
-    color: '#1a1a1a',
-    fontWeight: '600',
+  localNavRowMobile: {
+    justifyContent: 'flex-start',
+    alignItems: 'stretch',
+    paddingHorizontal: 0,
+    paddingBottom: 0,
   },
   emptyPanel: {
     flex: 1,
@@ -4490,6 +4739,7 @@ const styles = StyleSheet.create({
   },
   recvRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     gap: 8,
   },
@@ -4499,16 +4749,28 @@ const styles = StyleSheet.create({
     gap: 4,
     borderRadius: 8,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: ACCENT,
+    borderColor: T.blue,
     paddingHorizontal: 8,
     paddingVertical: 7,
-    backgroundColor: '#EEF7FB',
+    backgroundColor: 'rgba(0,122,255,0.08)',
   },
   fillButtonText: {
     fontFamily,
     fontSize: 12,
     fontWeight: '700',
-    color: ACCENT,
+    color: T.blue,
+  },
+  itemActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 10,
+  },
+  itemRowStack: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 8,
   },
   itemReceivedButton: {
     borderRadius: 8,

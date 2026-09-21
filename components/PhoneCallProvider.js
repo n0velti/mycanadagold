@@ -1550,7 +1550,7 @@ function ActiveCallRow({ call, collapsed, busy, muted, audioState, onMute, onHan
   );
 }
 
-export function PhoneIncomingDock({ collapsed = false, variant = 'sidebar' }) {
+export function PhoneIncomingDock({ collapsed = false }) {
   const {
     incoming,
     recentAnswered,
@@ -1567,7 +1567,6 @@ export function PhoneIncomingDock({ collapsed = false, variant = 'sidebar' }) {
   } = usePhoneCalls();
   if (!incoming.length && !recentAnswered.length && !activeCall) return null;
 
-  const banner = variant === 'banner';
   const onHangup = async () => {
     try {
       await hangup(activeCall);
@@ -1594,7 +1593,7 @@ export function PhoneIncomingDock({ collapsed = false, variant = 'sidebar' }) {
   };
 
   return (
-    <View style={[styles.dock, collapsed && styles.dockCollapsed, banner && styles.dockBanner]}>
+    <View style={[styles.dock, collapsed && styles.dockCollapsed]}>
       {activeCall ? (
         <ActiveCallRow
           call={activeCall}
@@ -1668,10 +1667,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#14532D',
     padding: 6,
     gap: 4,
-  },
-  dockBanner: {
-    marginHorizontal: 12,
-    marginBottom: 8,
   },
   dockCollapsed: {
     padding: 4,
