@@ -35,7 +35,7 @@ import {
   formatPickerDate,
   parseDateParam,
 } from '../lib/transactions';
-import { EmptyState, FONT, StaffAvatar, TriageDrawer } from './TriageKit';
+import { EmptyState, FONT, SegmentedSlider, StaffAvatar, TriageDrawer } from './TriageKit';
 
 const ACCENT = '#4F46E5';
 const TINT = '#EEF2FF';
@@ -201,7 +201,7 @@ function personPhoto(staff, name) {
   };
 }
 
-function DateChip({ label, value, onChange, minimumDate, maximumDate, compact }) {
+function DateChip({ label, value, onChange, minimumDate, maximumDate, compact, bare }) {
   const [open, setOpen] = useState(false);
   const dateValue = parseDateParam(value);
 
@@ -216,8 +216,8 @@ function DateChip({ label, value, onChange, minimumDate, maximumDate, compact })
 
   if (Platform.OS === 'web') {
     return (
-      <View style={[styles.dateChip, compact && styles.dateChipCompact]}>
-        <Text style={styles.dateChipLabel}>{label}</Text>
+      <View style={[bare ? styles.dateBare : styles.dateChip, compact && !bare && styles.dateChipCompact]}>
+        {bare ? null : <Text style={styles.dateChipLabel}>{label}</Text>}
         {createElement('input', {
           type: 'date',
           value: formatDateParam(dateValue),
@@ -230,15 +230,16 @@ function DateChip({ label, value, onChange, minimumDate, maximumDate, compact })
             border: 'none',
             background: 'transparent',
             fontFamily: FONT,
-            fontSize: 13,
+            fontSize: bare ? 15 : 13,
             color: '#1d1d1f',
             padding: 0,
             margin: 0,
             outline: 'none',
             cursor: 'pointer',
             minWidth: 0,
-            width: compact ? '100%' : 110,
+            width: bare || compact ? '100%' : 110,
             maxWidth: '100%',
+            textAlign: bare ? 'right' : 'left',
           },
         })}
       </View>
@@ -247,9 +248,12 @@ function DateChip({ label, value, onChange, minimumDate, maximumDate, compact })
 
   return (
     <>
-      <Pressable style={[styles.dateChip, compact && styles.dateChipCompact]} onPress={() => setOpen(true)}>
-        <Text style={styles.dateChipLabel}>{label}</Text>
-        <Text style={styles.dateChipValue}>{formatPickerDate(dateValue)}</Text>
+      <Pressable
+        style={[bare ? styles.dateBare : styles.dateChip, compact && !bare && styles.dateChipCompact]}
+        onPress={() => setOpen(true)}
+      >
+        {bare ? null : <Text style={styles.dateChipLabel}>{label}</Text>}
+        <Text style={[styles.dateChipValue, bare && styles.dateBareValue]}>{formatPickerDate(dateValue)}</Text>
       </Pressable>
       {open ? (
         <Modal transparent animationType="fade" onRequestClose={() => setOpen(false)}>
@@ -673,6 +677,357 @@ function EmployeeDrawer({ visible, name, facts, staff, onClose, onOpenEmployee }
   );
 }
 
+function PhoneField({ label, value, last, onPress, children }) {
+  const inner = (
+    <>
+      <Text style={styles.phoneLabel}>{label}</Text>
+      <View style={styles.phoneControl}>
+        {children || (
+          <Text style={styles.phoneValue} numberOfLines={1}>
+            {value}
+          </Text>
+        )}
+        {onPress ? <Ionicons name="chevron-forward" size={16} color="#C7C7CC" /> : null}
+      </View>
+    </>
+  );
+  const rowStyle = [styles.phoneRow, last && styles.phoneRowLast];
+  if (!onPress) return <View style={rowStyle}>{inner}</View>;
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [...rowStyle, pressed && styles.phoneRowPressed]}
+      accessibilityRole="button"
+      accessibilityLabel={value ? `${label}, ${value}` : label}
+    >
+      {inner}
+    </Pressable>
+  );
+}
+
+function ChoiceSheet({ visible, title, options, value, onClose, onSelect }) {
+  return (
+    <Modal transparent animationType="slide" visible={visible} onRequestClose={onClose}>
+      <Pressable style={styles.sheetBackdrop} onPress={onClose}>
+        <Pressable style={styles.sheetCard} onPress={(event) => event?.stopPropagation?.()}>
+          <View style={styles.sheetGrab}>
+            <View style={styles.sheetGrabber} />
+          </View>
+          <View style={styles.sheetHeader}>
+            <Text style={styles.sheetTitle}>{title}</Text>
+            <Pressable onPress={onClose} hitSlop={8} accessibilityLabel="Done">
+              <Text style={styles.sheetDone}>Done</Text>
+            </Pressable>
+          </View>
+          <ScrollView style={styles.sheetScroll} keyboardShouldPersistTaps="handled">
+            {options.map((option, index) => {
+              const on = option.key === value;
+              const last = index === options.length - 1;
+              return (
+                <Pressable
+                  key={option.key}
+                  onPress={() => {
+                    onSelect(option.key);
+                    onClose();
+                  }}
+                  style={({ pressed }) => [
+                    styles.sheetRow,
+                    last && styles.phoneRowLast,
+                    pressed && styles.phoneRowPressed,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: on }}
+                >
+                  <Text style={[styles.sheetRowLabel, on && styles.sheetRowLabelOn]} numberOfLines={1}>
+                    {option.label}
+                  </Text>
+                  {on ? <Ionicons name="checkmark" size={20} color={ACCENT} /> : <View style={styles.sheetCheck} />}
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+function CompactBars({ series, format, onSelect }) {
+  const visible = series.slice(0, CHART_LIMIT);
+  const max = Math.max(1, ...visible.map((item) => item.value));
+  if (!visible.length) return null;
+  const hidden = series.length - visible.length;
+
+  return (
+    <View style={styles.phoneCard}>
+      {visible.map((item, index) => {
+        const pct = Math.max(item.value > 0 ? 4 : 0, (item.value / max) * 100);
+        const last = index === visible.length - 1 && hidden === 0;
+        const Row = onSelect ? Pressable : View;
+        return (
+          <Row
+            key={item.key}
+            style={[styles.barRow, last && styles.phoneRowLast]}
+            onPress={onSelect ? () => onSelect(item.key) : undefined}
+            accessibilityRole={onSelect ? 'button' : undefined}
+            accessibilityLabel={item.label}
+          >
+            <View style={styles.barTop}>
+              <Text style={styles.barLabel} numberOfLines={1}>
+                {item.label}
+              </Text>
+              <Text style={styles.barValue} numberOfLines={1}>
+                {formatMeasure(item.value, format)}
+              </Text>
+            </View>
+            <View style={styles.barTrack}>
+              <View style={[styles.barFill, { width: `${pct}%` }]} />
+            </View>
+          </Row>
+        );
+      })}
+      {hidden > 0 ? (
+        <Text style={styles.barMore}>
+          Top {CHART_LIMIT} of {series.length}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function PhoneAnalytics({
+  loading,
+  error,
+  warning,
+  measureInfo,
+  pivot,
+  facts,
+  series,
+  rangeKey,
+  applyPreset,
+  startDate,
+  endDate,
+  setStart,
+  setEnd,
+  today,
+  groupBy,
+  measure,
+  applyCompare,
+  savedViews,
+  activeView,
+  onSave,
+  onRemoveView,
+  storeFilter,
+  staff,
+  openEmployee,
+  employeeRows,
+  showRoleCol,
+}) {
+  const [picker, setPicker] = useState('');
+  const groupLabel = DIMENSIONS.find((item) => item.key === groupBy)?.label || 'Employee';
+  const phoneRanges = [
+    { key: 'today', label: 'Today' },
+    { key: '7', label: '7D' },
+    { key: '30', label: '30D' },
+  ];
+
+  return (
+    <View style={styles.screenPhone}>
+      <ScrollView
+        style={styles.bodyScroll}
+        contentContainerStyle={styles.phoneScroll}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.phoneColumn}>
+          <View style={styles.phoneCard}>
+            <View style={styles.phoneTotalMeta}>
+              <Text style={styles.phoneKicker}>{measureInfo.label}</Text>
+              <Text style={styles.phoneMeta} numberOfLines={2}>
+                {storeFilter ? `${storeFilter} · ` : ''}
+                {loading ? 'Loading' : `${facts.length} events · ${pivot.rows.length} ${pivot.rowDim}`}
+              </Text>
+            </View>
+            <View style={styles.phoneTotalGrand}>
+              <Text style={styles.phoneTotalGrandLabel}>Total</Text>
+              <Text style={styles.phoneTotalGrandValue} numberOfLines={1} adjustsFontSizeToFit>
+                {loading ? '—' : formatMeasure(pivot.grand[measure], measureInfo.format)}
+              </Text>
+            </View>
+          </View>
+
+          {measureInfo.hint ? <Text style={styles.phoneHint}>{measureInfo.hint}.</Text> : null}
+          {warning ? <Text style={styles.phoneHint}>{warning}</Text> : null}
+
+          <View style={styles.phoneCard}>
+            <View style={styles.phoneSliderPad}>
+              <SegmentedSlider
+                fill
+                options={phoneRanges}
+                value={rangeKey === 'custom' ? '' : rangeKey}
+                onChange={applyPreset}
+              />
+            </View>
+            <PhoneField label="From">
+              <DateChip bare value={startDate} onChange={setStart} maximumDate={endDate} />
+            </PhoneField>
+            <PhoneField label="To" last>
+              <DateChip bare value={endDate} onChange={setEnd} minimumDate={startDate} maximumDate={today} />
+            </PhoneField>
+          </View>
+
+          <View style={styles.phoneCard}>
+            <PhoneField label="Count" value={measureInfo.label} onPress={() => setPicker('measure')} />
+            <PhoneField label="Group" value={groupLabel} last onPress={() => setPicker('group')} />
+          </View>
+
+          <View style={styles.phoneCard}>
+            {savedViews.length ? (
+              savedViews.map((view) => {
+                const on = activeView?.id === view.id;
+                return (
+                  <View key={view.id} style={styles.phoneRow}>
+                    <Pressable
+                      onPress={() => applyCompare(view)}
+                      style={styles.phoneSavedHit}
+                      accessibilityRole="button"
+                      accessibilityLabel={view.name}
+                    >
+                      <Text style={[styles.phoneSavedName, on && styles.sheetRowLabelOn]} numberOfLines={1}>
+                        {view.name}
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => onRemoveView(view.id)}
+                      hitSlop={8}
+                      accessibilityLabel={`Remove ${view.name}`}
+                    >
+                      <Ionicons name="close" size={16} color="#8e8e93" />
+                    </Pressable>
+                  </View>
+                );
+              })
+            ) : (
+              <View style={styles.phoneRow}>
+                <Text style={styles.phoneEmpty}>Nothing saved yet.</Text>
+              </View>
+            )}
+            <Pressable
+              onPress={onSave}
+              style={({ pressed }) => [styles.phoneRow, styles.phoneRowLast, pressed && styles.phoneRowPressed]}
+              accessibilityRole="button"
+              accessibilityLabel="Save this view"
+            >
+              <Ionicons name="bookmark-outline" size={16} color={ACCENT} />
+              <Text style={styles.phoneSaveLabel}>Save this view</Text>
+            </Pressable>
+          </View>
+
+          {loading ? (
+            <View style={styles.loadingBox}>
+              <ActivityIndicator color="#1a1a1a" />
+            </View>
+          ) : error ? (
+            <EmptyState icon="alert-circle-outline" title="Could not load" body={error} />
+          ) : !facts.length ? (
+            <EmptyState
+              icon="bar-chart-outline"
+              title="No activity"
+              body="No retail transactions in this range, so there is nothing to mix yet."
+            />
+          ) : (
+            <>
+              <CompactBars
+                series={series}
+                format={measureInfo.format}
+                onSelect={employeeRows ? openEmployee : undefined}
+              />
+              <View style={styles.phoneCard}>
+                <View style={styles.phoneListHead}>
+                  <Text style={styles.phoneListHeadLabel}>Breakdown</Text>
+                  <Text style={styles.phoneListHeadMeta} numberOfLines={1}>
+                    {groupLabel}
+                  </Text>
+                </View>
+                {pivot.rows.map((row, index) => {
+                  const photo = employeeRows ? personPhoto(staff, row.key) : null;
+                  const storeName = row.store || (pivot.rowDim === 'store' ? row.key : '');
+                  const value = formatMeasure(row.total[measure], measureInfo.format);
+                  const Row = employeeRows ? Pressable : View;
+                  const rowStyle = [styles.phonePerson];
+                  return (
+                    <Row
+                      key={row.key}
+                      style={
+                        employeeRows
+                          ? ({ pressed }) => [...rowStyle, pressed && styles.phoneRowPressed]
+                          : rowStyle
+                      }
+                      onPress={employeeRows ? () => openEmployee(row.key) : undefined}
+                      accessibilityRole={employeeRows ? 'button' : undefined}
+                      accessibilityLabel={employeeRows ? `Open ${row.key}` : row.key}
+                    >
+                      <Text style={styles.phoneRank}>{index + 1}</Text>
+                      {photo ? (
+                        <StaffAvatar uri={photo.uri} name={photo.label} size={36} />
+                      ) : storeShortCode(storeName) ? (
+                        <StoreMark name={storeName} size={28} />
+                      ) : null}
+                      <View style={styles.personCopy}>
+                        <Text style={styles.personName} numberOfLines={1}>
+                          {row.key}
+                        </Text>
+                        {showRoleCol && row.role ? (
+                          <Text style={styles.personRole} numberOfLines={1}>
+                            {row.role}
+                          </Text>
+                        ) : null}
+                        {employeeRows && row.store ? (
+                          <Text style={styles.personRole} numberOfLines={1}>
+                            {row.store}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <Text style={styles.phonePersonValue} numberOfLines={1}>
+                        {value}
+                      </Text>
+                      {employeeRows ? <Ionicons name="chevron-forward" size={16} color="#C7C7CC" /> : null}
+                    </Row>
+                  );
+                })}
+                <View style={[styles.phonePerson, styles.phonePersonTotal]}>
+                  <Text style={styles.phoneRank} />
+                  <Text style={[styles.personName, styles.footText, styles.phoneTotalName]}>Total</Text>
+                  <Text style={[styles.phonePersonValue, styles.footText]} numberOfLines={1}>
+                    {formatMeasure(pivot.grand[measure], measureInfo.format)}
+                  </Text>
+                </View>
+              </View>
+            </>
+          )}
+        </View>
+      </ScrollView>
+
+      <ChoiceSheet
+        visible={picker === 'measure'}
+        title="What to count"
+        options={MEASURES}
+        value={measure}
+        onClose={() => setPicker('')}
+        onSelect={(key) => applyCompare({ measure: key })}
+      />
+      <ChoiceSheet
+        visible={picker === 'group'}
+        title="One row for each"
+        options={DIMENSIONS}
+        value={groupBy}
+        onClose={() => setPicker('')}
+        onSelect={(key) => applyCompare({ groupBy: key })}
+      />
+    </View>
+  );
+}
+
 function EmployeesAnalytics({ session, storeFilter }) {
   const compact = useIsMobile();
   const range = defaultDateRange(7);
@@ -854,10 +1209,65 @@ function EmployeesAnalytics({ session, storeFilter }) {
     if (end < startDate) setStartDate(end);
   };
 
+  const applyPreset = (key) => {
+    if (key === '7') applyRange(week);
+    else if (key === '30') applyRange(month);
+    else applyRange({ startDate: today, endDate: today });
+  };
+
   if (!session?.token) {
     return (
-      <View style={[styles.screen, compact && styles.screenCompact]}>
+      <View style={[styles.screen, compact && styles.screenPhone]}>
         <EmptyState icon="people-outline" title="Analytics" body="Sign in to compare employee activity." />
+      </View>
+    );
+  }
+
+  if (compact) {
+    return (
+      <View style={styles.screenPhone}>
+        <PhoneAnalytics
+          loading={loading}
+          error={error}
+          warning={warning}
+          measureInfo={measureInfo}
+          pivot={pivot}
+          facts={facts}
+          series={series}
+          rangeKey={rangeKey}
+          applyPreset={applyPreset}
+          startDate={startDate}
+          endDate={endDate}
+          setStart={setStart}
+          setEnd={setEnd}
+          today={today}
+          groupBy={groupBy}
+          measure={measure}
+          applyCompare={applyCompare}
+          savedViews={savedViews}
+          activeView={activeView}
+          onSave={() => setSavingView(true)}
+          onRemoveView={removeSavedView}
+          storeFilter={storeFilter}
+          staff={staff}
+          openEmployee={openEmployee}
+          employeeRows={employeeRows}
+          showRoleCol={showRoleCol}
+        />
+        <EmployeeDrawer
+          visible={Boolean(selectedEmployee)}
+          name={selectedEmployee}
+          facts={facts}
+          staff={staff}
+          onClose={() => setSelectedEmployee('')}
+          onOpenEmployee={openEmployee}
+        />
+        <SaveViewModal
+          visible={savingView}
+          defaultName={defaultSaveName}
+          onCancel={() => setSavingView(false)}
+          onSave={saveCurrentView}
+        />
       </View>
     );
   }
@@ -1924,7 +2334,8 @@ const styles = StyleSheet.create({
     }),
   },
   statCardCompact: {
-    flexBasis: '47%',
+    flexBasis: '48%',
+    maxWidth: '48%',
     minWidth: 0,
   },
   statCardOn: {
@@ -2035,6 +2446,8 @@ const styles = StyleSheet.create({
   },
   rankedValueCompact: {
     minWidth: 0,
+    flexShrink: 1,
+    maxWidth: '46%',
     fontSize: 13,
     ...Platform.select({
       web: { whiteSpace: 'nowrap' },
@@ -2286,5 +2699,361 @@ const styles = StyleSheet.create({
   },
   footText: {
     fontWeight: '600',
+  },
+  screenPhone: {
+    flex: 1,
+    minHeight: 0,
+    backgroundColor: '#fff',
+    ...Platform.select({
+      web: { overflowX: 'hidden' },
+      default: {},
+    }),
+  },
+  phoneScroll: {
+    paddingTop: 8,
+    paddingBottom: 48,
+  },
+  phoneColumn: {
+    width: '88%',
+    maxWidth: 980,
+    alignSelf: 'center',
+    gap: 16,
+  },
+  phoneCard: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e5e5ea',
+    borderRadius: 12,
+    backgroundColor: '#fff',
+    overflow: 'hidden',
+    ...Platform.select({
+      web: { boxShadow: '0 8px 24px rgba(0,0,0,0.04)' },
+      default: {},
+    }),
+  },
+  phoneTotalMeta: {
+    gap: 4,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 12,
+  },
+  phoneKicker: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '600',
+    color: ACCENT,
+  },
+  phoneMeta: {
+    fontFamily: FONT,
+    fontSize: 12,
+    color: '#8e8e93',
+  },
+  phoneTotalGrand: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    minHeight: 58,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    backgroundColor: TINT,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#d9def8',
+  },
+  phoneTotalGrandLabel: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '600',
+    color: ACCENT,
+  },
+  phoneTotalGrandValue: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: FONT,
+    fontSize: 26,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    letterSpacing: -0.6,
+    fontVariant: ['tabular-nums'],
+    textAlign: 'right',
+  },
+  phoneHint: {
+    fontFamily: FONT,
+    fontSize: 12,
+    color: '#8e8e93',
+    paddingHorizontal: 4,
+  },
+  phoneSliderPad: {
+    paddingHorizontal: 12,
+    paddingTop: 12,
+    paddingBottom: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#ececef',
+  },
+  phoneRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 44,
+    paddingHorizontal: 14,
+    gap: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#ececef',
+  },
+  phoneRowLast: {
+    borderBottomWidth: 0,
+  },
+  phoneRowPressed: {
+    backgroundColor: '#f5f5f7',
+  },
+  phoneLabel: {
+    fontFamily: FONT,
+    width: 72,
+    flexShrink: 0,
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#6e6e73',
+  },
+  phoneControl: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 6,
+  },
+  phoneValue: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: FONT,
+    fontSize: 15,
+    color: '#1d1d1f',
+    textAlign: 'right',
+  },
+  dateBare: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+  },
+  dateBareValue: {
+    fontSize: 15,
+    textAlign: 'right',
+  },
+  phoneSavedHit: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  phoneSavedName: {
+    fontFamily: FONT,
+    fontSize: 15,
+    color: '#1d1d1f',
+  },
+  phoneEmpty: {
+    flex: 1,
+    fontFamily: FONT,
+    fontSize: 15,
+    color: '#8e8e93',
+  },
+  phoneSaveLabel: {
+    flex: 1,
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '600',
+    color: ACCENT,
+  },
+  phoneListHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    minHeight: 34,
+    paddingHorizontal: 14,
+    backgroundColor: '#f6f6f9',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#ececef',
+  },
+  phoneListHeadLabel: {
+    fontFamily: FONT,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#8e8e93',
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+  },
+  phoneListHeadMeta: {
+    flexShrink: 1,
+    fontFamily: FONT,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#8e8e93',
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+  },
+  phonePerson: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minHeight: 56,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#ececef',
+  },
+  phonePersonTotal: {
+    minHeight: 48,
+    backgroundColor: TINT,
+    borderBottomWidth: 0,
+  },
+  phoneRank: {
+    width: 22,
+    flexShrink: 0,
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#8e8e93',
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
+  phonePersonValue: {
+    flexShrink: 1,
+    maxWidth: '42%',
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
+  phoneTotalName: {
+    flex: 1,
+    marginLeft: 4,
+  },
+  barRow: {
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#ececef',
+  },
+  barTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  barLabel: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: FONT,
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#1d1d1f',
+  },
+  barValue: {
+    flexShrink: 0,
+    maxWidth: '46%',
+    fontFamily: FONT,
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
+  barTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: TINT,
+    overflow: 'hidden',
+  },
+  barFill: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: ACCENT,
+  },
+  barMore: {
+    fontFamily: FONT,
+    fontSize: 12,
+    color: '#8e8e93',
+    paddingHorizontal: 14,
+    paddingBottom: 12,
+  },
+  sheetBackdrop: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.28)',
+  },
+  sheetCard: {
+    maxHeight: '78%',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    backgroundColor: '#fff',
+    overflow: 'hidden',
+    ...Platform.select({
+      web: { boxShadow: '0 -8px 28px rgba(0,0,0,0.12)' },
+      default: {},
+    }),
+  },
+  sheetGrab: {
+    alignItems: 'center',
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+  sheetGrabber: {
+    width: 36,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: '#d1d1d6',
+  },
+  sheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 44,
+    paddingHorizontal: 16,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#ececef',
+  },
+  sheetTitle: {
+    fontFamily: FONT,
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    letterSpacing: -0.3,
+  },
+  sheetDone: {
+    fontFamily: FONT,
+    fontSize: 17,
+    fontWeight: '600',
+    color: ACCENT,
+  },
+  sheetScroll: {
+    maxHeight: 420,
+  },
+  sheetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 48,
+    paddingHorizontal: 16,
+    gap: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#ececef',
+  },
+  sheetRowLabel: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: FONT,
+    fontSize: 17,
+    color: '#1d1d1f',
+  },
+  sheetRowLabelOn: {
+    color: ACCENT,
+    fontWeight: '600',
+  },
+  sheetCheck: {
+    width: 20,
+    height: 20,
   },
 });
