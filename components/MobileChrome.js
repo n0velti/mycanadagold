@@ -174,9 +174,6 @@ export function MobileTabBar({
                 </View>
               ) : null}
             </View>
-            <Text style={[styles.tabLabel, isActive && styles.tabLabelActive]}>
-              {tab.label}
-            </Text>
           </Pressable>
         );
       })}
@@ -300,8 +297,8 @@ const styles = StyleSheet.create({
   },
   tabBar: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    paddingTop: 6,
+    alignItems: 'center',
+    paddingTop: 8,
     paddingBottom: mobileSafeBottom(),
     backgroundColor: 'rgba(255,255,255,0.72)',
     overflow: 'visible',
@@ -318,9 +315,7 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 2,
     minHeight: 44,
-    paddingTop: 2,
     overflow: 'visible',
     ...Platform.select({
       web: { cursor: 'pointer' },
@@ -366,17 +361,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: MOBILE.label,
     letterSpacing: -0.2,
-  },
-  tabLabel: {
-    fontFamily,
-    fontSize: 10,
-    fontWeight: '500',
-    color: MOBILE.secondary,
-    letterSpacing: -0.08,
-  },
-  tabLabelActive: {
-    color: MOBILE.label,
-    fontWeight: '600',
   },
   badge: {
     position: 'absolute',
