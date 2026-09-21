@@ -15,6 +15,10 @@
  *   /proxy/rippling/oauth/token            POST  → app.rippling.com/o/token (client secret held here)
  *   /proxy/rippling/company                POST  → save shared HR token (admin)
  *   /proxy/rippling/company/disconnect     POST  → clear shared HR token (admin)
+ *   /proxy/rippling/time/status            GET   → hours-report mailbox status + last import
+ *   /proxy/rippling/time/connect           POST  → store Gmail refresh token for the hours inbox (admin)
+ *   /proxy/rippling/time/disconnect        POST  → forget the hours inbox (admin)
+ *   /proxy/rippling/time/sync              POST  → pull the newest Rippling time CSV (rate-limited)
  *   /proxy/rippling/<path>                 GET   → rest.ripplingapis.com
  *   /proxy/gmail/oauth/config              GET   → { clientId, configured, hostedDomain }
  *   /proxy/gmail/oauth/token               POST  → oauth2.googleapis.com/token (client secret held here)
@@ -1369,6 +1373,590 @@ async function handleGmailMessage(req: Request, query: URLSearchParams): Promise
     ...mapped,
     body: body || mapped.snippet,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Rippling hours feed: a scheduled Rippling report emailed as CSV to a company
+// Gmail inbox. An HR / GM / System Admin connects that inbox once; the refresh
+// token lives in `rippling_time_sync` and the proxy pulls the newest file on
+// demand (rate-limited), so nobody has to be signed in for hours to update.
+// ---------------------------------------------------------------------------
+
+const TIME_SYNC_COOLDOWN_MS = 10 * 60_000;
+const TIME_SYNC_SEARCH = 'has:attachment filename:csv newer_than:7d';
+const TIME_SYNC_MAX_MESSAGES = 12;
+const TIME_SYNC_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+type TimeSyncRow = {
+  gmail_email: string;
+  gmail_refresh_token: string;
+  gmail_access_token: string;
+  gmail_token_expires_at: string | null;
+  last_attempt_at: string | null;
+  last_synced_at: string | null;
+  last_message_id: string;
+  last_message_at: string | null;
+  last_attachment_name: string;
+  last_row_count: number;
+  last_range_start: string | null;
+  last_range_end: string | null;
+  last_error: string;
+  last_clock_at: string | null;
+  last_clock_count: number;
+};
+
+const TIME_SYNC_COLUMNS =
+  'gmail_email, gmail_refresh_token, gmail_access_token, gmail_token_expires_at, last_attempt_at, last_synced_at, last_message_id, last_message_at, last_attachment_name, last_row_count, last_range_start, last_range_end, last_error, last_clock_at, last_clock_count';
+
+function emptyTimeSync(): TimeSyncRow {
+  return {
+    gmail_email: '',
+    gmail_refresh_token: '',
+    gmail_access_token: '',
+    gmail_token_expires_at: null,
+    last_attempt_at: null,
+    last_synced_at: null,
+    last_message_id: '',
+    last_message_at: null,
+    last_attachment_name: '',
+    last_row_count: 0,
+    last_range_start: null,
+    last_range_end: null,
+    last_error: '',
+    last_clock_at: null,
+    last_clock_count: 0,
+  };
+}
+
+async function loadTimeSync(): Promise<TimeSyncRow> {
+  try {
+    const { data, error: queryError } = await adminClient()
+      .from('rippling_time_sync')
+      .select(TIME_SYNC_COLUMNS)
+      .eq('id', true)
+      .maybeSingle();
+    if (queryError || !data) return emptyTimeSync();
+    const row = data as Partial<TimeSyncRow>;
+    return {
+      ...emptyTimeSync(),
+      ...row,
+      gmail_email: String(row.gmail_email || '').trim(),
+      gmail_refresh_token: String(row.gmail_refresh_token || '').trim(),
+      gmail_access_token: String(row.gmail_access_token || '').trim(),
+      last_message_id: String(row.last_message_id || '').trim(),
+      last_attachment_name: String(row.last_attachment_name || ''),
+      last_row_count: Number(row.last_row_count) || 0,
+      last_error: String(row.last_error || ''),
+      last_clock_count: Number(row.last_clock_count) || 0,
+    };
+  } catch {
+    return emptyTimeSync();
+  }
+}
+
+async function saveTimeSync(patch: Partial<TimeSyncRow>, updatedBy?: string): Promise<void> {
+  const payload: Record<string, unknown> = { id: true, ...patch, updated_at: new Date().toISOString() };
+  if (updatedBy) payload.updated_by = updatedBy;
+  const { error: writeError } = await adminClient().from('rippling_time_sync').upsert(payload, { onConflict: 'id' });
+  if (writeError) throw new Error(writeError.message);
+}
+
+function timeSyncPublic(row: TimeSyncRow, staff: StaffContext) {
+  const { clientId, clientSecret } = gmailOAuthApp();
+  return {
+    configured: Boolean(clientId && clientSecret),
+    connected: Boolean(row.gmail_refresh_token),
+    email: row.gmail_refresh_token ? row.gmail_email : '',
+    lastAttemptAt: row.last_attempt_at,
+    lastSyncedAt: row.last_synced_at,
+    lastMessageAt: row.last_message_at,
+    attachmentName: row.last_attachment_name,
+    rowCount: row.last_row_count,
+    rangeStart: row.last_range_start,
+    rangeEnd: row.last_range_end,
+    lastError: row.last_error,
+    clockReportedAt: row.last_clock_at,
+    clockedInCount: row.last_clock_count,
+    canManage: canManageCompanyRippling(staff),
+  };
+}
+
+async function timeSyncAccessToken(row: TimeSyncRow): Promise<string> {
+  const expiresAt = row.gmail_token_expires_at ? Date.parse(row.gmail_token_expires_at) : 0;
+  if (row.gmail_access_token && expiresAt > Date.now() + 60_000) return row.gmail_access_token;
+  if (!row.gmail_refresh_token) throw new Error('The hours mailbox is not connected.');
+
+  const { clientId, clientSecret } = gmailOAuthApp();
+  if (!clientId || !clientSecret) throw new Error('Google mail sign-in is not configured.');
+
+  const form = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    grant_type: 'refresh_token',
+    refresh_token: row.gmail_refresh_token,
+  });
+  const upstream = await forward(GMAIL_TOKEN_URL, {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: form.toString(),
+  }, 30_000);
+  const payload = (await upstream.json().catch(() => null)) as Record<string, unknown> | null;
+  if (!upstream.ok) {
+    const code = String(payload?.error || '');
+    if (code === 'invalid_grant') {
+      await saveTimeSync({ gmail_refresh_token: '', gmail_access_token: '', gmail_token_expires_at: null });
+      throw new Error('Google revoked access to the hours mailbox. Reconnect it on the Employees screen.');
+    }
+    throw new Error(googleErrorMessage(payload, 'Could not refresh Google mail access.'));
+  }
+  const accessToken = String(payload?.access_token || '').trim();
+  if (!accessToken) throw new Error('Google did not return an access token.');
+  const expiresIn = Number(payload?.expires_in) || 3600;
+  const expiresIso = new Date(Date.now() + expiresIn * 1000).toISOString();
+  await saveTimeSync({ gmail_access_token: accessToken, gmail_token_expires_at: expiresIso });
+  row.gmail_access_token = accessToken;
+  row.gmail_token_expires_at = expiresIso;
+  return accessToken;
+}
+
+/** RFC 4180-ish CSV: quoted fields, doubled quotes, CRLF, optional BOM. */
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let quoted = false;
+  const source = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  for (let i = 0; i < source.length; i += 1) {
+    const ch = source[i];
+    if (quoted) {
+      if (ch === '"') {
+        if (source[i + 1] === '"') {
+          field += '"';
+          i += 1;
+        } else {
+          quoted = false;
+        }
+      } else {
+        field += ch;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      quoted = true;
+    } else if (ch === ',') {
+      row.push(field);
+      field = '';
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && source[i + 1] === '\n') i += 1;
+      row.push(field);
+      field = '';
+      if (row.some((cell) => cell !== '')) rows.push(row);
+      row = [];
+    } else {
+      field += ch;
+    }
+  }
+  row.push(field);
+  if (row.some((cell) => cell !== '')) rows.push(row);
+  return rows;
+}
+
+/** "2026-07-27T10:02:00-0400" → "2026-07-27T10:02:00-04:00"; '' for anything unparsable. */
+function normalizeTimestamp(value: string): string {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  const fixed = text.replace(/([+-]\d{2})(\d{2})$/, '$1:$2').replace(' ', 'T');
+  return Number.isNaN(Date.parse(fixed)) ? '' : fixed;
+}
+
+type TimeReport = {
+  rows: {
+    entry_key: string;
+    employee_rippling_id: string;
+    employee_name: string;
+    entry_date: string;
+    started_at: string | null;
+    ended_at: string | null;
+  }[];
+  rangeStart: string;
+  rangeEnd: string;
+  totalRows: number;
+};
+
+/**
+ * Maps a Rippling "Time & Attendance" report to time entries. Returns null
+ * when the sheet is not a time report (so unrelated CSVs are ignored).
+ */
+function parseTimeReport(csv: string): TimeReport | null {
+  const table = parseCsv(csv);
+  if (table.length < 1) return null;
+  const header = table[0].map((cell) => cell.trim().toLowerCase());
+  const find = (test: (name: string) => boolean) => header.findIndex(test);
+
+  const idCol = find((name) => name === 'employee - id' || name === 'employee id' || /employee.*\bid\b/.test(name));
+  const nameCol = find((name) => name === 'employee' || /^employee\s*(-\s*)?(full\s*)?name$/.test(name) || name === 'name' || name === 'full name');
+  const startCol = find((name) => /\bstart\b/.test(name) && !/\bdate\b/.test(name));
+  const endCol = find((name) => /\bend\b/.test(name) && !/\bdate\b/.test(name));
+  const dateCol = find((name) => /\bdate\b/.test(name) && !/\bstart\b/.test(name) && !/\bend\b/.test(name));
+  if (startCol < 0 || endCol < 0 || (idCol < 0 && nameCol < 0)) return null;
+
+  const rows: TimeReport['rows'] = [];
+  const seen = new Set<string>();
+  let rangeStart = '';
+  let rangeEnd = '';
+  const noteDate = (date: string) => {
+    if (!date) return;
+    if (!rangeStart || date < rangeStart) rangeStart = date;
+    if (!rangeEnd || date > rangeEnd) rangeEnd = date;
+  };
+
+  for (let i = 1; i < table.length; i += 1) {
+    const cells = table[i];
+    const name = nameCol >= 0 ? String(cells[nameCol] || '').trim() : '';
+    const id = (idCol >= 0 ? String(cells[idCol] || '').trim() : '') || (name ? `name:${name.toLowerCase()}` : '');
+    if (!id) continue;
+    const started = normalizeTimestamp(cells[startCol] || '');
+    const ended = normalizeTimestamp(cells[endCol] || '');
+    let date = String(dateCol >= 0 ? cells[dateCol] || '' : '').trim().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) date = started ? started.slice(0, 10) : '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    noteDate(date);
+    // Rows without a clock-in are the report's left-join padding (or leave); nothing to show.
+    if (!started) continue;
+    const key = `${id}|${date}|${started}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push({
+      entry_key: key,
+      employee_rippling_id: id,
+      employee_name: name,
+      entry_date: date,
+      started_at: started,
+      ended_at: ended || null,
+    });
+  }
+
+  if (!rangeStart) return null;
+  return { rows, rangeStart, rangeEnd, totalRows: table.length - 1 };
+}
+
+type ClockReport = {
+  rows: { employee_rippling_id: string; employee_name: string; is_clocked_in: boolean }[];
+  clockedIn: number;
+};
+
+/**
+ * Rippling "Clock In report": Employee - ID, Employee, Is clocked in?. Some
+ * exports list only the people who are in; others list everyone with Yes/No.
+ */
+function parseClockReport(csv: string): ClockReport | null {
+  const table = parseCsv(csv);
+  if (table.length < 1) return null;
+  const header = table[0].map((cell) => cell.trim().toLowerCase());
+  const find = (test: (name: string) => boolean) => header.findIndex(test);
+
+  const flagCol = find((name) => /clocked\s*in/.test(name));
+  const idCol = find((name) => name === 'employee - id' || name === 'employee id' || /employee.*\bid\b/.test(name));
+  const nameCol = find((name) => name === 'employee' || /^employee\s*(-\s*)?(full\s*)?name$/.test(name) || name === 'name' || name === 'full name');
+  if (flagCol < 0 || (idCol < 0 && nameCol < 0)) return null;
+
+  const rows: ClockReport['rows'] = [];
+  const seen = new Set<string>();
+  let clockedIn = 0;
+  for (let i = 1; i < table.length; i += 1) {
+    const cells = table[i];
+    const name = nameCol >= 0 ? String(cells[nameCol] || '').trim() : '';
+    const id = (idCol >= 0 ? String(cells[idCol] || '').trim() : '') || (name ? `name:${name.toLowerCase()}` : '');
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const flag = String(cells[flagCol] || '').trim().toLowerCase();
+    const isIn = flag === 'yes' || flag === 'true' || flag === 'y' || flag === '1';
+    if (isIn) clockedIn += 1;
+    rows.push({ employee_rippling_id: id, employee_name: name, is_clocked_in: isIn });
+  }
+  return { rows, clockedIn };
+}
+
+type GmailAttachmentPart = GmailPart & { filename?: string; body?: { data?: string; attachmentId?: string; size?: number } };
+
+function collectCsvParts(part: GmailAttachmentPart | undefined, out: GmailAttachmentPart[] = []): GmailAttachmentPart[] {
+  if (!part) return out;
+  const filename = String(part.filename || '').trim();
+  const mime = String(part.mimeType || '').toLowerCase();
+  if ((filename && /\.csv$/i.test(filename)) || mime === 'text/csv') {
+    if (part.body?.attachmentId || part.body?.data) out.push(part);
+  }
+  for (const child of part.parts || []) collectCsvParts(child as GmailAttachmentPart, out);
+  return out;
+}
+
+function decodeBase64UrlBytes(data: string): Uint8Array {
+  const padded = data.replace(/-/g, '+').replace(/_/g, '/');
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function gmailAttachmentText(token: string, messageId: string, part: GmailAttachmentPart): Promise<string> {
+  let data = String(part.body?.data || '');
+  if (!data && part.body?.attachmentId) {
+    const size = Number(part.body?.size) || 0;
+    if (size > TIME_SYNC_MAX_ATTACHMENT_BYTES) throw new Error('The hours report is too large to import.');
+    const url = `${GMAIL_API}/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(part.body.attachmentId)}`;
+    const result = await googleJson(url, `Bearer ${token}`, 60_000);
+    if (!result.ok) throw new Error(googleErrorMessage(result.payload, 'Could not download the hours report.'));
+    data = String(result.payload?.data || '');
+  }
+  if (!data) return '';
+  return new TextDecoder('utf-8', { fatal: false }).decode(decodeBase64UrlBytes(data));
+}
+
+type TimeSyncResult = { skipped: boolean; imported: boolean; message: string };
+
+/**
+ * Finds the newest unprocessed Rippling time report in the connected inbox and
+ * swaps its date window into `rippling_time_entries`. Every file is a full
+ * snapshot of its window, so only the newest one matters.
+ */
+async function runTimeSync(row: TimeSyncRow, { force, userId }: { force: boolean; userId?: string }): Promise<TimeSyncResult> {
+  if (!row.gmail_refresh_token) return { skipped: true, imported: false, message: 'Hours mailbox is not connected.' };
+
+  const nowIso = new Date().toISOString();
+  if (force) {
+    await saveTimeSync({ last_attempt_at: nowIso }, userId);
+  } else {
+    const cutoff = new Date(Date.now() - TIME_SYNC_COOLDOWN_MS).toISOString();
+    const { data, error: gateError } = await adminClient()
+      .from('rippling_time_sync')
+      .update({ last_attempt_at: nowIso })
+      .eq('id', true)
+      .or(`last_attempt_at.is.null,last_attempt_at.lt.${cutoff}`)
+      .select('id');
+    if (gateError) throw new Error(gateError.message);
+    if (!data || !data.length) return { skipped: true, imported: false, message: 'Checked recently.' };
+  }
+
+  try {
+    const token = await timeSyncAccessToken(row);
+    const params = new URLSearchParams({ q: TIME_SYNC_SEARCH, maxResults: String(TIME_SYNC_MAX_MESSAGES) });
+    const list = await googleJson(`${GMAIL_API}/messages?${params.toString()}`, `Bearer ${token}`);
+    if (!list.ok) throw new Error(googleErrorMessage(list.payload, 'Could not search the hours mailbox.'));
+    const refs = Array.isArray(list.payload?.messages) ? (list.payload.messages as { id?: string }[]) : [];
+
+    const lastAt = row.last_message_at ? Date.parse(row.last_message_at) : 0;
+    const candidates: { id: string; internalDate: number; payload: Record<string, unknown> }[] = [];
+    for (const ref of refs) {
+      const id = String(ref?.id || '').trim();
+      if (!id || id === row.last_message_id) continue;
+      const detail = await googleJson(`${GMAIL_API}/messages/${encodeURIComponent(id)}?format=full`, `Bearer ${token}`, 45_000);
+      if (!detail.ok || !detail.payload) continue;
+      const internalDate = Number(detail.payload.internalDate) || 0;
+      if (internalDate && internalDate <= lastAt) continue;
+      candidates.push({ id, internalDate, payload: detail.payload });
+    }
+    candidates.sort((a, b) => b.internalDate - a.internalDate);
+
+    // Newest message first. Each report type is imported once (from the newest
+    // message that carries it); usually both CSVs ride in the same email.
+    let timeDone = false;
+    let clockDone = false;
+    let newestId = '';
+    let newestAt = 0;
+    const notes: string[] = [];
+
+    for (const candidate of candidates) {
+      if (timeDone && clockDone) break;
+      const parts = collectCsvParts(candidate.payload.payload as GmailAttachmentPart | undefined);
+      let usedThisMessage = false;
+      for (const part of parts) {
+        if (timeDone && clockDone) break;
+        const text = await gmailAttachmentText(token, candidate.id, part);
+        if (!text) continue;
+        const messageAt = candidate.internalDate ? new Date(candidate.internalDate).toISOString() : nowIso;
+
+        if (!timeDone) {
+          const report = parseTimeReport(text);
+          if (report) {
+            const { data: inserted, error: rpcError } = await adminClient().rpc('replace_rippling_time_entries', {
+              p_range_start: report.rangeStart,
+              p_range_end: report.rangeEnd,
+              p_message_id: candidate.id,
+              p_rows: report.rows,
+            });
+            if (rpcError) throw new Error(rpcError.message);
+            await saveTimeSync({
+              last_synced_at: new Date().toISOString(),
+              last_attachment_name: String(part.filename || '').slice(0, 200),
+              last_row_count: Number(inserted) || report.rows.length,
+              last_range_start: report.rangeStart,
+              last_range_end: report.rangeEnd,
+            }, userId);
+            notes.push(`${report.rows.length} time entries (${report.rangeStart} → ${report.rangeEnd})`);
+            timeDone = true;
+            usedThisMessage = true;
+            continue;
+          }
+        }
+
+        if (!clockDone) {
+          const clock = parseClockReport(text);
+          if (clock) {
+            const { error: rpcError } = await adminClient().rpc('replace_rippling_clock_status', {
+              p_message_id: candidate.id,
+              p_reported_at: messageAt,
+              p_rows: clock.rows,
+            });
+            if (rpcError) throw new Error(rpcError.message);
+            await saveTimeSync({ last_clock_at: messageAt, last_clock_count: clock.clockedIn }, userId);
+            notes.push(`${clock.clockedIn} clocked in`);
+            clockDone = true;
+            usedThisMessage = true;
+          }
+        }
+      }
+      if (usedThisMessage && candidate.internalDate >= newestAt) {
+        newestAt = candidate.internalDate;
+        newestId = candidate.id;
+      }
+    }
+
+    if (timeDone || clockDone) {
+      await saveTimeSync({
+        last_message_id: newestId,
+        last_message_at: newestAt ? new Date(newestAt).toISOString() : nowIso,
+        last_error: '',
+      }, userId);
+      return { skipped: false, imported: true, message: `Imported ${notes.join(' · ')}.` };
+    }
+
+    await saveTimeSync({ last_error: '' }, userId);
+    return { skipped: false, imported: false, message: 'No new hours report in the mailbox.' };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Hours sync failed.';
+    await saveTimeSync({ last_error: message.slice(0, 2000) }, userId).catch(() => {});
+    throw err;
+  }
+}
+
+async function handleRipplingTimeStatus(req: Request, staff: StaffContext): Promise<Response> {
+  const row = await loadTimeSync();
+  return json(req, 200, timeSyncPublic(row, staff));
+}
+
+async function handleRipplingTimeConnect(req: Request, staff: StaffContext, body: ArrayBuffer | null): Promise<Response> {
+  if (!canManageCompanyRippling(staff)) {
+    return error(req, 403, 'Only a System Admin, General Manager, or HR can connect the hours mailbox.', 'forbidden');
+  }
+  const { clientId, clientSecret, hostedDomain } = gmailOAuthApp();
+  if (!clientId || !clientSecret) {
+    return error(req, 503, 'Google mail sign-in is not configured. Ask a system admin to add the Google OAuth app.', 'gmail_unconfigured');
+  }
+
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = body ? JSON.parse(new TextDecoder().decode(body)) : {};
+  } catch {
+    return error(req, 400, 'Body must be JSON.', 'bad_request');
+  }
+  const code = String(payload.code || '').trim();
+  const redirectUri = String(payload.redirectUri || payload.redirect_uri || '').trim();
+  if (!code || !redirectUri) return error(req, 400, 'OAuth code and redirect URI are required.', 'bad_request');
+  if (!/^https:\/\//i.test(redirectUri) && !/^http:\/\/(localhost|127\.0\.0\.1)/i.test(redirectUri)) {
+    return error(req, 400, 'Redirect URI must use HTTPS.', 'bad_request');
+  }
+
+  const form = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: redirectUri,
+  });
+  const tokenRes = await forward(GMAIL_TOKEN_URL, {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: form.toString(),
+  }, 30_000);
+  const tokens = (await tokenRes.json().catch(() => null)) as Record<string, unknown> | null;
+  if (!tokenRes.ok) {
+    return error(req, 400, googleErrorMessage(tokens, 'Google sign-in failed.'), 'bad_request');
+  }
+  const accessToken = String(tokens?.access_token || '').trim();
+  const refreshToken = String(tokens?.refresh_token || '').trim();
+  if (!accessToken) return error(req, 400, 'Google did not return an access token.', 'bad_request');
+  if (!refreshToken) {
+    return error(
+      req,
+      400,
+      'Google did not return a long-lived token. Remove myCanadaGold at myaccount.google.com/permissions, then connect again.',
+      'bad_request',
+    );
+  }
+
+  const info = await googleJson(GMAIL_USERINFO_URL, `Bearer ${accessToken}`);
+  const email = String(info.payload?.email || '').trim().toLowerCase();
+  const hd = String(info.payload?.hd || '').trim().toLowerCase();
+  const allowed = gmailAllowedDomains(hostedDomain);
+  if (!info.ok || !email || !(allowed.includes(emailDomain(email)) || allowed.includes(hd))) {
+    return error(req, 403, `Connect a ${allowed[0] || 'company'} mailbox, not a personal Gmail address.`, 'forbidden');
+  }
+
+  const expiresIn = Number(tokens?.expires_in) || 3600;
+  await saveTimeSync({
+    gmail_email: email,
+    gmail_refresh_token: refreshToken,
+    gmail_access_token: accessToken,
+    gmail_token_expires_at: new Date(Date.now() + expiresIn * 1000).toISOString(),
+    last_message_id: '',
+    last_message_at: null,
+    last_error: '',
+  }, staff.userId);
+
+  let result: TimeSyncResult | null = null;
+  let syncError = '';
+  try {
+    result = await runTimeSync(await loadTimeSync(), { force: true, userId: staff.userId });
+  } catch (err) {
+    syncError = err instanceof Error ? err.message : 'Hours sync failed.';
+  }
+  const row = await loadTimeSync();
+  return json(req, 200, { ...timeSyncPublic(row, staff), sync: result, syncError });
+}
+
+async function handleRipplingTimeDisconnect(req: Request, staff: StaffContext): Promise<Response> {
+  if (!canManageCompanyRippling(staff)) {
+    return error(req, 403, 'Only a System Admin, General Manager, or HR can disconnect the hours mailbox.', 'forbidden');
+  }
+  await saveTimeSync({
+    gmail_email: '',
+    gmail_refresh_token: '',
+    gmail_access_token: '',
+    gmail_token_expires_at: null,
+    last_error: '',
+  }, staff.userId);
+  return json(req, 200, timeSyncPublic(await loadTimeSync(), staff));
+}
+
+async function handleRipplingTimeSync(req: Request, staff: StaffContext, body: ArrayBuffer | null): Promise<Response> {
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = body ? JSON.parse(new TextDecoder().decode(body)) : {};
+  } catch {
+    payload = {};
+  }
+  const force = Boolean(payload.force) && canManageCompanyRippling(staff);
+  const row = await loadTimeSync();
+  if (!row.gmail_refresh_token) {
+    return json(req, 200, { ...timeSyncPublic(row, staff), sync: { skipped: true, imported: false, message: 'Hours mailbox is not connected.' } });
+  }
+  try {
+    const result = await runTimeSync(row, { force, userId: staff.userId });
+    return json(req, 200, { ...timeSyncPublic(await loadTimeSync(), staff), sync: result });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Hours sync failed.';
+    return json(req, 200, { ...timeSyncPublic(await loadTimeSync(), staff), sync: null, syncError: message });
+  }
 }
 
 async function handleRippling(req: Request, rest: string, search: string): Promise<Response> {
@@ -4708,6 +5296,18 @@ Deno.serve(async (req) => {
     }
     if (path === '/rippling/company/disconnect' && req.method === 'POST') {
       return await handleRipplingCompanyDisconnect(req, staff);
+    }
+    if (path === '/rippling/time/status' && req.method === 'GET') {
+      return await handleRipplingTimeStatus(req, staff);
+    }
+    if (path === '/rippling/time/connect' && req.method === 'POST') {
+      return await handleRipplingTimeConnect(req, staff, await readBody(req));
+    }
+    if (path === '/rippling/time/disconnect' && req.method === 'POST') {
+      return await handleRipplingTimeDisconnect(req, staff);
+    }
+    if (path === '/rippling/time/sync' && req.method === 'POST') {
+      return await handleRipplingTimeSync(req, staff, await readBody(req));
     }
     if (path.startsWith('/rippling/')) {
       return await handleRippling(req, path.slice('/rippling'.length), search);
