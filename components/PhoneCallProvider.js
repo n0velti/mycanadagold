@@ -41,7 +41,13 @@ import { listRingCentralAccounts, formatPhoneNumber } from '../lib/ringcentral';
 import { isStoreWatched, loadWatchStores, saveWatchStores } from '../lib/phoneWatch';
 import { startRingtone, stopRingtone, unlockPhoneAudio } from '../lib/phoneSound';
 import { storeKeyFromName } from '../lib/storeSettings';
-import { ensureMicrophone, isWebPhoneSupported, primeCallAudio, startWebPhone } from '../lib/webPhone';
+import {
+  ensureMicrophone,
+  isMicrophoneFailure,
+  isWebPhoneSupported,
+  primeCallAudio,
+  startWebPhone,
+} from '../lib/webPhone';
 
 const SILENT_KEY = 'cgold.phone.silent';
 const SIP_CACHE_PREFIX = 'cgold.phone.sip.';
@@ -77,11 +83,9 @@ function writeSipCache(storeKey, value) {
   }
 }
 
+/** True only for a failure of getUserMedia itself (tagged by lib/webPhone). */
 function isMicrophoneError(err) {
-  const text = `${err?.name || ''} ${err?.message || ''}`;
-  return /NotAllowed|PermissionDenied|Permission denied|NotFound|NotReadable|Overconstrained|getUserMedia|microphone|audio input/i.test(
-    text,
-  );
+  return isMicrophoneFailure(err);
 }
 
 /** How long Call Control may take to land the replacement INVITE in this tab. */
@@ -94,23 +98,28 @@ function earlyDropMessage(seconds) {
 }
 
 /**
- * Firefox and Safari report a microphone blocked by the site's
- * Permissions-Policy header (or a non-HTTPS page) as a SecurityError whose
- * message is just "The operation is insecure."
+ * Safari (iOS especially) refuses getUserMedia with a SecurityError, "The
+ * operation is insecure", when the request does not come from a tap on a
+ * visible page, or when the site's Microphone setting is Deny. That is
+ * different from a normal NotAllowedError (the user pressed Don't Allow).
  */
-function isMicrophoneBlockedError(err) {
-  const text = `${err?.name || ''} ${err?.message || ''}`;
-  return /SecurityError|operation is insecure|permissions policy|feature policy/i.test(text);
+function isMicrophoneRefusedBySafari(err) {
+  return isMicrophoneError(err) && /SecurityError|operation is insecure/i.test(`${err.reason || ''} ${err.message || ''}`);
 }
 
 function microphoneMessage(err, action = 'answer') {
-  if (isMicrophoneBlockedError(err)) {
-    return `Safari blocked the microphone. Allow it for this site, then press ${action === 'call' ? 'Call' : 'Answer'} again.`;
+  if (!isMicrophoneError(err)) return '';
+  const again = `then press ${action === 'call' ? 'Call' : 'Answer'} again`;
+  if (isMicrophoneRefusedBySafari(err)) {
+    return `Safari refused the microphone for this page. Keep Safari in the foreground, set Microphone to Allow for this site (aA menu → Website Settings), ${again}.`;
   }
-  if (isMicrophoneError(err)) {
-    return `Allow microphone access for this site in the browser, then press ${action === 'call' ? 'Call' : 'Answer'} again.`;
+  if (/NotAllowed|PermissionDenied|Permission denied/i.test(`${err.reason || ''} ${err.message || ''}`)) {
+    return `Allow microphone access for this site in the browser, ${again}.`;
   }
-  return '';
+  if (/NotFound|NotReadable|Overconstrained|AbortError/i.test(`${err.reason || ''} ${err.message || ''}`)) {
+    return `No microphone is available to this browser right now (${err.reason || 'no device'}). Check nothing else is using it, ${again}.`;
+  }
+  return `The microphone could not be opened (${err.message || 'unknown error'}); ${again}.`;
 }
 
 function answerErrorMessage(err) {
@@ -118,6 +127,9 @@ function answerErrorMessage(err) {
   if (mic) return mic;
   if (err?.code === 'sip_timeout') {
     return 'RingCentral did not confirm the answer. The call may have ended; if it is still ringing, try again.';
+  }
+  if (err?.code === 'webrtc') {
+    return `This browser could not set up the call audio (${err.message}). Press Answer again, or pick up on the RingCentral app.`;
   }
   return err?.message || 'Could not answer in the browser.';
 }
@@ -675,6 +687,25 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     setAudioState((current) => (current[key] === state ? current : { ...current, [key]: state }));
   }, []);
 
+  /**
+   * The SDK auto-answered a replacement INVITE (Call Control's Answer) and
+   * failed, typically because the microphone could not be opened outside the
+   * tap. Put the card back to ringing and say why, so Answer can be pressed
+   * again instead of the call silently staying on "connected".
+   */
+  const onSipAnswerError = useCallback(
+    (snapshot, err) => {
+      console.warn('[phone] auto-answer failed', err?.code, err);
+      const key = callKey(snapshot);
+      answeringRef.current.delete(key);
+      updateCalls((state) =>
+        state.calls[key] ? patchCall(state, key, { status: 'Ringing', web: false, answeredAt: null }) : state,
+      );
+      setError(answerErrorMessage(err));
+    },
+    [updateCalls],
+  );
+
   const onSipChange = useCallback(
     (snapshot, meta = {}) => {
       let earlyDrop = 0;
@@ -827,6 +858,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
             onOutbound: onSipCall,
             onChange: onSipChange,
             onAudio: onSipAudio,
+            onAnswerError: onSipAnswerError,
             onStatus: (state, message) => {
               // Only the live registration for this store may report its state
               // (handles outlive this effect run, so `cancelled` is not checked).
@@ -873,7 +905,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       cancelled = true;
       window.removeEventListener('pagehide', onHide);
     };
-  }, [active, connectedKeyList, onSipAudio, onSipCall, onSipChange, setStorePhoneStatus]);
+  }, [active, connectedKeyList, onSipAnswerError, onSipAudio, onSipCall, onSipChange, setStorePhoneStatus]);
 
   useEffect(
     () => () => {
@@ -1149,7 +1181,9 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
             return { ok: true };
           } catch (err) {
             if (err?.code === 'call_gone') throw err;
-            if (isMicrophoneError(err) || isMicrophoneBlockedError(err) || err?.code === 'sip_timeout') {
+            if (isMicrophoneError(err) || err?.code === 'webrtc' || err?.code === 'sip_timeout') {
+              // Local failures: a replacement INVITE would hit the same wall.
+              console.warn('[phone] answer failed', err?.code, err);
               revert();
               throw new Error(answerErrorMessage(err));
             }
