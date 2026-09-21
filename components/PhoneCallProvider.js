@@ -821,8 +821,11 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       }
     }
 
+    const registering = new Set();
     const register = async (storeKey) => {
-      if (webPhonesRef.current.has(storeKey)) return;
+      if (cancelled || webPhonesRef.current.has(storeKey) || registering.has(storeKey)) return;
+      registering.add(storeKey);
+      try {
       setStorePhoneStatus(storeKey, { state: 'connecting', message: '' });
       let provision = readSipCache(storeKey);
       for (let attempt = 0; attempt < 2 && !cancelled; attempt += 1) {
@@ -876,19 +879,38 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
           return;
         } catch (err) {
           if (cancelled) return;
-          const message = err?.message || 'Could not register this browser as the store phone.';
+          console.warn('[phone] register failed', storeKey, err?.code || err?.name, err);
+          const transport = err?.code === 'sip_socket' || err?.code === 'sip_timeout';
+          const message = transport
+            ? `${err.message} The browser will keep trying.`
+            : err?.message || 'Could not register this browser as the store phone.';
           if (err?.code === 'ringcentral_other_extension' || err?.status === 409) {
             setStorePhoneStatus(storeKey, { state: 'other', message });
             return;
           }
-          // A cached registration may have been revoked: provision once more.
-          writeSipCache(storeKey, null);
-          provision = null;
+          // A rejected REGISTER means these SIP credentials are dead. A socket
+          // that never opened does not: provisioning again would mint another
+          // RingCentral device (the account only allows a handful).
+          const staleCredentials =
+            /Registration failed|401|403|unauthorized/i.test(err?.message || '') ||
+            (transport && !String(provision?.sipInfo?.outboundProxy || '').trim());
+          if (staleCredentials) {
+            writeSipCache(storeKey, null);
+            provision = null;
+          }
           if (attempt === 1 || err?.status === 429) {
-            setStorePhoneStatus(storeKey, { state: 'error', message });
+            setStorePhoneStatus(storeKey, { state: transport ? 'reconnecting' : 'error', message });
+            if (transport && !cancelled) {
+              window.setTimeout(() => {
+                if (!cancelled) register(storeKey);
+              }, err?.code === 'sip_timeout' ? 8_000 : 5_000);
+            }
             return;
           }
         }
+      }
+      } finally {
+        registering.delete(storeKey);
       }
     };
 
@@ -899,11 +921,26 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       }
     })();
 
-    const onHide = () => disposeAll();
+    // iOS Safari fires pagehide when it freezes the page (back/forward cache)
+    // and then restores it without re-running this effect. Disposing on that
+    // event aborts REGISTER — the socket error has no message, which is the
+    // "could not register" line — and the phone never starts again.
+    const onHide = (event) => {
+      if (event?.persisted) return;
+      disposeAll();
+    };
+    const onShow = () => {
+      if (cancelled) return;
+      for (const key of keys) {
+        if (!webPhonesRef.current.has(key)) register(key);
+      }
+    };
     window.addEventListener('pagehide', onHide);
+    window.addEventListener('pageshow', onShow);
     return () => {
       cancelled = true;
       window.removeEventListener('pagehide', onHide);
+      window.removeEventListener('pageshow', onShow);
     };
   }, [active, connectedKeyList, onSipAnswerError, onSipAudio, onSipCall, onSipChange, setStorePhoneStatus]);
 
