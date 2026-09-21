@@ -530,7 +530,9 @@ export function TextTabs({ options, value, onChange, leading, trailing, size = '
 export function SegmentedSlider({ options, value, onChange, style, fill = false }) {
   const isMobile = useIsMobile();
   const keys = (options || []).map((option) => option.key);
-  const index = Math.max(0, keys.indexOf(value));
+  const found = keys.indexOf(value);
+  const matched = found >= 0;
+  const index = matched ? found : 0;
   const [trackW, setTrackW] = useState(0);
   const slide = useRef(new Animated.Value(index)).current;
   const inset = 2;
@@ -558,7 +560,7 @@ export function SegmentedSlider({ options, value, onChange, style, fill = false 
       onLayout={(event) => setTrackW(event.nativeEvent.layout.width)}
       accessibilityRole="tablist"
     >
-      {segW > 0 && keys.length > 1 ? (
+      {matched && segW > 0 && keys.length > 1 ? (
         <Animated.View
           pointerEvents="none"
           style={[
@@ -576,7 +578,7 @@ export function SegmentedSlider({ options, value, onChange, style, fill = false 
             },
           ]}
         />
-      ) : segW > 0 ? (
+      ) : matched && segW > 0 ? (
         <View pointerEvents="none" style={[styles.segmentedThumb, { width: segW }]} />
       ) : null}
       {(options || []).map((option) => {
