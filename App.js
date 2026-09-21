@@ -6773,6 +6773,7 @@ export default function App() {
                         ...current.profile,
                         appRole: staff.appRole,
                         isSystemAdmin: staff.isSystemAdmin,
+                        isActive: staff.isActive ?? current.profile.isActive,
                       },
                     };
                   });

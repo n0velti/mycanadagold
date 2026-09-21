@@ -266,7 +266,13 @@ function AppEmployeesPanel({ session, onProfileUpdated, storeFilter }) {
       if (session?.token) {
         try {
           const synced = await syncStaffRoles(session);
-          if (synced?.profile?.id) onProfileUpdatedRef.current?.(synced.profile);
+          if (synced?.profile?.id) {
+            onProfileUpdatedRef.current?.({
+              ...synced.profile,
+              appRole: undefined,
+              isSystemAdmin: undefined,
+            });
+          }
         } catch {
           // Directory still loads if role sync is unavailable.
         }

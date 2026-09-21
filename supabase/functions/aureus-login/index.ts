@@ -238,7 +238,6 @@ async function upsertProfile(
   if (existingError) throw existingError;
 
   const firstLogin = !existing;
-  const lockedAdmin = Boolean(existing?.is_system_admin) || existing?.app_role === 'system_admin';
   const row: Record<string, unknown> = {
     aureus_user_id: identity.aureusUserId,
     aureus_login: identity.aureusLogin,
@@ -255,7 +254,9 @@ async function upsertProfile(
     last_login_at: now,
     updated_at: now,
   };
-  if (!lockedAdmin) {
+  // Infer a starting role only on first sign-in. After that, Settings →
+  // Permissions is the source of truth — login/sync must not overwrite it.
+  if (!existing) {
     row.app_role = inferAppRole(identity.role, identity.employeeType);
   }
 
@@ -363,8 +364,6 @@ async function applyDirectoryToProfiles(admin: SupabaseClient, directory: unknow
       if (identity.employeeType) patch.employee_type = identity.employeeType;
       if (identity.locationId) patch.location_id = identity.locationId;
       if (identity.locationName) patch.location_name = identity.locationName;
-      const locked = Boolean(profile.is_system_admin) || profile.app_role === 'system_admin';
-      if (!locked) patch.app_role = inferAppRole(identity.role, identity.employeeType);
       if (Object.keys(patch).length <= 1) return;
       const { error: updateError } = await admin.from('profiles').update(patch).eq('id', profile.id);
       if (!updateError) updated += 1;
