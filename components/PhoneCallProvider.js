@@ -105,7 +105,7 @@ function isMicrophoneBlockedError(err) {
 
 function microphoneMessage(err, action = 'answer') {
   if (isMicrophoneBlockedError(err)) {
-    return 'The microphone is blocked for this site (open it over HTTPS and check the host’s Permissions-Policy header allows microphone=(self)). Pick up on the RingCentral app for now.';
+    return `Safari blocked the microphone. Allow it for this site, then press ${action === 'call' ? 'Call' : 'Answer'} again.`;
   }
   if (isMicrophoneError(err)) {
     return `Allow microphone access for this site in the browser, then press ${action === 'call' ? 'Call' : 'Answer'} again.`;
@@ -1049,7 +1049,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     try {
       return await fn();
     } catch (err) {
-      setError(err?.message || 'Could not update that call.');
+      setError(microphoneMessage(err) || err?.message || 'Could not update that call.');
       throw err;
     } finally {
       setBusy(false);
