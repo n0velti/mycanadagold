@@ -7,10 +7,14 @@
  *   /proxy/anthropic/v1/messages           POST  → api.anthropic.com
  *   /proxy/openai/v1/chat/completions      POST  → api.openai.com
  *   /proxy/openrouter/v1/chat/completions  POST  → openrouter.ai
- *   /proxy/avatars/stylize                 POST  → OpenAI images/edits (Disney cartoon of the person in the photo)
+ *   /proxy/avatars/inspect                 POST  → OpenAI vision (is there exactly one clear face? describe them)
+ *   /proxy/avatars/stylize                 POST  → OpenAI images/edits (Disney cartoon of the person in the photo) + likeness check
  *   /proxy/fintrac/<path>                  *     → www142.fintrac-canafe.canada.ca
- *   /proxy/rippling/oauth/config           GET   → { clientId, configured }
+ *   /proxy/rippling/oauth/config           GET   → { clientId, configured, connected, canManage }
+ *   /proxy/rippling/oauth/app              POST  → save company OAuth app (admin)
  *   /proxy/rippling/oauth/token            POST  → app.rippling.com/o/token (client secret held here)
+ *   /proxy/rippling/company                POST  → save shared HR token (admin)
+ *   /proxy/rippling/company/disconnect     POST  → clear shared HR token (admin)
  *   /proxy/rippling/<path>                 GET   → rest.ripplingapis.com
  *   /proxy/gmail/oauth/config              GET   → { clientId, configured, hostedDomain }
  *   /proxy/gmail/oauth/token               POST  → oauth2.googleapis.com/token (client secret held here)
@@ -30,8 +34,9 @@
  *
  * AI providers use the company key saved in Settings (System Admin / GM) or,
  * if none is saved, the Edge Function secret. Clients never send vendor keys.
- * FINTRAC, Rippling, and Gmail user tokens are forwarded from
- * `X-Upstream-Authorization` (the caller's own session with that vendor).
+ * FINTRAC and Gmail user tokens are forwarded from
+ * `X-Upstream-Authorization`. Rippling uses that header or the company
+ * connection saved by a System Admin / GM / HR.
  */
 import { corsHeaders, error, json, preflight, readJson, securityHeaders } from '../_shared/http.ts';
 import { adminClient, requireActiveStaff, StaffAuthError, type StaffContext } from '../_shared/staff.ts';
@@ -39,8 +44,7 @@ import { adminClient, requireActiveStaff, StaffAuthError, type StaffContext } fr
 const FUNCTION_PREFIX = '/proxy';
 const MAX_BODY_BYTES = 25 * 1024 * 1024;
 const UPSTREAM_TIMEOUT_MS = 120_000;
-const AVATAR_TIMEOUT_MS = 180_000;
-const RATE_LIMIT_AVATAR = 8;
+const RATE_LIMIT_AVATAR = 12;
 
 const FINTRAC_ORIGIN = 'https://www142.fintrac-canafe.canada.ca';
 const RIPPLING_API_ORIGIN = 'https://rest.ripplingapis.com';
@@ -171,9 +175,18 @@ async function handleOpenAI(req: Request, body: ArrayBuffer | null): Promise<Res
 
 const AVATAR_IMAGE_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']);
 const AVATAR_MAX_BYTES = 8 * 1024 * 1024;
-const AVATAR_MODELS = ['gpt-image-2', 'gpt-image-1.5', 'gpt-image-1'];
-const AVATAR_DESCRIBE_MODELS = ['gpt-4.1-mini', 'gpt-4o-mini'];
-const AVATAR_DESCRIBE_TIMEOUT_MS = 25_000;
+// Newest first: GPT Image 2.5 keeps the subject's face best. Older models
+// are fallbacks for keys that do not have access yet.
+const AVATAR_MODELS = ['gpt-image-2.5-sunburst', 'gpt-image-2.5-flare', 'gpt-image-2', 'gpt-image-1.5'];
+// Vision models used to inspect the photo and to check the finished cartoon.
+const AVATAR_VISION_MODELS = ['gpt-5.6-terra', 'gpt-5.4-mini', 'gpt-4.1-mini'];
+const AVATAR_VISION_TIMEOUT_MS = 25_000;
+// Supabase returns 504 if nothing is sent within 150 s. Every avatar request
+// plans its work inside this budget instead of hoping the model is quick.
+const AVATAR_REQUEST_BUDGET_MS = 135_000;
+const AVATAR_GENERATE_MAX_MS = 110_000;
+const AVATAR_GENERATE_MIN_MS = 30_000;
+const AVATAR_VERIFY_MIN_MS = 10_000;
 
 /**
  * Fun Disney 3D cartoon restyle. The attached photo is the identity source —
@@ -265,20 +278,40 @@ function parseImageDataUrl(value: string): { mediaType: string; bytes: Uint8Arra
   }
 }
 
-function isRetryableImageModelError(payload: unknown): boolean {
-  const error = payload && typeof payload === 'object' ? (payload as { error?: { message?: string; code?: string } }).error : null;
-  const message = String(error?.message || '');
-  const code = String(error?.code || '');
-  return /model|unknown|not found|does not exist|not available/i.test(`${code} ${message}`);
+type ImageApiError = { error?: { message?: string; code?: string; type?: string } };
+
+function imageApiError(payload: unknown): { message: string; code: string } {
+  const err = payload && typeof payload === 'object' ? (payload as ImageApiError).error : null;
+  return { message: String(err?.message || ''), code: String(err?.code || err?.type || '') };
 }
 
-function sanitizeSubjectDescription(value: string): string {
-  const text = String(value || '').replace(/\s+/g, ' ').trim();
+/** The model name was rejected (not enabled on this key yet, or retired). Try the next one. */
+function isRetryableImageModelError(payload: unknown): boolean {
+  const { message, code } = imageApiError(payload);
+  return /model|unknown|not found|does not exist|not available|invalid value/i.test(`${code} ${message}`);
+}
+
+/** The safety filter declined the photo; another model will say the same thing. */
+function isModerationBlocked(payload: unknown): boolean {
+  const { message, code } = imageApiError(payload);
+  return /moderation|safety|content_policy|policy violation/i.test(`${code} ${message}`);
+}
+
+function sanitizeSubjectDescription(value: unknown): string {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
   if (!text) return '';
   return text.slice(0, 400);
 }
 
-function buildAvatarPrompt(subject: string, shirt: string, background: string): string {
+function sanitizeIssues(value: unknown): string[] {
+  const list = Array.isArray(value) ? value : typeof value === 'string' && value ? [value] : [];
+  return list
+    .map((item) => String(item ?? '').replace(/\s+/g, ' ').trim().slice(0, 160))
+    .filter(Boolean)
+    .slice(0, 4);
+}
+
+function buildAvatarPrompt(subject: string, shirt: string, background: string, corrections: string[] = []): string {
   const parts = [
     AVATAR_IDENTITY_PROMPT,
     AVATAR_STYLE_PROMPT,
@@ -290,7 +323,175 @@ function buildAvatarPrompt(subject: string, shirt: string, background: string): 
       `Visible facts from the photo, for matching only — do not invent anyone else: ${subject}`,
     );
   }
+  if (corrections.length > 0) {
+    parts.push(
+      `A previous attempt did not look like this person. Look at the photo again and fix exactly these mistakes: ${corrections.join(' ')} Everything else about their likeness must still match the photo.`,
+    );
+  }
   return parts.join(' ');
+}
+
+/** Prompt for the photo pre-check. Strict JSON so the client can act on it. */
+const AVATAR_INSPECT_PROMPT = [
+  'You are checking a photo before an artist draws a cartoon portrait of the person in it.',
+  'Return strict JSON only, with these keys:',
+  '"faceCount": the number of people whose face is clearly visible (not tiny background figures);',
+  '"framing": one of "good", "cut_off" (part of the main face is outside the frame), "too_small" (the face is a small part of the image), "too_dark" (the face is hard to see), or "no_face";',
+  '"subject": one factual sentence describing the main person (the largest or most central face) so an artist can keep their exact likeness:',
+  'apparent sex or gender presentation (woman, man, girl, boy, or as photographed), approximate age, ethnicity or skin tone, face shape, nose, mouth, jaw, eyebrow shape,',
+  'eye color and eye shape, hair color, hair length and style, facial hair or clean-shaven, glasses, earrings or other visible accessories, and any distinctive marks.',
+  'Do not guess a name. Do not invent features that are not visible. Do not describe lighting, clothing, or camera style. If there is no face, set "subject" to "".',
+].join(' ');
+
+/** Prompt for the likeness check after drawing. */
+const AVATAR_VERIFY_PROMPT = [
+  'Image 1 is a photograph of a person. Image 2 is a cartoon portrait that is supposed to be that same person.',
+  'Decide whether someone who knows the person in Image 1 would immediately recognize Image 2 as them.',
+  'A stylized cartoon look is expected and is NOT a problem: smoother skin, slightly larger eyes, simplified hair, different clothing, and a different background are all fine.',
+  'Report a problem ONLY when you are confident Image 2 differs from Image 1 in one of these: gender presentation; skin tone; hair color; hair length or basic hairstyle;',
+  'glasses present in one but not the other; facial hair present in one but not the other; a clearly different age group (child vs adult, young adult vs elderly);',
+  'a distinctly different face shape or a face that is clearly a different person; more than one person or no face in Image 2; or Image 2 not being a cartoon at all.',
+  'Return strict JSON only: {"match": true or false, "issues": [up to 4 short concrete corrections written as instructions to the artist, for example "Give her shoulder-length dark brown hair, not short blonde hair"; empty when match is true]}',
+].join(' ');
+
+function parseJsonObject(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  const candidates = [text, text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')];
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start >= 0 && end > start) candidates.push(text.slice(start, end + 1));
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+    } catch {
+      // try the next shape
+    }
+  }
+  return null;
+}
+
+/**
+ * Ask a vision model a question about one or two images and get a JSON
+ * object back. Falls through the model list; returns null when none answer.
+ */
+async function avatarVisionJson(
+  key: string,
+  prompt: string,
+  images: string[],
+  timeoutMs: number,
+): Promise<Record<string, unknown> | null> {
+  const content = [
+    { type: 'text', text: prompt },
+    ...images.map((url) => ({ type: 'image_url', image_url: { url, detail: 'high' } })),
+  ];
+  for (const model of AVATAR_VISION_MODELS) {
+    try {
+      const body: Record<string, unknown> = {
+        model,
+        // Includes reasoning tokens on gpt-5.x; the JSON answer itself is tiny.
+        max_completion_tokens: 1200,
+        response_format: { type: 'json_object' },
+        messages: [{ role: 'user', content }],
+      };
+      if (/^gpt-5/.test(model)) body.reasoning_effort = 'low';
+      const upstream = await forward(
+        'https://api.openai.com/v1/chat/completions',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${key}`,
+          },
+          body: JSON.stringify(body),
+        },
+        timeoutMs,
+      );
+      const result = await upstream.json().catch(() => null);
+      if (!upstream.ok) continue;
+      const parsed = parseJsonObject(result?.choices?.[0]?.message?.content);
+      if (parsed) return parsed;
+    } catch {
+      // Timeout or network error: fall through to the next vision model.
+    }
+  }
+  return null;
+}
+
+type AvatarInspection = {
+  ok: boolean;
+  reason: string;
+  message: string;
+  subject: string;
+  faceCount: number | null;
+  framing: string;
+};
+
+/** Look at the photo: exactly one clear face? Who is it? */
+async function inspectAvatarPhoto(key: string, dataUrl: string, timeoutMs: number): Promise<AvatarInspection> {
+  const result = await avatarVisionJson(key, AVATAR_INSPECT_PROMPT, [dataUrl], timeoutMs);
+  const unknown: AvatarInspection = { ok: true, reason: '', message: '', subject: '', faceCount: null, framing: 'unknown' };
+  if (!result) return unknown;
+
+  const faceCountRaw = Number(result.faceCount);
+  const faceCount = Number.isFinite(faceCountRaw) ? Math.max(0, Math.round(faceCountRaw)) : null;
+  const framing = String(result.framing || '').toLowerCase().trim();
+  const subject = sanitizeSubjectDescription(result.subject);
+
+  if (faceCount === 0 || framing === 'no_face') {
+    return {
+      ok: false,
+      reason: 'no_face',
+      message: 'We could not see a face clearly. Face the camera in good light, then try again.',
+      subject: '',
+      faceCount,
+      framing,
+    };
+  }
+  if (faceCount !== null && faceCount > 1) {
+    return {
+      ok: false,
+      reason: 'multiple_people',
+      message: 'We can see more than one person. Make sure only you are in the frame, then try again.',
+      subject: '',
+      faceCount,
+      framing,
+    };
+  }
+  if (framing === 'cut_off') {
+    return {
+      ok: false,
+      reason: 'cut_off',
+      message: 'Part of your face is outside the frame. Center your face in the oval, then try again.',
+      subject,
+      faceCount,
+      framing,
+    };
+  }
+  return { ok: true, reason: '', message: '', subject, faceCount, framing: framing || 'unknown' };
+}
+
+async function handleAvatarInspect(req: Request, body: ArrayBuffer | null): Promise<Response> {
+  if (req.method !== 'POST') return error(req, 405, 'Use POST.', 'method_not_allowed');
+  const key = await resolveAiApiKey('openai', 'OPENAI_API_KEY');
+  if (!key) return error(req, 400, MISSING_AI_KEY, 'missing_key');
+
+  let payload: { image?: string } = {};
+  try {
+    payload = body ? JSON.parse(new TextDecoder().decode(body)) : {};
+  } catch {
+    return error(req, 400, 'Body must be JSON.', 'bad_request');
+  }
+
+  const dataUrl = String(payload.image || '');
+  if (!parseImageDataUrl(dataUrl)) {
+    return error(req, 400, 'Send a JPEG, PNG, or WebP photo under 8 MB.', 'bad_request');
+  }
+
+  const inspection = await inspectAvatarPhoto(key, dataUrl, AVATAR_VISION_TIMEOUT_MS);
+  return json(req, 200, inspection);
 }
 
 function buildAvatarEditForm(
@@ -312,57 +513,25 @@ function buildAvatarEditForm(
   return form;
 }
 
-async function describePortraitSubject(key: string, dataUrl: string): Promise<string> {
-  const messages = [
-    {
-      role: 'user',
-      content: [
-        {
-          type: 'text',
-          text: [
-            'Describe the single person visible in this photo in one factual sentence so an artist can keep their exact likeness.',
-            'Include apparent sex or gender presentation (woman, man, girl, boy, or as photographed), approximate age,',
-            'ethnicity or skin tone, face shape, bone structure, nose, mouth, jaw, eyebrow shape, eye color and eye shape,',
-            'hair color, hair length, hair style, facial hair or clean-shaven, glasses, earrings or other visible accessories,',
-            'and any distinctive marks. Do not guess a name. Do not invent features that are not visible.',
-            'Do not describe lighting, clothing, or camera style. If no clear face is visible, say that.'
-          ].join(' '),
-        },
-        { type: 'image_url', image_url: { url: dataUrl } },
-      ],
-    },
-  ];
-
-  for (const model of AVATAR_DESCRIBE_MODELS) {
-    try {
-      const upstream = await forward(
-        'https://api.openai.com/v1/chat/completions',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${key}`,
-          },
-          body: JSON.stringify({ model, max_tokens: 180, messages }),
-        },
-        AVATAR_DESCRIBE_TIMEOUT_MS,
-      );
-      const result = await upstream.json().catch(() => null);
-      const text = sanitizeSubjectDescription(result?.choices?.[0]?.message?.content || '');
-      if (upstream.ok && text) return text;
-    } catch {
-      // Fall through to the next vision model, then to the locked prompt alone.
-    }
-  }
-  return '';
-}
-
+/**
+ * One drawing pass. The client sends the photo plus the `subject` sentence
+ * from /avatars/inspect (so we do not pay for vision twice) and, on a retry,
+ * the `corrections` the likeness check asked for. We draw once, then compare
+ * the cartoon with the photo and report `verified` so the client can decide
+ * whether to ask for another pass. Everything stays inside the 150 s gateway
+ * limit; when time runs short the check is skipped rather than the request
+ * dying with a 504.
+ */
 async function handleAvatarStylize(req: Request, body: ArrayBuffer | null, staffId = ''): Promise<Response> {
   if (req.method !== 'POST') return error(req, 405, 'Use POST.', 'method_not_allowed');
+  const startedAt = Date.now();
+  const deadline = startedAt + AVATAR_REQUEST_BUDGET_MS;
+  const remaining = () => deadline - Date.now();
+
   const key = await resolveAiApiKey('openai', 'OPENAI_API_KEY');
   if (!key) return error(req, 400, MISSING_AI_KEY, 'missing_key');
 
-  let payload: { image?: string } = {};
+  let payload: { image?: string; subject?: string; corrections?: unknown; attempt?: number } = {};
   try {
     payload = body ? JSON.parse(new TextDecoder().decode(body)) : {};
   } catch {
@@ -375,49 +544,121 @@ async function handleAvatarStylize(req: Request, body: ArrayBuffer | null, staff
     return error(req, 400, 'Send a JPEG, PNG, or WebP photo under 8 MB.', 'bad_request');
   }
 
-  const subject = await describePortraitSubject(key, dataUrl);
+  const corrections = sanitizeIssues(payload.corrections);
+  const attempt = Math.max(1, Math.min(9, Math.round(Number(payload.attempt) || 1)));
+
+  // Identity facts: reuse the client's inspection, else look once ourselves.
+  let subject = sanitizeSubjectDescription(payload.subject);
+  if (!subject) {
+    const inspection = await inspectAvatarPhoto(key, dataUrl, Math.min(AVATAR_VISION_TIMEOUT_MS, 20_000));
+    if (!inspection.ok) return error(req, 400, inspection.message, 'bad_request');
+    subject = inspection.subject;
+  }
+
   const seed = staffId || subject || String(image.bytes.byteLength);
   const shirt = pickForPerson(AVATAR_SHIRTS, seed, 'shirt');
   const background = pickForPerson(AVATAR_BACKGROUNDS, seed, 'background');
-  const prompt = buildAvatarPrompt(subject, shirt, background);
+  const prompt = buildAvatarPrompt(subject, shirt, background, corrections);
 
+  let cartoon = '';
+  let usedModel = '';
   let lastMessage = 'Could not draw that portrait.';
-  for (const model of AVATAR_MODELS) {
-    const upstream = await forward(
-      'https://api.openai.com/v1/images/edits',
-      {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${key}` },
-        body: buildAvatarEditForm(image, model, prompt),
-      },
-      AVATAR_TIMEOUT_MS,
-    );
+  let lastStatus = 502;
 
-    let result: { data?: Array<{ b64_json?: string }>; error?: { message?: string; code?: string } } = {};
+  for (const model of AVATAR_MODELS) {
+    if (remaining() < AVATAR_GENERATE_MIN_MS) {
+      lastMessage = 'The portrait took too long to draw. Try again.';
+      lastStatus = 504;
+      break;
+    }
+    const timeoutMs = Math.min(AVATAR_GENERATE_MAX_MS, remaining() - 5_000);
+
+    let upstream: Response;
+    try {
+      upstream = await forward(
+        'https://api.openai.com/v1/images/edits',
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${key}` },
+          body: buildAvatarEditForm(image, model, prompt),
+        },
+        timeoutMs,
+      );
+    } catch (err) {
+      const aborted = err instanceof Error && err.name === 'AbortError';
+      lastMessage = aborted ? 'The portrait took too long to draw. Try again.' : 'Could not reach the portrait service.';
+      lastStatus = aborted ? 504 : 502;
+      console.warn('avatar stylize transport failure', model, err instanceof Error ? err.message : err);
+      continue;
+    }
+
+    let result: { data?: Array<{ b64_json?: string }> } & ImageApiError = {};
     try {
       result = await upstream.json();
     } catch {
       lastMessage = 'Portrait service returned an invalid response.';
+      lastStatus = 502;
       continue;
     }
 
     if (!upstream.ok) {
-      lastMessage = result?.error?.message || `Portrait service error ${upstream.status}.`;
-      if (isRetryableImageModelError(result) && model !== AVATAR_MODELS[AVATAR_MODELS.length - 1]) {
-        continue;
+      const { message } = imageApiError(result);
+      lastMessage = message || `Portrait service error ${upstream.status}.`;
+      lastStatus = upstream.status >= 500 ? 502 : upstream.status === 429 ? 429 : 400;
+      console.warn('avatar stylize upstream error', model, upstream.status, lastMessage);
+      if (isModerationBlocked(result)) {
+        return error(
+          req,
+          400,
+          'The image safety filter declined that photo. Try a plain head-and-shoulders photo with nothing else in the frame.',
+          'bad_request',
+        );
       }
-      return error(req, upstream.status >= 500 ? 502 : 400, lastMessage, upstream.status >= 500 ? 'upstream_failed' : 'bad_request');
+      // Model unavailable, rate limited, or a server-side hiccup: try the next model.
+      if (upstream.status >= 500 || upstream.status === 429 || isRetryableImageModelError(result)) continue;
+      return error(req, 400, lastMessage, 'bad_request');
     }
 
     const b64 = result?.data?.[0]?.b64_json;
     if (!b64) {
       lastMessage = 'Portrait service did not return an image.';
+      lastStatus = 502;
       continue;
     }
-    return json(req, 200, { image: `data:image/jpeg;base64,${b64}` });
+    cartoon = `data:image/jpeg;base64,${b64}`;
+    usedModel = model;
+    break;
   }
 
-  return error(req, 502, lastMessage, 'upstream_failed');
+  if (!cartoon) {
+    return error(req, lastStatus === 429 ? 429 : lastStatus, lastMessage, lastStatus === 429 ? 'throttled' : 'upstream_failed');
+  }
+
+  // Likeness check: does the cartoon still read as the person in the photo?
+  let verified: boolean | null = null;
+  let issues: string[] = [];
+  if (remaining() >= AVATAR_VERIFY_MIN_MS) {
+    const check = await avatarVisionJson(
+      key,
+      AVATAR_VERIFY_PROMPT,
+      [dataUrl, cartoon],
+      Math.min(AVATAR_VISION_TIMEOUT_MS, remaining() - 3_000),
+    );
+    if (check && typeof check.match === 'boolean') {
+      verified = check.match;
+      issues = verified ? [] : sanitizeIssues(check.issues);
+    }
+  }
+
+  console.info('avatar stylize', {
+    model: usedModel,
+    attempt,
+    verified,
+    issues: issues.length,
+    ms: Date.now() - startedAt,
+  });
+
+  return json(req, 200, { image: cartoon, verified, issues, model: usedModel, attempt, subject });
 }
 
 async function handleOpenRouter(req: Request, body: ArrayBuffer | null): Promise<Response> {
@@ -466,24 +707,295 @@ async function handleFintrac(req: Request, rest: string, search: string, body: A
 // Rippling (OAuth app credentials held server-side; user tokens forwarded)
 // ---------------------------------------------------------------------------
 
-function ripplingOAuthApp(): { clientId: string; clientSecret: string } {
+type CompanyRipplingRow = {
+  oauth_client_id: string;
+  oauth_client_secret: string;
+  access_token: string;
+  refresh_token: string;
+  token_source: string;
+  company_name: string;
+};
+
+function canManageCompanyRippling(staff: StaffContext): boolean {
+  if (staff.isSystemAdmin) return true;
+  return staff.appRole === 'system_admin' || staff.appRole === 'general_manager' || staff.appRole === 'hr';
+}
+
+function emptyCompanyRippling(): CompanyRipplingRow {
   return {
-    clientId: (Deno.env.get('RIPPLING_CLIENT_ID') || '').trim(),
-    clientSecret: (Deno.env.get('RIPPLING_CLIENT_SECRET') || '').trim(),
+    oauth_client_id: '',
+    oauth_client_secret: '',
+    access_token: '',
+    refresh_token: '',
+    token_source: '',
+    company_name: '',
   };
 }
 
-function handleRipplingOAuthConfig(req: Request): Response {
-  const { clientId, clientSecret } = ripplingOAuthApp();
-  const configured = Boolean(clientId && clientSecret);
-  return new Response(JSON.stringify({ clientId: configured ? clientId : '', configured }), {
-    status: 200,
-    headers: { ...corsHeaders(req), ...securityHeaders(), 'Content-Type': 'application/json; charset=utf-8' },
+async function loadCompanyRippling(): Promise<CompanyRipplingRow> {
+  try {
+    const { data, error: queryError } = await adminClient()
+      .from('company_rippling')
+      .select('oauth_client_id, oauth_client_secret, access_token, refresh_token, token_source, company_name')
+      .eq('id', true)
+      .maybeSingle();
+    if (queryError || !data) return emptyCompanyRippling();
+    const row = data as CompanyRipplingRow;
+    return {
+      oauth_client_id: String(row.oauth_client_id || '').trim(),
+      oauth_client_secret: String(row.oauth_client_secret || '').trim(),
+      access_token: String(row.access_token || '').trim(),
+      refresh_token: String(row.refresh_token || '').trim(),
+      token_source: String(row.token_source || '').trim(),
+      company_name: String(row.company_name || '').trim(),
+    };
+  } catch {
+    return emptyCompanyRippling();
+  }
+}
+
+async function upsertCompanyRippling(
+  staff: StaffContext,
+  patch: Partial<CompanyRipplingRow>,
+): Promise<CompanyRipplingRow> {
+  const current = await loadCompanyRippling();
+  const next: CompanyRipplingRow = {
+    ...current,
+    ...patch,
+  };
+  const { error: writeError } = await adminClient().from('company_rippling').upsert(
+    {
+      id: true,
+      oauth_client_id: next.oauth_client_id,
+      oauth_client_secret: next.oauth_client_secret,
+      access_token: next.access_token,
+      refresh_token: next.refresh_token,
+      token_source: next.token_source,
+      company_name: next.company_name,
+      updated_at: new Date().toISOString(),
+      updated_by: staff.userId,
+    },
+    { onConflict: 'id' },
+  );
+  if (writeError) throw writeError;
+  return next;
+}
+
+async function ripplingOAuthApp(): Promise<{ clientId: string; clientSecret: string }> {
+  const fromEnv = {
+    clientId: (Deno.env.get('RIPPLING_CLIENT_ID') || '').trim(),
+    clientSecret: (Deno.env.get('RIPPLING_CLIENT_SECRET') || '').trim(),
+  };
+  if (fromEnv.clientId && fromEnv.clientSecret) return fromEnv;
+  const stored = await loadCompanyRippling();
+  return {
+    clientId: stored.oauth_client_id,
+    clientSecret: stored.oauth_client_secret,
+  };
+}
+
+function ripplingPublicConfig(
+  app: { clientId: string; clientSecret: string },
+  stored: CompanyRipplingRow,
+  staff: StaffContext,
+) {
+  const configured = Boolean(app.clientId && app.clientSecret);
+  return {
+    clientId: configured ? app.clientId : '',
+    configured,
+    connected: Boolean(stored.access_token),
+    companyName: stored.access_token ? stored.company_name : '',
+    tokenSource: stored.access_token ? stored.token_source : '',
+    canManage: canManageCompanyRippling(staff),
+  };
+}
+
+async function handleRipplingOAuthConfig(req: Request, staff: StaffContext): Promise<Response> {
+  const [app, stored] = await Promise.all([ripplingOAuthApp(), loadCompanyRippling()]);
+  return json(req, 200, ripplingPublicConfig(app, stored, staff));
+}
+
+async function handleRipplingOAuthAppSave(
+  req: Request,
+  staff: StaffContext,
+  body: ArrayBuffer | null,
+): Promise<Response> {
+  if (!canManageCompanyRippling(staff)) {
+    return error(req, 403, 'Only a System Admin, General Manager, or HR can add the Rippling sign-in app.', 'forbidden');
+  }
+
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = body ? JSON.parse(new TextDecoder().decode(body)) : {};
+  } catch {
+    return error(req, 400, 'Body must be JSON.', 'bad_request');
+  }
+
+  const clientId = String(payload.clientId || payload.client_id || '').trim();
+  const clientSecret = String(payload.clientSecret || payload.client_secret || '').trim();
+  if (!clientId || !clientSecret) {
+    return error(req, 400, 'Paste the Rippling app client ID and secret.', 'bad_request');
+  }
+  if (clientId.length > 256 || clientSecret.length > 512) {
+    return error(req, 400, 'Those Rippling app credentials are too long.', 'bad_request');
+  }
+
+  const stored = await upsertCompanyRippling(staff, {
+    oauth_client_id: clientId,
+    oauth_client_secret: clientSecret,
+  });
+  return json(req, 200, ripplingPublicConfig({ clientId, clientSecret }, stored, staff));
+}
+
+async function fetchRipplingCompanyName(token: string): Promise<string> {
+  const upstream = await forward(`${RIPPLING_API_ORIGIN}/companies/?expand=parent_legal_entity`, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
+      'User-Agent': 'MyCanadaGold/1.0',
+    },
+  });
+  const payload = await upstream.json().catch(() => null);
+  const results = Array.isArray((payload as { results?: unknown[] } | null)?.results)
+    ? (payload as { results: Array<Record<string, unknown>> }).results
+    : [];
+  const first = results[0] || {};
+  const parent = (first.parent_legal_entity || {}) as Record<string, unknown>;
+  return String(parent.legal_name || first.name || '').trim();
+}
+
+async function probeRipplingAccessToken(token: string): Promise<string> {
+  const upstream = await forward(`${RIPPLING_API_ORIGIN}/workers/?limit=1`, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
+      'User-Agent': 'MyCanadaGold/1.0',
+    },
+  });
+  if (!upstream.ok) {
+    const payload = await upstream.json().catch(() => null);
+    const message = String(
+      (payload as { message?: string; detail?: string } | null)?.message ||
+        (payload as { detail?: string } | null)?.detail ||
+        '',
+    );
+    if (upstream.status === 401 || /incorrect authentication|invalid api key|unauthorized/i.test(message)) {
+      throw new Error(
+        'Rippling rejected this token. In Rippling, open Tools → Developer → API Tokens, create a token with workers.read, then paste only the token.',
+      );
+    }
+    if (upstream.status === 403) {
+      throw new Error(
+        'This Rippling token authenticated but cannot read employees. Enable workers.read, or sign in as an admin who can view the whole company.',
+      );
+    }
+    throw new Error(message || `Rippling request failed (${upstream.status}).`);
+  }
+  return fetchRipplingCompanyName(token).catch(() => '');
+}
+
+async function saveCompanyRipplingTokens(
+  staff: StaffContext,
+  tokens: { accessToken: string; refreshToken?: string; source: 'oauth' | 'api-token' },
+): Promise<CompanyRipplingRow> {
+  const companyName = await probeRipplingAccessToken(tokens.accessToken);
+  return upsertCompanyRippling(staff, {
+    access_token: tokens.accessToken,
+    refresh_token: tokens.refreshToken || '',
+    token_source: tokens.source,
+    company_name: companyName,
   });
 }
 
-async function handleRipplingOAuthToken(req: Request, body: ArrayBuffer | null): Promise<Response> {
-  const { clientId, clientSecret } = ripplingOAuthApp();
+async function handleRipplingCompanySave(
+  req: Request,
+  staff: StaffContext,
+  body: ArrayBuffer | null,
+): Promise<Response> {
+  if (!canManageCompanyRippling(staff)) {
+    return error(req, 403, 'Only a System Admin, General Manager, or HR can connect Rippling for everyone.', 'forbidden');
+  }
+
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = body ? JSON.parse(new TextDecoder().decode(body)) : {};
+  } catch {
+    return error(req, 400, 'Body must be JSON.', 'bad_request');
+  }
+
+  const token = String(payload.token || payload.access_token || '')
+    .replace(/^Bearer\s+/i, '')
+    .trim();
+  if (!token) return error(req, 400, 'Paste a Rippling API token to connect.', 'bad_request');
+
+  try {
+    const stored = await saveCompanyRipplingTokens(staff, { accessToken: token, source: 'api-token' });
+    const app = await ripplingOAuthApp();
+    return json(req, 200, { ...ripplingPublicConfig(app, stored, staff), companyName: stored.company_name });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Could not connect Rippling.';
+    return error(req, 400, message, 'bad_request');
+  }
+}
+
+async function handleRipplingCompanyDisconnect(req: Request, staff: StaffContext): Promise<Response> {
+  if (!canManageCompanyRippling(staff)) {
+    return error(req, 403, 'Only a System Admin, General Manager, or HR can disconnect Rippling.', 'forbidden');
+  }
+  const stored = await upsertCompanyRippling(staff, {
+    access_token: '',
+    refresh_token: '',
+    token_source: '',
+    company_name: '',
+  });
+  const app = await ripplingOAuthApp();
+  return json(req, 200, ripplingPublicConfig(app, stored, staff));
+}
+
+async function refreshCompanyRipplingToken(): Promise<string> {
+  const stored = await loadCompanyRippling();
+  if (!stored.refresh_token) return '';
+  const app = await ripplingOAuthApp();
+  if (!app.clientId || !app.clientSecret) return '';
+
+  const form = new URLSearchParams();
+  form.set('grant_type', 'refresh_token');
+  form.set('refresh_token', stored.refresh_token);
+  const basic = btoa(`${app.clientId}:${app.clientSecret}`);
+  const upstream = await forward(RIPPLING_OAUTH_TOKEN_URL, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Authorization: `Basic ${basic}`,
+    },
+    body: form.toString(),
+  });
+  const payload = (await upstream.json().catch(() => null)) as
+    | { access_token?: string; refresh_token?: string }
+    | null;
+  const accessToken = String(payload?.access_token || '').trim();
+  if (!upstream.ok || !accessToken) return '';
+
+  await adminClient()
+    .from('company_rippling')
+    .update({
+      access_token: accessToken,
+      refresh_token: String(payload?.refresh_token || stored.refresh_token).trim(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', true);
+  return accessToken;
+}
+
+async function handleRipplingOAuthToken(
+  req: Request,
+  staff: StaffContext,
+  body: ArrayBuffer | null,
+): Promise<Response> {
+  const { clientId, clientSecret } = await ripplingOAuthApp();
   if (!clientId || !clientSecret) {
     return error(req, 503, 'Rippling sign-in is not configured. Ask a system admin to add the Rippling OAuth app.', 'rippling_unconfigured');
   }
@@ -524,6 +1036,25 @@ async function handleRipplingOAuthToken(req: Request, body: ArrayBuffer | null):
     },
     body: form.toString(),
   });
+
+  if (upstream.ok && canManageCompanyRippling(staff)) {
+    const tokens = (await upstream.clone().json().catch(() => null)) as
+      | { access_token?: string; refresh_token?: string }
+      | null;
+    const accessToken = String(tokens?.access_token || '').trim();
+    if (accessToken) {
+      try {
+        await saveCompanyRipplingTokens(staff, {
+          accessToken,
+          refreshToken: String(tokens?.refresh_token || '').trim(),
+          source: 'oauth',
+        });
+      } catch (err) {
+        console.error('rippling company save failed', err instanceof Error ? err.message : err);
+      }
+    }
+  }
+
   return passthroughResponse(req, upstream);
 }
 
@@ -841,18 +1372,34 @@ async function handleGmailMessage(req: Request, query: URLSearchParams): Promise
 }
 
 async function handleRippling(req: Request, rest: string, search: string): Promise<Response> {
-  const authorization = upstreamAuthorization(req);
-  if (!authorization) return error(req, 401, 'Connect Rippling first.', 'rippling_unauthenticated');
   if (req.method !== 'GET') return error(req, 405, 'Rippling access is read-only.', 'method_not_allowed');
 
-  const upstream = await forward(`${RIPPLING_API_ORIGIN}${rest}${search}`, {
-    method: 'GET',
-    headers: {
-      Accept: 'application/json',
-      Authorization: authorization,
-      'User-Agent': 'MyCanadaGold/1.0',
-    },
-  });
+  let authorization = upstreamAuthorization(req);
+  let usingCompany = false;
+  if (!authorization) {
+    const stored = await loadCompanyRippling();
+    if (stored.access_token) {
+      authorization = `Bearer ${stored.access_token}`;
+      usingCompany = true;
+    }
+  }
+  if (!authorization) return error(req, 401, 'Connect Rippling first.', 'rippling_unauthenticated');
+
+  const headers = {
+    Accept: 'application/json',
+    Authorization: authorization,
+    'User-Agent': 'MyCanadaGold/1.0',
+  };
+  let upstream = await forward(`${RIPPLING_API_ORIGIN}${rest}${search}`, { method: 'GET', headers });
+  if (upstream.status === 401 && usingCompany) {
+    const refreshed = await refreshCompanyRipplingToken();
+    if (refreshed) {
+      upstream = await forward(`${RIPPLING_API_ORIGIN}${rest}${search}`, {
+        method: 'GET',
+        headers: { ...headers, Authorization: `Bearer ${refreshed}` },
+      });
+    }
+  }
   return passthroughResponse(req, upstream);
 }
 
@@ -4115,7 +4662,7 @@ Deno.serve(async (req) => {
   }
 
   const { path, search, query } = routePath(req);
-  const isAvatar = path === '/avatars/stylize';
+  const isAvatar = path.startsWith('/avatars/');
   const isAi = path.startsWith('/anthropic/') || path.startsWith('/openai/') || path.startsWith('/openrouter/');
   const bucket = isAvatar ? 'avatar' : isAi ? 'ai' : 'other';
   const limit = isAvatar ? RATE_LIMIT_AVATAR : isAi ? RATE_LIMIT_AI : RATE_LIMIT_OTHER;
@@ -4133,6 +4680,9 @@ Deno.serve(async (req) => {
     if (path === '/openrouter/v1/chat/completions' && req.method === 'POST') {
       return await handleOpenRouter(req, await readBody(req));
     }
+    if (path === '/avatars/inspect') {
+      return await handleAvatarInspect(req, await readBody(req));
+    }
     if (path === '/avatars/stylize') {
       return await handleAvatarStylize(req, await readBody(req), staff.userId);
     }
@@ -4140,10 +4690,19 @@ Deno.serve(async (req) => {
       return await handleFintrac(req, path.slice('/fintrac'.length), search, await readBody(req));
     }
     if (path === '/rippling/oauth/config') {
-      return handleRipplingOAuthConfig(req);
+      return await handleRipplingOAuthConfig(req, staff);
+    }
+    if (path === '/rippling/oauth/app' && req.method === 'POST') {
+      return await handleRipplingOAuthAppSave(req, staff, await readBody(req));
     }
     if (path === '/rippling/oauth/token' && req.method === 'POST') {
-      return await handleRipplingOAuthToken(req, await readBody(req));
+      return await handleRipplingOAuthToken(req, staff, await readBody(req));
+    }
+    if (path === '/rippling/company' && req.method === 'POST') {
+      return await handleRipplingCompanySave(req, staff, await readBody(req));
+    }
+    if (path === '/rippling/company/disconnect' && req.method === 'POST') {
+      return await handleRipplingCompanyDisconnect(req, staff);
     }
     if (path.startsWith('/rippling/')) {
       return await handleRippling(req, path.slice('/rippling'.length), search);

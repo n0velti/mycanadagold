@@ -904,14 +904,20 @@ export function MobileListRow({
   trailing,
   onPress,
   last,
+  selected,
   accessibilityLabel,
 }) {
   const Row = onPress ? Pressable : View;
   return (
     <Row
-      style={[styles.mobileListRow, last && styles.mobileListRowLast]}
+      style={[
+        styles.mobileListRow,
+        selected && styles.mobileListRowSelected,
+        last && styles.mobileListRowLast,
+      ]}
       onPress={onPress}
       accessibilityRole={onPress ? 'button' : undefined}
+      accessibilityState={onPress ? { selected: Boolean(selected) } : undefined}
       accessibilityLabel={accessibilityLabel || title}
     >
       {leading ? <View style={styles.mobileListLead}>{leading}</View> : null}
@@ -1629,6 +1635,9 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: T.hairline,
     ...webCursor,
+  },
+  mobileListRowSelected: {
+    backgroundColor: 'rgba(0,122,255,0.08)',
   },
   mobileListRowLast: {
     borderBottomWidth: 0,

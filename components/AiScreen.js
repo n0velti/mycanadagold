@@ -630,7 +630,7 @@ export default function AiScreen({
             </View>
             {selectedAppMeta.length > 0 && selectedAppMeta.every((app) => !app.usesDate) ? (
               <Text style={styles.helpText}>
-                The selected apps are live snapshots, so the date range is unused until you add Transactions, Financials, Audit, Trends, FINTRAC, or 100 Ways.
+                The selected apps are live snapshots, so the date range is unused until you add Transactions, Financials, Audit, FINTRAC, or 100 Ways.
               </Text>
             ) : null}
           </View>

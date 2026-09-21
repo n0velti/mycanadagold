@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Image,
   Linking,
   Modal,
   Platform,
@@ -10,44 +9,54 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  useWindowDimensions,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
   RIPPLING_API_TOKENS_URL,
+  RIPPLING_DEVELOPER_URL,
   WORKER_STATUS,
   buildRipplingAuthorizeUrl,
+  canManageCompanyRippling,
   clearRipplingOAuthCallbackFromUrl,
   clearRipplingOAuthState,
   clearRipplingSession,
   createRipplingOAuthState,
+  disconnectCompanyRippling,
   exchangeRipplingOAuthCode,
   fetchEmployees,
   fetchRipplingCompany,
   getRipplingRedirectUri,
-  initialsFor,
   loadRipplingOAuthApp,
   loadRipplingSession,
   persistRipplingOAuthState,
   readRipplingOAuthCallback,
   readRipplingOAuthState,
+  saveCompanyRipplingSession,
+  saveRipplingOAuthApp,
   saveRipplingSession,
 } from '../lib/rippling';
 import { syncStaffRoles } from '../lib/auth';
 import { mergeEmployeesWithProfiles } from '../lib/aureusEmployees';
 import { categoryLabel, listStaffProfiles, useAppAccess } from '../lib/permissions';
+import { useIsMobile } from '../lib/mobileUi';
 import ProfilePhotoModal from './ProfilePhotoModal';
-
-const fontFamily = Platform.select({
-  ios: 'Sohne',
-  android: 'Sohne',
-  default: 'Sohne',
-});
-
-const ACCENT = '#1D4ED8';
-const ACCENT_SOFT = '#EFF6FF';
-const MOBILE_BREAKPOINT = 768;
+import {
+  BarButton,
+  Chip,
+  EmptyState,
+  FONT,
+  Group,
+  GroupRow,
+  MobileList,
+  MobileListRow,
+  SearchField,
+  SectionLabel,
+  StaffAvatar,
+  StatusPill,
+  T,
+  TextTabs,
+} from './TriageKit';
 
 const STATUS_FILTERS = [
   { key: WORKER_STATUS.ACTIVE, label: 'Active' },
@@ -60,70 +69,62 @@ const EMPLOYEE_TABS = [
   { key: 'rippling', label: 'Rippling' },
 ];
 
-function statusColor(status) {
+function statusTone(status) {
   switch (status) {
     case WORKER_STATUS.ACTIVE:
-      return '#2F8A4E';
+      return 'green';
     case WORKER_STATUS.TERMINATED:
-      return '#B91C1C';
+      return 'red';
     case WORKER_STATUS.HIRED:
     case WORKER_STATUS.ACCEPTED:
-      return ACCENT;
+      return 'blue';
     default:
-      return '#6b6b6b';
+      return 'neutral';
   }
 }
 
-function Avatar({ employee, size = 36 }) {
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    setFailed(false);
-  }, [employee.photoUrl]);
-  const showImage = Boolean(employee.photoUrl) && !failed;
+function FieldGroup({ title, fields }) {
+  const rows = (fields || []).filter((field) => field?.value);
+  if (!rows.length) return null;
   return (
-    <View
-      style={[
-        styles.avatar,
-        { width: size, height: size, borderRadius: size / 2 },
-        !showImage && styles.avatarFallback,
-      ]}
-    >
-      {showImage ? (
-        <Image
-          source={{ uri: employee.photoUrl }}
-          style={{ width: size, height: size, borderRadius: size / 2 }}
-          onError={() => setFailed(true)}
-        />
-      ) : (
-        <Text style={[styles.avatarInitials, { fontSize: size > 40 ? 16 : 12 }]}>
-          {employee.initials}
-        </Text>
-      )}
+    <View style={styles.cardBlock}>
+      {title ? <SectionLabel>{title}</SectionLabel> : null}
+      <Group>
+        {rows.map((field, index) => (
+          <GroupRow
+            key={field.label}
+            label={field.label}
+            value={field.value}
+            last={index === rows.length - 1}
+          />
+        ))}
+      </Group>
     </View>
   );
 }
 
-function TabBar({ options, value, onChange }) {
+function PersonHero({ name, title, photoUrl, statusLabel, statusTone: tone, onOpenPhoto, compact, onClose, heading }) {
   return (
-    <View style={styles.tabBar} accessibilityRole="tablist">
-      {options.map((option) => {
-        const active = option.key === value;
-        return (
-          <Pressable
-            key={option.key}
-            style={[styles.tab, active && styles.tabActive]}
-            onPress={() => onChange(option.key)}
-            accessibilityRole="tab"
-            accessibilityState={{ selected: active }}
-            accessibilityLabel={option.label}
-          >
-            <Text style={[styles.tabLabel, active && styles.tabLabelActive]} numberOfLines={1}>
-              {option.label}
-            </Text>
+    <View style={styles.heroCard}>
+      {compact ? (
+        <View style={styles.detailMobileHeader}>
+          <Text style={styles.detailMobileTitle}>{heading || 'Employee'}</Text>
+          <Pressable onPress={onClose} hitSlop={8} accessibilityRole="button" accessibilityLabel="Close">
+            <Ionicons name="close" size={22} color={T.secondary} />
           </Pressable>
-        );
-      })}
+        </View>
+      ) : null}
+      <Pressable
+        onPress={onOpenPhoto}
+        disabled={!onOpenPhoto}
+        accessibilityRole={onOpenPhoto ? 'button' : undefined}
+        accessibilityLabel={onOpenPhoto ? `View ${name}'s portrait` : undefined}
+      >
+        <StaffAvatar uri={photoUrl} name={name} size={72} />
+      </Pressable>
+      <Text style={styles.heroName}>{name}</Text>
+      {title ? <Text style={styles.heroTitle}>{title}</Text> : null}
+      {statusLabel ? <StatusPill label={statusLabel} tone={tone || 'neutral'} /> : null}
     </View>
   );
 }
@@ -147,64 +148,40 @@ function permissionLabel(person) {
   return categoryLabel(person) || '—';
 }
 
-function StaffEmployeeRow({ person, compact, selected, onPress }) {
+function StaffEmployeeRow({ person, selected, onPress, last }) {
   const name = staffDisplayName(person);
   const permission = permissionLabel(person);
-  const location = person.locationName || '—';
+  const location = person.locationName || '';
   const type = employeeTypeLabel(person);
   const inactive = person.isActive === false || person.profileActive === false;
+  const subtitle = [location, type !== '—' ? type : '', permission !== '—' ? permission : '']
+    .filter(Boolean)
+    .join(' · ');
 
   return (
-    <Pressable
-      onPress={onPress}
-      style={[styles.row, selected && styles.rowSelected, inactive && styles.rowInactive]}
-      {...(Platform.OS === 'web' ? { className: 'cgold-filter-option' } : null)}
-    >
-      <View style={styles.colName}>
-        <Avatar employee={{ photoUrl: person.avatarUrl || person.photoUrl, initials: initialsFor(name) }} size={32} />
-        <View style={styles.nameWrap}>
-          <Text style={styles.nameText} numberOfLines={1}>
-            {name}
-            {inactive ? ' · Inactive' : ''}
-          </Text>
-          <Text style={styles.emailText} numberOfLines={1}>
-            {compact
-              ? [location, type, permission].filter((value) => value && value !== '—').join(' · ')
-              : person.email || person.aureusLogin}
-          </Text>
-        </View>
-      </View>
-      {compact ? (
-        <Ionicons name="chevron-forward" size={16} color="#c4c4c4" />
-      ) : (
-        <>
-          <Text style={[styles.cell, styles.colAppLocation]} numberOfLines={1}>
-            {location}
-          </Text>
-          <Text style={[styles.cell, styles.colAppType]} numberOfLines={1}>
-            {type}
-          </Text>
-          <Text style={[styles.cell, styles.colAppPermission]} numberOfLines={1}>
-            {permission}
-          </Text>
-        </>
-      )}
-    </Pressable>
+    <View style={inactive ? styles.rowInactive : null}>
+      <MobileListRow
+        title={inactive ? `${name} · Inactive` : name}
+        subtitle={subtitle || person.email || person.aureusLogin}
+        leading={<StaffAvatar uri={person.avatarUrl || person.photoUrl} name={name} size={44} />}
+        selected={selected}
+        last={last}
+        onPress={onPress}
+      />
+    </View>
   );
 }
 
 function StaffEmployeeDetail({ person, onClose, compact, onOpenPhoto }) {
   if (!person) {
     return (
-      <View style={styles.detailEmpty}>
-        <Ionicons name="people-outline" size={28} color="#c4c4c4" />
-        <Text style={styles.detailEmptyText}>Select an employee to see their profile.</Text>
-      </View>
+      <EmptyState icon="people-outline" title="Employee" body="Select someone to see their profile." />
     );
   }
 
   const name = staffDisplayName(person);
   const photoUri = person.avatarUrl || person.photoUrl || '';
+  const inactive = person.isActive === false || person.profileActive === false;
 
   return (
     <ScrollView
@@ -212,39 +189,39 @@ function StaffEmployeeDetail({ person, onClose, compact, onOpenPhoto }) {
       contentContainerStyle={styles.detailContent}
       showsVerticalScrollIndicator={false}
     >
-      {compact ? (
-        <View style={styles.detailMobileHeader}>
-          <Text style={styles.detailMobileTitle}>Employee</Text>
-          <Pressable onPress={onClose} hitSlop={8}>
-            <Ionicons name="close" size={18} color="#6b6b6b" />
-          </Pressable>
-        </View>
-      ) : null}
-
-      <View style={styles.detailHero}>
-        <Pressable
-          onPress={onOpenPhoto}
-          accessibilityRole="button"
-          accessibilityLabel={`View ${name}'s portrait`}
-        >
-          <Avatar employee={{ photoUrl: photoUri, initials: initialsFor(name) }} size={64} />
-        </Pressable>
-        <View style={styles.detailHeroText}>
-          <Text style={styles.detailName}>{name}</Text>
-          <Text style={styles.detailTitle}>{employeeTypeLabel(person)}</Text>
-          {person.role && person.role !== person.employeeType ? (
-            <Text style={styles.statusText}>{person.role}</Text>
-          ) : null}
-        </View>
-      </View>
-
-      <DetailField label="Default location" value={person.locationName} />
-      <DetailField label="Employee type" value={person.employeeType} />
-      <DetailField label="Aureus role" value={person.role && person.role !== person.employeeType ? person.role : ''} />
-      <DetailField label="Permission" value={person.hasSignedIn ? permissionLabel(person) : 'Has not signed in to myCanadaGold'} />
-      <DetailField label="Work email" value={person.email} />
-      <DetailField label="Aureus login" value={person.aureusLogin} />
-      <DetailField label="Phone" value={person.phone} />
+      <PersonHero
+        name={name}
+        title={employeeTypeLabel(person)}
+        photoUrl={photoUri}
+        statusLabel={inactive ? 'Inactive' : person.hasSignedIn ? permissionLabel(person) : 'Hasn’t signed in'}
+        statusTone={inactive ? 'neutral' : person.hasSignedIn ? 'blue' : 'orange'}
+        onOpenPhoto={onOpenPhoto}
+        compact={compact}
+        onClose={onClose}
+      />
+      <FieldGroup
+        title="Work"
+        fields={[
+          { label: 'Location', value: person.locationName },
+          { label: 'Employee type', value: person.employeeType },
+          {
+            label: 'Aureus role',
+            value: person.role && person.role !== person.employeeType ? person.role : '',
+          },
+          {
+            label: 'Permission',
+            value: person.hasSignedIn ? permissionLabel(person) : 'Has not signed in to myCanadaGold',
+          },
+        ]}
+      />
+      <FieldGroup
+        title="Contact"
+        fields={[
+          { label: 'Work email', value: person.email },
+          { label: 'Aureus login', value: person.aureusLogin },
+          { label: 'Phone', value: person.phone },
+        ]}
+      />
     </ScrollView>
   );
 }
@@ -257,9 +234,18 @@ function locationMatchesStore(locationName, storeName) {
   return location.includes(store) || store.includes(location);
 }
 
+function groupRows(rows, keyFor) {
+  const map = new Map();
+  for (const row of rows) {
+    const key = keyFor(row) || 'Other';
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(row);
+  }
+  return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+}
+
 function AppEmployeesPanel({ session, onProfileUpdated, storeFilter }) {
-  const { width } = useWindowDimensions();
-  const isMobile = width < MOBILE_BREAKPOINT;
+  const isMobile = useIsMobile();
   const { canFilter } = useAppAccess();
   const lockedLocation = String(storeFilter || '').trim();
   const allowFilters = canFilter('employees') && !lockedLocation;
@@ -350,96 +336,77 @@ function AppEmployeesPanel({ session, onProfileUpdated, storeFilter }) {
     [filtered, selectedId],
   );
 
+  const grouped = useMemo(
+    () => groupRows(filtered, (row) => row.locationName || 'No location'),
+    [filtered],
+  );
+
   return (
     <View style={styles.body}>
       <View style={styles.toolbar}>
-        <View style={styles.search}>
-          <Ionicons name="search-outline" size={15} color="#8a8a8a" style={styles.searchIcon} />
-          <TextInput
-            style={styles.searchInput}
-            value={query}
-            onChangeText={setQuery}
-            placeholder="Search name, location, type…"
-            placeholderTextColor="#999"
-            autoCapitalize="none"
-            autoCorrect={false}
-            clearButtonMode="while-editing"
-          />
-          {query ? (
-            <Pressable onPress={() => setQuery('')} hitSlop={8}>
-              <Ionicons name="close-circle" size={15} color="#b0b0b0" />
-            </Pressable>
-          ) : null}
-        </View>
-        <Pressable style={styles.secondaryButton} onPress={load} disabled={loading}>
-          <Text style={styles.secondaryButtonText}>Refresh</Text>
-        </Pressable>
+        <SearchField
+          value={query}
+          onChangeText={setQuery}
+          placeholder="Search name, location, type…"
+          size={isMobile ? 'lg' : undefined}
+          style={styles.searchField}
+        />
+        <BarButton label="Refresh" onPress={load} disabled={loading} />
       </View>
 
       {allowFilters && locations.length > 1 ? (
         <View style={styles.filterRow}>
-          <Pressable
-            style={[styles.filterChip, !location && styles.filterChipActive]}
-            onPress={() => setLocation(null)}
-          >
-            <Text style={[styles.filterChipText, !location && styles.filterChipTextActive]}>All locations</Text>
-          </Pressable>
+          <Chip label="All locations" selected={!location} onPress={() => setLocation(null)} />
           {locations.map((name) => (
-            <Pressable
+            <Chip
               key={name}
-              style={[styles.filterChip, location === name && styles.filterChipActive]}
+              label={name}
+              selected={location === name}
               onPress={() => setLocation((current) => (current === name ? null : name))}
-            >
-              <Text style={[styles.filterChipText, location === name && styles.filterChipTextActive]}>
-                {name}
-              </Text>
-            </Pressable>
+            />
           ))}
         </View>
       ) : null}
-
-      <Text style={styles.directoryHint}>
-        {lockedLocation
-          ? `Employees at ${lockedLocation}`
-          : 'Employees who have signed in'}
-        {people.length ? ` · ${people.length}` : ''}
-      </Text>
 
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
       {loading && people.length === 0 ? (
         <View style={styles.centered}>
-          <ActivityIndicator color="#1a1a1a" />
+          <ActivityIndicator color={T.text} />
         </View>
       ) : (
         <View style={styles.split}>
-          <View style={styles.tableWrap}>
-            {!isMobile ? (
-              <View style={[styles.row, styles.headerRow]}>
-                <Text style={[styles.headerText, styles.colName]}>Name</Text>
-                <Text style={[styles.headerText, styles.colAppLocation]}>Default location</Text>
-                <Text style={[styles.headerText, styles.colAppType]}>Employee type</Text>
-                <Text style={[styles.headerText, styles.colAppPermission]}>Permission</Text>
-              </View>
-            ) : null}
+          <View style={styles.listPane}>
             <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
               {filtered.length === 0 ? (
-                <View style={styles.empty}>
-                  <Text style={styles.emptyText}>
-                    {query.trim() || location || lockedLocation
+                <EmptyState
+                  icon="people-outline"
+                  title="No employees"
+                  body={
+                    query.trim() || location || lockedLocation
                       ? 'No employees match the current filters.'
-                      : 'No employees have signed in yet.'}
-                  </Text>
-                </View>
+                      : 'No employees have signed in yet.'
+                  }
+                />
               ) : (
-                filtered.map((person) => (
-                  <StaffEmployeeRow
-                    key={person.id}
-                    person={person}
-                    compact={isMobile}
-                    selected={!isMobile && selectedId === person.id}
-                    onPress={() => setSelectedId(person.id)}
-                  />
+                grouped.map(([groupName, rows]) => (
+                  <View key={groupName} style={styles.listGroup}>
+                    <SectionLabel>
+                      {groupName}
+                      {` · ${rows.length}`}
+                    </SectionLabel>
+                    <MobileList>
+                      {rows.map((person, index) => (
+                        <StaffEmployeeRow
+                          key={person.id}
+                          person={person}
+                          last={index === rows.length - 1}
+                          selected={!isMobile && selectedId === person.id}
+                          onPress={() => setSelectedId(person.id)}
+                        />
+                      ))}
+                    </MobileList>
+                  </View>
                 ))
               )}
             </ScrollView>
@@ -494,9 +461,11 @@ function AppEmployeesPanel({ session, onProfileUpdated, storeFilter }) {
   );
 }
 
-function SignInCard({ onConnected }) {
-  // null = still loading; { clientId, configured } once the proxy answers.
+function SignInCard({ onConnected, profile }) {
+  // null = still loading; { clientId, configured, canManage } once the proxy answers.
   const [oauthApp, setOauthApp] = useState(null);
+  const [clientId, setClientId] = useState('');
+  const [clientSecret, setClientSecret] = useState('');
   const [token, setToken] = useState('');
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -509,13 +478,20 @@ function SignInCard({ onConnected }) {
         const app = await loadRipplingOAuthApp();
         if (!cancelled) setOauthApp(app);
       } catch {
-        if (!cancelled) setOauthApp({ clientId: '', configured: false });
+        if (!cancelled) {
+          setOauthApp({
+            clientId: '',
+            configured: false,
+            connected: false,
+            canManage: canManageCompanyRippling(profile),
+          });
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [profile]);
 
   useEffect(() => {
     const callback = readRipplingOAuthCallback();
@@ -540,7 +516,19 @@ function SignInCard({ onConnected }) {
         });
         clearRipplingOAuthState();
         clearRipplingOAuthCallbackFromUrl();
-        if (!cancelled) onConnected(session);
+        const app = await loadRipplingOAuthApp().catch(() => null);
+        if (!cancelled) {
+          onConnected(
+            app?.connected
+              ? {
+                  token: '',
+                  source: 'company',
+                  companyName: app.companyName,
+                  savedAt: Date.now(),
+                }
+              : session,
+          );
+        }
       } catch (err) {
         clearRipplingOAuthCallbackFromUrl();
         if (!cancelled) setError(err?.message || 'Rippling sign-in failed.');
@@ -554,6 +542,22 @@ function SignInCard({ onConnected }) {
     };
   }, [onConnected]);
 
+  const canManage = Boolean(oauthApp?.canManage) || canManageCompanyRippling(profile);
+
+  const saveOauthApp = async () => {
+    setBusy('app');
+    setError('');
+    try {
+      const app = await saveRipplingOAuthApp({ clientId, clientSecret });
+      setOauthApp(app);
+      setClientSecret('');
+    } catch (err) {
+      setError(err?.message || 'Could not save the Rippling sign-in app.');
+    } finally {
+      setBusy('');
+    }
+  };
+
   const signInWithRippling = async () => {
     const redirectUri = getRipplingRedirectUri();
     if (!redirectUri) {
@@ -562,7 +566,9 @@ function SignInCard({ onConnected }) {
     }
     if (!oauthApp?.configured || !oauthApp.clientId) {
       setError(
-        'Rippling sign-in is not set up yet. A system admin needs to add the Rippling OAuth app to the server. You can still connect with an API token below.',
+        canManage
+          ? 'Add the Rippling sign-in app above, then try again.'
+          : 'Rippling sign-in is not set up yet. Ask a System Admin, GM, or HR to add the Rippling app on this screen.',
       );
       return;
     }
@@ -592,7 +598,9 @@ function SignInCard({ onConnected }) {
     setBusy('token');
     setError('');
     try {
-      const session = await saveRipplingSession({ token });
+      const session = canManage
+        ? await saveCompanyRipplingSession({ token })
+        : await saveRipplingSession({ token });
       onConnected(session);
     } catch (err) {
       setError(err?.message || 'Could not save Rippling token.');
@@ -601,10 +609,12 @@ function SignInCard({ onConnected }) {
     }
   };
 
+  const redirectHint = getRipplingRedirectUri() || 'https://www.mycanadagold.ca/';
+
   return (
     <View style={styles.signInCard}>
       <View style={styles.signInIcon}>
-        <Ionicons name="people-outline" size={22} color={ACCENT} />
+        <Ionicons name="people-outline" size={22} color={T.blue} />
       </View>
       <Text style={styles.signInTitle}>Sign in to Rippling</Text>
       <Text style={styles.signInBody}>
@@ -613,10 +623,60 @@ function SignInCard({ onConnected }) {
         come back connected.
       </Text>
 
-      {oauthApp && !oauthApp.configured ? (
+      {canManage && oauthApp && !oauthApp.configured ? (
+        <>
+          <Text style={styles.fieldHint}>
+            Add the Rippling OAuth app so everyone can sign in with Rippling instead of an API
+            token. In the Rippling Developer Portal, create an app, enable workers.read,
+            users.read, departments.read, work-locations.read, and companies.read, and register
+            this redirect URI:
+          </Text>
+          <Text style={styles.redirectUri} selectable>
+            {redirectHint}
+          </Text>
+          <Pressable style={styles.linkRow} onPress={() => Linking.openURL(RIPPLING_DEVELOPER_URL)}>
+            <Ionicons name="open-outline" size={14} color={T.blue} />
+            <Text style={styles.linkText}>Open Rippling Developer Portal</Text>
+          </Pressable>
+          <TextInput
+            style={styles.secretInput}
+            value={clientId}
+            onChangeText={setClientId}
+            placeholder="Client ID"
+            placeholderTextColor="#999"
+            autoCapitalize="none"
+            autoCorrect={false}
+            editable={!busy}
+          />
+          <TextInput
+            style={styles.secretInput}
+            value={clientSecret}
+            onChangeText={setClientSecret}
+            placeholder="Client secret"
+            placeholderTextColor="#999"
+            autoCapitalize="none"
+            autoCorrect={false}
+            secureTextEntry
+            editable={!busy}
+          />
+          <Pressable
+            style={[styles.secondaryButton, Boolean(busy) && styles.primaryButtonDisabled]}
+            onPress={saveOauthApp}
+            disabled={Boolean(busy) || !clientId.trim() || !clientSecret.trim()}
+          >
+            {busy === 'app' ? (
+              <ActivityIndicator color={T.blue} />
+            ) : (
+              <Text style={[styles.secondaryButtonText, { color: T.blue }]}>Save Rippling app</Text>
+            )}
+          </Pressable>
+        </>
+      ) : null}
+
+      {oauthApp && !oauthApp.configured && !canManage ? (
         <Text style={styles.fieldHint}>
-          Rippling sign-in is not set up on the server yet. Connect with an API token below, or
-          ask a system admin to add the Rippling OAuth app.
+          Rippling sign-in is not set up yet. Ask a System Admin, GM, or HR to add the Rippling
+          app on this screen, or connect with an API token below.
         </Text>
       ) : null}
 
@@ -644,11 +704,12 @@ function SignInCard({ onConnected }) {
       {showToken ? (
         <>
           <Text style={styles.signInBody}>
-            Tools → Developer → API Tokens. Paste the token only — the app sends Authorization:
-            Bearer for you. Include workers.read. Unused tokens expire after 30 days.
+            {canManage
+              ? 'Connect once for everyone. Tools → Developer → API Tokens. Paste the token only — the app sends Authorization: Bearer for you. Include workers.read.'
+              : 'Tools → Developer → API Tokens. Paste the token only — the app sends Authorization: Bearer for you. Include workers.read. Unused tokens expire after 30 days.'}
           </Text>
           <Pressable style={styles.linkRow} onPress={() => Linking.openURL(RIPPLING_API_TOKENS_URL)}>
-            <Ionicons name="open-outline" size={14} color={ACCENT} />
+            <Ionicons name="open-outline" size={14} color={T.blue} />
             <Text style={styles.linkText}>Open API Tokens</Text>
           </Pressable>
           <TextInput
@@ -668,9 +729,11 @@ function SignInCard({ onConnected }) {
             disabled={Boolean(busy)}
           >
             {busy === 'token' ? (
-              <ActivityIndicator color={ACCENT} />
+              <ActivityIndicator color={T.blue} />
             ) : (
-              <Text style={[styles.secondaryButtonText, { color: ACCENT }]}>Connect with token</Text>
+              <Text style={[styles.secondaryButtonText, { color: T.blue }]}>
+                {canManage ? 'Connect for everyone' : 'Connect with token'}
+              </Text>
             )}
           </Pressable>
         </>
@@ -681,7 +744,7 @@ function SignInCard({ onConnected }) {
   );
 }
 
-function ConnectModal({ visible, onClose, onSaved }) {
+function ConnectModal({ visible, onClose, onSaved, canManage }) {
   const [token, setToken] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -698,7 +761,9 @@ function ConnectModal({ visible, onClose, onSaved }) {
     setSaving(true);
     setError('');
     try {
-      const session = await saveRipplingSession({ token });
+      const session = canManage
+        ? await saveCompanyRipplingSession({ token })
+        : await saveRipplingSession({ token });
       onSaved(session);
       onClose();
     } catch (err) {
@@ -726,7 +791,7 @@ function ConnectModal({ visible, onClose, onSaved }) {
             are revoked if the owner is terminated, or unused for 30 days.
           </Text>
           <Pressable style={styles.linkRow} onPress={() => Linking.openURL(RIPPLING_API_TOKENS_URL)}>
-            <Ionicons name="open-outline" size={14} color={ACCENT} />
+            <Ionicons name="open-outline" size={14} color={T.blue} />
             <Text style={styles.linkText}>Open API Tokens</Text>
           </Pressable>
           <TextInput
@@ -757,23 +822,14 @@ function ConnectModal({ visible, onClose, onSaved }) {
   );
 }
 
-function DetailField({ label, value }) {
-  if (!value) return null;
-  return (
-    <View style={styles.detailField}>
-      <Text style={styles.detailLabel}>{label}</Text>
-      <Text style={styles.detailValue}>{value}</Text>
-    </View>
-  );
-}
-
 function EmployeeDetail({ employee, onClose, compact }) {
   if (!employee) {
     return (
-      <View style={styles.detailEmpty}>
-        <Ionicons name="people-outline" size={28} color="#c4c4c4" />
-        <Text style={styles.detailEmptyText}>Select an employee to see their Rippling profile.</Text>
-      </View>
+      <EmptyState
+        icon="people-outline"
+        title="Rippling"
+        body="Select someone to see their Rippling profile."
+      />
     );
   }
 
@@ -783,96 +839,70 @@ function EmployeeDetail({ employee, onClose, compact }) {
       contentContainerStyle={styles.detailContent}
       showsVerticalScrollIndicator={false}
     >
-      {compact ? (
-        <View style={styles.detailMobileHeader}>
-          <Text style={styles.detailMobileTitle}>Profile</Text>
-          <Pressable onPress={onClose} hitSlop={8}>
-            <Ionicons name="close" size={18} color="#6b6b6b" />
-          </Pressable>
-        </View>
-      ) : null}
-
-      <View style={styles.detailHero}>
-        <Avatar employee={employee} size={64} />
-        <View style={styles.detailHeroText}>
-          <Text style={styles.detailName}>{employee.name}</Text>
-          <Text style={styles.detailTitle}>{employee.title || '—'}</Text>
-          <Text style={[styles.statusText, { color: statusColor(employee.status) }]}>
-            {employee.statusLabel}
-          </Text>
-        </View>
-      </View>
-
-      <DetailField label="Work email" value={employee.workEmail} />
-      <DetailField label="Personal email" value={employee.personalEmail} />
-      <DetailField label="Phone" value={employee.phone} />
-      <DetailField label="Department" value={employee.department} />
-      <DetailField label="Teams" value={employee.teams.join(', ')} />
-      <DetailField label="Manager" value={employee.managerName} />
-      <DetailField label="Location" value={employee.location} />
-      <DetailField label="Employment" value={employee.employmentType} />
-      <DetailField label="Level" value={employee.level} />
-      <DetailField label="Start date" value={employee.startDateLabel} />
-      <DetailField
-        label="End date"
-        value={employee.status === WORKER_STATUS.TERMINATED ? employee.endDateLabel : ''}
+      <PersonHero
+        name={employee.name}
+        title={employee.title}
+        photoUrl={employee.photoUrl}
+        statusLabel={employee.statusLabel}
+        statusTone={statusTone(employee.status)}
+        compact={compact}
+        onClose={onClose}
+        heading="Profile"
       />
-      <DetailField label="Legal entity" value={employee.legalEntity} />
-      <DetailField label="Employee #" value={employee.employeeNumber} />
-      <DetailField label="Annual compensation" value={employee.annualCompensation} />
-      <DetailField label="Hourly wage" value={employee.hourlyWage} />
+      <FieldGroup
+        title="Contact"
+        fields={[
+          { label: 'Work email', value: employee.workEmail },
+          { label: 'Personal email', value: employee.personalEmail },
+          { label: 'Phone', value: employee.phone },
+        ]}
+      />
+      <FieldGroup
+        title="Work"
+        fields={[
+          { label: 'Department', value: employee.department },
+          { label: 'Teams', value: employee.teams.join(', ') },
+          { label: 'Manager', value: employee.managerName },
+          { label: 'Location', value: employee.location },
+          { label: 'Employment', value: employee.employmentType },
+          { label: 'Level', value: employee.level },
+          { label: 'Start date', value: employee.startDateLabel },
+          {
+            label: 'End date',
+            value: employee.status === WORKER_STATUS.TERMINATED ? employee.endDateLabel : '',
+          },
+          { label: 'Legal entity', value: employee.legalEntity },
+          { label: 'Employee #', value: employee.employeeNumber },
+        ]}
+      />
+      <FieldGroup
+        title="Compensation"
+        fields={[
+          { label: 'Annual', value: employee.annualCompensation },
+          { label: 'Hourly', value: employee.hourlyWage },
+        ]}
+      />
     </ScrollView>
   );
 }
 
-function EmployeeRow({ employee, selected, onPress, compact }) {
+function EmployeeRow({ employee, selected, onPress, last }) {
+  const subtitle = [employee.title, employee.department, employee.location].filter(Boolean).join(' · ');
   return (
-    <Pressable
+    <MobileListRow
+      title={employee.name}
+      subtitle={subtitle || employee.workEmail}
+      leading={<StaffAvatar uri={employee.photoUrl} name={employee.name} size={44} />}
+      trailing={<StatusPill label={employee.statusLabel} tone={statusTone(employee.status)} compact />}
+      selected={selected}
+      last={last}
       onPress={onPress}
-      style={[styles.row, selected && styles.rowSelected]}
-      {...(Platform.OS === 'web' ? { className: 'cgold-filter-option' } : null)}
-    >
-      <View style={styles.colName}>
-        <Avatar employee={employee} size={32} />
-        <View style={styles.nameWrap}>
-          <Text style={styles.nameText} numberOfLines={1}>
-            {employee.name}
-          </Text>
-          <Text style={styles.emailText} numberOfLines={1}>
-            {compact
-              ? [employee.title, employee.department].filter(Boolean).join(' · ') || employee.workEmail
-              : employee.workEmail}
-          </Text>
-        </View>
-      </View>
-      {compact ? (
-        <Ionicons name="chevron-forward" size={16} color="#c4c4c4" />
-      ) : (
-        <>
-          <Text style={[styles.cell, styles.colTitle]} numberOfLines={1}>
-            {employee.title || '—'}
-          </Text>
-          <Text style={[styles.cell, styles.colDept]} numberOfLines={1}>
-            {employee.department || '—'}
-          </Text>
-          <Text style={[styles.cell, styles.colLocation]} numberOfLines={1}>
-            {employee.location || '—'}
-          </Text>
-          <Text
-            style={[styles.cell, styles.colStatus, { color: statusColor(employee.status) }]}
-            numberOfLines={1}
-          >
-            {employee.statusLabel}
-          </Text>
-        </>
-      )}
-    </Pressable>
+    />
   );
 }
 
-function RipplingPanel() {
-  const { width } = useWindowDimensions();
-  const isMobile = width < MOBILE_BREAKPOINT;
+function RipplingPanel({ profile }) {
+  const isMobile = useIsMobile();
   const { canFilter } = useAppAccess();
   const allowFilters = canFilter('employees');
   const [session, setSession] = useState(null);
@@ -887,10 +917,29 @@ function RipplingPanel() {
   const [connectOpen, setConnectOpen] = useState(false);
   const [bootstrapped, setBootstrapped] = useState(false);
   const requestId = useRef(0);
+  const canManage = canManageCompanyRippling(profile);
+  const usesCompany = session?.source === 'company';
+  const ripplingToken = usesCompany ? undefined : session?.token;
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      try {
+        const app = await loadRipplingOAuthApp();
+        if (cancelled) return;
+        if (app.connected) {
+          setSession({
+            token: '',
+            source: 'company',
+            companyName: app.companyName,
+            savedAt: Date.now(),
+          });
+          setBootstrapped(true);
+          return;
+        }
+      } catch {
+        // Fall through to a personal session if the company status call fails.
+      }
       const next = await loadRipplingSession();
       if (cancelled) return;
       setSession(next);
@@ -902,7 +951,7 @@ function RipplingPanel() {
   }, []);
 
   const load = useCallback(async () => {
-    if (!session?.token) {
+    if (!usesCompany && !session?.token) {
       setEmployees([]);
       setCompany(null);
       setError('');
@@ -916,10 +965,10 @@ function RipplingPanel() {
 
     try {
       const [result, companyInfo] = await Promise.all([
-        fetchEmployees(session.token, {
+        fetchEmployees(ripplingToken, {
           status: statusFilter === 'ALL' ? undefined : statusFilter,
         }),
-        fetchRipplingCompany(session.token).catch(() => null),
+        fetchRipplingCompany(ripplingToken).catch(() => null),
       ]);
       if (id !== requestId.current) return;
       setEmployees(result.employees);
@@ -939,7 +988,7 @@ function RipplingPanel() {
     } finally {
       if (id === requestId.current) setLoading(false);
     }
-  }, [session?.token, statusFilter]);
+  }, [ripplingToken, session?.token, statusFilter, usesCompany]);
 
   useEffect(() => {
     if (!bootstrapped) return;
@@ -986,8 +1035,17 @@ function RipplingPanel() {
     [filtered, selectedId],
   );
 
+  const grouped = useMemo(
+    () => groupRows(filtered, (row) => row.department || 'No department'),
+    [filtered],
+  );
+
   const disconnect = async () => {
-    await clearRipplingSession();
+    if (usesCompany) {
+      await disconnectCompanyRippling();
+    } else {
+      await clearRipplingSession();
+    }
     setSession(null);
     setEmployees([]);
     setCompany(null);
@@ -1000,13 +1058,13 @@ function RipplingPanel() {
     setError('');
   }, []);
 
-  const connected = Boolean(session?.token) && !session?.expired;
+  const connected = (usesCompany || Boolean(session?.token)) && !session?.expired;
 
   if (!bootstrapped) {
     return (
       <View style={styles.body}>
         <View style={styles.centered}>
-          <ActivityIndicator color="#1a1a1a" />
+          <ActivityIndicator color={T.text} />
         </View>
       </View>
     );
@@ -1015,7 +1073,7 @@ function RipplingPanel() {
   if (!connected) {
     return (
       <View style={styles.body}>
-        <SignInCard onConnected={handleConnected} />
+        <SignInCard onConnected={handleConnected} profile={profile} />
       </View>
     );
   }
@@ -1024,148 +1082,112 @@ function RipplingPanel() {
     <View style={styles.body}>
       <View style={styles.connectBar}>
         <View style={styles.connectInfo}>
-          <Ionicons
-            name={connected ? 'shield-checkmark-outline' : 'people-outline'}
-            size={16}
-            color={connected ? '#2F8A4E' : ACCENT}
-          />
+          <Ionicons name="shield-checkmark-outline" size={18} color={T.green} />
           <View style={styles.connectCopy}>
             <Text style={styles.connectTitle}>
-              {connected
-                ? `Rippling · ${company?.name || 'HR connected'}`
-                : session?.expired
-                  ? 'Rippling token rejected'
-                  : 'Rippling not connected'}
+              Rippling · {company?.name || 'HR connected'}
             </Text>
             <Text style={styles.connectHint}>
-              {connected
-                ? `${employees.length} worker${employees.length === 1 ? '' : 's'} from the Rippling HR API`
-                : 'Connect with a Rippling API token from Tools → Developer → API Tokens.'}
+              {`${employees.length} worker${employees.length === 1 ? '' : 's'} from the Rippling HR API`}
             </Text>
           </View>
         </View>
         <View style={styles.connectActions}>
-          {connected && !session?.fromEnv ? (
-            <Pressable style={styles.secondaryButton} onPress={disconnect}>
-              <Text style={styles.secondaryButtonText}>Disconnect</Text>
-            </Pressable>
+          {connected && !session?.fromEnv && (!usesCompany || canManage) ? (
+            <BarButton label="Disconnect" onPress={disconnect} />
           ) : null}
-          {connected ? (
-            <Pressable style={styles.secondaryButton} onPress={load} disabled={loading}>
-              <Text style={styles.secondaryButtonText}>Refresh</Text>
-            </Pressable>
+          <BarButton label="Refresh" onPress={load} disabled={loading} />
+          {canManage ? (
+            <BarButton
+              label={session?.source === 'oauth' || usesCompany ? 'Reconnect' : 'Update token'}
+              onPress={() => setConnectOpen(true)}
+            />
           ) : null}
-          <Pressable style={styles.primaryButtonCompact} onPress={() => setConnectOpen(true)}>
-            <Text style={styles.primaryButtonText}>
-              {session?.source === 'oauth' ? 'Reconnect' : 'Update token'}
-            </Text>
-          </Pressable>
         </View>
       </View>
 
       <View style={styles.toolbar}>
-        <View style={styles.search}>
-          <Ionicons name="search-outline" size={15} color="#8a8a8a" style={styles.searchIcon} />
-          <TextInput
-            style={styles.searchInput}
-            value={query}
-            onChangeText={setQuery}
-            placeholder="Search name, title, department…"
-            placeholderTextColor="#999"
-            autoCapitalize="none"
-            autoCorrect={false}
-            clearButtonMode="while-editing"
-          />
-          {query ? (
-            <Pressable onPress={() => setQuery('')} hitSlop={8}>
-              <Ionicons name="close-circle" size={15} color="#b0b0b0" />
-            </Pressable>
-          ) : null}
-        </View>
+        <SearchField
+          value={query}
+          onChangeText={setQuery}
+          placeholder="Search name, title, department…"
+          size={isMobile ? 'lg' : undefined}
+          style={styles.searchField}
+        />
       </View>
 
       {allowFilters ? (
-      <View style={styles.filterRow}>
-        {STATUS_FILTERS.map((filter) => (
-          <Pressable
-            key={filter.key}
-            style={[styles.filterChip, statusFilter === filter.key && styles.filterChipActive]}
-            onPress={() => setStatusFilter(filter.key)}
-          >
-            <Text
-              style={[
-                styles.filterChipText,
-                statusFilter === filter.key && styles.filterChipTextActive,
-              ]}
-            >
-              {filter.label}
-            </Text>
-          </Pressable>
-        ))}
-        {departments.length > 1 ? (
-          <>
-            <Pressable
-              style={[styles.filterChip, !department && styles.filterChipActive]}
-              onPress={() => setDepartment(null)}
-            >
-              <Text style={[styles.filterChipText, !department && styles.filterChipTextActive]}>
-                All departments
-              </Text>
-            </Pressable>
-            {departments.map((name) => (
-              <Pressable
-                key={name}
-                style={[styles.filterChip, department === name && styles.filterChipActive]}
-                onPress={() => setDepartment((current) => (current === name ? null : name))}
-              >
-                <Text
-                  style={[styles.filterChipText, department === name && styles.filterChipTextActive]}
-                >
-                  {name}
-                </Text>
-              </Pressable>
-            ))}
-          </>
-        ) : null}
-      </View>
+        <View style={styles.filterRow}>
+          {STATUS_FILTERS.map((filter) => (
+            <Chip
+              key={filter.key}
+              label={filter.label}
+              selected={statusFilter === filter.key}
+              onPress={() => setStatusFilter(filter.key)}
+              tone={
+                filter.key === WORKER_STATUS.ACTIVE
+                  ? 'green'
+                  : filter.key === WORKER_STATUS.TERMINATED
+                    ? 'red'
+                    : undefined
+              }
+            />
+          ))}
+          {departments.length > 1 ? (
+            <>
+              <Chip label="All departments" selected={!department} onPress={() => setDepartment(null)} />
+              {departments.map((name) => (
+                <Chip
+                  key={name}
+                  label={name}
+                  selected={department === name}
+                  onPress={() => setDepartment((current) => (current === name ? null : name))}
+                />
+              ))}
+            </>
+          ) : null}
+        </View>
       ) : null}
 
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
       {loading && employees.length === 0 ? (
         <View style={styles.centered}>
-          <ActivityIndicator color="#1a1a1a" />
+          <ActivityIndicator color={T.text} />
         </View>
       ) : (
         <View style={styles.split}>
-          <View style={styles.tableWrap}>
-            {!isMobile ? (
-              <View style={[styles.row, styles.headerRow]}>
-                <Text style={[styles.headerText, styles.colName]}>Name</Text>
-                <Text style={[styles.headerText, styles.colTitle]}>Title</Text>
-                <Text style={[styles.headerText, styles.colDept]}>Department</Text>
-                <Text style={[styles.headerText, styles.colLocation]}>Location</Text>
-                <Text style={[styles.headerText, styles.colStatus]}>Status</Text>
-              </View>
-            ) : null}
+          <View style={styles.listPane}>
             <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
               {filtered.length === 0 ? (
-                <View style={styles.empty}>
-                  <Text style={styles.emptyText}>
-                    {query.trim() || department
+                <EmptyState
+                  icon="people-outline"
+                  title="No workers"
+                  body={
+                    query.trim() || department
                       ? 'No employees match the current filters.'
-                      : 'No workers returned from Rippling.'}
-                  </Text>
-                </View>
+                      : 'No workers returned from Rippling.'
+                  }
+                />
               ) : (
-                filtered.map((employee) => (
-                  <EmployeeRow
-                    key={employee.id}
-                    employee={employee}
-                    compact={isMobile}
-                    selected={!isMobile && selectedId === employee.id}
-                    onPress={() => setSelectedId(employee.id)}
-                  />
+                grouped.map(([groupName, rows]) => (
+                  <View key={groupName} style={styles.listGroup}>
+                    <SectionLabel>
+                      {groupName}
+                      {` · ${rows.length}`}
+                    </SectionLabel>
+                    <MobileList>
+                      {rows.map((employee, index) => (
+                        <EmployeeRow
+                          key={employee.id}
+                          employee={employee}
+                          last={index === rows.length - 1}
+                          selected={!isMobile && selectedId === employee.id}
+                          onPress={() => setSelectedId(employee.id)}
+                        />
+                      ))}
+                    </MobileList>
+                  </View>
                 ))
               )}
             </ScrollView>
@@ -1201,6 +1223,7 @@ function RipplingPanel() {
       <ConnectModal
         visible={connectOpen}
         onClose={() => setConnectOpen(false)}
+        canManage={canManage}
         onSaved={(next) => {
           setSession(next);
           setError('');
@@ -1223,7 +1246,7 @@ export default function EmployeesScreen({
   return (
     <View style={styles.screen}>
       {embedded ? null : (
-        <TabBar options={EMPLOYEE_TABS} value={activeTab} onChange={setActiveTab} />
+        <TextTabs options={EMPLOYEE_TABS} value={activeTab} onChange={setActiveTab} size="lg" />
       )}
       {activeTab === 'employees' ? (
         <AppEmployeesPanel
@@ -1232,7 +1255,7 @@ export default function EmployeesScreen({
           storeFilter={storeFilter}
         />
       ) : (
-        <RipplingPanel />
+        <RipplingPanel profile={session?.profile} />
       )}
     </View>
   );
@@ -1242,60 +1265,18 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     minHeight: 0,
-  },
-  tabBar: {
-    flexShrink: 0,
-    flexDirection: 'row',
-    alignItems: 'stretch',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e8e8e8',
-    marginTop: 4,
-  },
-  tab: {
-    paddingHorizontal: 14,
-    paddingTop: 6,
-    paddingBottom: 11,
-    borderBottomWidth: 2,
-    borderBottomColor: 'transparent',
-    marginBottom: -StyleSheet.hairlineWidth,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  tabActive: {
-    borderBottomColor: ACCENT,
-  },
-  tabLabel: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '500',
-    color: '#6b6b6b',
-    letterSpacing: -0.2,
-  },
-  tabLabelActive: {
-    color: '#1a1a1a',
-    fontWeight: '600',
+    backgroundColor: '#F2F2F7',
   },
   body: {
     flex: 1,
-    gap: 10,
+    gap: 12,
     minHeight: 0,
-    marginTop: 12,
-  },
-  directoryHint: {
-    fontFamily,
-    fontSize: 12,
-    color: '#8a8a8a',
+    paddingHorizontal: 16,
+    paddingTop: 12,
   },
   rowInactive: {
     opacity: 0.55,
   },
-  colAppLocation: { flex: 1, minWidth: 110 },
-  colAppType: { width: '16%', minWidth: 90 },
-  colAppPermission: { width: '22%', minWidth: 120 },
   signInCard: {
     alignSelf: 'center',
     width: '100%',
@@ -1303,79 +1284,89 @@ const styles = StyleSheet.create({
     marginTop: 24,
     padding: 20,
     borderRadius: 12,
-    backgroundColor: '#fff',
+    backgroundColor: T.card,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e5e5e5',
+    borderColor: T.hairline,
     gap: 10,
   },
   signInIcon: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: ACCENT_SOFT,
+    backgroundColor: 'rgba(0,122,255,0.12)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   signInTitle: {
-    fontFamily,
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#1a1a1a',
+    fontFamily: FONT,
+    fontSize: 22,
+    fontWeight: '700',
+    color: T.text,
+    letterSpacing: -0.4,
   },
   signInBody: {
-    fontFamily,
+    fontFamily: FONT,
+    fontSize: 15,
+    lineHeight: 20,
+    color: T.secondary,
+  },
+  fieldHint: {
+    fontFamily: FONT,
     fontSize: 13,
     lineHeight: 18,
-    color: '#4a4a4a',
+    color: T.secondary,
   },
-  fieldLabel: {
-    fontFamily,
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#6b6b6b',
-    marginTop: 4,
-  },
-  fieldInput: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#ddd',
+  redirectUri: {
+    fontFamily: Platform.select({
+      ios: 'SohneMono',
+      android: 'SohneMono',
+      default: 'SohneMono',
+    }),
+    fontSize: 12,
+    color: T.text,
+    backgroundColor: T.fillSoft,
     borderRadius: 8,
     paddingHorizontal: 10,
     paddingVertical: 8,
-    fontFamily,
-    fontSize: 13,
-    color: '#1a1a1a',
-    ...Platform.select({ web: { outlineStyle: 'none' }, default: {} }),
   },
-  fieldHint: {
-    fontFamily,
-    fontSize: 12,
-    lineHeight: 16,
-    color: '#8a8a8a',
+  secretInput: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontFamily: FONT,
+    fontSize: 15,
+    color: T.text,
+    backgroundColor: T.fillSoft,
+    ...Platform.select({ web: { outlineStyle: 'none' }, default: {} }),
   },
   orRow: {
     alignSelf: 'flex-start',
     paddingVertical: 4,
   },
   orText: {
-    fontFamily,
-    fontSize: 12,
+    fontFamily: FONT,
+    fontSize: 15,
     fontWeight: '500',
-    color: ACCENT,
+    color: T.blue,
   },
   connectBar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
-    padding: 12,
-    borderRadius: 10,
-    backgroundColor: ACCENT_SOFT,
+    padding: 14,
+    borderRadius: 12,
+    backgroundColor: T.card,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
     flexWrap: 'wrap',
   },
   connectInfo: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 8,
+    gap: 10,
     flex: 1,
     minWidth: 220,
   },
@@ -1384,20 +1375,22 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   connectTitle: {
-    fontFamily,
-    fontSize: 13,
+    fontFamily: FONT,
+    fontSize: 15,
     fontWeight: '600',
-    color: '#1a1a1a',
+    color: T.text,
+    letterSpacing: -0.2,
   },
   connectHint: {
-    fontFamily,
-    fontSize: 12,
-    color: '#6b6b6b',
+    fontFamily: FONT,
+    fontSize: 13,
+    color: T.secondary,
   },
   connectActions: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    flexWrap: 'wrap',
   },
   toolbar: {
     flexDirection: 'row',
@@ -1405,243 +1398,95 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
-  search: {
+  searchField: {
     flex: 1,
     minWidth: 220,
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#d0d0d0',
-    borderRadius: 8,
-    paddingHorizontal: 8,
-    backgroundColor: '#fff',
-  },
-  searchIcon: {
-    marginRight: 4,
-  },
-  searchInput: {
-    flex: 1,
-    fontFamily,
-    fontSize: 13,
-    color: '#1a1a1a',
-    paddingVertical: 8,
-    ...Platform.select({ web: { outlineStyle: 'none' }, default: {} }),
   },
   filterRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 6,
   },
-  filterChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: '#f3f3f3',
-  },
-  filterChipActive: {
-    backgroundColor: ACCENT_SOFT,
-  },
-  filterChipText: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#6b6b6b',
-  },
-  filterChipTextActive: {
-    color: ACCENT,
-    fontWeight: '600',
-  },
   split: {
     flex: 1,
     minHeight: 0,
     flexDirection: 'row',
-    gap: 12,
+    gap: 16,
   },
-  tableWrap: {
-    flex: 1.6,
+  listPane: {
+    flex: 1.35,
     minWidth: 0,
     minHeight: 0,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#e8e8e8',
   },
   list: {
     flex: 1,
   },
   listContent: {
-    paddingBottom: 24,
+    paddingBottom: 32,
+    gap: 4,
   },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    width: '100%',
-    minHeight: 48,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#f0f0f0',
-    gap: 8,
-    paddingVertical: 8,
-    paddingRight: 4,
-  },
-  rowSelected: {
-    backgroundColor: ACCENT_SOFT,
-  },
-  headerRow: {
-    borderBottomColor: '#e5e5e5',
-    minHeight: 30,
-    paddingVertical: 0,
-  },
-  headerText: {
-    fontFamily,
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#9a9a9a',
-    letterSpacing: 0.2,
-  },
-  cell: {
-    fontFamily,
-    fontSize: 12,
-    color: '#1a1a1a',
-  },
-  colName: {
-    flex: 1.4,
-    minWidth: 160,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  nameWrap: {
-    flex: 1,
-    minWidth: 0,
-  },
-  nameText: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#1a1a1a',
-  },
-  emailText: {
-    fontFamily,
-    fontSize: 11,
-    color: '#8a8a8a',
-    marginTop: 1,
-  },
-  colTitle: { flex: 1, minWidth: 100 },
-  colDept: { width: '16%', minWidth: 90 },
-  colLocation: { width: '14%', minWidth: 80 },
-  colStatus: { width: 88, minWidth: 72 },
-  avatar: {
-    overflow: 'hidden',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#E5E7EB',
-  },
-  avatarFallback: {
-    backgroundColor: '#DBEAFE',
-  },
-  avatarInitials: {
-    fontFamily,
-    fontWeight: '700',
-    color: ACCENT,
+  listGroup: {
+    marginBottom: 8,
   },
   detailPane: {
     flex: 1,
-    minWidth: 260,
-    maxWidth: 360,
-    borderLeftWidth: StyleSheet.hairlineWidth,
-    borderLeftColor: '#e8e8e8',
-    paddingLeft: 14,
+    minWidth: 280,
+    maxWidth: 400,
+    minHeight: 0,
   },
   detailScroll: {
     flex: 1,
   },
   detailContent: {
-    gap: 12,
-    paddingBottom: 32,
-    paddingTop: 8,
+    paddingBottom: 40,
   },
-  detailEmpty: {
-    flex: 1,
+  cardBlock: {
+    marginTop: 8,
+  },
+  heroCard: {
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    padding: 16,
+    paddingVertical: 22,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    backgroundColor: T.card,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
+    gap: 6,
   },
-  detailEmptyText: {
-    fontFamily,
-    fontSize: 13,
-    color: '#8a8a8a',
+  heroName: {
+    fontFamily: FONT,
+    fontSize: 22,
+    fontWeight: '700',
+    color: T.text,
+    letterSpacing: -0.4,
+    textAlign: 'center',
+    marginTop: 8,
+  },
+  heroTitle: {
+    fontFamily: FONT,
+    fontSize: 15,
+    color: T.secondary,
     textAlign: 'center',
   },
-  detailHero: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  detailHeroText: {
-    flex: 1,
-    minWidth: 0,
-    gap: 2,
-  },
-  detailName: {
-    fontFamily,
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#1a1a1a',
-  },
-  detailTitle: {
-    fontFamily,
-    fontSize: 13,
-    color: '#6b6b6b',
-  },
-  statusText: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    marginTop: 2,
-  },
-  detailField: {
-    gap: 2,
-  },
-  detailLabel: {
-    fontFamily,
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#9a9a9a',
-    letterSpacing: 0.2,
-    textTransform: 'uppercase',
-  },
-  detailValue: {
-    fontFamily,
-    fontSize: 13,
-    color: '#1a1a1a',
-    lineHeight: 18,
-  },
   detailMobileHeader: {
+    alignSelf: 'stretch',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    marginBottom: 8,
   },
   detailMobileTitle: {
-    fontFamily,
-    fontSize: 16,
+    fontFamily: FONT,
+    fontSize: 17,
     fontWeight: '600',
-    color: '#1a1a1a',
+    color: T.text,
+    letterSpacing: -0.3,
   },
   mobileDetail: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: '#F2F2F7',
     paddingHorizontal: 16,
     paddingTop: Platform.OS === 'ios' ? 56 : 20,
-  },
-  empty: {
-    paddingVertical: 28,
-    alignItems: 'center',
-  },
-  emptyText: {
-    fontFamily,
-    fontSize: 13,
-    color: '#8a8a8a',
-    textAlign: 'center',
-    maxWidth: 420,
   },
   centered: {
     flex: 1,
@@ -1650,45 +1495,38 @@ const styles = StyleSheet.create({
     paddingVertical: 40,
   },
   errorText: {
-    fontFamily,
-    fontSize: 12,
-    color: '#B91C1C',
+    fontFamily: FONT,
+    fontSize: 13,
+    color: T.red,
   },
   primaryButton: {
-    backgroundColor: ACCENT,
-    borderRadius: 8,
+    backgroundColor: T.blue,
+    borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 10,
     alignItems: 'center',
     alignSelf: 'flex-start',
   },
-  primaryButtonCompact: {
-    backgroundColor: ACCENT,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    alignItems: 'center',
-  },
   primaryButtonDisabled: {
     opacity: 0.6,
   },
   primaryButtonText: {
-    fontFamily,
-    fontSize: 13,
+    fontFamily: FONT,
+    fontSize: 15,
     fontWeight: '600',
     color: '#fff',
   },
   secondaryButton: {
-    borderRadius: 8,
+    borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 8,
-    backgroundColor: '#fff',
+    backgroundColor: T.fillSoft,
   },
   secondaryButtonText: {
-    fontFamily,
-    fontSize: 13,
+    fontFamily: FONT,
+    fontSize: 15,
     fontWeight: '500',
-    color: '#6b6b6b',
+    color: T.secondary,
   },
   modalBackdrop: {
     flex: 1,
@@ -1700,8 +1538,8 @@ const styles = StyleSheet.create({
   modalCard: {
     width: '100%',
     maxWidth: 480,
-    backgroundColor: '#fff',
-    borderRadius: 12,
+    backgroundColor: T.card,
+    borderRadius: 14,
     padding: 16,
     gap: 10,
   },
@@ -1711,16 +1549,17 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   modalTitle: {
-    fontFamily,
-    fontSize: 16,
+    fontFamily: FONT,
+    fontSize: 17,
     fontWeight: '600',
-    color: '#1a1a1a',
+    color: T.text,
+    letterSpacing: -0.3,
   },
   modalBody: {
-    fontFamily,
-    fontSize: 13,
-    lineHeight: 18,
-    color: '#4a4a4a',
+    fontFamily: FONT,
+    fontSize: 15,
+    lineHeight: 20,
+    color: T.secondary,
   },
   linkRow: {
     flexDirection: 'row',
@@ -1728,24 +1567,24 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   linkText: {
-    fontFamily,
-    fontSize: 13,
-    color: ACCENT,
+    fontFamily: FONT,
+    fontSize: 15,
+    color: T.blue,
     fontWeight: '500',
   },
   tokenInput: {
     minHeight: 96,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#ddd',
-    borderRadius: 8,
+    borderColor: T.hairline,
+    borderRadius: 10,
     padding: 10,
     fontFamily: Platform.select({
       ios: 'SohneMono',
       android: 'SohneMono',
       default: 'SohneMono',
     }),
-    fontSize: 11,
-    color: '#1a1a1a',
+    fontSize: 13,
+    color: T.text,
     textAlignVertical: 'top',
   },
 });

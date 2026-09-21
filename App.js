@@ -80,6 +80,7 @@ import {
 import { readRipplingOAuthCallback, readRipplingOAuthState } from './lib/rippling';
 import { readGmailOAuthCallback } from './lib/gmail';
 import AiScreen from './components/AiScreen';
+import AnalyticsScreen from './components/AnalyticsScreen';
 import AccountingScreen from './components/AccountingScreen';
 import AuditScreen from './components/AuditScreen';
 import BonusesScreen from './components/BonusesScreen';
@@ -99,7 +100,6 @@ import { AUREUS_TX_LIVE_MS, useLiveRefresh } from './lib/liveRefresh';
 import { useTxnCashBreakdowns } from './lib/txnCashBreakdowns';
 import TransferScreen from './components/TransferScreen';
 import PricingScreen from './components/PricingScreen';
-import TrendsScreen from './components/TrendsScreen';
 import TriageScreen, { clearTriageCache } from './components/TriageScreen';
 import LogsScreen from './components/LogsScreen';
 import { flushNow as flushActionLog, setActionLogActor, setActionLogContext } from './lib/actionLog';
@@ -118,6 +118,7 @@ import SharedServicesScreen from './components/SharedServicesScreen';
 import PhoneScreen from './components/PhoneScreen';
 import EmailsScreen from './components/EmailsScreen';
 import { PhoneCallProvider, PhoneIncomingDock, usePhoneCalls } from './components/PhoneCallProvider';
+import MobilePhoneDock from './components/MobilePhoneDock';
 import { callsForStore, inboundCallRatio } from './lib/phoneCalls';
 import {
   emptyStoreSettings,
@@ -536,11 +537,10 @@ const TOOL_CARDS = [
   { key: 'financials', label: 'Financials', icon: 'wallet-outline', tint: '#F0F8EE', accent: '#3D8B4F' },
   { key: 'debit', label: 'Debit', icon: 'card-outline', tint: '#EEF4FF', accent: '#1D4ED8' },
   { key: 'accounting', label: 'Accounting', icon: 'calculator-outline', tint: '#EEF2FF', accent: '#3730A3' },
-  { key: 'trends', label: 'Trends', icon: 'trending-up-outline', tint: '#F4F0FF', accent: '#5A4FC7' },
+  { key: 'analytics', label: 'Analytics', icon: 'analytics-outline', tint: '#EEF2FF', accent: '#4F46E5' },
   { key: 'pricing', label: 'Pricing', icon: 'pricetag-outline', tint: '#F8F1E3', accent: '#A67C2D' },
   { key: 'bonuses', label: 'Bonuses', icon: 'gift-outline', tint: '#FEF9C3', accent: '#A16207' },
   { key: 'leaderboards', label: 'Leaderboards', icon: 'trophy-outline', tint: '#FFF8E8', accent: '#B8860B' },
-  { key: 'tasks', label: 'Tasks', icon: 'checkbox-outline', tint: '#EEF6FF', accent: '#2B6CB0' },
   { key: 'police-report', label: 'Police Report', icon: 'shield-outline', tint: '#F4F4F5', accent: '#3F3F46' },
   { key: 'security', label: 'Security', icon: 'lock-closed-outline', tint: '#EEF2FF', accent: '#374151' },
   { key: 'serphint', label: 'Serphint', icon: 'eye-outline', tint: '#ECFDF5', accent: '#047857' },
@@ -6092,6 +6092,7 @@ export default function App() {
   const [triageBatch, setTriageBatch] = useState(null);
   const [triageNav, setTriageNav] = useState(null);
   const [settingsPanel, setSettingsPanel] = useState(null);
+  const [analyticsMini, setAnalyticsMini] = useState(null);
   const [toolsQuery, setToolsQuery] = useState('');
   const [pinnedKeys, setPinnedKeys] = useState([]);
   const [appsView, setAppsView] = useState(DEFAULT_APPS_VIEW);
@@ -6194,6 +6195,7 @@ export default function App() {
     setActiveTab('home');
     setActiveTool(null);
     setSettingsPanel(null);
+    setAnalyticsMini(null);
     setViewedProfile(null);
     setDmFocusUserId('');
     setTeamsFocusId('');
@@ -6366,6 +6368,7 @@ export default function App() {
     }
     setActiveTab(tabKey);
     setSettingsPanel(null);
+    setAnalyticsMini(null);
     if (tabKey === 'tools') {
       setActiveTool(null);
     } else {
@@ -6450,6 +6453,7 @@ export default function App() {
     if (!hasApp(tool?.key)) return;
     setActiveTool(tool);
     setSettingsPanel(null);
+    setAnalyticsMini(null);
   };
 
   const openPinnedTool = (tool) => {
@@ -6515,6 +6519,7 @@ export default function App() {
     if (activeTool && !hasApp(activeTool.key)) {
       setActiveTool(null);
       setSettingsPanel(null);
+      setAnalyticsMini(null);
     }
   }, [activeTool, hasApp]);
 
@@ -6542,6 +6547,7 @@ export default function App() {
       setActiveTab('home');
       setActiveTool(null);
       setSettingsPanel(null);
+      setAnalyticsMini(null);
     } catch (error) {
       setLoginError(error?.message || 'Login failed.');
     } finally {
@@ -6574,6 +6580,7 @@ export default function App() {
     };
     const settingsSubPanelLabel =
       activeTool.key === 'settings' ? settingsSubPanels[settingsPanel] : null;
+    const nestedLabel = settingsSubPanelLabel;
 
     if (isMobile) {
       return null;
@@ -6586,19 +6593,26 @@ export default function App() {
             onPress={() => {
               setActiveTool(null);
               setSettingsPanel(null);
+              setAnalyticsMini(null);
             }}
             style={styles.breadcrumbLink}
           >
             <Text style={styles.breadcrumbLinkText}>Apps</Text>
           </Pressable>
           <Text style={styles.breadcrumbSep}>›</Text>
-          {settingsSubPanelLabel ? (
+          {nestedLabel ? (
             <>
-              <Pressable onPress={() => setSettingsPanel(null)} style={styles.breadcrumbLink}>
+              <Pressable
+                onPress={() => {
+                  setSettingsPanel(null);
+                  setAnalyticsMini(null);
+                }}
+                style={styles.breadcrumbLink}
+              >
                 <Text style={styles.breadcrumbLinkText}>{activeTool.label}</Text>
               </Pressable>
               <Text style={styles.breadcrumbSep}>›</Text>
-              <Text style={styles.breadcrumbCurrent}>{settingsSubPanelLabel}</Text>
+              <Text style={styles.breadcrumbCurrent}>{nestedLabel}</Text>
             </>
           ) : (activeTool.key === 'triage' || activeTool.key === 'phone') && triageStoreBack && triageBatch ? (
             <>
@@ -6630,7 +6644,7 @@ export default function App() {
             <Text style={styles.breadcrumbCurrent}>{activeTool.label}</Text>
           )}
         </View>
-        {(activeTool.key === 'triage' || activeTool.key === 'audit') && triageNav ? (
+        {(activeTool.key === 'triage' || activeTool.key === 'audit' || activeTool.key === 'transfer') && triageNav ? (
           <View style={styles.breadcrumbNav}>{triageNav}</View>
         ) : null}
       </View>
@@ -6704,6 +6718,11 @@ export default function App() {
               />
             ) : activeTool.key === 'accounting' ? (
               <AccountingScreen />
+            ) : activeTool.key === 'analytics' ? (
+              <AnalyticsScreen
+                session={session}
+                storeFilter={scopedStore || undefined}
+              />
             ) : activeTool.key === 'audit' ? (
               <AuditScreen
                 session={session}
@@ -6767,6 +6786,7 @@ export default function App() {
               <TransferScreen
                 session={session}
                 onRequireLogin={() => selectTab('profile')}
+                onNavTabs={setTriageNav}
                 onLocationChanged={({ locationId, locationName }) => {
                   setSession((current) => {
                     if (!current?.profile) return current;
@@ -6786,12 +6806,6 @@ export default function App() {
               />
             ) : activeTool.key === 'fintrac' ? (
               <FintracScreen
-                session={session}
-                onRequireLogin={() => selectTab('profile')}
-                storeFilter={scopedStore || undefined}
-              />
-            ) : activeTool.key === 'trends' ? (
-              <TrendsScreen
                 session={session}
                 onRequireLogin={() => selectTab('profile')}
                 storeFilter={scopedStore || undefined}
@@ -7099,6 +7113,7 @@ export default function App() {
       activeTool?.key === 'pricing' ||
       activeTool?.key === 'bonuses' ||
       activeTool?.key === 'employees' ||
+      activeTool?.key === 'analytics' ||
       activeTool?.key === 'triage'));
 
   const isAppsLibrary = activeTab === 'tools' && !activeTool;
@@ -7110,7 +7125,9 @@ export default function App() {
     ringcentral: 'Phone',
   };
   const mobileToolTitle =
-    activeTool?.key === 'settings' ? settingsSubPanels[settingsPanel] || activeTool?.label : activeTool?.label;
+    activeTool?.key === 'settings'
+      ? settingsSubPanels[settingsPanel] || activeTool?.label
+      : activeTool?.label;
   const groupedMobileTab =
     isMobile && ((activeTab === 'tools' && !activeTool) || activeTab === 'home' || activeTab === 'profile');
   const showingSettings = isMobile && activeTab === 'tools' && activeTool?.key === 'settings';
@@ -7218,11 +7235,12 @@ export default function App() {
                 }
                 setActiveTool(null);
                 setSettingsPanel(null);
+                setAnalyticsMini(null);
               }}
             />
           ) : null}
           <View style={contentStyle}>{renderContent()}</View>
-          <PhoneIncomingDock variant="banner" />
+          <MobilePhoneDock />
           <MobileTabBar
             tabs={mobileTabs}
             activeKey={activeTab}

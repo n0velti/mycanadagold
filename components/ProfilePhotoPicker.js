@@ -52,6 +52,8 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
   const [step, setStep] = useState('source');
   const [sourceUri, setSourceUri] = useState('');
   const [cartoonUri, setCartoonUri] = useState('');
+  const [cartoonVerified, setCartoonVerified] = useState(null);
+  const [status, setStatus] = useState('');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const { videoRef, cameraState, startCamera, stopStream, setVideoNode } = useWebcam({
@@ -68,6 +70,8 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
       setStep('source');
       setSourceUri('');
       setCartoonUri('');
+      setCartoonVerified(null);
+      setStatus('');
       setError('');
       setSaving(false);
       return undefined;
@@ -87,19 +91,28 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
     abortRef.current = controller;
     setError('');
     setCartoonUri('');
+    setCartoonVerified(null);
+    setStatus('Checking your photo…');
     setStep('stylizing');
     const source = typeof asset === 'string' ? asset : asset?.uri || '';
     try {
       setSourceUri(source);
-      const cartoon = await stylizeAvatarPhoto(asset, { signal: controller.signal });
+      const result = await stylizeAvatarPhoto(asset, {
+        signal: controller.signal,
+        onStatus: (text) => {
+          if (!controller.signal.aborted) setStatus(text);
+        },
+      });
       if (controller.signal.aborted) return;
-      setCartoonUri(cartoon);
+      setCartoonUri(result.image);
+      setCartoonVerified(result.verified);
       setStep('preview');
     } catch (err) {
       if (err?.name === 'AbortError' || controller.signal.aborted) return;
       setError(err?.message || 'Could not draw that portrait. Try another photo.');
       setStep(source ? 'preview' : 'source');
     } finally {
+      setStatus('');
       if (abortRef.current === controller) abortRef.current = null;
     }
   };
@@ -222,7 +235,10 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
           {step === 'camera' ? (
             <>
               <Text style={styles.title}>Take a photo</Text>
-              <Text style={styles.body}>Center your face, then capture. We draw a Disney cartoon that still looks like you.</Text>
+              <Text style={styles.body}>
+                Center your face in the oval, in good light, with only you in the frame. We draw a Disney
+                cartoon that still looks like you.
+              </Text>
               <View style={styles.previewShell}>
                 {Platform.OS === 'web'
                   ? createElement('video', {
@@ -288,7 +304,8 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
             <>
               <Text style={styles.title}>Drawing your portrait</Text>
               <Text style={styles.body}>
-                Drawing you as a Disney cartoon from this photo. This usually takes about 30 seconds.
+                Drawing you as a Disney cartoon from this photo, then checking it still looks like you.
+                This usually takes about a minute.
               </Text>
               <View style={styles.previewShell}>
                 {sourceUri ? (
@@ -296,7 +313,7 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
                 ) : null}
                 <View style={styles.overlay}>
                   <ActivityIndicator color="#fff" />
-                  <Text style={[styles.overlayTitle, styles.overlaySpaced]}>Redrawing you…</Text>
+                  <Text style={[styles.overlayTitle, styles.overlaySpaced]}>{status || 'Redrawing you…'}</Text>
                 </View>
               </View>
               <Pressable style={styles.cancel} onPress={close}>
@@ -310,7 +327,9 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
               <Text style={styles.title}>{cartoonUri ? 'Your Canada Gold portrait' : 'Could not draw it'}</Text>
               <Text style={styles.body}>
                 {cartoonUri
-                  ? 'This is the cartoon version of you that will show next to your name.'
+                  ? cartoonVerified === false
+                    ? 'This is the closest match we could draw. If it does not look like you, try again facing the camera in brighter light.'
+                    : 'This is the cartoon version of you that will show next to your name.'
                   : 'Try another photo, or take one with the webcam.'}
               </Text>
               <View style={styles.previewShell}>

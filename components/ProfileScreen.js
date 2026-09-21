@@ -700,29 +700,8 @@ export default function ProfileScreen({
     </View>
   );
 
-  const mobileBody = (
+  const infoCards = (
     <>
-      {viewingOther ? (
-        <View style={styles.mobileNav}>
-          <Pressable
-            onPress={onBack}
-            hitSlop={8}
-            style={styles.mobileNavSide}
-            accessibilityRole="button"
-            accessibilityLabel="Back"
-          >
-            <Ionicons name="chevron-back" size={28} color={BLUE} />
-          </Pressable>
-          <View style={styles.mobileNavSide} />
-        </View>
-      ) : null}
-
-      {mobileHero}
-      {mobileActions}
-
-      {actionError ? <Text style={styles.mobileError}>{actionError}</Text> : null}
-      {avatarError ? <Text style={styles.mobileError}>{avatarError}</Text> : null}
-
       <Group style={styles.mobileGroupSpaced}>
         <ContactRow
           caption="phone"
@@ -775,6 +754,33 @@ export default function ProfileScreen({
             />
           ))}
       </Group>
+    </>
+  );
+
+  const mobileBody = (
+    <>
+      {viewingOther ? (
+        <View style={styles.mobileNav}>
+          <Pressable
+            onPress={onBack}
+            hitSlop={8}
+            style={styles.mobileNavSide}
+            accessibilityRole="button"
+            accessibilityLabel="Back"
+          >
+            <Ionicons name="chevron-back" size={28} color={BLUE} />
+          </Pressable>
+          <View style={styles.mobileNavSide} />
+        </View>
+      ) : null}
+
+      {mobileHero}
+      {mobileActions}
+
+      {actionError ? <Text style={styles.mobileError}>{actionError}</Text> : null}
+      {avatarError ? <Text style={styles.mobileError}>{avatarError}</Text> : null}
+
+      {infoCards}
 
       <ProfileNotesTable profileId={profileId} myId={myId} />
 
@@ -811,8 +817,8 @@ export default function ProfileScreen({
 
   const desktopBody = settingsOpen && canEdit ? (
     <>
-              {accountRows.length > 0 ? (
-                <View style={[styles.group, isMobile && styles.groupIos]}>
+      {accountRows.length > 0 ? (
+        <View style={[styles.group, styles.groupIos]}>
           {accountRows.map((row, index) => (
             <DetailRow
               key={row.key}
@@ -828,7 +834,7 @@ export default function ProfileScreen({
       {linkedSystems.length > 0 ? (
         <View style={styles.linkedBlock}>
           <Text style={styles.sectionLabel}>Linked POS</Text>
-                  <View style={[styles.group, isMobile && styles.groupIos]}>
+          <View style={[styles.group, styles.groupIos]}>
             {linkedSystems.map((linked, index) => (
               <DetailRow
                 key={linked.key}
@@ -841,7 +847,7 @@ export default function ProfileScreen({
         </View>
       ) : null}
 
-              <View style={[styles.group, styles.logoutGroup, isMobile && styles.groupIos]}>
+      <View style={[styles.group, styles.logoutGroup, styles.groupIos]}>
         <Pressable
           onPress={onLogout}
           style={({ hovered, pressed }) => [
@@ -857,86 +863,111 @@ export default function ProfileScreen({
     </>
   ) : (
     <>
-      <View style={styles.heroWrap}>
-        <View style={styles.hero}>
-          <View style={styles.avatarButton}>
+      <View style={styles.heroCard}>
+        <View style={styles.avatarButton}>
+          <Pressable
+            onPress={handleViewAvatar}
+            disabled={avatarBusy}
+            style={styles.avatarTap}
+            accessibilityRole="button"
+            accessibilityLabel={avatarUrl ? `View ${name || 'profile'} photo` : 'View photo'}
+          >
+            <ProfileAvatar uri={avatarUrl} name={name} size={avatarSize} style={styles.avatar} />
+          </Pressable>
+          {canEdit ? (
             <Pressable
-              onPress={handleViewAvatar}
+              onPress={handlePickAvatar}
               disabled={avatarBusy}
-              style={styles.avatarTap}
+              style={styles.avatarEdit}
               accessibilityRole="button"
-              accessibilityLabel={avatarUrl ? `View ${name || 'profile'} photo` : 'View photo'}
+              accessibilityLabel={avatarUrl ? 'Edit profile photo' : 'Add a profile photo'}
+              hitSlop={4}
             >
-              <View style={[styles.avatarRing, { borderRadius: (avatarSize + 12) / 2 }]}>
-                <ProfileAvatar uri={avatarUrl} name={name} size={avatarSize} style={styles.avatar} />
-              </View>
+              {avatarBusy ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Ionicons name="pencil" size={14} color="#fff" />
+              )}
             </Pressable>
-            {canEdit ? (
-              <Pressable
-                onPress={handlePickAvatar}
-                disabled={avatarBusy}
-                style={styles.avatarEdit}
-                accessibilityRole="button"
-                accessibilityLabel={avatarUrl ? 'Edit profile photo' : 'Add a profile photo'}
-                hitSlop={4}
-              >
-                {avatarBusy ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Ionicons name="pencil" size={14} color="#fff" />
-                )}
-              </Pressable>
-            ) : null}
-          </View>
-
-          <View style={styles.heroCopy}>
-            <Text style={styles.name} numberOfLines={2}>
-              {name}
-            </Text>
-            {subtitle ? <Text style={styles.meta}>{subtitle}</Text> : null}
-            {email ? <Text style={styles.email}>{email}</Text> : null}
-          </View>
+          ) : null}
         </View>
+        <Text style={styles.heroCardName} numberOfLines={2}>
+          {name}
+        </Text>
+        {jobTitle ? (
+          <Text style={styles.heroCardJob} numberOfLines={2}>
+            {jobTitle}
+          </Text>
+        ) : null}
+        {subtitle ? <Text style={styles.heroCardMeta}>{subtitle}</Text> : null}
+      </View>
 
-        <View style={styles.actions}>
-          <ActionIcon
-            icon="paper-plane-outline"
-            label="Direct message"
+      <View style={styles.contactActions}>
+        {viewingOther ? (
+          <ContactAction
+            icon="chatbubble"
+            label="message"
             onPress={() => onMessage?.(profileId)}
             disabled={!messageEnabled}
           />
-          <ActionIcon
-            icon="git-network-outline"
-            label="Org chart"
-            onPress={openOrgChart}
-          />
-          <ActionIcon
-            icon="videocam-outline"
-            label="Video call"
-            onPress={() => void handleVideoCall()}
-            disabled={!canPhone}
-            busy={callBusy}
-          />
-          <ActionIcon
-            icon="call-outline"
-            label="Phone call"
-            onPress={handlePhoneCall}
-            disabled={!canPhone}
-            busy={callBusy}
-          />
-          {canEdit ? (
-            <ActionIcon
-              icon="settings-outline"
-              label="Settings"
-              onPress={() => setSettingsOpen(true)}
-            />
-          ) : null}
-        </View>
+        ) : null}
+        <ContactAction
+          icon="call"
+          label="call"
+          onPress={handlePhoneCall}
+          disabled={!canPhone}
+          busy={callBusy}
+        />
+        <ContactAction
+          icon="videocam"
+          label="video"
+          onPress={() => void handleVideoCall()}
+          disabled={!canPhone}
+          busy={callBusy}
+        />
+        <ContactAction
+          icon="mail"
+          label="mail"
+          onPress={() => void handleMail()}
+          disabled={!canMail}
+        />
+        <ContactAction icon="people" label="org" onPress={openOrgChart} />
+        {canEdit ? (
+          <ContactAction icon="settings" label="settings" onPress={() => setSettingsOpen(true)} />
+        ) : null}
       </View>
 
       {actionError ? <Text style={styles.error}>{actionError}</Text> : null}
       {avatarError ? <Text style={styles.error}>{avatarError}</Text> : null}
+      {infoCards}
       <ProfileNotesTable profileId={profileId} myId={myId} />
+      {linkedSystems.length > 0 ? (
+        <>
+          <GroupLabel title="Linked POS" />
+          <Group>
+            {linkedSystems.map((linked, index) => (
+              <ContactRow
+                key={linked.key}
+                caption={linked.label}
+                value={linked.token ? 'Connected' : linked.error || 'Not connected'}
+                last={index === linkedSystems.length - 1}
+              />
+            ))}
+          </Group>
+        </>
+      ) : null}
+      {canEdit ? (
+        <Group style={styles.logoutGroupMobile}>
+          <Pressable
+            onPress={onLogout}
+            style={({ hovered, pressed }) => [styles.logoutRow, (hovered || pressed) && styles.rowHovered]}
+            accessibilityRole="button"
+            accessibilityLabel="Log out"
+          >
+            <Text style={styles.logoutText}>Log Out</Text>
+          </Pressable>
+        </Group>
+      ) : null}
     </>
   );
 
@@ -955,7 +986,7 @@ export default function ProfileScreen({
         {isMobile ? (
           mobileBody
         ) : (
-          <View style={[styles.section, !settingsOpen && styles.sectionWide]}>
+          <View style={styles.section}>
             {viewingOther ? (
               <View style={styles.topBar}>
                 <Pressable
@@ -1073,7 +1104,7 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     minHeight: 0,
-    backgroundColor: '#fff',
+    backgroundColor: PAGE,
   },
   screenMobile: {
     backgroundColor: PAGE,
@@ -1437,13 +1468,45 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   group: {
-    backgroundColor: '#f2f2f7',
+    backgroundColor: CARD,
     borderRadius: 12,
     overflow: 'hidden',
   },
   groupIos: {
     backgroundColor: CARD,
     borderRadius: 10,
+  },
+  heroCard: {
+    alignItems: 'center',
+    paddingVertical: 28,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    backgroundColor: CARD,
+    gap: 6,
+    marginBottom: 12,
+  },
+  heroCardName: {
+    fontFamily,
+    fontSize: 28,
+    fontWeight: '700',
+    color: LABEL,
+    letterSpacing: -0.5,
+    textAlign: 'center',
+    marginTop: 10,
+  },
+  heroCardJob: {
+    fontFamily,
+    fontSize: 17,
+    color: SECONDARY,
+    letterSpacing: -0.2,
+    textAlign: 'center',
+  },
+  heroCardMeta: {
+    fontFamily,
+    fontSize: 14,
+    color: SECONDARY,
+    letterSpacing: -0.2,
+    textAlign: 'center',
   },
   detailLabel: {
     fontFamily,
