@@ -80,7 +80,7 @@ import {
 import { readRipplingOAuthCallback, readRipplingOAuthState } from './lib/rippling';
 import { readHoursOAuthCallback } from './lib/ripplingTime';
 import { readGmailOAuthCallback } from './lib/gmail';
-import { clearClockedIn, startClockedInSync, useIsClockedIn } from './lib/clockedIn';
+import { clearClockedIn, ClockedInMark, startClockedInSync, useIsClockedIn } from './lib/clockedIn';
 import AiScreen from './components/AiScreen';
 import AnalyticsScreen from './components/AnalyticsScreen';
 import AccountingScreen from './components/AccountingScreen';
@@ -718,7 +718,7 @@ function rowMatchesAllocatedStore(row, storeName) {
   return a.includes(b) || b.includes(a);
 }
 
-function ProfileAvatar({ uri, name, size = 24, style }) {
+function ProfileAvatar({ uri, name, size = 24, style, clockEdge }) {
   const [failed, setFailed] = useState(false);
   const clockedIn = useIsClockedIn(name);
 
@@ -728,46 +728,46 @@ function ProfileAvatar({ uri, name, size = 24, style }) {
 
   const initials = initialsFromName(name);
   const showImage = Boolean(uri) && !failed;
-  const ringWidth = clockedIn ? (size >= 28 ? 3 : 2) : 0;
-  const photo = size - ringWidth * 2;
 
   return (
-    <View
-      accessibilityLabel={clockedIn ? `${name}, clocked in` : name || 'Profile'}
-      style={[
-        {
-          width: size,
-          height: size,
-          borderRadius: size / 2,
-          alignItems: 'center',
-          justifyContent: 'center',
-          backgroundColor: '#e8e8ed',
-          overflow: 'hidden',
-        },
-        clockedIn ? { borderWidth: ringWidth, borderColor: '#248A3D' } : style,
-      ]}
-    >
-      {showImage ? (
-        <Image
-          source={{ uri }}
-          style={{ width: photo, height: photo, borderRadius: photo / 2 }}
-          onError={() => setFailed(true)}
-        />
-      ) : initials ? (
-        <Text
-          style={{
-            fontFamily,
-            fontSize: Math.max(10, Math.round(size * 0.38)),
-            fontWeight: '600',
-            color: '#1d1d1f',
-          }}
-        >
-          {initials}
-        </Text>
-      ) : (
-        <Ionicons name="person" size={Math.round(size * 0.5)} color="#8e8e93" />
-      )}
-    </View>
+    <ClockedInMark name={name} size={size} edge={clockEdge}>
+      <View
+        accessibilityLabel={clockedIn ? undefined : name || 'Profile'}
+        style={[
+          {
+            width: size,
+            height: size,
+            borderRadius: size / 2,
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: '#e8e8ed',
+            overflow: 'hidden',
+          },
+          style,
+        ]}
+      >
+        {showImage ? (
+          <Image
+            source={{ uri }}
+            style={{ width: size, height: size, borderRadius: size / 2 }}
+            onError={() => setFailed(true)}
+          />
+        ) : initials ? (
+          <Text
+            style={{
+              fontFamily,
+              fontSize: Math.max(10, Math.round(size * 0.38)),
+              fontWeight: '600',
+              color: '#1d1d1f',
+            }}
+          >
+            {initials}
+          </Text>
+        ) : (
+          <Ionicons name="person" size={Math.round(size * 0.5)} color="#8e8e93" />
+        )}
+      </View>
+    </ClockedInMark>
   );
 }
 
@@ -3517,13 +3517,14 @@ function HomePersonFace({ person, index, size, overlap, raised, onOpenPerson, ho
       ]}
       accessibilityRole="button"
       accessibilityLabel={clockedIn ? `${person.name}, clocked in` : `${person.name} profile`}
-      {...hoverHandlers(person.name)}
+      {...(clockedIn ? null : hoverHandlers(person.name))}
     >
       <ProfileAvatar
         uri={person.photoUrl}
         name={person.name}
         size={size}
         style={styles.homePeopleAvatarRing}
+        clockEdge="stack"
       />
     </Pressable>
   );

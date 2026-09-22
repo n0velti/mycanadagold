@@ -506,11 +506,13 @@ async function handleAvatarInspect(req: Request, body: ArrayBuffer | null): Prom
 }
 
 const TRIAGE_PO_PROMPT = [
-  'This is a photo of a printed Canada Gold purchase order, also called a buy ticket or PO paper.',
-  'Read the purchase order number. It is usually labeled PO, PO#, P.O., or Purchase, and it is a short numeric id.',
-  'Ignore prices, weights, phone numbers, dates, SKUs, store names, and customer names.',
-  'Return JSON only: {"poNumber":"123456"} with digits only.',
-  'If you cannot read a purchase order number, return {"poNumber":""}. Do not guess.',
+  'This photo is the top of a printed Canada Gold purchase order.',
+  'The purchase order number is at the top center, on the line directly under the date.',
+  'It is printed as PO# and then digits, for example PO#62216 under a date like 16-Jul-2026 11:30.',
+  'Read that PO# value. The date on the line above it is not the PO number.',
+  'Ignore prices, weights, phone numbers, addresses, and store names.',
+  'Return JSON only: {"poNumber":"62216"} with digits only.',
+  'If that PO# line is unreadable, return {"poNumber":""}.',
 ].join(' ');
 
 function sanitizePoNumber(value: unknown): string {

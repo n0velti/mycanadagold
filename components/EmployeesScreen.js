@@ -165,7 +165,7 @@ function useHoursSummary(enabled) {
   }, [enabled, refresh]);
 
   // The report lands hourly; re-check while the screen is open so the
-  // clocked-in rings follow it without a manual refresh.
+  // clocked-in dots follow it without a manual refresh.
   useLiveRefresh(() => refresh(), HOURS_LIVE_MS, enabled);
 
   return { summary, status, report, files, loading, refresh, setStatus };
