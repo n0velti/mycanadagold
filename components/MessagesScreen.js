@@ -43,6 +43,8 @@ import {
   toggleDmLike,
 } from '../lib/messages';
 import { intakeNames, listTeams } from '../lib/teams';
+import { ingestAiChatContext, sendAiChatMessage } from '../lib/aiChat';
+import { OPENROUTER_MODELS } from '../lib/openrouter';
 import ProfilePhotoModal from './ProfilePhotoModal';
 
 const fontFamily = Platform.select({
@@ -54,6 +56,10 @@ const fontFamily = Platform.select({
 const BLUE = '#0A84FF';
 const INBOX_WIDTH = 340;
 const MOBILE_BREAKPOINT = 768;
+const AI_MODEL =
+  OPENROUTER_MODELS.find((model) => model.key === 'anthropic/claude-sonnet-5')?.key ||
+  OPENROUTER_MODELS[0]?.key ||
+  '';
 
 const EMOJI_GROUPS = [
   {
@@ -426,6 +432,152 @@ function EmojiPicker({ visible, onPick }) {
   );
 }
 
+function AiDmPanel({ session, onClose }) {
+  const [status, setStatus] = useState('loading');
+  const [progress, setProgress] = useState('Loading company data…');
+  const [seedMessages, setSeedMessages] = useState([]);
+  const [turns, setTurns] = useState([]);
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const listRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - 6);
+    setStatus('loading');
+    setProgress('Loading company data…');
+    ingestAiChatContext(session, {
+      apps: [],
+      startDate: start,
+      endDate: end,
+      onProgress: (label) => {
+        if (!cancelled) setProgress(label);
+      },
+    })
+      .then((result) => {
+        if (cancelled) return;
+        setSeedMessages(result.seedMessages || []);
+        setStatus('ready');
+        setProgress('');
+        const note = (result.errors || []).filter(Boolean).join(' ');
+        if (note) setError(note);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setStatus('error');
+        setError(err.message || 'Could not load company data.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session]);
+
+  const send = async () => {
+    const text = draft.trim();
+    if (!text || busy || status !== 'ready') return;
+    setDraft('');
+    setBusy(true);
+    setError('');
+    const nextTurns = [...turns, { role: 'user', content: text }];
+    setTurns(nextTurns);
+    try {
+      const result = await sendAiChatMessage({
+        seedMessages,
+        turns,
+        userMessage: text,
+        model: AI_MODEL,
+      });
+      setTurns(result.turns || [...nextTurns, { role: 'assistant', content: result.text || '' }]);
+    } catch (err) {
+      setError(err.message || 'Could not get an answer.');
+    } finally {
+      setBusy(false);
+      requestAnimationFrame(() => listRef.current?.scrollToEnd?.({ animated: true }));
+    }
+  };
+
+  return (
+    <View style={styles.aiPanel}>
+      <View style={styles.aiHeader}>
+        <Pressable onPress={onClose} hitSlop={8} style={styles.aiBack} accessibilityLabel="Back to messages">
+          <Ionicons name="chevron-back" size={22} color={BLUE} />
+        </Pressable>
+        <View style={styles.aiHeaderCopy}>
+          <Text style={styles.aiTitle}>AI</Text>
+          <Text style={styles.aiSubtitle} numberOfLines={1}>
+            {status === 'loading' ? progress || 'Loading…' : 'Company data'}
+          </Text>
+        </View>
+      </View>
+      <ScrollView
+        ref={listRef}
+        style={styles.aiList}
+        contentContainerStyle={styles.aiListContent}
+        keyboardShouldPersistTaps="handled"
+        onContentSizeChange={() => listRef.current?.scrollToEnd?.({ animated: false })}
+      >
+        {status === 'loading' ? (
+          <View style={styles.aiEmpty}>
+            <ActivityIndicator color="#1d1d1f" />
+            <Text style={styles.emptyHint}>{progress}</Text>
+          </View>
+        ) : turns.length === 0 ? (
+          <View style={styles.aiEmpty}>
+            <Ionicons name="sparkles" size={28} color={BLUE} />
+            <Text style={styles.aiEmptyTitle}>Ask about the company</Text>
+            <Text style={styles.emptyHint}>
+              Sales, purchases, and inventory from the last 7 days.
+            </Text>
+          </View>
+        ) : (
+          turns.map((turn, index) => (
+            <View
+              key={`${turn.role}-${index}`}
+              style={[styles.aiBubble, turn.role === 'user' ? styles.aiBubbleMine : styles.aiBubbleThem]}
+            >
+              <Text style={[styles.aiBubbleText, turn.role === 'user' && styles.aiBubbleTextMine]}>
+                {turn.content}
+              </Text>
+            </View>
+          ))
+        )}
+        {busy ? <ActivityIndicator color="#8e8e93" style={styles.aiBusy} /> : null}
+      </ScrollView>
+      {error ? <Text style={styles.errorText}>{error}</Text> : null}
+      <View style={[styles.composer, styles.composerMobile]}>
+        <View style={[styles.composerField, styles.composerFieldMobile]}>
+          <TextInput
+            style={[styles.composerInput, styles.composerInputMobile]}
+            value={draft}
+            onChangeText={setDraft}
+            placeholder={status === 'ready' ? 'Ask about the data' : 'Loading data…'}
+            placeholderTextColor="#8e8e93"
+            editable={status === 'ready' && !busy}
+            multiline
+            maxLength={4000}
+            blurOnSubmit={false}
+            onSubmitEditing={Platform.OS === 'web' ? undefined : send}
+          />
+        </View>
+        <Pressable
+          onPress={send}
+          disabled={!draft.trim() || busy || status !== 'ready'}
+          style={[
+            styles.sendButton,
+            draft.trim() && status === 'ready' && !busy ? styles.sendButtonOn : styles.sendButtonOff,
+          ]}
+          accessibilityLabel="Send"
+        >
+          <Ionicons name="arrow-up" size={18} color="#fff" />
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
 export default function MessagesScreen({
   session,
   onUnreadChange,
@@ -444,6 +596,7 @@ export default function MessagesScreen({
   const [teams, setTeams] = useState([]);
   const [query, setQuery] = useState('');
   const [composeOpen, setComposeOpen] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const [groupName, setGroupName] = useState('');
   const [titleDraft, setTitleDraft] = useState('');
@@ -878,9 +1031,13 @@ export default function MessagesScreen({
             key={`team-${team.id}`}
             onPress={() => openTeam(team.id)}
             {...(Platform.OS === 'web' ? { className: 'cgold-dm-row' } : null)}
-            style={({ pressed }) => [styles.personRow, pressed && styles.rowPressed]}
+            style={({ pressed }) => [
+              styles.personRow,
+              isMobile && styles.personRowCompact,
+              pressed && styles.rowPressed,
+            ]}
           >
-            <View style={[styles.avatar, styles.teamAvatar]}>
+            <View style={[styles.avatar, styles.teamAvatar, isMobile && styles.teamAvatarCompact]}>
               <Ionicons name="people" size={20} color="#fff" />
             </View>
             <View style={styles.personCopy}>
@@ -906,9 +1063,13 @@ export default function MessagesScreen({
             key={person.id}
             onPress={() => toggleSelected(person.id)}
             {...(Platform.OS === 'web' ? { className: 'cgold-dm-row' } : null)}
-            style={({ pressed }) => [styles.personRow, pressed && styles.rowPressed]}
+            style={({ pressed }) => [
+              styles.personRow,
+              isMobile && styles.personRowCompact,
+              pressed && styles.rowPressed,
+            ]}
           >
-            <PersonAvatar person={person} size={44} showOnline />
+            <PersonAvatar person={person} size={isMobile ? 36 : 44} showOnline />
             <View style={styles.personCopy}>
               <Text style={styles.personName} numberOfLines={1}>
                 {contactName(person)}
@@ -1039,37 +1200,98 @@ export default function MessagesScreen({
       style={styles.root}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      {showInbox ? (
+      {isMobile && aiOpen ? (
+        <AiDmPanel session={session} onClose={() => setAiOpen(false)} />
+      ) : showInbox ? (
         <View style={[styles.inbox, isMobile && styles.inboxMobile]}>
           <View style={[styles.inboxHeader, isMobile && styles.inboxHeaderMobile]}>
-            <Text style={styles.inboxTitle}>{composeOpen ? 'New message' : 'Messages'}</Text>
+            <Text style={[styles.inboxTitle, isMobile && styles.inboxTitleMobile]} numberOfLines={1}>
+              {composeOpen ? 'New' : 'Messages'}
+            </Text>
             <View style={styles.inboxHeaderActions}>
-              <Pressable
-                onPress={() => {
-                  setComposeOpen((current) => !current);
-                  setSelectedIds([]);
-                  setGroupName('');
-                  setQuery('');
-                  if (isMobile) setActiveId(null);
-                }}
-                style={({ hovered, pressed }) => [
-                  styles.composeButton,
-                  (hovered || pressed) && styles.composeButtonHover,
-                ]}
-                accessibilityLabel={composeOpen ? 'Close compose' : 'New message'}
-              >
-                <Ionicons
-                  name={composeOpen ? 'close' : 'create-outline'}
-                  size={18}
-                  color={BLUE}
-                />
-              </Pressable>
+              {isMobile ? (
+                <>
+                  <Pressable
+                    onPress={() => {
+                      setComposeOpen(false);
+                      setSelectedIds([]);
+                      setGroupName('');
+                      setQuery('');
+                      setAiOpen(true);
+                    }}
+                    style={({ pressed }) => [styles.aiLaunch, pressed && styles.aiLaunchPressed]}
+                    accessibilityLabel="Chat with AI"
+                  >
+                    <Ionicons name="sparkles" size={16} color="#1d1d1f" />
+                    <Text style={styles.aiLaunchText}>AI</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => {
+                      if (!composeOpen) {
+                        setComposeOpen(true);
+                        setSelectedIds([]);
+                        setGroupName('');
+                        setQuery('');
+                        setActiveId(null);
+                        return;
+                      }
+                      if (selectedIds.length > 0) startConversation();
+                    }}
+                    disabled={composeOpen && selectedIds.length === 0}
+                    style={({ pressed }) => [
+                      styles.startConvoButton,
+                      composeOpen && selectedIds.length === 0 && styles.startConvoButtonOff,
+                      pressed && !(composeOpen && selectedIds.length === 0) && styles.startConvoButtonPressed,
+                    ]}
+                    accessibilityLabel={composeOpen ? 'Start conversation' : 'Start a conversation'}
+                  >
+                    <Text style={styles.startConvoButtonText}>
+                      {composeOpen && selectedIds.length > 1 ? 'Start group' : 'Start convo'}
+                    </Text>
+                  </Pressable>
+                  {composeOpen ? (
+                    <Pressable
+                      onPress={() => {
+                        setComposeOpen(false);
+                        setSelectedIds([]);
+                        setGroupName('');
+                        setQuery('');
+                      }}
+                      hitSlop={8}
+                      accessibilityLabel="Cancel"
+                    >
+                      <Ionicons name="close" size={22} color="#8e8e93" />
+                    </Pressable>
+                  ) : null}
+                </>
+              ) : (
+                <Pressable
+                  onPress={() => {
+                    setComposeOpen((current) => !current);
+                    setSelectedIds([]);
+                    setGroupName('');
+                    setQuery('');
+                    if (isMobile) setActiveId(null);
+                  }}
+                  style={({ hovered, pressed }) => [
+                    styles.composeButton,
+                    (hovered || pressed) && styles.composeButtonHover,
+                  ]}
+                  accessibilityLabel={composeOpen ? 'Close compose' : 'New message'}
+                >
+                  <Ionicons
+                    name={composeOpen ? 'close' : 'create-outline'}
+                    size={18}
+                    color={BLUE}
+                  />
+                </Pressable>
+              )}
             </View>
           </View>
           {composeOpen && selectedPeople.length > 0 ? (
-            <View style={styles.recipientBar}>
+            <View style={[styles.recipientBar, isMobile && styles.recipientBarMobile]}>
               <Text style={styles.recipientLabel}>To</Text>
-              <View style={styles.recipientBody}>
+              <View style={[styles.recipientBody, isMobile && styles.recipientBodyMobile]}>
                 {selectedPeople.map((person) => (
                   <Pressable
                     key={person.id}
@@ -1085,6 +1307,7 @@ export default function MessagesScreen({
                     <Ionicons name="close" size={11} color={BLUE} />
                   </Pressable>
                 ))}
+                {isMobile ? null : (
                 <Pressable
                   onPress={startConversation}
                   style={({ hovered, pressed }) => [
@@ -1102,6 +1325,7 @@ export default function MessagesScreen({
                   </Text>
                   <Ionicons name="arrow-forward" size={13} color="#fff" />
                 </Pressable>
+                )}
               </View>
             </View>
           ) : null}
@@ -1121,6 +1345,7 @@ export default function MessagesScreen({
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
+              style={styles.storiesScroll}
               contentContainerStyle={styles.storiesRow}
             >
               {onlinePeople.map((person) => (
@@ -1381,7 +1606,7 @@ export default function MessagesScreen({
                     {loadingThread && messages.length === 0 ? (
                       <ActivityIndicator color="#1d1d1f" style={styles.threadSpinner} />
                     ) : messages.length === 0 ? (
-                      <View style={styles.threadEmpty}>
+                      <View style={[styles.threadEmpty, isMobile && styles.threadEmptyMobile]}>
                         <Pressable
                           onPress={() => {
                             if (!activeThread.isGroup && activeThread.other) {
@@ -1390,7 +1615,7 @@ export default function MessagesScreen({
                           }}
                           accessibilityLabel={`View ${conversationTitle(activeThread)}'s profile`}
                         >
-                          <ConversationAvatar conversation={activeThread} size={72} />
+                          <ConversationAvatar conversation={activeThread} size={isMobile ? 52 : 72} />
                         </Pressable>
                         <Text style={styles.threadEmptyName}>{conversationTitle(activeThread)}</Text>
                         <Text style={styles.emptyHint}>
@@ -1445,7 +1670,7 @@ export default function MessagesScreen({
                     }}
                   />
 
-                  <View style={styles.composer}>
+                  <View style={[styles.composer, isMobile && styles.composerMobile]}>
                     <Pressable
                       onPress={() => setEmojiOpen((current) => !current)}
                       style={({ hovered, pressed }) => [
@@ -1456,13 +1681,13 @@ export default function MessagesScreen({
                     >
                       <Ionicons
                         name={emojiOpen ? 'happy' : 'happy-outline'}
-                        size={26}
+                        size={isMobile ? 22 : 26}
                         color={emojiOpen ? BLUE : '#8e8e93'}
                       />
                     </Pressable>
-                    <View style={styles.composerField}>
+                    <View style={[styles.composerField, isMobile && styles.composerFieldMobile]}>
                       <TextInput
-                        style={styles.composerInput}
+                        style={[styles.composerInput, isMobile && styles.composerInputMobile]}
                         value={draft}
                         onChangeText={onChangeDraft}
                         placeholder="Message"
@@ -1559,12 +1784,19 @@ const styles = StyleSheet.create({
   inboxHeaderMobile: {
     paddingTop: 8,
   },
+  storiesScroll: {
+    flexGrow: 0,
+    flexShrink: 0,
+    height: 96,
+    maxHeight: 96,
+  },
   storiesRow: {
     paddingHorizontal: 14,
-    paddingBottom: 10,
+    paddingVertical: 4,
     gap: 14,
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
+    flexGrow: 0,
   },
   storyItem: {
     width: 68,
@@ -1596,6 +1828,11 @@ const styles = StyleSheet.create({
     color: '#1d1d1f',
     letterSpacing: -0.6,
     flex: 1,
+    minWidth: 0,
+  },
+  inboxTitleMobile: {
+    fontSize: 22,
+    letterSpacing: -0.4,
   },
   inboxHeaderActions: {
     flexDirection: 'row',
@@ -1622,12 +1859,22 @@ const styles = StyleSheet.create({
     color: '#8e8e93',
     lineHeight: 24,
   },
+  recipientBarMobile: {
+    alignItems: 'center',
+    minHeight: 40,
+    maxHeight: 44,
+    paddingVertical: 4,
+  },
   recipientBody: {
     flex: 1,
     flexDirection: 'row',
     flexWrap: 'wrap',
     alignItems: 'center',
     gap: 6,
+  },
+  recipientBodyMobile: {
+    flexWrap: 'nowrap',
+    overflow: 'hidden',
   },
   createChatButton: {
     flexDirection: 'row',
@@ -1756,6 +2003,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  teamAvatarCompact: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+  },
   inboxCentered: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -1769,6 +2021,10 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingHorizontal: 14,
     paddingVertical: 10,
+  },
+  personRowCompact: {
+    gap: 10,
+    paddingVertical: 6,
   },
   personRowSelected: {
     backgroundColor: '#ececef',
@@ -1920,6 +2176,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingTop: 72,
     gap: 8,
+  },
+  threadEmptyMobile: {
+    paddingTop: 24,
+    gap: 4,
   },
   threadEmptyName: {
     fontFamily,
@@ -2321,5 +2581,151 @@ const styles = StyleSheet.create({
   },
   sendButtonOff: {
     backgroundColor: '#c7c7cc',
+  },
+  composerMobile: {
+    paddingTop: 6,
+    paddingBottom: 8,
+    alignItems: 'center',
+  },
+  composerFieldMobile: {
+    minHeight: 34,
+    maxHeight: 68,
+    paddingVertical: 4,
+  },
+  composerInputMobile: {
+    fontSize: 16,
+    lineHeight: 20,
+    maxHeight: 56,
+  },
+  startConvoButton: {
+    height: 36,
+    paddingHorizontal: 14,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: BLUE,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  startConvoButtonOff: {
+    opacity: 0.4,
+  },
+  startConvoButtonPressed: {
+    opacity: 0.8,
+  },
+  startConvoButtonText: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#fff',
+    letterSpacing: -0.2,
+  },
+  aiLaunch: {
+    height: 36,
+    paddingHorizontal: 12,
+    borderRadius: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#f2f2f7',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  aiLaunchPressed: {
+    backgroundColor: '#e5e5ea',
+  },
+  aiLaunchText: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    letterSpacing: -0.2,
+  },
+  aiPanel: {
+    flex: 1,
+    minHeight: 0,
+    backgroundColor: '#fff',
+  },
+  aiHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e5e5ea',
+  },
+  aiBack: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  aiHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  aiTitle: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#1d1d1f',
+  },
+  aiSubtitle: {
+    fontFamily,
+    fontSize: 12,
+    color: '#8e8e93',
+  },
+  aiList: {
+    flex: 1,
+    minHeight: 0,
+  },
+  aiListContent: {
+    paddingHorizontal: 14,
+    paddingTop: 16,
+    paddingBottom: 12,
+    gap: 8,
+  },
+  aiEmpty: {
+    alignItems: 'center',
+    paddingTop: 28,
+    gap: 6,
+  },
+  aiEmptyTitle: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#1d1d1f',
+  },
+  aiBubble: {
+    maxWidth: '84%',
+    borderRadius: 18,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  aiBubbleMine: {
+    alignSelf: 'flex-end',
+    backgroundColor: BLUE,
+  },
+  aiBubbleThem: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#f2f2f7',
+  },
+  aiBubbleText: {
+    fontFamily,
+    fontSize: 16,
+    lineHeight: 21,
+    color: '#1d1d1f',
+  },
+  aiBubbleTextMine: {
+    color: '#fff',
+  },
+  aiBusy: {
+    alignSelf: 'flex-start',
+    marginTop: 4,
   },
 });

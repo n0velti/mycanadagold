@@ -5,7 +5,6 @@ import { Image, Platform, Pressable, StyleSheet, Text, View } from 'react-native
 import { MOBILE, mobileSafeBottom, mobileSafeTop } from '../lib/mobileUi';
 
 const fontFamily = 'Sohne';
-const titleFontFamily = 'SohneLeicht';
 
 function initialsFromName(name) {
   const parts = String(name || '')
@@ -42,7 +41,7 @@ function TabProfileAvatar({ uri, name, active }) {
         ) : (
           <Ionicons
             name={active ? 'person' : 'person-outline'}
-            size={14}
+            size={17}
             color={active ? MOBILE.label : MOBILE.secondary}
           />
         )}
@@ -57,48 +56,6 @@ export function MobileSafeTop() {
       style={[styles.safeTop, { height: mobileSafeTop() }]}
       {...(Platform.OS === 'web' ? { className: 'cgold-mobile-inset-top' } : null)}
     />
-  );
-}
-
-export function MobileHomeHeader({ onBuy, onSell }) {
-  return (
-    <View style={styles.homeHeader}>
-      <View style={styles.brandMark}>
-        <Image
-          source={require('../assets/small_logo.png')}
-          style={styles.brandLogo}
-          resizeMode="cover"
-          accessibilityLabel="Canada Gold"
-        />
-      </View>
-      <Text style={styles.wordmark}>MyCanadaGold</Text>
-      {onBuy || onSell ? (
-        <View style={styles.tradePair}>
-          {onBuy ? (
-            <Pressable
-              onPress={onBuy}
-              style={[styles.tradeChip, styles.tradeChipBuy]}
-              accessibilityRole="button"
-              accessibilityLabel="Buy"
-              accessibilityHint="Buy metal from a customer"
-            >
-              <Text style={styles.tradeChipLabel}>Buy</Text>
-            </Pressable>
-          ) : null}
-          {onSell ? (
-            <Pressable
-              onPress={onSell}
-              style={[styles.tradeChip, styles.tradeChipSell]}
-              accessibilityRole="button"
-              accessibilityLabel="Sell"
-              accessibilityHint="Sell metal to a customer"
-            >
-              <Text style={styles.tradeChipLabel}>Sell</Text>
-            </Pressable>
-          ) : null}
-        </View>
-      ) : null}
-    </View>
   );
 }
 
@@ -149,6 +106,7 @@ export function MobileTabBar({
         const unread = tab.key === 'messages' ? messagesUnread : 0;
         const badge = unread > 99 ? '99+' : unread > 0 ? String(unread) : '';
         const isProfile = tab.key === 'profile';
+        const isHome = tab.key === 'home';
         return (
           <Pressable
             key={tab.key}
@@ -159,7 +117,14 @@ export function MobileTabBar({
             accessibilityLabel={badge ? `${tab.label}, ${badge} unread` : tab.label}
           >
             <View style={styles.tabIconWrap}>
-              {isProfile ? (
+              {isHome ? (
+                <Image
+                  source={require('../assets/small_logo.png')}
+                  style={[styles.tabLogo, !isActive && styles.tabLogoDim]}
+                  resizeMode="cover"
+                  accessibilityIgnoresInvertColors
+                />
+              ) : isProfile ? (
                 <TabProfileAvatar uri={profileAvatarUrl} name={profileName} active={isActive} />
               ) : (
                 <Ionicons
@@ -185,64 +150,6 @@ const styles = StyleSheet.create({
   safeTop: {
     flexShrink: 0,
     backgroundColor: 'transparent',
-  },
-  homeHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingBottom: 10,
-    gap: 8,
-    backgroundColor: MOBILE.bg,
-  },
-  brandMark: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    overflow: 'hidden',
-  },
-  brandLogo: {
-    width: 28,
-    height: 28,
-  },
-  wordmark: {
-    fontFamily: titleFontFamily,
-    flex: 1,
-    minWidth: 0,
-    fontSize: 22,
-    fontWeight: '400',
-    color: MOBILE.label,
-    letterSpacing: -0.7,
-  },
-  tradePair: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginLeft: 'auto',
-  },
-  tradeChip: {
-    minWidth: 52,
-    height: 30,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  tradeChipBuy: {
-    backgroundColor: '#1F8A4E',
-  },
-  tradeChipSell: {
-    backgroundColor: '#C0392B',
-  },
-  tradeChipLabel: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#fff',
-    letterSpacing: 0.2,
   },
   navHeader: {
     flexDirection: 'row',
@@ -296,11 +203,16 @@ const styles = StyleSheet.create({
     marginTop: -1,
   },
   tabBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 20,
     flexDirection: 'row',
     alignItems: 'center',
     paddingTop: 8,
     paddingBottom: mobileSafeBottom(),
-    backgroundColor: 'rgba(255,255,255,0.72)',
+    backgroundColor: Platform.OS === 'web' ? 'transparent' : 'rgba(255,255,255,0.55)',
     overflow: 'visible',
   },
   tabHairline: {
@@ -322,18 +234,26 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
+  tabLogo: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+  },
+  tabLogoDim: {
+    opacity: 0.55,
+  },
   tabIconWrap: {
     position: 'relative',
     overflow: 'visible',
-    width: 28,
-    height: 28,
+    width: 34,
+    height: 34,
     alignItems: 'center',
     justifyContent: 'center',
   },
   tabAvatarRing: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     borderWidth: 1.5,
     borderColor: 'transparent',
     alignItems: 'center',
@@ -343,21 +263,21 @@ const styles = StyleSheet.create({
     borderColor: MOBILE.label,
   },
   tabAvatar: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#E5E5EA',
   },
   tabAvatarImage: {
-    width: 24,
-    height: 24,
+    width: 30,
+    height: 30,
   },
   tabAvatarInitials: {
     fontFamily,
-    fontSize: 9,
+    fontSize: 11,
     fontWeight: '700',
     color: MOBILE.label,
     letterSpacing: -0.2,

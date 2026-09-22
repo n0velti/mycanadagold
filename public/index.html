@@ -13,6 +13,12 @@
       upgrade-insecure-requests: Safari rewrites http://localhost to https and
       Metro cannot serve that, so the page stays blank. Production already
       enforces HTTPS via HSTS.
+
+      'unsafe-eval' is development only: the Metro dev server delivers the
+      lazily loaded screens with fetch + eval, so without it opening any app
+      fails. scripts/fix-web-export.js removes it from the exported
+      dist/index.html (production loads chunks with plain script tags) and
+      scripts/check-bundle-secrets.js refuses to ship if it is still present.
     -->
     <meta
       http-equiv="Content-Security-Policy"
@@ -20,7 +26,7 @@
         base-uri 'self';
         object-src 'none';
         form-action 'self' https://app.rippling.com;
-        script-src 'self' http://localhost:* http://127.0.0.1:*;
+        script-src 'self' 'unsafe-eval' http://localhost:* http://127.0.0.1:*;
         style-src 'self' 'unsafe-inline';
         font-src 'self' data:;
         img-src 'self' data: blob: https:;
@@ -35,36 +41,30 @@
     <meta name="referrer" content="strict-origin-when-cross-origin" />
     <meta name="robots" content="noindex, nofollow" />
     <title>%WEB_TITLE%</title>
+    <!--
+      Open the TLS connections the app needs the moment it boots (session
+      restore hits Supabase, then the Aureus POS) so those handshakes overlap
+      with the JavaScript download instead of following it.
+    -->
+    <link rel="preconnect" href="https://bkvyyddtevzvuanzkobd.supabase.co" crossorigin />
+    <link rel="preconnect" href="https://canadagoldeast.aureuspos.com" crossorigin />
+    <!--
+      Fonts that gate the first paint. Preloading lets them download alongside
+      the bundle rather than after it has been parsed and run. The large icon
+      sets (Material Community, Feather) are deliberately not here; the app
+      fetches them in the background.
+    -->
+    <link rel="preload" href="/fonts/Sohne-Buch.otf" as="font" type="font/otf" crossorigin />
+    <link rel="preload" href="/fonts/Sohne-Leicht.otf" as="font" type="font/otf" crossorigin />
+    <link rel="preload" href="/fonts/SohneMono-Buch.otf" as="font" type="font/otf" crossorigin />
+    <link rel="preload" href="/fonts/Ionicons.ttf" as="font" type="font/ttf" crossorigin />
     <!-- The `react-native-web` recommended style reset: https://necolas.github.io/react-native-web/docs/setup/#root-element -->
+    <!--
+      No @font-face rules here: expo-font registers every family from App.js
+      (against the preloaded files above). Declaring them twice made the
+      browser fetch each font twice.
+    -->
     <style id="expo-reset">
-      @font-face {
-        font-family: Sohne;
-        src: url('/fonts/Sohne-Buch.otf') format('opentype');
-        font-weight: 400;
-        font-style: normal;
-        font-display: swap;
-      }
-      @font-face {
-        font-family: SohneLeicht;
-        src: url('/fonts/Sohne-Leicht.otf') format('opentype');
-        font-weight: 300;
-        font-style: normal;
-        font-display: swap;
-      }
-      @font-face {
-        font-family: ionicons;
-        src: url('/fonts/Ionicons.ttf') format('truetype');
-        font-weight: normal;
-        font-style: normal;
-        font-display: block;
-      }
-      @font-face {
-        font-family: material-community;
-        src: url('/fonts/MaterialCommunityIcons.ttf') format('truetype');
-        font-weight: normal;
-        font-style: normal;
-        font-display: block;
-      }
       html,
       body {
         height: 100%;
@@ -84,11 +84,49 @@
         height: 100%;
         flex: 1;
       }
+      /*
+        Boot spinner. Drawn by the browser as soon as the HTML arrives, so the
+        page is never blank while the bundle downloads. It mirrors the app's
+        ActivityIndicator (same geometry, colour and speed) and React replaces
+        it on first render, so the hand-off is invisible.
+      */
+      .cgold-boot {
+        display: flex;
+        flex: 1;
+        align-items: center;
+        justify-content: center;
+        background: #fff;
+      }
+      .cgold-boot svg {
+        width: 20px;
+        height: 20px;
+        animation: cgold-boot-spin 0.75s linear infinite;
+      }
+      @keyframes cgold-boot-spin {
+        from {
+          transform: rotate(0deg);
+        }
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .cgold-boot svg {
+          animation: none;
+        }
+      }
     </style>
   </head>
 
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>
-    <div id="root"></div>
+    <div id="root">
+      <div class="cgold-boot" role="status" aria-label="Loading">
+        <svg viewBox="0 0 32 32" fill="none" stroke="#1a1a1a" stroke-width="4">
+          <circle cx="16" cy="16" r="14" opacity="0.2"></circle>
+          <circle cx="16" cy="16" r="14" stroke-dasharray="80" stroke-dashoffset="60"></circle>
+        </svg>
+      </div>
+    </div>
   </body>
 </html>

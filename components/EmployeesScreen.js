@@ -448,7 +448,7 @@ function PersonHero({ name, title, photoUrl, statusLabel, statusTone: tone, onOp
         accessibilityRole={onOpenPhoto ? 'button' : undefined}
         accessibilityLabel={onOpenPhoto ? `View ${name}'s portrait` : undefined}
       >
-        <StaffAvatar uri={photoUrl} name={name} size={72} ring={clockedIn ? 'green' : undefined} />
+        <StaffAvatar uri={photoUrl} name={name} size={88} ring={clockedIn ? 'green' : undefined} />
       </Pressable>
       <Text style={styles.heroName}>{name}</Text>
       {title ? <Text style={styles.heroTitle}>{title}</Text> : null}
@@ -499,7 +499,7 @@ function StaffEmployeeRow({ person, selected, onPress, last, hours }) {
           <StaffAvatar
             uri={person.avatarUrl || person.photoUrl}
             name={name}
-            size={44}
+            size={52}
             ring={hours?.clockedIn ? 'green' : undefined}
           />
         }
@@ -981,7 +981,7 @@ function EmployeeRow({ employee, selected, onPress, last, hours }) {
         <StaffAvatar
           uri={employee.photoUrl}
           name={employee.name}
-          size={44}
+          size={52}
           ring={hours?.clockedIn ? 'green' : undefined}
         />
       }

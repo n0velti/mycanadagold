@@ -1,7 +1,9 @@
 import { createElement, useEffect, useRef, useState } from 'react';
+import { BlurView } from 'expo-blur';
 import * as ImagePicker from 'expo-image-picker';
 import {
   ActivityIndicator,
+  Animated,
   Image,
   KeyboardAvoidingView,
   Linking,
@@ -118,6 +120,45 @@ function actorNameOf(session) {
   return triageEditorFromSession(session)?.name || '';
 }
 
+function AddedToast({ label, onDone }) {
+  const opacity = useRef(new Animated.Value(0)).current;
+  const drop = useRef(new Animated.Value(-16)).current;
+  const check = useRef(new Animated.Value(0.2)).current;
+  const onDoneRef = useRef(onDone);
+  onDoneRef.current = onDone;
+
+  useEffect(() => {
+    const enter = Animated.parallel([
+      Animated.timing(opacity, { toValue: 1, duration: 180, useNativeDriver: true }),
+      Animated.spring(drop, { toValue: 0, speed: 16, bounciness: 7, useNativeDriver: true }),
+      Animated.spring(check, { toValue: 1, speed: 12, bounciness: 14, useNativeDriver: true }),
+    ]);
+    enter.start();
+    const timer = setTimeout(() => {
+      Animated.timing(opacity, { toValue: 0, duration: 280, useNativeDriver: true }).start(({ finished }) => {
+        if (finished) onDoneRef.current?.();
+      });
+    }, 1500);
+    return () => {
+      clearTimeout(timer);
+      enter.stop();
+    };
+  }, [check, drop, opacity]);
+
+  return (
+    <Animated.View pointerEvents="none" style={[styles.addedToast, { opacity, transform: [{ translateY: drop }] }]}>
+      <BlurView intensity={72} tint="light" style={styles.addedBlur}>
+        <Animated.View style={[styles.addedCheck, { transform: [{ scale: check }] }]}>
+          <Ionicons name="checkmark" size={16} color="#fff" />
+        </Animated.View>
+        <Text style={styles.addedText} numberOfLines={1}>
+          {label}
+        </Text>
+      </BlurView>
+    </Animated.View>
+  );
+}
+
 export default function TriagePoCapture({ session, openerRef, batchId = '', onCounted }) {
   const isMobile = useIsMobile();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
@@ -138,6 +179,7 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
   const [resultError, setResultError] = useState('');
   const [finishing, setFinishing] = useState(false);
   const [notice, setNotice] = useState('');
+  const [toast, setToast] = useState(null);
   const [needsSettings, setNeedsSettings] = useState(false);
   const [buyCatalog, setBuyCatalog] = useState(null);
   const [previewBox, setPreviewBox] = useState({ width: 0, height: 0 });
@@ -188,6 +230,7 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
     setResultError('');
     setFinishing(false);
     setNotice('');
+    setToast(null);
     setNeedsSettings(false);
     return undefined;
   }, [open, stopStream]);
@@ -411,12 +454,8 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
         actorNameOf(session),
       );
       onCounted?.(place.batch.id);
-      const where = [place.store.name, po.dateLabel].filter(Boolean).join(' · ');
-      setNotice(
-        counted.counted
-          ? `Counted for ${where}. ${counted.received} received.`
-          : `Already counted for ${where}.`,
-      );
+      const label = po.reference || `PO#${normalizePoNumber(poInput) || po.id}`;
+      setToast({ id: Date.now(), label: counted.counted ? `${label} added` : `${label} already counted` });
       nextPo();
     } catch (err) {
       setResultError(err?.message || 'Could not update the count.');
@@ -684,38 +723,16 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
                 <View style={styles.snapRetakeSpacer} />
               )}
             </View>
-            <View style={styles.snapMid} pointerEvents="box-none">
-              {!photoUri && liveCamera && cameraState !== 'live' ? (
-                <View style={styles.snapCenter}>
-                  <Text style={styles.snapCenterText}>
-                    {cameraState === 'requesting'
-                      ? 'Starting camera…'
-                      : cameraState === 'denied'
-                        ? 'Camera is off. You can turn it back on.'
-                        : 'Camera is off.'}
-                  </Text>
-                  {cameraState === 'requesting' ? (
-                    <ActivityIndicator color="#fff" />
-                  ) : (
-                    <Pressable style={styles.enableButton} onPress={enableCamera} accessibilityRole="button">
-                      <Text style={styles.enableButtonText}>Enable camera</Text>
-                    </Pressable>
-                  )}
-                </View>
-              ) : null}
-            </View>
-            <View style={[styles.snapDock, { paddingBottom: dockPad }]}>
-              {phase ? <Text style={styles.snapPhase}>{phase}</Text> : null}
-              {error ? <Text style={styles.snapError}>{error}</Text> : null}
-              {notice ? <Text style={styles.snapNotice}>{notice}</Text> : null}
-              <View style={styles.appleField}>
-                <Ionicons name="search" size={18} color="#8E8E93" />
+            {toast ? <AddedToast key={toast.id} label={toast.label} onDone={() => setToast(null)} /> : null}
+            <View style={styles.snapFieldWrap}>
+              <BlurView intensity={48} tint="light" style={styles.appleField}>
+                <Ionicons name="search" size={18} color="rgba(60,60,67,0.72)" />
                 <TextInput
                   style={styles.appleInput}
                   value={poInput}
                   onChangeText={setPoInput}
                   placeholder="PO #"
-                  placeholderTextColor="#8E8E93"
+                  placeholderTextColor="rgba(60,60,67,0.55)"
                   keyboardType="number-pad"
                   returnKeyType="search"
                   underlineColorAndroid="transparent"
@@ -738,7 +755,31 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
                     )}
                   </Pressable>
                 ) : null}
-              </View>
+              </BlurView>
+              {phase ? <Text style={styles.snapPhase}>{phase}</Text> : null}
+              {error ? <Text style={styles.snapError}>{error}</Text> : null}
+            </View>
+            <View style={styles.snapMid} pointerEvents="box-none">
+              {!photoUri && liveCamera && cameraState !== 'live' ? (
+                <View style={styles.snapCenter}>
+                  <Text style={styles.snapCenterText}>
+                    {cameraState === 'requesting'
+                      ? 'Starting camera…'
+                      : cameraState === 'denied'
+                        ? 'Camera is off. You can turn it back on.'
+                        : 'Camera is off.'}
+                  </Text>
+                  {cameraState === 'requesting' ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Pressable style={styles.enableButton} onPress={enableCamera} accessibilityRole="button">
+                      <Text style={styles.enableButtonText}>Enable camera</Text>
+                    </Pressable>
+                  )}
+                </View>
+              ) : null}
+            </View>
+            <View style={[styles.snapDock, { paddingBottom: dockPad }]}>
               {photoUri ? null : (
                 <Pressable
                   style={[styles.snapShutter, (busy || (liveCamera && cameraState !== 'live')) && styles.shutterOff]}
@@ -747,9 +788,9 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
                   accessibilityRole="button"
                   accessibilityLabel="Take photo"
                 >
-                  <View style={styles.snapShutterRing}>
+                  <BlurView intensity={42} tint="light" style={styles.snapShutterBlur}>
                     <View style={styles.snapShutterCore} />
-                  </View>
+                  </BlurView>
                 </Pressable>
               )}
             </View>
@@ -1652,15 +1693,24 @@ const styles = StyleSheet.create({
     color: '#30D158',
     textAlign: 'center',
   },
+  snapFieldWrap: {
+    paddingHorizontal: 16,
+    paddingTop: 6,
+    gap: 8,
+    zIndex: 2,
+  },
   appleField: {
     alignSelf: 'stretch',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     minHeight: 44,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: '#fff',
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(255,255,255,0.42)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.72)',
   },
   appleInput: {
     flex: 1,
@@ -1669,7 +1719,8 @@ const styles = StyleSheet.create({
     paddingVertical: 0,
     fontFamily: FONT,
     fontSize: 17,
-    color: '#000',
+    color: '#1d1d1f',
+    backgroundColor: 'transparent',
     ...Platform.select({
       web: { outlineStyle: 'none' },
       default: {},
@@ -1687,20 +1738,60 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  snapShutterRing: {
+  snapShutterBlur: {
     width: 78,
     height: 78,
     borderRadius: 39,
-    borderWidth: 4,
-    borderColor: '#fff',
+    overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.28)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.7)',
   },
   snapShutterCore: {
-    width: 62,
-    height: 62,
-    borderRadius: 31,
-    backgroundColor: '#fff',
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: 'rgba(255,255,255,0.38)',
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.85)',
+  },
+  addedToast: {
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    zIndex: 40,
+  },
+  addedBlur: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    maxWidth: '100%',
+    paddingVertical: 8,
+    paddingLeft: 8,
+    paddingRight: 16,
+    borderRadius: 22,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(255,255,255,0.55)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.8)',
+  },
+  addedCheck: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#34C759',
+  },
+  addedText: {
+    flexShrink: 1,
+    fontFamily: FONT,
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    letterSpacing: -0.2,
   },
   page: {
     flex: 1,

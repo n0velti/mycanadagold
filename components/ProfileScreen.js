@@ -36,26 +36,7 @@ const LABEL = MOBILE.label;
 const SECONDARY = MOBILE.secondary;
 const HAIRLINE = MOBILE.separator;
 
-export function profileTargetFromPerson(person) {
-  if (!person) return null;
-  const name = String(
-    person.name ||
-      person.fullName ||
-      [person.firstName, person.lastName].filter(Boolean).join(' ') ||
-      '',
-  ).trim();
-  return {
-    profileId: String(person.profileId || person.id || '').trim(),
-    name,
-    avatarUrl: person.avatarUrl || person.photoUrl || '',
-    locationName: person.locationName || '',
-    email: person.email || '',
-    employeeType: person.employeeType || person.posRole || '',
-    role: person.role || person.posRole || '',
-    teamId: person.teamId || '',
-    teamName: person.teamName || '',
-  };
-}
+export { profileTargetFromPerson } from '../lib/profileTarget';
 
 function initialsFromName(name) {
   const parts = String(name || '')
