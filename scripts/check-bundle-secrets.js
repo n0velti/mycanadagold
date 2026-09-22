@@ -23,6 +23,7 @@ const PATTERNS = [
   { label: 'RingCentral Montreal secret', regex: /YSpjaHomPKSfiaecwIv0y30mwYczLuP3RfJJKGrc4RhL/ },
   { label: 'RingCentral Montreal JWT', regex: /8I3ggfz3QXOf7QQwJAPipA/ },
   { label: 'localhost proxy fallback', regex: /localhost:8787/ },
+  { label: "development-only CSP 'unsafe-eval'", regex: /'unsafe-eval'/ },
 ];
 
 function walk(dir, out = []) {

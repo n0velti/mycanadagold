@@ -782,8 +782,8 @@ function initialsFromName(name) {
 }
 
 /**
- * `ring` marks the portrait as clocked in (a green presence dot) even when
- * the live name match has not caught up yet.
+ * `ring` draws the clocked-in gradient around the portrait even when the
+ * live name match has not caught up yet.
  */
 export function StaffAvatar({ uri, name, size = 24, ring }) {
   const [failed, setFailed] = useState(false);

@@ -16,3 +16,13 @@
   Content-Type: font/otf
 /assets/*.ttf
   Content-Type: font/ttf
+
+# Bundles and exported assets carry a content hash in their file name, so they
+# can be cached forever. Fonts keep their names; cache them for a week and let
+# the browser refresh in the background.
+/_expo/*
+  Cache-Control: public, max-age=31536000, immutable
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+/fonts/*
+  Cache-Control: public, max-age=604800, stale-while-revalidate=2592000

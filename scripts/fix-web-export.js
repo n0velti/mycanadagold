@@ -42,6 +42,19 @@ function main() {
     rewritten += 1;
   }
   console.log(`Rewrote ${rewritten} file(s) to use /assets/vendor/ font paths.`);
+
+  // The Metro dev server loads split bundles with fetch + eval, which needs
+  // 'unsafe-eval' in the CSP of public/index.html. Production chunks are
+  // loaded with plain <script> tags, so the exported page does not get it.
+  const indexHtml = path.join(DIST, 'index.html');
+  if (fs.existsSync(indexHtml)) {
+    const html = fs.readFileSync(indexHtml, 'utf8');
+    const stripped = html.replace(/\s*'unsafe-eval'/g, '');
+    if (stripped !== html) {
+      fs.writeFileSync(indexHtml, stripped);
+      console.log("Removed development-only 'unsafe-eval' from the production CSP.");
+    }
+  }
 }
 
 main();
