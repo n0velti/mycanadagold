@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -51,7 +52,7 @@ import {
 } from '../lib/triageLookups';
 import { catalogProductOptions, fetchWebsitePrices } from '../lib/websitePrices';
 import { findStaffByEmployeeName, listStaffProfiles } from '../lib/permissions';
-import { useTransferWorkflow } from '../lib/transferWorkflow';
+import { triageReviewEditKey, useTransferWorkflow } from '../lib/transferWorkflow';
 import {
   applyDate,
   applyTime,
@@ -878,6 +879,47 @@ function NewCustomerPanel({ onCancel, onCreated }) {
   );
 }
 
+function CapturedPreview({ uri, count, onPress }) {
+  if (!uri) return null;
+  return (
+    <Pressable
+      onPress={onPress}
+      style={styles.capturedPreview}
+      accessibilityRole="button"
+      accessibilityLabel={count > 1 ? `View ${count} captured photos` : 'View captured photo'}
+    >
+      <Image source={{ uri }} style={styles.capturedPreviewImage} />
+      {count > 1 ? (
+        <View style={styles.capturedPreviewBadge} pointerEvents="none">
+          <Text style={styles.capturedPreviewBadgeText}>{count > 9 ? '9+' : count}</Text>
+        </View>
+      ) : null}
+    </Pressable>
+  );
+}
+
+function CapturedPhotoStrip({ images, onChange, readOnly = false, compact = false, inset = true }) {
+  if (!images.length) return null;
+  return (
+    <View style={inset ? styles.capturedStrip : styles.capturedStripFlush}>
+      <View style={styles.itemsToolbar}>
+        <Text style={styles.itemsTitle}>Photos</Text>
+        <Text style={styles.summaryMetaInline}>Tap a photo to view it</Text>
+      </View>
+      <View style={[styles.detailsCard, styles.photoCard, styles.paneCard]}>
+        <TriageCorrectionImages
+          images={images}
+          onChange={onChange}
+          readOnly={readOnly}
+          compact={compact}
+          hideHeading
+          hideActions
+        />
+      </View>
+    </View>
+  );
+}
+
 export default function TriageReviewDrawer({ visible, session, row, review, extraRows = [], onClose, onSave, onHydrate }) {
   const { width: windowWidth } = useWindowDimensions();
   const isMobile = windowWidth < MOBILE_BREAKPOINT;
@@ -914,6 +956,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
   const imagesRef = useRef(null);
   const detailRequestId = useRef(0);
   const openedIdRef = useRef(null);
+  const baselineKeyRef = useRef('');
   const rowRef = useRef(row);
   const reviewRef = useRef(review);
   const sessionRef = useRef(session);
@@ -923,7 +966,18 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
   sessionRef.current = session;
   onHydrateRef.current = onHydrate;
 
+  const rememberBaseline = (nextDraft, extras = {}) => {
+    baselineKeyRef.current = triageReviewEditKey({
+      draft: nextDraft,
+      note: extras.note || '',
+      errorType: extras.errorType || '',
+      errorAmount: extras.errorAmount || '',
+      images: extras.images || [],
+    });
+  };
+
   const reset = useCallback(() => {
+    baselineKeyRef.current = '';
     setStepIndex(0);
     setActiveRow(null);
     setDraft(null);
@@ -973,26 +1027,41 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
       }
     };
     if (existingReview?.draft) {
+      const nextNote = existingReview.note || '';
+      const nextType = isListedErrorType(existingReview.errorType) ? existingReview.errorType : '';
+      const nextAmount = formatErrorAmount(existingReview.errorAmount);
+      const nextImages = normalizeReviewImages(existingReview.images);
+      let nextDraft;
       try {
-        setDraft(normalizeDraft(existingReview.draft));
+        nextDraft = normalizeDraft(existingReview.draft);
+        setDraft(nextDraft);
         setDetailError('');
       } catch (err) {
-        setDraft(safeDraft(current, null));
+        nextDraft = safeDraft(current, null);
+        setDraft(nextDraft);
         setDetailError(err?.message || 'Could not read saved edits.');
       }
-      setNote(existingReview.note || '');
-      setErrorType(isListedErrorType(existingReview.errorType) ? existingReview.errorType : '');
-      setErrorAmount(formatErrorAmount(existingReview.errorAmount));
-      setImages(normalizeReviewImages(existingReview.images));
+      setNote(nextNote);
+      setErrorType(nextType);
+      setErrorAmount(nextAmount);
+      setImages(nextImages);
+      rememberBaseline(nextDraft, {
+        note: nextNote,
+        errorType: nextType,
+        errorAmount: nextAmount,
+        images: nextImages,
+      });
       setDetailLoading(false);
       return;
     }
 
-    setDraft(safeDraft(current, null));
+    const preliminary = safeDraft(current, null);
+    setDraft(preliminary);
     setNote('');
     setErrorType('');
     setErrorAmount('');
     setImages([]);
+    rememberBaseline(preliminary);
     setDetailLoading(true);
 
     const auth = resolvePosAuthForRow(sessionRef.current, current);
@@ -1005,8 +1074,10 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
         if (id !== detailRequestId.current) return;
         try {
           const enriched = withLineItems(current, detail);
+          const nextDraft = safeDraft(enriched, detail);
           setActiveRow(enriched);
-          setDraft(safeDraft(enriched, detail));
+          setDraft(nextDraft);
+          rememberBaseline(nextDraft);
           onHydrateRef.current?.(enriched);
         } catch (err) {
           setDetailError(err?.message || 'Could not read this document.');
@@ -1270,7 +1341,10 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
 
   const finish = () => {
     if (!activeRow || !draft) return;
-    onSave?.(activeRow.id, buildReview(activeRow, draft, { note, errorType, errorAmount, images }));
+    const next = buildReview(activeRow, draft, { note, errorType, errorAmount, images });
+    if (triageReviewEditKey(next) !== baselineKeyRef.current) {
+      onSave?.(activeRow.id, next);
+    }
     onClose?.();
   };
 
@@ -1411,8 +1485,19 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
               {heldRow.reference || 'Details'}
             </Text>
           </View>
-          {isMobile ? null : (
+          {isMobile ? (
+            <CapturedPreview
+              uri={images[images.length - 1]?.uri}
+              count={images.length}
+              onPress={() => imagesRef.current?.viewAt?.(images.length - 1)}
+            />
+          ) : (
             <View style={styles.headerTools}>
+              <CapturedPreview
+                uri={images[images.length - 1]?.uri}
+                count={images.length}
+                onPress={() => imagesRef.current?.viewAt?.(images.length - 1)}
+              />
               <Pressable
                 style={[styles.addImageBtn, addImageDisabled && styles.addImageBtnDisabled]}
                 onPress={() => imagesRef.current?.addImage?.()}
@@ -1441,6 +1526,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
 
           {stepIndex === 0 ? (
             <DetailsPane {...detailsPaneProps}>
+              <CapturedPhotoStrip images={images} onChange={setImages} compact={isMobile} />
               <BuyTicketBar
                 compact={isMobile}
                 subtotal={subtotal}
@@ -1532,25 +1618,6 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
                   />
                 </View>
               ) : null}
-              {isMobile && images.length ? (
-                <View style={styles.mobilePhotos}>
-                  <View style={styles.itemsToolbar}>
-                    <Text style={styles.itemsTitle}>Photos</Text>
-                    <Text style={styles.summaryMetaInline}>
-                      {`${images.length} of ${MAX_REVIEW_IMAGES}`}
-                    </Text>
-                  </View>
-                  <View style={[styles.detailsCard, styles.photoCard, styles.paneCard, styles.mobilePhotoCard]}>
-                    <TriageCorrectionImages
-                      images={images}
-                      onChange={setImages}
-                      compact
-                      hideHeading
-                      hideActions
-                    />
-                  </View>
-                </View>
-              ) : null}
             </DetailsPane>
           ) : null}
 
@@ -1598,30 +1665,29 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
                 showPaymentNotes={showPaymentNotes}
                 changedCount={changedCount}
               />
-              {note || errorType || images.length ? (
+              {note || errorType ? (
                 <View style={[styles.detailsCard, styles.paneCard, styles.finishNoteCard]}>
                   {errorType ? (
-                    <View style={styles.detailReadRow}>
+                    <View style={[styles.detailReadRow, !note && styles.detailReadRowLast]}>
                       <Text style={styles.detailReadLabel}>Type of error</Text>
                       <Text style={styles.readValue}>{errorType}</Text>
                     </View>
                   ) : null}
                   {note ? (
-                    <View style={[styles.detailReadRow, !images.length && styles.detailReadRowLast]}>
+                    <View style={[styles.detailReadRow, styles.detailReadRowLast]}>
                       <Text style={styles.detailReadLabel}>Note</Text>
                       <Text style={styles.readValue}>{note}</Text>
                     </View>
                   ) : null}
-                  {images.length ? (
-                    <View style={[styles.detailReadRow, styles.detailReadRowLast]}>
-                      <Text style={styles.detailReadLabel}>Photos</Text>
-                      <Text style={styles.readValue}>
-                        {images.length} {images.length === 1 ? 'image' : 'images'}
-                      </Text>
-                    </View>
-                  ) : null}
                 </View>
               ) : null}
+              <CapturedPhotoStrip
+                images={images}
+                onChange={setImages}
+                readOnly
+                compact={isMobile}
+                inset={false}
+              />
             </ScrollView>
           ) : null}
         {isMobile ? (
@@ -1698,14 +1764,51 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignSelf: 'stretch',
   },
-  mobilePhotos: {
+  capturedStrip: {
     width: '88%',
     maxWidth: 980,
     alignSelf: 'center',
+    marginBottom: 16,
+  },
+  capturedStripFlush: {
+    alignSelf: 'stretch',
     marginTop: 18,
   },
-  mobilePhotoCard: {
-    maxWidth: '100%',
+  capturedPreview: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    backgroundColor: '#e8e8ed',
+    flexShrink: 0,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  capturedPreviewImage: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+  },
+  capturedPreviewBadge: {
+    position: 'absolute',
+    top: -6,
+    right: -6,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    borderRadius: 9,
+    backgroundColor: BUY_ACCENT,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
+  capturedPreviewBadgeText: {
+    fontFamily,
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#fff',
   },
   summaryMetaInline: {
     fontFamily,
@@ -2363,10 +2466,6 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     color: STRUCK,
     textDecorationLine: 'line-through',
-    ...Platform.select({
-      web: { textDecoration: 'line-through' },
-      default: {},
-    }),
   },
   readValueChanged: {
     fontFamily,
@@ -2774,10 +2873,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: STRUCK,
     textDecorationLine: 'line-through',
-    ...Platform.select({
-      web: { textDecoration: 'line-through' },
-      default: {},
-    }),
   },
   correctedText: {
     fontFamily,

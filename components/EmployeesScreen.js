@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Linking,
@@ -14,31 +14,22 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import {
   RIPPLING_API_TOKENS_URL,
-  RIPPLING_DEVELOPER_URL,
   WORKER_STATUS,
-  buildRipplingAuthorizeUrl,
   canManageCompanyRippling,
-  clearRipplingOAuthCallbackFromUrl,
-  clearRipplingOAuthState,
   clearRipplingSession,
-  createRipplingOAuthState,
   disconnectCompanyRippling,
-  exchangeRipplingOAuthCode,
   fetchEmployees,
   fetchRipplingCompany,
-  getRipplingRedirectUri,
   loadRipplingOAuthApp,
   loadRipplingSession,
-  persistRipplingOAuthState,
   readRipplingOAuthCallback,
-  readRipplingOAuthState,
   saveCompanyRipplingSession,
-  saveRipplingOAuthApp,
   saveRipplingSession,
 } from '../lib/rippling';
 import { syncStaffRoles } from '../lib/auth';
+import { reloadClockedIn } from '../lib/clockedIn';
 import { mergeEmployeesWithProfiles } from '../lib/aureusEmployees';
-import { getGmailRedirectUri, loadGmailOAuthApp } from '../lib/gmail';
+import { getGmailRedirectUri } from '../lib/gmail';
 import { categoryLabel, listStaffProfiles, useAppAccess } from '../lib/permissions';
 import {
   buildHoursAuthorizeUrl,
@@ -48,6 +39,9 @@ import {
   connectHoursMailbox,
   disconnectHoursMailbox,
   fetchHoursSummary,
+  fetchRipplingCsvFiles,
+  fetchRipplingReport,
+  fetchTimeEntries,
   formatClock,
   formatMinutes,
   formatRelativeTime,
@@ -55,7 +49,9 @@ import {
   hoursForPerson,
   loadHoursFeedStatus,
   readHoursOAuthCallback,
+  summarizeTimeEntries,
   syncHoursFeed,
+  uploadRipplingCsvFiles,
 } from '../lib/ripplingTime';
 import { useLiveRefresh } from '../lib/liveRefresh';
 import { useIsMobile } from '../lib/mobileUi';
@@ -129,6 +125,8 @@ function FieldGroup({ title, fields }) {
 function useHoursSummary(enabled) {
   const [summary, setSummary] = useState(null);
   const [status, setStatus] = useState(null);
+  const [report, setReport] = useState(null);
+  const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
   const requestId = useRef(0);
 
@@ -142,10 +140,17 @@ function useHoursSummary(enabled) {
           nextStatus = await syncHoursFeed({ force }).catch(() => null);
         }
         if (!nextStatus) nextStatus = await loadHoursFeedStatus().catch(() => null);
-        const nextSummary = await fetchHoursSummary().catch(() => null);
+        const [nextSummary, nextReport, nextFiles] = await Promise.all([
+          fetchHoursSummary().catch(() => null),
+          fetchRipplingReport().catch(() => null),
+          fetchRipplingCsvFiles().catch(() => []),
+        ]);
         if (id !== requestId.current) return nextStatus;
         setStatus(nextStatus);
         setSummary(nextSummary);
+        setReport(nextReport);
+        setFiles(nextFiles);
+        await reloadClockedIn().catch(() => {});
         return nextStatus;
       } finally {
         if (id === requestId.current) setLoading(false);
@@ -163,27 +168,58 @@ function useHoursSummary(enabled) {
   // clocked-in rings follow it without a manual refresh.
   useLiveRefresh(() => refresh(), HOURS_LIVE_MS, enabled);
 
-  return { summary, status, loading, refresh, setStatus };
+  return { summary, status, report, files, loading, refresh, setStatus };
 }
 
-const RECENT_SHIFT_LIMIT = 10;
-/** Re-poll the hours feed while Employees is open (server checks Gmail at most every 10 min). */
-const HOURS_LIVE_MS = 5 * 60_000;
+const HISTORY_DAY_LIMIT = 14;
+const HOURS_LIVE_MS = 60_000;
+const REPORT_ROW_LIMIT = 80;
 
 function HoursSection({ hours, status }) {
-  if (!hours) {
-    if (!status?.connected) return null;
+  const [history, setHistory] = useState(null);
+  const [showAll, setShowAll] = useState(false);
+  const employeeId = hours?.id || '';
+
+  useEffect(() => {
+    let cancelled = false;
+    setShowAll(false);
+    if (!employeeId) {
+      setHistory(null);
+      return undefined;
+    }
+    fetchTimeEntries(employeeId)
+      .then((rows) => {
+        if (!cancelled) setHistory(summarizeTimeEntries(rows));
+      })
+      .catch(() => {
+        if (!cancelled) setHistory(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [employeeId, status?.lastSyncedAt]);
+
+  if (!hours && !history?.days?.length) {
+    if (!status?.connected && !status?.lastSyncedAt) return null;
     return (
       <View style={styles.cardBlock}>
         <SectionLabel>Hours</SectionLabel>
         <Group>
-          <GroupRow label="Last 30 days" value="No time entries" last />
+          <GroupRow label="Clock history" value="No time entries yet" last />
         </Group>
       </View>
     );
   }
 
-  const shifts = hours.entries.slice(0, RECENT_SHIFT_LIMIT);
+  const totals = history?.totals || {
+    today: hours?.todayMinutes || 0,
+    week: hours?.weekMinutes || 0,
+    twoWeeks: (hours?.weekMinutes || 0) + (hours?.lastWeekMinutes || 0),
+    fourWeeks: hours?.monthMinutes || 0,
+    all: hours?.monthMinutes || 0,
+  };
+  const days = history?.days || [];
+  const visibleDays = showAll ? days : days.slice(0, HISTORY_DAY_LIMIT);
   const updated = status?.lastSyncedAt ? formatRelativeTime(status.lastSyncedAt) : '';
 
   return (
@@ -192,49 +228,54 @@ function HoursSection({ hours, status }) {
         <SectionLabel trailing={updated ? <Text style={styles.hoursUpdated}>{`Updated ${updated}`}</Text> : null}>
           Hours
         </SectionLabel>
+        {hours?.clockedIn || hours?.openSince ? (
+          <View style={styles.hoursNow}>
+            <StatusPill
+              label={hours.openSince ? `Clocked in · since ${formatClock(hours.openSince)}` : 'Clocked in'}
+              tone="green"
+              compact
+            />
+          </View>
+        ) : null}
         <Group>
-          {hours.clockedIn || hours.openSince ? (
-            <GroupRow label="Now">
-              <StatusPill
-                label={hours.openSince ? `Clocked in · since ${formatClock(hours.openSince)}` : 'Clocked in'}
-                tone="green"
-                compact
-              />
-            </GroupRow>
-          ) : null}
-          {hours.todayMinutes ? <GroupRow label="Today" value={formatMinutes(hours.todayMinutes)} /> : null}
-          <GroupRow label="This week" value={formatMinutes(hours.weekMinutes)} />
-          <GroupRow label="Last week" value={formatMinutes(hours.lastWeekMinutes)} />
-          <GroupRow
-            label="Last 30 days"
-            value={
-              hours.monthShifts
-                ? `${formatMinutes(hours.monthMinutes)} · ${hours.monthShifts} shift${hours.monthShifts === 1 ? '' : 's'}`
-                : formatMinutes(hours.monthMinutes)
-            }
-            last
-          />
+          <GroupRow label="Today" value={formatMinutes(totals.today)} />
+          <GroupRow label="This week" value={formatMinutes(totals.week)} />
+          <GroupRow label="2 weeks" value={formatMinutes(totals.twoWeeks)} />
+          <GroupRow label="4 weeks" value={formatMinutes(totals.fourWeeks)} />
+          <GroupRow label="All in this report" value={formatMinutes(totals.all)} last />
         </Group>
       </View>
-      {shifts.length ? (
-        <View style={styles.cardBlock}>
-          <SectionLabel>Recent shifts</SectionLabel>
+      <View style={styles.cardBlock}>
+        <SectionLabel>Clock in / out</SectionLabel>
+        {visibleDays.length ? (
+          visibleDays.map((day) => (
+            <View key={day.date} style={styles.hoursDay}>
+              <Text style={styles.hoursDayTitle}>{formatShiftDate(day.date)}</Text>
+              <Group>
+                {day.punches.map((punch, index) => (
+                  <GroupRow
+                    key={punch.key || `${day.date}-${index}`}
+                    label={`${formatClock(punch.start)} – ${punch.end ? formatClock(punch.end) : 'now'}`}
+                    value={punch.minutes ? formatMinutes(punch.minutes) : ''}
+                  />
+                ))}
+                <GroupRow label="Day total" value={formatMinutes(day.minutes)} last />
+              </Group>
+            </View>
+          ))
+        ) : (
           <Group>
-            {shifts.map((shift, index) => {
-              const range = `${formatClock(shift.start)} – ${shift.end ? formatClock(shift.end) : 'now'}`;
-              const duration = shift.minutes != null ? ` · ${formatMinutes(shift.minutes)}` : '';
-              return (
-                <GroupRow
-                  key={shift.key || `${shift.date}-${index}`}
-                  label={formatShiftDate(shift.date)}
-                  value={`${range}${duration}`}
-                  last={index === shifts.length - 1}
-                />
-              );
-            })}
+            <GroupRow label="History" value="No clock in or out in this report" last />
           </Group>
-        </View>
-      ) : null}
+        )}
+        {days.length > HISTORY_DAY_LIMIT ? (
+          <Pressable onPress={() => setShowAll((value) => !value)} style={styles.hoursMore}>
+            <Text style={styles.hoursMoreText}>
+              {showAll ? 'Show recent days' : `Show earlier days (${days.length - HISTORY_DAY_LIMIT})`}
+            </Text>
+          </Pressable>
+        ) : null}
+      </View>
     </>
   );
 }
@@ -251,25 +292,10 @@ function hoursForStaff(summary, person) {
  * HR / GM / System Admin card: connect the inbox that receives the scheduled
  * Rippling time report, see the last import, force a check, or disconnect.
  */
-function HoursFeedCard({ profile, status, onStatusChange, onRefresh, loading }) {
-  const [gmailApp, setGmailApp] = useState(null);
+function HoursFeedCard({ status, onStatusChange, onRefresh, loading }) {
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-
-  useEffect(() => {
-    let cancelled = false;
-    loadGmailOAuthApp()
-      .then((app) => {
-        if (!cancelled) setGmailApp(app);
-      })
-      .catch(() => {
-        if (!cancelled) setGmailApp({ clientId: '', configured: false, hostedDomain: 'canadagold.ca' });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   useEffect(() => {
     const callback = readHoursOAuthCallback();
@@ -306,15 +332,14 @@ function HoursFeedCard({ profile, status, onStatusChange, onRefresh, loading }) 
   const connect = () => {
     setError('');
     setNotice('');
-    if (!gmailApp?.configured || !gmailApp.clientId) {
-      setError('Google mail sign-in is not configured. Add the Google OAuth app secrets first.');
+    if (!status?.clientId) {
+      setError('The hours mailbox Google app is not ready yet.');
       return;
     }
     try {
       const url = buildHoursAuthorizeUrl({
-        clientId: gmailApp.clientId,
-        hostedDomain: gmailApp.hostedDomain,
-        loginHint: profile?.email || '',
+        clientId: status.clientId,
+        loginHint: status?.email || '',
       });
       if (typeof window !== 'undefined') {
         window.location.assign(url);
@@ -381,11 +406,10 @@ function HoursFeedCard({ profile, status, onStatusChange, onRefresh, loading }) 
           </Text>
           <Text style={styles.connectHint}>
             {connected
-              ? lastImport
-              : 'Connect the inbox that receives the scheduled Rippling “Time & Attendance” CSV. Hours then import automatically — nobody needs to stay signed in.'}
+              ? `${lastImport}\nReading ${status.email}. The newest CSV in that mailbox is what this screen shows.`
+              : `Connect ${status?.email || 'the hours mailbox'} with Google and allow “View your email messages and settings”. Rippling reads only that mailbox.`}
           </Text>
-          {status?.lastError ? <Text style={styles.errorText}>{status.lastError}</Text> : null}
-          {error ? <Text style={styles.errorText}>{error}</Text> : null}
+          {error ? <Text style={styles.errorText}>{error}</Text> : status?.lastError ? <Text style={styles.errorText}>{status.lastError}</Text> : null}
           {notice ? <Text style={styles.noticeText}>{notice}</Text> : null}
         </View>
       </View>
@@ -399,7 +423,7 @@ function HoursFeedCard({ profile, status, onStatusChange, onRefresh, loading }) 
           <BarButton
             label={busy === 'connect' ? 'Connecting…' : 'Connect mailbox'}
             onPress={connect}
-            disabled={Boolean(busy) || !gmailApp || !status}
+            disabled={Boolean(busy) || !status?.clientId}
           />
         )}
       </View>
@@ -798,289 +822,6 @@ function AppEmployeesPanel({ session, onProfileUpdated, storeFilter, hours }) {
   );
 }
 
-function SignInCard({ onConnected, profile }) {
-  // null = still loading; { clientId, configured, canManage } once the proxy answers.
-  const [oauthApp, setOauthApp] = useState(null);
-  const [clientId, setClientId] = useState('');
-  const [clientSecret, setClientSecret] = useState('');
-  const [token, setToken] = useState('');
-  const [busy, setBusy] = useState('');
-  const [error, setError] = useState('');
-  const [showToken, setShowToken] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const app = await loadRipplingOAuthApp();
-        if (!cancelled) setOauthApp(app);
-      } catch {
-        if (!cancelled) {
-          setOauthApp({
-            clientId: '',
-            configured: false,
-            connected: false,
-            canManage: canManageCompanyRippling(profile),
-          });
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [profile]);
-
-  useEffect(() => {
-    const callback = readRipplingOAuthCallback();
-    if (!callback) return;
-
-    let cancelled = false;
-    (async () => {
-      setBusy('oauth');
-      setError('');
-      try {
-        if (callback.error) {
-          throw new Error(callback.errorDescription || callback.error || 'Rippling sign-in was cancelled.');
-        }
-        const expected = readRipplingOAuthState();
-        if (!expected || !callback.state || expected !== callback.state) {
-          if (String(callback.state || '').startsWith('gmail.')) return;
-          throw new Error('Rippling sign-in state did not match. Try again.');
-        }
-        const session = await exchangeRipplingOAuthCode({
-          code: callback.code,
-          redirectUri: getRipplingRedirectUri(),
-        });
-        clearRipplingOAuthState();
-        clearRipplingOAuthCallbackFromUrl();
-        const app = await loadRipplingOAuthApp().catch(() => null);
-        if (!cancelled) {
-          onConnected(
-            app?.connected
-              ? {
-                  token: '',
-                  source: 'company',
-                  companyName: app.companyName,
-                  savedAt: Date.now(),
-                }
-              : session,
-          );
-        }
-      } catch (err) {
-        clearRipplingOAuthCallbackFromUrl();
-        if (!cancelled) setError(err?.message || 'Rippling sign-in failed.');
-      } finally {
-        if (!cancelled) setBusy('');
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [onConnected]);
-
-  const canManage = Boolean(oauthApp?.canManage) || canManageCompanyRippling(profile);
-
-  const saveOauthApp = async () => {
-    setBusy('app');
-    setError('');
-    try {
-      const app = await saveRipplingOAuthApp({ clientId, clientSecret });
-      setOauthApp(app);
-      setClientSecret('');
-    } catch (err) {
-      setError(err?.message || 'Could not save the Rippling sign-in app.');
-    } finally {
-      setBusy('');
-    }
-  };
-
-  const signInWithRippling = async () => {
-    const redirectUri = getRipplingRedirectUri();
-    if (!redirectUri) {
-      setError('Sign in with Rippling is available in the web app.');
-      return;
-    }
-    if (!oauthApp?.configured || !oauthApp.clientId) {
-      setError(
-        canManage
-          ? 'Add the Rippling sign-in app above, then try again.'
-          : 'Rippling sign-in is not set up yet. Ask a System Admin, GM, or HR to add the Rippling app on this screen.',
-      );
-      return;
-    }
-
-    setBusy('oauth');
-    setError('');
-    try {
-      const state = createRipplingOAuthState();
-      persistRipplingOAuthState(state);
-      const url = buildRipplingAuthorizeUrl({
-        clientId: oauthApp.clientId,
-        redirectUri,
-        state,
-      });
-      if (typeof window !== 'undefined') {
-        window.location.assign(url);
-        return;
-      }
-      await Linking.openURL(url);
-    } catch (err) {
-      setError(err?.message || 'Could not start Rippling sign-in.');
-      setBusy('');
-    }
-  };
-
-  const saveToken = async () => {
-    setBusy('token');
-    setError('');
-    try {
-      const session = canManage
-        ? await saveCompanyRipplingSession({ token })
-        : await saveRipplingSession({ token });
-      onConnected(session);
-    } catch (err) {
-      setError(err?.message || 'Could not save Rippling token.');
-    } finally {
-      setBusy('');
-    }
-  };
-
-  const redirectHint = getRipplingRedirectUri() || 'https://www.mycanadagold.ca/';
-
-  return (
-    <View style={styles.signInCard}>
-      <View style={styles.signInIcon}>
-        <Ionicons name="people-outline" size={22} color={T.blue} />
-      </View>
-      <Text style={styles.signInTitle}>Sign in to Rippling</Text>
-      <Text style={styles.signInBody}>
-        Rippling does not let this app host their email and password form. Sign in opens
-        Rippling’s own login page — type your Rippling email and password there, then you’ll
-        come back connected.
-      </Text>
-
-      {canManage && oauthApp && !oauthApp.configured ? (
-        <>
-          <Text style={styles.fieldHint}>
-            Add the Rippling OAuth app so everyone can sign in with Rippling instead of an API
-            token. In the Rippling Developer Portal, create an app, enable workers.read,
-            users.read, departments.read, work-locations.read, and companies.read, and register
-            this redirect URI:
-          </Text>
-          <Text style={styles.redirectUri} selectable>
-            {redirectHint}
-          </Text>
-          <Pressable style={styles.linkRow} onPress={() => Linking.openURL(RIPPLING_DEVELOPER_URL)}>
-            <Ionicons name="open-outline" size={14} color={T.blue} />
-            <Text style={styles.linkText}>Open Rippling Developer Portal</Text>
-          </Pressable>
-          <TextInput
-            style={styles.secretInput}
-            value={clientId}
-            onChangeText={setClientId}
-            placeholder="Client ID"
-            placeholderTextColor="#999"
-            autoCapitalize="none"
-            autoCorrect={false}
-            editable={!busy}
-          />
-          <TextInput
-            style={styles.secretInput}
-            value={clientSecret}
-            onChangeText={setClientSecret}
-            placeholder="Client secret"
-            placeholderTextColor="#999"
-            autoCapitalize="none"
-            autoCorrect={false}
-            secureTextEntry
-            editable={!busy}
-          />
-          <Pressable
-            style={[styles.secondaryButton, Boolean(busy) && styles.primaryButtonDisabled]}
-            onPress={saveOauthApp}
-            disabled={Boolean(busy) || !clientId.trim() || !clientSecret.trim()}
-          >
-            {busy === 'app' ? (
-              <ActivityIndicator color={T.blue} />
-            ) : (
-              <Text style={[styles.secondaryButtonText, { color: T.blue }]}>Save Rippling app</Text>
-            )}
-          </Pressable>
-        </>
-      ) : null}
-
-      {oauthApp && !oauthApp.configured && !canManage ? (
-        <Text style={styles.fieldHint}>
-          Rippling sign-in is not set up yet. Ask a System Admin, GM, or HR to add the Rippling
-          app on this screen, or connect with an API token below.
-        </Text>
-      ) : null}
-
-      <Pressable
-        style={[
-          styles.primaryButton,
-          (Boolean(busy) || !oauthApp?.configured) && styles.primaryButtonDisabled,
-        ]}
-        onPress={signInWithRippling}
-        disabled={Boolean(busy) || !oauthApp?.configured}
-      >
-        {busy === 'oauth' ? (
-          <ActivityIndicator color="#fff" />
-        ) : (
-          <Text style={styles.primaryButtonText}>Sign in with Rippling</Text>
-        )}
-      </Pressable>
-
-      <Pressable onPress={() => setShowToken((current) => !current)} style={styles.orRow}>
-        <Text style={styles.orText}>
-          {showToken ? 'Hide API token' : 'Or connect with an API token'}
-        </Text>
-      </Pressable>
-
-      {showToken ? (
-        <>
-          <Text style={styles.signInBody}>
-            {canManage
-              ? 'Connect once for everyone. Tools → Developer → API Tokens. Paste the token only — the app sends Authorization: Bearer for you. Include workers.read.'
-              : 'Tools → Developer → API Tokens. Paste the token only — the app sends Authorization: Bearer for you. Include workers.read. Unused tokens expire after 30 days.'}
-          </Text>
-          <Pressable style={styles.linkRow} onPress={() => Linking.openURL(RIPPLING_API_TOKENS_URL)}>
-            <Ionicons name="open-outline" size={14} color={T.blue} />
-            <Text style={styles.linkText}>Open API Tokens</Text>
-          </Pressable>
-          <TextInput
-            style={styles.tokenInput}
-            value={token}
-            onChangeText={setToken}
-            placeholder="UOCgmwb…"
-            placeholderTextColor="#999"
-            autoCapitalize="none"
-            autoCorrect={false}
-            multiline
-            editable={!busy}
-          />
-          <Pressable
-            style={[styles.secondaryButton, Boolean(busy) && styles.primaryButtonDisabled]}
-            onPress={saveToken}
-            disabled={Boolean(busy)}
-          >
-            {busy === 'token' ? (
-              <ActivityIndicator color={T.blue} />
-            ) : (
-              <Text style={[styles.secondaryButtonText, { color: T.blue }]}>
-                {canManage ? 'Connect for everyone' : 'Connect with token'}
-              </Text>
-            )}
-          </Pressable>
-        </>
-      ) : null}
-
-      {error ? <Text style={styles.errorText}>{error}</Text> : null}
-    </View>
-  );
-}
-
 function ConnectModal({ visible, onClose, onSaved, canManage }) {
   const [token, setToken] = useState('');
   const [saving, setSaving] = useState(false);
@@ -1159,7 +900,7 @@ function ConnectModal({ visible, onClose, onSaved, canManage }) {
   );
 }
 
-function EmployeeDetail({ employee, onClose, compact, hours, hoursStatus }) {
+function EmployeeDetail({ employee, onClose, compact, hours, hoursStatus, flow }) {
   if (!employee) {
     return (
       <EmptyState
@@ -1170,12 +911,17 @@ function EmployeeDetail({ employee, onClose, compact, hours, hoursStatus }) {
     );
   }
 
+  const Body = flow ? View : ScrollView;
+  const bodyProps = flow
+    ? { style: styles.detailFlow }
+    : {
+        style: styles.detailScroll,
+        contentContainerStyle: styles.detailContent,
+        showsVerticalScrollIndicator: false,
+      };
+
   return (
-    <ScrollView
-      style={styles.detailScroll}
-      contentContainerStyle={styles.detailContent}
-      showsVerticalScrollIndicator={false}
-    >
+    <Body {...bodyProps}>
       <PersonHero
         name={employee.name}
         title={employee.title}
@@ -1221,7 +967,7 @@ function EmployeeDetail({ employee, onClose, compact, hours, hoursStatus }) {
         ]}
       />
       <HoursSection hours={hours} status={hoursStatus} />
-    </ScrollView>
+    </Body>
   );
 }
 
@@ -1247,15 +993,256 @@ function EmployeeRow({ employee, selected, onPress, last, hours }) {
   );
 }
 
+function isCsvFile(file) {
+  const name = String(file?.name || '');
+  const type = String(file?.type || '').toLowerCase();
+  return /\.csv$/i.test(name) || type.includes('csv') || type.includes('comma-separated');
+}
+
+function readFileText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Could not read that file.'));
+    reader.readAsText(file);
+  });
+}
+
+function RipplingCsvDrop({ onImported }) {
+  const inputRef = useRef(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+
+  const acceptFiles = async (fileList) => {
+    const incoming = Array.from(fileList || []);
+    const csvs = incoming.filter(isCsvFile);
+    const skipped = incoming.length - csvs.length;
+    if (!csvs.length) {
+      setNotice('');
+      setError('Drop a CSV file.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const files = [];
+      for (const file of csvs) {
+        files.push({ name: file.name, csv: await readFileText(file) });
+      }
+      const result = await uploadRipplingCsvFiles(files);
+      const rows = Number(result?.rows) || 0;
+      const name = result?.attachment || csvs[csvs.length - 1].name;
+      const skippedNote = skipped ? ` Skipped ${skipped} file${skipped === 1 ? '' : 's'} that were not CSV.` : '';
+      setNotice(`${name} · ${rows} row${rows === 1 ? '' : 's'}.${skippedNote}`);
+      await onImported?.();
+    } catch (err) {
+      setError(err?.message || 'Could not update from that CSV.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (Platform.OS !== 'web') {
+    return (
+      <View style={styles.dropCard}>
+        <Text style={styles.reportTitle}>Drop a CSV</Text>
+        <Text style={styles.reportMeta}>Open Rippling in the web app to drop a CSV file.</Text>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.dropCard}>
+      {createElement('input', {
+        ref: inputRef,
+        type: 'file',
+        accept: '.csv,text/csv',
+        multiple: true,
+        style: { display: 'none' },
+        onChange: (event) => {
+          const list = event.target.files;
+          event.target.value = '';
+          if (list?.length) void acceptFiles(list);
+        },
+      })}
+      {createElement(
+        'div',
+        {
+          onDragEnter: (event) => {
+            event.preventDefault();
+            setDragOver(true);
+          },
+          onDragOver: (event) => {
+            event.preventDefault();
+            setDragOver(true);
+          },
+          onDragLeave: (event) => {
+            event.preventDefault();
+            setDragOver(false);
+          },
+          onDrop: (event) => {
+            event.preventDefault();
+            setDragOver(false);
+            if (!busy) void acceptFiles(event.dataTransfer?.files);
+          },
+          onClick: () => {
+            if (!busy) inputRef.current?.click();
+          },
+          role: 'button',
+          'aria-label': 'Drop CSV files',
+          style: {
+            minHeight: 88,
+            borderRadius: 10,
+            border: `1.5px dashed ${dragOver ? T.blue : '#C7C7CC'}`,
+            background: dragOver ? 'rgba(0,122,255,0.08)' : '#F7F7F8',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: busy ? 'progress' : 'pointer',
+            padding: 16,
+            textAlign: 'center',
+          },
+        },
+        createElement(
+          'div',
+          null,
+          createElement(
+            'div',
+            { style: { fontFamily: FONT, fontSize: 15, fontWeight: 600, color: T.text } },
+            busy ? 'Updating…' : 'Drop CSV files here',
+          ),
+          createElement(
+            'div',
+            { style: { fontFamily: FONT, fontSize: 13, color: T.secondary, marginTop: 4 } },
+            'or click to choose. Email attachments update this too. The newest file is what you see.',
+          ),
+        ),
+      )}
+      {error ? <Text style={styles.errorText}>{error}</Text> : null}
+      {notice ? <Text style={styles.noticeText}>{notice}</Text> : null}
+    </View>
+  );
+}
+
+function ReportTable({ children }) {
+  if (Platform.OS === 'web') {
+    return createElement(
+      'div',
+      {
+        style: {
+          overflowX: 'auto',
+          overflowY: 'visible',
+          maxWidth: '100%',
+          WebkitOverflowScrolling: 'touch',
+        },
+      },
+      children,
+    );
+  }
+  return (
+    <ScrollView horizontal contentContainerStyle={styles.reportTable}>
+      {children}
+    </ScrollView>
+  );
+}
+
+function CsvFileList({ files }) {
+  const list = Array.isArray(files) ? files : [];
+  if (!list.length) return null;
+  return (
+    <View style={styles.reportCard}>
+      <Text style={styles.reportTitle}>Latest CSV files</Text>
+      {list.map((file, index) => (
+        <View key={file.id || `${file.name}-${index}`} style={index === list.length - 1 ? null : styles.fileRow}>
+          <Text style={styles.fileName} numberOfLines={1}>{file.name}</Text>
+          <Text style={styles.reportMeta}>
+            {[
+              file.source === 'drop' ? 'Dropped in the app' : 'Email',
+              file.receivedAt ? formatRelativeTime(file.receivedAt) : '',
+              file.rowCount ? `${file.rowCount} rows` : '',
+              file.current ? 'Showing now' : '',
+            ].filter(Boolean).join(' · ')}
+          </Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function RipplingReport({ report, status }) {
+  const watching = Boolean(status?.savedMailbox || status?.connected);
+  const headers = Array.isArray(report?.headers) ? report.headers : [];
+  const allRows = Array.isArray(report?.rows) ? report.rows : [];
+  if (!watching && !headers.length) return null;
+
+  const rows = allRows.slice(0, REPORT_ROW_LIMIT);
+  const when = report?.receivedAt ? formatRelativeTime(report.receivedAt) : '';
+  const title = report?.subject || 'Latest Rippling email';
+  const meta = [
+    report?.attachmentName,
+    report?.rowCount ? `${report.rowCount} row${report.rowCount === 1 ? '' : 's'}` : '',
+    when ? `received ${when}` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  return (
+    <View style={styles.reportCard}>
+      <Text style={styles.reportTitle}>{headers.length ? title : `Watching ${status?.email || 'the hours inbox'}`}</Text>
+      <Text style={styles.reportMeta}>
+        {headers.length
+          ? meta || 'Latest CSV attachment'
+          : 'Signed in. A new email attachment or a CSV you drop here replaces what this screen shows.'}
+      </Text>
+      {headers.length ? (
+        <ReportTable>
+          <View>
+            <View style={styles.reportHead}>
+              {headers.map((header, index) => (
+                <Text key={`h-${index}`} style={styles.reportHeadCell} numberOfLines={2}>
+                  {header || ' '}
+                </Text>
+              ))}
+            </View>
+            {rows.length ? (
+              rows.map((line, rowIndex) => (
+                <View key={`r-${rowIndex}`} style={styles.reportRow}>
+                  {headers.map((_, index) => (
+                    <Text key={`c-${rowIndex}-${index}`} style={styles.reportCell} numberOfLines={2}>
+                      {line[index] || ' '}
+                    </Text>
+                  ))}
+                </View>
+              ))
+            ) : (
+              <Text style={styles.reportMeta}>The file had headers and no data rows.</Text>
+            )}
+            {report?.rowCount > rows.length ? (
+              <Text style={styles.reportMeta}>{`Showing ${rows.length} of ${report.rowCount} rows.`}</Text>
+            ) : null}
+          </View>
+        </ReportTable>
+      ) : null}
+    </View>
+  );
+}
+
 function RipplingPanel({ profile, hours }) {
   const isMobile = useIsMobile();
   const { canFilter } = useAppAccess();
   const allowFilters = canFilter('employees');
   const hoursSummary = hours?.summary || null;
   const hoursStatus = hours?.status || null;
+  const reportCard = <RipplingReport report={hours?.report} status={hoursStatus} />;
+  const fileList = <CsvFileList files={hours?.files} />;
+  const csvDrop = canManageHoursFeed(profile) ? (
+    <RipplingCsvDrop onImported={() => hours?.refresh?.({ sync: false })} />
+  ) : null;
   const hoursCard = canManageHoursFeed(profile) ? (
     <HoursFeedCard
-      profile={profile}
       status={hoursStatus}
       loading={Boolean(hours?.loading)}
       onStatusChange={hours?.setStatus}
@@ -1412,11 +1399,6 @@ function RipplingPanel({ profile, hours }) {
     setError('');
   };
 
-  const handleConnected = useCallback((next) => {
-    setSession(next);
-    setError('');
-  }, []);
-
   const connected = (usesCompany || Boolean(session?.token)) && !session?.expired;
 
   if (!bootstrapped) {
@@ -1429,18 +1411,19 @@ function RipplingPanel({ profile, hours }) {
     );
   }
 
-  if (!connected) {
-    return (
-      <View style={styles.body}>
-        {hoursCard}
-        <SignInCard onConnected={handleConnected} profile={profile} />
-      </View>
-    );
-  }
-
   return (
-    <View style={styles.body}>
+    <>
+    <ScrollView
+      style={styles.bodyScroll}
+      contentContainerStyle={styles.pageContent}
+      keyboardShouldPersistTaps="handled"
+    >
       {hoursCard}
+      {csvDrop}
+      {fileList}
+      {reportCard}
+      {connected ? (
+      <>
       <View style={styles.connectBar}>
         <View style={styles.connectInfo}>
           <Ionicons name="shield-checkmark-outline" size={18} color={T.green} />
@@ -1517,9 +1500,9 @@ function RipplingPanel({ profile, hours }) {
           <ActivityIndicator color={T.text} />
         </View>
       ) : (
-        <View style={styles.split}>
-          <View style={styles.listPane}>
-            <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
+        <View style={styles.splitFlow}>
+          <View style={styles.listPaneFlow}>
+            <View style={styles.listContent}>
               {filtered.length === 0 ? (
                 <EmptyState
                   icon="people-outline"
@@ -1552,48 +1535,49 @@ function RipplingPanel({ profile, hours }) {
                   </View>
                 ))
               )}
-            </ScrollView>
+            </View>
           </View>
 
           {!isMobile ? (
-            <View style={styles.detailPane}>
-              <EmployeeDetail employee={selected} hours={hoursFor(selected)} hoursStatus={hoursStatus} />
+            <View style={styles.detailPaneFlow}>
+              <EmployeeDetail flow employee={selected} hours={hoursFor(selected)} hoursStatus={hoursStatus} />
             </View>
           ) : null}
         </View>
       )}
-
-      {isMobile ? (
-        <Modal
-          visible={Boolean(selected)}
-          animationType="slide"
-          onRequestClose={() => setSelectedId(null)}
-        >
-          <View
-            style={styles.mobileDetail}
-            {...(Platform.OS === 'web' ? { className: 'cgold-mobile-sheet-top' } : null)}
-          >
-            <EmployeeDetail
-              employee={selected}
-              hours={hoursFor(selected)}
-              hoursStatus={hoursStatus}
-              compact
-              onClose={() => setSelectedId(null)}
-            />
-          </View>
-        </Modal>
+      </>
       ) : null}
-
-      <ConnectModal
-        visible={connectOpen}
-        onClose={() => setConnectOpen(false)}
-        canManage={canManage}
-        onSaved={(next) => {
-          setSession(next);
-          setError('');
-        }}
-      />
-    </View>
+    </ScrollView>
+    {isMobile ? (
+      <Modal
+        visible={Boolean(selected)}
+        animationType="slide"
+        onRequestClose={() => setSelectedId(null)}
+      >
+        <View
+          style={styles.mobileDetail}
+          {...(Platform.OS === 'web' ? { className: 'cgold-mobile-sheet-top' } : null)}
+        >
+          <EmployeeDetail
+            employee={selected}
+            hours={hoursFor(selected)}
+            hoursStatus={hoursStatus}
+            compact
+            onClose={() => setSelectedId(null)}
+          />
+        </View>
+      </Modal>
+    ) : null}
+    <ConnectModal
+      visible={connectOpen}
+      onClose={() => setConnectOpen(false)}
+      canManage={canManage}
+      onSaved={(next) => {
+        setSession(next);
+        setError('');
+      }}
+    />
+    </>
   );
 }
 
@@ -1640,82 +1624,88 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 12,
   },
+  bodyScroll: {
+    flex: 1,
+    minHeight: 0,
+    ...Platform.select({
+      web: { overflowY: 'auto' },
+    }),
+  },
+  pageContent: {
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 48,
+  },
   rowInactive: {
     opacity: 0.55,
   },
-  signInCard: {
-    alignSelf: 'center',
-    width: '100%',
-    maxWidth: 460,
-    marginTop: 24,
-    padding: 20,
+  dropCard: {
+    gap: 8,
+  },
+  reportCard: {
+    gap: 8,
+    padding: 14,
     borderRadius: 12,
     backgroundColor: T.card,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: T.hairline,
-    gap: 10,
   },
-  signInIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(0,122,255,0.12)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  signInTitle: {
+  reportTitle: {
     fontFamily: FONT,
-    fontSize: 22,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '600',
     color: T.text,
-    letterSpacing: -0.4,
+    letterSpacing: -0.2,
   },
-  signInBody: {
+  fileRow: {
+    paddingBottom: 8,
+    marginBottom: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: T.hairline,
+  },
+  fileName: {
     fontFamily: FONT,
-    fontSize: 15,
-    lineHeight: 20,
-    color: T.secondary,
+    fontSize: 14,
+    fontWeight: '600',
+    color: T.text,
   },
-  fieldHint: {
+  reportMeta: {
     fontFamily: FONT,
     fontSize: 13,
     lineHeight: 18,
     color: T.secondary,
   },
-  redirectUri: {
-    fontFamily: Platform.select({
-      ios: 'SohneMono',
-      android: 'SohneMono',
-      default: 'SohneMono',
-    }),
-    fontSize: 12,
-    color: T.text,
-    backgroundColor: T.fillSoft,
-    borderRadius: 8,
-    paddingHorizontal: 10,
+  reportTable: {
+    paddingBottom: 4,
+  },
+  reportHead: {
+    flexDirection: 'row',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: T.hairline,
+  },
+  reportHeadCell: {
+    width: 148,
     paddingVertical: 8,
-  },
-  secretInput: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: T.hairline,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingRight: 12,
     fontFamily: FONT,
-    fontSize: 15,
+    fontSize: 12,
+    fontWeight: '600',
+    color: T.secondary,
+  },
+  reportRow: {
+    flexDirection: 'row',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: T.hairline,
+  },
+  reportCell: {
+    width: 148,
+    paddingVertical: 8,
+    paddingRight: 12,
+    fontFamily: FONT,
+    fontSize: 13,
+    lineHeight: 18,
     color: T.text,
-    backgroundColor: T.fillSoft,
-    ...Platform.select({ web: { outlineStyle: 'none' }, default: {} }),
-  },
-  orRow: {
-    alignSelf: 'flex-start',
-    paddingVertical: 4,
-  },
-  orText: {
-    fontFamily: FONT,
-    fontSize: 15,
-    fontWeight: '500',
-    color: T.blue,
   },
   connectBar: {
     flexDirection: 'row',
@@ -1779,13 +1769,27 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 16,
   },
+  splitFlow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 16,
+    width: '100%',
+  },
   listPane: {
     flex: 1.35,
     minWidth: 0,
     minHeight: 0,
   },
+  listPaneFlow: {
+    flex: 1.35,
+    minWidth: 0,
+  },
   list: {
     flex: 1,
+    minHeight: 0,
+    ...Platform.select({
+      web: { overflowY: 'auto' },
+    }),
   },
   listContent: {
     paddingBottom: 32,
@@ -1800,8 +1804,20 @@ const styles = StyleSheet.create({
     maxWidth: 400,
     minHeight: 0,
   },
+  detailPaneFlow: {
+    flex: 1,
+    minWidth: 280,
+    maxWidth: 400,
+  },
   detailScroll: {
     flex: 1,
+    minHeight: 0,
+    ...Platform.select({
+      web: { overflowY: 'auto' },
+    }),
+  },
+  detailFlow: {
+    width: '100%',
   },
   detailContent: {
     paddingBottom: 40,
@@ -1880,6 +1896,27 @@ const styles = StyleSheet.create({
     fontFamily: FONT,
     fontSize: 12,
     color: T.tertiary,
+  },
+  hoursNow: {
+    marginBottom: 8,
+  },
+  hoursDay: {
+    marginTop: 12,
+  },
+  hoursDayTitle: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '600',
+    color: T.secondary,
+    marginBottom: 6,
+  },
+  hoursMore: {
+    paddingVertical: 10,
+  },
+  hoursMoreText: {
+    fontFamily: FONT,
+    fontSize: 14,
+    color: T.blue,
   },
   primaryButton: {
     backgroundColor: T.blue,

@@ -19,6 +19,7 @@ import {
   MEASURES,
   buildEmployeeInsight,
   chartSeries,
+  factsFromTimeEntries,
   factsFromTransactions,
   formatMeasure,
   listTriageErrorFacts,
@@ -35,6 +36,8 @@ import {
   formatPickerDate,
   parseDateParam,
 } from '../lib/transactions';
+import { useIsClockedIn } from '../lib/clockedIn';
+import { fetchTimeEntriesBetween } from '../lib/ripplingTime';
 import { EmptyState, FONT, SegmentedSlider, StaffAvatar, TriageDrawer } from './TriageKit';
 
 const ACCENT = '#4F46E5';
@@ -359,7 +362,7 @@ function MetricChart({ series, format, onSelect }) {
 }
 
 function valueColumnWidth(format, label, samples = []) {
-  const floor = format === 'money' ? 148 : format === 'decimal' ? 88 : 72;
+  const floor = format === 'money' ? 148 : format === 'hours' ? 96 : format === 'decimal' ? 88 : 72;
   const longest = Math.max(
     String(label || '').length,
     ...samples.map((sample) => String(sample || '').length),
@@ -487,6 +490,7 @@ function EmployeeDrawer({ visible, name, facts, staff, onClose, onOpenEmployee }
   const [measureKey, setMeasureKey] = useState('volume');
   const insight = useMemo(() => buildEmployeeInsight(facts, name), [facts, name]);
   const person = useMemo(() => findStaffByEmployeeName(staff, name), [staff, name]);
+  const clockedIn = useIsClockedIn(staffDisplayName(person) || name);
   const measureInfo = measureMeta(measureKey);
 
   const peerRows = useMemo(() => {
@@ -524,7 +528,7 @@ function EmployeeDrawer({ visible, name, facts, staff, onClose, onOpenEmployee }
 
   const rank = insight.ranks[measureKey] || {};
   const highlightStats = INSIGHT_MEASURES.filter((item) =>
-    ['volume', 'transactions', 'errors', 'staffDays'].includes(item.key),
+    ['volume', 'transactions', 'hours', 'errors', 'staffDays'].includes(item.key),
   );
 
   return (
@@ -551,8 +555,7 @@ function EmployeeDrawer({ visible, name, facts, staff, onClose, onOpenEmployee }
           <View style={styles.heroCopy}>
             <Text style={styles.heroName} numberOfLines={1}>{insight.name}</Text>
             <Text style={styles.heroMeta} numberOfLines={2}>
-              {insight.role}
-              {insight.store ? ` · ${insight.store}` : ''}
+              {[insight.role, insight.store, clockedIn ? 'Clocked in' : ''].filter(Boolean).join(' · ')}
             </Text>
           </View>
           {compact ? null : <StoreMark name={insight.store} size={36} />}
@@ -933,7 +936,7 @@ function PhoneAnalytics({
             <EmptyState
               icon="bar-chart-outline"
               title="No activity"
-              body="No retail transactions in this range, so there is nothing to mix yet."
+              body="No retail transactions or Rippling hours in this range."
             />
           ) : (
             <>
@@ -1039,6 +1042,7 @@ function EmployeesAnalytics({ session, storeFilter }) {
   const [staff, setStaff] = useState([]);
   const [rows, setRows] = useState([]);
   const [errorFacts, setErrorFacts] = useState([]);
+  const [timeRows, setTimeRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [warning, setWarning] = useState('');
@@ -1068,6 +1072,7 @@ function EmployeesAnalytics({ session, storeFilter }) {
     if (!session?.token) {
       setRows([]);
       setErrorFacts([]);
+      setTimeRows([]);
       setError('');
       setWarning('');
       return;
@@ -1076,9 +1081,10 @@ function EmployeesAnalytics({ session, storeFilter }) {
     setLoading(true);
     setError('');
     try {
-      const [tx, people] = await Promise.all([
+      const [tx, people, punches] = await Promise.all([
         fetchTransactionsAcrossPos(session, { startDate, endDate, includePurchases: true }),
         listStaffProfiles().catch(() => []),
+        fetchTimeEntriesBetween(startDate, endDate).catch(() => []),
       ]);
       if (id !== requestId.current) return;
       const staffRows = Array.isArray(people) ? people : [];
@@ -1087,11 +1093,13 @@ function EmployeesAnalytics({ session, storeFilter }) {
       setRows(tx.rows || []);
       setStaff(staffRows);
       setErrorFacts(Array.isArray(mistakes) ? mistakes : []);
+      setTimeRows(Array.isArray(punches) ? punches : []);
       setWarning(tx.warning || '');
     } catch (err) {
       if (id !== requestId.current) return;
       setRows([]);
       setErrorFacts([]);
+      setTimeRows([]);
       setError(err?.message || 'Could not load employee activity.');
       setWarning('');
     } finally {
@@ -1105,6 +1113,7 @@ function EmployeesAnalytics({ session, storeFilter }) {
 
   const facts = useMemo(() => {
     const sales = factsFromTransactions(rows, staff, { storeFilter });
+    const hours = factsFromTimeEntries(timeRows, staff, { storeFilter, sales });
     const lock = String(storeFilter || '').trim();
     const mistakes = lock
       ? errorFacts.filter(
@@ -1114,8 +1123,8 @@ function EmployeesAnalytics({ session, storeFilter }) {
             fact.store.localeCompare(lock, undefined, { sensitivity: 'base' }) === 0,
         )
       : errorFacts;
-    return [...sales, ...mistakes];
-  }, [rows, staff, storeFilter, errorFacts]);
+    return [...sales, ...hours, ...mistakes];
+  }, [rows, staff, storeFilter, errorFacts, timeRows]);
   const pivot = useMemo(
     () => pivotFacts(facts, { groupBy, measure }),
     [facts, groupBy, measure],
@@ -1413,7 +1422,7 @@ function EmployeesAnalytics({ session, storeFilter }) {
             <EmptyState
               icon="bar-chart-outline"
               title="No activity"
-              body="No retail transactions in this range, so there is nothing to mix yet."
+              body="No retail transactions or Rippling hours in this range."
             />
           ) : (
             <>

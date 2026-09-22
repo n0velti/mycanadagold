@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import TriageAccuracyPanel from './TriageAccuracyPanel';
+import TriagePoCapture from './TriagePoCapture';
 import TriageDailyReceiptsDrawer from './TriageDailyReceiptsDrawer';
 import TriageDeletedPanel from './TriageDeletedPanel';
 import TriageTransfersPanel from './TriageTransfersPanel';
@@ -124,6 +125,7 @@ export default function TriageScreen({
   const [batchContext, setBatchContext] = useState(null);
   const [dailyOpen, setDailyOpen] = useState(false);
   const leaveStoreRef = useRef(null);
+  const openScanRef = useRef(() => {});
   const onStoreBackChangeRef = useRef(onStoreBackChange);
   onStoreBackChangeRef.current = onStoreBackChange;
   const currentTab = TRIAGE_TABS.find((tab) => tab.key === activeTab) || TRIAGE_TABS[0];
@@ -211,6 +213,16 @@ export default function TriageScreen({
     if (!dailyBatch) setDailyOpen(false);
   }, [dailyBatch]);
 
+  const scanButton = (size) => (
+    <BarButton
+      tone="green"
+      size={size}
+      label="+ Add"
+      onPress={() => openScanRef.current()}
+      accessibilityLabel="Add a PO"
+    />
+  );
+
   const searchField = session?.token ? (
     <SearchField
       value={listQuery}
@@ -233,15 +245,7 @@ export default function TriageScreen({
     session?.token && activeTab === 'transfers' && transferView === 'list' ? (
       <>
         {searchField}
-        <BarButton
-          label="Quick Add"
-          onPress={() => {
-            setDashTab('poso');
-            setListQuery('');
-            setQuickAddOpen(true);
-          }}
-          accessibilityLabel="Quick Add a PO from any store"
-        />
+        {scanButton()}
         <BarButton
           icon="add"
           label="Add Batch"
@@ -281,11 +285,7 @@ export default function TriageScreen({
               onPress={() => batchContext.onOpenFeed?.()}
               accessibilityLabel="Open feed view"
             />
-            <BarButton
-              label="Quick Add"
-              onPress={() => batchContext.onAddMelt?.()}
-              accessibilityLabel="Quick Add a PO / SO"
-            />
+            {scanButton()}
           </>
         ) : null}
       </>
@@ -374,17 +374,7 @@ export default function TriageScreen({
         <SegmentedSlider fill options={dashTabOptions} value={dashTab} onChange={changeDashTab} />
         {searchField}
         <View style={styles.mobileActions}>
-          <BarButton
-            size="lg"
-            fill={dashTab === 'poso'}
-            label="Quick Add"
-            onPress={() => {
-              setDashTab('poso');
-              setListQuery('');
-              setQuickAddOpen(true);
-            }}
-            accessibilityLabel="Quick Add a PO from any store"
-          />
+          {scanButton('lg')}
           <BarButton
             size="lg"
             fill={dashTab === 'batch'}
@@ -431,13 +421,7 @@ export default function TriageScreen({
               onPress={() => batchContext.onOpenFeed?.()}
               accessibilityLabel="Open feed view"
             />
-            <BarButton
-              size="lg"
-              fill
-              label="Quick Add"
-              onPress={() => batchContext.onAddMelt?.()}
-              accessibilityLabel="Quick Add a PO / SO"
-            />
+            {scanButton('lg')}
           </View>
         ) : null}
       </View>
@@ -524,6 +508,17 @@ export default function TriageScreen({
         </View>
       ) : null}
 
+      {session?.token ? (
+        <TriagePoCapture
+          session={session}
+          openerRef={openScanRef}
+          batchId={dailyBatch?.id || ''}
+          onCounted={(finishedBatchId) => {
+            if (finishedBatchId && finishedBatchId === dailyBatch?.id) daily.reload();
+          }}
+        />
+      ) : null}
+
       <TriageDailyReceiptsDrawer
         visible={dailyOpen && Boolean(dailyBatch)}
         onClose={() => setDailyOpen(false)}
@@ -542,6 +537,7 @@ const styles = StyleSheet.create({
   body: {
     flex: 1,
     minHeight: 0,
+    position: 'relative',
     backgroundColor: T.bg,
   },
   bodyMobile: {

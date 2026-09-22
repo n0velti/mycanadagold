@@ -1725,7 +1725,6 @@ function MeltTab({
                       ? 'Add a date range or a PO/SO number to bring in purchases for this store.'
                       : `Add a date range or a single PO/SO from ${batchLabel} to start checking the melt.`
                   }
-                  action={<BarButton size="lg" fill label="Quick Add" onPress={() => onAddOpenChange(true)} />}
                 />
               ) : (
                 <EmptyState
@@ -1793,7 +1792,6 @@ function MeltTab({
                     ? 'Add a date range or a PO/SO number to bring in purchases for this store.'
                     : `Add a date range or a single PO/SO from ${batchLabel} to start checking the melt.`
                 }
-                action={<TextAction icon="add" label="Quick Add" strong onPress={() => onAddOpenChange(true)} />}
               />
             ) : (
               <TableEmpty>Bullion-only purchases stay in store and are hidden from melt.</TableEmpty>
@@ -2855,7 +2853,23 @@ function PoSoList({ transfers, query = '', onOpenPo, onDelete }) {
               onPress={() => item.po && onOpenPo(item.po)}
               accessibilityLabel={item.openLabel}
               leading={<PoThumb urls={item.photoUrls} label={item.document} size={52} />}
-              trailing={<StatusPill label={item.status.label} tone={item.status.tone} compact />}
+              trailing={
+                <>
+                  <StatusPill label={item.status.label} tone={item.status.tone} compact />
+                  <Pressable
+                    style={styles.dashDelete}
+                    onPress={(event) => {
+                      event?.stopPropagation?.();
+                      onDelete(item.batch);
+                    }}
+                    hitSlop={10}
+                    accessibilityRole="button"
+                    accessibilityLabel={item.deleteLabel}
+                  >
+                    <Ionicons name="trash-outline" size={18} color={T.red} />
+                  </Pressable>
+                </>
+              }
             />
           </View>
         )}
@@ -3436,8 +3450,7 @@ export default function TriageTransfersPanel({
           <EmptyState
             icon="document-text-outline"
             title="No PO / SO yet"
-            body="Quick Add a single PO or SO from any store. It lands here, not inside a date batch."
-            action={<BarButton label="Quick Add" onPress={() => onQuickAddOpenChange?.(true)} />}
+            body="A PO you add lands here, not inside a date batch."
           />
         ) : (
           <PoSoList transfers={poRows} query={listQuery} onOpenPo={openStandalonePo} onDelete={deleteBatch} />

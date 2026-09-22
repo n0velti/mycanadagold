@@ -80,7 +80,7 @@ import {
 import { readRipplingOAuthCallback, readRipplingOAuthState } from './lib/rippling';
 import { readHoursOAuthCallback } from './lib/ripplingTime';
 import { readGmailOAuthCallback } from './lib/gmail';
-import { AvatarRing, clearClockedIn, startClockedInSync } from './lib/clockedIn';
+import { clearClockedIn, startClockedInSync, useIsClockedIn } from './lib/clockedIn';
 import AiScreen from './components/AiScreen';
 import AnalyticsScreen from './components/AnalyticsScreen';
 import AccountingScreen from './components/AccountingScreen';
@@ -720,6 +720,7 @@ function rowMatchesAllocatedStore(row, storeName) {
 
 function ProfileAvatar({ uri, name, size = 24, style }) {
   const [failed, setFailed] = useState(false);
+  const clockedIn = useIsClockedIn(name);
 
   useEffect(() => {
     setFailed(false);
@@ -727,10 +728,12 @@ function ProfileAvatar({ uri, name, size = 24, style }) {
 
   const initials = initialsFromName(name);
   const showImage = Boolean(uri) && !failed;
+  const ringWidth = clockedIn ? (size >= 28 ? 3 : 2) : 0;
+  const photo = size - ringWidth * 2;
 
   return (
-    <AvatarRing name={name} size={size}>
     <View
+      accessibilityLabel={clockedIn ? `${name}, clocked in` : name || 'Profile'}
       style={[
         {
           width: size,
@@ -741,13 +744,13 @@ function ProfileAvatar({ uri, name, size = 24, style }) {
           backgroundColor: '#e8e8ed',
           overflow: 'hidden',
         },
-        style,
+        clockedIn ? { borderWidth: ringWidth, borderColor: '#248A3D' } : style,
       ]}
     >
       {showImage ? (
         <Image
           source={{ uri }}
-          style={{ width: size, height: size }}
+          style={{ width: photo, height: photo, borderRadius: photo / 2 }}
           onError={() => setFailed(true)}
         />
       ) : initials ? (
@@ -765,7 +768,6 @@ function ProfileAvatar({ uri, name, size = 24, style }) {
         <Ionicons name="person" size={Math.round(size * 0.5)} color="#8e8e93" />
       )}
     </View>
-    </AvatarRing>
   );
 }
 
@@ -3315,16 +3317,9 @@ function HomeStoreCard({
     );
   }
 
-  return (
-    <Pressable
-      onPress={() => onOpenStore(row)}
-      style={({ hovered, pressed }) => [
-        ...cardStyle,
-        (hovered || pressed) && styles.igStoreCardPressed,
-      ]}
-      accessibilityRole="button"
-      accessibilityLabel={`${row.store}, ${open ? 'open' : 'closed'}`}
-    >
+  const cardLabel = `${row.store}, ${open ? 'open' : 'closed'}`;
+  const cardBody = (
+    <>
       <HomeStoreStatusIcon accent={accent} open={open} compact />
       <View style={[styles.igStoreBody, !last && styles.igStoreBodyDivider]}>
         <View style={styles.igStoreCopy}>
@@ -3353,6 +3348,39 @@ function HomeStoreCard({
         </View>
         <Ionicons name="chevron-forward" size={16} color="#c7c7cc" style={styles.igStoreChevron} />
       </View>
+    </>
+  );
+
+  if (Platform.OS === 'web') {
+    return (
+      <View style={cardStyle}>
+        <Pressable
+          onPress={() => onOpenStore(row)}
+          style={({ hovered, pressed }) => [
+            StyleSheet.absoluteFill,
+            (hovered || pressed) && styles.igStoreCardPressed,
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel={cardLabel}
+        />
+        <View pointerEvents="none" style={styles.igStoreCardForeground}>
+          {cardBody}
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <Pressable
+      onPress={() => onOpenStore(row)}
+      style={({ hovered, pressed }) => [
+        ...cardStyle,
+        (hovered || pressed) && styles.igStoreCardPressed,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={cardLabel}
+    >
+      {cardBody}
     </Pressable>
   );
 }
@@ -3467,6 +3495,40 @@ function HomePhoneRate({ stats, compact = false }) {
   );
 }
 
+function HomePersonFace({ person, index, size, overlap, raised, onOpenPerson, hoverHandlers, setTip }) {
+  const clockedIn = useIsClockedIn(person.name);
+  return (
+    <Pressable
+      pointerEvents="auto"
+      onPress={(event) => {
+        event?.stopPropagation?.();
+        setTip({ text: '', el: null });
+        onOpenPerson?.(person);
+      }}
+      onPointerDown={(event) => event?.stopPropagation?.()}
+      style={[
+        styles.homePeopleAvatarWrap,
+        {
+          width: size,
+          height: size,
+          marginLeft: index === 0 ? 0 : -overlap,
+          zIndex: clockedIn || raised ? 30 + index : index + 1,
+        },
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={clockedIn ? `${person.name}, clocked in` : `${person.name} profile`}
+      {...hoverHandlers(person.name)}
+    >
+      <ProfileAvatar
+        uri={person.photoUrl}
+        name={person.name}
+        size={size}
+        style={styles.homePeopleAvatarRing}
+      />
+    </Pressable>
+  );
+}
+
 function HomePeopleStack({ people = [], compact = false, onOpenPerson, trailing = false }) {
   const [tip, setTip] = useState({ text: '', el: null });
   const size = compact ? 22 : HOME_PEOPLE_SIZE;
@@ -3506,37 +3568,21 @@ function HomePeopleStack({ people = [], compact = false, onOpenPerson, trailing 
       accessibilityLabel={people.map((person) => person.name).join(', ')}
     >
       {visible.map((person, index) => (
-        <Pressable
+        <HomePersonFace
           key={`${person.name}-${index}`}
-          onPress={(event) => {
-            event?.stopPropagation?.();
-            setTip({ text: '', el: null });
-            onOpenPerson?.(person);
-          }}
-          onPointerDown={(event) => event?.stopPropagation?.()}
-          style={[
-            styles.homePeopleAvatarWrap,
-            {
-              width: size,
-              height: size,
-              marginLeft: index === 0 ? 0 : -overlap,
-              zIndex: tip.text === person.name ? 20 : index + 1,
-            },
-          ]}
-          accessibilityRole="button"
-          accessibilityLabel={`${person.name} profile`}
-          {...hoverHandlers(person.name)}
-        >
-          <ProfileAvatar
-            uri={person.photoUrl}
-            name={person.name}
-            size={size}
-            style={styles.homePeopleAvatarRing}
-          />
-        </Pressable>
+          person={person}
+          index={index}
+          size={size}
+          overlap={overlap}
+          raised={tip.text === person.name}
+          onOpenPerson={onOpenPerson}
+          hoverHandlers={hoverHandlers}
+          setTip={setTip}
+        />
       ))}
       {extra > 0 ? (
         <View
+          pointerEvents="auto"
           style={[
             styles.homePeopleAvatarWrap,
             styles.homePeopleMore,
@@ -3662,6 +3708,33 @@ function HomeStoreTableRow({
     );
   }
 
+  const label = `${row.store}, ${open ? 'open' : 'closed'}`;
+  // Profile avatars are buttons. On web the row control has to be a sibling of
+  // those buttons; a Pressable with accessibilityRole="button" renders a
+  // <button>, and a button cannot contain another button.
+  if (Platform.OS === 'web') {
+    return (
+      <View
+        style={[styles.homeStoreRow, selected && styles.homeStoreRowSelected]}
+        className={selected ? 'cgold-home-row cgold-home-row-selected' : 'cgold-home-row'}
+      >
+        <Pressable
+          onPress={() => onOpenStore(row)}
+          style={({ hovered, pressed }) => [
+            StyleSheet.absoluteFill,
+            !selected && (hovered || pressed) && styles.homeStoreRowHovered,
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel={label}
+        />
+        <View pointerEvents="none" style={styles.homeStoreRowForeground}>
+          <HomeStoreStatusIcon accent={accent} open={open} />
+          {rowBody}
+        </View>
+      </View>
+    );
+  }
+
   return (
     <Pressable
       onPress={() => onOpenStore(row)}
@@ -3670,15 +3743,8 @@ function HomeStoreTableRow({
         !selected && (hovered || pressed) && styles.homeStoreRowHovered,
         selected && styles.homeStoreRowSelected,
       ]}
-      {...(Platform.OS === 'web'
-        ? {
-            className: selected
-              ? 'cgold-home-row cgold-home-row-selected'
-              : 'cgold-home-row',
-          }
-        : null)}
       accessibilityRole="button"
-      accessibilityLabel={`${row.store}, ${open ? 'open' : 'closed'}`}
+      accessibilityLabel={label}
     >
       <HomeStoreStatusIcon accent={accent} open={open} />
       {rowBody}
@@ -8169,6 +8235,7 @@ const styles = StyleSheet.create({
     minWidth: 600,
   },
   homeStoreRow: {
+    position: 'relative',
     flexDirection: 'row',
     alignItems: 'center',
     minHeight: 52,
@@ -8195,6 +8262,12 @@ const styles = StyleSheet.create({
   },
   homeStoreRowSelected: {
     backgroundColor: '#e8e8ed',
+  },
+  homeStoreRowForeground: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    zIndex: 1,
   },
   homeStoreRowBody: {
     flex: 1,
@@ -11327,6 +11400,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   igStoreCard: {
+    position: 'relative',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
@@ -11342,6 +11416,13 @@ const styles = StyleSheet.create({
       web: { cursor: 'default' },
       default: {},
     }),
+  },
+  igStoreCardForeground: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    zIndex: 1,
   },
   igStoreBody: {
     flex: 1,
