@@ -18,7 +18,6 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { assetToDataUrl } from '../lib/avatarCartoon';
 import { mobileSafeBottom, mobileSafeTop, useIsMobile } from '../lib/mobileUi';
-import { compressImageDataUrl } from '../lib/openrouter';
 import {
   batchStoreKey,
   buildDailyReceiptGrid,
@@ -240,8 +239,7 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
       const raw = await assetToDataUrl(asset);
       if (token !== requestRef.current) return;
       setPhotoUri(raw);
-      const image = await compressImageDataUrl(raw, { maxWidth: 1600, quality: 0.82 });
-      const poNumber = await readPoNumberFromPhoto(image);
+      const poNumber = await readPoNumberFromPhoto(raw);
       if (token !== requestRef.current) return;
       if (!poNumber) {
         setPhase('');
