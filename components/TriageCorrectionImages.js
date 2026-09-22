@@ -132,7 +132,7 @@ function TriageCorrectionImages({
 }, ref) {
   const isMobile = useIsMobile();
   const list = normalizeReviewImages(images);
-  const [viewerUri, setViewerUri] = useState('');
+  const [viewerIndex, setViewerIndex] = useState(-1);
   const [error, setError] = useState('');
   const [sourceOpen, setSourceOpen] = useState(false);
   const [captureOpen, setCaptureOpen] = useState(false);
@@ -203,11 +203,23 @@ function TriageCorrectionImages({
     void pickFromLibrary();
   };
 
+  const viewing = viewerIndex >= 0 && viewerIndex < list.length ? list[viewerIndex] : null;
+
+  useEffect(() => {
+    if (viewerIndex >= list.length) setViewerIndex(-1);
+  }, [list.length, viewerIndex]);
+
   useImperativeHandle(ref, () => ({
     addImage: openAddMenu,
     takePhoto,
     pickFromLibrary,
     canAdd,
+    viewAt: (index = 0) => {
+      if (!list.length) return;
+      const next = Math.min(Math.max(0, index), list.length - 1);
+      if (!list[next]?.uri) return;
+      setViewerIndex(next);
+    },
   }));
 
   const captureWebcam = () => {
@@ -246,9 +258,12 @@ function TriageCorrectionImages({
           {list.map((item) => (
             <View key={item.id} style={[styles.thumbWrap, isMobile && styles.thumbWrapMobile]}>
               <Pressable
-                onPress={() => setViewerUri(item.uri)}
+                onPress={() => {
+                  const index = list.findIndex((entry) => entry.id === item.id);
+                  setViewerIndex(index < 0 ? 0 : index);
+                }}
                 accessibilityRole="button"
-                accessibilityLabel="View correction photo"
+                accessibilityLabel="View captured photo"
               >
                 <Image source={{ uri: item.uri }} style={[styles.thumb, isMobile && styles.thumbMobile]} />
               </Pressable>
@@ -489,19 +504,48 @@ function TriageCorrectionImages({
       </Modal>
       ) : null}
 
-      {viewerUri ? (
-      <Modal visible transparent animationType="fade" onRequestClose={() => setViewerUri('')}>
+      {viewing ? (
+      <Modal visible transparent animationType="fade" onRequestClose={() => setViewerIndex(-1)}>
         <View style={styles.viewerRoot}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setViewerUri('')} />
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setViewerIndex(-1)} />
           <View style={styles.viewerBar}>
-            <Text style={styles.viewerTitle}>Correction photo</Text>
-            <Pressable onPress={() => setViewerUri('')} hitSlop={8} accessibilityLabel="Close photo">
+            <Text style={styles.viewerTitle}>
+              {list.length > 1 ? `Photo ${viewerIndex + 1} of ${list.length}` : 'Captured photo'}
+            </Text>
+            <Pressable onPress={() => setViewerIndex(-1)} hitSlop={8} accessibilityLabel="Close photo">
               <Ionicons name="close" size={22} color="#fff" />
             </Pressable>
           </View>
-          {viewerUri ? (
-            <Image source={{ uri: viewerUri }} style={styles.viewerImage} resizeMode="contain" />
-          ) : null}
+          <View style={styles.viewerStage} pointerEvents="box-none">
+            <Image
+              source={{ uri: viewing.uri }}
+              style={styles.viewerImage}
+              resizeMode="contain"
+              pointerEvents="none"
+            />
+            {list.length > 1 ? (
+              <Pressable
+                onPress={() => setViewerIndex((index) => Math.max(0, index - 1))}
+                disabled={viewerIndex <= 0}
+                style={[styles.viewerNav, styles.viewerNavLeft, viewerIndex <= 0 && styles.viewerNavOff]}
+                accessibilityRole="button"
+                accessibilityLabel="Previous photo"
+              >
+                <Ionicons name="chevron-back" size={28} color="#fff" />
+              </Pressable>
+            ) : null}
+            {list.length > 1 ? (
+              <Pressable
+                onPress={() => setViewerIndex((index) => Math.min(list.length - 1, index + 1))}
+                disabled={viewerIndex >= list.length - 1}
+                style={[styles.viewerNav, styles.viewerNavRight, viewerIndex >= list.length - 1 && styles.viewerNavOff]}
+                accessibilityRole="button"
+                accessibilityLabel="Next photo"
+              >
+                <Ionicons name="chevron-forward" size={28} color="#fff" />
+              </Pressable>
+            ) : null}
+          </View>
         </View>
       </Modal>
       ) : null}
@@ -949,9 +993,35 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#fff',
   },
+  viewerStage: {
+    flex: 1,
+    minHeight: 0,
+  },
+  viewerNav: {
+    position: 'absolute',
+    top: '46%',
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.16)',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  viewerNavLeft: {
+    left: 0,
+  },
+  viewerNavRight: {
+    right: 0,
+  },
+  viewerNavOff: {
+    opacity: 0.35,
+  },
   viewerImage: {
     width: '100%',
-    height: '78%',
-    borderRadius: 10,
+    height: '100%',
   },
 });

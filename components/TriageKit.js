@@ -58,6 +58,7 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
   style.textContent = [
     '.cgold-triage-btn{cursor:pointer;}',
     '.cgold-triage-btn:hover{background-color:#f5f5f7!important;}',
+    '.cgold-triage-btn.cgold-triage-btn-green:hover{background-color:#1A7344!important;}',
   ].join('');
 }
 
@@ -605,26 +606,30 @@ export function SegmentedSlider({ options, value, onChange, style, fill = false 
   );
 }
 
-/** Neutral outlined toolbar button — same treatment for every action, no colour coding. */
-export function BarButton({ label, icon, onPress, disabled, accessibilityLabel, size, fill }) {
+/** Toolbar button. `fill` is the blue primary. `tone="green"` is the same shape in green. */
+export function BarButton({ label, icon, onPress, disabled, accessibilityLabel, size, fill, tone }) {
   const large = size === 'lg';
-  const iconColor = fill ? '#fff' : T.text;
+  const green = tone === 'green';
+  const iconColor = fill || green ? '#fff' : T.text;
   return (
     <Pressable
       style={[
         styles.barButton,
         large && styles.barButtonLg,
-        fill && styles.barButtonFill,
+        fill && !green && styles.barButtonFill,
+        green && styles.barButtonGreen,
         disabled && styles.textActionDisabled,
       ]}
       onPress={onPress}
       disabled={disabled}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel || label}
-      {...(Platform.OS === 'web' ? { className: 'cgold-triage-btn' } : null)}
+      {...(Platform.OS === 'web'
+        ? { className: green ? 'cgold-triage-btn cgold-triage-btn-green' : 'cgold-triage-btn' }
+        : null)}
     >
       {icon ? <Ionicons name={icon} size={large ? 18 : 15} color={iconColor} /> : null}
-      <Text style={[styles.barButtonLabel, large && styles.barButtonLabelLg, fill && styles.barButtonLabelFill]}>
+      <Text style={[styles.barButtonLabel, large && styles.barButtonLabelLg, (fill || green) && styles.barButtonLabelFill]}>
         {label}
       </Text>
     </Pressable>
@@ -1381,6 +1386,10 @@ const styles = StyleSheet.create({
   barButtonFill: {
     backgroundColor: T.blue,
     borderColor: T.blue,
+  },
+  barButtonGreen: {
+    backgroundColor: '#1F8A4E',
+    borderColor: '#1F8A4E',
   },
   barButtonLabel: {
     fontFamily: FONT,
