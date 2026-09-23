@@ -207,13 +207,20 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    zIndex: 20,
+    zIndex: 40,
     flexDirection: 'row',
     alignItems: 'center',
     paddingTop: 8,
     paddingBottom: mobileSafeBottom(),
-    backgroundColor: Platform.OS === 'web' ? 'transparent' : 'rgba(255,255,255,0.55)',
+    backgroundColor: 'rgba(255,255,255,0.62)',
     overflow: 'visible',
+    ...Platform.select({
+      web: {
+        backdropFilter: 'saturate(180%) blur(22px)',
+        WebkitBackdropFilter: 'saturate(180%) blur(22px)',
+      },
+      default: {},
+    }),
   },
   tabHairline: {
     position: 'absolute',
