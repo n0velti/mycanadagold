@@ -297,58 +297,110 @@ function PercentField({ value, onChange, disabled }) {
   );
 }
 
+function decimalDraft(text) {
+  const cleaned = String(text).replace(/[^0-9.]/g, '');
+  const dot = cleaned.indexOf('.');
+  if (dot === -1) return cleaned;
+  const whole = cleaned.slice(0, dot);
+  const frac = cleaned.slice(dot + 1).replace(/\./g, '').slice(0, 3);
+  return `${whole}.${frac}`;
+}
+
+function roundQtyInput(value, max) {
+  let n = Math.round((Number(value) || 0) * 1000) / 1000;
+  if (!Number.isFinite(n) || n < 0) n = 0;
+  if (max != null && n > Number(max)) {
+    n = Math.round((Number(max) || 0) * 1000) / 1000;
+    if (!Number.isFinite(n) || n < 0) n = 0;
+  }
+  return Object.is(n, -0) ? 0 : n;
+}
+
 function QtyEditField({ value, onChange, max, compact }) {
+  const [focused, setFocused] = useState(false);
+  const [draft, setDraft] = useState(() => (value == null || value === '' ? '' : String(value)));
+
+  useEffect(() => {
+    if (focused) return;
+    setDraft(value == null || value === '' ? '' : String(value));
+  }, [value, focused]);
+
   return (
     <TextInput
       style={[styles.qtyInput, compact && styles.qtyInputCompact]}
-      value={value == null ? '' : String(value)}
+      value={draft}
+      onFocus={() => setFocused(true)}
       onChangeText={(text) => {
-        const cleaned = text.replace(/[^0-9]/g, '');
-        if (cleaned === '') {
-          onChange('');
+        const normalized = decimalDraft(text);
+        setDraft(normalized);
+        if (normalized === '' || normalized === '.') {
+          onChange(normalized === '' ? '' : 0);
           return;
         }
-        let n = Number(cleaned);
+        const n = Number(normalized);
         if (!Number.isFinite(n)) return;
-        if (max != null && n > max) n = max;
-        onChange(n);
+        if (max != null && n > Number(max)) {
+          const capped = roundQtyInput(max);
+          setDraft(String(capped));
+          onChange(capped);
+          return;
+        }
+        onChange(normalized.endsWith('.') ? n : roundQtyInput(n, max));
       }}
       onBlur={() => {
-        if (value === '' || value == null) onChange(0);
-        else {
-          let n = Math.round(Number(value));
-          if (!Number.isFinite(n) || n < 0) n = 0;
-          if (max != null && n > max) n = max;
-          onChange(n);
+        setFocused(false);
+        if (draft === '' || draft === '.' || draft == null) {
+          setDraft('0');
+          onChange(0);
+          return;
         }
+        const n = roundQtyInput(draft, max);
+        setDraft(String(n));
+        onChange(n);
       }}
-      keyboardType="number-pad"
+      keyboardType="decimal-pad"
       selectTextOnFocus
     />
   );
 }
 
 function ReceivedQtyField({ value, onChange }) {
+  const [focused, setFocused] = useState(false);
+  const [draft, setDraft] = useState(() =>
+    value == null || value === '' ? '' : String(value),
+  );
+
+  useEffect(() => {
+    if (focused) return;
+    setDraft(value == null || value === '' ? '' : String(value));
+  }, [value, focused]);
+
   return (
     <TextInput
       style={[styles.qtyInput, styles.recvQtyInput]}
-      value={value == null || value === '' ? '' : String(value)}
+      value={draft}
+      onFocus={() => setFocused(true)}
       onChangeText={(text) => {
-        const cleaned = text.replace(/[^0-9]/g, '');
-        if (cleaned === '') {
+        const normalized = decimalDraft(text);
+        setDraft(normalized);
+        if (normalized === '' || normalized === '.') {
           onChange(null);
           return;
         }
-        const n = Number(cleaned);
-        if (Number.isFinite(n)) onChange(n);
+        onChange(roundQtyInput(normalized));
       }}
       onBlur={() => {
-        if (value === '' || value == null) return;
-        let n = Math.round(Number(value));
-        if (!Number.isFinite(n) || n < 0) n = 0;
+        setFocused(false);
+        if (draft === '' || draft === '.') {
+          setDraft('');
+          onChange(null);
+          return;
+        }
+        const n = roundQtyInput(draft);
+        setDraft(String(n));
         onChange(n);
       }}
-      keyboardType="number-pad"
+      keyboardType="decimal-pad"
       selectTextOnFocus
       placeholder="0"
       placeholderTextColor="#c0c0c0"
@@ -3962,11 +4014,11 @@ const styles = StyleSheet.create({
     paddingRight: 8,
   },
   itemColQty: {
-    width: 52,
+    width: 64,
     textAlign: 'right',
   },
   itemColRecv: {
-    width: 72,
+    width: 80,
     textAlign: 'right',
   },
   itemName: {
@@ -4627,7 +4679,7 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   thQty: {
-    width: 52,
+    width: 68,
     textAlign: 'right',
   },
   thPartner: {
@@ -4780,8 +4832,8 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
   recvQtyInput: {
-    width: 64,
-    minWidth: 64,
+    width: 72,
+    minWidth: 72,
   },
   dateField: {
     flexDirection: 'row',

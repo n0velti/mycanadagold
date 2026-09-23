@@ -37,8 +37,11 @@
  *   /proxy/ringcentral/details             POST  → JWT auth + numbers and extensions for one store
  *   /proxy/ringcentral/save                POST  → upsert per-store JWT credentials (service role)
  *   /proxy/ringcentral/delete              POST  → remove a store’s RingCentral credentials
- *   /proxy/ringcentral/phone               POST  → presence, call log, voicemail, RingOut, answer/reject
+ *   /proxy/ringcentral/phone               POST  → presence, call log, voicemail, RingOut, answer/reject,
+ *                                                  call-out, on-demand recording, AI analyses (analyze/insights/ringsense)
  *   /proxy/ringcentral/voicemail-content   GET   → voicemail audio for one message
+ *   /proxy/ringcentral/recording-content   GET   → call recording audio (media host)
+ *   /proxy/ringcentral/ai-webhook          POST  → RingCentral AI job results (signed per job, no staff session)
  *
  * AI providers use the company key saved in Settings (System Admin / GM) or,
  * if none is saved, the Edge Function secret. Clients never send vendor keys.
@@ -46,7 +49,7 @@
  * `X-Upstream-Authorization`. Rippling uses that header or the company
  * connection saved by a System Admin / GM / HR.
  */
-import { corsHeaders, error, json, preflight, readJson, securityHeaders } from '../_shared/http.ts';
+import { corsHeaders, error, json, preflight, readJson, securityHeaders, sha256Hex } from '../_shared/http.ts';
 import { adminClient, requireActiveStaff, StaffAuthError, type StaffContext } from '../_shared/staff.ts';
 
 const FUNCTION_PREFIX = '/proxy';
@@ -1512,9 +1515,10 @@ function listGmailAttachments(part: GmailPart | undefined, out: { filename: stri
 // be opened by any other signed-in person.
 // ---------------------------------------------------------------------------
 
-// Just under the 15-minute email cadence so each Employees-screen poll reads
-// the mailbox instead of landing inside the previous cooldown.
-const TIME_SYNC_COOLDOWN_MS = 14 * 60_000;
+// Just under the 7-minute app poll so each check searches the mailbox for a
+// newer CSV. A check inside this window is skipped and the stored latest
+// files stay on screen.
+const TIME_SYNC_COOLDOWN_MS = 6 * 60_000 + 30_000;
 // Shift mail arrives every 15 minutes. A search that includes from:rippling
 // fills the newest page with those messages and never opens the email that
 // carries the time, clock, and daily CSVs. Those are fetched on their own.
@@ -1530,6 +1534,13 @@ const CSV_SYNC_MAX_MESSAGES = 4;
 const CSV_TEXT_MAX_CHARS = 1_500_000;
 const TIME_SYNC_MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;
 const TIME_SYNC_MAX_FULL_MESSAGES = 6;
+// Message shape only. Leaving out body.data keeps a multi-megabyte CSV from
+// arriving until that report is the one we still need.
+const TIME_SYNC_MESSAGE_FIELDS = [
+  'id',
+  'internalDate',
+  'payload(mimeType,filename,headers(name,value),body(attachmentId,size),parts(mimeType,filename,headers(name,value),body(attachmentId,size),parts(mimeType,filename,headers(name,value),body(attachmentId,size),parts(mimeType,filename,headers(name,value),body(attachmentId,size)))))',
+].join(',');
 
 type TimeSyncRow = {
   gmail_email: string;
@@ -1739,44 +1750,53 @@ async function timeSyncAccessToken(row: TimeSyncRow): Promise<string> {
   return accessToken;
 }
 
+function csvField(source: string, start: number, end: number, quoted: boolean): string {
+  const raw = source.slice(start, end);
+  return quoted ? raw.replace(/""/g, '"') : raw;
+}
+
 /** RFC 4180-ish CSV: quoted fields, doubled quotes, CRLF, optional BOM. */
 function parseCsv(text: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];
-  let field = '';
+  let start = 0;
   let quoted = false;
+  let quotedField = false;
+  let quotedEnd = -1;
   const source = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  const pushField = (end: number) => {
+    row.push(csvField(source, start, quotedEnd >= 0 ? quotedEnd : end, quotedField));
+    quotedField = false;
+    quotedEnd = -1;
+  };
   for (let i = 0; i < source.length; i += 1) {
     const ch = source[i];
     if (quoted) {
-      if (ch === '"') {
-        if (source[i + 1] === '"') {
-          field += '"';
-          i += 1;
-        } else {
-          quoted = false;
-        }
-      } else {
-        field += ch;
+      if (ch !== '"') continue;
+      if (source[i + 1] === '"') {
+        i += 1;
+        continue;
       }
+      quoted = false;
+      quotedEnd = i;
       continue;
     }
     if (ch === '"') {
       quoted = true;
+      quotedField = true;
+      start = i + 1;
     } else if (ch === ',') {
-      row.push(field);
-      field = '';
+      pushField(i);
+      start = i + 1;
     } else if (ch === '\n' || ch === '\r') {
+      pushField(i);
       if (ch === '\r' && source[i + 1] === '\n') i += 1;
-      row.push(field);
-      field = '';
+      start = i + 1;
       if (row.some((cell) => cell !== '')) rows.push(row);
       row = [];
-    } else {
-      field += ch;
     }
   }
-  row.push(field);
+  pushField(source.length);
   if (row.some((cell) => cell !== '')) rows.push(row);
   return rows;
 }
@@ -2090,6 +2110,79 @@ function isWideIdentityHeader(name: string): boolean {
   );
 }
 
+/** "2026-09-13 12:30 PM EDT" without building a timezone formatter per row. */
+function spokenShiftTime(value: string): { date: string; iso: string; label: string } | null {
+  const match = String(value || '').trim().match(/^(\d{4}-\d{2}-\d{2})[ T](\d{1,2}):(\d{2})(?::\d{2})?\s*([ap]m)(?:\s+([A-Za-z]{2,5}))?/i);
+  if (!match) return null;
+  let hours = Number(match[2]);
+  const minutes = Number(match[3]);
+  if (hours < 1 || hours > 12 || minutes > 59) return null;
+  const pm = match[4].toLowerCase().startsWith('p');
+  if (pm && hours !== 12) hours += 12;
+  if (!pm && hours === 12) hours = 0;
+  const zone = (match[5] || 'EDT').toUpperCase();
+  const offset = zone === 'EST' || zone === 'CST' ? 5 : zone === 'MST' ? 7 : zone === 'PST' ? 8 : 4;
+  const iso = new Date(Date.UTC(
+    Number(match[1].slice(0, 4)),
+    Number(match[1].slice(5, 7)) - 1,
+    Number(match[1].slice(8, 10)),
+    hours + offset,
+    minutes,
+  )).toISOString();
+  return { date: match[1], iso, label: formatShiftLabel(hours, minutes) };
+}
+
+/** One row per segment. The 90-day file is large, so this stays on the columns Rippling sends. */
+function segmentShiftReport(table: string[][]): ShiftRoleReport | null {
+  if (table.length < 2) return null;
+  const header = table[0].map((cell) => cell.trim().toLowerCase());
+  const col = (name: string) => header.indexOf(name);
+  const idCol = col('employee - id');
+  const nameCol = col('employee');
+  const startCol = col('segment start time');
+  const endCol = col('segment end time');
+  const openCol = col('is open shift');
+  const tagsCol = col('tags');
+  if (idCol < 0 || startCol < 0) return null;
+  const rows: ShiftRoleRow[] = [];
+  const seen = new Set<string>();
+  let rangeStart = '';
+  let rangeEnd = '';
+  for (let i = 1; i < table.length; i += 1) {
+    const cells = table[i] || [];
+    if (openCol >= 0 && /^(true|yes)$/i.test(String(cells[openCol] || '').trim())) continue;
+    const id = String(cells[idCol] || '').trim();
+    const name = nameCol >= 0 ? String(cells[nameCol] || '').trim() : '';
+    if (!id || /^total\b/i.test(name)) continue;
+    const startRaw = String(cells[startCol] || '').trim();
+    const endRaw = endCol >= 0 ? String(cells[endCol] || '').trim() : '';
+    const start = spokenShiftTime(startRaw);
+    const end = endRaw ? spokenShiftTime(endRaw) : null;
+    const date = start?.date || '';
+    if (!date) continue;
+    if (!rangeStart || date < rangeStart) rangeStart = date;
+    if (!rangeEnd || date > rangeEnd) rangeEnd = date;
+    const role = (tagsCol >= 0 ? String(cells[tagsCol] || '').trim() : '') || 'Shift';
+    const key = `${id}|${date}|${role}|${start.label}`.slice(0, 240);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push({
+      shift_key: key,
+      employee_rippling_id: id.slice(0, 100),
+      employee_name: name.slice(0, 200),
+      role_name: role.slice(0, 120),
+      location_name: '',
+      shift_date: date,
+      started_at: start.iso,
+      ended_at: end?.iso || null,
+      start_label: start.label,
+      end_label: end?.label || '',
+    });
+  }
+  if (!rangeStart || !rows.length) return null;
+  return { rows, rangeStart, rangeEnd };
+}
+
 /**
  * Rippling "Shift report by role". The subject or filename has to say "shift"
  * so a time report that happens to have a Role column is left for the hours
@@ -2366,7 +2459,7 @@ type TimeSyncResult = { skipped: boolean; imported: boolean; message: string };
  */
 async function runTimeSync(
   row: TimeSyncRow,
-  { force, userId, accessToken }: { force: boolean; userId?: string; accessToken?: string },
+  { force, userId, accessToken, part: syncPart = 'reports' }: { force: boolean; userId?: string; accessToken?: string; part?: 'reports' | 'shifts' },
 ): Promise<TimeSyncResult> {
   const bearer = String(accessToken || '').trim();
   if (!bearer && !row.gmail_refresh_token) {
@@ -2428,19 +2521,21 @@ async function runTimeSync(
       }
       return picked;
     };
-    const refs = [
-      ...take(clockRefs, 1),
-      ...take(timeRefs, 1),
-      ...take(shiftRefs, 2),
-      ...take(csvRefs, 2),
-    ].slice(0, TIME_SYNC_MAX_FULL_MESSAGES);
+    // The 90-day shift CSV is large enough to stop the worker. Hours and clock
+    // are imported in this request. Shifts run after the response is sent.
+    const refs = syncPart === 'shifts'
+      ? take(shiftRefs, 1)
+      : [...take(clockRefs, 1), ...take(timeRefs, 1), ...take(csvRefs, 2)].slice(0, TIME_SYNC_MAX_FULL_MESSAGES);
 
     const candidates: { id: string; internalDate: number; payload: Record<string, unknown> }[] = [];
     for (const ref of refs) {
       const id = String(ref?.id || '').trim();
       if (!id) continue;
-      const detail = await googleJson(`${GMAIL_API}/messages/${encodeURIComponent(id)}?format=full`, `Bearer ${token}`, 20_000);
-      if (!detail.ok || !detail.payload) continue;
+      const shell = `${GMAIL_API}/messages/${encodeURIComponent(id)}?format=full&fields=${encodeURIComponent(TIME_SYNC_MESSAGE_FIELDS)}`;
+      const detail = await googleJson(shell, `Bearer ${token}`, 20_000);
+      if (!detail.ok || !detail.payload) {
+        throw new Error(googleErrorMessage(detail.payload, 'Could not read a Rippling email.'));
+      }
       candidates.push({
         id,
         internalDate: Number(detail.payload.internalDate) || 0,
@@ -2448,6 +2543,32 @@ async function runTimeSync(
       });
     }
     candidates.sort((a, b) => b.internalDate - a.internalDate);
+    const reportKind = (filename: string, mailSubject: string): 'shift' | 'clock' | 'time' | 'csv' => {
+      const hint = `${filename} ${mailSubject}`;
+      if (/\bshift\b/i.test(hint)) return 'shift';
+      if (/\bclock\b/i.test(hint)) return 'clock';
+      if (/\btime\b/i.test(hint) || /\bemployee\b/i.test(hint)) return 'time';
+      return 'csv';
+    };
+    const messageSubject = (candidate: { payload: Record<string, unknown> }) => {
+      const root = candidate.payload.payload as GmailPart | undefined;
+      const headers = (root as { headers?: { name?: string; value?: string }[] } | undefined)?.headers;
+      return gmailHeader(headers, 'Subject');
+    };
+    const shiftMessage = (candidate: { payload: Record<string, unknown> }) => {
+      const root = candidate.payload.payload as GmailPart | undefined;
+      const subject = messageSubject(candidate);
+      const parts = collectReportParts(root);
+      return parts.length > 0 && parts.every((part) => reportKind(gmailPartFilename(part), subject) === 'shift');
+    };
+    // Clock and hours CSVs are the ones the app is waiting on. The 90-day shift
+    // file is large enough to kill this request, so it runs after those are saved.
+    candidates.sort((a, b) => {
+      const aShift = shiftMessage(a);
+      const bShift = shiftMessage(b);
+      if (aShift !== bShift) return aShift ? 1 : -1;
+      return b.internalDate - a.internalDate;
+    });
     const emailLive = row.feed_source !== 'drop';
     // A newer drop must not hide the mailbox while Email is the selected source.
     const stampsFromDrop = String(row.last_message_id || '').startsWith('drop:');
@@ -2470,8 +2591,11 @@ async function runTimeSync(
     let listedShiftOnly = false;
     const notes: string[] = [];
     const inspected: string[] = [];
+    const failures: string[] = [];
+    let keptText = false;
 
     for (const candidate of candidates) {
+      try {
       const root = candidate.payload.payload as GmailPart | undefined;
       const headers = (root as { headers?: { name?: string; value?: string }[] } | undefined)?.headers;
       const subject = gmailHeader(headers, 'Subject');
@@ -2572,6 +2696,17 @@ async function runTimeSync(
       }
       for (let index = 0; index < parts.length; index += 1) {
         const part = parts[index];
+        const guessed = reportKind(gmailPartFilename(part), subject);
+        const stamp = guessed === 'shift' ? shiftAt : guessed === 'clock' ? clockAt : guessed === 'time' ? timeAt : snapshotAt;
+        if (!isNewerMail(messageAt, stamp)) {
+          if (guessed === 'shift') shiftDone = true;
+          else if (guessed === 'clock') clockDone = true;
+          else if (guessed === 'time') timeDone = true;
+          else snapshotDone = true;
+          continue;
+        }
+        if (guessed === 'shift' && syncPart !== 'shifts') continue;
+        if (guessed !== 'shift' && syncPart === 'shifts') continue;
         let text = '';
         try {
           text = await gmailAttachmentText(token, candidate.id, part);
@@ -2580,6 +2715,50 @@ async function runTimeSync(
         }
         const label = uniqueAttachmentName(gmailPartFilename(part), index, usedNames);
         if (/\bshift\b/i.test(label)) sawShiftMail = true;
+        if (guessed === 'shift') {
+          const table = text ? parseCsv(text) : [];
+          const shift = segmentShiftReport(table);
+          if (shift && emailLive) {
+            const { error: clearError } = await adminClient()
+              .from('rippling_shift_roles')
+              .delete()
+              .gte('shift_date', shift.rangeStart)
+              .lte('shift_date', shift.rangeEnd);
+            if (clearError) throw new Error(clearError.message);
+            const syncedAt = new Date().toISOString();
+            let saved = 0;
+            for (let offset = 0; offset < shift.rows.length; offset += 200) {
+              const slice = shift.rows.slice(offset, offset + 200).map((row) => ({
+                ...row,
+                source_message_id: candidate.id.slice(0, 200),
+                synced_at: syncedAt,
+              }));
+              const { error: insertError } = await adminClient().from('rippling_shift_roles').upsert(slice, { onConflict: 'shift_key' });
+              if (insertError) throw new Error(insertError.message);
+              saved += slice.length;
+            }
+            await saveTimeSync({
+              last_shift_at: messageAt,
+              last_shift_count: saved,
+              last_error: '',
+            }, userId);
+            notes.push(`${saved} shifts by role (${shift.rangeStart} → ${shift.rangeEnd})`);
+            shiftAt = messageAt;
+            shiftDone = true;
+            usedThisMessage = true;
+          }
+          await rememberCsvFile({
+            messageId: candidate.id,
+            name: label,
+            subject,
+            source: 'email',
+            receivedAt: messageAt,
+            rowCount: shift?.rows.length || table.length,
+            kind: 'shift',
+            current: false,
+          });
+          continue;
+        }
         const table = text ? snapshotFromCsv(text) : { headers: [], rows: [], total: 0 };
         const hint = `${label} ${subject}`;
         const kind = text && parseShiftRoleReport(text, hint)
@@ -2600,8 +2779,9 @@ async function runTimeSync(
           rowCount: table.total,
           kind,
           current: false,
-          csvText: takeBatch ? text : '',
+          csvText: takeBatch && guessed !== 'shift' ? text : '',
         });
+        if (takeBatch && guessed !== 'shift' && text) keptText = true;
         if (text) await tryText(text, label, true);
       }
       if (snapshotPick && !snapshotDone && emailLive) {
@@ -2646,27 +2826,38 @@ async function runTimeSync(
         newestAt = candidate.internalDate;
         newestId = candidate.id;
       }
+      } catch (err) {
+        failures.push(err instanceof Error ? err.message : 'Could not read an email.');
+      }
       if (snapshotDone && timeDone && clockDone && shiftDone) break;
     }
 
-    if (listedMessageId) await keepLatestCsvText('email', listedMessageId);
+    if (listedMessageId && keptText) await keepLatestCsvText('email', listedMessageId);
 
     if (!emailLive && listedMessageId) {
       await saveTimeSync({ last_error: '' }, userId);
       return { skipped: false, imported: false, message: 'Read the latest email attachments. Dropped file is what this screen uses.' };
     }
 
-    if (snapshotDone || timeDone || clockDone || shiftDone) {
+    if (snapshotDone || timeDone || clockDone || shiftDone || failures.length) {
       const missing = [
-        !timeDone ? 'Time report not in these emails.' : '',
-        !clockDone ? 'Clock-in report not in these emails.' : '',
-        !shiftDone && sawShiftMail ? 'Shift report by role was in the mailbox but could not be read.' : '',
+        syncPart !== 'shifts' && !timeDone ? 'Time report not in these emails.' : '',
+        syncPart !== 'shifts' && !clockDone ? 'Clock-in report not in these emails.' : '',
+        syncPart === 'shifts' && !shiftDone && sawShiftMail ? 'Shift report by role was in the mailbox but could not be read.' : '',
+        ...failures,
       ].filter(Boolean).join(' ');
       await saveTimeSync({
         last_message_id: newestId || candidates[0]?.id || '',
         last_message_at: newestAt ? new Date(newestAt).toISOString() : nowIso,
-        last_error: missing,
+        last_error: missing.slice(0, 2000),
       }, userId);
+      if (!notes.length) {
+        return {
+          skipped: false,
+          imported: false,
+          message: failures[0] || 'Checked the mailbox. The latest CSV is already in the app.',
+        };
+      }
       return { skipped: false, imported: true, message: `Imported ${notes.join(' · ')}.` };
     }
 
@@ -2806,6 +2997,7 @@ async function handleRipplingTimeSync(req: Request, staff: StaffContext, body: A
     payload = {};
   }
   const force = Boolean(payload.force) && (canManageCompanyRippling(staff) || isHoursMailboxOwner(staff));
+  const shiftsOnly = payload.part === 'shifts';
   const row = await loadTimeSync();
   if (!hoursOAuthReady(row)) {
     const hint = isHoursMailboxOwner(staff) ? `Connect ${savedHoursMailbox()} with Google.` : 'The hours mailbox is not connected yet.';
@@ -2815,8 +3007,29 @@ async function handleRipplingTimeSync(req: Request, staff: StaffContext, body: A
     });
   }
   try {
-    const result = await runTimeSync(row, { force, userId: staff.userId });
-    return json(req, 200, { ...timeSyncPublic(await loadTimeSync(), staff), sync: result });
+    if (shiftsOnly) {
+      const result = await runTimeSync(row, { force: true, userId: staff.userId, part: 'shifts' });
+      return json(req, 200, { ...timeSyncPublic(await loadTimeSync(), staff), sync: result });
+    }
+    const result = await runTimeSync(row, { force, userId: staff.userId, part: 'reports' });
+    const response = json(req, 200, { ...timeSyncPublic(await loadTimeSync(), staff), sync: result });
+    if (!result.skipped) {
+      const headers = new Headers();
+      const authorization = req.headers.get('Authorization');
+      const apiKey = req.headers.get('apikey');
+      if (authorization) headers.set('Authorization', authorization);
+      if (apiKey) headers.set('apikey', apiKey);
+      headers.set('Content-Type', 'application/json');
+      const follow = fetch(req.url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ part: 'shifts' }),
+      }).then((upstream) => upstream.body?.cancel());
+      const runtime = (globalThis as { EdgeRuntime?: { waitUntil: (promise: Promise<unknown>) => void } }).EdgeRuntime;
+      if (runtime?.waitUntil) runtime.waitUntil(follow);
+      else await follow;
+    }
+    return response;
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Hours sync failed.';
     return json(req, 200, { ...timeSyncPublic(await loadTimeSync(), staff), sync: null, syncError: message });
@@ -2873,6 +3086,11 @@ function timeMs(value: string | null | undefined): number {
 /** A file replaces what is showing only when it is as new as what is already there. */
 function isAtLeastAsNew(incomingIso: string, currentIso: string | null | undefined): boolean {
   return timeMs(incomingIso) >= timeMs(currentIso);
+}
+
+/** Skip a mailbox file the app already imported. A newer internal date is a new email. */
+function isNewerMail(incomingIso: string, currentIso: string | null | undefined): boolean {
+  return timeMs(incomingIso) > timeMs(currentIso);
 }
 
 async function rememberCsvFile(input: {
@@ -5310,9 +5528,21 @@ function callLogForStore(
   for (const row of mine) {
     const key = row.sessionId || row.id;
     const current = bySession.get(key);
-    if (!current || rcOutcomeRank(row.result, row.duration) > rcOutcomeRank(current.result, current.duration)) {
+    if (!current) {
       bySession.set(key, row);
+      continue;
     }
+    // The recording sits on whichever leg RingCentral recorded (usually the
+    // user's), so keep it whichever leg wins on outcome.
+    const winner =
+      rcOutcomeRank(row.result, row.duration) > rcOutcomeRank(current.result, current.duration) ? row : current;
+    const loser = winner === row ? current : row;
+    bySession.set(key, {
+      ...winner,
+      recordingId: winner.recordingId || loser.recordingId,
+      recordingType: winner.recordingType || loser.recordingType,
+      telephonySessionId: winner.telephonySessionId || loser.telephonySessionId,
+    });
   }
   return [...bySession.values()]
     .map((row) => ({ ...row, storeKey: account.store_key, storeName: account.store_name }))
@@ -5443,6 +5673,11 @@ type RcCallLogRow = {
   extensionId: string;
   /** Shared by every leg of one call: the queue's and each member's. */
   sessionId: string;
+  /** Call Control id of the whole call (RingSense keys its insights by this). */
+  telephonySessionId: string;
+  /** Set when RingCentral recorded this leg (automatic or on-demand). */
+  recordingId: string;
+  recordingType: string;
 };
 
 function mapCallLog(account: RingCentralAccount, payload: unknown): RcCallLogRow[] {
@@ -5457,6 +5692,10 @@ function mapCallLog(account: RingCentralAccount, payload: unknown): RcCallLogRow
     const from = rcParty(row.from);
     const to = rcParty(row.to);
     const extension = (row.extension || {}) as Record<string, unknown>;
+    const recording = (row.recording && typeof row.recording === 'object' ? row.recording : {}) as Record<
+      string,
+      unknown
+    >;
     rows.push({
       id,
       storeKey: account.store_key,
@@ -5471,6 +5710,9 @@ function mapCallLog(account: RingCentralAccount, payload: unknown): RcCallLogRow
       toName: to.name,
       extensionId: String(extension.id || ''),
       sessionId: String(row.sessionId || row.telephonySessionId || ''),
+      telephonySessionId: String(row.telephonySessionId || ''),
+      recordingId: rcSafeId(recording.id),
+      recordingType: String(recording.type || ''),
     });
   }
   return rows;
@@ -6246,7 +6488,424 @@ async function firstRingCentralDevice(
   return String(ranked[0]?.id || '');
 }
 
-async function handleRingCentralPhone(req: Request): Promise<Response> {
+// ---------------------------------------------------------------------------
+// Call Control call-out, on-demand recording, recordings and AI review
+// ---------------------------------------------------------------------------
+
+/** Binary content (recordings, greetings) is served from the media host, not the platform host. */
+function rcMediaOrigin(origin: string): string {
+  return origin === RC_SANDBOX ? 'https://media.devtest.ringcentral.com' : 'https://media.ringcentral.com';
+}
+
+const rcHomeCountryCache = new Map<string, { at: number; id: string }>();
+
+/** The JWT extension's home country id (Light group, cached), for call-out's optional `countryId`. */
+async function rcHomeCountryId(
+  account: RingCentralAccount,
+  origin: string,
+  headers: Record<string, string>,
+): Promise<string> {
+  const cached = rcHomeCountryCache.get(account.store_key);
+  if (cached && Date.now() - cached.at < RC_DIRECTORY_TTL_MS) return cached.id;
+  const result = await rcJson(`${origin}/restapi/v1.0/account/~/extension/~`, { method: 'GET', headers });
+  noteRcRateHeaders(rcScope(account), result);
+  if (!result.ok) return cached?.id || '';
+  const payload = (result.payload || {}) as { regionalSettings?: { homeCountry?: { id?: string | number } } };
+  const id = String(payload.regionalSettings?.homeCountry?.id || '');
+  rcHomeCountryCache.set(account.store_key, { at: Date.now(), id });
+  return id;
+}
+
+/** A `CallSession` from call-out as the live-call row the app already understands. */
+function rcCallOutLiveCall(account: RingCentralAccount, payload: unknown, ext: StoreExtensions): LivePhoneCall | null {
+  const root = (payload || {}) as { session?: Record<string, unknown> } & Record<string, unknown>;
+  const session = (root.session && typeof root.session === 'object' ? root.session : root) as Record<string, unknown>;
+  const sessionId = rcSafeId(session.id);
+  if (!sessionId) return null;
+  const parties = (Array.isArray(session.parties) ? session.parties : [])
+    .map(rcPartySnapshot)
+    .filter((row): row is RcPartySnapshot => Boolean(row));
+  const mine =
+    parties.find((row) => row.direction === 'Outbound' && (!row.extensionId || ext.ids.has(row.extensionId))) ||
+    parties.find((row) => row.direction === 'Outbound') ||
+    parties[0] ||
+    null;
+  return {
+    id: sessionId,
+    storeKey: account.store_key,
+    storeName: account.store_name,
+    direction: 'Outbound',
+    status: mine && /^Answered$/i.test(mine.status) ? 'CallConnected' : 'Dialing',
+    from: mine?.from.phoneNumber || '',
+    fromName: mine?.from.name || '',
+    to: mine?.to.phoneNumber || '',
+    toName: mine?.to.name || '',
+    telephonySessionId: sessionId,
+    partyId: mine?.partyId || '',
+    sessionId,
+    startTime: String(session.creationTime || new Date().toISOString()),
+    extensionNumber: '',
+    extensionName: '',
+  };
+}
+
+/** RingCentral refused the device itself (unregistered, wrong type): the browser should dial over SIP instead. */
+function isRingCentralDeviceRejected(result: RcJsonResult): boolean {
+  const raw = `${rcErrorMessage(result.payload, '')} ${JSON.stringify(result.payload ?? '')}`;
+  return /deviceId|device is not|device not|not registered|offline|unsupported device|CMN-102.*device|Resource for parameter \[deviceId\]/i.test(
+    raw,
+  );
+}
+
+const RC_INSIGHTS_TABLE = 'ringcentral_call_insights';
+const RC_INSIGHTS_BATCH_MAX = 25;
+const RC_INSIGHTS_LIST_MAX = 200;
+const RC_AI_PERMISSION_MESSAGE =
+  'RingCentral’s AI API is not enabled for this app. In the RingCentral Developer Console open the app → Settings → Permissions, add “AI”, save, then retry. (RingCentral error: application needs to have [AI] permission.)';
+const RC_RINGSENSE_PERMISSION_MESSAGE =
+  'RingSense insights are not available for this line: the RingCentral user behind the JWT has no RingSense licence/permission (error RAH-3005). Assign RingSense for RingEX to that user in the Admin Portal, or use “Analyze with RingCentral AI” instead.';
+
+type RcInsightRow = {
+  id: string;
+  store_key: string;
+  store_name: string;
+  telephony_session_id: string;
+  recording_id: string;
+  call_log_id: string;
+  source: 'rc_ai' | 'ringsense';
+  status: 'queued' | 'processing' | 'done' | 'failed';
+  language_code: string;
+  job_id: string;
+  direction: string;
+  from_number: string;
+  from_name: string;
+  to_number: string;
+  to_name: string;
+  duration: number;
+  call_started_at: string | null;
+  result: unknown;
+  error: string;
+  requested_by?: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+};
+
+const RC_INSIGHT_COLUMNS =
+  'id, store_key, store_name, telephony_session_id, recording_id, call_log_id, source, status, language_code, job_id, direction, from_number, from_name, to_number, to_name, duration, call_started_at, result, error, created_at, updated_at, completed_at';
+
+function isInsightsTableMissing(err: unknown): boolean {
+  const message = err && typeof err === 'object' ? String((err as { message?: string }).message || '') : String(err || '');
+  const code = err && typeof err === 'object' ? String((err as { code?: string }).code || '') : '';
+  return code === '42P01' || code === 'PGRST205' || (/schema cache|does not exist/i.test(message) && /ringcentral_call_insights/i.test(message));
+}
+
+const RC_INSIGHTS_TABLE_MESSAGE =
+  'Run the latest Phone migration (ringcentral_call_insights) in Supabase, then retry.';
+
+function publicInsightRow(row: RcInsightRow) {
+  return {
+    id: row.id,
+    storeKey: row.store_key,
+    storeName: row.store_name,
+    telephonySessionId: row.telephony_session_id,
+    recordingId: row.recording_id,
+    callLogId: row.call_log_id,
+    source: row.source,
+    status: row.status,
+    languageCode: row.language_code,
+    jobId: row.job_id,
+    direction: row.direction,
+    from: row.from_number,
+    fromName: row.from_name,
+    to: row.to_number,
+    toName: row.to_name,
+    duration: Number(row.duration) || 0,
+    startTime: row.call_started_at || '',
+    result: row.result ?? null,
+    error: row.error || '',
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    completedAt: row.completed_at,
+  };
+}
+
+/** Public callback URL for one insight job. RingCentral posts the result here; the signature gates it. */
+async function rcInsightWebhookUrl(rowId: string): Promise<string> {
+  const base = String(Deno.env.get('SUPABASE_URL') || '').replace(/\/+$/, '');
+  const sig = await rcInsightSignature(rowId);
+  return `${base}/functions/v1${FUNCTION_PREFIX}/ringcentral/ai-webhook?job=${encodeURIComponent(rowId)}&sig=${sig}`;
+}
+
+async function rcInsightSignature(rowId: string): Promise<string> {
+  const secret = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('SUPABASE_SECRET_KEY') ?? '';
+  return (await sha256Hex(`ringcentral-ai:${rowId}:${secret}`)).slice(0, 40);
+}
+
+function rcAiLanguage(value: unknown): string {
+  const raw = String(value || '').trim();
+  return /^[a-z]{2}-[A-Z]{2}$/.test(raw) ? raw : 'en-US';
+}
+
+/**
+ * Submit queued RingCentral-AI jobs for this account while the Heavy budget
+ * allows. Each recording is fetched by RingCentral's AI service straight from
+ * the media host using a short-lived access token in the URL (the documented
+ * way to hand it a recording), and the result arrives on the webhook.
+ */
+async function rcDrainInsightJobs(
+  account: RingCentralAccount,
+  origin: string,
+  headers: Record<string, string>,
+  limit = 6,
+): Promise<{ submitted: number; error: string }> {
+  const scope = rcScope(account);
+  const { data, error: queryError } = await adminClient()
+    .from(RC_INSIGHTS_TABLE)
+    .select(RC_INSIGHT_COLUMNS)
+    .eq('store_key', account.store_key)
+    .eq('source', 'rc_ai')
+    .eq('status', 'queued')
+    .order('created_at', { ascending: true })
+    .limit(Math.max(1, limit));
+  if (queryError) {
+    if (isInsightsTableMissing(queryError)) return { submitted: 0, error: RC_INSIGHTS_TABLE_MESSAGE };
+    return { submitted: 0, error: queryError.message || 'Could not read queued analyses.' };
+  }
+  const rows = (data || []) as RcInsightRow[];
+  if (!rows.length) return { submitted: 0, error: '' };
+  const token = headers.Authorization.replace(/^Bearer\s+/i, '');
+  const media = rcMediaOrigin(origin);
+  let submitted = 0;
+  let lastError = '';
+  for (const row of rows) {
+    if (!row.recording_id) {
+      await adminClient()
+        .from(RC_INSIGHTS_TABLE)
+        .update({ status: 'failed', error: 'This call has no recording to analyze.', updated_at: new Date().toISOString() })
+        .eq('id', row.id);
+      continue;
+    }
+    if (rcGroupBlocked(scope, 'heavy') || !rcTakeHeavy(scope)) {
+      lastError = lastError || RC_RATE_LIMIT_MESSAGE;
+      break;
+    }
+    const webhook = await rcInsightWebhookUrl(row.id);
+    const contentUri = `${media}/restapi/v1.0/account/~/recording/${row.recording_id}/content?access_token=${encodeURIComponent(token)}`;
+    const result = await rcJson(`${origin}/ai/insights/v1/async/analyze-interaction?webhook=${encodeURIComponent(webhook)}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        contentUri,
+        encoding: 'Mpeg',
+        languageCode: rcAiLanguage(row.language_code),
+        source: 'RingCentral',
+        audioType: 'CallCenter',
+        speakerCount: 2,
+        enableVoiceActivityDetection: true,
+        insights: ['All'],
+      }),
+    });
+    noteRcRateHeaders(scope, result);
+    const now = new Date().toISOString();
+    if (result.ok) {
+      const jobId = String((result.payload as { jobId?: string } | null)?.jobId || '');
+      await adminClient()
+        .from(RC_INSIGHTS_TABLE)
+        .update({ status: 'processing', job_id: jobId, error: '', updated_at: now })
+        .eq('id', row.id);
+      submitted += 1;
+      continue;
+    }
+    const raw = `${rcErrorMessage(result.payload, '')} ${JSON.stringify(result.payload ?? '')}`;
+    const permission = result.status === 403 || /\[AI\] permission|InsufficientPermissions|CMN-401/i.test(raw);
+    const message = permission
+      ? RC_AI_PERMISSION_MESSAGE
+      : isRingCentralRateLimit(result.status, result.payload)
+        ? RC_RATE_LIMIT_MESSAGE
+        : rcErrorMessage(result.payload, 'RingCentral AI did not accept this recording.');
+    lastError = message;
+    if (isRingCentralRateLimit(result.status, result.payload)) break; // leave it queued for the next drain
+    await adminClient()
+      .from(RC_INSIGHTS_TABLE)
+      .update({ status: 'failed', error: message.slice(0, 500), updated_at: now })
+      .eq('id', row.id);
+    if (permission) break; // every other job would fail the same way
+  }
+  return { submitted, error: lastError };
+}
+
+/**
+ * RingSense for RingEX insights for one call (keyed by telephony session id).
+ * Stored in the same table under source `ringsense` so a second look is free.
+ */
+async function rcRingSenseInsights(
+  account: RingCentralAccount,
+  origin: string,
+  headers: Record<string, string>,
+  telephonySessionId: string,
+  meta: Partial<RcInsightRow>,
+): Promise<{ row: RcInsightRow | null; error: string; code: string }> {
+  const scope = rcScope(account);
+  const existing = await adminClient()
+    .from(RC_INSIGHTS_TABLE)
+    .select(RC_INSIGHT_COLUMNS)
+    .eq('store_key', account.store_key)
+    .eq('source', 'ringsense')
+    .eq('telephony_session_id', telephonySessionId)
+    .maybeSingle();
+  if (existing.error && isInsightsTableMissing(existing.error)) {
+    return { row: null, error: RC_INSIGHTS_TABLE_MESSAGE, code: 'ringcentral_unconfigured' };
+  }
+  const have = (existing.data as RcInsightRow | null) || null;
+  if (have && have.status === 'done') return { row: have, error: '', code: '' };
+  if (rcGroupBlocked(scope, 'heavy') || !rcTakeHeavy(scope)) {
+    return { row: have, error: RC_RATE_LIMIT_MESSAGE, code: 'throttled' };
+  }
+  const result = await rcJson(
+    `${origin}/ai/ringsense/v1/public/accounts/~/domains/pbx/records/${encodeURIComponent(telephonySessionId)}/insights`,
+    { method: 'GET', headers },
+  );
+  noteRcRateHeaders(scope, result);
+  const now = new Date().toISOString();
+  const base = {
+    store_key: account.store_key,
+    store_name: account.store_name,
+    telephony_session_id: telephonySessionId,
+    recording_id: String(meta.recording_id || ''),
+    call_log_id: String(meta.call_log_id || ''),
+    source: 'ringsense',
+    language_code: 'auto',
+    direction: String(meta.direction || ''),
+    from_number: String(meta.from_number || ''),
+    from_name: String(meta.from_name || ''),
+    to_number: String(meta.to_number || ''),
+    to_name: String(meta.to_name || ''),
+    duration: Number(meta.duration) || 0,
+    call_started_at: meta.call_started_at || null,
+    requested_by: meta.requested_by || null,
+    updated_at: now,
+  };
+  if (!result.ok) {
+    const raw = `${rcErrorMessage(result.payload, '')} ${JSON.stringify(result.payload ?? '')}`;
+    const forbidden = result.status === 403 || /RAH-3005|do not have valid permission/i.test(raw);
+    const notReady = result.status === 404 || /RAH-|not found|no insight/i.test(raw);
+    const message = forbidden
+      ? RC_RINGSENSE_PERMISSION_MESSAGE
+      : notReady
+        ? 'RingSense has no insights for this call yet (it needs a RingSense-recorded call, and processing can take a few minutes).'
+        : rcErrorMessage(result.payload, 'Could not load RingSense insights.');
+    const code = forbidden ? 'ringsense_forbidden' : notReady ? 'ringsense_not_ready' : 'bad_request';
+    const { data } = await adminClient()
+      .from(RC_INSIGHTS_TABLE)
+      .upsert({ ...base, status: 'failed', error: message.slice(0, 500), result: null }, {
+        onConflict: 'store_key,source,recording_id,telephony_session_id',
+      })
+      .select(RC_INSIGHT_COLUMNS)
+      .maybeSingle();
+    return { row: (data as RcInsightRow | null) || null, error: message, code };
+  }
+  const { data, error: writeError } = await adminClient()
+    .from(RC_INSIGHTS_TABLE)
+    .upsert({ ...base, status: 'done', error: '', result: result.payload ?? null, completed_at: now }, {
+      onConflict: 'store_key,source,recording_id,telephony_session_id',
+    })
+    .select(RC_INSIGHT_COLUMNS)
+    .maybeSingle();
+  if (writeError) return { row: null, error: writeError.message || 'Could not save RingSense insights.', code: 'bad_request' };
+  return { row: (data as RcInsightRow | null) || null, error: '', code: '' };
+}
+
+/** Unauthenticated callback from RingCentral's AI service; the per-job signature is the credential. */
+async function handleRingCentralAiWebhook(req: Request, query: URLSearchParams): Promise<Response> {
+  const rowId = String(query.get('job') || '').trim();
+  const sig = String(query.get('sig') || '').trim();
+  if (!/^[0-9a-f-]{36}$/i.test(rowId) || !sig) return error(req, 400, 'Missing job.', 'bad_request');
+  const expected = await rcInsightSignature(rowId);
+  if (!secretsMatch(sig, expected)) return error(req, 403, 'Bad signature.', 'forbidden');
+
+  // RingCentral first validates the webhook with an empty/handshake request
+  // (it expects the `Validation-Token` echoed back); real results are JSON.
+  const validation = req.headers.get('validation-token');
+  if (validation) {
+    return new Response(null, { status: 200, headers: { 'Validation-Token': validation, ...corsHeaders(req) } });
+  }
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = await readJson<Record<string, unknown>>(req, 8 * 1024 * 1024);
+  } catch {
+    return error(req, 400, 'Bad JSON.', 'bad_request');
+  }
+  const status = String(payload.status || '').toLowerCase();
+  const response = payload.response ?? payload;
+  const failed = status === 'fail' || (response && typeof response === 'object' && Array.isArray((response as { errors?: unknown[] }).errors));
+  const failure = failed
+    ? String(
+        ((response as { errors?: { message?: string }[] })?.errors || [])
+          .map((item) => item?.message)
+          .filter(Boolean)
+          .join('; ') || 'RingCentral AI could not analyze this recording.',
+      )
+    : '';
+  const now = new Date().toISOString();
+  const { error: writeError } = await adminClient()
+    .from(RC_INSIGHTS_TABLE)
+    .update({
+      status: failed ? 'failed' : 'done',
+      result: failed ? null : response,
+      error: failure.slice(0, 500),
+      job_id: String(payload.jobId || '') || undefined,
+      completed_at: now,
+      updated_at: now,
+    })
+    .eq('id', rowId)
+    .eq('source', 'rc_ai');
+  if (writeError) {
+    console.error('ringcentral ai webhook', writeError.message);
+    return error(req, 500, 'Could not store the result.', 'misconfigured');
+  }
+  return json(req, 200, { ok: true });
+}
+
+async function handleRingCentralRecordingContent(req: Request, query: URLSearchParams): Promise<Response> {
+  const storeKey = storeKeyOf(query.get('storeKey') || '');
+  const recordingId = rcSafeId(query.get('recordingId'));
+  if (!storeKey || !recordingId) return error(req, 400, 'Missing recording.', 'bad_request');
+
+  const session = await ringCentralSession(req, storeKey);
+  if ('response' in session) return session.response;
+  const { account, origin, headers } = session;
+  const scope = rcScope(account);
+  // Recording content is Heavy (10/min per user) and shared with the call log poll.
+  if (rcGroupBlocked(scope, 'heavy') || !rcTakeHeavy(scope)) {
+    return error(req, 429, RC_RATE_LIMIT_MESSAGE, 'throttled');
+  }
+  const url = `${rcMediaOrigin(origin)}/restapi/v1.0/account/~/recording/${recordingId}/content`;
+  const range = req.headers.get('range');
+  const upstream = await forward(
+    url,
+    { method: 'GET', headers: { Authorization: headers.Authorization, ...(range ? { Range: range } : {}) } },
+    60_000,
+  );
+  if (!upstream.ok && upstream.status !== 206) {
+    const payload = await upstream.json().catch(() => null);
+    const message = rcErrorMessage(
+      payload,
+      upstream.status === 404
+        ? 'That recording is no longer available (RingCentral keeps recordings for a limited time).'
+        : 'Could not load that recording.',
+    );
+    return error(req, upstream.status === 429 ? 429 : 400, message, upstream.status === 429 ? 'throttled' : 'bad_request');
+  }
+  const response = passthroughResponse(req, upstream);
+  for (const name of ['Accept-Ranges', 'Content-Range', 'Content-Disposition']) {
+    const value = upstream.headers.get(name);
+    if (value) response.headers.set(name, value);
+  }
+  return response;
+}
+
+async function handleRingCentralPhone(req: Request, staff: StaffContext): Promise<Response> {
   const body = await readJson<{
     action?: string;
     storeKey?: string;
@@ -6259,7 +6918,12 @@ async function handleRingCentralPhone(req: Request): Promise<Response> {
     storePhone?: string; // legacy hint from older web builds; attribution is by extension now
     dateFrom?: string; // `history`: ISO window start
     dateTo?: string; // `history`: ISO window end (exclusive)
-  }>(req);
+    recordingId?: string; // `record`: pause/resume an on-demand recording
+    active?: boolean; // `record`: false pauses, true resumes (omit to start)
+    languageCode?: string; // `analyze`: language spoken on the recording (en-US, fr-CA, …)
+    calls?: unknown[]; // `analyze`: call-log rows to send to RingCentral AI
+    ids?: unknown[]; // `insights`: restrict to these insight row ids
+  }>(req, 96 * 1024);
   const action = String(body.action || 'presence').trim().toLowerCase();
   const storeKey = storeKeyOf(body.storeKey || body.storeName || '');
   if (!storeKey) return error(req, 400, 'Choose a store.', 'bad_request');
@@ -6534,6 +7198,268 @@ async function handleRingCentralPhone(req: Request): Promise<Response> {
       return json(req, 200, { store: publicRingCentralAccount(account), liveCalls, ok: true });
     }
 
+    if (action === 'callout') {
+      // Call Control "Make CallOut": RingCentral rings the store's device
+      // first (the browser registered through `sip`, so the INVITE carries
+      // Alert-Info: Auto Answer and the softphone picks it up by itself), then
+      // dials `to` as the second leg. Unlike a SIP INVITE from the browser the
+      // telephony session and party ids are known immediately, so the call can
+      // be recorded, transferred or hung up through the API from the start.
+      const rawTo = String(body.to || '').trim();
+      const digits = rcDigits(rawTo);
+      if (!digits) return error(req, 400, 'Enter a number to call.', 'bad_request');
+      const isExtension = digits.length <= 6 && !rawTo.startsWith('+');
+      const toParty = isExtension ? { extensionNumber: digits } : { phoneNumber: rcE164(rawTo) };
+      const scope = rcScope(account);
+      const ext = await resolveStoreExtensions(account, origin, headers);
+      const deviceId = rcSafeId(body.deviceId) || (await firstRingCentralDevice(origin, headers));
+      if (!deviceId) {
+        return error(
+          req,
+          400,
+          'No phone is registered for this line. Allow the microphone in this browser so the app can be the phone, or sign in to the RingCentral app.',
+          'ringcentral_no_device',
+        );
+      }
+      if (rcGroupBlocked(scope, 'heavy') || !rcTakeHeavy(scope)) {
+        return error(req, 429, RC_RATE_LIMIT_MESSAGE, 'throttled');
+      }
+      const place = (extra: Record<string, unknown> = {}) =>
+        rcJson(`${origin}/restapi/v1.0/account/~/telephony/call-out`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ from: { deviceId }, to: toParty, ...extra }),
+        });
+      let result = await place();
+      noteRcRateHeaders(scope, result);
+      if (!result.ok && /countryId/i.test(JSON.stringify(result.payload ?? ''))) {
+        // Some accounts insist on the caller's country for the dial plan.
+        const countryId = await rcHomeCountryId(account, origin, headers).catch(() => '');
+        if (countryId && rcTakeHeavy(scope)) {
+          result = await place({ countryId: { id: countryId } });
+          noteRcRateHeaders(scope, result);
+        }
+      }
+      if (!result.ok) {
+        rcPresenceCache.delete(storeKey);
+        account.live_calls_at = null;
+        const deviceRejected = isRingCentralDeviceRejected(result);
+        return error(
+          req,
+          result.status === 429 ? 429 : 400,
+          rcErrorMessage(
+            result.payload,
+            deviceRejected
+              ? 'RingCentral would not place the call from this browser’s device.'
+              : 'Could not start the call.',
+          ),
+          result.status === 429 ? 'throttled' : deviceRejected ? 'ringcentral_callout_rejected' : 'bad_request',
+        );
+      }
+      const call = rcCallOutLiveCall(account, result.payload, ext);
+      rcPresenceCache.delete(storeKey);
+      account.live_calls_at = null;
+      if (call) {
+        rcSessionCache.delete(call.telephonySessionId);
+        // Seed presence so the next poll (and other tabs) see the call right away.
+        const cached = cachedLiveCalls(account)?.calls || [];
+        rememberLiveCalls(account, [...cached.filter((row) => row.id !== call.id), call]);
+      }
+      return json(req, 200, {
+        store: publicRingCentralAccount(account),
+        call,
+        liveCalls: cachedLiveCalls(account)?.calls || (call ? [call] : []),
+      });
+    }
+
+    if (action === 'record') {
+      // On-demand recording of the store's leg (Call Control, Light group).
+      // Start: POST …/recordings → { id, active }. Pause/resume: PATCH with
+      // { active }. The finished recording shows up on the call-log row.
+      const telephonySessionId = rcSafeId(body.telephonySessionId);
+      if (!telephonySessionId) return error(req, 400, 'That call is no longer available.', 'bad_request');
+      const resolved = await rcResolveStoreParty(account, origin, headers, telephonySessionId, rcSafeId(body.partyId));
+      if (resolved.gone) return error(req, 409, 'That call already ended.', 'ringcentral_wrong_state');
+      const partyId = resolved.party?.partyId || rcSafeId(body.partyId);
+      if (!partyId) return error(req, 409, 'That call already ended.', 'ringcentral_wrong_state');
+      if (resolved.party && !/^(Answered|Hold)$/i.test(resolved.party.status)) {
+        return error(req, 409, 'Recording can start once the call is connected.', 'ringcentral_wrong_state');
+      }
+      const base = `${origin}/restapi/v1.0/account/~/telephony/sessions/${telephonySessionId}/parties/${partyId}/recordings`;
+      const recordingId = rcSafeId(body.recordingId);
+      const result = recordingId
+        ? await rcJson(`${base}/${recordingId}?brandId=~`, {
+            method: 'PATCH',
+            headers,
+            body: JSON.stringify({ active: body.active !== false }),
+          })
+        : await rcJson(base, { method: 'POST', headers, body: '{}' });
+      noteRcRateHeaders(rcScope(account), result);
+      rcSessionCache.delete(telephonySessionId);
+      if (!result.ok) {
+        if (isRingCentralWrongState(result)) {
+          return error(req, 409, 'That call already ended or cannot be recorded right now.', 'ringcentral_wrong_state');
+        }
+        const raw = JSON.stringify(result.payload ?? '');
+        const message = /feature|not available|not enabled|OnDemand/i.test(raw)
+          ? 'On-demand call recording is not enabled for this RingCentral user. An admin can turn it on under Users → Call recording.'
+          : rcErrorMessage(result.payload, 'Could not change the recording.');
+        return error(req, result.status === 429 ? 429 : 400, message, result.status === 429 ? 'throttled' : 'bad_request');
+      }
+      const row = (result.payload || {}) as { id?: string | number; active?: boolean };
+      return json(req, 200, {
+        store: publicRingCentralAccount(account),
+        recording: {
+          id: String(row.id || recordingId || ''),
+          active: recordingId ? body.active !== false : row.active !== false,
+          telephonySessionId,
+          partyId,
+        },
+      });
+    }
+
+    if (action === 'analyze') {
+      // Queue recorded calls for RingCentral AI (Interaction Analytics) and
+      // submit as many as this minute's Heavy budget allows. Results land on
+      // the webhook; `insights` returns them.
+      const rows = (Array.isArray(body.calls) ? body.calls : []).slice(0, RC_INSIGHTS_BATCH_MAX);
+      const language = rcAiLanguage(body.languageCode);
+      const now = new Date().toISOString();
+      const upserts: Record<string, unknown>[] = [];
+      for (const raw of rows) {
+        if (!raw || typeof raw !== 'object') continue;
+        const item = raw as Record<string, unknown>;
+        const recordingId = rcSafeId(item.recordingId);
+        if (!recordingId) continue;
+        upserts.push({
+          store_key: account.store_key,
+          store_name: account.store_name,
+          telephony_session_id: rcSafeId(item.telephonySessionId),
+          recording_id: recordingId,
+          call_log_id: rcSafeId(item.id),
+          source: 'rc_ai',
+          status: 'queued',
+          language_code: language,
+          direction: String(item.direction || '').slice(0, 20),
+          from_number: String(item.from || '').slice(0, 40),
+          from_name: String(item.fromName || '').slice(0, 120),
+          to_number: String(item.to || '').slice(0, 40),
+          to_name: String(item.toName || '').slice(0, 120),
+          duration: Number(item.duration) || 0,
+          call_started_at: Date.parse(String(item.startTime || '')) ? new Date(String(item.startTime)).toISOString() : null,
+          requested_by: staff.userId,
+          error: '',
+          result: null,
+          completed_at: null,
+          updated_at: now,
+        });
+      }
+      if (!upserts.length) return error(req, 400, 'Pick at least one recorded call.', 'bad_request');
+      // Re-queue only rows that never finished; a completed analysis is kept.
+      const keys = upserts.map((row) => String(row.recording_id));
+      const existing = await adminClient()
+        .from(RC_INSIGHTS_TABLE)
+        .select('recording_id, status')
+        .eq('store_key', account.store_key)
+        .eq('source', 'rc_ai')
+        .in('recording_id', keys);
+      if (existing.error) {
+        if (isInsightsTableMissing(existing.error)) {
+          return error(req, 400, RC_INSIGHTS_TABLE_MESSAGE, 'ringcentral_unconfigured');
+        }
+        return error(req, 400, existing.error.message || 'Could not queue the analysis.', 'bad_request');
+      }
+      const done = new Set(
+        ((existing.data || []) as { recording_id: string; status: string }[])
+          .filter((row) => row.status === 'done' || row.status === 'processing')
+          .map((row) => row.recording_id),
+      );
+      const fresh = upserts.filter((row) => !done.has(String(row.recording_id)));
+      if (fresh.length) {
+        const { error: writeError } = await adminClient()
+          .from(RC_INSIGHTS_TABLE)
+          .upsert(fresh, { onConflict: 'store_key,source,recording_id,telephony_session_id' });
+        if (writeError) return error(req, 400, writeError.message || 'Could not queue the analysis.', 'bad_request');
+      }
+      const drained = await rcDrainInsightJobs(account, origin, headers);
+      const list = await adminClient()
+        .from(RC_INSIGHTS_TABLE)
+        .select(RC_INSIGHT_COLUMNS)
+        .eq('store_key', account.store_key)
+        .in('recording_id', keys)
+        .order('created_at', { ascending: false });
+      return json(req, 200, {
+        store: publicRingCentralAccount(account),
+        queued: fresh.length,
+        submitted: drained.submitted,
+        skipped: upserts.length - fresh.length,
+        aiError: drained.error,
+        insights: ((list.data || []) as RcInsightRow[]).map(publicInsightRow),
+      });
+    }
+
+    if (action === 'insights') {
+      // Stored analyses for this store (RingCentral AI and RingSense). Also
+      // pushes any still-queued jobs while there is Heavy budget to spare.
+      const ids = (Array.isArray(body.ids) ? body.ids : []).map((value) => String(value || '')).filter((value) =>
+        /^[0-9a-f-]{36}$/i.test(value),
+      );
+      let drained = { submitted: 0, error: '' };
+      try {
+        drained = await rcDrainInsightJobs(account, origin, headers, 3);
+      } catch (err) {
+        drained = { submitted: 0, error: err instanceof Error ? err.message : '' };
+      }
+      let query = adminClient()
+        .from(RC_INSIGHTS_TABLE)
+        .select(RC_INSIGHT_COLUMNS)
+        .eq('store_key', account.store_key)
+        .order('created_at', { ascending: false })
+        .limit(RC_INSIGHTS_LIST_MAX);
+      if (ids.length) query = query.in('id', ids);
+      const { data, error: queryError } = await query;
+      if (queryError) {
+        if (isInsightsTableMissing(queryError)) {
+          return json(req, 200, { store: publicRingCentralAccount(account), insights: [], aiError: RC_INSIGHTS_TABLE_MESSAGE, tableMissing: true });
+        }
+        return error(req, 400, queryError.message || 'Could not load analyses.', 'bad_request');
+      }
+      return json(req, 200, {
+        store: publicRingCentralAccount(account),
+        insights: ((data || []) as RcInsightRow[]).map(publicInsightRow),
+        submitted: drained.submitted,
+        aiError: drained.error,
+      });
+    }
+
+    if (action === 'ringsense') {
+      const telephonySessionId = rcSafeId(body.telephonySessionId);
+      if (!telephonySessionId) return error(req, 400, 'That call has no RingCentral session id.', 'bad_request');
+      const first = (Array.isArray(body.calls) ? body.calls : [])[0];
+      const item = (first && typeof first === 'object' ? first : {}) as Record<string, unknown>;
+      const outcome = await rcRingSenseInsights(account, origin, headers, telephonySessionId, {
+        recording_id: rcSafeId(item.recordingId),
+        call_log_id: rcSafeId(item.id),
+        direction: String(item.direction || ''),
+        from_number: String(item.from || ''),
+        from_name: String(item.fromName || ''),
+        to_number: String(item.to || ''),
+        to_name: String(item.toName || ''),
+        duration: Number(item.duration) || 0,
+        call_started_at: Date.parse(String(item.startTime || '')) ? new Date(String(item.startTime)).toISOString() : null,
+        requested_by: staff.userId,
+      });
+      if (outcome.error && !outcome.row?.result) {
+        const status = outcome.code === 'throttled' ? 429 : outcome.code === 'ringsense_forbidden' ? 403 : 400;
+        return error(req, status, outcome.error, outcome.code || 'bad_request');
+      }
+      return json(req, 200, {
+        store: publicRingCentralAccount(account),
+        insight: outcome.row ? publicInsightRow(outcome.row) : null,
+        aiError: outcome.error,
+      });
+    }
+
     return error(req, 400, 'Unknown phone action.', 'bad_request');
   } catch (err) {
     const message = ringCentralFailureMessage(err);
@@ -6580,6 +7506,15 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return preflight(req);
 
   const early = routePath(req);
+  if (early.path === '/ringcentral/ai-webhook' && req.method === 'POST') {
+    // RingCentral's AI service posts job results here; signed per job, no staff session.
+    try {
+      return await handleRingCentralAiWebhook(req, early.query);
+    } catch (err) {
+      console.error('ringcentral ai webhook', err instanceof Error ? err.message : err);
+      return error(req, 400, 'Webhook failed.', 'bad_request');
+    }
+  }
   if (early.path === '/rippling/time/mailbox' && req.method === 'POST') {
     try {
       return await handleRipplingTimeMailbox(req, await readBody(req));
@@ -6713,10 +7648,13 @@ Deno.serve(async (req) => {
       return await handleRingCentralDelete(req, staff);
     }
     if (path === '/ringcentral/phone' && req.method === 'POST') {
-      return await handleRingCentralPhone(req);
+      return await handleRingCentralPhone(req, staff);
     }
     if (path === '/ringcentral/voicemail-content' && req.method === 'GET') {
       return await handleRingCentralVoicemailContent(req, query);
+    }
+    if (path === '/ringcentral/recording-content' && req.method === 'GET') {
+      return await handleRingCentralRecordingContent(req, query);
     }
     return error(req, 404, 'Unknown proxy route.', 'not_found');
   } catch (err) {

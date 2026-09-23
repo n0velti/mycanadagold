@@ -49,6 +49,7 @@ import {
   formatShiftDate,
   formatShiftSpan,
   HOURS_MAILBOX,
+  RIPPLING_MAIL_CHECK_MS,
   hoursForPerson,
   shiftsForPerson,
   torontoToday,
@@ -173,15 +174,14 @@ function useHoursSummary(enabled) {
     refresh();
   }, [enabled, refresh]);
 
-  // The shift report by role arrives every 15 minutes. Re-read while this
-  // screen is open so each profile calendar follows that email.
-  useLiveRefresh(() => refresh(), SHIFT_REPORT_LIVE_MS, enabled);
+  // Look for a newer Rippling CSV every 7 minutes. Hours, clock-in, and
+  // shifts stay on the latest file until a newer attachment arrives.
+  useLiveRefresh(() => refresh(), RIPPLING_MAIL_CHECK_MS, enabled);
 
   return { summary, status, report, files, shifts, loading, refresh, setStatus };
 }
 
 const HISTORY_DAY_LIMIT = 14;
-const SHIFT_REPORT_LIVE_MS = 15 * 60_000;
 const REPORT_ROW_LIMIT = 80;
 
 function HoursSection({ hours, status }) {

@@ -4033,7 +4033,7 @@ function HomeStoreTableRow({
     />
   );
   const rowBody = (
-    <View style={[styles.homeStoreRowBody, !last && styles.homeStoreRowDivider]}>
+    <View style={styles.homeStoreRowBody}>
       <View style={styles.homeStoreColStore}>
         <Text style={styles.homeStoreName} numberOfLines={1}>
           {row.store}
@@ -4059,7 +4059,7 @@ function HomeStoreTableRow({
   if (!canOpen) {
     return (
       <View
-        style={[styles.homeStoreRow, styles.homeStoreRowStatic]}
+        style={[styles.homeStoreRow, !last && styles.homeStoreRowDivider, styles.homeStoreRowStatic]}
         accessibilityLabel={`${row.store}, ${open ? 'open' : 'closed'}`}
       >
         <HomeStoreStatusIcon accent={accent} open={open} compact />
@@ -4075,7 +4075,11 @@ function HomeStoreTableRow({
   if (Platform.OS === 'web') {
     return (
       <View
-        style={[styles.homeStoreRow, selected && styles.homeStoreRowSelected]}
+        style={[
+          styles.homeStoreRow,
+          !last && styles.homeStoreRowDivider,
+          selected && styles.homeStoreRowSelected,
+        ]}
         className={selected ? 'cgold-home-row cgold-home-row-selected' : 'cgold-home-row'}
       >
         <Pressable
@@ -4100,6 +4104,7 @@ function HomeStoreTableRow({
       onPress={() => onOpenStore(row)}
       style={({ hovered, pressed }) => [
         styles.homeStoreRow,
+        !last && styles.homeStoreRowDivider,
         !selected && (hovered || pressed) && styles.homeStoreRowHovered,
         selected && styles.homeStoreRowSelected,
       ]}
@@ -8935,6 +8940,7 @@ const styles = StyleSheet.create({
   },
   homeStoreRowForeground: {
     flex: 1,
+    alignSelf: 'stretch',
     flexDirection: 'row',
     alignItems: 'center',
     zIndex: 1,

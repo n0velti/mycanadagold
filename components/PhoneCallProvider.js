@@ -5,14 +5,17 @@ import { Ionicons } from '@expo/vector-icons';
 import {
   callPartyLabel,
   controlPhoneCall,
+  controlRecording,
   fetchPhoneInbox,
   fetchPhonePresence,
   fetchSipProvision,
   isCallGoneError,
+  isCallOutRejected,
   isPhoneRateLimitMessage,
   liveLogEntry,
   mergeCallLog,
   sameInboundCall,
+  startCallOut,
   startRingOut,
 } from '../lib/phoneCalls';
 import {
@@ -54,6 +57,8 @@ const SIP_CACHE_PREFIX = 'cgold.phone.sip.';
 const SIP_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
 const CALL_GONE_MESSAGE = 'That call already ended or was picked up elsewhere.';
 const ANSWERED_MS = 1_000;
+/** A call-out's auto-answer INVITE normally reaches the browser within a second or two. */
+const CALLOUT_INVITE_WINDOW_MS = 20_000;
 const ACCENT = '#15803D';
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -194,6 +199,8 @@ const PhoneCallContext = createContext({
   muted: false,
   toggleMute: () => {},
   sendDtmf: () => {},
+  recording: null,
+  toggleRecording: async () => {},
   webPhoneStatus: {},
   canDialInBrowser: () => false,
   inboxByStore: {},
@@ -262,6 +269,12 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
   const answeringRef = useRef(new Map());
   // Keys of calls this tab is hanging up itself (their SIP end is expected).
   const hangingUpRef = useRef(new Set());
+  // Call-outs placed from this tab whose auto-answer INVITE has not arrived yet:
+  // storeKey → { key, to, at }. The INVITE is the first leg of *our* outbound
+  // call, so it must never show up as an incoming call.
+  const pendingCallOutRef = useRef(new Map());
+  // On-demand recording of the active call: { id, active, callKey } or null.
+  const [recording, setRecording] = useState(null);
   // Remote-audio state per call key: 'playing' | 'blocked' | 'none'.
   const [audioState, setAudioState] = useState({});
   const requestId = useRef(0);
@@ -694,11 +707,58 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     setWebPhoneStatus((current) => ({ ...current, [storeKey]: { ...(current[storeKey] || {}), ...next } }));
   }, []);
 
+  /**
+   * The INVITE for a call-out's first leg: same telephony session as the
+   * call-out response, or (ids not matching yet) the only INVITE this store
+   * expects right now. Returns the pending entry, or null for a real inbound.
+   */
+  const matchPendingCallOut = useCallback((snapshot) => {
+    if (snapshot.direction === 'Outbound') return null;
+    const pending = pendingCallOutRef.current.get(snapshot.storeKey);
+    if (!pending) return null;
+    if (Date.now() - pending.at > CALLOUT_INVITE_WINDOW_MS) {
+      pendingCallOutRef.current.delete(snapshot.storeKey);
+      return null;
+    }
+    const key = callKey(snapshot);
+    if (key === pending.key) return pending;
+    if (snapshot.telephonySessionId && pending.key.startsWith('s-') && snapshot.telephonySessionId !== pending.key) {
+      return null; // A different session: someone really is calling the store.
+    }
+    // Ids unknown yet (the INVITE beat the call-out response): only an INVITE
+    // RingCentral marked for auto-answer can be our leg.
+    return snapshot.autoAnswer ? pending : null;
+  }, []);
+
   const onSipCall = useCallback(
     (snapshot) => {
       answeringRef.current.delete(callKey(snapshot));
+      const pending = matchPendingCallOut(snapshot);
+      if (pending) pendingCallOutRef.current.delete(snapshot.storeKey);
       updateCalls((state) => {
         const key = callKey(snapshot);
+        if (pending) {
+          // Our own call-out ringing this browser (auto-answered by the SDK):
+          // keep the outbound card, just attach the SIP leg to it.
+          const card = state.calls[pending.key] || state.calls[key] || null;
+          let next = state;
+          if (pending.key !== key && state.calls[pending.key]) next = rekeyCall(next, pending.key, snapshot);
+          if (!next.calls[key]) next = applySipCall(next, snapshot);
+          return patchCall(next, key, {
+            direction: 'Outbound',
+            status: card?.status && !isRingingStatus(card.status) ? card.status : 'Dialing',
+            from: card?.from || snapshot.to || '',
+            fromName: card?.fromName || '',
+            to: card?.to || pending.to || '',
+            toName: card?.toName || '',
+            telephonySessionId: snapshot.telephonySessionId || card?.telephonySessionId || key,
+            partyId: card?.partyId || snapshot.partyId || '',
+            callId: snapshot.callId || card?.callId || '',
+            callOut: true,
+            sip: true,
+            web: true,
+          });
+        }
         const existing = state.calls[key];
         const next = applySipCall(state, snapshot);
         // A call-control Answer lands here as a fresh auto-answered INVITE: the
@@ -709,7 +769,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
         return next;
       });
     },
-    [updateCalls],
+    [matchPendingCallOut, updateCalls],
   );
 
   const onSipAudio = useCallback((snapshot, state) => {
@@ -783,7 +843,9 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
           answeringRef.current.delete(key);
           // Outbound: the SIP server accepts the INVITE right away, so this is
           // not the callee picking up. Presence flips it to connected later.
-          if (snapshot.direction === 'Outbound') return patchCall(next, key, { web: true });
+          // A call-out's first leg is the same: the browser just accepted its
+          // own leg; RingCentral is still dialling the other party.
+          if (snapshot.direction === 'Outbound' || next.calls[key]?.callOut) return patchCall(next, key, { web: true });
           return markAnswered(next, key);
         }
         return patchCall(next, key, {
@@ -1436,9 +1498,48 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
   );
 
   /**
-   * Place a call. From a browser registered as the store phone the call is
-   * made here with audio; elsewhere RingOut rings the store phone first and
-   * then dials the number.
+   * On-demand recording of the active call through Call Control. First press
+   * starts a recording; later presses pause / resume it. The finished file
+   * appears on the call-log row (Recordings tab) a minute or two after hang-up.
+   */
+  const toggleRecording = useCallback(
+    () =>
+      perform(async () => {
+        const target = activeCall;
+        if (!target) throw new Error('There is no call to record.');
+        if (!isConnectedStatus(target.status)) throw new Error('Recording can start once the call is connected.');
+        if (!target.telephonySessionId) throw new Error('This call has no RingCentral session id yet. Try again in a moment.');
+        const key = callKey(target);
+        if (recording && recording.callKey === key && recording.id) {
+          const next = await controlRecording(target, { recordingId: recording.id, active: !recording.active });
+          const state = { id: next.id || recording.id, active: next.active, callKey: key };
+          setRecording(state);
+          return state;
+        }
+        const next = await controlRecording(target);
+        const state = { id: next.id, active: next.active, callKey: key };
+        setRecording(state);
+        return state;
+      }),
+    [activeCall, perform, recording],
+  );
+
+  useEffect(() => {
+    if (!recording) return;
+    if (!activeCall || callKey(activeCall) !== recording.callKey) setRecording(null);
+  }, [activeCall, recording]);
+
+  /**
+   * Place a call. From a browser registered as the store phone:
+   *
+   *  1. Call Control "call-out" from this browser's device. RingCentral rings
+   *     the device (the softphone auto-answers the Alert-Info INVITE) and then
+   *     dials the number; the telephony session is known from the start, so
+   *     the call can be recorded or ended through the API right away.
+   *  2. If RingCentral will not place it from this device, a plain SIP INVITE
+   *     from the browser (the softphone's own `call()`).
+   *
+   * Elsewhere RingOut rings the store phone first and then dials the number.
    */
   const dial = useCallback(
     (to, { storeKey: wanted = '', from = '' } = {}) =>
@@ -1450,6 +1551,63 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
         if (activeCall) throw new Error('Finish the current call before placing another.');
 
         const line = webPhoneFor(storeKey);
+        if (Platform.OS === 'web' && line.ready && line.deviceId) {
+          // Still inside the click: unlock speaker + microphone before any await,
+          // because the auto-answered leg needs both without a second gesture.
+          primeCallAudio();
+          try {
+            await ensureMicrophone();
+          } catch (err) {
+            throw new Error(microphoneMessage(err, 'call') || err?.message || 'This browser has no microphone access.');
+          }
+          try {
+            await line.handle.ensureConnected({ verify: true });
+          } catch {
+            // Not registered right now: RingCentral would ring a dead device.
+            // Skip call-out; the SIP path below re-checks and RingOut remains.
+          }
+          if (line.handle.isConnected()) {
+            const placeholder = `callout:${storeKey}:${Date.now()}`;
+            pendingCallOutRef.current.set(storeKey, { key: placeholder, to: callee, at: Date.now() });
+            try {
+              const result = await startCallOut(storeKey, callee, line.deviceId);
+              const call = result.call;
+              if (call?.telephonySessionId) {
+                const key = callKey(call);
+                updateCalls((state) => {
+                  if (state.calls[key]) {
+                    // The auto-answer INVITE already arrived and opened the card.
+                    return patchCall(state, key, {
+                      from: state.calls[key].from || call.from,
+                      to: state.calls[key].to || call.to || callee,
+                      partyId: call.partyId || state.calls[key].partyId,
+                      direction: 'Outbound',
+                      callOut: true,
+                      web: true,
+                    });
+                  }
+                  const opened = applySipCall(state, { ...call, status: 'Dialing', to: call.to || callee });
+                  // No SIP leg here yet: presence, not the softphone, decides
+                  // when this card goes away (with the usual grace period).
+                  return patchCall(opened, key, { sip: false, web: true, callOut: true });
+                });
+                const pending = pendingCallOutRef.current.get(storeKey);
+                if (pending && pending.key === placeholder) {
+                  pendingCallOutRef.current.set(storeKey, { ...pending, key });
+                }
+                setMuted(false);
+                return { web: true, callOut: true, call };
+              }
+              pendingCallOutRef.current.delete(storeKey);
+            } catch (err) {
+              pendingCallOutRef.current.delete(storeKey);
+              const fallbackToSip =
+                isCallOutRejected(err) || err?.code === 'throttled' || err?.status === 429 || err?.status === 502;
+              if (!fallbackToSip) throw new Error(err?.message || 'Could not start the call.');
+              console.warn('[phone] call-out unavailable, dialling over SIP', err?.code || err?.status, err?.message);
+            }
+          }
+        }
         if (Platform.OS === 'web' && line.ready) {
           const callerId = sipCallee(from) && line.callerIds.some((n) => sipCallee(n) === sipCallee(from))
             ? sipCallee(from)
@@ -1504,6 +1662,9 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       muted,
       toggleMute,
       sendDtmf,
+      /** On-demand recording of the active call: { id, active, callKey } | null */
+      recording: activeCall && recording?.callKey === callKey(activeCall) ? recording : null,
+      toggleRecording,
       /** Remote audio for the active call: 'playing' | 'blocked' | 'none' | '' */
       audioState: activeCall ? audioState[activeCall.id] || '' : '',
       resumeAudio,
@@ -1554,6 +1715,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       mergedCallsByStore,
       muted,
       recentAnswered,
+      recording,
       refreshInbox,
       refreshPresence,
       reject,
@@ -1570,6 +1732,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       stores,
       syncStoreAccounts,
       toggleMute,
+      toggleRecording,
       watchPrefs,
       watchedStores,
       webPhoneStatus,

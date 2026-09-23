@@ -13,6 +13,7 @@ import {
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
 import { activeCallKicker, usePhoneCalls } from './PhoneCallProvider';
+import CallRecordingsPanel from './CallRecordingsPanel';
 import { fetchTransferStores } from '../lib/locations';
 import { formatDateParam, formatPickerDate, parseDateParam } from '../lib/transactions';
 import {
@@ -21,6 +22,7 @@ import {
   fetchVoicemailAudioUrl,
   formatCallWhen,
   formatDuration,
+  hasRecording,
   inboundCallsUnique,
   inboundCallRatio,
   isAnsweredInbound,
@@ -52,6 +54,7 @@ const TABS = [
   { key: 'log', label: 'Call log' },
   { key: 'dial', label: 'Making calls' },
   { key: 'voicemail', label: 'Voicemail' },
+  { key: 'recordings', label: 'Recordings & AI' },
   { key: 'stats', label: 'Ratio' },
 ];
 const KEYPAD = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#'];
@@ -316,11 +319,15 @@ function CallHistoryRow({ row, inbound = true, showDirection = false, onCallback
             resultLabel(row.result),
             formatCallWhen(row.startTime),
             row.duration ? formatDuration(row.duration) : '',
+            hasRecording(row) ? 'Recorded' : '',
           ]
             .filter(Boolean)
             .join(' · ')}
         </Text>
       </View>
+      {hasRecording(row) ? (
+        <Ionicons name="recording-outline" size={14} color="#8a8a8a" accessibilityLabel="Recorded" />
+      ) : null}
       {onCallback ? (
         <Pressable
           style={[styles.callbackBtn, (callbackBusy || callbackDisabled) && styles.callbackBtnDisabled]}
@@ -1737,6 +1744,26 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
                   <Ionicons name={phone.muted ? 'mic-off' : 'mic'} size={14} color={phone.muted ? '#B45309' : '#1a1a1a'} />
                 </Pressable>
               ) : null}
+              {canManage && activeCall.telephonySessionId ? (
+                <Pressable
+                  style={[styles.callBtn, styles.muteBtn, phone.recording?.active && styles.recordBtnOn]}
+                  onPress={() => phone.toggleRecording?.().catch?.(() => {})}
+                  disabled={phone.busy || !isConnectedStatus(activeCall.status)}
+                  accessibilityLabel={
+                    phone.recording?.active
+                      ? 'Pause recording'
+                      : phone.recording
+                        ? 'Resume recording'
+                        : 'Record this call'
+                  }
+                >
+                  <Ionicons
+                    name={phone.recording?.active ? 'stop-circle' : 'radio-button-on'}
+                    size={14}
+                    color={phone.recording?.active ? '#fff' : '#B91C1C'}
+                  />
+                </Pressable>
+              ) : null}
               <Pressable
                 style={[styles.callBtn, styles.rejectBtn, phone.busy && styles.placeCallDisabled]}
                 onPress={endCall}
@@ -2023,6 +2050,17 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
               })
             )}
           </View>
+        ) : null}
+
+        {tab === 'recordings' ? (
+          <CallRecordingsPanel
+            storeKey={storeKey}
+            storeName={activeAccount?.storeName || storeKey}
+            calls={visibleCalls}
+            loading={inboxLoading}
+            rangeLabel={rangeLabel}
+            canManage={canManage}
+          />
         ) : null}
 
         {tab === 'stats' ? (
@@ -3196,6 +3234,10 @@ const styles = StyleSheet.create({
   muteBtnOn: {
     backgroundColor: '#FEF3C7',
     borderColor: '#F59E0B',
+  },
+  recordBtnOn: {
+    backgroundColor: '#B91C1C',
+    borderColor: '#B91C1C',
   },
   soundBtn: {
     backgroundColor: '#FCD34D',
