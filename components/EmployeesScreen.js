@@ -29,7 +29,7 @@ import {
 import { syncStaffRoles } from '../lib/auth';
 import { reloadClockedIn } from '../lib/clockedIn';
 import { mergeEmployeesWithProfiles } from '../lib/aureusEmployees';
-import { getGmailRedirectUri } from '../lib/gmail';
+import { getGmailRedirectUri, loadGmailOAuthApp } from '../lib/gmail';
 import { categoryLabel, listStaffProfiles, useAppAccess } from '../lib/permissions';
 import {
   buildHoursAuthorizeUrl,
@@ -48,6 +48,7 @@ import {
   formatRelativeTime,
   formatShiftDate,
   formatShiftSpan,
+  HOURS_MAILBOX,
   hoursForPerson,
   shiftsForPerson,
   torontoToday,
@@ -56,6 +57,7 @@ import {
   summarizeTimeEntries,
   syncHoursFeed,
   uploadRipplingCsvFiles,
+  setHoursFeedSource,
 } from '../lib/ripplingTime';
 import { useLiveRefresh } from '../lib/liveRefresh';
 import { useIsMobile } from '../lib/mobileUi';
@@ -369,17 +371,59 @@ function todayShiftLabel(shifts) {
   return ['Today', formatShiftSpan(first), first.role].filter(Boolean).join(' · ');
 }
 
+function minuteGap(actual, scheduled) {
+  if (!(actual instanceof Date) || !(scheduled instanceof Date)) return null;
+  if (Number.isNaN(actual.getTime()) || Number.isNaN(scheduled.getTime())) return null;
+  return Math.round((actual.getTime() - scheduled.getTime()) / 60000);
+}
+
+function gapPhrase(minutes) {
+  if (minutes == null) return '';
+  const abs = Math.abs(minutes);
+  if (abs < 1) return 'on time';
+  return minutes < 0 ? `${abs}m early` : `${abs}m late`;
+}
+
 function ShiftScheduleSection({ personKey, shifts, status }) {
   const list = useMemo(() => (Array.isArray(shifts) ? shifts : []), [shifts]);
   const today = torontoToday();
   const [month, setMonth] = useState(() => monthStartKey(today));
   const [selected, setSelected] = useState(today);
+  const [punches, setPunches] = useState([]);
   const byDate = useMemo(() => shiftsByDate(list), [list]);
+  const punchesByDate = useMemo(() => {
+    const map = new Map();
+    for (const punch of punches) {
+      if (!punch?.date) continue;
+      const bucket = map.get(punch.date) || [];
+      bucket.push(punch);
+      map.set(punch.date, bucket);
+    }
+    return map;
+  }, [punches]);
 
   useEffect(() => {
     setMonth(monthStartKey(today));
     setSelected(today);
   }, [personKey, today]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!personKey) {
+      setPunches([]);
+      return undefined;
+    }
+    fetchTimeEntries(personKey)
+      .then((rows) => {
+        if (!cancelled) setPunches(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setPunches([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [personKey, status?.lastSyncedAt]);
 
   const reported = status?.shiftReportedAt;
   const updated = reported ? formatRelativeTime(reported) : '';
@@ -417,6 +461,13 @@ function ShiftScheduleSection({ personKey, shifts, status }) {
     list.filter((shift) => shift.date.slice(0, 7) === month.slice(0, 7)).map((shift) => shift.role).filter(Boolean),
   )];
   const selectedShifts = byDate.get(selected) || [];
+  const selectedPunches = punchesByDate.get(selected) || [];
+  const shiftStart = selectedShifts.map((shift) => shift.start).filter(Boolean).sort((a, b) => a - b)[0] || null;
+  const shiftEnd = selectedShifts.map((shift) => shift.end).filter(Boolean).sort((a, b) => b - a)[0] || null;
+  const punchStart = selectedPunches.map((punch) => punch.start).filter(Boolean).sort((a, b) => a - b)[0] || null;
+  const punchEnd = selectedPunches.map((punch) => punch.end).filter(Boolean).sort((a, b) => b - a)[0] || null;
+  const inGap = gapPhrase(minuteGap(punchStart, shiftStart));
+  const outGap = gapPhrase(minuteGap(punchEnd, shiftEnd));
   const next = list.find((shift) => shift.date >= today);
 
   return (
@@ -459,6 +510,7 @@ function ShiftScheduleSection({ personKey, shifts, status }) {
           {cells.map((date, index) => {
             if (!date) return <View key={`empty-${month}-${index}`} style={styles.calCell} />;
             const dayShifts = byDate.get(date) || [];
+            const dayPunches = punchesByDate.get(date) || [];
             const isToday = date === today;
             const isSelected = date === selected;
             return (
@@ -468,7 +520,7 @@ function ShiftScheduleSection({ personKey, shifts, status }) {
                 style={[styles.calCell, isSelected && styles.calCellSelected]}
                 accessibilityRole="button"
                 accessibilityState={{ selected: isSelected }}
-                accessibilityLabel={`${formatShiftDate(date)}${dayShifts.length ? `, ${dayShifts.length} ${dayShifts.length === 1 ? 'shift' : 'shifts'}` : ', no shift'}`}
+                accessibilityLabel={`${formatShiftDate(date)}${dayShifts.length ? `, ${dayShifts.length} ${dayShifts.length === 1 ? 'shift' : 'shifts'}` : ''}${dayPunches.length ? `, clocked ${formatClock(dayPunches[0].start)}` : ', no shift'}`}
               >
                 <Text style={[styles.calDayNum, isToday && styles.calDayNumToday]}>{Number(date.slice(8))}</Text>
                 {dayShifts.slice(0, 2).map((shift, shiftIndex) => {
@@ -483,20 +535,23 @@ function ShiftScheduleSection({ personKey, shifts, status }) {
                   );
                 })}
                 {dayShifts.length > 2 ? <Text style={styles.calMore}>{`+${dayShifts.length - 2}`}</Text> : null}
+                {dayPunches.length ? <View style={styles.calPunch} /> : null}
               </Pressable>
             );
           })}
         </View>
-        {monthRoles.length ? (
-          <View style={styles.roleLegend}>
-            {monthRoles.map((role) => (
-              <View key={role} style={styles.roleLegendItem}>
-                <View style={[styles.roleDot, { backgroundColor: roleColor(role).fg }]} />
-                <Text style={styles.roleLegendText}>{role}</Text>
-              </View>
-            ))}
+        <View style={styles.roleLegend}>
+          <View style={styles.roleLegendItem}>
+            <View style={[styles.roleDot, { backgroundColor: '#248A3D' }]} />
+            <Text style={styles.roleLegendText}>Clock punch</Text>
           </View>
-        ) : null}
+          {monthRoles.map((role) => (
+            <View key={role} style={styles.roleLegendItem}>
+              <View style={[styles.roleDot, { backgroundColor: roleColor(role).fg }]} />
+              <Text style={styles.roleLegendText}>{role}</Text>
+            </View>
+          ))}
+        </View>
       </View>
       <View style={styles.hoursDay}>
         <Text style={styles.hoursDayTitle}>{formatShiftDate(selected)}</Text>
@@ -516,6 +571,20 @@ function ShiftScheduleSection({ personKey, shifts, status }) {
             <GroupRow label="Shift" value="No shift" last />
           </Group>
         )}
+        {selectedPunches.length ? (
+          <Group>
+            {selectedPunches.map((punch, index) => (
+              <GroupRow
+                key={punch.key || `${selected}-punch-${index}`}
+                label="Clock"
+                value={`${formatClock(punch.start)} – ${punch.end ? formatClock(punch.end) : 'now'}`}
+                last={index === selectedPunches.length - 1 && !inGap && !outGap}
+              />
+            ))}
+            {inGap ? <GroupRow label="Against shift start" value={inGap} last={!outGap} /> : null}
+            {outGap ? <GroupRow label="Against shift end" value={outGap} last /> : null}
+          </Group>
+        ) : null}
       </View>
     </View>
   );
@@ -541,7 +610,7 @@ function shiftsForStaff(index, person) {
  * HR / GM / System Admin card: connect the inbox that receives the scheduled
  * Rippling time report, see the last import, force a check, or disconnect.
  */
-function HoursFeedCard({ status, onStatusChange, onRefresh, loading }) {
+function HoursFeedCard({ status, onStatusChange, onRefresh, loading, owner }) {
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -562,9 +631,11 @@ function HoursFeedCard({ status, onStatusChange, onRefresh, loading }) {
         clearHoursOAuthCallbackFromUrl();
         if (cancelled) return;
         onStatusChange?.(next);
-        if (next.syncError) setError(next.syncError);
+        const synced = await onRefresh?.({ force: true });
+        if (cancelled) return;
+        if (synced?.syncError) setError(synced.syncError);
+        else if (synced?.sync?.message) setNotice(synced.sync.message);
         else if (next.sync?.message) setNotice(next.sync.message);
-        onRefresh?.({ sync: false });
       } catch (err) {
         clearHoursOAuthState();
         clearHoursOAuthCallbackFromUrl();
@@ -578,17 +649,20 @@ function HoursFeedCard({ status, onStatusChange, onRefresh, loading }) {
     };
   }, [onRefresh, onStatusChange]);
 
-  const connect = () => {
+  const connect = async () => {
     setError('');
     setNotice('');
-    if (!status?.clientId) {
-      setError('The hours mailbox Google app is not ready yet.');
-      return;
-    }
+    setBusy('connect');
     try {
+      const app = await loadGmailOAuthApp();
+      if (!app?.configured || !app.clientId) {
+        setError('Google mail is not set up on the server yet.');
+        return;
+      }
       const url = buildHoursAuthorizeUrl({
-        clientId: status.clientId,
-        loginHint: status?.email || '',
+        clientId: app.clientId,
+        loginHint: HOURS_MAILBOX,
+        hostedDomain: app.hostedDomain || 'canadagold.ca',
       });
       if (typeof window !== 'undefined') {
         window.location.assign(url);
@@ -597,6 +671,8 @@ function HoursFeedCard({ status, onStatusChange, onRefresh, loading }) {
       Linking.openURL(url);
     } catch (err) {
       setError(err?.message || 'Could not start Google sign-in.');
+    } finally {
+      setBusy('');
     }
   };
 
@@ -644,6 +720,8 @@ function HoursFeedCard({ status, onStatusChange, onRefresh, loading }) {
         .join('\n')
     : 'Nothing imported yet';
 
+  const canConnect = Boolean(status?.canConnect || owner);
+
   return (
     <View style={styles.connectBar}>
       <View style={styles.connectInfo}>
@@ -654,12 +732,14 @@ function HoursFeedCard({ status, onStatusChange, onRefresh, loading }) {
         />
         <View style={styles.connectCopy}>
           <Text style={styles.connectTitle}>
-            {connected ? `Hours report · ${status.email}` : 'Hours report mailbox'}
+            {`Hours report · ${HOURS_MAILBOX}`}
           </Text>
           <Text style={styles.connectHint}>
             {connected
-              ? `${lastImport}\nReading ${status.email}. The newest CSV in that mailbox is what this screen shows.`
-              : `Connect ${status?.email || 'the hours mailbox'} with Google and allow “View your email messages and settings”. Rippling reads only that mailbox.`}
+              ? `${lastImport}\nCSV attachments from ${HOURS_MAILBOX} are what this screen uses. They keep updating even when that account is signed out.`
+              : canConnect
+                ? `CSV attachments are read from ${HOURS_MAILBOX}. Connect that Google account once and allow “View your email messages and settings”. Only those files are imported, including after you sign out.`
+                : `CSV attachments are read from ${HOURS_MAILBOX}. That account connects Google once. Other people cannot open the mailbox.`}
           </Text>
           {error ? <Text style={styles.errorText}>{error}</Text> : status?.lastError ? <Text style={styles.errorText}>{status.lastError}</Text> : null}
           {notice ? <Text style={styles.noticeText}>{notice}</Text> : null}
@@ -669,15 +749,17 @@ function HoursFeedCard({ status, onStatusChange, onRefresh, loading }) {
         {connected ? (
           <>
             <BarButton label={busy === 'sync' || loading ? 'Checking…' : 'Check now'} onPress={checkNow} disabled={Boolean(busy) || loading} />
-            <BarButton label="Disconnect" onPress={disconnect} disabled={Boolean(busy)} />
+            {canConnect ? (
+              <BarButton label="Disconnect" onPress={disconnect} disabled={Boolean(busy)} />
+            ) : null}
           </>
-        ) : (
+        ) : canConnect ? (
           <BarButton
             label={busy === 'connect' ? 'Connecting…' : 'Connect mailbox'}
             onPress={connect}
-            disabled={Boolean(busy) || !status?.clientId}
+            disabled={Boolean(busy)}
           />
-        )}
+        ) : null}
       </View>
     </View>
   );
@@ -815,7 +897,7 @@ function StaffEmployeeDetail({ person, onClose, compact, onOpenPhoto, hours, hou
           { label: 'Phone', value: person.phone },
         ]}
       />
-      <ShiftScheduleSection personKey={person.id} shifts={shifts} status={hoursStatus} />
+      <ShiftScheduleSection personKey={hours?.id || person.ripplingId || ''} shifts={shifts} status={hoursStatus} />
       <HoursSection hours={hours} status={hoursStatus} />
     </ScrollView>
   );
@@ -1223,7 +1305,7 @@ function EmployeeDetail({ employee, onClose, compact, hours, hoursStatus, shifts
           { label: 'Hourly', value: employee.hourlyWage },
         ]}
       />
-      <ShiftScheduleSection personKey={employee.id} shifts={shifts} status={hoursStatus} />
+      <ShiftScheduleSection personKey={hours?.id || employee.id} shifts={shifts} status={hoursStatus} />
       <HoursSection hours={hours} status={hoursStatus} />
     </Body>
   );
@@ -1266,12 +1348,13 @@ function readFileText(file) {
   });
 }
 
-function RipplingCsvDrop({ onImported }) {
+function RipplingCsvDrop({ onImported, feedSource }) {
   const inputRef = useRef(null);
   const [dragOver, setDragOver] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const usingDrop = feedSource === 'drop';
 
   const acceptFiles = async (fileList) => {
     const incoming = Array.from(fileList || []);
@@ -1294,7 +1377,11 @@ function RipplingCsvDrop({ onImported }) {
       const rows = Number(result?.rows) || 0;
       const name = result?.attachment || csvs[csvs.length - 1].name;
       const skippedNote = skipped ? ` Skipped ${skipped} file${skipped === 1 ? '' : 's'} that were not CSV.` : '';
-      setNotice(`${name} · ${rows} row${rows === 1 ? '' : 's'}.${skippedNote}`);
+      setNotice(
+        result?.applied === false
+          ? `${name} is saved. Choose Dropped file to use it.${skippedNote}`
+          : `${name} · ${rows} row${rows === 1 ? '' : 's'}.${skippedNote}`,
+      );
       await onImported?.();
     } catch (err) {
       setError(err?.message || 'Could not update from that CSV.');
@@ -1375,7 +1462,9 @@ function RipplingCsvDrop({ onImported }) {
           createElement(
             'div',
             { style: { fontFamily: FONT, fontSize: 13, color: T.secondary, marginTop: 4 } },
-            'or click to choose. Email attachments update this too. The newest file is what you see.',
+            usingDrop
+              ? 'or click to choose. This file is what the screen uses.'
+              : 'or click to choose. It is saved for the Dropped file switch. Email is what the screen uses.',
           ),
         ),
       )}
@@ -1407,25 +1496,78 @@ function ReportTable({ children }) {
   );
 }
 
+function FeedSourceSwitch({ source, busy, onChange }) {
+  const emailOn = source !== 'drop';
+  const option = (id, label) => {
+    const on = id === 'email' ? emailOn : !emailOn;
+    return (
+      <Pressable
+        key={id}
+        onPress={() => onChange(id)}
+        disabled={busy || on}
+        accessibilityRole="button"
+        accessibilityState={{ selected: on }}
+        style={[styles.sourceOption, on && styles.sourceOptionOn]}
+      >
+        <Text style={[styles.sourceOptionText, on && styles.sourceOptionTextOn]}>{label}</Text>
+      </Pressable>
+    );
+  };
+  return (
+    <View style={styles.sourceSwitch}>
+      <Text style={styles.reportMeta}>Update hours from</Text>
+      <View style={styles.sourceOptions}>
+        {option('email', 'Email')}
+        {option('drop', 'Dropped file')}
+      </View>
+    </View>
+  );
+}
+
 function CsvFileList({ files }) {
   const list = Array.isArray(files) ? files : [];
-  if (!list.length) return null;
+  const emails = list.filter((file) => file.source === 'email');
+  const groups = [];
+  for (const file of emails) {
+    const id = file.messageId || file.id;
+    const existing = groups.find((group) => group.id === id);
+    if (existing) existing.files.push(file);
+    else groups.push({ id, files: [file], subject: file.subject, receivedAt: file.receivedAt });
+  }
+  const latest = groups.find((group) => (
+    group.files.length >= 2
+    || group.files.some((file) => file.kind === 'time' || file.kind === 'clock' || file.kind === 'csv')
+  )) || groups[0];
+  const latestFiles = latest?.files || [];
+  const dropped = list.filter((file) => file.source === 'drop').slice(0, 3);
+
+  const renderFile = (file, index, count) => (
+    <View key={file.id || `${file.name}-${index}`} style={index === count - 1 ? null : styles.fileRow}>
+      <Text style={styles.fileName} numberOfLines={1}>{file.name}</Text>
+      <Text style={styles.reportMeta}>
+        {[
+          file.receivedAt ? formatRelativeTime(file.receivedAt) : '',
+          file.rowCount ? `${file.rowCount} rows` : '',
+          file.kind && file.kind !== 'attachment' ? file.kind : '',
+          file.current ? 'Showing now' : '',
+        ].filter(Boolean).join(' · ')}
+      </Text>
+    </View>
+  );
+
   return (
     <View style={styles.reportCard}>
-      <Text style={styles.reportTitle}>Latest CSV files</Text>
-      {list.map((file, index) => (
-        <View key={file.id || `${file.name}-${index}`} style={index === list.length - 1 ? null : styles.fileRow}>
-          <Text style={styles.fileName} numberOfLines={1}>{file.name}</Text>
-          <Text style={styles.reportMeta}>
-            {[
-              file.source === 'drop' ? 'Dropped in the app' : 'Email',
-              file.receivedAt ? formatRelativeTime(file.receivedAt) : '',
-              file.rowCount ? `${file.rowCount} rows` : '',
-              file.current ? 'Showing now' : '',
-            ].filter(Boolean).join(' · ')}
-          </Text>
+      <Text style={styles.reportTitle}>Last email attachments</Text>
+      {latest?.subject ? <Text style={styles.reportMeta} numberOfLines={2}>{latest.subject}</Text> : null}
+      {latestFiles.length
+        ? latestFiles.map((file, index) => renderFile(file, index, latestFiles.length))
+        : <Text style={styles.reportMeta}>No CSV attachment has been read from the mailbox yet.</Text>}
+      {dropped.length ? (
+        <View style={styles.droppedFiles}>
+          <Text style={styles.fileName}>Dropped files</Text>
+          {dropped.map((file, index) => renderFile(file, index, dropped.length))}
         </View>
-      ))}
+      ) : null}
     </View>
   );
 }
@@ -1449,7 +1591,7 @@ function RipplingReport({ report, status }) {
 
   return (
     <View style={styles.reportCard}>
-      <Text style={styles.reportTitle}>{headers.length ? title : `Watching ${status?.email || 'the hours inbox'}`}</Text>
+      <Text style={styles.reportTitle}>{headers.length ? title : 'Watching the hours inbox'}</Text>
       <Text style={styles.reportMeta}>
         {headers.length
           ? meta || 'Latest CSV attachment'
@@ -1494,14 +1636,31 @@ function RipplingPanel({ profile, hours }) {
   const allowFilters = canFilter('employees');
   const hoursSummary = hours?.summary || null;
   const hoursStatus = hours?.status || null;
+  const canManageFeed = canManageHoursFeed(profile);
   const reportCard = <RipplingReport report={hours?.report} status={hoursStatus} />;
   const fileList = <CsvFileList files={hours?.files} />;
-  const csvDrop = canManageHoursFeed(profile) ? (
-    <RipplingCsvDrop onImported={() => hours?.refresh?.({ sync: false })} />
+  const chooseSource = async (source) => {
+    if (!canManageFeed || sourceBusy) return;
+    setSourceBusy(true);
+    setSourceError('');
+    try {
+      const next = await setHoursFeedSource(source);
+      hours?.setStatus?.(next);
+      await hours?.refresh?.({ sync: false });
+    } catch (err) {
+      setSourceError(err?.message || 'Could not change the hours source.');
+    } finally {
+      setSourceBusy(false);
+    }
+  };
+  const csvDrop = canManageFeed ? (
+    <RipplingCsvDrop feedSource={hoursStatus?.feedSource} onImported={() => hours?.refresh?.({ sync: false })} />
   ) : null;
-  const hoursCard = canManageHoursFeed(profile) ? (
+  const hoursOwner = String(profile?.email || '').trim().toLowerCase() === HOURS_MAILBOX;
+  const hoursCard = canManageFeed || hoursStatus?.canConnect || hoursOwner ? (
     <HoursFeedCard
       status={hoursStatus}
+      owner={hoursOwner}
       loading={Boolean(hours?.loading)}
       onStatusChange={hours?.setStatus}
       onRefresh={hours?.refresh}
@@ -1522,6 +1681,14 @@ function RipplingPanel({ profile, hours }) {
   const [selectedId, setSelectedId] = useState(null);
   const [connectOpen, setConnectOpen] = useState(false);
   const [bootstrapped, setBootstrapped] = useState(false);
+  const [sourceBusy, setSourceBusy] = useState(false);
+  const [sourceError, setSourceError] = useState('');
+  const sourceSwitch = canManageFeed ? (
+    <View style={styles.dropCard}>
+      <FeedSourceSwitch source={hoursStatus?.feedSource} busy={sourceBusy} onChange={chooseSource} />
+      {sourceError ? <Text style={styles.errorText}>{sourceError}</Text> : null}
+    </View>
+  ) : null;
   const requestId = useRef(0);
   const canManage = canManageCompanyRippling(profile);
   const usesCompany = session?.source === 'company';
@@ -1679,6 +1846,7 @@ function RipplingPanel({ profile, hours }) {
       keyboardShouldPersistTaps="handled"
     >
       {hoursCard}
+      {sourceSwitch}
       {csvDrop}
       {fileList}
       {reportCard}
@@ -1908,6 +2076,35 @@ const styles = StyleSheet.create({
     opacity: 0.55,
   },
   dropCard: {
+    gap: 8,
+  },
+  sourceSwitch: {
+    gap: 8,
+  },
+  sourceOptions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  sourceOption: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: '#F2F2F7',
+  },
+  sourceOptionOn: {
+    backgroundColor: T.text,
+  },
+  sourceOptionText: {
+    fontFamily: FONT,
+    fontSize: 14,
+    fontWeight: '600',
+    color: T.text,
+  },
+  sourceOptionTextOn: {
+    color: '#fff',
+  },
+  droppedFiles: {
+    marginTop: 12,
     gap: 8,
   },
   reportCard: {
@@ -2279,6 +2476,14 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: T.secondary,
     textAlign: 'center',
+  },
+  calPunch: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: '#248A3D',
+    alignSelf: 'center',
+    marginTop: 2,
   },
   roleLegend: {
     flexDirection: 'row',

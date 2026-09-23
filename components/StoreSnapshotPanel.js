@@ -31,9 +31,10 @@ import {
   formatAmount,
   formatDateParam,
   isCashTransaction,
+  parseDateParam,
 } from '../lib/transactions';
 import { useTxnCashBreakdowns } from '../lib/txnCashBreakdowns';
-import { callPartyLabel, callsForStore, inboundCallRatio, isPhoneRateLimitMessage } from '../lib/phoneCalls';
+import { callPartyLabel, callsForStore, fetchPhoneHistory, inboundCallRatio, isPhoneRateLimitMessage, mergeCallLog } from '../lib/phoneCalls';
 import { formatPhoneNumber } from '../lib/ringcentral';
 import { storeKeyFromName } from '../lib/storeSettings';
 import { MOBILE_FILTER_INSET, MOBILE_FILTER_SIZE, useIsMobile } from '../lib/mobileUi';
@@ -184,7 +185,7 @@ function InventorySearch({ value, onChangeText }) {
   );
 }
 
-function AppBox({ app, meta, onOpen, children, style, bodyStyle }) {
+function AppBox({ app, meta, onOpen, children, style, bodyStyle, muted = false }) {
   return (
     <View style={[styles.appBox, style]}>
       <Pressable
@@ -196,7 +197,7 @@ function AppBox({ app, meta, onOpen, children, style, bodyStyle }) {
         accessibilityRole="button"
         accessibilityLabel={`Open ${app.label}`}
       >
-        <View style={[styles.appBoxIcon, { backgroundColor: app.accent }]}>
+        <View style={[styles.appBoxIcon, { backgroundColor: app.accent }, muted && styles.appIconMuted]}>
           <Ionicons name={app.icon} size={16} color="#fff" />
         </View>
         <View style={styles.appBoxHeadCopy}>
@@ -317,7 +318,7 @@ function DashSection({ title, meta, onPress, children }) {
   );
 }
 
-function DashLink({ app, value, meta, tone, onOpen, last, accessory, loading }) {
+function DashLink({ app, value, meta, tone, onOpen, last, accessory, loading, muted = false }) {
   const valueColor =
     tone === 'low' ? styles.phoneRateLow : tone === 'high' ? styles.phoneRateHigh : null;
 
@@ -331,7 +332,7 @@ function DashLink({ app, value, meta, tone, onOpen, last, accessory, loading }) 
       accessibilityRole="button"
       accessibilityLabel={`${app.label}${value ? `, ${value}` : ''}${meta ? `, ${meta}` : ''}`}
     >
-      <View style={[styles.dashIcon, { backgroundColor: app.accent }]}>
+      <View style={[styles.dashIcon, { backgroundColor: app.accent }, muted && styles.appIconMuted]}>
         <Ionicons name={app.icon} size={20} color="#fff" />
       </View>
       <View style={[styles.dashRowBody, !last && styles.dashRowDivider]}>
@@ -1122,7 +1123,7 @@ function PhoneActiveRow({ call, busy, muted, audioState, onMute, onHangup, onEna
   );
 }
 
-function PhoneSnapshotBody({ storeName, startKey, endKey, periodLabel }) {
+function PhoneSnapshotBody({ storeName, startKey, endKey, periodLabel, calls = null }) {
   const phone = usePhoneCalls();
   const storeKey = storeKeyFromName(storeName);
   const activeCall = phone.activeCall && phone.activeCall.storeKey === storeKey ? phone.activeCall : null;
@@ -1137,10 +1138,10 @@ function PhoneSnapshotBody({ storeName, startKey, endKey, periodLabel }) {
     () => (phone.recentAnswered || []).filter((row) => row.storeKey === storeKey),
     [phone.recentAnswered, storeKey],
   );
-  const ratio = useMemo(
-    () => inboundCallRatio(callsInRange(callsForStore(phone.mergedCallsByStore, storeName), startKey, endKey)),
-    [endKey, phone.mergedCallsByStore, startKey, storeKey],
-  );
+  const ratio = useMemo(() => {
+    if (calls) return inboundCallRatio(calls);
+    return inboundCallRatio(callsInRange(callsForStore(phone.mergedCallsByStore, storeName), startKey, endKey));
+  }, [calls, endKey, phone.mergedCallsByStore, startKey, storeName]);
   const inboxLoading = Boolean(phone.inboxFetching?.[storeKey]);
   const phoneError = isPhoneRateLimitMessage(phone.error) ? '' : phone.error;
 
@@ -1650,17 +1651,35 @@ function StoreSnapshotPanel({
     : 'Now';
 
   const storeKey = storeKeyFromName(storeName);
+  const [historyCalls, setHistoryCalls] = useState([]);
   const incomingCalls = useMemo(
     () => (phone.incoming || []).filter((call) => call.storeKey === storeKey),
     [phone.incoming, storeKey],
   );
-  const phoneRatio = useMemo(
-    () =>
-      inboundCallRatio(
-        callsInRange(callsForStore(phone.mergedCallsByStore, storeName), startKey, endKey),
-      ),
-    [endKey, phone.mergedCallsByStore, startKey, storeName],
-  );
+  useEffect(() => {
+    if (!storeName || !startKey || !endKey) {
+      setHistoryCalls([]);
+      return undefined;
+    }
+    let cancelled = false;
+    const dateFrom = parseDateParam(startKey);
+    const dateTo = parseDateParam(endKey);
+    dateTo.setDate(dateTo.getDate() + 1);
+    fetchPhoneHistory(storeName, { dateFrom, dateTo })
+      .then((payload) => {
+        if (!cancelled) setHistoryCalls(payload.calls || []);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [endKey, startKey, storeName]);
+  const phoneCalls = useMemo(() => {
+    const inbox = callsInRange(callsForStore(phone.mergedCallsByStore, storeName), startKey, endKey);
+    const history = callsInRange(historyCalls, startKey, endKey);
+    return mergeCallLog(history, inbox);
+  }, [endKey, historyCalls, phone.mergedCallsByStore, startKey, storeName]);
+  const phoneRatio = useMemo(() => inboundCallRatio(phoneCalls), [phoneCalls]);
   const emailCapture = useMemo(
     () => storeEmailCapture(txRows, storeName),
     [storeName, txRows],
@@ -1799,6 +1818,7 @@ function StoreSnapshotPanel({
             ? `${phoneRatio.answered} answered · ${phoneRatio.missed} missed`
             : `No inbound calls ${periodLabel === 'Today' ? 'today' : 'in this period'}`,
           tone: phoneRatio.rate == null ? null : phoneRatio.rate < 80 ? 'low' : 'high',
+          muted: phoneRatio.rate == null,
         }
       : null,
     showEmails
@@ -1812,6 +1832,7 @@ function StoreSnapshotPanel({
               : emailCapture?.customerCount > 0 && emailCapture.rate >= 80
                 ? 'high'
                 : null,
+          muted: !emailCapture || emailCapture.customerCount === 0,
         }
       : null,
     {
@@ -1849,6 +1870,7 @@ function StoreSnapshotPanel({
             startKey={startKey}
             endKey={endKey}
             periodLabel={periodLabel}
+            calls={phoneCalls}
           />
         </DashSection>
       ) : null}
@@ -1861,6 +1883,7 @@ function StoreSnapshotPanel({
             value={row.value}
             meta={row.meta}
             tone={row.tone}
+            muted={row.muted}
             loading={row.loading}
             accessory={row.accessory}
             onOpen={onOpenApp}
@@ -1968,12 +1991,14 @@ function StoreSnapshotPanel({
             onOpen={onOpenApp}
             style={[styles.appRowBox, styles.appRowBoxDesktop]}
             bodyStyle={styles.appBoxBodyFill}
+            muted={phoneRatio.rate == null}
           >
             <PhoneSnapshotBody
               storeName={storeName}
               startKey={startKey}
               endKey={endKey}
               periodLabel={periodLabel}
+              calls={phoneCalls}
             />
           </AppBox>
         ) : null}
@@ -1984,6 +2009,7 @@ function StoreSnapshotPanel({
             onOpen={onOpenApp}
             style={[styles.appRowBox, styles.appRowBoxDesktop]}
             bodyStyle={styles.appBoxBodyFill}
+            muted={!emailCapture || emailCapture.customerCount === 0}
           >
             <ScrollView
               style={styles.employeeList}
@@ -2576,6 +2602,9 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  appIconMuted: {
+    opacity: 0.38,
   },
   appBoxHeadCopy: {
     flex: 1,

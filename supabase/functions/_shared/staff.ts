@@ -13,6 +13,7 @@ const PROFILE_CACHE_TTL_MS = 60_000;
 export interface StaffContext {
   userId: string;
   aureusUserId: string;
+  email: string;
   isSystemAdmin: boolean;
   appRole: string;
   posRole: string;
@@ -56,7 +57,7 @@ async function loadProfile(userId: string, aureusUserId: string): Promise<StaffC
 
   const { data, error } = await adminClient()
     .from('profiles')
-    .select('id, aureus_user_id, is_active, aureus_verified_at, app_role, is_system_admin, role, employee_type')
+    .select('id, aureus_user_id, email, is_active, aureus_verified_at, app_role, is_system_admin, role, employee_type')
     .eq('id', userId)
     .maybeSingle();
 
@@ -65,6 +66,7 @@ async function loadProfile(userId: string, aureusUserId: string): Promise<StaffC
     context = {
       userId,
       aureusUserId: data.aureus_user_id,
+      email: String(data.email || '').trim().toLowerCase(),
       isSystemAdmin: Boolean(data.is_system_admin) || data.app_role === 'system_admin',
       appRole: String(data.app_role || ''),
       posRole: String(data.role || ''),
@@ -123,5 +125,8 @@ export async function requireActiveStaff(req: Request): Promise<StaffContext> {
   if (!context) {
     throw new StaffAuthError('Your MyCanadaGold access has been disabled.', 403, 'deactivated');
   }
-  return context;
+  // Login address is the auth user email. That is how the hours mailbox owner
+  // is recognized, separate from a Google session that may belong to someone else.
+  const claimEmail = String(claims.email || '').trim().toLowerCase();
+  return claimEmail ? { ...context, email: claimEmail } : context;
 }

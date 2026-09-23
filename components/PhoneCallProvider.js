@@ -38,7 +38,7 @@ import { PHONE_INBOX_MS, PHONE_LIVE_MS, useLiveRefresh } from '../lib/liveRefres
 import { fetchTransferStores } from '../lib/locations';
 import { useAppAccess } from '../lib/permissions';
 import { listRingCentralAccounts, formatPhoneNumber } from '../lib/ringcentral';
-import { isStoreWatched, loadWatchStores, saveWatchStores } from '../lib/phoneWatch';
+import { defaultWatchKeys, isStoreWatched, loadWatchStores, saveWatchStores } from '../lib/phoneWatch';
 import { startRingtone, stopRingtone, unlockPhoneAudio } from '../lib/phoneSound';
 import { storeKeyFromName } from '../lib/storeSettings';
 import {
@@ -152,6 +152,28 @@ export function formatCallClock(ms) {
   return `${mins}:${String(secs).padStart(2, '0')}`;
 }
 
+function storeLabelMatches(label, wanted) {
+  if (!label || !wanted) return false;
+  if (label === wanted) return true;
+  return label.includes(wanted) || wanted.includes(label);
+}
+
+/** RingCentral store key for the location this person is set in. */
+function resolveCurrentStoreKey(stores, locationName) {
+  const wanted = storeKeyFromName(locationName);
+  if (!wanted) return '';
+  const list = stores || [];
+  const exact = list.find(
+    (row) => storeKeyFromName(row?.storeKey) === wanted || storeKeyFromName(row?.storeName) === wanted,
+  );
+  if (exact?.storeKey) return exact.storeKey;
+  const fuzzy = list.find((row) =>
+    storeLabelMatches(storeKeyFromName(row?.storeName), wanted) ||
+    storeLabelMatches(storeKeyFromName(row?.storeKey), wanted),
+  );
+  return fuzzy?.storeKey || wanted;
+}
+
 export function liveCallKey(call) {
   if (!call?.storeKey) return '';
   return `${call.storeKey}:${callKey(call)}`;
@@ -183,6 +205,7 @@ const PhoneCallContext = createContext({
   syncStoreAccounts: () => {},
   removeStoreAccount: () => {},
   watchPrefs: { mode: 'all', keys: [] },
+  currentStoreKey: '',
   setStoreWatched: async () => {},
   watchedStores: [],
   silent: false,
@@ -293,7 +316,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
         setSilentState(silentRaw === '1');
         setWatchPrefs(watch);
       } catch {
-        // Keep ringing on and watch every connected store.
+        // Keep ringing on, for the store this person is set in.
       }
     })();
     return () => {
@@ -330,18 +353,23 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     [posPhones, stores],
   );
 
+  const locationName = session?.profile?.locationName || storeFilter || '';
+  const currentStoreKey = useMemo(
+    () => resolveCurrentStoreKey(stores, locationName),
+    [locationName, stores],
+  );
+
   const watchedStores = useMemo(
-    () => connectedStores.filter((row) => isStoreWatched(watchPrefs, row.storeKey)),
-    [connectedStores, watchPrefs],
+    () => connectedStores.filter((row) => isStoreWatched(watchPrefs, row.storeKey, currentStoreKey)),
+    [connectedStores, currentStoreKey, watchPrefs],
   );
 
   const setStoreWatched = useCallback(
     async (storeKey, on) => {
       const key = String(storeKey || '').trim();
       if (!key) return;
-      const connectedKeys = connectedStores.map((row) => row.storeKey);
       setWatchPrefs((current) => {
-        const baseKeys = current.mode === 'selected' ? current.keys : connectedKeys;
+        const baseKeys = current.mode === 'selected' ? current.keys : defaultWatchKeys(currentStoreKey);
         const nextKeys = new Set(baseKeys);
         if (on) nextKeys.add(key);
         else nextKeys.delete(key);
@@ -350,7 +378,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
         return next;
       });
     },
-    [connectedStores],
+    [currentStoreKey],
   );
 
   const watchStoreKey = useCallback((storeKey) => {
@@ -627,6 +655,8 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
   }, [active, refreshInbox, selectedStoreKey]);
 
   const connectedKeyList = connectedStores.map((row) => row.storeKey).sort().join(',');
+  // Register this browser only on the lines that should actually ring here.
+  const ringKeyList = watchedStores.map((row) => row.storeKey).sort().join(',');
 
   useEffect(() => {
     if (!active || !connectedKeyList) return undefined;
@@ -790,7 +820,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       webDeviceIdRef.current.clear();
       webCallerIdRef.current.clear();
     };
-    if (!active || !connectedKeyList) {
+    if (!active || !ringKeyList) {
       disposeAll();
       setWebPhoneStatus({});
       return undefined;
@@ -798,7 +828,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     if (!isWebPhoneSupported) {
       setWebPhoneStatus(
         Object.fromEntries(
-          connectedKeyList
+          ringKeyList
             .split(',')
             .filter(Boolean)
             .map((key) => [key, { state: 'unsupported', message: 'This browser cannot act as a phone.' }]),
@@ -807,9 +837,9 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       return undefined;
     }
     let cancelled = false;
-    const keys = connectedKeyList.split(',').filter(Boolean);
+    const keys = ringKeyList.split(',').filter(Boolean);
 
-    // Drop registrations for stores that are no longer connected.
+    // Drop registrations for stores that should no longer ring on this screen.
     for (const [storeKey, handle] of [...webPhonesRef.current.entries()]) {
       if (keys.includes(storeKey)) continue;
       handle.dispose().catch(() => {});
@@ -942,7 +972,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       window.removeEventListener('pagehide', onHide);
       window.removeEventListener('pageshow', onShow);
     };
-  }, [active, connectedKeyList, onSipAnswerError, onSipAudio, onSipCall, onSipChange, setStorePhoneStatus]);
+  }, [active, ringKeyList, onSipAnswerError, onSipAudio, onSipCall, onSipChange, setStorePhoneStatus]);
 
   useEffect(
     () => () => {
@@ -959,10 +989,12 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
   const allLiveCalls = useMemo(() => listCalls(callState), [callState]);
 
   const incoming = useMemo(() => {
-    const ringing = ringingCalls(callState).filter((call) => isStoreWatched(watchPrefs, call.storeKey));
+    const ringing = ringingCalls(callState).filter((call) =>
+      isStoreWatched(watchPrefs, call.storeKey, currentStoreKey),
+    );
     ringing.sort((a, b) => (a.seenAt || 0) - (b.seenAt || 0));
     return ringing;
-  }, [callState, watchPrefs]);
+  }, [callState, currentStoreKey, watchPrefs]);
 
   // Calls the user swiped away on this device: still ringing elsewhere and still
   // listed on the Phone screen, but no bar, ringtone or vibration here.
@@ -1482,6 +1514,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       inboxFetching,
       refreshInbox,
       watchPrefs,
+      currentStoreKey,
       setStoreWatched,
       watchedStores,
       silent,
@@ -1531,6 +1564,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       selectedStoreKey,
       sendDtmf,
       setSilent,
+      currentStoreKey,
       setStoreWatched,
       silent,
       stores,
