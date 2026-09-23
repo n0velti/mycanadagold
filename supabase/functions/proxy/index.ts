@@ -1474,11 +1474,16 @@ function listGmailAttachments(part: GmailPart | undefined, out: { filename: stri
 // demand. This is not the Gmail session used by the Emails screen.
 // ---------------------------------------------------------------------------
 
-const TIME_SYNC_COOLDOWN_MS = 10 * 60_000;
-// Gmail often does not index a Rippling attachment under filename:csv, so the
-// query is wide and each message is inspected for a CSV.
-const TIME_SYNC_SEARCH = 'newer_than:21d (filename:csv OR subject:Report OR from:rippling has:attachment)';
-const TIME_SYNC_MAX_MESSAGES = 16;
+// Just under the 15-minute email cadence so each Employees-screen poll reads
+// the mailbox instead of landing inside the previous cooldown.
+const TIME_SYNC_COOLDOWN_MS = 14 * 60_000;
+// Shift report by role arrives every 15 minutes, so a single "newest N" search
+// would be only those emails and would hide the hourly time and clock reports.
+const SHIFT_SYNC_SEARCH = 'newer_than:21d (subject:shift OR filename:shift OR subject:"by role")';
+const HOURS_SYNC_SEARCH = 'newer_than:21d (filename:csv OR filename:xlsx OR subject:clock OR subject:report OR from:rippling)';
+const RECENT_MAIL_SEARCH = 'newer_than:2d';
+const SHIFT_SYNC_MAX_MESSAGES = 12;
+const HOURS_SYNC_MAX_MESSAGES = 16;
 const TIME_SYNC_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
 type TimeSyncRow = {
@@ -1498,10 +1503,12 @@ type TimeSyncRow = {
   last_clock_at: string | null;
   last_clock_count: number;
   last_time_at: string | null;
+  last_shift_at: string | null;
+  last_shift_count: number;
 };
 
 const TIME_SYNC_COLUMNS =
-  'gmail_email, gmail_refresh_token, gmail_access_token, gmail_token_expires_at, last_attempt_at, last_synced_at, last_message_id, last_message_at, last_attachment_name, last_row_count, last_range_start, last_range_end, last_error, last_clock_at, last_clock_count, last_time_at';
+  'gmail_email, gmail_refresh_token, gmail_access_token, gmail_token_expires_at, last_attempt_at, last_synced_at, last_message_id, last_message_at, last_attachment_name, last_row_count, last_range_start, last_range_end, last_error, last_clock_at, last_clock_count, last_time_at, last_shift_at, last_shift_count';
 
 function emptyTimeSync(): TimeSyncRow {
   return {
@@ -1521,6 +1528,8 @@ function emptyTimeSync(): TimeSyncRow {
     last_clock_at: null,
     last_clock_count: 0,
     last_time_at: null,
+    last_shift_at: null,
+    last_shift_count: 0,
   };
 }
 
@@ -1544,6 +1553,7 @@ async function loadTimeSync(): Promise<TimeSyncRow> {
       last_row_count: Number(row.last_row_count) || 0,
       last_error: String(row.last_error || ''),
       last_clock_count: Number(row.last_clock_count) || 0,
+      last_shift_count: Number(row.last_shift_count) || 0,
     };
   } catch {
     return emptyTimeSync();
@@ -1589,6 +1599,8 @@ function timeSyncPublic(row: TimeSyncRow, staff: StaffContext) {
     lastError: row.last_error,
     clockReportedAt: row.last_clock_at,
     clockedInCount: row.last_clock_count,
+    shiftReportedAt: row.last_shift_at,
+    shiftCount: row.last_shift_count,
     canManage: canManageCompanyRippling(staff),
   };
 }
@@ -1798,6 +1810,356 @@ function parseClockReport(csv: string): ClockReport | null {
   return { rows, clockedIn };
 }
 
+type ShiftRoleRow = {
+  shift_key: string;
+  employee_rippling_id: string;
+  employee_name: string;
+  role_name: string;
+  location_name: string;
+  shift_date: string;
+  started_at: string | null;
+  ended_at: string | null;
+  start_label: string;
+  end_label: string;
+};
+
+type ShiftRoleReport = {
+  rows: ShiftRoleRow[];
+  rangeStart: string;
+  rangeEnd: string;
+};
+
+const SHIFT_MONTHS: Record<string, string> = {
+  jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+  jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
+};
+
+function validIsoDate(iso: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return false;
+  const [year, month, day] = iso.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+function parseDateOnly(value: string): string {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) {
+    const date = `${iso[1]}-${iso[2]}-${iso[3]}`;
+    return validIsoDate(date) ? date : '';
+  }
+  const named = text.match(/^([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})/);
+  if (named) {
+    const month = SHIFT_MONTHS[named[1].slice(0, 3).toLowerCase()];
+    if (month) {
+      const date = `${named[3]}-${month}-${named[2].padStart(2, '0')}`;
+      return validIsoDate(date) ? date : '';
+    }
+  }
+  const slash = text.match(/^(\d{1,2})[/.](\d{1,2})[/.](\d{2,4})/);
+  if (!slash) return '';
+  let year = Number(slash[3]);
+  if (year < 100) year += 2000;
+  let month = Number(slash[1]);
+  let day = Number(slash[2]);
+  if (month > 12 && day <= 12) {
+    const swap = month;
+    month = day;
+    day = swap;
+  }
+  const date = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  return validIsoDate(date) ? date : '';
+}
+
+function formatShiftLabel(hours: number, minutes: number): string {
+  const suffix = hours >= 12 ? 'p' : 'a';
+  const hour = hours % 12 || 12;
+  return minutes ? `${hour}:${String(minutes).padStart(2, '0')}${suffix}` : `${hour}${suffix}`;
+}
+
+function parseClockFace(value: string): { h: number; m: number; label: string } | null {
+  const text = String(value || '').trim();
+  const match = text.match(/^(\d{1,2})(?::(\d{2}))?(?::\d{2})?\s*([ap](?:m|\.m\.)?)?$/i);
+  if (!match) return null;
+  let hours = Number(match[1]);
+  const minutes = Number(match[2] || '0');
+  if (minutes > 59 || hours > 24) return null;
+  const ampm = (match[3] || '').toLowerCase();
+  if (ampm) {
+    if (hours < 1 || hours > 12) return null;
+    if (ampm.startsWith('p') && hours !== 12) hours += 12;
+    if (ampm.startsWith('a') && hours === 12) hours = 0;
+  } else if (hours === 24 && minutes === 0) {
+    hours = 0;
+  } else if (hours > 23) {
+    return null;
+  }
+  return { h: hours, m: minutes, label: formatShiftLabel(hours, minutes) };
+}
+
+/** Civil time in Toronto, stored as UTC. */
+function torontoStamp(date: string, hours: number, minutes: number): string {
+  const want = Date.UTC(
+    Number(date.slice(0, 4)),
+    Number(date.slice(5, 7)) - 1,
+    Number(date.slice(8, 10)),
+    hours,
+    minutes,
+  );
+  let ms = want;
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Toronto',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  });
+  for (let i = 0; i < 4; i += 1) {
+    const parts = Object.fromEntries(fmt.formatToParts(new Date(ms)).map((part) => [part.type, part.value]));
+    const got = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour), Number(parts.minute));
+    if (got === want) break;
+    ms += want - got;
+  }
+  return new Date(ms).toISOString();
+}
+
+function clockLabelFromIso(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Toronto',
+    hour: 'numeric',
+    minute: '2-digit',
+    hourCycle: 'h12',
+  }).formatToParts(date);
+  const hour = Number(parts.find((part) => part.type === 'hour')?.value || '0');
+  const minute = Number(parts.find((part) => part.type === 'minute')?.value || '0');
+  const dayPeriod = (parts.find((part) => part.type === 'dayPeriod')?.value || '').toLowerCase();
+  let hours = hour % 12;
+  if (dayPeriod.startsWith('p')) hours += 12;
+  if (hour === 12 && dayPeriod.startsWith('a')) hours = 0;
+  if (hour === 12 && dayPeriod.startsWith('p')) hours = 12;
+  return formatShiftLabel(hours, minute);
+}
+
+function isRoleHeader(name: string): boolean {
+  return (
+    /\brole\b/.test(name) ||
+    /\bjob\s*codes?\b/.test(name) ||
+    /^position$/.test(name) ||
+    /\bshift position\b/.test(name) ||
+    /\bassigned role\b/.test(name)
+  );
+}
+
+function isWideIdentityHeader(name: string): boolean {
+  return (
+    /employee/.test(name) ||
+    /\bid\b/.test(name) ||
+    name === 'name' ||
+    /full name/.test(name) ||
+    /\bdate\b/.test(name) ||
+    /\bstart\b/.test(name) ||
+    /\bend\b/.test(name) ||
+    /email/.test(name) ||
+    /location/.test(name) ||
+    /department/.test(name) ||
+    /schedule/.test(name) ||
+    /status/.test(name) ||
+    /duration/.test(name) ||
+    /\bhours?\b/.test(name) ||
+    /break/.test(name) ||
+    /notes?/.test(name) ||
+    /comment/.test(name) ||
+    /clock/.test(name)
+  );
+}
+
+/**
+ * Rippling "Shift report by role". The subject or filename has to say "shift"
+ * so a time report that happens to have a Role column is left for the hours
+ * parser. Accepts one row per shift, or a wide sheet with a column per role.
+ */
+function parseShiftRoleReport(csv: string, label: string): ShiftRoleReport | null {
+  if (!/\bshift\b/i.test(label)) return null;
+  const table = parseCsv(csv);
+  if (table.length < 2) return null;
+  const header = table[0].map((cell) => cell.trim().toLowerCase().replace(/\s+/g, ' '));
+  const find = (test: (name: string) => boolean) => header.findIndex(test);
+  if (find((name) => /clocked\s*in/.test(name) || /clock\s*in\s*status/.test(name)) >= 0) return null;
+
+  const idCol = find((name) => name === 'employee - id' || name === 'employee id' || /employee.*\bid\b/.test(name));
+  const nameCol = find((name) => name === 'employee' || /^employee\s*(-\s*)?(full\s*)?name$/.test(name) || name === 'name' || name === 'full name');
+  const roleCol = find(isRoleHeader);
+  const dateCol = find((name) => /\bdate\b/.test(name) && !/\bstart\b/.test(name) && !/\bend\b/.test(name));
+  const startCol = find((name) => /\bstart\b/.test(name) && !/\bdate\b/.test(name));
+  const endCol = find((name) => /\bend\b/.test(name) && !/\bdate\b/.test(name));
+  const locationCol = find((name) => /location/.test(name) || name === 'store' || name === 'schedule' || name === 'department');
+  if (idCol < 0 && nameCol < 0) return null;
+
+  const rows: ShiftRoleRow[] = [];
+  const seen = new Set<string>();
+  let rangeStart = '';
+  let rangeEnd = '';
+  const noteDate = (date: string) => {
+    if (!rangeStart || date < rangeStart) rangeStart = date;
+    if (!rangeEnd || date > rangeEnd) rangeEnd = date;
+  };
+
+  const pushShift = (input: {
+    id: string;
+    name: string;
+    role: string;
+    location: string;
+    date: string;
+    startIso: string;
+    endIso: string;
+    startLabel: string;
+    endLabel: string;
+  }) => {
+    if (!input.id || !validIsoDate(input.date)) return;
+    if (!input.startIso && !input.startLabel) return;
+    if (/^total\b/i.test(input.name) || /^total\b/i.test(input.role)) return;
+    noteDate(input.date);
+    const key = `${input.id}|${input.date}|${input.role.toLowerCase()}|${input.startLabel}|${input.startIso}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    let ended = input.endIso;
+    if (input.startIso && ended && Date.parse(ended) <= Date.parse(input.startIso)) {
+      const next = new Date(Date.parse(ended) + 24 * 60 * 60_000);
+      if (!Number.isNaN(next.getTime())) ended = next.toISOString();
+    }
+    rows.push({
+      shift_key: key,
+      employee_rippling_id: input.id,
+      employee_name: input.name,
+      role_name: input.role,
+      location_name: input.location,
+      shift_date: input.date,
+      started_at: input.startIso || null,
+      ended_at: ended || null,
+      start_label: input.startLabel.slice(0, 40),
+      end_label: input.endLabel.slice(0, 40),
+    });
+  };
+
+  const personFrom = (cells: string[]) => {
+    const name = nameCol >= 0 ? String(cells[nameCol] || '').trim() : '';
+    const id = (idCol >= 0 ? String(cells[idCol] || '').trim() : '') || (name ? `name:${name.toLowerCase()}` : '');
+    const location = locationCol >= 0 ? String(cells[locationCol] || '').trim() : '';
+    return { id, name, location };
+  };
+
+  const zonedIso = (value: string) => {
+    const text = String(value || '').trim();
+    if (!/(?:Z|[+-]\d{2}:?\d{2})$/i.test(text)) return '';
+    return normalizeTimestamp(text);
+  };
+  const faceIn = (value: string) => {
+    const text = String(value || '').trim();
+    const match = text.match(/(\d{1,2}(?::\d{2})?(?::\d{2})?\s*[ap](?:m|\.m\.)?|\d{1,2}:\d{2}(?::\d{2})?)\s*$/i);
+    return match ? parseClockFace(match[1]) : parseClockFace(text);
+  };
+  const timesFrom = (rawStart: string, rawEnd: string, dateHint: string) => {
+    let startText = String(rawStart || '').trim();
+    let endText = String(rawEnd || '').trim();
+    if (!endText) {
+      const parts = startText.split(/\s*(?:–|—|-)\s*/);
+      if (parts.length === 2 && parseClockFace(parts[0]) && parseClockFace(parts[1])) {
+        startText = parts[0];
+        endText = parts[1];
+      }
+    }
+    const startZoned = zonedIso(startText);
+    const endZoned = zonedIso(endText);
+    if (startZoned) {
+      const date = parseDateOnly(startZoned) || dateHint;
+      return {
+        date,
+        startIso: startZoned,
+        endIso: endZoned,
+        startLabel: clockLabelFromIso(startZoned),
+        endLabel: endZoned ? clockLabelFromIso(endZoned) : '',
+      };
+    }
+    const date = dateHint || parseDateOnly(startText);
+    const startFace = faceIn(startText);
+    const endFace = faceIn(endText);
+    if (!date || !startFace) return null;
+    return {
+      date,
+      startIso: torontoStamp(date, startFace.h, startFace.m),
+      endIso: endFace ? torontoStamp(date, endFace.h, endFace.m) : '',
+      startLabel: startFace.label,
+      endLabel: endFace?.label || '',
+    };
+  };
+
+  if (roleCol >= 0 && (dateCol >= 0 || startCol >= 0)) {
+    let sectionRole = '';
+    for (let i = 1; i < table.length; i += 1) {
+      const cells = table[i] || [];
+      const filled = cells.map((cell) => String(cell || '').trim()).filter(Boolean);
+      if (filled.length === 1) {
+        const tagged = filled[0].match(/^(?:role|job|position)\s*[:\-]\s*(.+)$/i);
+        if (tagged) {
+          sectionRole = tagged[1].trim();
+          continue;
+        }
+      }
+      const person = personFrom(cells);
+      if (!person.id) continue;
+      const role = (roleCol >= 0 ? String(cells[roleCol] || '').trim() : '') || sectionRole;
+      const dateHint = dateCol >= 0 ? parseDateOnly(String(cells[dateCol] || '')) : '';
+      const times = timesFrom(
+        startCol >= 0 ? String(cells[startCol] || '') : '',
+        endCol >= 0 ? String(cells[endCol] || '') : '',
+        dateHint,
+      );
+      if (!times) continue;
+      pushShift({ ...person, role, ...times });
+    }
+  } else {
+    const roleCols = header
+      .map((name, index) => ({ name: table[0][index].trim(), index }))
+      .filter((col) => col.name && !isWideIdentityHeader(header[col.index] || '') && !isRoleHeader(header[col.index] || ''));
+    if (!roleCols.length || dateCol < 0) return null;
+    let ranged = 0;
+    for (let i = 1; i < table.length; i += 1) {
+      const cells = table[i] || [];
+      const person = personFrom(cells);
+      if (!person.id) continue;
+      const date = parseDateOnly(String(cells[dateCol] || ''));
+      if (!date) continue;
+      for (const col of roleCols) {
+        const cell = String(cells[col.index] || '').trim();
+        if (!cell || /^(-|—|n\/a|na|off)$/i.test(cell)) continue;
+        const pieces = cell.split(/\s*(?:–|—|\bto\b|-)\s*/i).map((part) => part.trim()).filter(Boolean);
+        const startFace = parseClockFace(pieces[0] || '');
+        const endFace = pieces.length > 1 ? parseClockFace(pieces[1] || '') : null;
+        if (!startFace) continue;
+        ranged += 1;
+        pushShift({
+          ...person,
+          role: col.name,
+          date,
+          startIso: torontoStamp(date, startFace.h, startFace.m),
+          endIso: endFace ? torontoStamp(date, endFace.h, endFace.m) : '',
+          startLabel: startFace.label,
+          endLabel: endFace?.label || '',
+        });
+      }
+    }
+    if (!ranged) return null;
+  }
+
+  if (!rangeStart || !rows.length) return null;
+  return { rows, rangeStart, rangeEnd };
+}
+
 function gmailPartFilename(part: GmailPart | undefined): string {
   const direct = String(part?.filename || '').trim();
   if (direct) return direct;
@@ -1894,10 +2256,27 @@ async function runTimeSync(
         throw new Error(`The hours mailbox must be ${required}.`);
       }
     }
-    const params = new URLSearchParams({ q: TIME_SYNC_SEARCH, maxResults: String(TIME_SYNC_MAX_MESSAGES) });
-    const list = await googleJson(`${GMAIL_API}/messages?${params.toString()}`, `Bearer ${token}`);
-    if (!list.ok) throw new Error(googleErrorMessage(list.payload, 'Could not search the hours mailbox.'));
-    const refs = Array.isArray(list.payload?.messages) ? (list.payload.messages as { id?: string }[]) : [];
+    const listMessages = async (query: string, maxResults: number) => {
+      const params = new URLSearchParams({ q: query, maxResults: String(maxResults) });
+      const list = await googleJson(`${GMAIL_API}/messages?${params.toString()}`, `Bearer ${token}`);
+      if (!list.ok) throw new Error(googleErrorMessage(list.payload, 'Could not search the hours mailbox.'));
+      return Array.isArray(list.payload?.messages) ? (list.payload.messages as { id?: string }[]) : [];
+    };
+    let [shiftRefs, reportRefs] = await Promise.all([
+      listMessages(SHIFT_SYNC_SEARCH, SHIFT_SYNC_MAX_MESSAGES),
+      listMessages(HOURS_SYNC_SEARCH, HOURS_SYNC_MAX_MESSAGES),
+    ]);
+    if (!shiftRefs.length && !reportRefs.length) {
+      reportRefs = await listMessages(RECENT_MAIL_SEARCH, 25);
+    }
+    const seenIds = new Set<string>();
+    const refs: { id?: string }[] = [];
+    for (const ref of [...shiftRefs, ...reportRefs]) {
+      const id = String(ref?.id || '').trim();
+      if (!id || seenIds.has(id)) continue;
+      seenIds.add(id);
+      refs.push(ref);
+    }
 
     const candidates: { id: string; internalDate: number; payload: Record<string, unknown> }[] = [];
     for (const ref of refs) {
@@ -1916,23 +2295,27 @@ async function runTimeSync(
     let snapshotAt = String(snapRow.data?.received_at || '');
     let clockAt = String(row.last_clock_at || '');
     let timeAt = String(row.last_time_at || '');
+    let shiftAt = String(row.last_shift_at || '');
 
     // Newest message first. Each report type is taken from the newest message
-    // that actually contains it — the two reports arrive as separate emails.
+    // that actually contains it — time, clock-in, and shift-by-role arrive separately.
     let timeDone = false;
     let clockDone = false;
+    let shiftDone = false;
     let snapshotDone = false;
     let newestId = '';
     let newestAt = 0;
+    let sawShiftMail = false;
     const notes: string[] = [];
     const inspected: string[] = [];
 
     for (const candidate of candidates) {
-      if (snapshotDone && timeDone && clockDone) break;
+      if (snapshotDone && timeDone && clockDone && shiftDone) break;
       const root = candidate.payload.payload as GmailPart | undefined;
       const headers = (root as { headers?: { name?: string; value?: string }[] } | undefined)?.headers;
       const subject = gmailHeader(headers, 'Subject');
       const fromAddress = gmailHeader(headers, 'From');
+      if (/\bshift\b/i.test(subject)) sawShiftMail = true;
       const parts = collectReportParts(root);
       let usedThisMessage = false;
       const messageAt = candidate.internalDate ? new Date(candidate.internalDate).toISOString() : nowIso;
@@ -1940,12 +2323,38 @@ async function runTimeSync(
 
       const tryText = async (text: string, label: string, captureSnapshot = false) => {
         if (!text) return;
-        if (captureSnapshot && !snapshotDone) {
+        const hint = `${label} ${subject}`;
+        const shift = parseShiftRoleReport(text, hint);
+        // A shift email every 15 minutes must not replace the hours CSV on screen.
+        if (captureSnapshot && !snapshotDone && !shift) {
           const table = snapshotFromCsv(text);
           if (table.headers.length && (!snapshotPick || table.total > snapshotPick.table.total)) {
             snapshotPick = { label, table };
           }
         }
+        if (!shiftDone && isAtLeastAsNew(messageAt, shiftAt)) {
+          if (shift) {
+            const { data: inserted, error: rpcError } = await adminClient().rpc('replace_rippling_shift_roles', {
+              p_range_start: shift.rangeStart,
+              p_range_end: shift.rangeEnd,
+              p_message_id: candidate.id,
+              p_rows: shift.rows,
+            });
+            if (rpcError) throw new Error(rpcError.message);
+            await saveTimeSync({
+              last_shift_at: messageAt,
+              last_shift_count: Number(inserted) || shift.rows.length,
+            }, userId);
+            notes.push(`${shift.rows.length} shifts by role (${shift.rangeStart} → ${shift.rangeEnd})`);
+            shiftAt = messageAt;
+            shiftDone = true;
+            usedThisMessage = true;
+          }
+        } else if (!shiftDone) {
+          shiftDone = true;
+        }
+        // A shift email that we could not map must not be stored as clock punches.
+        if (shift || /\bshift\b/i.test(hint)) return;
         if (timeDone && clockDone) return;
         if (!timeDone && isAtLeastAsNew(messageAt, timeAt)) {
           const report = parseTimeReport(text);
@@ -1994,13 +2403,21 @@ async function runTimeSync(
       };
 
       for (const part of parts) {
-        if (snapshotDone && timeDone && clockDone) break;
+        if (snapshotDone && timeDone && clockDone && shiftDone) break;
         const text = await gmailAttachmentText(token, candidate.id, part);
         const label = gmailPartFilename(part) || subject || 'report.csv';
+        if (/\bshift\b/i.test(label)) sawShiftMail = true;
         await tryText(text, label, true);
         const table = snapshotFromCsv(text);
         if (table.headers.length) {
-          const kind = parseClockReport(text) ? 'clock' : parseTimeReport(text) ? 'time' : 'csv';
+          const hint = `${label} ${subject}`;
+          const kind = parseShiftRoleReport(text, hint)
+            ? 'shift'
+            : parseClockReport(text)
+              ? 'clock'
+              : parseTimeReport(text)
+                ? 'time'
+                : 'csv';
           await rememberCsvFile({
             messageId: candidate.id,
             name: label,
@@ -2047,7 +2464,7 @@ async function runTimeSync(
         snapshotDone = true;
         usedThisMessage = true;
       }
-      if (!timeDone || !clockDone) {
+      if (!timeDone || !clockDone || !shiftDone) {
         await tryText(extractGmailText(root), subject);
       }
       if (!usedThisMessage) {
@@ -2060,10 +2477,11 @@ async function runTimeSync(
       }
     }
 
-    if (snapshotDone || timeDone || clockDone) {
+    if (snapshotDone || timeDone || clockDone || shiftDone) {
       const missing = [
         !timeDone ? 'Time report not in these emails.' : '',
         !clockDone ? 'Clock-in report not in these emails.' : '',
+        !shiftDone && sawShiftMail ? 'Shift report by role was in the mailbox but could not be read.' : '',
       ].filter(Boolean).join(' ');
       await saveTimeSync({
         last_message_id: newestId || candidates[0]?.id || '',
@@ -2355,14 +2773,28 @@ async function importRipplingCsvFiles(input: {
   const notes: string[] = [];
   let timeReport: TimeReport | null = null;
   let clockReport: ClockReport | null = null;
+  let shiftReport: ShiftRoleReport | null = null;
   let timeLabel = '';
   let clockLabel = '';
+  let shiftLabel = '';
 
   for (const file of input.files) {
+    const hint = `${file.name} ${input.subject}`;
+    const shift = parseShiftRoleReport(file.csv, hint);
     const table = snapshotFromCsv(file.csv);
-    if (table.headers.length) {
+    // Emailed shift reports refresh employee calendars. They do not replace
+    // the hours CSV on the Rippling tab. A file dropped in the app still shows.
+    const hideShiftSnapshot = input.snapshotMode === 'largest' && Boolean(shift);
+    if (table.headers.length && !hideShiftSnapshot) {
       const replace = input.snapshotMode === 'last' || !snapshot || table.total > snapshot.total;
       if (replace) snapshot = { name: file.name, ...table };
+    }
+    if (/\bshift\b/i.test(hint)) {
+      if (shift && !shiftReport) {
+        shiftReport = shift;
+        shiftLabel = file.name;
+      }
+      continue;
     }
     const report = parseTimeReport(file.csv);
     if (report && !timeReport) {
@@ -2376,7 +2808,7 @@ async function importRipplingCsvFiles(input: {
     }
   }
 
-  if (!snapshot || !snapshot.headers.length) {
+  if (!snapshot?.headers.length && !shiftReport && !timeReport && !clockReport) {
     throw new Error('The file was not a CSV table.');
   }
 
@@ -2387,16 +2819,19 @@ async function importRipplingCsvFiles(input: {
     .eq('id', true)
     .maybeSingle();
   const source = csvFileSource(input.messageId, input.fromAddress);
-  const showThis = isAtLeastAsNew(input.receivedAt, existingSnap.data?.received_at || null);
+  const showThis = Boolean(snapshot?.headers.length) && isAtLeastAsNew(input.receivedAt, existingSnap.data?.received_at || null);
   const applyClock = Boolean(clockReport) && isAtLeastAsNew(input.receivedAt, sync.last_clock_at);
   const applyTime = Boolean(timeReport) && isAtLeastAsNew(input.receivedAt, sync.last_time_at);
+  const applyShift = Boolean(shiftReport) && isAtLeastAsNew(input.receivedAt, sync.last_shift_at);
 
   for (const file of input.files) {
-    const clock = parseClockReport(file.csv);
-    const time = parseTimeReport(file.csv);
+    const hint = `${file.name} ${input.subject}`;
+    const shift = parseShiftRoleReport(file.csv, hint);
+    const clock = shift ? null : parseClockReport(file.csv);
+    const time = shift || clock ? null : parseTimeReport(file.csv);
     const table = snapshotFromCsv(file.csv);
-    const kind = clock ? 'clock' : time ? 'time' : 'csv';
-    const isShown = showThis && file.name === snapshot.name;
+    const kind = shift ? 'shift' : clock ? 'clock' : time ? 'time' : 'csv';
+    const isShown = Boolean(snapshot && showThis && file.name === snapshot.name);
     await rememberCsvFile({
       messageId: input.messageId,
       name: file.name,
@@ -2409,7 +2844,7 @@ async function importRipplingCsvFiles(input: {
     });
   }
 
-  if (showThis) {
+  if (showThis && snapshot) {
     const { error: snapError } = await adminClient().from('rippling_report_snapshot').upsert({
       id: true,
       message_id: input.messageId,
@@ -2456,11 +2891,27 @@ async function importRipplingCsvFiles(input: {
       last_attachment_name: (timeLabel || clockLabel).slice(0, 200),
     });
   }
+  if (shiftReport && applyShift) {
+    const { data: inserted, error: rpcError } = await adminClient().rpc('replace_rippling_shift_roles', {
+      p_range_start: shiftReport.rangeStart,
+      p_range_end: shiftReport.rangeEnd,
+      p_message_id: input.messageId,
+      p_rows: shiftReport.rows,
+    });
+    if (rpcError) throw new Error(rpcError.message);
+    notes.push(`${shiftReport.rows.length} shifts by role`);
+    await saveTimeSync({
+      last_shift_at: input.receivedAt,
+      last_shift_count: Number(inserted) || shiftReport.rows.length,
+    });
+  }
 
   await saveTimeSync({
     ...(input.keepMailboxEmail ? {} : { gmail_email: mailbox }),
-    last_synced_at: new Date().toISOString(),
-    ...(showThis ? {
+    ...((applyTime && timeReport) || (applyClock && clockReport) || showThis
+      ? { last_synced_at: new Date().toISOString() }
+      : {}),
+    ...(showThis && snapshot ? {
       last_message_id: input.messageId,
       last_message_at: input.receivedAt,
       last_attachment_name: snapshot.name.slice(0, 200),
@@ -2469,7 +2920,11 @@ async function importRipplingCsvFiles(input: {
     last_error: '',
   });
 
-  return { rows: snapshot.total, attachment: snapshot.name, imported: notes };
+  return {
+    rows: snapshot?.total || shiftReport?.rows.length || 0,
+    attachment: snapshot?.name || shiftLabel,
+    imported: notes,
+  };
 }
 
 /**

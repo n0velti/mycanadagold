@@ -14,7 +14,7 @@ import {
   useTransferWorkflow,
 } from '../lib/transferWorkflow';
 import { confirmDestructive, EmptyState, FONT, Group, MobileListRow, T } from './TriageKit';
-import { MOBILE, useIsMobile } from '../lib/mobileUi';
+import { useIsMobile } from '../lib/mobileUi';
 import { docNoun, PoThumb } from './TriageTable';
 
 const webCursor = Platform.select({ web: { cursor: 'pointer' }, default: {} });
@@ -217,16 +217,18 @@ const styles = StyleSheet.create({
     backgroundColor: T.bg,
   },
   bodyMobile: {
-    backgroundColor: MOBILE.bg,
+    backgroundColor: '#fff',
   },
   content: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 0,
     paddingTop: 8,
     paddingBottom: 24,
     flexGrow: 1,
+    backgroundColor: '#fff',
   },
   contentMobile: {
     paddingBottom: 40,
+    backgroundColor: '#fff',
   },
   row: {
     flexDirection: 'row',

@@ -7,7 +7,7 @@ import TriageDailyReceiptsDrawer from './TriageDailyReceiptsDrawer';
 import TriageDeletedPanel from './TriageDeletedPanel';
 import TriageTransfersPanel from './TriageTransfersPanel';
 import { BarButton, EmptyState, FONT, IconAction, SearchField, SegmentedSlider, T, TextTabs } from './TriageKit';
-import { MOBILE, useIsMobile } from '../lib/mobileUi';
+import { useIsMobile } from '../lib/mobileUi';
 import {
   buildDailyReceiptGrid,
   dailyReceiptStatus,
@@ -33,12 +33,12 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
   }
   style.textContent = [
     '.cgold-triage-row{cursor:pointer;background-color:transparent;}',
-    '.cgold-triage-table-row:hover,.cgold-triage-table-row:has(:hover),.cgold-triage-table-row.is-hover{background-color:#f5f5f7!important;}',
+    '.cgold-triage-table-row:hover,.cgold-triage-table-row:has(:hover),.cgold-triage-table-row.is-hover{background-color:rgba(60,60,67,0.08)!important;}',
     '.cgold-triage-table-row:hover > *,.cgold-triage-table-row:has(:hover) > *,.cgold-triage-table-row.is-hover > *{background-color:transparent!important;}',
-    '.cgold-triage-row-selected,.cgold-triage-row-selected:hover{background-color:#EAF2FF!important;}',
-    '.cgold-accuracy-row:hover{background-color:#f5f5f7!important;}',
-    '.cgold-chrome-stats-btn{cursor:pointer;transition:background-color .12s ease,border-color .12s ease;}',
-    '.cgold-chrome-stats-btn:hover{background-color:#f5f5f7;}',
+    '.cgold-triage-row-selected,.cgold-triage-row-selected:hover{background-color:#f2f2f7!important;}',
+    '.cgold-accuracy-row:hover{background-color:rgba(60,60,67,0.08)!important;}',
+    '.cgold-chrome-stats-btn{cursor:pointer;transition:background-color .12s ease;}',
+    '.cgold-chrome-stats-btn:hover{background-color:#dedee3;}',
     '.cgold-chrome-stats-btn-attention:hover{background-color:rgba(0,122,255,0.16);}',
   ].join('');
 }
@@ -541,7 +541,7 @@ const styles = StyleSheet.create({
     backgroundColor: T.bg,
   },
   bodyMobile: {
-    backgroundColor: MOBILE.bg,
+    backgroundColor: '#fff',
   },
   bodyEmbedded: {
     width: '100%',
@@ -571,7 +571,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-start',
     alignItems: 'stretch',
     paddingBottom: 0,
-    backgroundColor: MOBILE.bg,
+    backgroundColor: '#fff',
   },
   mobileChrome: {
     flexShrink: 0,
@@ -592,7 +592,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
     borderRadius: 12,
-    backgroundColor: T.card,
+    backgroundColor: '#f2f2f7',
   },
   mobileStatCardOn: {
     backgroundColor: 'rgba(0,122,255,0.10)',
@@ -639,10 +639,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 16,
-    paddingTop: 28,
+    paddingTop: 16,
     paddingBottom: 12,
+    backgroundColor: '#fff',
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: T.hairline,
+    borderBottomColor: 'rgba(0,0,0,0.06)',
   },
   pageChromeStart: {
     flexShrink: 1,
@@ -686,9 +687,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: T.hairline,
-    backgroundColor: T.card,
+    backgroundColor: '#e8e8ed',
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -698,10 +697,11 @@ const styles = StyleSheet.create({
     maxWidth: 640,
   },
   chromeStatsHitPressed: {
-    backgroundColor: '#f5f5f7',
+    backgroundColor: '#dedee3',
   },
   chromeStatsHitAttention: {
     backgroundColor: 'rgba(0,122,255,0.10)',
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: 'rgba(0,122,255,0.38)',
   },
   chromeStatsHitAttentionPressed: {

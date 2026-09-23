@@ -281,8 +281,10 @@ function MessageBubble({
     }
     const now = Date.now();
     if (now - lastTap.current < 320) {
+      lastTap.current = 0;
       if (!message.likedByMe) setBurst((current) => current + 1);
       onToggleLike(message);
+      return;
     }
     lastTap.current = now;
   };
@@ -450,7 +452,7 @@ function EmojiPicker({ visible, onPick }) {
   );
 }
 
-function AiDmPanel({ session, onClose, onSaved }) {
+function AiDmPanel({ session, onClose, onSaved, dismissRef }) {
   const [status, setStatus] = useState('ready');
   const [progress, setProgress] = useState('');
   const [seedMessages, setSeedMessages] = useState([]);
@@ -537,6 +539,18 @@ function AiDmPanel({ session, onClose, onSaved }) {
       setError(err.message || 'Could not save this chat.');
     }
   };
+
+  const exitRef = useRef(exit);
+  exitRef.current = exit;
+
+  useEffect(() => {
+    if (!dismissRef) return undefined;
+    const dismiss = () => exitRef.current?.();
+    dismissRef.current = dismiss;
+    return () => {
+      if (dismissRef.current === dismiss) dismissRef.current = null;
+    };
+  }, [dismissRef]);
 
   return (
     <View style={styles.aiPanel}>
@@ -646,6 +660,7 @@ export default function MessagesScreen({
   const [query, setQuery] = useState('');
   const [composeOpen, setComposeOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
+  const dismissAiRef = useRef(null);
   const [selectedIds, setSelectedIds] = useState([]);
   const [groupName, setGroupName] = useState('');
   const [titleDraft, setTitleDraft] = useState('');
@@ -697,6 +712,7 @@ export default function MessagesScreen({
   const openConversation = useCallback(
     async (conversationId, { skipLoad } = {}) => {
       if (!conversationId) return;
+      void dismissAiRef.current?.();
       setActiveId(conversationId);
       setComposeOpen(false);
       setSelectedIds([]);
@@ -969,19 +985,21 @@ export default function MessagesScreen({
 
   const handleToggleLike = async (message) => {
     if (!message?.id || String(message.id).startsWith('temp-')) return;
+    let wasLiked = null;
     setMessages((current) =>
-      current.map((item) =>
-        item.id === message.id
-          ? {
-              ...item,
-              likedByMe: !item.likedByMe,
-              likeCount: item.likedByMe ? Math.max(0, item.likeCount - 1) : item.likeCount + 1,
-            }
-          : item,
-      ),
+      current.map((item) => {
+        if (item.id !== message.id) return item;
+        wasLiked = item.likedByMe;
+        return {
+          ...item,
+          likedByMe: !item.likedByMe,
+          likeCount: item.likedByMe ? Math.max(0, item.likeCount - 1) : item.likeCount + 1,
+        };
+      }),
     );
+    if (wasLiked == null) return;
     try {
-      await toggleDmLike(message.id, message.likedByMe);
+      await toggleDmLike(message.id, wasLiked);
     } catch (err) {
       setError(err.message || 'Could not like that message.');
       refreshInbox();
@@ -1067,6 +1085,18 @@ export default function MessagesScreen({
 
   const showInbox = !isMobile || !activeId;
   const showThread = !isMobile || Boolean(activeId);
+
+  const openAiChat = () => {
+    if (aiOpen && !isMobile) {
+      void dismissAiRef.current?.();
+      return;
+    }
+    setComposeOpen(false);
+    setSelectedIds([]);
+    setGroupName('');
+    setQuery('');
+    setAiOpen(true);
+  };
   const threadLive = Boolean(activeId && activeThread);
   const memberIds = new Set((activeThread?.members || []).map((person) => person.id));
   const addablePeople = peopleIndex.filter((person) => !memberIds.has(person.id));
@@ -1185,7 +1215,7 @@ export default function MessagesScreen({
     }
 
     return filteredInbox.map((row) => {
-      const selected = row.conversationId === activeId;
+      const selected = !aiOpen && row.conversationId === activeId;
       const unread = row.unreadCount > 0;
       const senderName = row.lastMessageIsAssistant
         ? 'MyCanadaGold AI'
@@ -1255,6 +1285,7 @@ export default function MessagesScreen({
           session={session}
           onClose={() => setAiOpen(false)}
           onSaved={refreshInbox}
+          dismissRef={dismissAiRef}
         />
       ) : showInbox ? (
         <View style={[styles.inbox, isMobile && styles.inboxMobile]}>
@@ -1266,13 +1297,7 @@ export default function MessagesScreen({
               {isMobile ? (
                 <>
                   <Pressable
-                    onPress={() => {
-                      setComposeOpen(false);
-                      setSelectedIds([]);
-                      setGroupName('');
-                      setQuery('');
-                      setAiOpen(true);
-                    }}
+                    onPress={openAiChat}
                     style={({ pressed }) => [styles.aiLaunch, pressed && styles.aiLaunchPressed]}
                     accessibilityLabel="Chat with AI"
                   >
@@ -1319,26 +1344,39 @@ export default function MessagesScreen({
                   ) : null}
                 </>
               ) : (
-                <Pressable
-                  onPress={() => {
-                    setComposeOpen((current) => !current);
-                    setSelectedIds([]);
-                    setGroupName('');
-                    setQuery('');
-                    if (isMobile) setActiveId(null);
-                  }}
-                  style={({ hovered, pressed }) => [
-                    styles.composeButton,
-                    (hovered || pressed) && styles.composeButtonHover,
-                  ]}
-                  accessibilityLabel={composeOpen ? 'Close compose' : 'New message'}
-                >
-                  <Ionicons
-                    name={composeOpen ? 'close' : 'create-outline'}
-                    size={18}
-                    color={BLUE}
-                  />
-                </Pressable>
+                <>
+                  <Pressable
+                    onPress={openAiChat}
+                    style={({ hovered, pressed }) => [
+                      styles.aiLaunch,
+                      aiOpen && styles.aiLaunchActive,
+                      (hovered || pressed) && styles.aiLaunchPressed,
+                    ]}
+                    accessibilityLabel={aiOpen ? 'Close AI chat' : 'Chat with AI'}
+                  >
+                    <Ionicons name="sparkles" size={16} color={aiOpen ? BLUE : '#1d1d1f'} />
+                    <Text style={[styles.aiLaunchText, aiOpen && styles.aiLaunchTextActive]}>AI</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => {
+                      setComposeOpen((current) => !current);
+                      setSelectedIds([]);
+                      setGroupName('');
+                      setQuery('');
+                    }}
+                    style={({ hovered, pressed }) => [
+                      styles.composeButton,
+                      (hovered || pressed) && styles.composeButtonHover,
+                    ]}
+                    accessibilityLabel={composeOpen ? 'Close compose' : 'New message'}
+                  >
+                    <Ionicons
+                      name={composeOpen ? 'close' : 'create-outline'}
+                      size={18}
+                      color={BLUE}
+                    />
+                  </Pressable>
+                </>
               )}
             </View>
           </View>
@@ -1448,7 +1486,16 @@ export default function MessagesScreen({
         </View>
       ) : null}
 
-      {showThread ? (
+      {showThread && !isMobile && aiOpen ? (
+        <View style={styles.thread}>
+          <AiDmPanel
+            session={session}
+            onClose={() => setAiOpen(false)}
+            onSaved={refreshInbox}
+            dismissRef={dismissAiRef}
+          />
+        </View>
+      ) : showThread ? (
         <View style={styles.thread}>
           {threadLive ? (
             <>
@@ -2715,12 +2762,18 @@ const styles = StyleSheet.create({
   aiLaunchPressed: {
     backgroundColor: '#e5e5ea',
   },
+  aiLaunchActive: {
+    backgroundColor: '#e8f1ff',
+  },
   aiLaunchText: {
     fontFamily,
     fontSize: 15,
     fontWeight: '600',
     color: '#1d1d1f',
     letterSpacing: -0.2,
+  },
+  aiLaunchTextActive: {
+    color: BLUE,
   },
   aiPanel: {
     flex: 1,

@@ -21,7 +21,7 @@ import {
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
-import { mobileSafeBottom, mobileSafeTop, MOBILE, useIsMobile } from '../lib/mobileUi';
+import { mobileSafeBottom, mobileSafeTop, useIsMobile } from '../lib/mobileUi';
 import { fetchTransferStores } from '../lib/locations';
 import { findStaffByEmployeeName, listStaffProfiles } from '../lib/permissions';
 import {
@@ -3518,17 +3518,18 @@ const styles = StyleSheet.create({
     backgroundColor: T.bg,
   },
   bodyMobile: {
-    backgroundColor: MOBILE.bg,
+    backgroundColor: '#fff',
   },
   mobileList: {
     flex: 1,
     minHeight: 0,
+    backgroundColor: '#fff',
   },
   mobileListContent: {
-    paddingHorizontal: 16,
-    paddingTop: 4,
+    paddingTop: 0,
     paddingBottom: 40,
     flexGrow: 1,
+    backgroundColor: '#fff',
   },
   mobileGroupStart: {
     borderTopLeftRadius: 12,
@@ -3672,10 +3673,10 @@ const styles = StyleSheet.create({
   },
   meltHeadLabel: {
     fontFamily,
-    fontSize: 11,
-    fontWeight: '600',
+    fontSize: 13,
+    fontWeight: '400',
     color: '#8e8e93',
-    letterSpacing: 0.3,
+    letterSpacing: -0.08,
     textTransform: 'uppercase',
   },
   meltHeadLabelRight: {

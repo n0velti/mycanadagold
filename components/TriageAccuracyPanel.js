@@ -38,7 +38,7 @@ import {
   TextAction,
   TriageDrawer,
 } from './TriageKit';
-import { MOBILE, useIsMobile } from '../lib/mobileUi';
+import { useIsMobile } from '../lib/mobileUi';
 
 const fontFamily = FONT;
 
@@ -702,31 +702,31 @@ const styles = StyleSheet.create({
     backgroundColor: T.bg,
   },
   bodyMobile: {
-    backgroundColor: MOBILE.bg,
+    backgroundColor: '#fff',
   },
   mobileList: {
     flex: 1,
     minHeight: 0,
   },
   mobileListContent: {
-    paddingHorizontal: 16,
-    paddingTop: 4,
+    paddingTop: 0,
     paddingBottom: 40,
     flexGrow: 1,
+    backgroundColor: '#fff',
   },
   mobileHint: {
     fontFamily,
     fontSize: 13,
     lineHeight: 18,
     color: T.secondary,
-    paddingHorizontal: 4,
+    paddingHorizontal: 16,
     paddingBottom: 10,
   },
   mobilePhotoError: {
     fontFamily,
     fontSize: 13,
     color: T.red,
-    paddingHorizontal: 4,
+    paddingHorizontal: 16,
     paddingBottom: 10,
   },
   mobileGroupStart: {
