@@ -26,6 +26,7 @@ import {
   formatInboxTime,
   formatLastSeen,
   formatThreadStamp,
+  getOrCreateAiDm,
   getOrCreateDm,
   getOrCreateTeamDm,
   hideDmMessage,
@@ -660,8 +661,7 @@ export default function MessagesScreen({
   const [teams, setTeams] = useState([]);
   const [query, setQuery] = useState('');
   const [composeOpen, setComposeOpen] = useState(false);
-  const [aiOpen, setAiOpen] = useState(false);
-  const dismissAiRef = useRef(null);
+  const aiSessionsRef = useRef(new Map());
   const [selectedIds, setSelectedIds] = useState([]);
   const [groupName, setGroupName] = useState('');
   const [titleDraft, setTitleDraft] = useState('');
@@ -713,7 +713,6 @@ export default function MessagesScreen({
   const openConversation = useCallback(
     async (conversationId, { skipLoad } = {}) => {
       if (!conversationId) return;
-      void dismissAiRef.current?.();
       setActiveId(conversationId);
       setComposeOpen(false);
       setSelectedIds([]);
@@ -1022,9 +1021,78 @@ export default function MessagesScreen({
     }
   };
 
+  const ensureAiSession = (conversationId) => {
+    const existing = aiSessionsRef.current.get(conversationId);
+    if (existing) return existing;
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - 6);
+    const prepared = prepareAiChatSession({ startDate: start, endDate: end });
+    aiSessionsRef.current.set(conversationId, prepared);
+    return prepared;
+  };
+
   const handleSend = async () => {
     const text = draft.trim();
     if (!text || !activeId || sending) return;
+    if (activeThread?.isAi) {
+      setDraft('');
+      setEmojiOpen(false);
+      setSending(true);
+      const tempId = `temp-${Date.now()}`;
+      const history = messages
+        .filter((item) => item.body && !String(item.id).startsWith('temp-'))
+        .map((item) => ({
+          role: item.isAssistant ? 'assistant' : 'user',
+          content: item.body,
+        }));
+      setMessages((current) => [
+        ...current,
+        {
+          id: tempId,
+          conversationId: activeId,
+          senderId: myId,
+          body: text,
+          createdAt: new Date().toISOString(),
+          likedByMe: false,
+          likeCount: 0,
+          isAssistant: false,
+          pending: true,
+        },
+      ]);
+      try {
+        const saved = await sendDmMessage(activeId, text);
+        setMessages((current) => current.map((item) => (item.id === tempId ? saved : item)));
+        const prepared = ensureAiSession(activeId);
+        const result = await sendAiChatMessage({
+          seedMessages: prepared.seedMessages,
+          turns: history,
+          userMessage: text,
+          model: AI_MODEL,
+          session,
+          context: prepared.context,
+          startDate: prepared.context?.selection?.startDate,
+          endDate: prepared.context?.selection?.endDate,
+        });
+        if (result.sources?.length) {
+          prepared.context = { ...prepared.context, lastSources: result.sources };
+        }
+        const reply = await sendDmMessage(activeId, result.text || 'I could not answer that.', {
+          assistant: true,
+        });
+        setMessages((current) => (
+          current.some((item) => item.id === reply.id) ? current : [...current, reply]
+        ));
+        await refreshInbox();
+      } catch (err) {
+        setMessages((current) => current.filter((item) => item.id !== tempId));
+        setDraft(text);
+        setError(err.message || 'Could not get an answer.');
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
     setDraft('');
     setEmojiOpen(false);
     typingRef.current?.stop?.(myName);
@@ -1087,23 +1155,56 @@ export default function MessagesScreen({
   const showInbox = !isMobile || !activeId;
   const showThread = !isMobile || Boolean(activeId);
 
-  const openAiChat = () => {
-    if (aiOpen && !isMobile) {
-      void dismissAiRef.current?.();
-      return;
+  const openAiConversation = useCallback(async () => {
+    try {
+      const conversationId = await getOrCreateAiDm();
+      await refreshInbox();
+      await openConversation(conversationId);
+    } catch (err) {
+      setError(err.message || 'Could not open MyCanadaGold AI.');
     }
-    setComposeOpen(false);
-    setSelectedIds([]);
-    setGroupName('');
-    setQuery('');
-    setAiOpen(true);
-  };
+  }, [openConversation, refreshInbox]);
+
   const threadLive = Boolean(activeId && activeThread);
   const memberIds = new Set((activeThread?.members || []).map((person) => person.id));
   const addablePeople = peopleIndex.filter((person) => !memberIds.has(person.id));
 
   const renderInboxList = () => {
     if (composeOpen) {
+      const aiQuery = query.trim().toLowerCase();
+      const showAiPin = !aiQuery || 'talk to ai mycanadagold'.includes(aiQuery);
+      const aiPin = showAiPin ? (
+        <Pressable
+          key="talk-to-ai"
+          onPress={() => void openAiConversation()}
+          {...(Platform.OS === 'web' ? { className: 'cgold-dm-row' } : null)}
+          style={({ pressed }) => [
+            styles.personRow,
+            isMobile && styles.personRowCompact,
+            pressed && styles.rowPressed,
+          ]}
+          accessibilityLabel="Talk to AI"
+        >
+          <View
+            style={[
+              styles.avatar,
+              styles.teamAvatar,
+              styles.aiPinAvatar,
+              isMobile && styles.teamAvatarCompact,
+            ]}
+          >
+            <Ionicons name="sparkles" size={18} color="#fff" />
+          </View>
+          <View style={styles.personCopy}>
+            <Text style={styles.personName} numberOfLines={1}>
+              Talk to AI
+            </Text>
+            <Text style={styles.personSub} numberOfLines={1}>
+              MyCanadaGold AI
+            </Text>
+          </View>
+        </Pressable>
+      ) : null;
       const teamRows = filteredTeams.map((team) => {
         const intake = intakeNames(team, 2);
         return (
@@ -1169,7 +1270,7 @@ export default function MessagesScreen({
         );
       });
 
-      if (teamRows.length === 0 && peopleRows.length === 0) {
+      if (!aiPin && teamRows.length === 0 && peopleRows.length === 0) {
         return (
           <Text style={styles.emptyHint}>
             {peopleIndex.length === 0 && teams.length === 0
@@ -1181,6 +1282,7 @@ export default function MessagesScreen({
 
       return (
         <>
+          {aiPin}
           {teamRows.length > 0 ? (
             <>
               <Text style={styles.composeSection}>Teams</Text>
@@ -1216,7 +1318,7 @@ export default function MessagesScreen({
     }
 
     return filteredInbox.map((row) => {
-      const selected = !aiOpen && row.conversationId === activeId;
+      const selected = row.conversationId === activeId;
       const unread = row.unreadCount > 0;
       const senderName = row.lastMessageIsAssistant
         ? 'MyCanadaGold AI'
@@ -1281,104 +1383,33 @@ export default function MessagesScreen({
       style={[styles.root, isMobile && styles.canvasMobile]}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      {isMobile && aiOpen ? (
-        <AiDmPanel
-          session={session}
-          onClose={() => setAiOpen(false)}
-          onSaved={refreshInbox}
-          dismissRef={dismissAiRef}
-        />
-      ) : showInbox ? (
+      {showInbox ? (
         <View style={[styles.inbox, isMobile && styles.inboxMobile]}>
           <View style={[styles.inboxHeader, isMobile && styles.inboxHeaderMobile]}>
             <Text style={[styles.inboxTitle, isMobile && styles.inboxTitleMobile]} numberOfLines={1}>
               {composeOpen ? 'New' : 'Messages'}
             </Text>
             <View style={styles.inboxHeaderActions}>
-              {isMobile ? (
-                <>
-                  <Pressable
-                    onPress={openAiChat}
-                    style={({ pressed }) => [styles.aiLaunch, pressed && styles.aiLaunchPressed]}
-                    accessibilityLabel="Chat with AI"
-                  >
-                    <Ionicons name="sparkles" size={16} color="#1d1d1f" />
-                    <Text style={styles.aiLaunchText}>AI</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => {
-                      if (!composeOpen) {
-                        setComposeOpen(true);
-                        setSelectedIds([]);
-                        setGroupName('');
-                        setQuery('');
-                        setActiveId(null);
-                        return;
-                      }
-                      if (selectedIds.length > 0) startConversation();
-                    }}
-                    disabled={composeOpen && selectedIds.length === 0}
-                    style={({ pressed }) => [
-                      styles.startConvoButton,
-                      composeOpen && selectedIds.length === 0 && styles.startConvoButtonOff,
-                      pressed && !(composeOpen && selectedIds.length === 0) && styles.startConvoButtonPressed,
-                    ]}
-                    accessibilityLabel={composeOpen ? 'Start conversation' : 'Start a conversation'}
-                  >
-                    <Text style={styles.startConvoButtonText}>
-                      {composeOpen && selectedIds.length > 1 ? 'Start group' : 'Start convo'}
-                    </Text>
-                  </Pressable>
-                  {composeOpen ? (
-                    <Pressable
-                      onPress={() => {
-                        setComposeOpen(false);
-                        setSelectedIds([]);
-                        setGroupName('');
-                        setQuery('');
-                      }}
-                      hitSlop={8}
-                      accessibilityLabel="Cancel"
-                    >
-                      <Ionicons name="close" size={22} color="#8e8e93" />
-                    </Pressable>
-                  ) : null}
-                </>
-              ) : (
-                <>
-                  <Pressable
-                    onPress={openAiChat}
-                    style={({ hovered, pressed }) => [
-                      styles.aiLaunch,
-                      aiOpen && styles.aiLaunchActive,
-                      (hovered || pressed) && styles.aiLaunchPressed,
-                    ]}
-                    accessibilityLabel={aiOpen ? 'Close AI chat' : 'Chat with AI'}
-                  >
-                    <Ionicons name="sparkles" size={16} color={aiOpen ? BLUE : '#1d1d1f'} />
-                    <Text style={[styles.aiLaunchText, aiOpen && styles.aiLaunchTextActive]}>AI</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => {
-                      setComposeOpen((current) => !current);
-                      setSelectedIds([]);
-                      setGroupName('');
-                      setQuery('');
-                    }}
-                    style={({ hovered, pressed }) => [
-                      styles.composeButton,
-                      (hovered || pressed) && styles.composeButtonHover,
-                    ]}
-                    accessibilityLabel={composeOpen ? 'Close compose' : 'New message'}
-                  >
-                    <Ionicons
-                      name={composeOpen ? 'close' : 'create-outline'}
-                      size={18}
-                      color={BLUE}
-                    />
-                  </Pressable>
-                </>
-              )}
+              <Pressable
+                onPress={() => {
+                  setComposeOpen((current) => !current);
+                  setSelectedIds([]);
+                  setGroupName('');
+                  setQuery('');
+                  if (isMobile && !composeOpen) setActiveId(null);
+                }}
+                style={({ hovered, pressed }) => [
+                  styles.composeButton,
+                  (hovered || pressed) && styles.composeButtonHover,
+                ]}
+                accessibilityLabel={composeOpen ? 'Close compose' : 'Start a conversation'}
+              >
+                <Ionicons
+                  name={composeOpen ? 'close' : 'create-outline'}
+                  size={isMobile ? 22 : 18}
+                  color={BLUE}
+                />
+              </Pressable>
             </View>
           </View>
           {composeOpen && selectedPeople.length > 0 ? (
@@ -1400,7 +1431,6 @@ export default function MessagesScreen({
                     <Ionicons name="close" size={11} color={BLUE} />
                   </Pressable>
                 ))}
-                {isMobile ? null : (
                 <Pressable
                   onPress={startConversation}
                   style={({ hovered, pressed }) => [
@@ -1418,7 +1448,6 @@ export default function MessagesScreen({
                   </Text>
                   <Ionicons name="arrow-forward" size={13} color="#fff" />
                 </Pressable>
-                )}
               </View>
             </View>
           ) : null}
@@ -1487,16 +1516,7 @@ export default function MessagesScreen({
         </View>
       ) : null}
 
-      {showThread && !isMobile && aiOpen ? (
-        <View style={styles.thread}>
-          <AiDmPanel
-            session={session}
-            onClose={() => setAiOpen(false)}
-            onSaved={refreshInbox}
-            dismissRef={dismissAiRef}
-          />
-        </View>
-      ) : showThread ? (
+      {showThread ? (
         <View style={[styles.thread, isMobile && styles.canvasMobile]}>
           {threadLive ? (
             <>
@@ -1801,7 +1821,7 @@ export default function MessagesScreen({
                         style={[styles.composerInput, isMobile && styles.composerInputMobile]}
                         value={draft}
                         onChangeText={onChangeDraft}
-                        placeholder="Message"
+                        placeholder={activeThread?.isAi ? 'Message MyCanadaGold AI' : 'Message'}
                         placeholderTextColor="#8e8e93"
                         multiline
                         maxLength={4000}
@@ -2109,6 +2129,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 12,
     paddingBottom: 4,
+  },
+  aiPinAvatar: {
+    backgroundColor: '#6B4DE6',
   },
   teamAvatar: {
     width: 44,

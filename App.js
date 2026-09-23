@@ -2449,7 +2449,20 @@ function mergeLiveTxRows(current, incoming) {
   });
 }
 
-function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date, startKey, endKey, onClose }) {
+function HomeStoreDrawer({
+  visible,
+  store,
+  session,
+  periodLabel = 'Today',
+  date,
+  startKey,
+  endKey,
+  onClose,
+  appsOpen = false,
+  onAppsOpenChange,
+  onMobileFilterTop,
+  mobileChromeWidth = HOME_FILTER_SIZE,
+}) {
   const { width: windowWidth } = useWindowDimensions();
   const isMobile = windowWidth < MOBILE_BREAKPOINT;
   const { hasApp } = useAppAccess();
@@ -2467,13 +2480,16 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
   const appIconSize = isMobile ? 42 : 54;
   const appItemWidth = appIconSize + (isMobile ? 36 : 30);
   const [headerHeight, setHeaderHeight] = useState(null);
-  const [appsOpen, setAppsOpen] = useState(false);
   const [filterTop, setFilterTop] = useState(36);
-  const [appsButtonWidth, setAppsButtonWidth] = useState(HOME_FILTER_SIZE);
   const topInset = isMobile ? 0 : headerHeight ?? 140;
+  const onMobileFilterTopRef = useRef(onMobileFilterTop);
+  const onAppsOpenChangeRef = useRef(onAppsOpenChange);
+  onMobileFilterTopRef.current = onMobileFilterTop;
+  onAppsOpenChangeRef.current = onAppsOpenChange;
   const alignFilter = useCallback((top) => {
     if (!Number.isFinite(top)) return;
     setFilterTop((current) => (Math.abs(current - top) < 0.5 ? current : top));
+    onMobileFilterTopRef.current?.(top);
   }, []);
   const onHeaderLayout = useCallback((event) => {
     const next = Math.round(event?.nativeEvent?.layout?.height || 0);
@@ -2566,7 +2582,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
   useEffect(() => {
     if (visible) {
       setActiveTab('overview');
-      setAppsOpen(false);
+      onAppsOpenChangeRef.current?.(false);
       return;
     }
 
@@ -2780,7 +2796,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                       onOpenApp={openApp}
                       onAmountHover={ensurePaymentBreakdown}
                       onFilterTop={alignFilter}
-                      filterSlotWidth={appsButtonWidth}
+                      filterSlotWidth={mobileChromeWidth}
                       topInset={topInset}
                       ready={settled}
                     />
@@ -2894,7 +2910,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                           store={heldStore}
                           periodLabel={periodLabel}
                           plain
-                          filterSlotWidth={appsButtonWidth}
+                          filterSlotWidth={mobileChromeWidth}
                           onAmountLayout={(row) => {
                             txAmountRowRef.current = row;
                             alignFilter(txHeroYRef.current + row.y + (row.height - HOME_FILTER_SIZE) / 2);
@@ -3020,7 +3036,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                     <View style={styles.storeAppsLayer}>
                       <Pressable
                         style={StyleSheet.absoluteFill}
-                        onPress={() => setAppsOpen(false)}
+                        onPress={() => onAppsOpenChange?.(false)}
                         accessibilityLabel="Close apps"
                       />
                       <View style={[styles.storeAppsCard, { top: filterTop + HOME_FILTER_SIZE + 8 }]}>
@@ -3036,7 +3052,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                                 key={tool.key}
                                 onPress={() => {
                                   setActiveTab(tool.key);
-                                  setAppsOpen(false);
+                                  onAppsOpenChange?.(false);
                                 }}
                                 style={({ pressed }) => [
                                   styles.igFilterAction,
@@ -3063,34 +3079,6 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                       </View>
                     </View>
                   ) : null}
-                  <Pressable
-                    onPress={() => setAppsOpen((open) => !open)}
-                    onLayout={(event) => {
-                      const next = Math.ceil(event.nativeEvent.layout.width);
-                      if (next > 0) {
-                        setAppsButtonWidth((current) => (current === next ? current : next));
-                      }
-                    }}
-                    hitSlop={6}
-                    style={[styles.storeNameButton, { top: filterTop }]}
-                    accessibilityRole="button"
-                    accessibilityLabel={heldStore.store ? `${heldStore.store} apps` : 'Store apps'}
-                    accessibilityState={{ expanded: appsOpen }}
-                  >
-                    <BlurView
-                      intensity={72}
-                      tint="light"
-                      style={styles.storeNameBlur}
-                      {...(Platform.OS === 'web' ? { className: 'cgold-mobile-filter-blur' } : null)}
-                    >
-                      <HomeFilterLines color={appsOpen || activeTab !== 'overview' ? '#007AFF' : '#1d1d1f'} />
-                      {heldStore.store ? (
-                        <Text style={styles.storeNameLabel} numberOfLines={1}>
-                          {heldStore.store}
-                        </Text>
-                      ) : null}
-                    </BlurView>
-                  </Pressable>
                 </>
               ) : (
               <HeaderShell
@@ -4334,6 +4322,38 @@ function HomeStoresTable({
 const HOME_FILTER_SIZE = MOBILE_FILTER_SIZE;
 const HOME_FILTER_RIGHT = MOBILE_FILTER_INSET;
 
+function FilterChromeLabel({ text }) {
+  const opacity = useRef(new Animated.Value(1)).current;
+  const labelRef = useRef(text);
+  const [label, setLabel] = useState(text);
+
+  useEffect(() => {
+    if (text === labelRef.current) return undefined;
+    const fade = Animated.timing(opacity, {
+      toValue: 0,
+      duration: 90,
+      useNativeDriver: false,
+    });
+    fade.start(({ finished }) => {
+      if (!finished) return;
+      labelRef.current = text;
+      setLabel(text);
+      Animated.timing(opacity, {
+        toValue: 1,
+        duration: 160,
+        useNativeDriver: false,
+      }).start();
+    });
+    return () => fade.stop();
+  }, [opacity, text]);
+
+  return (
+    <Animated.Text style={[styles.storeNameLabel, { opacity }]} numberOfLines={1}>
+      {label}
+    </Animated.Text>
+  );
+}
+
 function HomeFilterLines({ color }) {
   return (
     <View style={styles.igFilterLines}>
@@ -4354,6 +4374,8 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson, onBuy, onSell, home
   const amountRowRef = useRef({ y: 20, height: 46 });
   const [filterTop, setFilterTop] = useState(36);
   const [homeFilterWidth, setHomeFilterWidth] = useState(HOME_FILTER_SIZE);
+  const [storeAppsOpen, setStoreAppsOpen] = useState(false);
+  const [storeFilterTop, setStoreFilterTop] = useState(36);
   const [filterAnchor, setFilterAnchor] = useState({ top: 90, right: 16 });
   const allowHomeFilters = canFilter('home');
   const dateRestricted = isRestrictedHomeEmployee(session?.profile);
@@ -4534,6 +4556,8 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson, onBuy, onSell, home
   const openStore = useCallback(
     (row) => {
       if (!allowHomeFilters && !rowMatchesAllocatedStore(row, assignedStore)) return;
+      setFiltersOpen(false);
+      setStoreAppsOpen(false);
       setSelectedStore(row);
     },
     [allowHomeFilters, assignedStore],
@@ -4546,6 +4570,7 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson, onBuy, onSell, home
   }, [selectedStore, canOpenHomeStore]);
 
   const closeStore = useCallback(() => {
+    setStoreAppsOpen(false);
     setSelectedStore(null);
   }, []);
   const homeRootTickRef = useRef(homeRootTick);
@@ -4720,6 +4745,9 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson, onBuy, onSell, home
     });
   };
 
+  const chromeLabel = selectedStore?.store || 'MyCanadaGold';
+  const chromeTop = selectedStore ? storeFilterTop : filterTop;
+  const chromeActive = selectedStore ? storeAppsOpen : filtersOpen || filtersActive;
   const filterButton = isMobile ? (
     <Pressable
       ref={filterButtonRef}
@@ -4730,13 +4758,17 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson, onBuy, onSell, home
         placeFilterMenu();
       }}
       onPress={() => {
+        if (selectedStore) {
+          setStoreAppsOpen((open) => !open);
+          return;
+        }
         placeFilterMenu();
         setFiltersOpen((open) => !open);
       }}
-      style={[styles.storeNameButton, { top: filterTop }]}
+      style={[styles.storeNameButton, styles.homeChromeButton, { top: chromeTop }]}
       accessibilityRole="button"
-      accessibilityLabel="MyCanadaGold filters"
-      accessibilityState={{ expanded: filtersOpen }}
+      accessibilityLabel={selectedStore ? `${chromeLabel} apps` : 'MyCanadaGold filters'}
+      accessibilityState={{ expanded: selectedStore ? storeAppsOpen : filtersOpen }}
     >
       <BlurView
         intensity={72}
@@ -4744,10 +4776,8 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson, onBuy, onSell, home
         style={styles.storeNameBlur}
         {...(Platform.OS === 'web' ? { className: 'cgold-mobile-filter-blur' } : null)}
       >
-        <HomeFilterLines color={filtersOpen || filtersActive ? '#007AFF' : '#1d1d1f'} />
-        <Text style={styles.storeNameLabel} numberOfLines={1}>
-          MyCanadaGold
-        </Text>
+        <HomeFilterLines color={chromeActive ? '#007AFF' : '#1d1d1f'} />
+        <FilterChromeLabel text={chromeLabel} />
       </BlurView>
     </Pressable>
   ) : null;
@@ -4807,7 +4837,7 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson, onBuy, onSell, home
               <View
                 style={[
                   styles.igHomeFilterSlot,
-                  homeFilterWidth > 0 && { width: homeFilterWidth },
+                  { width: Math.max(homeFilterWidth, HOME_FILTER_SIZE) },
                 ]}
               />
             </View>
@@ -4960,8 +4990,6 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson, onBuy, onSell, home
         </View>
       ) : null}
 
-      {filterButton}
-
       <HomeStoreDrawer
         visible={Boolean(selectedStore)}
         store={selectedStore}
@@ -4971,7 +4999,13 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson, onBuy, onSell, home
         startKey={startKey}
         endKey={endKey}
         onClose={closeStore}
+        appsOpen={storeAppsOpen}
+        onAppsOpenChange={setStoreAppsOpen}
+        onMobileFilterTop={setStoreFilterTop}
+        mobileChromeWidth={homeFilterWidth}
       />
+
+      {filterButton}
     </View>
   );
 }
@@ -8561,7 +8595,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 64,
-    zIndex: 30,
+    zIndex: 50,
   },
   contentMobilePadded: {
     paddingHorizontal: 16,
@@ -9453,6 +9487,9 @@ const styles = StyleSheet.create({
   },
   storeAppsScroll: {
     maxHeight: 420,
+  },
+  homeChromeButton: {
+    zIndex: 24,
   },
   storeNameButton: {
     position: 'absolute',
