@@ -111,7 +111,7 @@ import { profileTargetFromPerson } from './lib/profileTarget';
 import ProfileLocationPicker from './components/ProfileLocationPicker';
 import { PhoneCallProvider, PhoneIncomingDock, usePhoneCalls } from './components/PhoneCallProvider';
 import MobilePhoneDock from './components/MobilePhoneDock';
-import { callsForStore, inboundCallRatio } from './lib/phoneCalls';
+import { callsForStore, fetchPhoneHistory, inboundCallRatio, mergeCallLog } from './lib/phoneCalls';
 import {
   emptyStoreSettings,
   isStoreOpenNow,
@@ -129,7 +129,6 @@ import { CANVAS, MOBILE_FILTER_INSET, MOBILE_FILTER_SIZE } from './lib/mobileUi'
 // screen can also be warmed ahead of time (see `warmScreen`).
 const SCREEN_LOADERS = {
   accounting: () => import('./components/AccountingScreen'),
-  ai: () => import('./components/AiScreen'),
   analytics: () => import('./components/AnalyticsScreen'),
   audit: () => import('./components/AuditScreen'),
   bonuses: () => import('./components/BonusesScreen'),
@@ -159,7 +158,6 @@ const SCREEN_LOADERS = {
 };
 
 const AccountingScreen = lazy(SCREEN_LOADERS.accounting);
-const AiScreen = lazy(SCREEN_LOADERS.ai);
 const AnalyticsScreen = lazy(SCREEN_LOADERS.analytics);
 const AuditScreen = lazy(SCREEN_LOADERS.audit);
 const BonusesScreen = lazy(SCREEN_LOADERS.bonuses);
@@ -698,7 +696,6 @@ const TOOL_CARDS = [
   { key: 'transactions', label: 'Transactions', icon: 'swap-horizontal-outline', tint: '#E8F1FF', accent: '#2F6FED' },
   { key: 'inventory', label: 'Inventory', icon: 'cube-outline', tint: '#FFF4E5', accent: '#C47A12' },
   { key: 'preorders', label: 'Preorders', icon: 'cart-outline', tint: '#FFF7ED', accent: '#EA580C' },
-  { key: 'ai', label: 'MyCanadaGold AI', icon: 'sparkles-outline', tint: '#F3EEFF', accent: '#6B4DE6' },
   { key: 'messages', label: 'Direct Messages', icon: 'chatbubbles-outline', tint: '#EEF4FF', accent: '#0A84FF' },
   { key: 'audit', label: 'Audit', icon: 'clipboard-outline', tint: '#EEF8F1', accent: '#2F8A4E' },
   { key: 'transfer', label: 'Transfer', icon: 'arrow-forward-outline', tint: '#EEF7FB', accent: '#1F7A9A' },
@@ -758,7 +755,7 @@ const STORE_DRAWER_TABS = STORE_DRAWER_TAB_KEYS.map((key) =>
   TOOL_CARDS.find((tool) => tool.key === key),
 ).filter(Boolean);
 
-const TRANSACTION_DETAIL_TAB_KEYS = ['triage', 'ai', 'serphint'];
+const TRANSACTION_DETAIL_TAB_KEYS = ['triage', 'serphint'];
 
 const TRANSACTION_DETAIL_TABS = TRANSACTION_DETAIL_TAB_KEYS.map((key) =>
   TOOL_CARDS.find((tool) => tool.key === key),
@@ -2778,7 +2775,6 @@ function HomeStoreDrawer({
               activeTab === 'employees' ||
               activeTab === 'debit' ||
               activeTab === 'audit' ||
-              activeTab === 'ai' ||
               activeTab === 'triage' ||
               activeTab === 'phone' ||
               activeTab === 'emails' ||
@@ -2836,12 +2832,6 @@ function HomeStoreDrawer({
                         session={session}
                         storeFilter={heldStore.store}
                         initialDate={date}
-                        embedded
-                      />
-                    ) : activeTab === 'ai' ? (
-                      <AiScreen
-                        session={session}
-                        storeFilter={heldStore.store}
                         embedded
                       />
                     ) : activeTab === 'triage' ? (
@@ -3554,19 +3544,31 @@ function HomeLiveValue({
   );
 }
 
+const HOME_RATE_EMPTY = '#c7c7cc';
+
+function homeRateIconColor(stats) {
+  if (stats?.rate == null) return HOME_RATE_EMPTY;
+  return stats.rate < 80 ? '#B91C1C' : '#15803D';
+}
+
 function HomeStoreMetric({ icon, stats, label }) {
-  if (stats?.rate == null) return null;
-  const low = stats.rate < 80;
+  const empty = stats?.rate == null;
+  const low = !empty && stats.rate < 80;
   return (
-    <View style={styles.igStoreMetric} accessibilityLabel={`${label} ${stats.ratio}`}>
-      <Ionicons name={icon} size={14} color={low ? '#B91C1C' : '#15803D'} />
-      <HomeLiveValue
-        style={[styles.igStoreMetricText, low ? styles.homeStorePhoneLow : styles.homeStorePhoneHigh]}
-        numeric={stats.rate}
-        format={formatHomePercentTick}
-      >
-        {stats.ratio}
-      </HomeLiveValue>
+    <View
+      style={styles.igStoreMetric}
+      accessibilityLabel={empty ? `${label}, no activity` : `${label} ${stats.ratio}`}
+    >
+      <Ionicons name={icon} size={14} color={homeRateIconColor(stats)} />
+      {empty ? null : (
+        <HomeLiveValue
+          style={[styles.igStoreMetricText, low ? styles.homeStorePhoneLow : styles.homeStorePhoneHigh]}
+          numeric={stats.rate}
+          format={formatHomePercentTick}
+        >
+          {stats.ratio}
+        </HomeLiveValue>
+      )}
     </View>
   );
 }
@@ -3587,41 +3589,41 @@ function HomeStoreCard({
 }) {
   const accent = storeAccent(row.store);
   const hasActivity = Number(row.txCount) > 0;
-  const hasMetrics = emailStats?.rate != null || phoneStats?.rate != null;
   const cardStyle = [styles.igStoreCard, selected && styles.igStoreCardSelected];
+  const rateMetrics = (
+    <View style={styles.igStoreMetrics}>
+      <HomeStoreMetric icon="mail" stats={emailStats} label="Email capture" />
+      <HomeStoreMetric icon="call" stats={phoneStats} label="Phone answer rate" />
+    </View>
+  );
 
   if (!canOpen) {
     return (
       <View style={[cardStyle, styles.igStoreCardStatic]} accessibilityLabel={`${row.store}, ${open ? 'open' : 'closed'}`}>
         <HomeStoreStatusIcon accent={accent} open={open} compact />
-        <View style={[styles.igStoreBody, !last && styles.igStoreBodyDivider]}>
-          <View style={styles.igStoreCopy}>
-            <Text style={styles.igStoreName} numberOfLines={1}>
-              {row.store}
-            </Text>
-            <View style={styles.igStoreMetaRow}>
+        <View style={[styles.igStoreBody, styles.igStoreBodyStack, !last && styles.igStoreBodyDivider]}>
+          <View style={styles.igStoreBodyMain}>
+            <View style={styles.igStoreCopy}>
+              <Text style={styles.igStoreName} numberOfLines={1}>
+                {row.store}
+              </Text>
               <HomeLiveValue style={styles.igStoreMeta} numeric={row.txCount} numberOfLines={1}>
                 {hasActivity ? `${row.txCount} tx` : 'No transactions'}
               </HomeLiveValue>
-              {hasMetrics ? (
-                <>
-                  <HomeStoreMetric icon="mail" stats={emailStats} label="Email capture" />
-                  <HomeStoreMetric icon="call" stats={phoneStats} label="Phone answer rate" />
-                </>
+            </View>
+            <View style={styles.igStoreTrailing}>
+              {people.length > 0 ? (
+                <HomePeopleStack
+                  people={people}
+                  compact
+                  interactive={peopleInteractive}
+                  onOpenPerson={onOpenPerson}
+                />
               ) : null}
             </View>
+            <View style={styles.igStoreChevron} />
           </View>
-          <View style={styles.igStoreTrailing}>
-            {people.length > 0 ? (
-              <HomePeopleStack
-                people={people}
-                compact
-                interactive={peopleInteractive}
-                onOpenPerson={onOpenPerson}
-              />
-            ) : null}
-          </View>
-          <View style={styles.igStoreChevron} />
+          {rateMetrics}
         </View>
       </View>
     );
@@ -3631,37 +3633,32 @@ function HomeStoreCard({
   const cardBody = (
     <>
       <HomeStoreStatusIcon accent={accent} open={open} compact />
-      <View style={[styles.igStoreBody, !last && styles.igStoreBodyDivider]}>
-        <View style={styles.igStoreCopy}>
-          <Text style={styles.igStoreName} numberOfLines={1}>
-            {row.store}
-          </Text>
-          <View style={styles.igStoreMetaRow}>
+      <View style={[styles.igStoreBody, styles.igStoreBodyStack, !last && styles.igStoreBodyDivider]}>
+        <View style={styles.igStoreBodyMain}>
+          <View style={styles.igStoreCopy}>
+            <Text style={styles.igStoreName} numberOfLines={1}>
+              {row.store}
+            </Text>
             <HomeLiveValue style={styles.igStoreMeta} numeric={row.txCount} numberOfLines={1}>
               {hasActivity ? `${row.txCount} tx` : 'No transactions'}
             </HomeLiveValue>
-            {hasMetrics ? (
-              <>
-                <HomeStoreMetric icon="mail" stats={emailStats} label="Email capture" />
-                <HomeStoreMetric icon="call" stats={phoneStats} label="Phone answer rate" />
-              </>
+          </View>
+          <View style={styles.igStoreTrailing}>
+            {showAmounts ? (
+              <HomeStoreAmount amount={row.totalAmount} count={row.txCount} breakdown={row} compact />
+            ) : null}
+            {people.length > 0 ? (
+              <HomePeopleStack
+                people={people}
+                compact
+                interactive={peopleInteractive}
+                onOpenPerson={onOpenPerson}
+              />
             ) : null}
           </View>
+          <Ionicons name="chevron-forward" size={18} color="#c7c7cc" style={styles.igStoreChevron} />
         </View>
-        <View style={styles.igStoreTrailing}>
-          {showAmounts ? (
-            <HomeStoreAmount amount={row.totalAmount} count={row.txCount} breakdown={row} compact />
-          ) : null}
-          {people.length > 0 ? (
-            <HomePeopleStack
-              people={people}
-              compact
-              interactive={peopleInteractive}
-              onOpenPerson={onOpenPerson}
-            />
-          ) : null}
-        </View>
-        <Ionicons name="chevron-forward" size={18} color="#c7c7cc" style={styles.igStoreChevron} />
+        {rateMetrics}
       </View>
     </>
   );
@@ -3720,8 +3717,14 @@ function callsInHomeRange(calls, startKey, endKey) {
   });
 }
 
-function phoneRatioForStore(mergedCallsByStore, storeName, startKey, endKey) {
-  return inboundCallRatio(callsInHomeRange(callsForStore(mergedCallsByStore, storeName), startKey, endKey));
+function homeCallsForStore(mergedCallsByStore, historyByStore, storeName, startKey, endKey) {
+  const inbox = callsInHomeRange(callsForStore(mergedCallsByStore, storeName), startKey, endKey);
+  const history = callsInHomeRange(callsForStore(historyByStore, storeName), startKey, endKey);
+  return mergeCallLog(history, inbox);
+}
+
+function phoneRatioForStore(mergedCallsByStore, historyByStore, storeName, startKey, endKey) {
+  return inboundCallRatio(homeCallsForStore(mergedCallsByStore, historyByStore, storeName, startKey, endKey));
 }
 
 function emailRatioFromTransactions(transactions) {
@@ -3744,9 +3747,10 @@ function emailRatioFromTransactions(transactions) {
   };
 }
 
-function HomePercentRate({ stats, compact = false, columnStyle, emptyLabel, noun, tip }) {
+function HomePercentRate({ stats, compact = false, columnStyle, emptyLabel, noun, tip, icon }) {
   const [anchor, setAnchor] = useState(null);
   const empty = stats?.rate == null;
+  const low = !empty && stats.rate < 80;
   const hover =
     Platform.OS === 'web' && tip
       ? {
@@ -3761,20 +3765,22 @@ function HomePercentRate({ stats, compact = false, columnStyle, emptyLabel, noun
       {...hover}
       accessibilityLabel={empty ? emptyLabel : `${noun} ${stats.ratio}. ${tip}`}
     >
-      <HomeLiveValue
-        style={[
-          compact ? styles.igStorePhone : styles.homeStorePhone,
-          empty && styles.homeStoreMoneyEmpty,
-          !empty && stats.rate < 80 && styles.homeStorePhoneLow,
-          !empty && stats.rate >= 80 && styles.homeStorePhoneHigh,
-        ]}
-        numeric={empty ? null : stats.rate}
-        format={formatHomePercentTick}
-        origin="end"
-        numberOfLines={1}
-      >
-        {empty ? '—' : stats.ratio}
-      </HomeLiveValue>
+      {icon ? <Ionicons name={icon} size={15} color={homeRateIconColor(stats)} /> : null}
+      {empty ? null : (
+        <HomeLiveValue
+          style={[
+            compact ? styles.igStorePhone : styles.homeStorePhone,
+            low && styles.homeStorePhoneLow,
+            !low && styles.homeStorePhoneHigh,
+          ]}
+          numeric={stats.rate}
+          format={formatHomePercentTick}
+          origin="end"
+          numberOfLines={1}
+        >
+          {stats.ratio}
+        </HomeLiveValue>
+      )}
       <FloatingTooltip visible={Boolean(anchor && tip)} text={tip} anchorEl={anchor} align="end" />
     </View>
   );
@@ -3795,6 +3801,7 @@ function HomeEmailRate({ stats, compact = false }) {
       emptyLabel="No email capture rate"
       noun="Email capture rate"
       tip={tip}
+      icon="mail"
     />
   );
 }
@@ -3812,6 +3819,7 @@ function HomePhoneRate({ stats, compact = false }) {
       emptyLabel="No phone answer rate"
       noun="Phone answer rate"
       tip={tip}
+      icon="call"
     />
   );
 }
@@ -4121,24 +4129,29 @@ function HomeStoresTable({
   const phone = usePhoneCalls();
   const [hoursByKey, setHoursByKey] = useState(() => new Map());
   const [nowTick, setNowTick] = useState(() => Date.now());
+  const [callHistoryByStore, setCallHistoryByStore] = useState({});
   const peopleByStore = useMemo(
     () => new Map(rows.map((row) => [row.store, peopleInStore(row.store, row.transactions, staff)])),
     [rows, staff],
   );
   const totalPeople = useMemo(() => uniqueStorePeople(rows, staff), [rows, staff]);
+  const storeNamesKey = useMemo(() => rows.map((row) => row.store).filter(Boolean).join('\n'), [rows]);
   const phoneByStore = useMemo(() => {
     const next = new Map();
     for (const row of rows) {
-      next.set(row.store, phoneRatioForStore(phone.mergedCallsByStore, row.store, startKey, endKey));
+      next.set(
+        row.store,
+        phoneRatioForStore(phone.mergedCallsByStore, callHistoryByStore, row.store, startKey, endKey),
+      );
     }
     return next;
-  }, [endKey, phone.mergedCallsByStore, rows, startKey]);
+  }, [callHistoryByStore, endKey, phone.mergedCallsByStore, rows, startKey]);
   const totalPhoneStats = useMemo(() => {
     const calls = rows.flatMap((row) =>
-      callsInHomeRange(callsForStore(phone.mergedCallsByStore, row.store), startKey, endKey),
+      homeCallsForStore(phone.mergedCallsByStore, callHistoryByStore, row.store, startKey, endKey),
     );
     return inboundCallRatio(calls);
-  }, [endKey, phone.mergedCallsByStore, rows, startKey]);
+  }, [callHistoryByStore, endKey, phone.mergedCallsByStore, rows, startKey]);
   const emailByStore = useMemo(() => {
     const next = new Map();
     for (const row of rows) {
@@ -4150,6 +4163,36 @@ function HomeStoresTable({
     () => emailRatioFromTransactions(rows.flatMap((row) => row.transactions || [])),
     [rows],
   );
+
+  useEffect(() => {
+    if (!startKey || !endKey || !storeNamesKey) {
+      setCallHistoryByStore({});
+      return undefined;
+    }
+    let cancelled = false;
+    const names = storeNamesKey.split('\n');
+    const dateFrom = parseDateParam(startKey);
+    const dateTo = parseDateParam(endKey);
+    dateTo.setDate(dateTo.getDate() + 1);
+    (async () => {
+      const next = {};
+      await Promise.all(
+        names.map(async (name) => {
+          try {
+            const payload = await fetchPhoneHistory(name, { dateFrom, dateTo });
+            const key = storeKeyFromName(name);
+            if (key) next[key] = payload.calls || [];
+          } catch {
+            // The live inbox still covers this store.
+          }
+        }),
+      );
+      if (!cancelled) setCallHistoryByStore(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [endKey, startKey, storeNamesKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -4201,18 +4244,15 @@ function HomeStoresTable({
         ))}
         {totals ? (
           <View style={[styles.igStoreCard, styles.igStoreTotalCard]}>
-            <View style={styles.igStoreBody}>
-              <View style={styles.igStoreCopy}>
-                <Text style={styles.igStoreTotalLabel}>Total</Text>
-                <View style={styles.igStoreMetaRow}>
+            <View style={[styles.igStoreBody, styles.igStoreBodyStack]}>
+              <View style={styles.igStoreBodyMain}>
+                <View style={styles.igStoreCopy}>
+                  <Text style={styles.igStoreTotalLabel}>Total</Text>
                   <HomeLiveValue style={styles.igStoreMeta} numeric={totals.txCount} numberOfLines={1}>
                     {totals.txCount} tx
                   </HomeLiveValue>
-                  <HomeStoreMetric icon="mail" stats={totalEmailStats} label="Email capture" />
-                  <HomeStoreMetric icon="call" stats={totalPhoneStats} label="Phone answer rate" />
                 </View>
-              </View>
-              <View style={styles.igStoreTrailing}>
+                <View style={styles.igStoreTrailing}>
                 {showAmounts ? (
                   <HomeStoreAmount
                     amount={totals.totalAmount}
@@ -4231,7 +4271,12 @@ function HomeStoresTable({
                 ) : null}
               </View>
             </View>
+            <View style={styles.igStoreMetrics}>
+              <HomeStoreMetric icon="mail" stats={totalEmailStats} label="Email capture" />
+              <HomeStoreMetric icon="call" stats={totalPhoneStats} label="Phone answer rate" />
+            </View>
           </View>
+        </View>
         ) : null}
       </View>
     );
@@ -7382,12 +7427,6 @@ export default function App() {
               />
             ) : activeTool.key === 'preorders' ? (
               <PreordersScreen />
-            ) : activeTool.key === 'ai' ? (
-              <AiScreen
-                session={session}
-                onRequireLogin={() => selectTab('profile')}
-                storeFilter={scopedStore || undefined}
-              />
             ) : activeTool.key === 'financials' ? (
               <FinancialsScreen
                 session={session}
@@ -8860,7 +8899,7 @@ const styles = StyleSheet.create({
   },
   homeStoreTable: {
     flexGrow: 1,
-    minWidth: 728,
+    minWidth: 760,
   },
   homeStoreTableNoAmounts: {
     minWidth: 600,
@@ -9050,11 +9089,14 @@ const styles = StyleSheet.create({
     textAlign: 'right',
   },
   homeStoreColEmail: {
-    width: 72,
+    width: 88,
+    minWidth: 88,
     flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 4,
     paddingRight: 8,
-    alignItems: 'flex-end',
-    justifyContent: 'center',
     textAlign: 'right',
     ...Platform.select({
       web: { whiteSpace: 'nowrap' },
@@ -9062,12 +9104,15 @@ const styles = StyleSheet.create({
     }),
   },
   homeStoreColPhone: {
-    width: 72,
+    width: 88,
+    minWidth: 88,
     flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 4,
     paddingRight: 12,
     marginRight: 8,
-    alignItems: 'flex-end',
-    justifyContent: 'center',
     textAlign: 'right',
     ...Platform.select({
       web: { whiteSpace: 'nowrap' },
@@ -9081,6 +9126,8 @@ const styles = StyleSheet.create({
     color: '#1d1d1f',
     letterSpacing: -0.16,
     fontVariant: ['tabular-nums'],
+    flexShrink: 0,
+    maxWidth: 64,
   },
   homeStorePhoneLow: {
     color: '#B91C1C',
@@ -12362,6 +12409,18 @@ const styles = StyleSheet.create({
     paddingRight: 16,
     alignSelf: 'stretch',
   },
+  igStoreBodyStack: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 6,
+  },
+  igStoreBodyMain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    minWidth: 0,
+    width: '100%',
+  },
   igStoreBodyDivider: {
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: 'rgba(60,60,67,0.24)',
@@ -12395,6 +12454,12 @@ const styles = StyleSheet.create({
     gap: 8,
     minWidth: 0,
   },
+  igStoreMetrics: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flexShrink: 0,
+  },
   igStoreMetric: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -12407,6 +12472,8 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     letterSpacing: -0.08,
     fontVariant: ['tabular-nums'],
+    flexShrink: 0,
+    maxWidth: 56,
   },
   igStoreTrailing: {
     alignItems: 'flex-end',

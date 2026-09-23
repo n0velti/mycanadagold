@@ -17,7 +17,8 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
 import { persistOwnLocation } from '../lib/auth';
 import { fetchTransferStores } from '../lib/locations';
-import { useIsMobile } from '../lib/mobileUi';
+import { CANVAS, useIsMobile } from '../lib/mobileUi';
+import { rowMatchesQuery } from '../lib/itemSearch';
 import { formatDateParam, formatPickerDate, parseDateParam } from '../lib/transactions';
 import {
   fetchTransferDetail,
@@ -67,9 +68,16 @@ const fontFamily = Platform.select({
   default: 'Sohne',
 });
 
-const ACCENT = '#1F7A9A';
+const LABEL = '#1d1d1f';
+const SECONDARY = '#8e8e93';
+const HAIRLINE = 'rgba(60,60,67,0.24)';
+const HAIRLINE_SOFT = 'rgba(60,60,67,0.18)';
+const BLUE = '#007AFF';
+const GREEN = '#248A3D';
+const titleFont = 'SohneLeicht';
+const ACCENT = BLUE;
+const TILE = '#1F7A9A';
 const MIN_STOPS = 2;
-const HAIRLINE = '#e6e6e6';
 const MOBILE_BREAKPOINT = 768;
 const DRAWER_OPEN_MS = 280;
 const DRAWER_CLOSE_MS = 220;
@@ -100,10 +108,59 @@ const TRANSFER_TABS = [
 ];
 
 const PRIORITY_COLORS = {
-  green: '#2F8A4E',
-  yellow: '#C9A227',
-  red: '#C43C3C',
+  green: '#34C759',
+  yellow: '#FF9F0A',
+  red: '#FF3B30',
 };
+
+function PageHero({ label, value, hint, stats, bleed = false }) {
+  const isMobile = useIsMobile();
+  return (
+    <View
+      style={[
+        styles.hero,
+        isMobile && styles.heroMobile,
+        bleed && styles.heroBleed,
+        bleed && isMobile && styles.heroBleedMobile,
+      ]}
+    >
+      <Text style={styles.heroLabel}>{label}</Text>
+      <Text style={styles.heroValue} numberOfLines={3} adjustsFontSizeToFit>
+        {value}
+      </Text>
+      {hint ? <Text style={styles.heroHint}>{hint}</Text> : null}
+      {stats?.length ? (
+        <View style={styles.heroStats}>
+          {stats.map((stat, index) => (
+            <View key={stat.label} style={styles.heroStatSlot}>
+              {index > 0 ? <View style={styles.heroStatDivider} /> : null}
+              <View style={styles.heroStat}>
+                <Text style={styles.heroStatValue} numberOfLines={1}>
+                  {stat.value}
+                </Text>
+                <Text style={styles.heroStatLabel}>{stat.label}</Text>
+              </View>
+            </View>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function SectionHead({ title, meta }) {
+  const isMobile = useIsMobile();
+  return (
+    <View style={[styles.sectionHead, isMobile && styles.sectionHeadMobile]}>
+      <Text style={styles.sectionHeadTitle}>{title}</Text>
+      {meta ? (
+        <Text style={styles.sectionHeadMeta} numberOfLines={1}>
+          {meta}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
 
 function StoreName({ name, isWorkshop, style, activeStyle, active }) {
   return (
@@ -143,11 +200,11 @@ function StoreDropdown({
 
   return (
     <View style={[styles.dropdownWrap, { zIndex }]}>
-      <Text style={styles.hopLabel}>{label}</Text>
       <Pressable
         style={[styles.dropdown, open && styles.dropdownOpen]}
         onPress={onToggle}
       >
+        <Text style={styles.hopLabel}>{label}</Text>
         <View style={styles.dropdownMain}>
           {selected ? (
             <StoreName
@@ -157,20 +214,14 @@ function StoreDropdown({
             />
           ) : (
             <Text style={[styles.dropdownValue, styles.dropdownPlaceholder]}>
-              Select store
+              Select
             </Text>
           )}
-          {selected ? (
-            <Text style={styles.dropdownMeta} numberOfLines={1}>
-              {selected.systemLabel}
-              {selected.city ? ` · ${selected.city}` : ''}
-            </Text>
-          ) : null}
         </View>
         <Ionicons
           name={open ? 'chevron-up' : 'chevron-down'}
-          size={16}
-          color="#8a8a8a"
+          size={14}
+          color="#c7c7cc"
         />
       </Pressable>
 
@@ -403,7 +454,7 @@ function receiveStatusStyle(status) {
       wrap: styles.statusAll,
       text: styles.statusAllText,
       icon: 'checkmark-circle',
-      color: '#2F8A4E',
+      color: GREEN,
     };
   }
   if (status === RECEIVE_STATUS.partially_received) {
@@ -411,7 +462,7 @@ function receiveStatusStyle(status) {
       wrap: styles.statusPartial,
       text: styles.statusPartialText,
       icon: 'checkmark-circle-outline',
-      color: '#9A6B00',
+      color: '#C93400',
     };
   }
   return {
@@ -930,31 +981,16 @@ function TransferDetailDrawer({
             ]}
             showsVerticalScrollIndicator={false}
           >
-            <View style={styles.drawerHero}>
-              <Text style={styles.drawerHeroRoute}>
-                {from} → {to}
-              </Text>
-              <Text style={styles.drawerHeroMeta}>
-                {held.reference}
-                {held.date ? ` · ${formatListDate(held.date)}` : ''}
-              </Text>
-              <View
-                style={[
-                  styles.statusPill,
-                  styles.drawerStatus,
-                  received ? styles.statusReceived : styles.statusOther,
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.statusPillText,
-                    received ? styles.statusReceivedText : styles.statusOtherText,
-                  ]}
-                >
-                  {statusLabel(held.status)}
-                </Text>
-              </View>
-            </View>
+            <PageHero
+              bleed
+              label={held.reference || 'Transfer'}
+              value={`${from} → ${to}`}
+              stats={[
+                { label: 'Date', value: formatListDate(held.date) },
+                { label: items.length === 1 ? 'Item' : 'Items', value: items.length },
+                { label: 'Status', value: statusLabel(held.status) },
+              ]}
+            />
 
             <Text style={styles.drawerSectionLabel}>Details</Text>
             <View style={styles.drawerGroup}>
@@ -1179,6 +1215,7 @@ function recountDashboard(rows) {
 }
 
 function DashboardPanel({ session, stores, onRequireLogin, onLocationChanged }) {
+  const isMobile = useIsMobile();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -1437,41 +1474,69 @@ function DashboardPanel({ session, stores, onRequireLogin, onLocationChanged }) 
   }
 
   return (
-    <View style={styles.dashboard}>
-      <View style={styles.searchBar}>
-        <Ionicons name="search" size={16} color="#8e8e93" style={styles.searchIcon} />
-        <TextInput
-          style={styles.searchInput}
-          value={query}
-          onChangeText={setQuery}
-          placeholder="Search items, stores, TR#"
-          placeholderTextColor="#8e8e93"
-          autoCapitalize="none"
-          autoCorrect={false}
-          clearButtonMode="while-editing"
-        />
-        {query ? (
-          <Pressable onPress={() => setQuery('')} hitSlop={8}>
-            <Ionicons name="close-circle" size={18} color="#c7c7cc" />
-          </Pressable>
-        ) : null}
-      </View>
+    <View style={[styles.dashboard, isMobile && styles.dashboardMobile]}>
+      <PageHero
+        label="Transfers"
+        value={loading && rows.length === 0 ? '—' : String(rows.length)}
+        stats={[
+          { label: 'Pending', value: pendingCount },
+          { label: 'Received', value: receivedCount },
+          { label: 'Showing', value: filteredRows.length },
+        ]}
+      />
 
-      <View style={styles.dashboardToolbar}>
-        <Text style={styles.dashboardMeta} numberOfLines={1}>
-          {metaLabel}
-          {activeFilterCount > 0
-            ? ` · ${activeFilterCount} filter${activeFilterCount > 1 ? 's' : ''}`
-            : ''}
-        </Text>
+      <SectionHead
+        title="Transfers"
+        meta={
+          activeFilterCount > 0
+            ? `${metaLabel} · ${activeFilterCount} filter${activeFilterCount > 1 ? 's' : ''}`
+            : metaLabel
+        }
+      />
+
+      <View style={[styles.toolbar, isMobile && styles.toolbarMobile]}>
+        <View style={styles.searchBar}>
+          <Ionicons name="search" size={16} color={SECONDARY} style={styles.searchIcon} />
+          <TextInput
+            style={styles.searchInput}
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Search items, stores, TR#"
+            placeholderTextColor={SECONDARY}
+            autoCapitalize="none"
+            autoCorrect={false}
+            clearButtonMode="while-editing"
+          />
+          {query ? (
+            <Pressable onPress={() => setQuery('')} hitSlop={8}>
+              <Ionicons name="close-circle" size={18} color="#c7c7cc" />
+            </Pressable>
+          ) : null}
+        </View>
         <View style={styles.dashboardToolbarRight}>
+          {isMobile ? null : (
+            <>
+              <FilterableHeaderCell
+                label="From"
+                colStyle={styles.toolbarFilter}
+                active={columnFilters.fromName != null}
+                onPress={() => setOpenFilter('fromName')}
+              />
+              <FilterableHeaderCell
+                label="To"
+                colStyle={styles.toolbarFilter}
+                active={columnFilters.toName != null}
+                onPress={() => setOpenFilter('toName')}
+              />
+            </>
+          )}
           {activeFilterCount > 0 ? (
             <Pressable onPress={clearColumnFilters} hitSlop={6}>
               <Text style={styles.clearFiltersText}>Clear</Text>
             </Pressable>
           ) : null}
           {(loading && rows.length > 0) || itemLookup ? (
-            <ActivityIndicator size="small" color="#8a8a8a" />
+            <ActivityIndicator size="small" color={SECONDARY} />
           ) : null}
           <Pressable
             onPress={load}
@@ -1484,38 +1549,66 @@ function DashboardPanel({ session, stores, onRequireLogin, onLocationChanged }) 
               (hovered || pressed) && styles.refreshButtonHover,
             ]}
           >
-            <Ionicons name="refresh-outline" size={18} color={loading ? '#c0c0c0' : ACCENT} />
+            <Ionicons name="refresh-outline" size={18} color={loading ? '#c7c7cc' : LABEL} />
           </Pressable>
         </View>
       </View>
 
-      {error ? <Text style={[styles.errorText, styles.dashboardError]}>{error}</Text> : null}
+      {error ? (
+        <Text style={[styles.errorText, styles.dashboardError, isMobile && styles.insetTextMobile]}>
+          {error}
+        </Text>
+      ) : null}
       {warning && !error ? (
-        <Text style={[styles.warningText, styles.dashboardError]}>{warning}</Text>
+        <Text style={[styles.warningText, styles.dashboardError, isMobile && styles.insetTextMobile]}>
+          {warning}
+        </Text>
       ) : null}
 
       <View style={styles.listTable}>
+        {isMobile ? (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.mobileFilters}
+          >
+            {FILTER_COLUMNS.map((col) => (
+              <FilterableHeaderCell
+                key={col.key}
+                label={col.label}
+                colStyle={styles.mobileFilterCell}
+                active={columnFilters[col.key] != null}
+                onPress={() => setOpenFilter(col.key)}
+              />
+            ))}
+          </ScrollView>
+        ) : (
         <View style={styles.listHead}>
-          {FILTER_COLUMNS.slice(0, 4).map((col) => (
+          <View style={styles.txIconSpacer} />
+          <View style={styles.txMain}>
             <FilterableHeaderCell
-              key={col.key}
-              label={col.label}
-              colStyle={styles[col.colStyle]}
-              active={columnFilters[col.key] != null}
-              onPress={() => setOpenFilter(col.key)}
+              label="Transfer"
+              colStyle={styles.colPrimary}
+              active={columnFilters.reference != null}
+              onPress={() => setOpenFilter('reference')}
             />
-          ))}
-          <Text style={[styles.listTh, styles.colItems]}>Items</Text>
-          {FILTER_COLUMNS.slice(4).map((col) => (
             <FilterableHeaderCell
-              key={col.key}
-              label={col.label}
-              colStyle={styles[col.colStyle]}
-              active={columnFilters[col.key] != null}
-              onPress={() => setOpenFilter(col.key)}
+              label="Date"
+              colStyle={styles.colDate}
+              active={columnFilters.dateLabel != null}
+              onPress={() => setOpenFilter('dateLabel')}
             />
-          ))}
+            <Text style={[styles.listTh, styles.colItems]}>Items</Text>
+            <FilterableHeaderCell
+              label="Status"
+              colStyle={styles.colStatus}
+              active={columnFilters.statusDisplay != null}
+              onPress={() => setOpenFilter('statusDisplay')}
+            />
+            <View style={styles.chevronSpacer} />
+          </View>
         </View>
+        )}
 
         {loading && rows.length === 0 ? (
           <View style={styles.listEmpty}>
@@ -1539,9 +1632,10 @@ function DashboardPanel({ session, stores, onRequireLogin, onLocationChanged }) 
             contentContainerStyle={styles.listScrollContent}
             showsVerticalScrollIndicator={false}
           >
-            {filteredRows.map((row) => {
+            {filteredRows.map((row, index) => {
               const received = row.status === 'received';
               const selected = selectedRow?.id === row.id;
+              const last = index === filteredRows.length - 1;
               return (
                 <Pressable
                   key={row.id || `${row.date}-${row.reference}`}
@@ -1554,50 +1648,66 @@ function DashboardPanel({ session, stores, onRequireLogin, onLocationChanged }) 
                   {...(Platform.OS === 'web'
                     ? {
                         className: selected
-                          ? 'cgold-tx-row cgold-tx-row-selected'
-                          : 'cgold-tx-row',
+                          ? 'cgold-home-row cgold-home-row-selected'
+                          : 'cgold-home-row',
                       }
                     : null)}
                 >
-                  <Text style={[styles.listTd, styles.colDate]} numberOfLines={1}>
-                    {row.dateLabel}
-                  </Text>
-                  <Text style={[styles.listTd, styles.colId, styles.listRef]} numberOfLines={1}>
-                    {row.reference}
-                  </Text>
-                  <View style={styles.colFrom}>
-                    <Text style={styles.listTd} numberOfLines={1}>
-                      {row.fromName}
-                    </Text>
-                    {row.comments ? (
-                      <Text style={styles.listComment} numberOfLines={1}>
-                        {row.comments}
-                      </Text>
-                    ) : null}
+                  <View style={[styles.txIcon, received ? styles.txIconReceived : null]}>
+                    <Ionicons
+                      name={received ? 'checkmark' : 'arrow-forward'}
+                      size={16}
+                      color="#fff"
+                    />
                   </View>
-                  <Text style={[styles.listTd, styles.colTo]} numberOfLines={1}>
-                    {row.toName}
-                  </Text>
-                  <Text style={[styles.listTd, styles.colItems, styles.listItems]} numberOfLines={1}>
-                    {row.itemCount || '—'}
-                  </Text>
-                  <View style={styles.colStatus}>
-                    <View
-                      style={[
-                        styles.statusPill,
-                        received ? styles.statusReceived : styles.statusOther,
-                      ]}
-                    >
-                      <Text
+                  <View style={[styles.txMain, !last && styles.txDivider]}>
+                    {isMobile ? (
+                      <View style={styles.activeRowMain}>
+                        <Text style={styles.listRef} numberOfLines={1}>
+                          {row.reference}
+                        </Text>
+                        <Text style={styles.listComment} numberOfLines={1}>
+                          {row.dateLabel} · {row.fromName} → {row.toName}
+                        </Text>
+                      </View>
+                    ) : (
+                      <>
+                        <View style={styles.colPrimary}>
+                          <Text style={styles.listRef} numberOfLines={1}>
+                            {row.reference}
+                          </Text>
+                          <Text style={styles.listComment} numberOfLines={1}>
+                            {row.fromName} → {row.toName}
+                            {row.comments ? ` · ${row.comments}` : ''}
+                          </Text>
+                        </View>
+                        <Text style={[styles.listMeta, styles.colDate]} numberOfLines={1}>
+                          {row.dateLabel}
+                        </Text>
+                        <Text style={[styles.listCount, styles.colItems]} numberOfLines={1}>
+                          {row.itemCount || '—'}
+                        </Text>
+                      </>
+                    )}
+                    <View style={styles.colStatus}>
+                      <View
                         style={[
-                          styles.statusPillText,
-                          received ? styles.statusReceivedText : styles.statusOtherText,
+                          styles.statusPill,
+                          received ? styles.statusReceived : styles.statusOther,
                         ]}
-                        numberOfLines={1}
                       >
-                        {row.statusDisplay}
-                      </Text>
+                        <Text
+                          style={[
+                            styles.statusPillText,
+                            received ? styles.statusReceivedText : styles.statusOtherText,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {row.statusDisplay}
+                        </Text>
+                      </View>
                     </View>
+                    <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
                   </View>
                 </Pressable>
               );
@@ -2026,14 +2136,19 @@ function PlannedTransferDrawer({ visible, transfer, session, onClose, onLocation
             ]}
             showsVerticalScrollIndicator={false}
           >
-            <View style={styles.drawerHero}>
-              <Text style={styles.drawerHeroRoute}>{path}</Text>
-              <Text style={styles.drawerHeroMeta}>
-                {live.reference}
-                {live.dateLabel ? ` · ${live.dateLabel}` : ''}
-              </Text>
-              <ReceiveStatusButton status={live.receiveStatus} />
-            </View>
+            <PageHero
+              bleed
+              label={live.reference || 'Transfer'}
+              value={path}
+              stats={[
+                { label: 'Date', value: live.dateLabel || '—' },
+                { label: items.length === 1 ? 'Item' : 'Items', value: items.length },
+                {
+                  label: 'Received',
+                  value: RECEIVE_STATUS_LABELS[live.receiveStatus] || '—',
+                },
+              ]}
+            />
 
             <Text style={styles.drawerSectionLabel}>Details</Text>
             <View style={styles.drawerGroup}>
@@ -2241,8 +2356,19 @@ function ActivePanel({ onRequireLogin, session, onLocationChanged }) {
     );
   }
 
+  const openCount = planned.filter((row) => row.receiveStatus !== RECEIVE_STATUS.all_received).length;
+
   return (
-    <View style={[styles.dashboard, { paddingTop: 8 }]}>
+    <View style={styles.dashboard}>
+      <PageHero
+        label="Active"
+        value={String(planned.length)}
+        stats={[
+          { label: 'Open', value: openCount },
+          { label: 'Received', value: planned.length - openCount },
+        ]}
+      />
+      <SectionHead title="In progress" meta={planned.length ? `${planned.length}` : ''} />
       {planned.length === 0 ? (
         <EmptyTab tab={TRANSFER_TABS.find((tab) => tab.key === 'active')} />
       ) : (
@@ -2251,33 +2377,42 @@ function ActivePanel({ onRequireLogin, session, onLocationChanged }) {
           contentContainerStyle={styles.listScrollContent}
           showsVerticalScrollIndicator={false}
         >
-          {planned.map((row) => {
+          {planned.map((row, index) => {
             const selectedRow = selectedId === row.id;
+            const done = row.receiveStatus === RECEIVE_STATUS.all_received;
+            const last = index === planned.length - 1;
             return (
               <Pressable
                 key={row.id}
                 onPress={() => setSelectedId(row.id)}
                 style={({ hovered, pressed }) => [
-                  styles.activeRow,
+                  styles.listRow,
                   !selectedRow && (hovered || pressed) && styles.listRowHover,
                   selectedRow && styles.listRowSelected,
                 ]}
                 {...(Platform.OS === 'web'
                   ? {
                       className: selectedRow
-                        ? 'cgold-tx-row cgold-tx-row-selected'
-                        : 'cgold-tx-row',
+                        ? 'cgold-home-row cgold-home-row-selected'
+                        : 'cgold-home-row',
                     }
                   : null)}
               >
-                <View style={styles.activeRowMain}>
-                  <Text style={styles.activeDate}>{row.dateLabel}</Text>
-                  <Text style={styles.activeRef}>{row.reference}</Text>
-                  <Text style={styles.activePath} numberOfLines={1}>
-                    {row.fromName} → {row.toName}
-                  </Text>
+                <View style={[styles.txIcon, done ? styles.txIconReceived : null]}>
+                  <Ionicons name={done ? 'checkmark' : 'time'} size={16} color="#fff" />
                 </View>
-                <ReceiveStatusButton status={row.receiveStatus} />
+                <View style={[styles.txMain, !last && styles.txDivider]}>
+                  <View style={styles.activeRowMain}>
+                    <Text style={styles.listRef} numberOfLines={1}>
+                      {row.reference}
+                    </Text>
+                    <Text style={styles.listComment} numberOfLines={1}>
+                      {row.dateLabel} · {row.fromName} → {row.toName}
+                    </Text>
+                  </View>
+                  <ReceiveStatusButton status={row.receiveStatus} />
+                  <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+                </View>
               </Pressable>
             );
           })}
@@ -2303,7 +2438,7 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [warning, setWarning] = useState('');
-  const [coverage, setCoverage] = useState('');
+  const [, setCoverage] = useState('');
   const [stops, setStops] = useState(['', '']);
   const [openIndex, setOpenIndex] = useState(null);
   const [status, setStatus] = useState('');
@@ -2320,6 +2455,7 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
   const [pdfBusy, setPdfBusy] = useState(false);
   const [showPlan, setShowPlan] = useState(false);
   const [finishOpen, setFinishOpen] = useState(false);
+  const [targetsOpen, setTargetsOpen] = useState(false);
 
   const tabOptions = useMemo(
     () =>
@@ -2663,34 +2799,25 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
     >
-      <Text style={styles.title}>Transfer route</Text>
-      <Text style={styles.subtitle}>
-        Route is one-way only — the car leaves the first stop, then each next stop
-        in order (no going back). Example: Montreal → Laval → Workshop. Tap
-        Transfer to see OUT/IN for each stop so the % targets are met along that
-        path.
-      </Text>
+      {pathLabels.length >= 2 ? (
+        <Text style={[styles.pathLine, isMobile && styles.pathLineMobile]} numberOfLines={2}>
+          {pathLabels.join(' → ')}
+        </Text>
+      ) : null}
 
       {loading && stores.length === 0 ? (
-        <View style={styles.loadingRow}>
-          <ActivityIndicator size="small" color={ACCENT} />
-          <Text style={styles.loadingText}>Loading stores…</Text>
+        <View style={[styles.loadingRow, isMobile && styles.insetTextMobile]}>
+          <ActivityIndicator size="small" color={SECONDARY} />
         </View>
       ) : null}
 
-      {error ? <Text style={styles.errorText}>{error}</Text> : null}
-      {warning ? <Text style={styles.warningText}>{warning}</Text> : null}
-      {coverage ? <Text style={styles.coverageText}>{coverage}</Text> : null}
+      {error ? <Text style={[styles.errorText, styles.insetText, isMobile && styles.insetTextMobile]}>{error}</Text> : null}
+      {warning ? <Text style={[styles.warningText, styles.insetText, isMobile && styles.insetTextMobile]}>{warning}</Text> : null}
 
-      <View style={styles.chain}>
+      <View style={[styles.chain, isMobile && styles.chainMobile]}>
         {stops.map((stopId, index) => {
-          const isLast = index === stops.length - 1;
           const hopLabel =
-            index === 0
-              ? 'From'
-              : isLast
-                ? 'To'
-                : `Via ${index}`;
+            index === 0 ? 'From' : index === stops.length - 1 ? 'To' : `Via ${index}`;
 
           return (
             <View key={`hop-${index}`} style={styles.hopBlock}>
@@ -2716,64 +2843,34 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
                   </Pressable>
                 ) : null}
               </View>
-
-              {!isLast ? (
-                <View style={styles.arrowBetween}>
-                  <Ionicons name="arrow-forward" size={20} color={ACCENT} />
-                </View>
-              ) : null}
             </View>
           );
         })}
       </View>
 
-      <Pressable style={styles.addHopButton} onPress={addStop}>
-        <Ionicons name="add-circle-outline" size={18} color={ACCENT} />
+      <Pressable style={[styles.addHopButton, isMobile && styles.addHopButtonMobile]} onPress={addStop}>
         <Text style={styles.addHopText}>Add stop</Text>
-        <Ionicons name="arrow-forward" size={14} color="#8a8a8a" />
       </Pressable>
 
-      {pathLabels.length >= 2 ? (
-        <Text style={styles.pathPreview}>{pathLabels.join(' → ')}</Text>
-      ) : null}
-
-      <View style={styles.actionsRow}>
+      <View style={[styles.actionsRow, isMobile && styles.actionsRowMobile]}>
         <Pressable
           style={[styles.transferButton, (!canTransfer || planning) && styles.transferButtonDisabled]}
           onPress={handleTransfer}
           disabled={planning}
         >
-          {planning ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <Ionicons name="arrow-forward-outline" size={18} color="#fff" />
-          )}
+          {planning ? <ActivityIndicator size="small" color="#fff" /> : null}
           <Text style={styles.transferButtonText}>
             {planning ? 'Planning…' : 'Transfer'}
           </Text>
         </Pressable>
 
         {showPlan && plan ? (
-          <Pressable
-            style={[styles.pdfButton, pdfBusy && styles.transferButtonDisabled]}
-            onPress={handleDownloadPdf}
-            disabled={pdfBusy}
-          >
-            {pdfBusy ? (
-              <ActivityIndicator size="small" color={ACCENT} />
-            ) : (
-              <Ionicons name="download-outline" size={18} color={ACCENT} />
-            )}
-            <Text style={styles.pdfButtonText}>Download PDF</Text>
+          <Pressable onPress={handleDownloadPdf} disabled={pdfBusy} hitSlop={6}>
+            <Text style={[styles.textAction, pdfBusy && styles.transferButtonDisabled]}>PDF</Text>
           </Pressable>
         ) : null}
-
         {showPlan && plan ? (
           <Pressable
-            style={[
-              styles.finishButton,
-              planItemCount === 0 && styles.transferButtonDisabled,
-            ]}
             onPress={() => {
               if (planItemCount === 0) {
                 setStatus('Nothing to transfer. Adjust send quantities first.');
@@ -2781,27 +2878,19 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
               }
               setFinishOpen(true);
             }}
+            hitSlop={6}
           >
-            <Ionicons name="checkmark-circle-outline" size={18} color="#fff" />
-            <Text style={styles.finishButtonText}>Finish setup</Text>
+            <Text style={styles.textAction}>Finish</Text>
           </Pressable>
         ) : null}
       </View>
 
-      {status ? <Text style={styles.statusText}>{status}</Text> : null}
-      {planError ? <Text style={styles.errorText}>{planError}</Text> : null}
-      {inventoryWarning ? <Text style={styles.warningText}>{inventoryWarning}</Text> : null}
+      {status ? <Text style={[styles.statusText, isMobile && styles.insetTextMobile]}>{status}</Text> : null}
+      {planError ? <Text style={[styles.errorText, styles.insetText, isMobile && styles.insetTextMobile]}>{planError}</Text> : null}
+      {inventoryWarning ? <Text style={[styles.warningText, styles.insetText, isMobile && styles.insetTextMobile]}>{inventoryWarning}</Text> : null}
 
       {showPlan && plan ? (
-        <View style={styles.planSection}>
-          <View style={styles.modeBanner}>
-            <Ionicons name="arrow-forward" size={16} color={ACCENT} />
-            <Text style={styles.modeBannerText}>
-              One-way route: {pathLabels.join(' → ')}. Inventory only moves
-              forward along these arrows.
-            </Text>
-          </View>
-
+        <View style={[styles.planSection, isMobile && styles.planSectionMobile]}>
           {plan.unknownStores?.length ? (
             <Text style={styles.warningText}>
               Ignored (not Quebec/Workshop): {plan.unknownStores.join(', ')}
@@ -2815,21 +2904,26 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
             </Text>
           ) : null}
 
-          <SplitsEditor
-            title="Target split %"
-            splits={splits}
-            territories={activeTerritories}
-            onChangeTier={updateSplit}
-            disabledTiers={{
-              red: mode === 'quebec',
-            }}
-          />
-
-          <Pressable style={styles.resetLink} onPress={resetSplits}>
-            <Text style={styles.resetLinkText}>
-              Reset percentages & quantities to defaults
-            </Text>
+          <Pressable style={styles.targetsToggle} onPress={() => setTargetsOpen((open) => !open)}>
+            <Text style={styles.targetsToggleText}>Targets</Text>
+            <Ionicons name={targetsOpen ? 'chevron-up' : 'chevron-down'} size={14} color={SECONDARY} />
           </Pressable>
+          {targetsOpen ? (
+            <>
+              <SplitsEditor
+                title="Target split %"
+                splits={splits}
+                territories={activeTerritories}
+                onChangeTier={updateSplit}
+                disabledTiers={{
+                  red: mode === 'quebec',
+                }}
+              />
+              <Pressable style={styles.resetLink} onPress={resetSplits}>
+                <Text style={styles.resetLinkText}>Reset</Text>
+              </Pressable>
+            </>
+          ) : null}
 
           {plan?.hasManualEdits ? (
             <Text style={styles.itemOverrideHint}>
@@ -2926,9 +3020,7 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
                           </View>
                         ))}
                       </View>
-                    ) : (
-                      <Text style={styles.noneLine}>No outbound</Text>
-                    )}
+                    ) : null}
 
                     {sheet.ins.length > 0 ? (
                       <View style={styles.tableBlock}>
@@ -2968,9 +3060,7 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
                           </View>
                         ))}
                       </View>
-                    ) : (
-                      <Text style={styles.noneLine}>No inbound</Text>
-                    )}
+                    ) : null}
 
                     {!hasTransfers ? (
                       <Text style={styles.noneLine}>
@@ -3111,11 +3201,7 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
                     <Text style={styles.resetLinkText}>Use category default</Text>
                   </Pressable>
                 </View>
-              ) : (
-                <Text style={styles.itemOverrideHint}>
-                  Tip: tap any transfer product row to set a custom % for that item.
-                </Text>
-              )}
+              ) : null}
             </>
           ) : (
             <Text style={styles.emptyPlan}>
@@ -3124,23 +3210,6 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
             </Text>
           )}
 
-          <Pressable
-            style={[
-              styles.finishButton,
-              styles.finishButtonBlock,
-              planItemCount === 0 && styles.transferButtonDisabled,
-            ]}
-            onPress={() => {
-              if (planItemCount === 0) {
-                setStatus('Nothing to transfer. Adjust send quantities first.');
-                return;
-              }
-              setFinishOpen(true);
-            }}
-          >
-            <Ionicons name="checkmark-circle-outline" size={18} color="#fff" />
-            <Text style={styles.finishButtonText}>Finish setup</Text>
-          </Pressable>
         </View>
       ) : null}
     </ScrollView>
@@ -3182,7 +3251,7 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
   },
   createScroll: {
     flex: 1,
@@ -3214,7 +3283,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 14,
-    backgroundColor: '#EEF7FB',
+    backgroundColor: 'rgba(31,122,154,0.12)',
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 12,
@@ -3223,7 +3292,7 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 20,
     fontWeight: '600',
-    color: '#1a1a1a',
+    color: LABEL,
     letterSpacing: -0.3,
     marginBottom: 6,
   },
@@ -3231,17 +3300,139 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 15,
     lineHeight: 21,
-    color: '#6b6b6b',
+    color: SECONDARY,
     textAlign: 'center',
     maxWidth: 320,
   },
   dashboard: {
     flex: 1,
     minHeight: 0,
-    maxWidth: 960,
     width: '100%',
-    alignSelf: 'center',
-    paddingHorizontal: 20,
+    backgroundColor: CANVAS,
+  },
+  dashboardMobile: {
+    backgroundColor: CANVAS,
+  },
+  hero: {
+    alignSelf: 'stretch',
+    paddingTop: 8,
+    paddingBottom: 14,
+    paddingHorizontal: 32,
+    backgroundColor: '#fff',
+  },
+  heroMobile: {
+    paddingHorizontal: 16,
+  },
+  heroBleed: {
+    marginHorizontal: -20,
+    marginTop: -8,
+  },
+  heroBleedMobile: {
+    marginHorizontal: -16,
+  },
+  heroLabel: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: SECONDARY,
+    letterSpacing: -0.08,
+  },
+  heroValue: {
+    marginTop: 2,
+    fontFamily: titleFont,
+    fontSize: 40,
+    lineHeight: 46,
+    fontWeight: '400',
+    color: LABEL,
+    letterSpacing: -1.2,
+  },
+  heroHint: {
+    marginTop: 6,
+    fontFamily,
+    fontSize: 14,
+    lineHeight: 20,
+    color: SECONDARY,
+    letterSpacing: -0.08,
+    maxWidth: 560,
+  },
+  heroStats: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: HAIRLINE_SOFT,
+  },
+  heroStatSlot: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  heroStatDivider: {
+    width: StyleSheet.hairlineWidth,
+    alignSelf: 'stretch',
+    height: 28,
+    marginRight: 12,
+    backgroundColor: HAIRLINE_SOFT,
+  },
+  heroStat: {
+    flex: 1,
+    minWidth: 0,
+    gap: 1,
+  },
+  heroStatValue: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: LABEL,
+    letterSpacing: -0.3,
+    fontVariant: ['tabular-nums'],
+  },
+  heroStatLabel: {
+    fontFamily,
+    fontSize: 12,
+    color: SECONDARY,
+    letterSpacing: -0.05,
+  },
+  sectionHead: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    paddingHorizontal: 32,
+    marginTop: 18,
+    marginBottom: 8,
+    gap: 12,
+  },
+  sectionHeadMobile: {
+    paddingHorizontal: 16,
+  },
+  sectionHeadTitle: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.08,
+    textTransform: 'uppercase',
+  },
+  sectionHeadMeta: {
+    flex: 1,
+    fontFamily,
+    fontSize: 13,
+    color: SECONDARY,
+    letterSpacing: -0.08,
+    fontVariant: ['tabular-nums'],
+    textAlign: 'right',
+  },
+  toolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 32,
+    marginBottom: 8,
+  },
+  toolbarMobile: {
+    paddingHorizontal: 16,
   },
   dashboardToolbar: {
     flexDirection: 'row',
@@ -3275,32 +3466,61 @@ const styles = StyleSheet.create({
     }),
   },
   refreshButtonHover: {
-    backgroundColor: '#EEF7FB',
+    backgroundColor: 'rgba(60,60,67,0.08)',
   },
   dashboardError: {
     marginBottom: 8,
+    paddingHorizontal: 32,
+  },
+  insetText: {
+    paddingHorizontal: 32,
+  },
+  insetTextMobile: {
+    paddingHorizontal: 16,
+  },
+  chainMobile: {
+    marginHorizontal: 16,
+  },
+  addHopButtonMobile: {
+    paddingHorizontal: 16,
+  },
+  actionsRowMobile: {
+    paddingHorizontal: 16,
+  },
+  planSectionMobile: {
+    marginHorizontal: 16,
   },
   listTable: {
     flex: 1,
     minHeight: 0,
+    backgroundColor: '#fff',
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: HAIRLINE,
+    borderTopColor: HAIRLINE_SOFT,
   },
   listHead: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 4,
+    minHeight: 32,
+    paddingLeft: 16,
+    backgroundColor: '#fff',
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
+    borderBottomColor: HAIRLINE_SOFT,
+    ...Platform.select({
+      web: {
+        position: 'sticky',
+        top: 0,
+        zIndex: 3,
+      },
+      default: {},
+    }),
   },
   listTh: {
     fontFamily,
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#8a8a8a',
+    fontSize: 13,
+    fontWeight: '400',
+    color: SECONDARY,
     textTransform: 'uppercase',
-    letterSpacing: 0.3,
+    letterSpacing: -0.08,
   },
   listScroll: {
     flex: 1,
@@ -3322,11 +3542,8 @@ const styles = StyleSheet.create({
   listRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 9,
-    paddingHorizontal: 4,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#f0f0f0',
-    minHeight: 42,
+    minHeight: 72,
+    paddingLeft: 16,
     backgroundColor: '#fff',
     ...Platform.select({
       web: { cursor: 'pointer' },
@@ -3334,10 +3551,57 @@ const styles = StyleSheet.create({
     }),
   },
   listRowHover: {
-    backgroundColor: '#f5f5f7',
+    backgroundColor: 'rgba(60,60,67,0.08)',
   },
   listRowSelected: {
-    backgroundColor: '#e8e8ed',
+    backgroundColor: '#f2f2f7',
+  },
+  txIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 13,
+    marginRight: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: TILE,
+    flexShrink: 0,
+  },
+  txIconReceived: {
+    backgroundColor: '#34C759',
+  },
+  txIconSpacer: {
+    width: 46,
+    marginRight: 12,
+    flexShrink: 0,
+  },
+  txMain: {
+    flex: 1,
+    minWidth: 0,
+    alignSelf: 'stretch',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingRight: 16,
+  },
+  txDivider: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
+  },
+  chevronSpacer: {
+    width: 18,
+    flexShrink: 0,
+  },
+  mobileFilters: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  mobileFilterCell: {
+    flexGrow: 0,
+    flexShrink: 0,
+    paddingRight: 12,
   },
   listThCell: {
     flexDirection: 'row',
@@ -3355,14 +3619,14 @@ const styles = StyleSheet.create({
     color: '#1a1a1a',
   },
   searchBar: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     minWidth: 0,
-    borderRadius: 12,
+    borderRadius: 10,
     paddingHorizontal: 12,
-    backgroundColor: '#e8e8ed',
-    minHeight: 42,
-    marginBottom: 8,
+    backgroundColor: 'rgba(118,118,128,0.12)',
+    minHeight: 36,
   },
   searchIcon: {
     marginRight: 8,
@@ -3539,7 +3803,7 @@ const styles = StyleSheet.create({
   },
   drawerPanel: {
     height: '100%',
-    backgroundColor: '#f5f5f7',
+    backgroundColor: '#f2f2f7',
     ...Platform.select({
       web: { boxShadow: '-12px 0 32px rgba(0,0,0,0.18)' },
       default: { elevation: 12 },
@@ -3553,7 +3817,7 @@ const styles = StyleSheet.create({
     paddingTop: 16,
     paddingBottom: 8,
     gap: 12,
-    backgroundColor: '#f5f5f7',
+    backgroundColor: '#f2f2f7',
   },
   drawerTopBarMobile: {
     paddingHorizontal: 16,
@@ -3565,7 +3829,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 17,
     fontWeight: '600',
-    color: '#1a1a1a',
+    color: LABEL,
     letterSpacing: -0.4,
   },
   drawerClose: {
@@ -3615,19 +3879,19 @@ const styles = StyleSheet.create({
   },
   drawerSectionLabel: {
     fontFamily,
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#8a8a8a',
+    fontSize: 13,
+    fontWeight: '400',
+    color: SECONDARY,
     textTransform: 'uppercase',
-    letterSpacing: 0.4,
+    letterSpacing: -0.08,
     marginBottom: 8,
-    marginTop: 4,
+    marginTop: 16,
   },
   drawerGroup: {
     backgroundColor: '#fff',
     borderRadius: 14,
     overflow: 'hidden',
-    marginBottom: 20,
+    marginBottom: 8,
   },
   drawerLoading: {
     paddingVertical: 16,
@@ -3641,7 +3905,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     gap: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e5e5ea',
+    borderBottomColor: HAIRLINE,
   },
   detailRowLast: {
     borderBottomWidth: 0,
@@ -3650,15 +3914,18 @@ const styles = StyleSheet.create({
     fontFamily,
     width: 96,
     flexShrink: 0,
-    fontSize: 14,
-    color: '#8a8a8a',
+    fontSize: 15,
+    color: SECONDARY,
+    letterSpacing: -0.2,
     paddingTop: 1,
   },
   detailValue: {
     fontFamily,
     flex: 1,
-    fontSize: 14,
-    color: '#1a1a1a',
+    fontSize: 15,
+    fontWeight: '500',
+    color: LABEL,
+    letterSpacing: -0.2,
   },
   itemHead: {
     flexDirection: 'row',
@@ -3722,7 +3989,7 @@ const styles = StyleSheet.create({
     textAlign: 'right',
   },
   itemQtyShort: {
-    color: '#C43C3C',
+    color: '#FF3B30',
   },
   itemEmpty: {
     fontFamily,
@@ -3745,11 +4012,26 @@ const styles = StyleSheet.create({
   },
   listTd: {
     fontFamily,
-    fontSize: 13,
-    color: '#1a1a1a',
+    fontSize: 15,
+    fontWeight: '500',
+    color: LABEL,
+    letterSpacing: -0.2,
   },
   listRef: {
+    fontFamily,
+    fontSize: 17,
     fontWeight: '600',
+    color: LABEL,
+    letterSpacing: -0.24,
+    fontVariant: ['tabular-nums'],
+  },
+  listCount: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: LABEL,
+    letterSpacing: -0.3,
+    textAlign: 'right',
     fontVariant: ['tabular-nums'],
   },
   listItems: {
@@ -3758,13 +4040,30 @@ const styles = StyleSheet.create({
   },
   listComment: {
     fontFamily,
-    fontSize: 11,
-    color: '#8a8a8a',
-    marginTop: 2,
+    fontSize: 14,
+    color: SECONDARY,
+    letterSpacing: -0.08,
+  },
+  colPrimary: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: 'center',
+    gap: 2,
   },
   colDate: {
-    width: 104,
+    width: 128,
     paddingRight: 8,
+  },
+  toolbarFilter: {
+    flexGrow: 0,
+    flexShrink: 0,
+  },
+  listMeta: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '500',
+    color: LABEL,
+    letterSpacing: -0.2,
   },
   colId: {
     width: 78,
@@ -3781,12 +4080,12 @@ const styles = StyleSheet.create({
     paddingRight: 8,
   },
   colItems: {
-    width: 52,
+    width: 72,
     paddingRight: 10,
     textAlign: 'right',
   },
   colStatus: {
-    width: 88,
+    width: 112,
     alignItems: 'flex-start',
   },
   statusPill: {
@@ -3795,33 +4094,30 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
   },
   statusReceived: {
-    backgroundColor: '#E8F5EE',
+    backgroundColor: 'rgba(52,199,89,0.16)',
   },
   statusOther: {
-    backgroundColor: '#F4F0E0',
+    backgroundColor: 'rgba(255,149,0,0.18)',
   },
   statusPillText: {
     fontFamily,
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '600',
+    letterSpacing: -0.04,
   },
   statusReceivedText: {
-    color: '#2F8A4E',
+    color: GREEN,
   },
   statusOtherText: {
-    color: '#9A6B00',
+    color: '#C93400',
   },
   signInWrap: {
     flex: 1,
     minHeight: 0,
   },
   content: {
-    paddingHorizontal: 20,
-    paddingTop: 8,
-    paddingBottom: 40,
-    maxWidth: 860,
+    paddingBottom: 48,
     width: '100%',
-    alignSelf: 'center',
   },
   title: {
     fontFamily,
@@ -3842,6 +4138,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
     marginBottom: 16,
+    paddingHorizontal: 32,
   },
   loadingText: {
     fontFamily,
@@ -3851,13 +4148,13 @@ const styles = StyleSheet.create({
   errorText: {
     fontFamily,
     fontSize: 13,
-    color: '#C0392B',
+    color: '#FF3B30',
     marginBottom: 12,
   },
   warningText: {
     fontFamily,
     fontSize: 12,
-    color: '#9A6B00',
+    color: '#C93400',
     marginBottom: 12,
   },
   coverageText: {
@@ -3879,31 +4176,31 @@ const styles = StyleSheet.create({
     backgroundColor: '#fafafa',
   },
   chain: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    alignItems: 'flex-start',
-    gap: 0,
+    marginHorizontal: 32,
     marginBottom: 8,
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    overflow: 'visible',
   },
   hopBlock: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    marginBottom: 12,
+    marginBottom: 0,
   },
   hopRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     gap: 8,
-    width: 220,
+    paddingLeft: 16,
+    paddingRight: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
   },
   hopLabel: {
     fontFamily,
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#8a8a8a',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    marginBottom: 6,
+    width: 56,
+    fontSize: 15,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.2,
   },
   dropdownWrap: {
     flex: 1,
@@ -3911,34 +4208,32 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   dropdown: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e0e0e0',
-    borderRadius: 10,
-    paddingHorizontal: 12,
+    minHeight: 48,
     paddingVertical: 10,
-    backgroundColor: '#fff',
-    minHeight: 52,
   },
   dropdownOpen: {
-    borderColor: ACCENT,
+    backgroundColor: 'transparent',
   },
   dropdownMain: {
     flex: 1,
     minWidth: 0,
-    gap: 2,
+    alignItems: 'flex-end',
   },
   dropdownValue: {
     fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#1a1a1a',
+    fontSize: 16,
+    fontWeight: '500',
+    color: LABEL,
+    letterSpacing: -0.2,
+    textAlign: 'right',
   },
   dropdownPlaceholder: {
-    color: '#9a9a9a',
-    fontWeight: '500',
+    color: '#c7c7cc',
+    fontWeight: '400',
   },
   dropdownMeta: {
     fontFamily,
@@ -3991,7 +4286,7 @@ const styles = StyleSheet.create({
     borderBottomColor: '#f0f0f0',
   },
   optionActive: {
-    backgroundColor: '#EEF7FB',
+    backgroundColor: 'rgba(0,122,255,0.12)',
   },
   optionCopy: {
     flex: 1,
@@ -4014,13 +4309,10 @@ const styles = StyleSheet.create({
     color: '#8a8a8a',
   },
   removeHop: {
-    marginTop: 28,
     padding: 4,
   },
   arrowBetween: {
-    width: 36,
-    height: 52,
-    marginTop: 24,
+    height: 28,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -4030,14 +4322,52 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     paddingVertical: 10,
-    paddingHorizontal: 4,
-    marginBottom: 16,
+    paddingHorizontal: 32,
+    marginBottom: 8,
   },
   addHopText: {
     fontFamily,
-    fontSize: 14,
+    fontSize: 15,
+    fontWeight: '400',
+    color: BLUE,
+    letterSpacing: -0.2,
+  },
+  pathLine: {
+    fontFamily,
+    fontSize: 17,
+    lineHeight: 22,
     fontWeight: '600',
-    color: ACCENT,
+    color: LABEL,
+    letterSpacing: -0.24,
+    paddingHorizontal: 32,
+    paddingTop: 16,
+    paddingBottom: 10,
+  },
+  pathLineMobile: {
+    paddingHorizontal: 16,
+  },
+  textAction: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '500',
+    color: BLUE,
+    letterSpacing: -0.2,
+    paddingHorizontal: 8,
+    paddingVertical: 10,
+  },
+  targetsToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 44,
+    paddingHorizontal: 2,
+  },
+  targetsToggleText: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '500',
+    color: LABEL,
+    letterSpacing: -0.2,
   },
   pathPreview: {
     fontFamily,
@@ -4051,17 +4381,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
     marginBottom: 8,
+    paddingHorizontal: 32,
   },
   transferButton: {
     alignSelf: 'flex-start',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    backgroundColor: ACCENT,
+    justifyContent: 'center',
+    backgroundColor: LABEL,
     borderRadius: 10,
-    paddingHorizontal: 18,
-    paddingVertical: 12,
-    minHeight: 44,
+    paddingHorizontal: 16,
+    minHeight: 36,
   },
   transferButtonDisabled: {
     opacity: 0.45,
@@ -4077,13 +4407,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    borderRadius: 10,
+    borderRadius: 12,
     paddingHorizontal: 16,
     paddingVertical: 12,
     minHeight: 44,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: ACCENT,
-    backgroundColor: '#EEF7FB',
+    backgroundColor: 'rgba(118,118,128,0.12)',
   },
   pdfButtonText: {
     fontFamily,
@@ -4096,8 +4424,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: '#2F8A4E',
-    borderRadius: 10,
+    backgroundColor: '#34C759',
+    borderRadius: 12,
     paddingHorizontal: 16,
     paddingVertical: 12,
     minHeight: 44,
@@ -4115,31 +4443,32 @@ const styles = StyleSheet.create({
   },
   statusText: {
     fontFamily,
-    fontSize: 13,
-    color: '#1F7A9A',
+    fontSize: 14,
+    color: BLUE,
     marginTop: 8,
     marginBottom: 8,
+    paddingHorizontal: 32,
   },
   planSection: {
     marginTop: 16,
+    marginHorizontal: 32,
     gap: 12,
   },
   modeBanner: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 8,
-    backgroundColor: '#F7FBFC',
-    borderRadius: 10,
-    padding: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#D7E8EF',
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    padding: 14,
   },
   modeBannerText: {
     flex: 1,
     fontFamily,
-    fontSize: 13,
-    lineHeight: 18,
-    color: '#355A68',
+    fontSize: 14,
+    lineHeight: 20,
+    color: LABEL,
+    letterSpacing: -0.08,
   },
   sectionTitle: {
     fontFamily,
@@ -4149,10 +4478,8 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   splitsCard: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e6e6e6',
-    borderRadius: 12,
-    padding: 12,
+    borderRadius: 14,
+    padding: 14,
     backgroundColor: '#fff',
   },
   splitsHeader: {
@@ -4238,10 +4565,8 @@ const styles = StyleSheet.create({
     color: ACCENT,
   },
   stopCard: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e0e0e0',
-    borderRadius: 12,
-    padding: 12,
+    borderRadius: 14,
+    padding: 14,
     backgroundColor: '#fff',
     gap: 8,
   },
@@ -4251,33 +4576,34 @@ const styles = StyleSheet.create({
     gap: 6,
     marginBottom: 2,
     paddingBottom: 8,
-    borderBottomWidth: 2,
-    borderBottomColor: '#1a1a1a',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE_SOFT,
   },
   stopTitle: {
     fontFamily,
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1a1a1a',
+    fontSize: 17,
+    fontWeight: '600',
+    color: LABEL,
+    letterSpacing: -0.24,
   },
   tableBlock: {
     marginTop: 4,
   },
   tableCaption: {
     fontFamily,
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#6b6b6b',
+    fontSize: 13,
+    fontWeight: '400',
+    color: SECONDARY,
     textTransform: 'uppercase',
-    letterSpacing: 0.4,
+    letterSpacing: -0.08,
     marginBottom: 6,
   },
   tableHead: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#f5f5f5',
-    borderTopLeftRadius: 8,
-    borderTopRightRadius: 8,
+    backgroundColor: '#f7f7f8',
+    borderRadius: 8,
+    minHeight: 32,
     paddingVertical: 7,
     paddingHorizontal: 8,
   },
@@ -4388,14 +4714,12 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   tableRowActive: {
-    backgroundColor: '#EEF7FB',
+    backgroundColor: 'rgba(0,122,255,0.08)',
   },
   itemOverrideCard: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#D7E8EF',
-    borderRadius: 12,
-    padding: 12,
-    backgroundColor: '#F7FBFC',
+    borderRadius: 14,
+    padding: 14,
+    backgroundColor: '#f7f7f8',
     gap: 8,
   },
   itemOverrideHint: {
@@ -4444,8 +4768,8 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
     marginTop: 16,
     marginHorizontal: 20,
-    backgroundColor: ACCENT,
-    borderRadius: 10,
+    backgroundColor: LABEL,
+    borderRadius: 12,
     paddingHorizontal: 16,
     paddingVertical: 10,
   },
@@ -4504,7 +4828,7 @@ const styles = StyleSheet.create({
     maxWidth: 460,
     maxHeight: '88%',
     backgroundColor: '#fff',
-    borderRadius: 12,
+    borderRadius: 16,
     padding: 18,
     gap: 12,
   },
@@ -4585,8 +4909,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   dateModeChipActive: {
-    borderColor: ACCENT,
-    backgroundColor: '#EEF7FB',
+    borderColor: 'transparent',
+    backgroundColor: '#fff',
   },
   dateModeChipDisabled: {
     opacity: 0.45,
@@ -4608,7 +4932,7 @@ const styles = StyleSheet.create({
   receiveError: {
     fontFamily,
     fontSize: 13,
-    color: '#c0392b',
+    color: '#FF3B30',
   },
   savedDateList: {
     maxHeight: 160,
@@ -4624,7 +4948,7 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   savedDateRowActive: {
-    backgroundColor: '#EEF7FB',
+    backgroundColor: 'rgba(0,122,255,0.12)',
   },
   savedDateLabel: {
     fontFamily,
@@ -4653,10 +4977,10 @@ const styles = StyleSheet.create({
   finishSubmit: {
     flex: 1,
     height: 44,
-    borderRadius: 8,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#2F8A4E',
+    backgroundColor: LABEL,
   },
   finishSubmitText: {
     fontFamily,
@@ -4680,16 +5004,16 @@ const styles = StyleSheet.create({
     flexShrink: 1,
   },
   statusAll: {
-    backgroundColor: '#E8F5EE',
+    backgroundColor: 'rgba(52,199,89,0.16)',
   },
   statusAllText: {
-    color: '#2F8A4E',
+    color: GREEN,
   },
   statusPartial: {
-    backgroundColor: '#F4F0E0',
+    backgroundColor: 'rgba(255,149,0,0.18)',
   },
   statusPartialText: {
-    color: '#9A6B00',
+    color: '#C93400',
   },
   statusNone: {
     backgroundColor: '#f0f0f0',
@@ -4709,13 +5033,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: '#2F8A4E',
+    backgroundColor: GREEN,
     borderRadius: 8,
     paddingHorizontal: 10,
     paddingVertical: 7,
   },
   receiveAllButtonDone: {
-    backgroundColor: '#E8F5EE',
+    backgroundColor: 'rgba(52,199,89,0.16)',
   },
   receiveAllButtonText: {
     fontFamily,
@@ -4724,7 +5048,7 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
   receiveAllButtonTextDone: {
-    color: '#2F8A4E',
+    color: GREEN,
   },
   plannedItem: {
     paddingHorizontal: 16,
@@ -4779,7 +5103,7 @@ const styles = StyleSheet.create({
     backgroundColor: ACCENT,
   },
   itemReceivedButtonDone: {
-    backgroundColor: '#E8F5EE',
+    backgroundColor: 'rgba(52,199,89,0.16)',
   },
   itemReceivedButtonText: {
     fontFamily,
@@ -4788,7 +5112,7 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
   itemReceivedButtonTextDone: {
-    color: '#2F8A4E',
+    color: GREEN,
   },
   activeRow: {
     flexDirection: 'row',

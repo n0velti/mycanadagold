@@ -247,6 +247,8 @@ export default function EmailsScreen({
     }
   }, [focus, capture]);
 
+  const loginEmail = String(session?.profile?.email || session?.login || '').trim().toLowerCase();
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -256,7 +258,12 @@ export default function EmailsScreen({
           loadGmailOAuthApp().catch(() => ({ clientId: '', configured: false, hostedDomain: 'canadagold.ca' })),
         ]);
         if (cancelled) return;
-        setGmailSession(mail);
+        if (mail?.email && loginEmail && mail.email !== loginEmail) {
+          await clearGmailSession();
+          setGmailSession(null);
+        } else {
+          setGmailSession(mail);
+        }
         setOauthApp(app);
       } finally {
         if (!cancelled) setGmailReady(true);
@@ -265,9 +272,10 @@ export default function EmailsScreen({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loginEmail]);
 
   useEffect(() => {
+    if (!loginEmail) return undefined;
     const callback = readGmailOAuthCallback();
     if (!callback) return undefined;
     let cancelled = false;
@@ -286,6 +294,11 @@ export default function EmailsScreen({
           code: callback.code,
           redirectUri: readGmailOAuthRedirect() || getGmailRedirectUri(),
         });
+        const mine = loginEmail;
+        if (mine && next.email && next.email !== mine) {
+          await clearGmailSession();
+          throw new Error('Sign in with the Google account you use for this app.');
+        }
         clearGmailOAuthState();
         clearGmailOAuthCallbackFromUrl();
         if (!cancelled) {
@@ -302,7 +315,7 @@ export default function EmailsScreen({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loginEmail]);
 
   const refreshList = useCallback(async () => {
     const mailSession = gmailSessionRef.current;

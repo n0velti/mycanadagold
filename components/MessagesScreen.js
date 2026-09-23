@@ -29,6 +29,7 @@ import {
   getOrCreateAiDm,
   getOrCreateDm,
   getOrCreateTeamDm,
+  hideDmConversation,
   hideDmMessage,
   initialsFromName,
   leaveDmGroup,
@@ -43,6 +44,7 @@ import {
   subscribeDmRealtime,
   subscribeDmTyping,
   toggleDmLike,
+  unhideDmConversation,
 } from '../lib/messages';
 import { intakeNames, listTeams } from '../lib/teams';
 import { prepareAiChatSession, sendAiChatMessage, titleAiChat } from '../lib/aiChat';
@@ -252,6 +254,107 @@ function confirmDeleteForMe(onConfirm) {
   ]);
 }
 
+function confirmDeleteConversation(thread, onConfirm) {
+  const title = 'Delete chat?';
+  const kept = thread?.isAi
+    ? ''
+    : thread?.isGroup
+      ? 'Everyone else will still have it.'
+      : `${conversationTitle(thread)} will still have it.`;
+  const body = kept
+    ? `This chat will be removed from your messages. ${kept}`
+    : 'This chat will be removed from your messages.';
+  if (Platform.OS === 'web') {
+    if (typeof window !== 'undefined' && window.confirm(`${title}\n\n${body}`)) onConfirm();
+    return;
+  }
+  Alert.alert(title, body, [
+    { text: 'Cancel', style: 'cancel' },
+    { text: 'Delete', style: 'destructive', onPress: onConfirm },
+  ]);
+}
+
+function mergeSentMessage(current, localKey, tempId, saved) {
+  const index = current.findIndex((item) => item.localKey === localKey || item.id === tempId);
+  if (index === -1) {
+    if (current.some((item) => item.id === saved.id)) return current;
+    return [...current, saved];
+  }
+  const next = current.slice();
+  next[index] = {
+    ...saved,
+    localKey: current[index].localKey || localKey,
+    justSent: current[index].justSent,
+  };
+  return next.filter((item, itemIndex) => item.id !== saved.id || itemIndex === index);
+}
+
+function AppleSend({ active, onSettled, children }) {
+  const progress = useRef(new Animated.Value(active ? 0 : 1)).current;
+  const sizeRef = useRef({ width: 0, height: 0 });
+  const onSettledRef = useRef(onSettled);
+  const [ready, setReady] = useState(false);
+  onSettledRef.current = onSettled;
+
+  useEffect(() => {
+    if (!active || !ready) return undefined;
+    progress.setValue(0);
+    const animation = Animated.spring(progress, {
+      toValue: 1,
+      stiffness: 340,
+      damping: 22,
+      mass: 0.65,
+      useNativeDriver: true,
+    });
+    animation.start(({ finished }) => {
+      if (finished) onSettledRef.current?.();
+    });
+    return () => animation.stop();
+  }, [active, ready, progress]);
+
+  if (!active) return children;
+
+  const { width, height } = sizeRef.current;
+  const scale = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.28, 1],
+  });
+  const lift = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [14, 0],
+  });
+  const opacity = progress.interpolate({
+    inputRange: [0, 0.12, 1],
+    outputRange: [0, 1, 1],
+  });
+
+  return (
+    <Animated.View
+      pointerEvents="box-none"
+      onLayout={(event) => {
+        const next = event.nativeEvent.layout;
+        if (next.width <= 0 || next.height <= 0) return;
+        sizeRef.current = { width: next.width, height: next.height };
+        if (!ready) setReady(true);
+      }}
+      style={{
+        alignSelf: 'stretch',
+        opacity: ready ? opacity : 0,
+        transform: [
+          { translateY: lift },
+          { translateX: width / 2 },
+          { translateY: height / 2 },
+          { scale },
+          { translateX: -width / 2 },
+          { translateY: -height / 2 },
+        ],
+      }}
+    >
+      {children}
+    </Animated.View>
+  );
+}
+
 function MessageBubble({
   message,
   mine,
@@ -263,6 +366,7 @@ function MessageBubble({
   onCloseMenu,
   onToggleLike,
   onDeleteForMe,
+  onSendSettled,
 }) {
   const lastTap = useRef(0);
   const [burst, setBurst] = useState(0);
@@ -298,6 +402,7 @@ function MessageBubble({
   };
 
   return (
+    <AppleSend active={Boolean(message.justSent)} onSettled={() => onSendSettled?.(message)}>
     <View
       style={[styles.bubbleRow, mine ? styles.bubbleRowMine : styles.bubbleRowTheirs, message.likeCount > 0 && styles.bubbleRowLiked]}
       {...(Platform.OS === 'web'
@@ -385,6 +490,7 @@ function MessageBubble({
         </View>
       ) : null}
     </View>
+    </AppleSend>
   );
 }
 
@@ -675,10 +781,12 @@ export default function MessagesScreen({
   const [loadingInbox, setLoadingInbox] = useState(true);
   const [loadingThread, setLoadingThread] = useState(false);
   const [sending, setSending] = useState(false);
+  const [aiThinkingId, setAiThinkingId] = useState(null);
   const [error, setError] = useState('');
   const [photoPerson, setPhotoPerson] = useState(null);
   const [menuMessageId, setMenuMessageId] = useState(null);
   const threadRef = useRef(null);
+  const sendScale = useRef(new Animated.Value(1)).current;
   const typingRef = useRef(null);
   const activeIdRef = useRef(null);
   const inboxRef = useRef(inbox);
@@ -686,6 +794,7 @@ export default function MessagesScreen({
   activeIdRef.current = activeId;
   const onUnreadChangeRef = useRef(onUnreadChange);
   onUnreadChangeRef.current = onUnreadChange;
+  const refreshInboxRef = useRef(async () => []);
 
   const activeThread = inbox.find((row) => row.conversationId === activeId) || null;
 
@@ -709,6 +818,7 @@ export default function MessagesScreen({
       setLoadingInbox(false);
     }
   }, []);
+  refreshInboxRef.current = refreshInbox;
 
   const openConversation = useCallback(
     async (conversationId, { skipLoad } = {}) => {
@@ -726,6 +836,14 @@ export default function MessagesScreen({
       setTitleDraft('');
       if (!skipLoad) setLoadingThread(true);
       try {
+        if (!inboxRef.current.some((row) => row.conversationId === conversationId)) {
+          try {
+            await unhideDmConversation(conversationId);
+            await refreshInboxRef.current();
+          } catch {
+            // Opening still works if this database has no conversation-hide function yet.
+          }
+        }
         const rows = await listDmMessages(conversationId, myId);
         setMessages(rows);
         await markDmRead(conversationId);
@@ -819,18 +937,32 @@ export default function MessagesScreen({
           if (conversationId === activeIdRef.current) {
             setMessages((current) => {
               if (current.some((item) => item.id === row.id)) return current;
-              return [
-                ...current,
-                {
-                  id: row.id,
-                  conversationId: row.conversation_id,
-                  senderId: row.sender_id,
-                  body: row.body,
-                  createdAt: row.created_at,
-                  likedByMe: false,
-                  likeCount: 0,
-                },
-              ];
+              const incoming = {
+                id: row.id,
+                conversationId: row.conversation_id,
+                senderId: row.sender_id,
+                body: row.body,
+                createdAt: row.created_at,
+                likedByMe: false,
+                likeCount: 0,
+              };
+              const tempIndex = current.findIndex(
+                (item) =>
+                  item.localKey &&
+                  String(item.id).startsWith('temp-') &&
+                  item.body === row.body &&
+                  item.senderId === row.sender_id,
+              );
+              if (tempIndex >= 0) {
+                const next = current.slice();
+                next[tempIndex] = {
+                  ...incoming,
+                  localKey: current[tempIndex].localKey,
+                  justSent: current[tempIndex].justSent,
+                };
+                return next;
+              }
+              return [...current, incoming];
             });
             markDmRead(conversationId)
               .then(() => onUnreadChangeRef.current?.())
@@ -916,7 +1048,7 @@ export default function MessagesScreen({
     requestAnimationFrame(() => {
       threadRef.current?.scrollToEnd?.({ animated: false });
     });
-  }, [messages.length, typingByUser, activeId]);
+  }, [messages.length, typingByUser, activeId, aiThinkingId]);
 
   const peopleIndex = useMemo(() => {
     const byId = new Map(contacts.map((person) => [person.id, person]));
@@ -1021,6 +1153,25 @@ export default function MessagesScreen({
     }
   };
 
+  const handleDeleteConversation = async (thread) => {
+    const conversationId = thread?.conversationId;
+    if (!conversationId) return;
+    setMenuMessageId(null);
+    setDetailsOpen(false);
+    if (activeId === conversationId) {
+      setActiveId(null);
+      setMessages([]);
+    }
+    setInbox((current) => current.filter((row) => row.conversationId !== conversationId));
+    try {
+      await hideDmConversation(conversationId);
+      await refreshInbox();
+    } catch (err) {
+      setError(err.message || 'Could not delete that chat.');
+      await refreshInbox();
+    }
+  };
+
   const ensureAiSession = (conversationId) => {
     const existing = aiSessionsRef.current.get(conversationId);
     if (existing) return existing;
@@ -1035,11 +1186,20 @@ export default function MessagesScreen({
   const handleSend = async () => {
     const text = draft.trim();
     if (!text || !activeId || sending) return;
+    const localKey = `local-${Date.now()}`;
+    const tempId = `temp-${localKey}`;
+    sendScale.setValue(0.82);
+    Animated.spring(sendScale, {
+      toValue: 1,
+      friction: 5,
+      tension: 180,
+      useNativeDriver: true,
+    }).start();
     if (activeThread?.isAi) {
       setDraft('');
       setEmojiOpen(false);
       setSending(true);
-      const tempId = `temp-${Date.now()}`;
+      setAiThinkingId(activeId);
       const history = messages
         .filter((item) => item.body && !String(item.id).startsWith('temp-'))
         .map((item) => ({
@@ -1050,6 +1210,8 @@ export default function MessagesScreen({
         ...current,
         {
           id: tempId,
+          localKey,
+          justSent: true,
           conversationId: activeId,
           senderId: myId,
           body: text,
@@ -1062,7 +1224,7 @@ export default function MessagesScreen({
       ]);
       try {
         const saved = await sendDmMessage(activeId, text);
-        setMessages((current) => current.map((item) => (item.id === tempId ? saved : item)));
+        setMessages((current) => mergeSentMessage(current, localKey, tempId, saved));
         const prepared = ensureAiSession(activeId);
         const result = await sendAiChatMessage({
           seedMessages: prepared.seedMessages,
@@ -1083,8 +1245,10 @@ export default function MessagesScreen({
         setMessages((current) => (
           current.some((item) => item.id === reply.id) ? current : [...current, reply]
         ));
+        setAiThinkingId(null);
         await refreshInbox();
       } catch (err) {
+        setAiThinkingId(null);
         setMessages((current) => current.filter((item) => item.id !== tempId));
         setDraft(text);
         setError(err.message || 'Could not get an answer.');
@@ -1097,11 +1261,12 @@ export default function MessagesScreen({
     setEmojiOpen(false);
     typingRef.current?.stop?.(myName);
     setSending(true);
-    const tempId = `temp-${Date.now()}`;
     setMessages((current) => [
       ...current,
       {
         id: tempId,
+        localKey,
+        justSent: true,
         conversationId: activeId,
         senderId: myId,
         body: text,
@@ -1113,11 +1278,7 @@ export default function MessagesScreen({
     ]);
     try {
       const saved = await sendDmMessage(activeId, text);
-      setMessages((current) => {
-        const withoutTemp = current.filter((item) => item.id !== tempId);
-        if (withoutTemp.some((item) => item.id === saved.id)) return withoutTemp;
-        return [...withoutTemp, saved];
-      });
+      setMessages((current) => mergeSentMessage(current, localKey, tempId, saved));
       await refreshInbox();
     } catch (err) {
       setMessages((current) => current.filter((item) => item.id !== tempId));
@@ -1142,6 +1303,7 @@ export default function MessagesScreen({
     );
   };
 
+  const aiThinking = Boolean(activeThread?.isAi && aiThinkingId && aiThinkingId === activeId);
   const typingNames = Object.values(typingByUser).filter(Boolean);
   const typingLabel =
     typingNames.length === 0
@@ -1335,45 +1497,54 @@ export default function MessagesScreen({
           ? 'New group chat'
           : 'Start the conversation';
       return (
-        <Pressable
+        <View
           key={row.conversationId}
-          onPress={() => openConversation(row.conversationId)}
           {...(Platform.OS === 'web'
             ? { className: selected ? 'cgold-dm-row cgold-dm-row-active' : 'cgold-dm-row' }
             : null)}
-          style={({ pressed }) => [
-            styles.personRow,
-            selected && styles.personRowSelected,
-            pressed && styles.rowPressed,
-          ]}
+          style={[styles.personRow, selected && styles.personRowSelected]}
         >
-          <ConversationAvatar conversation={row} size={52} />
-          <View style={styles.personCopy}>
-            <View style={styles.personTop}>
-              <Text style={[styles.personName, unread && styles.personNameUnread]} numberOfLines={1}>
-                {conversationTitle(row)}
-              </Text>
-              <Text style={[styles.personTime, unread && styles.personTimeUnread]}>
-                {formatInboxTime(row.lastMessageAt)}
-              </Text>
+          <Pressable
+            onPress={() => openConversation(row.conversationId)}
+            onLongPress={() => confirmDeleteConversation(row, () => handleDeleteConversation(row))}
+            style={({ pressed }) => [styles.rowOpen, pressed && styles.rowPressed]}
+          >
+            <ConversationAvatar conversation={row} size={52} />
+            <View style={styles.personCopy}>
+              <View style={styles.personTop}>
+                <Text style={[styles.personName, unread && styles.personNameUnread]} numberOfLines={1}>
+                  {conversationTitle(row)}
+                </Text>
+                <Text style={[styles.personTime, unread && styles.personTimeUnread]}>
+                  {formatInboxTime(row.lastMessageAt)}
+                </Text>
+              </View>
+              <View style={styles.personBottom}>
+                <Text
+                  style={[styles.personSub, unread && styles.personPreviewUnread]}
+                  numberOfLines={1}
+                >
+                  {preview}
+                </Text>
+                {unread ? (
+                  <View style={styles.unreadPill}>
+                    <Text style={styles.unreadPillText}>
+                      {row.unreadCount > 9 ? '9+' : row.unreadCount}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
             </View>
-            <View style={styles.personBottom}>
-              <Text
-                style={[styles.personSub, unread && styles.personPreviewUnread]}
-                numberOfLines={1}
-              >
-                {preview}
-              </Text>
-              {unread ? (
-                <View style={styles.unreadPill}>
-                  <Text style={styles.unreadPillText}>
-                    {row.unreadCount > 9 ? '9+' : row.unreadCount}
-                  </Text>
-                </View>
-              ) : null}
-            </View>
-          </View>
-        </Pressable>
+          </Pressable>
+          <Pressable
+            onPress={() => confirmDeleteConversation(row, () => handleDeleteConversation(row))}
+            hitSlop={8}
+            style={styles.rowDelete}
+            accessibilityLabel={`Delete chat with ${conversationTitle(row)}`}
+          >
+            <Ionicons name="trash-outline" size={18} color="#8e8e93" />
+          </Pressable>
+        </View>
       );
     });
   };
@@ -1573,10 +1744,21 @@ export default function MessagesScreen({
                         !activeThread.isGroup && activeThread.other?.isOnline && styles.threadSeenLive,
                       ]}
                     >
-                      {conversationSubtitle(activeThread, { typingLabel })}
+                      {conversationSubtitle(activeThread, {
+                        typingLabel: aiThinking ? 'Thinking…' : typingLabel,
+                      })}
                     </Text>
                   </Pressable>
                 </View>
+                <Pressable
+                  onPress={() =>
+                    confirmDeleteConversation(activeThread, () => handleDeleteConversation(activeThread))
+                  }
+                  style={styles.infoButton}
+                  accessibilityLabel="Delete chat"
+                >
+                  <Ionicons name="trash-outline" size={20} color="#8e8e93" />
+                </Pressable>
                 {activeThread.isGroup ? (
                   <Pressable
                     onPress={() => {
@@ -1698,27 +1880,35 @@ export default function MessagesScreen({
                     </>
                   ) : null}
                   <Pressable
-                    onPress={async () => {
-                      try {
-                        const id = activeThread.conversationId;
-                        await leaveDmGroup(id);
-                        setActiveId(null);
-                        setDetailsOpen(false);
-                        await refreshInbox();
-                      } catch (err) {
-                        setError(err.message || 'Could not leave that group.');
-                      }
-                    }}
+                    onPress={() =>
+                      confirmDeleteConversation(activeThread, () => handleDeleteConversation(activeThread))
+                    }
                     style={styles.leaveButton}
                   >
                     <Text style={styles.leaveButtonText}>
-                      {activeThread.isTeam
-                        ? 'Leave team chat'
-                        : activeThread.isAi
-                          ? 'Delete chat'
-                          : 'Leave group'}
+                      {activeThread.isAi ? 'Delete chat' : 'Delete for you'}
                     </Text>
                   </Pressable>
+                  {!activeThread.isAi ? (
+                    <Pressable
+                      onPress={async () => {
+                        try {
+                          const id = activeThread.conversationId;
+                          await leaveDmGroup(id);
+                          setActiveId(null);
+                          setDetailsOpen(false);
+                          await refreshInbox();
+                        } catch (err) {
+                          setError(err.message || 'Could not leave that group.');
+                        }
+                      }}
+                      style={styles.leaveButton}
+                    >
+                      <Text style={styles.leaveButtonText}>
+                        {activeThread.isTeam ? 'Leave team chat' : 'Leave group'}
+                      </Text>
+                    </Pressable>
+                  ) : null}
                 </ScrollView>
               ) : (
                 <>
@@ -1760,7 +1950,7 @@ export default function MessagesScreen({
                         const groupedWithNext = sameAuthor(message, next) && !shouldShowStamp(message, next);
                         const sender = peopleById.get(message.senderId);
                         return (
-                          <View key={message.id} style={groupedWithPrev ? styles.msgTight : styles.msgGap}>
+                          <View key={message.localKey || message.id} style={groupedWithPrev ? styles.msgTight : styles.msgGap}>
                             {shouldShowStamp(prev, message) ? (
                               <Text style={styles.stamp}>{formatThreadStamp(message.createdAt)}</Text>
                             ) : null}
@@ -1781,12 +1971,28 @@ export default function MessagesScreen({
                               onCloseMenu={() => setMenuMessageId(null)}
                               onToggleLike={handleToggleLike}
                               onDeleteForMe={handleDeleteForMe}
+                              onSendSettled={(item) => {
+                                setMessages((current) =>
+                                  current.map((row) =>
+                                    row.localKey && row.localKey === item.localKey
+                                      ? { ...row, justSent: false }
+                                      : row,
+                                  ),
+                                );
+                              }}
                             />
                           </View>
                         );
                       })
                     )}
-                    {typingNames.length > 0 ? (
+                    {aiThinking ? (
+                      <View style={styles.msgGap}>
+                        <Text style={styles.senderLabel}>MyCanadaGold AI</Text>
+                        <View style={styles.typingRow}>
+                          <TypingDots />
+                        </View>
+                      </View>
+                    ) : typingNames.length > 0 ? (
                       <View style={styles.typingRow}>
                         <TypingDots />
                       </View>
@@ -1823,14 +2029,16 @@ export default function MessagesScreen({
                         onChangeText={onChangeDraft}
                         placeholder={activeThread?.isAi ? 'Message MyCanadaGold AI' : 'Message'}
                         placeholderTextColor="#8e8e93"
-                        multiline
+                        multiline={false}
+                        numberOfLines={1}
+                        returnKeyType="send"
                         maxLength={4000}
                         blurOnSubmit={false}
                         onSubmitEditing={Platform.OS === 'web' ? undefined : handleSend}
                         {...(Platform.OS === 'web'
                           ? {
                               onKeyDown: (event) => {
-                                if (event.key === 'Enter' && !event.shiftKey) {
+                                if (event.key === 'Enter') {
                                   event.preventDefault();
                                   handleSend();
                                 }
@@ -1839,17 +2047,19 @@ export default function MessagesScreen({
                           : null)}
                       />
                     </View>
-                    <Pressable
-                      onPress={handleSend}
-                      disabled={!draft.trim() || sending}
-                      style={[
-                        styles.sendButton,
-                        draft.trim() ? styles.sendButtonOn : styles.sendButtonOff,
-                      ]}
-                      accessibilityLabel="Send"
-                    >
-                      <Ionicons name="arrow-up" size={18} color="#fff" />
-                    </Pressable>
+                    <Animated.View style={{ transform: [{ scale: sendScale }] }}>
+                      <Pressable
+                        onPress={handleSend}
+                        disabled={!draft.trim() || sending}
+                        style={[
+                          styles.sendButton,
+                          draft.trim() ? styles.sendButtonOn : styles.sendButtonOff,
+                        ]}
+                        accessibilityLabel="Send"
+                      >
+                        <Ionicons name="arrow-up" size={18} color="#fff" />
+                      </Pressable>
+                    </Animated.View>
                   </View>
                 </>
               )}
@@ -2169,6 +2379,19 @@ const styles = StyleSheet.create({
   },
   rowPressed: {
     backgroundColor: '#f5f5f7',
+  },
+  rowOpen: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  rowDelete: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   personCopy: {
     flex: 1,
@@ -2668,7 +2891,7 @@ const styles = StyleSheet.create({
   },
   composer: {
     flexDirection: 'row',
-    alignItems: 'flex-end',
+    alignItems: 'center',
     gap: 8,
     paddingHorizontal: 10,
     paddingTop: 8,
@@ -2682,28 +2905,33 @@ const styles = StyleSheet.create({
     height: 34,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 2,
   },
   emojiToggleActive: {
     opacity: 0.85,
   },
   composerField: {
     flex: 1,
+    height: 36,
     minHeight: 36,
-    maxHeight: 120,
+    maxHeight: 36,
     borderWidth: 1,
     borderColor: '#d1d1d6',
-    borderRadius: 20,
+    borderRadius: 18,
     paddingHorizontal: 14,
-    paddingVertical: Platform.OS === 'web' ? 7 : 6,
+    paddingVertical: 0,
     justifyContent: 'center',
+    overflow: 'hidden',
   },
   composerInput: {
     fontFamily,
     fontSize: 16,
+    lineHeight: 20,
+    height: 22,
+    maxHeight: 22,
     color: '#1d1d1f',
-    maxHeight: 100,
     padding: 0,
+    paddingVertical: 0,
+    margin: 0,
     outlineStyle: 'none',
   },
   sendButton: {
@@ -2712,7 +2940,6 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 3,
   },
   sendButtonOn: {
     backgroundColor: BLUE,
@@ -2726,14 +2953,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   composerFieldMobile: {
+    height: 34,
     minHeight: 34,
-    maxHeight: 68,
-    paddingVertical: 4,
+    maxHeight: 34,
+    paddingVertical: 0,
   },
   composerInputMobile: {
     fontSize: 16,
     lineHeight: 20,
-    maxHeight: 56,
+    height: 20,
+    maxHeight: 20,
   },
   aiComposerField: {
     height: 36,

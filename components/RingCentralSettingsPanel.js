@@ -73,7 +73,7 @@ function Field({ label, value, onChangeText, placeholder, secure, multiline, hin
 
 function IncomingWatchList({ stores }) {
   const isMobile = useIsMobile();
-  const { watchPrefs, setStoreWatched } = usePhoneCalls();
+  const { watchPrefs, setStoreWatched, currentStoreKey } = usePhoneCalls();
   const connected = (stores || []).filter((row) => row.account?.hasJwt);
   if (connected.length === 0) return null;
 
@@ -81,10 +81,10 @@ function IncomingWatchList({ stores }) {
     return (
       <IosGroup
         header="Incoming On This Screen"
-        footer="Choose which store lines appear in the tab bar. You can watch more than one at a time."
+        footer="Calls ring for the store you're set in. Turn on more lines to hear those too."
       >
         {connected.map((row) => {
-          const on = isStoreWatched(watchPrefs, row.key);
+          const on = isStoreWatched(watchPrefs, row.key, currentStoreKey);
           return (
             <IosRow
               key={row.key}
@@ -105,11 +105,11 @@ function IncomingWatchList({ stores }) {
     <View style={styles.watchBlock}>
       <Text style={styles.sectionLabel}>Incoming on this screen</Text>
       <Text style={styles.introTight}>
-        Choose which store lines appear in the left tab bar. You can watch more than one at a time.
+        Calls ring for the store you're set in. Turn on more lines to hear those too.
       </Text>
       <View style={styles.menuList}>
         {connected.map((row) => {
-          const on = isStoreWatched(watchPrefs, row.key);
+          const on = isStoreWatched(watchPrefs, row.key, currentStoreKey);
           return (
             <Pressable
               key={row.key}

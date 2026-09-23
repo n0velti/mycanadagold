@@ -1,6 +1,7 @@
 /**
- * Stays signed in as the hours inbox and posts the newest CSV attachment to
- * the app. Install once from the Apps Script editor:
+ * Stays signed in as edward.anuichi@canadagold.ca and posts only the newest
+ * Rippling CSV attachment. The app also pulls that CSV itself, so this script
+ * is optional. Install once from the Apps Script editor:
  *
  *   Script properties: MAILBOX_ENDPOINT, MAILBOX_SECRET
  *   Run install() and approve Gmail + external requests.
@@ -26,9 +27,7 @@ function syncRipplingCsv() {
   if (!secret || !endpoint) throw new Error('Set MAILBOX_SECRET and MAILBOX_ENDPOINT in script properties.');
 
   var queries = [
-    'newer_than:21d filename:csv',
-    'newer_than:21d subject:Scheduled subject:Report',
-    'newer_than:21d from:rippling has:attachment',
+    'newer_than:21d filename:csv label:rippling-updates',
   ];
   var seen = {};
   var threads = [];
