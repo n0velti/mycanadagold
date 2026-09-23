@@ -2845,7 +2845,7 @@ function CashAuditPanel({
         onSend={sendAiFollowUp}
         busy={aiBusy}
         disabled={!aiMessages.length}
-        placeholder="Ask about Till 1 CAD, USD, a payment, or till entry…"
+        placeholder="Ask which sale, purchase, transfer, or combination explains the difference…"
         onOpenReference={txnDrawer.openReference}
       />
     </>
