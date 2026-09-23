@@ -183,6 +183,7 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
   const [needsSettings, setNeedsSettings] = useState(false);
   const [buyCatalog, setBuyCatalog] = useState(null);
   const [previewBox, setPreviewBox] = useState({ width: 0, height: 0 });
+  const [poEntry, setPoEntry] = useState(false);
   const requestRef = useRef(0);
   const openRef = useRef(false);
   openRef.current = open;
@@ -232,6 +233,7 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
     setNotice('');
     setToast(null);
     setNeedsSettings(false);
+    setPoEntry(false);
     return undefined;
   }, [open, stopStream]);
 
@@ -286,7 +288,7 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
       if (token !== requestRef.current) return;
       if (!poNumber) {
         setPhase('');
-        setError('Could not read a PO number from that photo. Type it in the box.');
+        setError('Could not read a PO number from that photo. Tap PO #.');
         return;
       }
       setPoInput(poNumber);
@@ -393,6 +395,7 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
     setErrorNote('');
     setErrorType('');
     setResultError('');
+    setPoEntry(false);
     if (isMobile) return;
     if (liveCamera) void startCamera();
     else void launchDeviceCamera();
@@ -492,6 +495,7 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
     : Math.max(320, windowHeight * (isMobile ? 0.58 : 0.52));
   const paperWidth = Math.min(boxWidth, boxHeight * PAPER_ASPECT);
   const paperHeight = paperWidth > 0 ? paperWidth / PAPER_ASPECT : 0;
+  const poFieldWidth = Math.min(168, Math.max(112, (windowWidth - 132) / 2));
 
   const lines = Array.isArray(po?.pricedLines) ? po.pricedLines : [];
   const place = po ? placePurchaseOnBatch(triage, po, batchId) : null;
@@ -724,41 +728,12 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
               )}
             </View>
             {toast ? <AddedToast key={toast.id} label={toast.label} onDone={() => setToast(null)} /> : null}
-            <View style={styles.snapFieldWrap}>
-              <BlurView intensity={48} tint="light" style={styles.appleField}>
-                <Ionicons name="search" size={18} color="rgba(60,60,67,0.72)" />
-                <TextInput
-                  style={styles.appleInput}
-                  value={poInput}
-                  onChangeText={setPoInput}
-                  placeholder="PO #"
-                  placeholderTextColor="rgba(60,60,67,0.55)"
-                  keyboardType="number-pad"
-                  returnKeyType="search"
-                  underlineColorAndroid="transparent"
-                  editable={!busy}
-                  onSubmitEditing={() => void lookupTyped()}
-                  accessibilityLabel="PO number"
-                />
-                {poInput.trim() ? (
-                  <Pressable
-                    onPress={() => void lookupTyped()}
-                    disabled={busy}
-                    hitSlop={8}
-                    accessibilityRole="button"
-                    accessibilityLabel="Look up PO"
-                  >
-                    {busy ? (
-                      <ActivityIndicator color="#007AFF" />
-                    ) : (
-                      <Text style={styles.appleGo}>Look up</Text>
-                    )}
-                  </Pressable>
-                ) : null}
-              </BlurView>
-              {phase ? <Text style={styles.snapPhase}>{phase}</Text> : null}
-              {error ? <Text style={styles.snapError}>{error}</Text> : null}
-            </View>
+            {phase || error ? (
+              <View style={styles.snapStatus} pointerEvents="none">
+                {phase ? <Text style={styles.snapPhase}>{phase}</Text> : null}
+                {error ? <Text style={styles.snapError}>{error}</Text> : null}
+              </View>
+            ) : null}
             <View style={styles.snapMid} pointerEvents="box-none">
               {!photoUri && liveCamera && cameraState !== 'live' ? (
                 <View style={styles.snapCenter}>
@@ -780,19 +755,66 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
               ) : null}
             </View>
             <View style={[styles.snapDock, { paddingBottom: dockPad }]}>
-              {photoUri ? null : (
-                <Pressable
-                  style={[styles.snapShutter, (busy || (liveCamera && cameraState !== 'live')) && styles.shutterOff]}
-                  onPress={onShutter}
-                  disabled={busy || (liveCamera && cameraState !== 'live')}
-                  accessibilityRole="button"
-                  accessibilityLabel="Take photo"
-                >
-                  <BlurView intensity={42} tint="light" style={styles.snapShutterBlur}>
-                    <View style={styles.snapShutterCore} />
+              <View style={styles.snapControls}>
+                {!poEntry && !photoUri ? <View style={styles.poChipBalance} /> : null}
+                {photoUri ? null : (
+                  <Pressable
+                    style={[styles.snapShutter, (busy || (liveCamera && cameraState !== 'live')) && styles.shutterOff]}
+                    onPress={onShutter}
+                    disabled={busy || (liveCamera && cameraState !== 'live')}
+                    accessibilityRole="button"
+                    accessibilityLabel="Take photo"
+                  >
+                    <BlurView intensity={42} tint="light" style={styles.snapShutterBlur}>
+                      <View style={styles.snapShutterCore} />
+                    </BlurView>
+                  </Pressable>
+                )}
+                {poEntry ? (
+                  <BlurView intensity={48} tint="light" style={[styles.poEntryBlur, { width: poFieldWidth }]}>
+                    <TextInput
+                      style={styles.poEntryInput}
+                      value={poInput}
+                      onChangeText={setPoInput}
+                      placeholder="PO #"
+                      placeholderTextColor="rgba(60,60,67,0.55)"
+                      keyboardType="number-pad"
+                      returnKeyType="search"
+                      underlineColorAndroid="transparent"
+                      autoFocus
+                      editable={!busy}
+                      onSubmitEditing={() => void lookupTyped()}
+                      onBlur={() => {
+                        if (!poInput.trim()) setPoEntry(false);
+                      }}
+                      accessibilityLabel="PO number"
+                    />
+                    {poInput.trim() ? (
+                      <Pressable
+                        onPress={() => void lookupTyped()}
+                        disabled={busy}
+                        hitSlop={8}
+                        accessibilityRole="button"
+                        accessibilityLabel="Look up PO"
+                      >
+                        {busy ? <ActivityIndicator color="#007AFF" /> : <Text style={styles.poEntryGo}>Go</Text>}
+                      </Pressable>
+                    ) : null}
                   </BlurView>
-                </Pressable>
-              )}
+                ) : (
+                  <Pressable
+                    style={styles.poChipButton}
+                    onPress={() => setPoEntry(true)}
+                    disabled={busy}
+                    accessibilityRole="button"
+                    accessibilityLabel="Enter PO number"
+                  >
+                    <BlurView intensity={48} tint="light" style={styles.poChipBlur}>
+                      <Text style={styles.poChipText}>PO #</Text>
+                    </BlurView>
+                  </Pressable>
+                )}
+              </View>
             </View>
           </KeyboardAvoidingView>
         </View>
@@ -1672,6 +1694,77 @@ const styles = StyleSheet.create({
     gap: 18,
     paddingHorizontal: 16,
   },
+  snapControls: {
+    width: '100%',
+    height: 84,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 28,
+  },
+  snapStatus: {
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    gap: 6,
+  },
+  poChipBalance: {
+    width: 54,
+    height: 54,
+  },
+  poChipButton: {
+    width: 54,
+    height: 54,
+  },
+  poChipBlur: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.42)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.72)',
+  },
+  poChipText: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1d1d1f',
+    letterSpacing: -0.2,
+  },
+  poEntryBlur: {
+    height: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(255,255,255,0.42)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.72)',
+  },
+  poEntryInput: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 44,
+    paddingVertical: 0,
+    fontFamily: FONT,
+    fontSize: 17,
+    color: '#1d1d1f',
+    backgroundColor: 'transparent',
+    ...Platform.select({
+      web: { outlineStyle: 'none' },
+      default: {},
+    }),
+  },
+  poEntryGo: {
+    fontFamily: FONT,
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#007AFF',
+  },
   snapPhase: {
     fontFamily: FONT,
     fontSize: 15,
@@ -1692,45 +1785,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#30D158',
     textAlign: 'center',
-  },
-  snapFieldWrap: {
-    paddingHorizontal: 16,
-    paddingTop: 6,
-    gap: 8,
-    zIndex: 2,
-  },
-  appleField: {
-    alignSelf: 'stretch',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    minHeight: 44,
-    paddingHorizontal: 14,
-    borderRadius: 14,
-    overflow: 'hidden',
-    backgroundColor: 'rgba(255,255,255,0.42)',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.72)',
-  },
-  appleInput: {
-    flex: 1,
-    minWidth: 0,
-    minHeight: 44,
-    paddingVertical: 0,
-    fontFamily: FONT,
-    fontSize: 17,
-    color: '#1d1d1f',
-    backgroundColor: 'transparent',
-    ...Platform.select({
-      web: { outlineStyle: 'none' },
-      default: {},
-    }),
-  },
-  appleGo: {
-    fontFamily: FONT,
-    fontSize: 17,
-    fontWeight: '600',
-    color: '#007AFF',
   },
   snapShutter: {
     width: 84,

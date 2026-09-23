@@ -607,6 +607,8 @@ const MOBILE_BREAKPOINT = 768;
 const MOBILE_APP_SECTION_PAD = 8;
 const MOBILE_APP_GAP = 12;
 const MOBILE_APP_ICON_MAX = 84;
+// Shrink tiles a bit under the column so the four-across row feels lighter.
+const MOBILE_APP_ICON_SCALE = 0.94;
 
 function useIsMobile() {
   const { width } = useWindowDimensions();
@@ -620,7 +622,9 @@ function useAppGridLayout() {
     const gridWidth = Math.max(0, width - MOBILE_APP_SECTION_PAD * 2 + gap);
     const cell = gridWidth / APP_COLUMNS_MOBILE;
     // Floor so the tile stays inside the column after rounding, which keeps the row at four.
-    const iconSize = Math.floor(Math.min(MOBILE_APP_ICON_MAX, Math.max(64, cell - gap - 1)));
+    const iconSize = Math.floor(
+      Math.min(MOBILE_APP_ICON_MAX, Math.max(64, cell - gap - 1)) * MOBILE_APP_ICON_SCALE,
+    );
     return {
       columns: APP_COLUMNS_MOBILE,
       iconSize,
@@ -693,7 +697,7 @@ const TOOL_CARDS = [
   { key: 'transactions', label: 'Transactions', icon: 'swap-horizontal-outline', tint: '#E8F1FF', accent: '#2F6FED' },
   { key: 'inventory', label: 'Inventory', icon: 'cube-outline', tint: '#FFF4E5', accent: '#C47A12' },
   { key: 'preorders', label: 'Preorders', icon: 'cart-outline', tint: '#FFF7ED', accent: '#EA580C' },
-  { key: 'ai', label: 'AI', icon: 'sparkles-outline', tint: '#F3EEFF', accent: '#6B4DE6' },
+  { key: 'ai', label: 'MyCanadaGold AI', icon: 'sparkles-outline', tint: '#F3EEFF', accent: '#6B4DE6' },
   { key: 'messages', label: 'Direct Messages', icon: 'chatbubbles-outline', tint: '#EEF4FF', accent: '#0A84FF' },
   { key: 'audit', label: 'Audit', icon: 'clipboard-outline', tint: '#EEF8F1', accent: '#2F8A4E' },
   { key: 'transfer', label: 'Transfer', icon: 'arrow-forward-outline', tint: '#EEF7FB', accent: '#1F7A9A' },
