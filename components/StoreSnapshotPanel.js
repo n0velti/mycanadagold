@@ -219,7 +219,7 @@ function DashStat({ value, label }) {
   );
 }
 
-function OverviewHero({ store, periodLabel, plain = false, onAmountLayout }) {
+function OverviewHero({ store, periodLabel, plain = false, onAmountLayout, filterSlotWidth = 0 }) {
   const total = Number(store?.totalAmount) || 0;
   const txCount = Number(store?.txCount) || 0;
   const saleCount = Number(store?.saleCount) || 0;
@@ -246,7 +246,12 @@ function OverviewHero({ store, periodLabel, plain = false, onAmountLayout }) {
           >
             {empty ? '—' : formatAmount(total)}
           </Text>
-          <View style={styles.dashHeroFilterSlot} />
+          <View
+            style={[
+              styles.dashHeroFilterSlot,
+              filterSlotWidth > 0 && { width: filterSlotWidth },
+            ]}
+          />
         </View>
         <View style={styles.dashHeroStats}>
           <DashStat value={txCount} label={txCount === 1 ? 'Transaction' : 'Transactions'} />
@@ -1322,6 +1327,7 @@ function StoreSnapshotPanel({
   onOpenApp,
   onAmountHover,
   onFilterTop,
+  filterSlotWidth = 0,
   topInset = 0,
   ready = true,
 }) {
@@ -1828,6 +1834,7 @@ function StoreSnapshotPanel({
           store={store}
           periodLabel={periodLabel}
           plain
+          filterSlotWidth={filterSlotWidth}
           onAmountLayout={(row) => {
             amountRowRef.current = row;
             emitFilterTop();
@@ -2058,6 +2065,7 @@ export default memo(
     prev.onOpenApp === next.onOpenApp &&
     prev.onAmountHover === next.onAmountHover &&
     prev.onFilterTop === next.onFilterTop &&
+    prev.filterSlotWidth === next.filterSlotWidth &&
     prev.topInset === next.topInset &&
     prev.ready === next.ready,
 );
