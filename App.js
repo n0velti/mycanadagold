@@ -121,7 +121,7 @@ import {
 import { captureTokenFromLocation } from './lib/qrCode';
 import { fetchAureusEmployee } from './lib/aureusEmployees';
 import { useDirectMessages } from './lib/messages';
-import { MOBILE_FILTER_INSET, MOBILE_FILTER_SIZE } from './lib/mobileUi';
+import { CANVAS, MOBILE_FILTER_INSET, MOBILE_FILTER_SIZE } from './lib/mobileUi';
 
 // Every tool screen is loaded on demand. On web, Metro turns each `import()`
 // into its own chunk, so the first paint only ships the shell, login and home
@@ -4734,7 +4734,7 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson, onBuy, onSell, home
     isMobile && !(loading && storeRows.length === 0) && visibleRows.length > 0;
 
   return (
-    <View ref={homeRootRef} style={[styles.toolsScreen, isMobile && styles.igHomeScreen]}>
+    <View ref={homeRootRef} style={[styles.toolsScreen, styles.canvasFill, isMobile && styles.igHomeScreen]}>
       <ScrollView
         style={styles.toolsScroll}
         contentContainerStyle={[
@@ -7768,6 +7768,12 @@ export default function App() {
     activeTool?.key === 'settings'
       ? settingsSubPanels[settingsPanel] || activeTool?.label
       : activeTool?.label;
+  const canvasMobileTab =
+    isMobile &&
+    (activeTab === 'home' ||
+      activeTab === 'messages' ||
+      activeTab === 'profile' ||
+      isAppsLibrary);
   const groupedMobileTab =
     isMobile && ((activeTab === 'tools' && !activeTool) || activeTab === 'profile');
   const showingSettings = isMobile && activeTab === 'tools' && activeTool?.key === 'settings';
@@ -7781,6 +7787,7 @@ export default function App() {
     isAppsLibrary && styles.contentAppsLibrary,
     !isMobile && activeTab === 'home' && styles.contentAppsLibrary,
     (groupedMobileTab || showingSettings) && styles.contentMobileGrouped,
+    canvasMobileTab && styles.canvasFill,
     isMobile && activeTab !== 'home' && styles.contentMobileTabInset,
     isMobile &&
       !isFullBleedTool &&
@@ -7835,6 +7842,7 @@ export default function App() {
           style={[
             styles.containerMobile,
             groupedShell ? styles.containerMobileGrouped : styles.containerMobileFeed,
+            canvasMobileTab && styles.canvasFill,
           ]}
         >
           <StatusBar style="dark" />
@@ -8024,6 +8032,9 @@ const styles = StyleSheet.create({
   },
   containerMobileFeed: {
     backgroundColor: '#fff',
+  },
+  canvasFill: {
+    backgroundColor: CANVAS,
   },
   containerMobileGrouped: {
     backgroundColor: '#f2f2f7',
@@ -11880,7 +11891,7 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
   igGroupedScreen: {
-    backgroundColor: '#f2f2f7',
+    backgroundColor: CANVAS,
   },
   igLargeTitle: {
     fontFamily: titleFontFamily,
@@ -12082,12 +12093,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   igHomeScreen: {
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
   },
   igHomeScroll: {
     paddingTop: 0,
     paddingBottom: 0,
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
   },
   igHomeScrollEnd: {
     paddingBottom: 104,
@@ -12099,7 +12110,7 @@ const styles = StyleSheet.create({
     paddingTop: 16,
     paddingBottom: 14,
     paddingHorizontal: 16,
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
   },
   igHomeHeroLabel: {
     fontFamily,
@@ -12200,13 +12211,13 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     width: '100%',
     maxWidth: '100%',
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
     paddingBottom: 104,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: 'rgba(60,60,67,0.18)',
   },
   igStoreList: {
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
     borderRadius: 0,
     overflow: 'hidden',
     width: '100%',
@@ -12218,7 +12229,7 @@ const styles = StyleSheet.create({
     gap: 12,
     minHeight: 80,
     paddingLeft: 16,
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},

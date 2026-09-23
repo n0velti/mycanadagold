@@ -16,7 +16,7 @@ import { uploadOwnAvatar } from '../lib/profiles';
 import { categoryLabel, findStaffByEmployeeName, findStaffById, listStaffProfiles } from '../lib/permissions';
 import { listTeams, teamMemberName } from '../lib/teams';
 import { fetchAureusEmployee } from '../lib/aureusEmployees';
-import { MOBILE, useIsMobile } from '../lib/mobileUi';
+import { CANVAS, MOBILE, useIsMobile } from '../lib/mobileUi';
 import { IOS } from './IosSettings';
 import { formatPhoneNumber } from '../lib/ringcentral';
 import ProfilePhotoModal from './ProfilePhotoModal';
@@ -1091,10 +1091,10 @@ const styles = StyleSheet.create({
     backgroundColor: PAGE,
   },
   screenMobile: {
-    backgroundColor: PAGE,
+    backgroundColor: CANVAS,
   },
   screenMobileSettings: {
-    backgroundColor: PAGE,
+    backgroundColor: CANVAS,
   },
   scroll: {
     flex: 1,
