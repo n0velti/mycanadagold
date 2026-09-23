@@ -2469,6 +2469,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
   const [headerHeight, setHeaderHeight] = useState(null);
   const [appsOpen, setAppsOpen] = useState(false);
   const [filterTop, setFilterTop] = useState(36);
+  const [appsButtonWidth, setAppsButtonWidth] = useState(HOME_FILTER_SIZE);
   const topInset = isMobile ? 0 : headerHeight ?? 140;
   const alignFilter = useCallback((top) => {
     if (!Number.isFinite(top)) return;
@@ -2779,6 +2780,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                       onOpenApp={openApp}
                       onAmountHover={ensurePaymentBreakdown}
                       onFilterTop={alignFilter}
+                      filterSlotWidth={appsButtonWidth}
                       topInset={topInset}
                       ready={settled}
                     />
@@ -2892,6 +2894,7 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                           store={heldStore}
                           periodLabel={periodLabel}
                           plain
+                          filterSlotWidth={appsButtonWidth}
                           onAmountLayout={(row) => {
                             txAmountRowRef.current = row;
                             alignFilter(txHeroYRef.current + row.y + (row.height - HOME_FILTER_SIZE) / 2);
@@ -3062,19 +3065,30 @@ function HomeStoreDrawer({ visible, store, session, periodLabel = 'Today', date,
                   ) : null}
                   <Pressable
                     onPress={() => setAppsOpen((open) => !open)}
+                    onLayout={(event) => {
+                      const next = Math.ceil(event.nativeEvent.layout.width);
+                      if (next > 0) {
+                        setAppsButtonWidth((current) => (current === next ? current : next));
+                      }
+                    }}
                     hitSlop={6}
-                    style={[styles.igHomeFilterButton, styles.storeAppsButton, { top: filterTop }]}
+                    style={[styles.storeNameButton, { top: filterTop }]}
                     accessibilityRole="button"
-                    accessibilityLabel="Store apps"
+                    accessibilityLabel={heldStore.store ? `${heldStore.store} apps` : 'Store apps'}
                     accessibilityState={{ expanded: appsOpen }}
                   >
                     <BlurView
                       intensity={72}
                       tint="light"
-                      style={styles.igHomeFilterBlur}
+                      style={styles.storeNameBlur}
                       {...(Platform.OS === 'web' ? { className: 'cgold-mobile-filter-blur' } : null)}
                     >
                       <HomeFilterLines color={appsOpen || activeTab !== 'overview' ? '#007AFF' : '#1d1d1f'} />
+                      {heldStore.store ? (
+                        <Text style={styles.storeNameLabel} numberOfLines={1}>
+                          {heldStore.store}
+                        </Text>
+                      ) : null}
                     </BlurView>
                   </Pressable>
                 </>
@@ -4339,6 +4353,7 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson, onBuy, onSell, home
   const heroTopRef = useRef(0);
   const amountRowRef = useRef({ y: 20, height: 46 });
   const [filterTop, setFilterTop] = useState(36);
+  const [homeFilterWidth, setHomeFilterWidth] = useState(HOME_FILTER_SIZE);
   const [filterAnchor, setFilterAnchor] = useState({ top: 90, right: 16 });
   const allowHomeFilters = canFilter('home');
   const dateRestricted = isRestrictedHomeEmployee(session?.profile);
@@ -4709,23 +4724,30 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson, onBuy, onSell, home
     <Pressable
       ref={filterButtonRef}
       hitSlop={6}
-      onLayout={placeFilterMenu}
+      onLayout={(event) => {
+        const next = Math.ceil(event.nativeEvent.layout.width);
+        if (next > 0) setHomeFilterWidth((current) => (current === next ? current : next));
+        placeFilterMenu();
+      }}
       onPress={() => {
         placeFilterMenu();
         setFiltersOpen((open) => !open);
       }}
-      style={[styles.igHomeFilterButton, { top: filterTop }]}
+      style={[styles.storeNameButton, { top: filterTop }]}
       accessibilityRole="button"
-      accessibilityLabel="Filters"
+      accessibilityLabel="MyCanadaGold filters"
       accessibilityState={{ expanded: filtersOpen }}
     >
       <BlurView
         intensity={72}
         tint="light"
-        style={styles.igHomeFilterBlur}
+        style={styles.storeNameBlur}
         {...(Platform.OS === 'web' ? { className: 'cgold-mobile-filter-blur' } : null)}
       >
         <HomeFilterLines color={filtersOpen || filtersActive ? '#007AFF' : '#1d1d1f'} />
+        <Text style={styles.storeNameLabel} numberOfLines={1}>
+          MyCanadaGold
+        </Text>
       </BlurView>
     </Pressable>
   ) : null;
@@ -4782,7 +4804,12 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson, onBuy, onSell, home
                   {formatAmount(totals.totalAmount)}
                 </HomeLiveValue>
               )}
-              <View style={styles.igHomeFilterSlot} />
+              <View
+                style={[
+                  styles.igHomeFilterSlot,
+                  homeFilterWidth > 0 && { width: homeFilterWidth },
+                ]}
+              />
             </View>
             <View style={styles.igHomeHeroStats}>
               <View style={styles.igHomeHeroStat}>
@@ -9427,8 +9454,48 @@ const styles = StyleSheet.create({
   storeAppsScroll: {
     maxHeight: 420,
   },
-  storeAppsButton: {
+  storeNameButton: {
+    position: 'absolute',
+    right: HOME_FILTER_RIGHT,
     zIndex: 22,
+    maxWidth: '78%',
+    height: HOME_FILTER_SIZE,
+    borderRadius: HOME_FILTER_SIZE / 2,
+    ...Platform.select({
+      web: {
+        cursor: 'pointer',
+        boxShadow: '0 1px 6px rgba(0,0,0,0.1)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOpacity: 0.1,
+        shadowRadius: 6,
+        shadowOffset: { width: 0, height: 1 },
+        elevation: 3,
+      },
+    }),
+  },
+  storeNameBlur: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    height: HOME_FILTER_SIZE,
+    maxWidth: '100%',
+    paddingLeft: 11,
+    paddingRight: 12,
+    borderRadius: HOME_FILTER_SIZE / 2,
+    overflow: 'hidden',
+    backgroundColor: Platform.OS === 'web' ? 'transparent' : 'rgba(255,255,255,0.55)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(0,0,0,0.14)',
+  },
+  storeNameLabel: {
+    flexShrink: 1,
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    letterSpacing: -0.24,
   },
   storeAppsRowSelected: {
     backgroundColor: 'rgba(0,122,255,0.08)',
