@@ -36,6 +36,7 @@ import {
   listDmMessages,
   markDmRead,
   renameDmGroup,
+  saveAiDmChat,
   sendDmMessage,
   shouldShowStamp,
   subscribeDmRealtime,
@@ -43,7 +44,7 @@ import {
   toggleDmLike,
 } from '../lib/messages';
 import { intakeNames, listTeams } from '../lib/teams';
-import { ingestAiChatContext, sendAiChatMessage } from '../lib/aiChat';
+import { prepareAiChatSession, sendAiChatMessage, titleAiChat } from '../lib/aiChat';
 import { OPENROUTER_MODELS } from '../lib/openrouter';
 import ProfilePhotoModal from './ProfilePhotoModal';
 
@@ -155,6 +156,23 @@ function firstNameOf(person) {
 }
 
 function ConversationAvatar({ conversation, size = 52 }) {
+  if (conversation?.isAi) {
+    return (
+      <View
+        style={[
+          styles.avatar,
+          {
+            width: size,
+            height: size,
+            borderRadius: size / 2,
+            backgroundColor: '#6B4DE6',
+          },
+        ]}
+      >
+        <Ionicons name="sparkles" size={Math.max(16, Math.round(size * 0.42))} color="#fff" />
+      </View>
+    );
+  }
   if (conversation?.isTeam) {
     return (
       <View
@@ -432,47 +450,34 @@ function EmojiPicker({ visible, onPick }) {
   );
 }
 
-function AiDmPanel({ session, onClose }) {
-  const [status, setStatus] = useState('loading');
-  const [progress, setProgress] = useState('Loading company data…');
+function AiDmPanel({ session, onClose, onSaved }) {
+  const [status, setStatus] = useState('ready');
+  const [progress, setProgress] = useState('');
   const [seedMessages, setSeedMessages] = useState([]);
+  const [chatContext, setChatContext] = useState(null);
   const [turns, setTurns] = useState([]);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
   const listRef = useRef(null);
 
   useEffect(() => {
-    let cancelled = false;
+    if (!session?.token) {
+      setStatus('idle');
+      setSeedMessages([]);
+      setChatContext(null);
+      return;
+    }
     const end = new Date();
     const start = new Date();
     start.setDate(end.getDate() - 6);
-    setStatus('loading');
-    setProgress('Loading company data…');
-    ingestAiChatContext(session, {
-      apps: [],
-      startDate: start,
-      endDate: end,
-      onProgress: (label) => {
-        if (!cancelled) setProgress(label);
-      },
-    })
-      .then((result) => {
-        if (cancelled) return;
-        setSeedMessages(result.seedMessages || []);
-        setStatus('ready');
-        setProgress('');
-        const note = (result.errors || []).filter(Boolean).join(' ');
-        if (note) setError(note);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setStatus('error');
-        setError(err.message || 'Could not load company data.');
-      });
-    return () => {
-      cancelled = true;
-    };
+    const prepared = prepareAiChatSession({ startDate: start, endDate: end });
+    setSeedMessages(prepared.seedMessages);
+    setChatContext(prepared.context);
+    setStatus('ready');
+    setProgress('');
+    setError('');
   }, [session]);
 
   const send = async () => {
@@ -481,6 +486,7 @@ function AiDmPanel({ session, onClose }) {
     setDraft('');
     setBusy(true);
     setError('');
+    setProgress('Choosing data…');
     const nextTurns = [...turns, { role: 'user', content: text }];
     setTurns(nextTurns);
     try {
@@ -489,27 +495,62 @@ function AiDmPanel({ session, onClose }) {
         turns,
         userMessage: text,
         model: AI_MODEL,
+        session,
+        context: chatContext,
+        startDate: chatContext?.selection?.startDate,
+        endDate: chatContext?.selection?.endDate,
+        onLookup: (label) => setProgress(label || ''),
       });
+      if (result.sources?.length) {
+        setChatContext((current) =>
+          current ? { ...current, lastSources: result.sources } : current,
+        );
+      }
       setTurns(result.turns || [...nextTurns, { role: 'assistant', content: result.text || '' }]);
     } catch (err) {
       setError(err.message || 'Could not get an answer.');
     } finally {
       setBusy(false);
+      setProgress('');
       requestAnimationFrame(() => listRef.current?.scrollToEnd?.({ animated: true }));
+    }
+  };
+
+  const exit = async () => {
+    if (saving) return;
+    const snapshot = turns.filter(
+      (turn) => (turn.role === 'user' || turn.role === 'assistant') && String(turn.content || '').trim(),
+    );
+    if (!snapshot.some((turn) => turn.role === 'user')) {
+      onClose();
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      const title = await titleAiChat(snapshot, AI_MODEL);
+      await saveAiDmChat(title, snapshot);
+      if (onSaved) await onSaved();
+      onClose();
+    } catch (err) {
+      setSaving(false);
+      setError(err.message || 'Could not save this chat.');
     }
   };
 
   return (
     <View style={styles.aiPanel}>
       <View style={styles.aiHeader}>
-        <Pressable onPress={onClose} hitSlop={8} style={styles.aiBack} accessibilityLabel="Back to messages">
+        <Pressable
+          onPress={() => void exit()}
+          hitSlop={8}
+          style={styles.aiBack}
+          accessibilityLabel="Back to messages"
+        >
           <Ionicons name="chevron-back" size={22} color={BLUE} />
         </Pressable>
         <View style={styles.aiHeaderCopy}>
-          <Text style={styles.aiTitle}>AI</Text>
-          <Text style={styles.aiSubtitle} numberOfLines={1}>
-            {status === 'loading' ? progress || 'Loading…' : 'Company data'}
-          </Text>
+          <Text style={styles.aiTitle}>{saving ? 'Saving chat…' : 'MyCanadaGold AI'}</Text>
         </View>
       </View>
       <ScrollView
@@ -529,7 +570,7 @@ function AiDmPanel({ session, onClose }) {
             <Ionicons name="sparkles" size={28} color={BLUE} />
             <Text style={styles.aiEmptyTitle}>Ask about the company</Text>
             <Text style={styles.emptyHint}>
-              Sales, purchases, and inventory from the last 7 days.
+              Ask about tills, sales, stock, or staff. Only that data is loaded.
             </Text>
           </View>
         ) : (
@@ -548,18 +589,26 @@ function AiDmPanel({ session, onClose }) {
       </ScrollView>
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
       <View style={[styles.composer, styles.composerMobile]}>
-        <View style={[styles.composerField, styles.composerFieldMobile]}>
+        <View style={[styles.composerField, styles.aiComposerField]}>
           <TextInput
-            style={[styles.composerInput, styles.composerInputMobile]}
+            style={[styles.composerInput, styles.aiComposerInput]}
             value={draft}
             onChangeText={setDraft}
-            placeholder={status === 'ready' ? 'Ask about the data' : 'Loading data…'}
+            placeholder={status === 'ready' ? 'Message MyCanadaGold AI' : 'Loading…'}
             placeholderTextColor="#8e8e93"
             editable={status === 'ready' && !busy}
-            multiline
+            multiline={false}
+            numberOfLines={1}
+            returnKeyType="send"
             maxLength={4000}
-            blurOnSubmit={false}
-            onSubmitEditing={Platform.OS === 'web' ? undefined : send}
+            blurOnSubmit
+            onSubmitEditing={send}
+            onKeyPress={(event) => {
+              const key = event?.nativeEvent?.key || event?.key;
+              if (key !== 'Enter') return;
+              event.preventDefault?.();
+              if (draft.trim() && status === 'ready' && !busy) send();
+            }}
           />
         </View>
         <Pressable
@@ -1138,8 +1187,9 @@ export default function MessagesScreen({
     return filteredInbox.map((row) => {
       const selected = row.conversationId === activeId;
       const unread = row.unreadCount > 0;
-      const senderName =
-        row.lastMessageSenderId === myId
+      const senderName = row.lastMessageIsAssistant
+        ? 'MyCanadaGold AI'
+        : row.lastMessageSenderId === myId
           ? 'You'
           : firstNameOf((row.members || []).find((person) => person.id === row.lastMessageSenderId));
       const preview = row.lastMessagePreview
@@ -1201,7 +1251,11 @@ export default function MessagesScreen({
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       {isMobile && aiOpen ? (
-        <AiDmPanel session={session} onClose={() => setAiOpen(false)} />
+        <AiDmPanel
+          session={session}
+          onClose={() => setAiOpen(false)}
+          onSaved={refreshInbox}
+        />
       ) : showInbox ? (
         <View style={[styles.inbox, isMobile && styles.inboxMobile]}>
           <View style={[styles.inboxHeader, isMobile && styles.inboxHeaderMobile]}>
@@ -1544,7 +1598,7 @@ export default function MessagesScreen({
                       ) : null}
                     </Pressable>
                   ))}
-                  {!activeThread.isTeam ? (
+                  {!activeThread.isTeam && !activeThread.isAi ? (
                     <>
                       <Pressable
                         onPress={() => setAddingMembers((current) => !current)}
@@ -1590,7 +1644,11 @@ export default function MessagesScreen({
                     style={styles.leaveButton}
                   >
                     <Text style={styles.leaveButtonText}>
-                      {activeThread.isTeam ? 'Leave team chat' : 'Leave group'}
+                      {activeThread.isTeam
+                        ? 'Leave team chat'
+                        : activeThread.isAi
+                          ? 'Delete chat'
+                          : 'Leave group'}
                     </Text>
                   </Pressable>
                 </ScrollView>
@@ -1626,11 +1684,12 @@ export default function MessagesScreen({
                       messages.map((message, index) => {
                         const prev = messages[index - 1];
                         const next = messages[index + 1];
-                        const mine = message.senderId === myId;
-                        const groupedWithPrev =
-                          prev?.senderId === message.senderId && !shouldShowStamp(prev, message);
-                        const groupedWithNext =
-                          next?.senderId === message.senderId && !shouldShowStamp(message, next);
+                        const mine = !message.isAssistant && message.senderId === myId;
+                        const sameAuthor = (left, right) =>
+                          Boolean(left?.isAssistant) === Boolean(right?.isAssistant) &&
+                          left?.senderId === right?.senderId;
+                        const groupedWithPrev = sameAuthor(prev, message) && !shouldShowStamp(prev, message);
+                        const groupedWithNext = sameAuthor(message, next) && !shouldShowStamp(message, next);
                         const sender = peopleById.get(message.senderId);
                         return (
                           <View key={message.id} style={groupedWithPrev ? styles.msgTight : styles.msgGap}>
@@ -1643,7 +1702,11 @@ export default function MessagesScreen({
                               groupedWithPrev={groupedWithPrev}
                               groupedWithNext={groupedWithNext}
                               senderLabel={
-                                activeThread.isGroup && !mine ? firstNameOf(sender) : null
+                                message.isAssistant
+                                  ? 'MyCanadaGold AI'
+                                  : activeThread.isGroup && !mine
+                                    ? firstNameOf(sender)
+                                    : null
                               }
                               menuOpen={menuMessageId === message.id}
                               onOpenMenu={(item) => setMenuMessageId(item.id)}
@@ -2596,6 +2659,20 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 20,
     maxHeight: 56,
+  },
+  aiComposerField: {
+    height: 36,
+    minHeight: 36,
+    maxHeight: 36,
+    paddingVertical: 0,
+    justifyContent: 'center',
+  },
+  aiComposerInput: {
+    height: 22,
+    maxHeight: 22,
+    fontSize: 16,
+    lineHeight: 20,
+    paddingVertical: 0,
   },
   startConvoButton: {
     height: 36,

@@ -15,9 +15,11 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
 import {
   AI_CHAT_APPS,
-  ingestAiChatContext,
+  prepareAiChatSession,
   sendAiChatMessage,
+  titleAiChat,
 } from '../lib/aiChat';
+import { saveAiDmChat } from '../lib/messages';
 import { peekInventoryMatrix, fetchInventoryMatrix } from '../lib/inventory';
 import { useAppAccess } from '../lib/permissions';
 import {
@@ -45,6 +47,95 @@ const DEFAULT_MODEL =
   MODEL_OPTIONS[0].key;
 const ALL_LOCATIONS = '';
 const DEFAULT_APPS = [];
+
+function inlineRuns(text) {
+  const value = String(text || '').replace(/^\s{0,3}#{1,3}\s+/, '');
+  const runs = [];
+  const re = /\*\*([^*]+)\*\*/g;
+  let last = 0;
+  let match = re.exec(value);
+  while (match) {
+    if (match.index > last) runs.push({ text: value.slice(last, match.index), strong: false });
+    runs.push({ text: match[1], strong: true });
+    last = match.index + match[0].length;
+    match = re.exec(value);
+  }
+  if (last < value.length) runs.push({ text: value.slice(last), strong: false });
+  return runs.length ? runs : [{ text: value, strong: false }];
+}
+
+function AssistantBody({ text }) {
+  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+  const blocks = [];
+  let list = null;
+
+  const flushList = () => {
+    if (!list) return;
+    blocks.push(list);
+    list = null;
+  };
+
+  for (const line of lines) {
+    const bullet = line.match(/^\s*(?:[-*•]|\d+[.)])\s+(.*)$/);
+    if (bullet) {
+      if (!list) list = { type: 'list', items: [] };
+      list.items.push(bullet[1]);
+      continue;
+    }
+    flushList();
+    if (!line.trim()) {
+      if (blocks.length && blocks[blocks.length - 1].type !== 'gap') {
+        blocks.push({ type: 'gap' });
+      }
+      continue;
+    }
+    blocks.push({ type: 'p', text: line.trim() });
+  }
+  flushList();
+
+  return (
+    <View style={styles.answer}>
+      {blocks.map((block, index) => {
+        if (block.type === 'gap') return <View key={`gap-${index}`} style={styles.answerGap} />;
+        if (block.type === 'list') {
+          return (
+            <View key={`list-${index}`} style={styles.answerList}>
+              {block.items.map((item, itemIndex) => (
+                <View key={`item-${itemIndex}`} style={styles.answerRow}>
+                  <Text style={styles.answerBullet}>•</Text>
+                  <Text style={styles.answerItem}>
+                    {inlineRuns(item).map((run, runIndex) =>
+                      run.strong ? (
+                        <Text key={runIndex} style={styles.bubbleStrong}>
+                          {run.text}
+                        </Text>
+                      ) : (
+                        run.text
+                      ),
+                    )}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          );
+        }
+        return (
+          <Text key={`p-${index}`} style={styles.bubbleText}>
+            {inlineRuns(block.text).map((run, runIndex) =>
+              run.strong ? (
+                <Text key={runIndex} style={styles.bubbleStrong}>
+                  {run.text}
+                </Text>
+              ) : (
+                run.text
+              ),
+            )}
+          </Text>
+        );
+      })}
+    </View>
+  );
+}
 
 function modelOptionMetaLine(option) {
   const parts = [];
@@ -201,8 +292,10 @@ export default function AiScreen({
   const { canFilter } = useAppAccess();
   const allowFilters = canFilter('ai');
   const chatScrollRef = useRef(null);
-  const ingestIdRef = useRef(0);
   const chatAbortRef = useRef(null);
+  const turnsRef = useRef([]);
+  const modelRef = useRef(model);
+  const archivedKeyRef = useRef('');
 
   const [startDate, setStartDate] = useState(() => defaultDateRange(7).startDate);
   const [endDate, setEndDate] = useState(() => defaultDateRange(7).endDate);
@@ -218,6 +311,8 @@ export default function AiScreen({
   const [ingestSummaries, setIngestSummaries] = useState([]);
   const [ingestError, setIngestError] = useState('');
   const [seedMessages, setSeedMessages] = useState([]);
+  const [chatContext, setChatContext] = useState(null);
+  const [lookupLabel, setLookupLabel] = useState('');
 
   const [turns, setTurns] = useState([]);
   const [draft, setDraft] = useState('');
@@ -225,6 +320,31 @@ export default function AiScreen({
   const [chatError, setChatError] = useState('');
 
   const modelMeta = getModelMeta(model, MODEL_OPTIONS) || MODEL_OPTIONS[0];
+  turnsRef.current = turns;
+  modelRef.current = model;
+
+  const archiveChat = useCallback(async (snapshot) => {
+    const usable = (snapshot || []).filter(
+      (turn) =>
+        (turn?.role === 'user' || turn?.role === 'assistant') && String(turn.content || '').trim(),
+    );
+    if (!usable.some((turn) => turn.role === 'user')) return;
+    const key = usable.map((turn) => `${turn.role}:${turn.content}`).join('\n');
+    if (archivedKeyRef.current === key) return;
+    archivedKeyRef.current = key;
+    try {
+      const title = await titleAiChat(usable, modelRef.current);
+      await saveAiDmChat(title, usable);
+    } catch {
+      if (archivedKeyRef.current === key) archivedKeyRef.current = '';
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      void archiveChat(turnsRef.current);
+    };
+  }, [archiveChat]);
   const selectedAppMeta = AI_CHAT_APPS.filter((app) => selectedApps.includes(app.key));
   const companyMode = selectedApps.length === 0;
   const appsSummary = companyMode
@@ -290,56 +410,28 @@ export default function AiScreen({
     if (!session?.token) {
       setIngestStatus('idle');
       setSeedMessages([]);
+      setChatContext(null);
       setIngestSummaries([]);
       setTurns([]);
-      return undefined;
+      return;
     }
 
-    const id = ++ingestIdRef.current;
-    const timer = setTimeout(() => {
-      setIngestStatus('loading');
-      setIngestProgress(
-        companyMode ? 'Loading company overview…' : 'Loading selected data…',
-      );
-      setIngestError('');
-      setSeedMessages([]);
-      setTurns([]);
-      setChatError('');
-
-      ingestAiChatContext(session, {
-        apps: selectedApps,
-        startDate,
-        endDate,
-        locationName: locationName || undefined,
-        onProgress: (label) => {
-          if (ingestIdRef.current === id) setIngestProgress(label);
-        },
-      })
-        .then((result) => {
-          if (ingestIdRef.current !== id) return;
-          setSeedMessages(result.seedMessages);
-          setIngestSummaries(result.summaries || []);
-          setIngestStatus('ready');
-          setIngestProgress('');
-          setIngestError((result.errors || []).filter(Boolean).join(' '));
-        })
-        .catch((error) => {
-          if (ingestIdRef.current !== id) return;
-          setSeedMessages([]);
-          setIngestSummaries([]);
-          setIngestStatus('error');
-          setIngestProgress('');
-          setIngestError(error?.message || 'Could not ingest the selected data.');
-        });
-    }, 280);
-
-    return () => {
-      clearTimeout(timer);
-      if (ingestIdRef.current === id) {
-        ingestIdRef.current += 1;
-      }
-    };
-  }, [session, ingestKey, selectedApps, startDate, endDate, locationName]);
+    void archiveChat(turnsRef.current);
+    const prepared = prepareAiChatSession({
+      apps: selectedApps,
+      startDate,
+      endDate,
+      locationName: locationName || undefined,
+    });
+    setSeedMessages(prepared.seedMessages);
+    setChatContext(prepared.context);
+    setIngestSummaries(prepared.summaries);
+    setIngestStatus('ready');
+    setIngestProgress('');
+    setIngestError('');
+    setTurns([]);
+    setChatError('');
+  }, [session, ingestKey, selectedApps, startDate, endDate, locationName, archiveChat]);
 
   useEffect(() => {
     if (!chatScrollRef.current) return;
@@ -376,12 +468,26 @@ export default function AiScreen({
         userMessage: question,
         model,
         signal: controller.signal,
+        session,
+        context: chatContext,
+        startDate,
+        endDate,
+        locationName,
+        onLookup: (label) => {
+          if (!controller.signal.aborted) setLookupLabel(label || '');
+        },
         onDelta: (full) => {
+          setLookupLabel('');
           setTurns([...prior, { role: 'user', content: question }, { role: 'assistant', content: full }]);
         },
       });
       if (controller.signal.aborted) return;
       setTurns(result.turns);
+      if (result.sources?.length) {
+        setChatContext((current) =>
+          current ? { ...current, lastSources: result.sources } : current,
+        );
+      }
     } catch (error) {
       if (controller.signal.aborted || error?.name === 'AbortError') return;
       setChatError(error?.message || 'Chat failed.');
@@ -390,12 +496,14 @@ export default function AiScreen({
     } finally {
       if (chatAbortRef.current === controller) {
         setChatBusy(false);
+        setLookupLabel('');
       }
     }
-  }, [draft, chatBusy, ingestStatus, turns, seedMessages, model]);
+  }, [draft, chatBusy, ingestStatus, turns, seedMessages, model, session, chatContext, startDate, endDate, locationName]);
 
   const clearChat = () => {
     chatAbortRef.current?.abort();
+    void archiveChat(turns);
     setTurns([]);
     setChatError('');
     setChatBusy(false);
@@ -434,13 +542,13 @@ export default function AiScreen({
         <View style={[styles.chatPane, stacked && styles.chatPaneStacked]}>
           <View style={styles.chatHeader}>
             <View style={styles.chatHeaderCopy}>
-              <Text style={styles.heading}>Chat</Text>
+              <Text style={styles.heading}>MyCanadaGold AI</Text>
               <Text style={styles.subheading} numberOfLines={2}>
                 {ingestStatus === 'loading'
                   ? ingestProgress || 'Ingesting selected data…'
                   : ingestStatus === 'ready'
                     ? `Using ${modelMeta?.label || 'model'} · ${locationLabel} · ${formatPickerDate(startDate)} – ${formatPickerDate(endDate)}`
-                    : 'Loading company context…'}
+                    : 'Ask a question to load data'}
               </Text>
             </View>
             {turns.length > 0 ? (
@@ -484,16 +592,16 @@ export default function AiScreen({
                 <Text style={styles.emptyTitle}>
                   {ingestStatus === 'ready'
                     ? companyMode
-                      ? 'Company overview loaded'
+                      ? 'Ready'
                       : 'Context loaded'
                     : 'Loading context…'}
                 </Text>
                 <Text style={styles.emptyBody}>
                   {ingestStatus === 'ready'
                     ? companyMode
-                      ? 'Ask how the company or a store is doing. Select apps below for inventory SKUs, transactions, cash, and more.'
+                      ? 'Ask about tills, sales, stock, staff, or prices. Only that data is loaded, then the answer comes back as a short list.'
                       : `Try “Are there any gold maples in ${locationName || 'Montreal'}?” then keep talking.`
-                    : 'The chatbot answers from the date, location, and apps you select — or a company overview when none are selected.'}
+                    : 'Ready when you ask.'}
                 </Text>
               </View>
             ) : (
@@ -510,11 +618,19 @@ export default function AiScreen({
                     ]}
                   >
                     <Text style={[styles.bubbleRole, isUser && styles.bubbleRoleUser]}>
-                      {isUser ? 'You' : modelMeta?.label || 'AI'}
+                      {isUser ? 'You' : 'MyCanadaGold AI'}
                     </Text>
-                    <Text style={[styles.bubbleText, isUser && styles.bubbleTextUser]}>
-                      {turn.content || (isStreamingTail ? '…' : '')}
-                    </Text>
+                    {isUser ? (
+                      <Text style={[styles.bubbleText, styles.bubbleTextUser]}>
+                        {turn.content}
+                      </Text>
+                    ) : turn.content ? (
+                      <AssistantBody text={turn.content} />
+                    ) : (
+                      <Text style={styles.bubbleText}>
+                        {isStreamingTail ? lookupLabel || '…' : ''}
+                      </Text>
+                    )}
                   </View>
                 );
               })
@@ -531,15 +647,16 @@ export default function AiScreen({
               placeholder={placeholder}
               placeholderTextColor="#b0b0b0"
               editable={!chatBusy && ingestStatus === 'ready'}
-              multiline
-              blurOnSubmit={false}
+              multiline={false}
+              numberOfLines={1}
+              returnKeyType="send"
+              blurOnSubmit
               onSubmitEditing={() => {
                 if (canSend) void send();
               }}
               onKeyPress={(event) => {
                 const key = event?.nativeEvent?.key || event?.key;
-                const shift = event?.nativeEvent?.shiftKey || event?.shiftKey;
-                if (key === 'Enter' && !shift) {
+                if (key === 'Enter') {
                   event.preventDefault?.();
                   if (canSend) void send();
                 }
@@ -690,8 +807,8 @@ export default function AiScreen({
             </View>
             <Text style={styles.helpText}>
               {companyMode
-                ? 'No apps selected. Asking general questions uses a company-wide stock and sales overview.'
-                : `Ingesting ${appsSummary}.`}
+                ? 'Nothing loads until you ask. Each question pulls only the datasets it needs.'
+                : `${appsSummary} selected. A question still loads only the data it needs.`}
             </Text>
           </View>
 
@@ -949,6 +1066,39 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     color: '#1a1a1a',
   },
+  answerItem: {
+    fontFamily,
+    fontSize: 14,
+    lineHeight: 21,
+    color: '#1a1a1a',
+    flex: 1,
+  },
+  bubbleStrong: {
+    fontFamily,
+    fontWeight: '700',
+    color: '#1a1a1a',
+  },
+  answer: {
+    gap: 2,
+  },
+  answerGap: {
+    height: 8,
+  },
+  answerList: {
+    gap: 4,
+  },
+  answerRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  answerBullet: {
+    fontFamily,
+    fontSize: 14,
+    lineHeight: 21,
+    color: ACCENT,
+    width: 12,
+  },
   bubbleTextUser: {
     color: '#1a1a1a',
   },
@@ -959,7 +1109,7 @@ const styles = StyleSheet.create({
   },
   composer: {
     flexDirection: 'row',
-    alignItems: 'flex-end',
+    alignItems: 'center',
     gap: 8,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: '#e5e5e5',
@@ -967,13 +1117,12 @@ const styles = StyleSheet.create({
   },
   composerInput: {
     flex: 1,
-    minHeight: 44,
-    maxHeight: 120,
+    height: 44,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: '#e5e5e5',
     borderRadius: 12,
     paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingVertical: 0,
     fontFamily,
     fontSize: 15,
     color: '#1a1a1a',
