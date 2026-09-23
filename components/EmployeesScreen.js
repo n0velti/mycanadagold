@@ -41,12 +41,16 @@ import {
   fetchHoursSummary,
   fetchRipplingCsvFiles,
   fetchRipplingReport,
+  fetchShiftRoleIndex,
   fetchTimeEntries,
   formatClock,
   formatMinutes,
   formatRelativeTime,
   formatShiftDate,
+  formatShiftSpan,
   hoursForPerson,
+  shiftsForPerson,
+  torontoToday,
   loadHoursFeedStatus,
   readHoursOAuthCallback,
   summarizeTimeEntries,
@@ -127,29 +131,32 @@ function useHoursSummary(enabled) {
   const [status, setStatus] = useState(null);
   const [report, setReport] = useState(null);
   const [files, setFiles] = useState([]);
+  const [shifts, setShifts] = useState(null);
   const [loading, setLoading] = useState(false);
   const requestId = useRef(0);
 
   const refresh = useCallback(
-    async ({ force = false, sync = true } = {}) => {
+    async ({ force = false, sync = true, silent = false } = {}) => {
       const id = ++requestId.current;
-      setLoading(true);
+      if (!silent) setLoading(true);
       try {
         let nextStatus = null;
         if (sync) {
           nextStatus = await syncHoursFeed({ force }).catch(() => null);
         }
         if (!nextStatus) nextStatus = await loadHoursFeedStatus().catch(() => null);
-        const [nextSummary, nextReport, nextFiles] = await Promise.all([
+        const [nextSummary, nextReport, nextFiles, nextShifts] = await Promise.all([
           fetchHoursSummary().catch(() => null),
           fetchRipplingReport().catch(() => null),
           fetchRipplingCsvFiles().catch(() => []),
+          fetchShiftRoleIndex().catch(() => null),
         ]);
         if (id !== requestId.current) return nextStatus;
         setStatus(nextStatus);
         setSummary(nextSummary);
         setReport(nextReport);
         setFiles(nextFiles);
+        setShifts(nextShifts);
         await reloadClockedIn().catch(() => {});
         return nextStatus;
       } finally {
@@ -164,15 +171,15 @@ function useHoursSummary(enabled) {
     refresh();
   }, [enabled, refresh]);
 
-  // The report lands hourly; re-check while the screen is open so the
-  // clocked-in dots follow it without a manual refresh.
-  useLiveRefresh(() => refresh(), HOURS_LIVE_MS, enabled);
+  // The shift report by role arrives every 15 minutes. Re-read while this
+  // screen is open so each profile calendar follows that email.
+  useLiveRefresh(() => refresh(), SHIFT_REPORT_LIVE_MS, enabled);
 
-  return { summary, status, report, files, loading, refresh, setStatus };
+  return { summary, status, report, files, shifts, loading, refresh, setStatus };
 }
 
 const HISTORY_DAY_LIMIT = 14;
-const HOURS_LIVE_MS = 60_000;
+const SHIFT_REPORT_LIVE_MS = 15 * 60_000;
 const REPORT_ROW_LIMIT = 80;
 
 function HoursSection({ hours, status }) {
@@ -228,7 +235,7 @@ function HoursSection({ hours, status }) {
         <SectionLabel trailing={updated ? <Text style={styles.hoursUpdated}>{`Updated ${updated}`}</Text> : null}>
           Hours
         </SectionLabel>
-        {hours?.clockedIn || hours?.openSince ? (
+        {hours?.clockedIn ? (
           <View style={styles.hoursNow}>
             <StatusPill
               label={hours.openSince ? `Clocked in · since ${formatClock(hours.openSince)}` : 'Clocked in'}
@@ -280,11 +287,253 @@ function HoursSection({ hours, status }) {
   );
 }
 
+const ROLE_COLORS = [
+  { bg: 'rgba(0,122,255,0.16)', fg: '#007AFF' },
+  { bg: 'rgba(36,138,61,0.16)', fg: '#248A3D' },
+  { bg: 'rgba(255,149,0,0.22)', fg: '#C93400' },
+  { bg: 'rgba(175,82,222,0.18)', fg: '#8944AB' },
+  { bg: 'rgba(10,132,193,0.16)', fg: '#0A84C1' },
+  { bg: 'rgba(215,0,21,0.12)', fg: '#D70015' },
+];
+
+const CAL_WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+function roleColor(role) {
+  const text = String(role || 'Shift');
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) hash = (hash * 33 + text.charCodeAt(i)) >>> 0;
+  return ROLE_COLORS[hash % ROLE_COLORS.length];
+}
+
+function monthStartKey(iso) {
+  return `${String(iso || '').slice(0, 7)}-01`;
+}
+
+function addMonthsKey(iso, delta) {
+  const [year, month] = String(iso || '').split('-').map(Number);
+  const date = new Date(Date.UTC(year, (month || 1) - 1 + delta, 1));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-01`;
+}
+
+function addDaysKey(iso, days) {
+  const [year, month, day] = String(iso || '').split('-').map(Number);
+  const date = new Date(Date.UTC(year, (month || 1) - 1, day || 1));
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function mondayKey(iso) {
+  const [year, month, day] = String(iso || '').split('-').map(Number);
+  const date = new Date(Date.UTC(year, (month || 1) - 1, day || 1));
+  const weekday = date.getUTCDay();
+  return addDaysKey(iso, weekday === 0 ? -6 : 1 - weekday);
+}
+
+function monthTitle(iso) {
+  const [year, month] = String(iso || '').split('-').map(Number);
+  const date = new Date(Date.UTC(year, (month || 1) - 1, 1, 12));
+  return date.toLocaleDateString('en-CA', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+}
+
+function monthCells(iso) {
+  const [year, month] = String(iso || '').split('-').map(Number);
+  const first = new Date(Date.UTC(year, (month || 1) - 1, 1));
+  const weekday = first.getUTCDay();
+  const offset = weekday === 0 ? 6 : weekday - 1;
+  const days = new Date(Date.UTC(year, month || 1, 0)).getUTCDate();
+  const cells = [];
+  for (let i = 0; i < offset; i += 1) cells.push(null);
+  for (let day = 1; day <= days; day += 1) {
+    cells.push(`${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
+  }
+  while (cells.length % 7 !== 0) cells.push(null);
+  return cells;
+}
+
+function shiftsByDate(shifts) {
+  const map = new Map();
+  for (const shift of shifts || []) {
+    if (!shift?.date) continue;
+    const bucket = map.get(shift.date) || [];
+    bucket.push(shift);
+    map.set(shift.date, bucket);
+  }
+  return map;
+}
+
+function todayShiftLabel(shifts) {
+  const today = torontoToday();
+  const todays = (shifts || []).filter((shift) => shift.date === today);
+  if (!todays.length) return '';
+  const first = todays[0];
+  return ['Today', formatShiftSpan(first), first.role].filter(Boolean).join(' · ');
+}
+
+function ShiftScheduleSection({ personKey, shifts, status }) {
+  const list = useMemo(() => (Array.isArray(shifts) ? shifts : []), [shifts]);
+  const today = torontoToday();
+  const [month, setMonth] = useState(() => monthStartKey(today));
+  const [selected, setSelected] = useState(today);
+  const byDate = useMemo(() => shiftsByDate(list), [list]);
+
+  useEffect(() => {
+    setMonth(monthStartKey(today));
+    setSelected(today);
+  }, [personKey, today]);
+
+  const reported = status?.shiftReportedAt;
+  const updated = reported ? formatRelativeTime(reported) : '';
+  if (!list.length && !reported && !status?.connected && !status?.lastSyncedAt) return null;
+
+  const updatedLabel = updated ? <Text style={styles.hoursUpdated}>{`Updated ${updated}`}</Text> : null;
+
+  if (!list.length) {
+    return (
+      <View style={styles.cardBlock}>
+        <SectionLabel trailing={updatedLabel}>Schedule</SectionLabel>
+        <Group>
+          <GroupRow
+            label="Shift report by role"
+            value={reported ? 'No shifts for this person in the latest email' : 'Waiting for the next 15-minute email'}
+            last
+          />
+        </Group>
+      </View>
+    );
+  }
+
+  const cells = monthCells(month);
+  const weekStart = mondayKey(today);
+  const weekEnd = addDaysKey(weekStart, 6);
+  const week = list.filter((shift) => shift.date >= weekStart && shift.date <= weekEnd);
+  const weekMinutes = week.reduce((total, shift) => total + (Number(shift.minutes) || 0), 0);
+  const weekRoles = [...new Set(week.map((shift) => shift.role).filter(Boolean))];
+  const weekLine = [
+    `${week.length} shift${week.length === 1 ? '' : 's'}`,
+    weekMinutes ? formatMinutes(weekMinutes) : '',
+    weekRoles.join(', '),
+  ].filter(Boolean).join(' · ');
+  const monthRoles = [...new Set(
+    list.filter((shift) => shift.date.slice(0, 7) === month.slice(0, 7)).map((shift) => shift.role).filter(Boolean),
+  )];
+  const selectedShifts = byDate.get(selected) || [];
+  const next = list.find((shift) => shift.date >= today);
+
+  return (
+    <View style={styles.cardBlock}>
+      <SectionLabel trailing={updatedLabel}>Schedule</SectionLabel>
+      <View style={styles.calCard}>
+        {next ? (
+          <Text style={styles.calNext}>
+            {`${next.date === today ? 'Today' : formatShiftDate(next.date)}${formatShiftSpan(next) ? ` · ${formatShiftSpan(next)}` : ''}${next.role ? ` · ${next.role}` : ''}${next.location ? ` · ${next.location}` : ''}`}
+          </Text>
+        ) : (
+          <Text style={styles.calNext}>No upcoming shift in this report</Text>
+        )}
+        <Text style={styles.calWeekLine}>{`This week · ${weekLine}`}</Text>
+        <View style={styles.calNavRow}>
+          <Pressable
+            onPress={() => setMonth((current) => addMonthsKey(current, -1))}
+            hitSlop={8}
+            accessibilityLabel="Previous month"
+            style={styles.calNav}
+          >
+            <Ionicons name="chevron-back" size={18} color={T.text} />
+          </Pressable>
+          <Text style={styles.calTitle}>{monthTitle(month)}</Text>
+          <Pressable
+            onPress={() => setMonth((current) => addMonthsKey(current, 1))}
+            hitSlop={8}
+            accessibilityLabel="Next month"
+            style={styles.calNav}
+          >
+            <Ionicons name="chevron-forward" size={18} color={T.text} />
+          </Pressable>
+        </View>
+        <View style={styles.calWeekdays}>
+          {CAL_WEEKDAYS.map((day) => (
+            <Text key={day} style={styles.calWeekday}>{day}</Text>
+          ))}
+        </View>
+        <View style={styles.calGrid}>
+          {cells.map((date, index) => {
+            if (!date) return <View key={`empty-${month}-${index}`} style={styles.calCell} />;
+            const dayShifts = byDate.get(date) || [];
+            const isToday = date === today;
+            const isSelected = date === selected;
+            return (
+              <Pressable
+                key={date}
+                onPress={() => setSelected(date)}
+                style={[styles.calCell, isSelected && styles.calCellSelected]}
+                accessibilityRole="button"
+                accessibilityState={{ selected: isSelected }}
+                accessibilityLabel={`${formatShiftDate(date)}${dayShifts.length ? `, ${dayShifts.length} ${dayShifts.length === 1 ? 'shift' : 'shifts'}` : ', no shift'}`}
+              >
+                <Text style={[styles.calDayNum, isToday && styles.calDayNumToday]}>{Number(date.slice(8))}</Text>
+                {dayShifts.slice(0, 2).map((shift, shiftIndex) => {
+                  const color = roleColor(shift.role);
+                  const span = formatShiftSpan(shift);
+                  return (
+                    <View key={shift.key || `${date}-${shiftIndex}`} style={[styles.shiftChip, { backgroundColor: color.bg }]}>
+                      <Text style={[styles.shiftChipText, { color: color.fg }]} numberOfLines={1}>
+                        {span || shift.role || 'Shift'}
+                      </Text>
+                    </View>
+                  );
+                })}
+                {dayShifts.length > 2 ? <Text style={styles.calMore}>{`+${dayShifts.length - 2}`}</Text> : null}
+              </Pressable>
+            );
+          })}
+        </View>
+        {monthRoles.length ? (
+          <View style={styles.roleLegend}>
+            {monthRoles.map((role) => (
+              <View key={role} style={styles.roleLegendItem}>
+                <View style={[styles.roleDot, { backgroundColor: roleColor(role).fg }]} />
+                <Text style={styles.roleLegendText}>{role}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+      </View>
+      <View style={styles.hoursDay}>
+        <Text style={styles.hoursDayTitle}>{formatShiftDate(selected)}</Text>
+        {selectedShifts.length ? (
+          <Group>
+            {selectedShifts.map((shift, index) => (
+              <GroupRow
+                key={shift.key || `${selected}-${index}`}
+                label={[shift.role || 'Shift', shift.location].filter(Boolean).join(' · ')}
+                value={formatShiftSpan(shift) || 'Scheduled'}
+                last={index === selectedShifts.length - 1}
+              />
+            ))}
+          </Group>
+        ) : (
+          <Group>
+            <GroupRow label="Shift" value="No shift" last />
+          </Group>
+        )}
+      </View>
+    </View>
+  );
+}
+
 function hoursForStaff(summary, person) {
   if (!summary || !person) return null;
   return hoursForPerson(summary, {
     ripplingId: person.ripplingId,
     names: [person.fullName, [person.firstName, person.lastName].filter(Boolean).join(' ')],
+  });
+}
+
+function shiftsForStaff(index, person) {
+  if (!index || !person) return [];
+  return shiftsForPerson(index, {
+    ripplingId: person.ripplingId,
+    names: [person.fullName, person.name, [person.firstName, person.lastName].filter(Boolean).join(' ')],
   });
 }
 
@@ -387,6 +636,9 @@ function HoursFeedCard({ status, onStatusChange, onRefresh, loading }) {
         status.clockReportedAt
           ? `${status.clockedInCount} clocked in as of ${formatRelativeTime(status.clockReportedAt)}`
           : '',
+        status.shiftReportedAt
+          ? `${status.shiftCount} shifts by role as of ${formatRelativeTime(status.shiftReportedAt)}`
+          : '',
       ]
         .filter(Boolean)
         .join('\n')
@@ -479,14 +731,15 @@ function permissionLabel(person) {
   return categoryLabel(person) || '—';
 }
 
-function StaffEmployeeRow({ person, selected, onPress, last, hours }) {
+function StaffEmployeeRow({ person, selected, onPress, last, hours, shifts }) {
   const name = staffDisplayName(person);
   const permission = permissionLabel(person);
   const location = person.locationName || '';
   const type = employeeTypeLabel(person);
   const inactive = person.isActive === false || person.profileActive === false;
   const weekHours = hours?.weekMinutes ? `${formatMinutes(hours.weekMinutes)} this wk` : '';
-  const subtitle = [location, type !== '—' ? type : '', permission !== '—' ? permission : '', weekHours]
+  const todayShift = todayShiftLabel(shifts);
+  const subtitle = [location, type !== '—' ? type : '', permission !== '—' ? permission : '', todayShift, weekHours]
     .filter(Boolean)
     .join(' · ');
 
@@ -511,7 +764,7 @@ function StaffEmployeeRow({ person, selected, onPress, last, hours }) {
   );
 }
 
-function StaffEmployeeDetail({ person, onClose, compact, onOpenPhoto, hours, hoursStatus }) {
+function StaffEmployeeDetail({ person, onClose, compact, onOpenPhoto, hours, hoursStatus, shifts }) {
   if (!person) {
     return (
       <EmptyState icon="people-outline" title="Employee" body="Select someone to see their profile." />
@@ -562,6 +815,7 @@ function StaffEmployeeDetail({ person, onClose, compact, onOpenPhoto, hours, hou
           { label: 'Phone', value: person.phone },
         ]}
       />
+      <ShiftScheduleSection personKey={person.id} shifts={shifts} status={hoursStatus} />
       <HoursSection hours={hours} status={hoursStatus} />
     </ScrollView>
   );
@@ -757,6 +1011,7 @@ function AppEmployeesPanel({ session, onProfileUpdated, storeFilter, hours }) {
                           key={person.id}
                           person={person}
                           hours={hoursForStaff(hoursSummary, person)}
+                          shifts={shiftsForStaff(hours?.shifts, person)}
                           last={index === rows.length - 1}
                           selected={!isMobile && selectedId === person.id}
                           onPress={() => setSelectedId(person.id)}
@@ -774,6 +1029,7 @@ function AppEmployeesPanel({ session, onProfileUpdated, storeFilter, hours }) {
               <StaffEmployeeDetail
                 person={selected}
                 hours={hoursForStaff(hoursSummary, selected)}
+                shifts={shiftsForStaff(hours?.shifts, selected)}
                 hoursStatus={hoursStatus}
                 onOpenPhoto={() => selected && setPhotoPerson(selected)}
               />
@@ -795,6 +1051,7 @@ function AppEmployeesPanel({ session, onProfileUpdated, storeFilter, hours }) {
             <StaffEmployeeDetail
               person={selected}
               hours={hoursForStaff(hoursSummary, selected)}
+              shifts={shiftsForStaff(hours?.shifts, selected)}
               hoursStatus={hoursStatus}
               compact
               onClose={() => setSelectedId(null)}
@@ -900,7 +1157,7 @@ function ConnectModal({ visible, onClose, onSaved, canManage }) {
   );
 }
 
-function EmployeeDetail({ employee, onClose, compact, hours, hoursStatus, flow }) {
+function EmployeeDetail({ employee, onClose, compact, hours, hoursStatus, shifts, flow }) {
   if (!employee) {
     return (
       <EmptyState
@@ -966,6 +1223,7 @@ function EmployeeDetail({ employee, onClose, compact, hours, hoursStatus, flow }
           { label: 'Hourly', value: employee.hourlyWage },
         ]}
       />
+      <ShiftScheduleSection personKey={employee.id} shifts={shifts} status={hoursStatus} />
       <HoursSection hours={hours} status={hoursStatus} />
     </Body>
   );
@@ -1251,6 +1509,8 @@ function RipplingPanel({ profile, hours }) {
   ) : null;
   const hoursFor = (employee) =>
     employee ? hoursForPerson(hoursSummary, { ripplingId: employee.id, names: [employee.name] }) : null;
+  const shiftsFor = (employee) =>
+    employee ? shiftsForPerson(hours?.shifts, { ripplingId: employee.id, names: [employee.name] }) : [];
   const [session, setSession] = useState(null);
   const [employees, setEmployees] = useState([]);
   const [company, setCompany] = useState(null);
@@ -1540,7 +1800,13 @@ function RipplingPanel({ profile, hours }) {
 
           {!isMobile ? (
             <View style={styles.detailPaneFlow}>
-              <EmployeeDetail flow employee={selected} hours={hoursFor(selected)} hoursStatus={hoursStatus} />
+              <EmployeeDetail
+                flow
+                employee={selected}
+                hours={hoursFor(selected)}
+                shifts={shiftsFor(selected)}
+                hoursStatus={hoursStatus}
+              />
             </View>
           ) : null}
         </View>
@@ -1561,6 +1827,7 @@ function RipplingPanel({ profile, hours }) {
           <EmployeeDetail
             employee={selected}
             hours={hoursFor(selected)}
+            shifts={shiftsFor(selected)}
             hoursStatus={hoursStatus}
             compact
             onClose={() => setSelectedId(null)}
@@ -1917,6 +2184,122 @@ const styles = StyleSheet.create({
     fontFamily: FONT,
     fontSize: 14,
     color: T.blue,
+  },
+  calCard: {
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: T.card,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
+    gap: 8,
+  },
+  calNext: {
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '600',
+    color: T.text,
+    letterSpacing: -0.2,
+  },
+  calWeekLine: {
+    fontFamily: FONT,
+    fontSize: 13,
+    color: T.secondary,
+  },
+  calNavRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 4,
+  },
+  calNav: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 16,
+    backgroundColor: T.fillSoft,
+  },
+  calTitle: {
+    fontFamily: FONT,
+    fontSize: 16,
+    fontWeight: '600',
+    color: T.text,
+    letterSpacing: -0.2,
+  },
+  calWeekdays: {
+    flexDirection: 'row',
+  },
+  calWeekday: {
+    width: '14.2857%',
+    textAlign: 'center',
+    fontFamily: FONT,
+    fontSize: 11,
+    fontWeight: '600',
+    color: T.secondary,
+  },
+  calGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
+  calCell: {
+    width: '14.2857%',
+    minHeight: 68,
+    paddingHorizontal: 2,
+    paddingVertical: 4,
+    borderRadius: 8,
+    gap: 2,
+  },
+  calCellSelected: {
+    backgroundColor: T.fillSoft,
+  },
+  calDayNum: {
+    fontFamily: FONT,
+    fontSize: 12,
+    fontWeight: '600',
+    color: T.text,
+    textAlign: 'center',
+  },
+  calDayNumToday: {
+    color: T.blue,
+  },
+  shiftChip: {
+    borderRadius: 4,
+    paddingHorizontal: 3,
+    paddingVertical: 1,
+  },
+  shiftChipText: {
+    fontFamily: FONT,
+    fontSize: 9,
+    fontWeight: '600',
+    letterSpacing: -0.2,
+  },
+  calMore: {
+    fontFamily: FONT,
+    fontSize: 9,
+    fontWeight: '600',
+    color: T.secondary,
+    textAlign: 'center',
+  },
+  roleLegend: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    paddingTop: 4,
+  },
+  roleLegendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  roleDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  roleLegendText: {
+    fontFamily: FONT,
+    fontSize: 12,
+    color: T.secondary,
   },
   primaryButton: {
     backgroundColor: T.blue,

@@ -36,7 +36,7 @@ import { useTxnCashBreakdowns } from '../lib/txnCashBreakdowns';
 import { callPartyLabel, callsForStore, inboundCallRatio, isPhoneRateLimitMessage } from '../lib/phoneCalls';
 import { formatPhoneNumber } from '../lib/ringcentral';
 import { storeKeyFromName } from '../lib/storeSettings';
-import { useIsMobile } from '../lib/mobileUi';
+import { MOBILE_FILTER_INSET, MOBILE_FILTER_SIZE, useIsMobile } from '../lib/mobileUi';
 import { activeCallKicker, formatCallClock, usePhoneCalls } from './PhoneCallProvider';
 import { isConnectedStatus } from '../lib/callState';
 import TxnCashBreakdownModal, { TxnCashIcon } from './TxnCashBreakdownModal';
@@ -210,16 +210,57 @@ function AppBox({ app, meta, onOpen, children, style, bodyStyle }) {
   );
 }
 
-function OverviewHero({ store, periodLabel }) {
+function DashStat({ value, label }) {
+  return (
+    <View style={styles.dashHeroStat}>
+      <Text style={styles.dashHeroStatValue}>{value}</Text>
+      <Text style={styles.dashHeroStatLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function OverviewHero({ store, periodLabel, plain = false, onAmountLayout }) {
   const total = Number(store?.totalAmount) || 0;
   const txCount = Number(store?.txCount) || 0;
   const saleCount = Number(store?.saleCount) || 0;
   const purchaseCount = Number(store?.purchaseCount) || 0;
   const empty = !total && !txCount;
   const txLabel = `${txCount} transaction${txCount === 1 ? '' : 's'}`;
+  const label = `${periodLabel}, ${empty ? 'No total' : formatAmount(total)}, ${txLabel}`;
+
+  if (plain) {
+    return (
+      <View style={styles.dashHero} accessibilityLabel={label}>
+        <Text style={styles.dashHeroLabel}>{periodLabel}</Text>
+        <View
+          style={styles.dashHeroAmountRow}
+          onLayout={(event) => {
+            const { y, height } = event.nativeEvent.layout;
+            onAmountLayout?.({ y, height });
+          }}
+        >
+          <Text
+            style={[styles.dashHeroAmount, empty && styles.heroAmountEmpty]}
+            numberOfLines={1}
+            adjustsFontSizeToFit
+          >
+            {empty ? '—' : formatAmount(total)}
+          </Text>
+          <View style={styles.dashHeroFilterSlot} />
+        </View>
+        <View style={styles.dashHeroStats}>
+          <DashStat value={txCount} label={txCount === 1 ? 'Transaction' : 'Transactions'} />
+          <View style={styles.dashHeroStatDivider} />
+          <DashStat value={saleCount} label="Sales" />
+          <View style={styles.dashHeroStatDivider} />
+          <DashStat value={purchaseCount} label="Purchases" />
+        </View>
+      </View>
+    );
+  }
 
   return (
-    <View style={styles.heroCard} accessibilityLabel={`${periodLabel}, ${empty ? 'No total' : formatAmount(total)}, ${txLabel}`}>
+    <View style={styles.heroCard} accessibilityLabel={label}>
       <Text style={styles.heroKicker}>{periodLabel}</Text>
       <Text style={[styles.heroAmount, empty && styles.heroAmountEmpty]} numberOfLines={1}>
         {empty ? '—' : formatAmount(total)}
@@ -250,7 +291,28 @@ function OverviewHero({ store, periodLabel }) {
   );
 }
 
-function MetricTile({ app, value, meta, tone, onOpen, accessory, loading }) {
+function DashSection({ title, meta, onPress, children }) {
+  return (
+    <View style={styles.dashSection}>
+      <Pressable
+        onPress={onPress}
+        disabled={!onPress}
+        style={styles.dashHead}
+        accessibilityRole={onPress ? 'button' : undefined}
+        accessibilityLabel={onPress ? `Open ${title}` : title}
+      >
+        <Text style={styles.dashHeadTitle}>{title}</Text>
+        <View style={styles.dashHeadTrail}>
+          {meta ? <Text style={styles.dashHeadMeta}>{meta}</Text> : null}
+          {onPress ? <Ionicons name="chevron-forward" size={14} color={SECONDARY} /> : null}
+        </View>
+      </Pressable>
+      <View style={styles.dashList}>{children}</View>
+    </View>
+  );
+}
+
+function DashLink({ app, value, meta, tone, onOpen, last, accessory, loading }) {
   const valueColor =
     tone === 'low' ? styles.phoneRateLow : tone === 'high' ? styles.phoneRateHigh : null;
 
@@ -258,34 +320,36 @@ function MetricTile({ app, value, meta, tone, onOpen, accessory, loading }) {
     <Pressable
       onPress={() => onOpen?.(app.key)}
       style={({ hovered, pressed }) => [
-        styles.metricTile,
-        (hovered || pressed) && styles.metricTilePressed,
+        styles.dashRow,
+        (hovered || pressed) && styles.dashRowPressed,
       ]}
       accessibilityRole="button"
-      accessibilityLabel={`${app.label}, ${value || ''}${meta ? `, ${meta}` : ''}`}
+      accessibilityLabel={`${app.label}${value ? `, ${value}` : ''}${meta ? `, ${meta}` : ''}`}
     >
-      <View style={styles.metricHead}>
-        <View style={[styles.metricIcon, { backgroundColor: app.accent }]}>
-          <Ionicons name={app.icon} size={13} color="#fff" />
-        </View>
-        <Text style={styles.metricTitle} numberOfLines={1}>
-          {app.label}
-        </Text>
-        <Ionicons name="chevron-forward" size={12} color={SECONDARY} />
+      <View style={[styles.dashIcon, { backgroundColor: app.accent }]}>
+        <Ionicons name={app.icon} size={20} color="#fff" />
       </View>
-      {loading ? (
-        <ActivityIndicator style={styles.metricSpinner} size="small" color={BLUE} />
-      ) : (
-        <Text style={[styles.metricValue, valueColor]} numberOfLines={1}>
-          {value || '—'}
-        </Text>
-      )}
-      {accessory}
-      {meta ? (
-        <Text style={styles.metricMeta} numberOfLines={2}>
-          {meta}
-        </Text>
-      ) : null}
+      <View style={[styles.dashRowBody, !last && styles.dashRowDivider]}>
+        <View style={styles.dashCopy}>
+          <Text style={styles.dashTitle} numberOfLines={1}>
+            {app.label}
+          </Text>
+          {meta ? (
+            <Text style={styles.dashMeta} numberOfLines={2}>
+              {meta}
+            </Text>
+          ) : null}
+          {accessory}
+        </View>
+        {loading ? (
+          <ActivityIndicator size="small" color={BLUE} />
+        ) : (
+          <Text style={[styles.dashValue, valueColor]} numberOfLines={1}>
+            {value || '—'}
+          </Text>
+        )}
+        <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+      </View>
     </Pressable>
   );
 }
@@ -343,18 +407,18 @@ function EmployeeAvatar({ person, size = 32, ring = false }) {
   );
 }
 
-function EmployeeRow({ person, last }) {
+function EmployeeRow({ person, last, dashboard = false }) {
   const subtitle = person.txCount
     ? `${person.txCount} transaction${person.txCount === 1 ? '' : 's'} today`
     : person.role || 'Assigned to this store';
   return (
-    <View style={[styles.row, styles.rowStatic, last && styles.rowLast]}>
-      <EmployeeAvatar person={person} />
+    <View style={[dashboard ? styles.dashPersonRow : styles.row, styles.rowStatic, last && styles.rowLast]}>
+      <EmployeeAvatar person={person} size={dashboard ? 46 : 32} />
       <View style={styles.rowCopy}>
-        <Text style={styles.rowTitle} numberOfLines={1}>
+        <Text style={dashboard ? styles.dashTitle : styles.rowTitle} numberOfLines={1}>
           {person.name}
         </Text>
-        <Text style={styles.rowSubtitle} numberOfLines={1}>
+        <Text style={dashboard ? styles.dashMeta : styles.rowSubtitle} numberOfLines={1}>
           {subtitle}
         </Text>
       </View>
@@ -886,25 +950,25 @@ const TransactionRow = memo(function TransactionRow({
   );
 });
 
-const InventoryRow = memo(function InventoryRow({ row, qty, last }) {
+const InventoryRow = memo(function InventoryRow({ row, qty, last, dashboard = false }) {
   return (
-    <View style={[styles.row, styles.rowStatic, last && styles.rowLast]}>
+    <View style={[dashboard ? styles.dashPersonRow : styles.row, styles.rowStatic, last && styles.rowLast]}>
       {row.priority ? (
         <View style={[styles.priorityDot, { backgroundColor: PRIORITY_COLORS[row.priority] }]} />
       ) : (
-        <View style={styles.priorityDotSpacer} />
+        <View style={dashboard ? null : styles.priorityDotSpacer} />
       )}
       <View style={styles.rowCopy}>
-        <Text style={styles.rowTitle} numberOfLines={1}>
+        <Text style={dashboard ? styles.dashTitle : styles.rowTitle} numberOfLines={1}>
           {row.name}
         </Text>
         {row.sku ? (
-          <Text style={styles.rowSubtitle} numberOfLines={1}>
+          <Text style={dashboard ? styles.dashMeta : styles.rowSubtitle} numberOfLines={1}>
             {row.sku}
           </Text>
         ) : null}
       </View>
-      <Text style={[styles.rowValue, qty === 0 && styles.rowValueMuted]}>
+      <Text style={[dashboard ? styles.dashValue : styles.rowValue, qty === 0 && styles.rowValueMuted]}>
         {qty === 0 ? '—' : formatQty(qty)}
       </Text>
     </View>
@@ -1257,6 +1321,7 @@ function StoreSnapshotPanel({
   onOpenTransaction,
   onOpenApp,
   onAmountHover,
+  onFilterTop,
   topInset = 0,
   ready = true,
 }) {
@@ -1280,6 +1345,15 @@ function StoreSnapshotPanel({
   const [txCatalogs, setTxCatalogs] = useState(() => new Map());
   const [priceReview, setPriceReview] = useState(null);
   const tolerance = usePriceCheckTolerance();
+  const onFilterTopRef = useRef(onFilterTop);
+  onFilterTopRef.current = onFilterTop;
+  const heroYRef = useRef(0);
+  const amountRowRef = useRef(null);
+  const emitFilterTop = useCallback(() => {
+    const row = amountRowRef.current;
+    if (!row || !onFilterTopRef.current) return;
+    onFilterTopRef.current(heroYRef.current + row.y + (row.height - MOBILE_FILTER_SIZE) / 2);
+  }, []);
   const cashRequestId = useRef(0);
   const inventoryRequestId = useRef(0);
   const hasInventoryRef = useRef(false);
@@ -1625,6 +1699,7 @@ function StoreSnapshotPanel({
           key={row.id}
           row={row}
           qty={qty}
+          dashboard={isMobile}
           last={hiddenItemCount === 0 && index === visibleItems.length - 1}
         />
       ))}
@@ -1657,6 +1732,7 @@ function StoreSnapshotPanel({
       <EmployeeRow
         key={`${person.name}-${index}`}
         person={person}
+        dashboard={isMobile}
         last={index === presentEmployees.length - 1}
       />
     ))
@@ -1702,89 +1778,96 @@ function StoreSnapshotPanel({
     </ScrollView>
   );
 
+  const metricRows = [
+    {
+      app: SNAPSHOT_APPS.financials,
+      value: cash ? formatAmount(cadAmt, 'CAD') : '—',
+      meta: cashMeta,
+      loading: cashLoading && !cash,
+    },
+    showPhone
+      ? {
+          app: SNAPSHOT_APPS.phone,
+          value: phoneRatio.ratio,
+          meta: phoneRatio.total
+            ? `${phoneRatio.answered} answered · ${phoneRatio.missed} missed`
+            : `No inbound calls ${periodLabel === 'Today' ? 'today' : 'in this period'}`,
+          tone: phoneRatio.rate == null ? null : phoneRatio.rate < 80 ? 'low' : 'high',
+        }
+      : null,
+    showEmails
+      ? {
+          app: SNAPSHOT_APPS.emails,
+          value: !emailCapture || emailCapture.customerCount === 0 ? '—' : emailCapture.rateLabel,
+          meta: emailMeta,
+          tone:
+            emailCapture?.customerCount > 0 && emailCapture.rate < 80
+              ? 'low'
+              : emailCapture?.customerCount > 0 && emailCapture.rate >= 80
+                ? 'high'
+                : null,
+        }
+      : null,
+    {
+      app: SNAPSHOT_APPS.employees,
+      value: presentEmployees.length ? `${presentEmployees.length}` : '—',
+      meta: presentEmployees.length ? employeeMeta : 'No one assigned',
+      accessory: <PeopleStack people={presentEmployees} />,
+    },
+  ].filter(Boolean);
+
   const mobileContent = (
     <>
-      <OverviewHero store={store} periodLabel={periodLabel} />
+      <View
+        onLayout={(event) => {
+          heroYRef.current = event.nativeEvent.layout.y;
+          emitFilterTop();
+        }}
+      >
+        <OverviewHero
+          store={store}
+          periodLabel={periodLabel}
+          plain
+          onAmountLayout={(row) => {
+            amountRowRef.current = row;
+            emitFilterTop();
+          }}
+        />
+      </View>
 
       {showPhone && incomingCalls.length ? (
-        <AppBox app={SNAPSHOT_APPS.phone} meta="Incoming" onOpen={onOpenApp}>
+        <DashSection title="Phone" meta="Incoming" onPress={() => onOpenApp?.('phone')}>
           <PhoneSnapshotBody
             storeName={storeName}
             startKey={startKey}
             endKey={endKey}
             periodLabel={periodLabel}
           />
-        </AppBox>
+        </DashSection>
       ) : null}
 
-      <View style={styles.metricGrid}>
-        <MetricTile
-          app={SNAPSHOT_APPS.financials}
-          value={cash ? formatAmount(cadAmt, 'CAD') : '—'}
-          meta={cashMeta}
-          loading={cashLoading && !cash}
-          onOpen={onOpenApp}
-        />
-        {showPhone ? (
-          <MetricTile
-            app={SNAPSHOT_APPS.phone}
-            value={phoneRatio.ratio}
-            meta={
-              phoneRatio.total
-                ? `${phoneRatio.answered} answered · ${phoneRatio.missed} missed`
-                : `No inbound calls ${periodLabel === 'Today' ? 'today' : 'in this period'}`
-            }
-            tone={
-              phoneRatio.rate == null
-                ? null
-                : phoneRatio.rate < 80
-                  ? 'low'
-                  : 'high'
-            }
+      <View style={[styles.dashList, styles.dashListLead]}>
+        {metricRows.map((row, index) => (
+          <DashLink
+            key={row.app.key}
+            app={row.app}
+            value={row.value}
+            meta={row.meta}
+            tone={row.tone}
+            loading={row.loading}
+            accessory={row.accessory}
             onOpen={onOpenApp}
+            last={index === metricRows.length - 1}
           />
-        ) : null}
-        {showEmails ? (
-          <MetricTile
-            app={SNAPSHOT_APPS.emails}
-            value={
-              !emailCapture || emailCapture.customerCount === 0
-                ? '—'
-                : emailCapture.rateLabel
-            }
-            meta={emailMeta}
-            tone={
-              emailCapture?.customerCount > 0 && emailCapture.rate < 80
-                ? 'low'
-                : emailCapture?.customerCount > 0 && emailCapture.rate >= 80
-                  ? 'high'
-                  : null
-            }
-            onOpen={onOpenApp}
-          />
-        ) : null}
-        <MetricTile
-          app={SNAPSHOT_APPS.employees}
-          value={
-            presentEmployees.length
-              ? `${presentEmployees.length}`
-              : '—'
-          }
-          meta={presentEmployees.length ? employeeMeta : 'No one assigned'}
-          accessory={<PeopleStack people={presentEmployees} />}
-          onOpen={onOpenApp}
-        />
+        ))}
       </View>
 
       {showEmails && missingEmails.length ? (
-        <AppBox
-          app={SNAPSHOT_APPS.emails}
-          meta={`${missingEmails.length} missing`}
-          onOpen={onOpenApp}
+        <DashSection
+          title="Missing email"
+          meta={`${missingEmails.length}`}
+          onPress={() => onOpenApp?.('emails')}
         >
-          <Text style={styles.emailSectionLabel}>
-            Missing email · {missingEmails.length}
-          </Text>
           {visibleMissing.map((person, index) => (
             <View
               key={person.id || `${person.customerName}-${index}`}
@@ -1797,10 +1880,10 @@ function StoreSnapshotPanel({
             >
               <Ionicons name="mail-unread-outline" size={16} color={RED} />
               <View style={styles.rowCopy}>
-                <Text style={styles.rowTitle} numberOfLines={1}>
+                <Text style={styles.dashTitle} numberOfLines={1}>
                   {person.customerName}
                 </Text>
-                <Text style={styles.rowSubtitle} numberOfLines={1}>
+                <Text style={styles.dashMeta} numberOfLines={1}>
                   {[person.reference, person.employeeName]
                     .filter((part) => part && part !== '—')
                     .join(' · ') || 'No email on file'}
@@ -1811,17 +1894,17 @@ function StoreSnapshotPanel({
           {hiddenMissing > 0 ? (
             <ShowMoreRow remaining={hiddenMissing} onPress={() => onOpenApp?.('emails')} />
           ) : null}
-        </AppBox>
+        </DashSection>
       ) : null}
 
-      <AppBox app={SNAPSHOT_APPS.transactions} meta={txMeta} onOpen={onOpenApp}>
+      <DashSection title="Transactions" meta={txMeta} onPress={() => onOpenApp?.('transactions')}>
         {transactionsBody}
-      </AppBox>
+      </DashSection>
 
-      <AppBox app={SNAPSHOT_APPS.inventory} meta={itemMeta} onOpen={onOpenApp}>
+      <DashSection title="Inventory" meta={itemMeta} onPress={() => onOpenApp?.('inventory')}>
         <InventorySearch value={inventoryQuery} onChangeText={setInventoryQuery} />
         {inventoryBody}
-      </AppBox>
+      </DashSection>
     </>
   );
 
@@ -1930,7 +2013,8 @@ function StoreSnapshotPanel({
         style={styles.scroll}
         contentContainerStyle={[
           styles.scrollContent,
-          { paddingTop: topInset + 10, paddingBottom: isMobile ? 48 : 32 },
+          isMobile && styles.scrollContentMobile,
+          { paddingTop: topInset + 8, paddingBottom: isMobile ? 104 : 32 },
         ]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
@@ -1973,6 +2057,7 @@ export default memo(
     prev.onOpenTransaction === next.onOpenTransaction &&
     prev.onOpenApp === next.onOpenApp &&
     prev.onAmountHover === next.onAmountHover &&
+    prev.onFilterTop === next.onFilterTop &&
     prev.topInset === next.topInset &&
     prev.ready === next.ready,
 );
@@ -1985,7 +2070,190 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   bodyMobile: {
+    paddingHorizontal: 0,
+    backgroundColor: '#fff',
+  },
+  dashHero: {
+    alignSelf: 'stretch',
+    paddingTop: 8,
+    paddingBottom: 14,
     paddingHorizontal: 16,
+    backgroundColor: '#fff',
+  },
+  dashHeroLabel: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: SECONDARY,
+    letterSpacing: -0.08,
+  },
+  dashHeroAmountRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 2,
+    gap: 12,
+  },
+  dashHeroFilterSlot: {
+    width: MOBILE_FILTER_SIZE + (MOBILE_FILTER_INSET - 16),
+    height: MOBILE_FILTER_SIZE,
+  },
+  dashHeroAmount: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: 'SohneLeicht',
+    fontSize: 40,
+    lineHeight: 46,
+    fontWeight: '400',
+    color: LABEL,
+    letterSpacing: -1.2,
+    fontVariant: ['tabular-nums'],
+  },
+  dashHeroStats: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(60,60,67,0.18)',
+  },
+  dashHeroStat: {
+    flex: 1,
+    minWidth: 0,
+    gap: 1,
+  },
+  dashHeroStatDivider: {
+    width: StyleSheet.hairlineWidth,
+    height: 28,
+    marginHorizontal: 12,
+    backgroundColor: 'rgba(60,60,67,0.18)',
+  },
+  dashHeroStatValue: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: LABEL,
+    letterSpacing: -0.3,
+    fontVariant: ['tabular-nums'],
+  },
+  dashHeroStatLabel: {
+    fontFamily,
+    fontSize: 12,
+    color: SECONDARY,
+    letterSpacing: -0.05,
+  },
+  dashSection: {
+    marginTop: 8,
+  },
+  dashHead: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 8,
+  },
+  dashHeadTitle: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.08,
+    textTransform: 'uppercase',
+  },
+  dashHeadTrail: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+  dashHeadMeta: {
+    fontFamily,
+    fontSize: 13,
+    color: SECONDARY,
+    letterSpacing: -0.08,
+    fontVariant: ['tabular-nums'],
+  },
+  dashList: {
+    backgroundColor: '#fff',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(60,60,67,0.18)',
+  },
+  dashListLead: {
+    marginTop: 8,
+  },
+  dashRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    minHeight: 72,
+    backgroundColor: '#fff',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  dashRowPressed: {
+    backgroundColor: 'rgba(60,60,67,0.08)',
+  },
+  dashIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 13,
+    marginLeft: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  dashRowBody: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    alignSelf: 'stretch',
+    paddingVertical: 14,
+    paddingRight: 16,
+  },
+  dashRowDivider: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(60,60,67,0.24)',
+  },
+  dashCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  dashTitle: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: LABEL,
+    letterSpacing: -0.24,
+  },
+  dashMeta: {
+    fontFamily,
+    fontSize: 14,
+    color: SECONDARY,
+    letterSpacing: -0.08,
+  },
+  dashValue: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: LABEL,
+    letterSpacing: -0.3,
+    fontVariant: ['tabular-nums'],
+    flexShrink: 1,
+  },
+  dashPersonRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 72,
+    paddingLeft: 16,
+    paddingRight: 16,
+    paddingVertical: 12,
+    gap: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(60,60,67,0.24)',
   },
   heroCard: {
     backgroundColor: '#fff',
@@ -2150,10 +2418,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingLeft: 16,
+    paddingRight: 16,
+    paddingVertical: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: SEPARATOR,
+    borderBottomColor: 'rgba(60,60,67,0.24)',
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -2529,8 +2798,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    minHeight: 32,
-    marginHorizontal: 12,
+    minHeight: 36,
+    marginHorizontal: 16,
     marginTop: 10,
     marginBottom: 4,
     paddingHorizontal: 10,
@@ -2556,6 +2825,10 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingBottom: 32,
     gap: 12,
+  },
+  scrollContentMobile: {
+    gap: 0,
+    backgroundColor: '#fff',
   },
   row: {
     flexDirection: 'row',

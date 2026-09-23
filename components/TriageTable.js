@@ -27,15 +27,15 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     document.head.appendChild(style);
   }
   style.textContent = [
-    '.cgold-triage-table-blur{-webkit-backdrop-filter:saturate(180%) blur(18px);backdrop-filter:saturate(180%) blur(18px);background-color:rgba(246,246,249,0.78)!important;}',
-    '.cgold-triage-table-row{cursor:pointer;background-color:#fff;}',
-    '.cgold-triage-table-row:hover,.cgold-triage-table-row:has(:hover),.cgold-triage-table-row.is-hover{background-color:#f5f5f7!important;}',
+    '.cgold-triage-table-blur{background-color:#fff!important;}',
+    '.cgold-triage-table-row{cursor:pointer;background-color:transparent;}',
+    '.cgold-triage-table-row:hover,.cgold-triage-table-row:has(:hover),.cgold-triage-table-row.is-hover{background-color:rgba(60,60,67,0.08)!important;}',
     '.cgold-triage-table-row:hover > *,.cgold-triage-table-row:has(:hover) > *,.cgold-triage-table-row.is-hover > *{background-color:transparent!important;}',
   ].join('');
 }
 
 /** Row height used for FlatList layout hints; keep in sync with styles.tableRow. */
-export const TABLE_ROW_HEIGHT = 46;
+export const TABLE_ROW_HEIGHT = 56;
 const HEADER_FALLBACK_HEIGHT = 32;
 const TOOLBAR_FALLBACK_HEIGHT = 34;
 const LEADING_FALLBACK_HEIGHT = 88;
@@ -399,7 +399,7 @@ export function TableFrame({
 
   const chrome = (
     <BlurView
-      intensity={buy ? 0 : 60}
+      intensity={0}
       tint="light"
       style={[styles.tableChrome, buy && styles.tableChromeBuy]}
       onLayout={onChromeLayout}
@@ -725,8 +725,7 @@ const styles = StyleSheet.create({
   },
   tableHContent: {
     flexGrow: 1,
-    paddingHorizontal: 16,
-    paddingBottom: 16,
+    paddingBottom: 32,
   },
   tableHFill: {
     flex: 1,
@@ -736,40 +735,26 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
     backgroundColor: '#fff',
-    borderRadius: 12,
     overflow: 'visible',
-    ...Platform.select({
-      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.04)' },
-      default: {},
-    }),
   },
-  tableCardBuy: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e5e5ea',
-    ...Platform.select({
-      web: { boxShadow: 'none' },
-      default: { elevation: 0 },
-    }),
-  },
+  tableCardBuy: {},
   tableChrome: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
     zIndex: 8,
-    borderTopLeftRadius: 12,
-    borderTopRightRadius: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#d1d1d6',
-    backgroundColor: 'rgba(246,246,249,0.9)',
+    borderBottomColor: 'rgba(60,60,67,0.18)',
+    backgroundColor: '#fff',
     ...Platform.select({
       web: { height: 'fit-content' },
       default: {},
     }),
   },
   tableChromeBuy: {
-    backgroundColor: '#f6f6f9',
-    borderBottomColor: '#ececef',
+    backgroundColor: '#fff',
+    borderBottomColor: 'rgba(60,60,67,0.18)',
   },
   tableLeading: {
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -806,10 +791,11 @@ const styles = StyleSheet.create({
   },
   tableHeadLabel: {
     fontFamily,
-    fontSize: 12,
-    fontWeight: '500',
-    color: SECONDARY,
-    letterSpacing: -0.1,
+    fontSize: 13,
+    fontWeight: '400',
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+    textTransform: 'uppercase',
   },
   tableHeadLabelRight: {
     textAlign: 'right',
@@ -826,8 +812,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     height: TABLE_ROW_HEIGHT,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
-    backgroundColor: '#fff',
+    borderBottomColor: 'rgba(60,60,67,0.24)',
+    backgroundColor: 'transparent',
   },
   tableRowWrap: {
     height: undefined,
@@ -835,15 +821,13 @@ const styles = StyleSheet.create({
     alignItems: 'stretch',
   },
   tableRowHover: {
-    backgroundColor: '#f5f5f7',
+    backgroundColor: 'rgba(60,60,67,0.08)',
   },
   tableRowMainHover: {
-    backgroundColor: '#f5f5f7',
+    backgroundColor: 'rgba(60,60,67,0.08)',
   },
   tableRowLast: {
     borderBottomWidth: 0,
-    borderBottomLeftRadius: 12,
-    borderBottomRightRadius: 12,
   },
   tableRowMain: {
     flex: 1,
@@ -874,9 +858,9 @@ const styles = StyleSheet.create({
   },
   tableCellText: {
     fontFamily,
-    fontSize: 13,
+    fontSize: 15,
     color: TEXT,
-    letterSpacing: -0.08,
+    letterSpacing: -0.2,
   },
   tableCellTextRight: {
     textAlign: 'right',
@@ -950,10 +934,10 @@ const styles = StyleSheet.create({
   },
   tableCellStrong: {
     fontFamily,
-    fontSize: 13,
+    fontSize: 16,
     fontWeight: '600',
     color: TEXT,
-    letterSpacing: -0.08,
+    letterSpacing: -0.24,
   },
   tableCellMuted: {
     fontFamily,
@@ -1038,10 +1022,10 @@ const styles = StyleSheet.create({
   colFilterLabel: {
     fontFamily,
     flexShrink: 1,
-    fontSize: 11,
-    fontWeight: '600',
-    color: SECONDARY,
-    letterSpacing: 0.2,
+    fontSize: 13,
+    fontWeight: '400',
+    color: '#8e8e93',
+    letterSpacing: -0.08,
     textTransform: 'uppercase',
   },
   colFilterLabelOn: {
