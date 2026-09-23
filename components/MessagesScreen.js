@@ -46,6 +46,7 @@ import {
 import { intakeNames, listTeams } from '../lib/teams';
 import { prepareAiChatSession, sendAiChatMessage, titleAiChat } from '../lib/aiChat';
 import { OPENROUTER_MODELS } from '../lib/openrouter';
+import { CANVAS } from '../lib/mobileUi';
 import ProfilePhotoModal from './ProfilePhotoModal';
 
 const fontFamily = Platform.select({
@@ -1277,7 +1278,7 @@ export default function MessagesScreen({
 
   return (
     <KeyboardAvoidingView
-      style={styles.root}
+      style={[styles.root, isMobile && styles.canvasMobile]}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       {isMobile && aiOpen ? (
@@ -1496,7 +1497,7 @@ export default function MessagesScreen({
           />
         </View>
       ) : showThread ? (
-        <View style={styles.thread}>
+        <View style={[styles.thread, isMobile && styles.canvasMobile]}>
           {threadLive ? (
             <>
               <View style={styles.threadHeader}>
@@ -1882,6 +1883,10 @@ const styles = StyleSheet.create({
     width: '100%',
     borderRightWidth: 0,
     flex: 1,
+    backgroundColor: CANVAS,
+  },
+  canvasMobile: {
+    backgroundColor: CANVAS,
   },
   inboxHeader: {
     flexDirection: 'row',
