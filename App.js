@@ -211,11 +211,28 @@ function ScreenFallback() {
  * stayed open; reloading picks up the new build. Without this, the failure
  * would unmount the whole app.
  */
+function reloadFreshScreen() {
+  const url = new URL(window.location.href);
+  url.searchParams.set('screen', String(Date.now()));
+  window.location.replace(url.toString());
+}
+
 class ScreenBoundary extends Component {
   state = { failed: false };
 
   static getDerivedStateFromError() {
     return { failed: true };
+  }
+
+  componentDidCatch() {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    try {
+      if (sessionStorage.getItem('cgold-screen-reload')) return;
+      sessionStorage.setItem('cgold-screen-reload', '1');
+    } catch {
+      return;
+    }
+    reloadFreshScreen();
   }
 
   componentDidUpdate(prevProps) {
@@ -232,7 +249,7 @@ class ScreenBoundary extends Component {
         {Platform.OS === 'web' ? (
           <Pressable
             accessibilityRole="button"
-            onPress={() => window.location.reload()}
+            onPress={reloadFreshScreen}
             style={styles.screenReloadButton}
           >
             <Text style={styles.screenReloadLabel}>Reload</Text>
