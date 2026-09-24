@@ -39,6 +39,7 @@ import {
   withSyncedHeaderTotal,
   withSyncedTotalsFromItems,
 } from '../lib/triageDraft';
+import { listTriageErrorTypes, saveTriageErrorType } from '../lib/triageErrorTypes';
 import TriageCorrectionImages from './TriageCorrectionImages';
 import { FONT, T, TextAction, TriageDrawer, SearchField, StaffAvatar, useHeldValue } from './TriageKit';
 import { PoThumb } from './TriageTable';
@@ -966,6 +967,23 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
   sessionRef.current = session;
   onHydrateRef.current = onHydrate;
 
+  useEffect(() => {
+    if (!visible) return undefined;
+    let cancelled = false;
+    listTriageErrorTypes()
+      .then((labels) => {
+        if (cancelled) return;
+        const custom = labels.filter(
+          (label) => !ERROR_TYPES.some((builtIn) => builtIn.toLowerCase() === label.toLowerCase()),
+        );
+        setExtraTypes(custom);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [visible]);
+
   const rememberBaseline = (nextDraft, extras = {}) => {
     baselineKeyRef.current = triageReviewEditKey({
       draft: nextDraft,
@@ -986,7 +1004,6 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
     setNote('');
     setErrorType('');
     setErrorAmount('');
-    setExtraTypes([]);
     setAddingType(false);
     setNewType('');
     setTypeQuery('');
@@ -1325,15 +1342,22 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
     setOpenKey('');
   };
 
-  const addErrorType = () => {
+  const addErrorType = async () => {
     const label = String(newType || '').trim();
     if (!isListedErrorType(label)) return;
     const existing = typeOptions.find((option) => option.label.toLowerCase() === label.toLowerCase());
     const next = existing?.label || label;
     if (!existing) {
-      setExtraTypes((current) => [...current, next]);
+      try {
+        const saved = await saveTriageErrorType(next);
+        setExtraTypes((current) => [...current, saved]);
+        setErrorType(saved);
+      } catch {
+        return;
+      }
+    } else {
+      setErrorType(next);
     }
-    setErrorType(next);
     setNewType('');
     setAddingType(false);
     setTypeQuery('');
