@@ -28,13 +28,15 @@ import {
   placePurchaseOnBatch,
   poDateKey,
 } from '../lib/triageDailyReceipts';
-import { ERROR_TYPES } from '../lib/triageDraft';
+import { ERROR_TYPES, formatErrorAmount, normalizeReviewImages } from '../lib/triageDraft';
+import { uploadTriageErrorPhotos } from '../lib/triageErrorPhotos';
 import { lookupPurchasesByPoNumber, normalizePoNumber, readPoNumberFromPhoto } from '../lib/triagePoRead';
 import { formatAmount } from '../lib/transactions';
 import { ensurePurchaseOnDateBatch, saveTriagePoReview, setTriagePoReceived, triageEditorFromSession, useTransferWorkflow } from '../lib/transferWorkflow';
 import { getVideoElement, useWebcam, webcamSupported } from '../lib/webcam';
 import { catalogNameForPurchaseLine, fetchWebsitePrices } from '../lib/websitePrices';
 import { FONT, T } from './TriageKit';
+import TriageCorrectionImages from './TriageCorrectionImages';
 
 const PAPER_ASPECT = 8.5 / 11;
 
@@ -176,6 +178,8 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
   const [errorMode, setErrorMode] = useState(false);
   const [errorNote, setErrorNote] = useState('');
   const [errorType, setErrorType] = useState('');
+  const [errorAmount, setErrorAmount] = useState('');
+  const [errorImages, setErrorImages] = useState([]);
   const [resultError, setResultError] = useState('');
   const [finishing, setFinishing] = useState(false);
   const [notice, setNotice] = useState('');
@@ -228,6 +232,8 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
     setErrorMode(false);
     setErrorNote('');
     setErrorType('');
+    setErrorAmount('');
+    setErrorImages([]);
     setResultError('');
     setFinishing(false);
     setNotice('');
@@ -267,6 +273,8 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
     setErrorMode(false);
     setErrorNote('');
     setErrorType('');
+    setErrorAmount('');
+    setErrorImages([]);
     setResultError('');
     setResultOpen(true);
   };
@@ -394,6 +402,8 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
     setErrorMode(false);
     setErrorNote('');
     setErrorType('');
+    setErrorAmount('');
+    setErrorImages([]);
     setResultError('');
     setPoEntry(false);
     if (isMobile) return;
@@ -421,8 +431,10 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
   const finishPo = async (withError) => {
     if (!po || finishing) return;
     const note = errorNote.trim();
-    if (withError && !note && !errorType) {
-      setResultError('Add a note or pick an error type.');
+    const amount = errorAmount.trim();
+    const photos = normalizeReviewImages(errorImages);
+    if (withError && !note && !errorType && !amount && !photos.length) {
+      setResultError('Add a note, set amount, photo, or pick an error type.');
       return;
     }
     const actor = actorNameOf(session);
@@ -432,9 +444,11 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
     setResultError('');
     try {
       if (withError) {
+        const poId = place?.item?.id || po.id;
+        const images = photos.length ? await uploadTriageErrorPhotos(photos, poId) : [];
         saveTriagePoReview(
-          place?.item?.id || po.id,
-          { note, errorType, errorAmount: '' },
+          poId,
+          { note, errorType, errorAmount: formatErrorAmount(amount), images },
           triageEditorFromSession(session),
         );
       }
@@ -557,6 +571,27 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
               multiline
               editable={!finishing}
               accessibilityLabel="Error note"
+            />
+            <Text style={styles.sectionLabel}>Set amount</Text>
+            <TextInput
+              style={styles.amountInput}
+              value={errorAmount}
+              onChangeText={setErrorAmount}
+              placeholder="0.00"
+              placeholderTextColor="#8E8E93"
+              keyboardType="decimal-pad"
+              editable={!finishing}
+              accessibilityLabel="Set amount"
+            />
+            <Text style={styles.sectionLabel}>Photos</Text>
+            <TriageCorrectionImages
+              images={errorImages}
+              onChange={setErrorImages}
+              showSourceButtons
+              captureButtons
+              hideHeading
+              hideActions
+              readOnly={finishing}
             />
             {resultError ? <Text style={styles.error}>{resultError}</Text> : null}
           </ScrollView>
@@ -1009,7 +1044,11 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
               <Text style={styles.resultClose}>Close</Text>
             </Pressable>
           </View>
-          <View style={styles.resultContent}>
+          <ScrollView
+            style={errorMode ? styles.resultScroll : null}
+            contentContainerStyle={styles.resultContent}
+            keyboardShouldPersistTaps="handled"
+          >
             <Text style={styles.resultKicker}>Total</Text>
             <Text style={styles.resultTotal}>{moneyLabel(po?.amount)}</Text>
             <Text style={styles.detailMeta}>
@@ -1076,10 +1115,31 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
                   editable={!finishing}
                   accessibilityLabel="Error note"
                 />
+                <Text style={styles.sectionLabel}>Set amount</Text>
+                <TextInput
+                  style={styles.amountInput}
+                  value={errorAmount}
+                  onChangeText={setErrorAmount}
+                  placeholder="0.00"
+                  placeholderTextColor="#8E8E93"
+                  keyboardType="decimal-pad"
+                  editable={!finishing}
+                  accessibilityLabel="Set amount"
+                />
+                <Text style={styles.sectionLabel}>Photos</Text>
+                <TriageCorrectionImages
+                  images={errorImages}
+                  onChange={setErrorImages}
+                  showSourceButtons
+                  captureButtons
+                  hideHeading
+                  hideActions
+                  readOnly={finishing}
+                />
               </View>
             ) : null}
             {resultError ? <Text style={styles.error}>{resultError}</Text> : null}
-          </View>
+          </ScrollView>
           <View style={[styles.resultActions, isMobile && styles.resultActionsMobile]}>
             {errorMode ? (
               <>
@@ -1960,6 +2020,36 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '600',
     color: '#000',
+  },
+  sectionLabel: {
+    marginTop: 16,
+    marginBottom: 6,
+    marginLeft: 4,
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '600',
+    letterSpacing: -0.1,
+    color: '#8E8E93',
+    textTransform: 'uppercase',
+  },
+  amountInput: {
+    minHeight: 48,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(60, 60, 67, 0.18)',
+    fontFamily: FONT,
+    fontSize: 17,
+    color: '#000',
+    fontVariant: ['tabular-nums'],
+    ...Platform.select({
+      web: { outlineStyle: 'none' },
+      default: {},
+    }),
+  },
+  resultScroll: {
+    maxHeight: 520,
   },
   appleNote: {
     marginTop: 16,
