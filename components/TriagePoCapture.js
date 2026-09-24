@@ -707,7 +707,14 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
       </View>
     </>
   ) : null;
-  const poPictures = [...new Set([...(Array.isArray(po?.imageUrls) ? po.imageUrls : []), photoUri].filter(Boolean))];
+  const poPictures = [
+    ...new Set(
+      [...(Array.isArray(po?.imageUrls) ? po.imageUrls : []), photoUri]
+        .map((value) => (typeof value === 'string' ? value : value?.uri))
+        .map((value) => String(value || '').trim())
+        .filter(Boolean),
+    ),
+  ];
   const poPhotoStrip = poPictures.length ? (
     <View style={styles.poPhotos}>
       {poPictures.map((uri) => (

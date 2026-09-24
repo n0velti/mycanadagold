@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
-import { FlatList, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { FlatList, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import {
   applyTriageReviewToPo,
   collectAccuracyTriagePos,
@@ -19,6 +19,7 @@ import {
   TableCell,
   TableEmpty,
   TableFrame,
+  TableHead,
   TablePhotoCell,
   TableRow,
   TableRowMain,
@@ -50,6 +51,7 @@ const COL = {
   received: { flex: 0.95, minWidth: 100 },
   error: { flex: 1.15, minWidth: 120 },
   amount: { flex: 0.85, minWidth: 88 },
+  details: { flex: 1.8, minWidth: 180 },
 };
 
 const EMPTY_FILTERS = {
@@ -89,6 +91,21 @@ function storeNameOf(row) {
   return name && name !== '—' ? name : '';
 }
 
+function errorDetailParts(review) {
+  const note = String(review?.note || '').trim();
+  const amount = String(review?.errorAmount || '').trim();
+  const edits = (Array.isArray(review?.lineEdits) ? review.lineEdits : [])
+    .map((line) => {
+      const name = String(line?.name || 'Line').trim();
+      const was = String(line?.originalAmount || '').trim() || '—';
+      const now = String(line?.amount || '').trim() || '—';
+      return `${name}: ${was} → ${now}`;
+    })
+    .filter(Boolean);
+  const photos = normalizeReviewImages(review?.images);
+  return { note, amount, edits, photos };
+}
+
 function errorPlace(row) {
   const type = String(row?.review?.errorType || '').trim();
   if (type) return type;
@@ -119,7 +136,9 @@ function rowMatchesQuery(row, query) {
     row.triageDateLabel,
     row.customerName,
     errorPlace(row),
+    row.review?.note,
     row.review?.errorAmount,
+    ...(Array.isArray(row.review?.lineEdits) ? row.review.lineEdits.flatMap((line) => [line?.name, line?.originalAmount, line?.amount]) : []),
     row.amountLabel,
   ]
     .filter(Boolean)
@@ -169,7 +188,34 @@ function BreakdownList({ title, rows, total, empty }) {
   );
 }
 
+function ErrorDetailBlock({ review }) {
+  const detail = errorDetailParts(review);
+  const lines = [
+    detail.note,
+    detail.amount ? `Set amount ${detail.amount}` : '',
+    ...detail.edits,
+  ].filter(Boolean);
+  if (!lines.length && !detail.photos.length) return null;
+  return (
+    <View style={styles.detailBlock}>
+      {lines.map((line, index) => (
+        <Text key={`${index}-${line}`} style={styles.detailLine}>
+          {line}
+        </Text>
+      ))}
+      {detail.photos.length ? (
+        <View style={styles.detailPhotos}>
+          {detail.photos.map((photo) => (
+            <Image key={photo.id} source={{ uri: photo.uri }} style={styles.detailPhoto} resizeMode="cover" />
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 const AccuracyTableRow = memo(function AccuracyTableRow({ row, last, showError, onOpen }) {
+  const detail = errorDetailParts(row.review);
   return (
     <TableRow last={last} wrap>
       <TablePhotoCell>
@@ -193,8 +239,11 @@ const AccuracyTableRow = memo(function AccuracyTableRow({ row, last, showError, 
             <TableCell flex={COL.error.flex} minWidth={COL.error.minWidth} wrap>
               {errorPlace(row)}
             </TableCell>
-            <TableCell flex={COL.amount.flex} minWidth={COL.amount.minWidth} align="right" wrap last>
-              {String(row.review?.errorAmount || '').trim() || '—'}
+            <TableCell flex={COL.amount.flex} minWidth={COL.amount.minWidth} align="right" wrap>
+              {detail.amount || '—'}
+            </TableCell>
+            <TableCell flex={COL.details.flex} minWidth={COL.details.minWidth} wrap last>
+              <ErrorDetailBlock review={row.review} />
             </TableCell>
           </>
         ) : (
@@ -452,7 +501,7 @@ export default function TriageAccuracyPanel({
             photoError ? (
               <Text style={styles.mobilePhotoError}>{photoError}</Text>
             ) : showError && visible.length ? (
-              <Text style={styles.mobileHint}>Tap the camera to attach a photo. Tap the row to open the ticket.</Text>
+              <Text style={styles.mobileHint}>Tap a purchase to edit its error.</Text>
             ) : null
           }
           ListEmptyComponent={mobileEmpty}
@@ -469,7 +518,7 @@ export default function TriageAccuracyPanel({
                       ? [errorPlace(item), item.review?.errorAmount].filter(Boolean).join(' · ')
                       : item.triageDateLabel || item.amountLabel || ''
                   }
-                  last={index === visible.length - 1}
+                  last={index === visible.length - 1 && !showError}
                   onPress={() => openFromTable(item)}
                   accessibilityLabel={`Open ${item.reference || 'document'}`}
                   leading={<PoThumb urls={item.imageUrls} label={item.reference} size={52} />}
@@ -491,13 +540,23 @@ export default function TriageAccuracyPanel({
                     )
                   }
                 />
+                {showError ? (
+                  <Pressable
+                    onPress={() => openFromTable(item)}
+                    style={[styles.mobileDetail, index === visible.length - 1 && styles.mobileDetailLast]}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Edit error for ${item.reference || 'document'}`}
+                  >
+                    <ErrorDetailBlock review={item.review} />
+                  </Pressable>
+                ) : null}
               </View>
             );
           }}
         />
       ) : (
       <TableFrame
-        minWidth={showError ? 920 : 780}
+        minWidth={showError ? 1120 : 780}
         data={visible}
         renderItem={renderRow}
         keyExtractor={accuracyKey}
@@ -590,6 +649,7 @@ export default function TriageAccuracyPanel({
                   style={{ ...COL.amount, alignItems: 'flex-end' }}
                   {...sortProps('amount')}
                 />
+                <TableHead label="Error details" flex={COL.details.flex} minWidth={COL.details.minWidth} />
               </>
             ) : (
               <ColumnFilter
@@ -721,6 +781,37 @@ const styles = StyleSheet.create({
     color: T.secondary,
     paddingHorizontal: 16,
     paddingBottom: 10,
+  },
+  mobileDetail: {
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    backgroundColor: '#fff',
+  },
+  mobileDetailLast: {
+    borderBottomLeftRadius: 12,
+    borderBottomRightRadius: 12,
+  },
+  detailBlock: {
+    gap: 4,
+    paddingTop: 2,
+  },
+  detailLine: {
+    fontFamily,
+    fontSize: 13,
+    lineHeight: 18,
+    color: T.text,
+  },
+  detailPhotos: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 4,
+  },
+  detailPhoto: {
+    width: 64,
+    height: 64,
+    borderRadius: 8,
+    backgroundColor: '#F2F2F7',
   },
   mobilePhotoError: {
     fontFamily,
