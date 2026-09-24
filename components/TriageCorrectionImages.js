@@ -128,6 +128,7 @@ function TriageCorrectionImages({
   hideHeading = false,
   hideActions = false,
   showSourceButtons = false,
+  captureButtons = false,
   pickerOnly = false,
 }, ref) {
   const isMobile = useIsMobile();
@@ -295,7 +296,7 @@ function TriageCorrectionImages({
       ) : null}
 
       {showSourceButtons && !readOnly ? (
-        isMobile ? (
+        isMobile || captureButtons ? (
           <View style={styles.mobileCaptureStack}>
             <Pressable
               style={[styles.mobileCapturePrimary, !canAdd && styles.actionDisabled]}
@@ -306,7 +307,7 @@ function TriageCorrectionImages({
             >
               <Ionicons name="camera" size={22} color={canAdd ? '#fff' : SECONDARY} />
               <Text style={[styles.mobileCapturePrimaryText, !canAdd && styles.actionTextDisabled]}>
-                Take Photo
+                {captureButtons ? 'Take a photo' : 'Take Photo'}
               </Text>
             </Pressable>
             <Pressable
@@ -314,11 +315,11 @@ function TriageCorrectionImages({
               onPress={chooseFiles}
               disabled={!canAdd}
               accessibilityRole="button"
-              accessibilityLabel="Choose from photo library"
+              accessibilityLabel={captureButtons ? 'Upload an image' : 'Choose from photo library'}
             >
               <Ionicons name="images-outline" size={18} color={canAdd ? ACCENT : SECONDARY} />
               <Text style={[styles.mobileCaptureSecondaryText, !canAdd && styles.sourceActionTextDisabled]}>
-                Photo Library
+                {captureButtons ? 'Upload an image' : 'Photo Library'}
               </Text>
             </Pressable>
           </View>
