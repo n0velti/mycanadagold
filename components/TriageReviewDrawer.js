@@ -137,6 +137,10 @@ function OptionRow({ label, count, selected, last, onPress }) {
 function ErrorReportFields({
   note,
   setNote,
+  errorAmount,
+  setErrorAmount,
+  lineEdits,
+  setLineEdits,
   images,
   setImages,
   isMobile,
@@ -160,12 +164,52 @@ function ErrorReportFields({
           style={styles.noteCardInput}
           value={note}
           onChangeText={setNote}
-          placeholder="Describe the error"
+          placeholder="Error Details"
           placeholderTextColor="#c7c7cc"
           multiline
           textAlignVertical="top"
         />
       </View>
+
+      <Text style={styles.groupHeader}>Set amount</Text>
+      <View style={[styles.detailsCard, styles.paneCard]}>
+        <TextInput
+          style={styles.noteCardInput}
+          value={errorAmount}
+          onChangeText={setErrorAmount}
+          placeholder="0.00"
+          placeholderTextColor="#c7c7cc"
+          keyboardType="decimal-pad"
+        />
+      </View>
+
+      {lineEdits.length ? (
+        <>
+          <Text style={styles.groupHeader}>Line items</Text>
+          <View style={[styles.detailsCard, styles.paneCard]}>
+            {lineEdits.map((line, index) => (
+              <View key={`${line.index}-${index}`} style={styles.detailReadRow}>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={styles.detailReadLabel}>{line.name || 'Line'}</Text>
+                  <Text style={styles.readValue}>Was {line.originalAmount || '—'}</Text>
+                </View>
+                <TextInput
+                  style={[styles.noteCardInput, { flex: 0.7, minWidth: 88 }]}
+                  value={String(line.amount || '')}
+                  onChangeText={(value) =>
+                    setLineEdits((current) =>
+                      current.map((row, rowIndex) => (rowIndex === index ? { ...row, amount: value } : row)),
+                    )
+                  }
+                  placeholder="Now"
+                  placeholderTextColor="#c7c7cc"
+                  keyboardType="decimal-pad"
+                />
+              </View>
+            ))}
+          </View>
+        </>
+      ) : null}
 
       <Text style={styles.groupHeader}>Photos</Text>
       <View style={[styles.detailsCard, styles.photoCard, styles.paneCard]}>
@@ -942,6 +986,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
   const [newType, setNewType] = useState('');
   const [typeQuery, setTypeQuery] = useState('');
   const [images, setImages] = useState([]);
+  const [lineEdits, setLineEdits] = useState([]);
   const [locations, setLocations] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [staffProfiles, setStaffProfiles] = useState([]);
@@ -991,6 +1036,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
       errorType: extras.errorType || '',
       errorAmount: extras.errorAmount || '',
       images: extras.images || [],
+      lineEdits: extras.lineEdits || [],
     });
   };
 
@@ -1008,6 +1054,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
     setNewType('');
     setTypeQuery('');
     setImages([]);
+    setLineEdits([]);
     setAddingCustomer(false);
   }, []);
 
@@ -1032,9 +1079,34 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
     openedIdRef.current = current.id;
     setActiveRow(current);
     setAddingCustomer(false);
-    setStepIndex(0);
     const id = ++detailRequestId.current;
     const existingReview = reviewRef.current || current.review;
+    const nextNote = String(existingReview?.note || '');
+    const nextType = isListedErrorType(existingReview?.errorType) ? existingReview.errorType : '';
+    const nextAmount = formatErrorAmount(existingReview?.errorAmount);
+    const nextImages = normalizeReviewImages(existingReview?.images);
+    const nextLines = Array.isArray(existingReview?.lineEdits) ? existingReview.lineEdits : [];
+    const hasError = Boolean(
+      nextNote.trim() ||
+        nextType ||
+        nextAmount ||
+        nextImages.length ||
+        nextLines.length ||
+        (Array.isArray(existingReview?.corrections) && existingReview.corrections.length),
+    );
+    const savedExtras = {
+      note: nextNote,
+      errorType: nextType,
+      errorAmount: nextAmount,
+      images: nextImages,
+      lineEdits: nextLines,
+    };
+    setNote(nextNote);
+    setErrorType(nextType);
+    setErrorAmount(nextAmount);
+    setImages(nextImages);
+    setLineEdits(nextLines);
+    setStepIndex(hasError ? 1 : 0);
     const safeDraft = (row, detail) => {
       try {
         return normalizeDraft(buildDraft(row, detail));
@@ -1044,10 +1116,6 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
       }
     };
     if (existingReview?.draft) {
-      const nextNote = existingReview.note || '';
-      const nextType = isListedErrorType(existingReview.errorType) ? existingReview.errorType : '';
-      const nextAmount = formatErrorAmount(existingReview.errorAmount);
-      const nextImages = normalizeReviewImages(existingReview.images);
       let nextDraft;
       try {
         nextDraft = normalizeDraft(existingReview.draft);
@@ -1058,27 +1126,14 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
         setDraft(nextDraft);
         setDetailError(err?.message || 'Could not read saved edits.');
       }
-      setNote(nextNote);
-      setErrorType(nextType);
-      setErrorAmount(nextAmount);
-      setImages(nextImages);
-      rememberBaseline(nextDraft, {
-        note: nextNote,
-        errorType: nextType,
-        errorAmount: nextAmount,
-        images: nextImages,
-      });
+      rememberBaseline(nextDraft, savedExtras);
       setDetailLoading(false);
       return;
     }
 
     const preliminary = safeDraft(current, null);
     setDraft(preliminary);
-    setNote('');
-    setErrorType('');
-    setErrorAmount('');
-    setImages([]);
-    rememberBaseline(preliminary);
+    rememberBaseline(preliminary, savedExtras);
     setDetailLoading(true);
 
     const auth = resolvePosAuthForRow(sessionRef.current, current);
@@ -1094,7 +1149,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
           const nextDraft = safeDraft(enriched, detail);
           setActiveRow(enriched);
           setDraft(nextDraft);
-          rememberBaseline(nextDraft);
+          rememberBaseline(nextDraft, savedExtras);
           onHydrateRef.current?.(enriched);
         } catch (err) {
           setDetailError(err?.message || 'Could not read this document.');
@@ -1365,7 +1420,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
 
   const finish = () => {
     if (!activeRow || !draft) return;
-    const next = buildReview(activeRow, draft, { note, errorType, errorAmount, images });
+    const next = buildReview(activeRow, draft, { note, errorType, errorAmount, images, lineEdits });
     if (triageReviewEditKey(next) !== baselineKeyRef.current) {
       onSave?.(activeRow.id, next);
     }
@@ -1655,6 +1710,10 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
               <ErrorReportFields
                 note={note}
                 setNote={setNote}
+                errorAmount={errorAmount}
+                setErrorAmount={setErrorAmount}
+                lineEdits={lineEdits}
+                setLineEdits={setLineEdits}
                 images={images}
                 setImages={setImages}
                 isMobile={isMobile}
