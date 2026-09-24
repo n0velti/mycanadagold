@@ -707,6 +707,20 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
       </View>
     </>
   ) : null;
+  const poPictures = [...new Set([...(Array.isArray(po?.imageUrls) ? po.imageUrls : []), photoUri].filter(Boolean))];
+  const poPhotoStrip = poPictures.length ? (
+    <View style={styles.poPhotos}>
+      {poPictures.map((uri) => (
+        <Image
+          key={uri}
+          source={{ uri }}
+          style={styles.poPhoto}
+          resizeMode="contain"
+          accessibilityLabel="PO photo"
+        />
+      ))}
+    </View>
+  ) : null;
   const place = po ? placePurchaseOnBatch(triage, po, batchId) : null;
   const placeLabel = place ? [place.store?.name, po?.dateLabel].filter(Boolean).join(' · ') : '';
   if (openerRef) openerRef.current = openCapture;
@@ -769,6 +783,7 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
               accessibilityLabel="Set amount"
             />
             {lineEditor}
+            {poPhotoStrip}
             <Text style={styles.sectionLabel}>Photos</Text>
             <TriageCorrectionImages
               images={errorImages}
@@ -2261,6 +2276,18 @@ const styles = StyleSheet.create({
     letterSpacing: -0.1,
     color: '#8E8E93',
     textTransform: 'uppercase',
+  },
+  poPhotos: {
+    gap: 8,
+    padding: 8,
+    borderRadius: 12,
+    backgroundColor: '#fff',
+  },
+  poPhoto: {
+    width: '100%',
+    height: 240,
+    borderRadius: 8,
+    backgroundColor: '#F2F2F7',
   },
   lineEdit: {
     gap: 8,
