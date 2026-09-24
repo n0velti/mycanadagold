@@ -28,7 +28,8 @@ import {
   placePurchaseOnBatch,
   poDateKey,
 } from '../lib/triageDailyReceipts';
-import { ERROR_TYPES, formatErrorAmount, normalizeReviewImages } from '../lib/triageDraft';
+import { formatErrorAmount, isListedErrorType, normalizeReviewImages } from '../lib/triageDraft';
+import { listTriageErrorTypes, mergeErrorTypes, saveTriageErrorType } from '../lib/triageErrorTypes';
 import { uploadTriageErrorPhotos } from '../lib/triageErrorPhotos';
 import { lookupPurchasesByPoNumber, normalizePoNumber, readPoNumberFromPhoto } from '../lib/triagePoRead';
 import { formatAmount } from '../lib/transactions';
@@ -118,6 +119,40 @@ function moneyLabel(amount) {
   return formatAmount(amount);
 }
 
+function lineAmountNumber(value) {
+  const amount = Number(String(value ?? '').replace(/[^0-9.-]/g, ''));
+  return Number.isFinite(amount) ? amount : null;
+}
+
+function lineDraftsFromPo(lines) {
+  return (Array.isArray(lines) ? lines : []).map((line, index) => {
+    const original = line?.originalLineTotal != null ? line.originalLineTotal : line?.lineTotal;
+    const current = line?.lineTotal;
+    return {
+      index,
+      originalAmount: original,
+      amount: current == null || !Number.isFinite(Number(current)) ? '' : String(current),
+    };
+  });
+}
+
+function changedLineEdits(drafts, lines, catalog) {
+  return (drafts || [])
+    .map((draft) => {
+      const line = lines[draft.index];
+      const next = lineAmountNumber(draft.amount);
+      const original = lineAmountNumber(draft.originalAmount);
+      if (next == null || original == null || Math.abs(next - original) < 0.001) return null;
+      return {
+        index: draft.index,
+        name: lineTitle(line, catalog),
+        originalAmount: moneyLabel(draft.originalAmount),
+        amount: formatErrorAmount(draft.amount),
+      };
+    })
+    .filter(Boolean);
+}
+
 function actorNameOf(session) {
   return triageEditorFromSession(session)?.name || '';
 }
@@ -161,6 +196,101 @@ function AddedToast({ label, onDone }) {
   );
 }
 
+function ErrorTypePicker({ types, value, onChange, onAdd, disabled }) {
+  const [query, setQuery] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [addError, setAddError] = useState('');
+  const [savingType, setSavingType] = useState(false);
+  const needle = query.trim().toLowerCase();
+  const shown = needle ? types.filter((label) => label.toLowerCase().includes(needle)) : types;
+
+  const submit = async () => {
+    const label = draft.trim();
+    if (!isListedErrorType(label) || savingType) return;
+    setSavingType(true);
+    setAddError('');
+    try {
+      const saved = await onAdd(label);
+      onChange(saved || label);
+      setDraft('');
+      setAdding(false);
+      setQuery('');
+    } catch (err) {
+      setAddError(err?.message || 'Could not save that error type.');
+    } finally {
+      setSavingType(false);
+    }
+  };
+
+  return (
+    <View style={styles.group}>
+      <TextInput
+        style={styles.typeSearch}
+        value={query}
+        onChangeText={setQuery}
+        placeholder="Search error types"
+        placeholderTextColor="#8E8E93"
+        editable={!disabled}
+        autoCorrect={false}
+        accessibilityLabel="Search error types"
+      />
+      {shown.map((label) => {
+        const selected = value === label;
+        return (
+          <Pressable
+            key={label}
+            style={styles.groupRow}
+            onPress={() => onChange(selected ? '' : label)}
+            disabled={disabled}
+            accessibilityRole="button"
+            accessibilityState={{ selected }}
+          >
+            <Text style={styles.groupLabel}>{label}</Text>
+            {selected ? <Ionicons name="checkmark" size={20} color="#007AFF" /> : null}
+          </Pressable>
+        );
+      })}
+      {shown.length === 0 && !adding ? (
+        <Text style={styles.typeEmpty}>No matching types</Text>
+      ) : null}
+      {adding ? (
+        <View style={[styles.groupRow, styles.groupRowLast, styles.typeAddRow]}>
+          <TextInput
+            style={styles.typeAddInput}
+            value={draft}
+            onChangeText={setDraft}
+            placeholder="New error type"
+            placeholderTextColor="#8E8E93"
+            editable={!disabled && !savingType}
+            autoFocus
+            onSubmitEditing={() => void submit()}
+            accessibilityLabel="New error type"
+          />
+          <Pressable onPress={() => void submit()} disabled={disabled || savingType} accessibilityRole="button">
+            <Text style={styles.typeAddSave}>{savingType ? 'Saving…' : 'Save'}</Text>
+          </Pressable>
+        </View>
+      ) : (
+        <Pressable
+          style={[styles.groupRow, styles.groupRowLast]}
+          onPress={() => {
+            setAdding(true);
+            setAddError('');
+          }}
+          disabled={disabled}
+          accessibilityRole="button"
+          accessibilityLabel="Add error type"
+        >
+          <Ionicons name="add" size={18} color="#007AFF" />
+          <Text style={styles.typeAddLink}>Add error type</Text>
+        </Pressable>
+      )}
+      {addError ? <Text style={styles.typeAddError}>{addError}</Text> : null}
+    </View>
+  );
+}
+
 export default function TriagePoCapture({ session, openerRef, batchId = '', onCounted }) {
   const isMobile = useIsMobile();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
@@ -180,6 +310,28 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
   const [errorType, setErrorType] = useState('');
   const [errorAmount, setErrorAmount] = useState('');
   const [errorImages, setErrorImages] = useState([]);
+  const [lineDrafts, setLineDrafts] = useState([]);
+  const [savedErrorTypes, setSavedErrorTypes] = useState([]);
+  const errorTypes = mergeErrorTypes(savedErrorTypes);
+
+  useEffect(() => {
+    if (!errorMode) return undefined;
+    let cancelled = false;
+    listTriageErrorTypes()
+      .then((labels) => {
+        if (!cancelled) setSavedErrorTypes(labels);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [errorMode]);
+
+  const addSharedErrorType = async (label) => {
+    const saved = await saveTriageErrorType(label);
+    setSavedErrorTypes((current) => mergeErrorTypes([...current, saved]));
+    return saved;
+  };
   const [resultError, setResultError] = useState('');
   const [finishing, setFinishing] = useState(false);
   const [notice, setNotice] = useState('');
@@ -234,6 +386,7 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
     setErrorType('');
     setErrorAmount('');
     setErrorImages([]);
+    setLineDrafts([]);
     setResultError('');
     setFinishing(false);
     setNotice('');
@@ -275,6 +428,7 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
     setErrorType('');
     setErrorAmount('');
     setErrorImages([]);
+    setLineDrafts(lineDraftsFromPo(row?.pricedLines));
     setResultError('');
     setResultOpen(true);
   };
@@ -404,6 +558,7 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
     setErrorType('');
     setErrorAmount('');
     setErrorImages([]);
+    setLineDrafts([]);
     setResultError('');
     setPoEntry(false);
     if (isMobile) return;
@@ -433,8 +588,9 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
     const note = errorNote.trim();
     const amount = errorAmount.trim();
     const photos = normalizeReviewImages(errorImages);
-    if (withError && !note && !errorType && !amount && !photos.length) {
-      setResultError('Add a note, set amount, photo, or pick an error type.');
+    const lineEdits = changedLineEdits(lineDrafts, lines, buyCatalog);
+    if (withError && !note && !errorType && !amount && !photos.length && !lineEdits.length) {
+      setResultError('Add a note, set amount, photo, line change, or pick an error type.');
       return;
     }
     const actor = actorNameOf(session);
@@ -448,7 +604,7 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
         const images = photos.length ? await uploadTriageErrorPhotos(photos, poId) : [];
         saveTriagePoReview(
           poId,
-          { note, errorType, errorAmount: formatErrorAmount(amount), images },
+          { note, errorType, errorAmount: formatErrorAmount(amount), images, lineEdits },
           triageEditorFromSession(session),
         );
       }
@@ -512,6 +668,45 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
   const poFieldWidth = Math.min(168, Math.max(112, (windowWidth - 132) / 2));
 
   const lines = Array.isArray(po?.pricedLines) ? po.pricedLines : [];
+  const updateLineAmount = (index, value) => {
+    setLineDrafts((current) => current.map((draft) => (draft.index === index ? { ...draft, amount: value } : draft)));
+  };
+  const lineEditor = lineDrafts.length ? (
+    <>
+      <Text style={styles.sectionLabel}>Line items</Text>
+      <View style={styles.group}>
+        {lineDrafts.map((draft, index) => {
+          const line = lines[draft.index];
+          const title = lineTitle(line, buyCatalog);
+          const last = index === lineDrafts.length - 1;
+          return (
+            <View key={`${title}-${draft.index}`} style={[styles.lineEdit, last && styles.groupRowLast]}>
+              <Text style={styles.lineName} numberOfLines={2}>{title}</Text>
+              <View style={styles.lineEditAmounts}>
+                <View style={styles.lineEditWas}>
+                  <Text style={styles.lineEditCaption}>Was</Text>
+                  <Text style={styles.lineMoney}>{moneyLabel(draft.originalAmount)}</Text>
+                </View>
+                <View style={styles.lineEditNow}>
+                  <Text style={styles.lineEditCaption}>Now</Text>
+                  <TextInput
+                    style={styles.lineEditInput}
+                    value={draft.amount}
+                    onChangeText={(value) => updateLineAmount(draft.index, value)}
+                    placeholder="0.00"
+                    placeholderTextColor="#8E8E93"
+                    keyboardType="decimal-pad"
+                    editable={!finishing}
+                    accessibilityLabel={`Updated amount for ${title}`}
+                  />
+                </View>
+              </View>
+            </View>
+          );
+        })}
+      </View>
+    </>
+  ) : null;
   const place = po ? placePurchaseOnBatch(triage, po, batchId) : null;
   const placeLabel = place ? [place.store?.name, po?.dateLabel].filter(Boolean).join(' · ') : '';
   if (openerRef) openerRef.current = openCapture;
@@ -545,28 +740,18 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
             contentContainerStyle={styles.pageScroll}
             keyboardShouldPersistTaps="handled"
           >
-            <View style={styles.group}>
-              {ERROR_TYPES.map((label, index) => {
-                const selected = errorType === label;
-                return (
-                  <Pressable
-                    key={label}
-                    style={[styles.groupRow, index === ERROR_TYPES.length - 1 && styles.groupRowLast]}
-                    onPress={() => setErrorType(selected ? '' : label)}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected }}
-                  >
-                    <Text style={styles.groupLabel}>{label}</Text>
-                    {selected ? <Ionicons name="checkmark" size={20} color="#007AFF" /> : null}
-                  </Pressable>
-                );
-              })}
-            </View>
+            <ErrorTypePicker
+              types={errorTypes}
+              value={errorType}
+              onChange={setErrorType}
+              onAdd={addSharedErrorType}
+              disabled={finishing}
+            />
             <TextInput
               style={styles.appleNote}
               value={errorNote}
               onChangeText={setErrorNote}
-              placeholder="What does not match the paper?"
+              placeholder="Error Details"
               placeholderTextColor="#8E8E93"
               multiline
               editable={!finishing}
@@ -583,6 +768,7 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
               editable={!finishing}
               accessibilityLabel="Set amount"
             />
+            {lineEditor}
             <Text style={styles.sectionLabel}>Photos</Text>
             <TriageCorrectionImages
               images={errorImages}
@@ -1089,27 +1275,18 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
             {errorMode ? (
               <View style={styles.errorBox}>
                 <Text style={styles.fieldLabel}>Error</Text>
-                <View style={styles.typeWrap}>
-                  {ERROR_TYPES.map((label) => {
-                    const selected = errorType === label;
-                    return (
-                      <Pressable
-                        key={label}
-                        style={[styles.typeChip, selected && styles.typeChipOn]}
-                        onPress={() => setErrorType(selected ? '' : label)}
-                        accessibilityRole="button"
-                        accessibilityState={{ selected }}
-                      >
-                        <Text style={[styles.typeChipText, selected && styles.typeChipTextOn]}>{label}</Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
+                <ErrorTypePicker
+                  types={errorTypes}
+                  value={errorType}
+                  onChange={setErrorType}
+                  onAdd={addSharedErrorType}
+                  disabled={finishing}
+                />
                 <TextInput
                   style={styles.note}
                   value={errorNote}
                   onChangeText={setErrorNote}
-                  placeholder="What does not match the paper?"
+                  placeholder="Error Details"
                   placeholderTextColor={T.secondary}
                   multiline
                   editable={!finishing}
@@ -1126,6 +1303,7 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
                   editable={!finishing}
                   accessibilityLabel="Set amount"
                 />
+                {lineEditor}
                 <Text style={styles.sectionLabel}>Photos</Text>
                 <TriageCorrectionImages
                   images={errorImages}
@@ -2021,6 +2199,58 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#000',
   },
+  typeSearch: {
+    minHeight: 44,
+    paddingHorizontal: 16,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(60, 60, 67, 0.18)',
+    fontFamily: FONT,
+    fontSize: 17,
+    color: '#000',
+    ...Platform.select({
+      web: { outlineStyle: 'none' },
+      default: {},
+    }),
+  },
+  typeEmpty: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    fontFamily: FONT,
+    fontSize: 15,
+    color: '#8E8E93',
+  },
+  typeAddRow: {
+    gap: 8,
+  },
+  typeAddInput: {
+    flex: 1,
+    minHeight: 36,
+    fontFamily: FONT,
+    fontSize: 17,
+    color: '#000',
+    ...Platform.select({
+      web: { outlineStyle: 'none' },
+      default: {},
+    }),
+  },
+  typeAddSave: {
+    fontFamily: FONT,
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#007AFF',
+  },
+  typeAddLink: {
+    fontFamily: FONT,
+    fontSize: 17,
+    color: '#007AFF',
+  },
+  typeAddError: {
+    paddingHorizontal: 16,
+    paddingBottom: 10,
+    fontFamily: FONT,
+    fontSize: 13,
+    color: '#FF3B30',
+  },
   sectionLabel: {
     marginTop: 16,
     marginBottom: 6,
@@ -2031,6 +2261,48 @@ const styles = StyleSheet.create({
     letterSpacing: -0.1,
     color: '#8E8E93',
     textTransform: 'uppercase',
+  },
+  lineEdit: {
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(60, 60, 67, 0.18)',
+  },
+  lineEditAmounts: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  lineEditWas: {
+    flex: 1,
+    gap: 2,
+  },
+  lineEditNow: {
+    flex: 1,
+    gap: 2,
+  },
+  lineEditCaption: {
+    fontFamily: FONT,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#8E8E93',
+    textTransform: 'uppercase',
+  },
+  lineEditInput: {
+    minHeight: 36,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#F2F2F7',
+    fontFamily: FONT,
+    fontSize: 17,
+    color: '#000',
+    fontVariant: ['tabular-nums'],
+    ...Platform.select({
+      web: { outlineStyle: 'none' },
+      default: {},
+    }),
   },
   amountInput: {
     minHeight: 48,
