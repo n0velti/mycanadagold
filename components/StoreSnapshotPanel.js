@@ -37,7 +37,7 @@ import { useTxnCashBreakdowns } from '../lib/txnCashBreakdowns';
 import { callPartyLabel, callsForStore, fetchPhoneHistory, inboundCallRatio, isPhoneRateLimitMessage, mergeCallLog } from '../lib/phoneCalls';
 import { formatPhoneNumber } from '../lib/ringcentral';
 import { storeKeyFromName } from '../lib/storeSettings';
-import { MOBILE_FILTER_INSET, MOBILE_FILTER_SIZE, useIsMobile } from '../lib/mobileUi';
+import { CANVAS, MOBILE_FILTER_INSET, MOBILE_FILTER_SIZE, useIsMobile } from '../lib/mobileUi';
 import { activeCallKicker, formatCallClock, usePhoneCalls } from './PhoneCallProvider';
 import { isConnectedStatus } from '../lib/callState';
 import TxnCashBreakdownModal, { TxnCashIcon } from './TxnCashBreakdownModal';
@@ -48,10 +48,10 @@ const fontFamily = Platform.select({
   default: 'Sohne',
 });
 
-const LABEL = '#1d1d1f';
+const LABEL = '#1a1a1a';
 const SECONDARY = '#8e8e93';
 const FILL = 'rgba(118, 118, 128, 0.12)';
-const SEPARATOR = '#e5e5ea';
+const SEPARATOR = '#d0d0d0';
 const BLUE = '#007AFF';
 const GREEN = '#34C759';
 const RED = '#FF3B30';
@@ -93,13 +93,17 @@ function namesMatch(a, b) {
 }
 
 const SNAPSHOT_APPS = {
-  financials: { key: 'financials', label: 'Financials', icon: 'wallet', accent: '#3D8B4F' },
-  inventory: { key: 'inventory', label: 'Inventory', icon: 'cube', accent: '#C47A12' },
-  employees: { key: 'employees', label: 'Employees', icon: 'people', accent: '#1D4ED8' },
-  phone: { key: 'phone', label: 'Phone', icon: 'call', accent: '#15803D' },
-  emails: { key: 'emails', label: 'Emails', icon: 'mail', accent: '#4338CA' },
-  transactions: { key: 'transactions', label: 'Transactions', icon: 'swap-horizontal', accent: '#2F6FED' },
+  financials: { key: 'financials', label: 'Financials', icon: 'wallet-outline', accent: '#3D8B4F' },
+  inventory: { key: 'inventory', label: 'Inventory', icon: 'cube-outline', accent: '#C47A12' },
+  employees: { key: 'employees', label: 'Employees', icon: 'people-outline', accent: '#1D4ED8' },
+  phone: { key: 'phone', label: 'Phone', icon: 'call-outline', accent: '#15803D' },
+  emails: { key: 'emails', label: 'Emails', icon: 'mail-outline', accent: '#4338CA' },
+  transactions: { key: 'transactions', label: 'Transactions', icon: 'swap-horizontal-outline', accent: '#2F6FED' },
 };
+
+function filledIonicon(name) {
+  return typeof name === 'string' && name.endsWith('-outline') ? name.slice(0, -8) : name;
+}
 
 function hasDrawerActivity(drawer) {
   if (!drawer) return false;
@@ -163,7 +167,7 @@ function pickStoreColumns(stores, storeName) {
 function InventorySearch({ value, onChangeText }) {
   return (
     <View style={styles.searchField}>
-      <Ionicons name="search" size={15} color={SECONDARY} />
+      <Ionicons name="search-outline" size={16} color={SECONDARY} />
       <TextInput
         style={styles.searchInput}
         value={value}
@@ -198,7 +202,7 @@ function AppBox({ app, meta, onOpen, children, style, bodyStyle, muted = false }
         accessibilityLabel={`Open ${app.label}`}
       >
         <View style={[styles.appBoxIcon, { backgroundColor: app.accent }, muted && styles.appIconMuted]}>
-          <Ionicons name={app.icon} size={16} color="#fff" />
+          <Ionicons name={filledIonicon(app.icon)} size={14} color="#fff" />
         </View>
         <View style={styles.appBoxHeadCopy}>
           <Text style={styles.appBoxTitle}>{app.label}</Text>
@@ -333,7 +337,7 @@ function DashLink({ app, value, meta, tone, onOpen, last, accessory, loading, mu
       accessibilityLabel={`${app.label}${value ? `, ${value}` : ''}${meta ? `, ${meta}` : ''}`}
     >
       <View style={[styles.dashIcon, { backgroundColor: app.accent }, muted && styles.appIconMuted]}>
-        <Ionicons name={app.icon} size={20} color="#fff" />
+        <Ionicons name={filledIonicon(app.icon)} size={14} color="#fff" />
       </View>
       <View style={[styles.dashRowBody, !last && styles.dashRowDivider]}>
         <View style={styles.dashCopy}>
@@ -749,33 +753,26 @@ function TxTableHeader() {
   return (
     <View style={styles.txTableHeader}>
       <View style={styles.colPhoto} />
-      <Text style={[styles.txTableHeaderLabel, styles.colDate]} numberOfLines={1}>
-        Date
-      </Text>
-      <Text style={[styles.txTableHeaderLabel, styles.colTime]} numberOfLines={1}>
-        Time
-      </Text>
-      <Text style={[styles.txTableHeaderLabel, styles.colRef]} numberOfLines={1}>
-        PO# / SO#
-      </Text>
-      <Text style={[styles.txTableHeaderLabel, styles.colCustomer]} numberOfLines={1}>
-        Customer
-      </Text>
-      <Text style={[styles.txTableHeaderLabel, styles.colItems]} numberOfLines={1}>
-        Items
-      </Text>
-      <Text style={[styles.txTableHeaderLabel, styles.colPayment]} numberOfLines={1}>
-        Payment
-      </Text>
-      <Text style={[styles.txTableHeaderLabel, styles.colAmount]} numberOfLines={1}>
-        Amount
-      </Text>
-      <Text style={[styles.txTableHeaderLabel, styles.colEmployee]} numberOfLines={1}>
-        Employee
-      </Text>
-      <Text style={[styles.txTableHeaderLabel, styles.colCheck]} numberOfLines={1}>
-        Price
-      </Text>
+      <View style={[styles.txTableRowBody, styles.homeTxHeaderRule]}>
+        <Text style={[styles.homeTxHeaderLabel, styles.colDate]} numberOfLines={1}>
+          Date
+        </Text>
+        <Text style={[styles.homeTxHeaderLabel, styles.colRef]} numberOfLines={1}>
+          PO# / SO#
+        </Text>
+        <Text style={[styles.homeTxHeaderLabel, styles.colCustomer]} numberOfLines={1}>
+          Customer
+        </Text>
+        <Text style={[styles.homeTxHeaderLabel, styles.colPayment]} numberOfLines={1}>
+          Payment
+        </Text>
+        <Text style={[styles.homeTxHeaderLabel, styles.colAmount]} numberOfLines={1}>
+          Amount
+        </Text>
+        <Text style={[styles.homeTxHeaderLabel, styles.colEmployee]} numberOfLines={1}>
+          Employee
+        </Text>
+      </View>
     </View>
   );
 }
@@ -900,7 +897,7 @@ const TransactionRow = memo(function TransactionRow({
       style={({ hovered, pressed }) => [
         styles.txTableRow,
         last && styles.rowLast,
-        (hovered || pressed) && styles.rowHovered,
+        (hovered || pressed) && styles.homeTxRowHovered,
       ]}
       accessibilityRole="button"
       accessibilityLabel={`${isBuy ? 'PO' : 'SO'} ${item.customerName || ''} ${item.amountLabel || ''}`}
@@ -908,43 +905,40 @@ const TransactionRow = memo(function TransactionRow({
       <View style={styles.colPhoto}>
         <TxnPhotoThumb urls={item.imageUrls} label={item.reference || (isBuy ? 'PO' : 'SO')} />
       </View>
-      <Text style={[styles.txCell, styles.txCellSecondary, styles.colDate]} numberOfLines={1}>
-        {item.dateLabel || '—'}
-      </Text>
-      <Text style={[styles.txCell, styles.txCellSecondary, styles.colTime]} numberOfLines={1}>
-        {item.timeLabel || '—'}
-      </Text>
-      <View style={[styles.txRef, styles.colRef]}>
-        <Text style={[styles.kind, isBuy && styles.kindBuy]}>{isBuy ? 'PO' : 'SO'}</Text>
-        <Text style={[styles.txCell, styles.txCellSecondary]} numberOfLines={1}>
+      <View style={[styles.txTableRowBody, !last && styles.txTableRowDivider]}>
+        <View style={styles.colDate}>
+          <Text style={[styles.txCell, styles.txCellPrimary]} numberOfLines={1}>
+            {item.dateLabel || '—'}
+          </Text>
+          {item.timeLabel ? (
+            <Text style={[styles.txCell, styles.txCellSecondary, styles.txTimeUnder]} numberOfLines={1}>
+              {item.timeLabel}
+            </Text>
+          ) : null}
+        </View>
+        <Text style={[styles.txCell, styles.txCellSecondary, styles.colRef]} numberOfLines={1}>
           {item.reference || '—'}
         </Text>
-      </View>
-      <Text style={[styles.txCell, styles.txCellPrimary, styles.colCustomer]} numberOfLines={1}>
-        {item.customerName || '—'}
-      </Text>
-      <Text style={[styles.txCell, styles.txCellSecondary, styles.colItems]} numberOfLines={1}>
-        {items || '—'}
-      </Text>
-      <View style={styles.colPayment} {...splitHover}>
-        <Text style={styles.txCell} numberOfLines={1}>
-          {item.paymentMethodLabel || '—'}
+        <Text style={[styles.txCell, styles.txCellPrimary, styles.colCustomer]} numberOfLines={1}>
+          {item.customerName || '—'}
         </Text>
-      </View>
-      <View style={[styles.txAmount, styles.colAmount]} {...splitHover}>
-        {showCash ? (
-          <TxnCashIcon saved={cashSaved} onPress={() => onCashPress(item)} />
-        ) : null}
-        <Text style={styles.rowValue}>{item.amountLabel}</Text>
-      </View>
-      <View style={[styles.colEmployee, styles.txEmployee]}>
-        <EmployeeAvatar person={hoverPerson} size={24} />
-        <Text style={[styles.txCell, styles.txCellSecondary]} numberOfLines={1}>
-          {employee || '—'}
-        </Text>
-      </View>
-      <View style={styles.colCheck}>
-        <PriceCheckBadge check={priceCheck} onPress={() => onPricePress?.(priceCheck)} />
+        <View style={styles.colPayment} {...splitHover}>
+          <Text style={styles.txCell} numberOfLines={1}>
+            {item.paymentMethodLabel || '—'}
+          </Text>
+        </View>
+        <View style={[styles.txAmount, styles.colAmount]} {...splitHover}>
+          {showCash ? (
+            <TxnCashIcon saved={cashSaved} onPress={() => onCashPress(item)} />
+          ) : null}
+          <Text style={styles.rowValue}>{item.amountLabel}</Text>
+        </View>
+        <View style={[styles.colEmployee, styles.txEmployee]}>
+          <EmployeeAvatar person={hoverPerson} size={24} />
+          <Text style={[styles.txCell, styles.txCellSecondary]} numberOfLines={1}>
+            {employee || '—'}
+          </Text>
+        </View>
       </View>
       <FloatingTooltip
         visible={Boolean(splitAnchor && splitTip)}
@@ -1331,6 +1325,8 @@ function StoreSnapshotPanel({
   filterSlotWidth = 0,
   topInset = 0,
   ready = true,
+  onHeaderStats,
+  desktopHeader = null,
 }) {
   const storeName = store?.store || '';
   const isMobile = useIsMobile();
@@ -1338,6 +1334,7 @@ function StoreSnapshotPanel({
   const phone = usePhoneCalls();
   const showPhone = hasApp('phone');
   const showEmails = hasApp('emails');
+  const showFinancials = hasApp('financials');
   const [inventoryQuery, setInventoryQuery] = useState('');
   const [inventoryLimit, setInventoryLimit] = useState(INVENTORY_PAGE);
   const [cash, setCash] = useState(null);
@@ -1684,6 +1681,48 @@ function StoreSnapshotPanel({
     () => storeEmailCapture(txRows, storeName),
     [storeName, txRows],
   );
+
+  useEffect(() => {
+    if (!onHeaderStats) return;
+    const emailEmpty = !emailCapture || emailCapture.customerCount === 0;
+    onHeaderStats({
+      email: showEmails
+        ? {
+            ratio: emailEmpty ? '—' : `${Math.round(emailCapture.rate)}%`,
+            tone: emailEmpty ? null : emailCapture.rate < 80 ? 'low' : 'high',
+          }
+        : null,
+      phone: showPhone
+        ? {
+            ratio: phoneRatio.rate == null ? '—' : phoneRatio.ratio,
+            tone: phoneRatio.rate == null ? null : phoneRatio.rate < 80 ? 'low' : 'high',
+          }
+        : null,
+      people: presentEmployees,
+      till: showFinancials
+        ? {
+            amount:
+              cashLoading && !cash
+                ? '…'
+                : cash
+                  ? formatAmount(cash.cad?.aureusOnHand ?? cash.cad?.expectedOnHand ?? 0, 'CAD')
+                  : cashError || '—',
+          }
+        : null,
+    });
+  }, [
+    cash,
+    cashError,
+    cashLoading,
+    emailCapture,
+    onHeaderStats,
+    phoneRatio,
+    presentEmployees,
+    showEmails,
+    showFinancials,
+    showPhone,
+  ]);
+
   const missingEmails = useMemo(
     () => (emailCapture?.people || []).filter((person) => !person.hasEmail),
     [emailCapture],
@@ -1810,38 +1849,7 @@ function StoreSnapshotPanel({
       meta: cashMeta,
       loading: cashLoading && !cash,
     },
-    showPhone
-      ? {
-          app: SNAPSHOT_APPS.phone,
-          value: phoneRatio.ratio,
-          meta: phoneRatio.total
-            ? `${phoneRatio.answered} answered · ${phoneRatio.missed} missed`
-            : `No inbound calls ${periodLabel === 'Today' ? 'today' : 'in this period'}`,
-          tone: phoneRatio.rate == null ? null : phoneRatio.rate < 80 ? 'low' : 'high',
-          muted: phoneRatio.rate == null,
-        }
-      : null,
-    showEmails
-      ? {
-          app: SNAPSHOT_APPS.emails,
-          value: !emailCapture || emailCapture.customerCount === 0 ? '—' : emailCapture.rateLabel,
-          meta: emailMeta,
-          tone:
-            emailCapture?.customerCount > 0 && emailCapture.rate < 80
-              ? 'low'
-              : emailCapture?.customerCount > 0 && emailCapture.rate >= 80
-                ? 'high'
-                : null,
-          muted: !emailCapture || emailCapture.customerCount === 0,
-        }
-      : null,
-    {
-      app: SNAPSHOT_APPS.employees,
-      value: presentEmployees.length ? `${presentEmployees.length}` : '—',
-      meta: presentEmployees.length ? employeeMeta : 'No one assigned',
-      accessory: <PeopleStack people={presentEmployees} />,
-    },
-  ].filter(Boolean);
+  ];
 
   const mobileContent = (
     <>
@@ -1863,18 +1871,6 @@ function StoreSnapshotPanel({
         />
       </View>
 
-      {showPhone && incomingCalls.length ? (
-        <DashSection title="Phone" meta="Incoming" onPress={() => onOpenApp?.('phone')}>
-          <PhoneSnapshotBody
-            storeName={storeName}
-            startKey={startKey}
-            endKey={endKey}
-            periodLabel={periodLabel}
-            calls={phoneCalls}
-          />
-        </DashSection>
-      ) : null}
-
       <View style={[styles.dashList, styles.dashListLead]}>
         {metricRows.map((row, index) => (
           <DashLink
@@ -1892,41 +1888,6 @@ function StoreSnapshotPanel({
         ))}
       </View>
 
-      {showEmails && missingEmails.length ? (
-        <DashSection
-          title="Missing email"
-          meta={`${missingEmails.length}`}
-          onPress={() => onOpenApp?.('emails')}
-        >
-          {visibleMissing.map((person, index) => (
-            <View
-              key={person.id || `${person.customerName}-${index}`}
-              style={[
-                styles.row,
-                styles.rowStatic,
-                styles.emailRow,
-                hiddenMissing === 0 && index === visibleMissing.length - 1 && styles.rowLast,
-              ]}
-            >
-              <Ionicons name="mail-unread-outline" size={16} color={RED} />
-              <View style={styles.rowCopy}>
-                <Text style={styles.dashTitle} numberOfLines={1}>
-                  {person.customerName}
-                </Text>
-                <Text style={styles.dashMeta} numberOfLines={1}>
-                  {[person.reference, person.employeeName]
-                    .filter((part) => part && part !== '—')
-                    .join(' · ') || 'No email on file'}
-                </Text>
-              </View>
-            </View>
-          ))}
-          {hiddenMissing > 0 ? (
-            <ShowMoreRow remaining={hiddenMissing} onPress={() => onOpenApp?.('emails')} />
-          ) : null}
-        </DashSection>
-      ) : null}
-
       <DashSection title="Transactions" meta={txMeta} onPress={() => onOpenApp?.('transactions')}>
         {transactionsBody}
       </DashSection>
@@ -1940,103 +1901,30 @@ function StoreSnapshotPanel({
 
   const desktopContent = (
     <>
-      <View style={styles.appRow}>
-        <AppBox
-          app={SNAPSHOT_APPS.financials}
-          meta="Now"
-          onOpen={onOpenApp}
-          style={[styles.appRowBox, styles.appRowBoxDesktop]}
-        >
-          {financialsBody}
-        </AppBox>
-        <AppBox
-          app={SNAPSHOT_APPS.inventory}
-          meta={itemMeta}
-          onOpen={onOpenApp}
-          style={[styles.appRowBox, styles.appRowBoxDesktop]}
-          bodyStyle={styles.inventoryBoxBody}
-        >
-          <InventorySearch value={inventoryQuery} onChangeText={setInventoryQuery} />
-          <ScrollView
-            style={styles.inventoryList}
-            contentContainerStyle={styles.boxListContent}
-            nestedScrollEnabled
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-          >
-            {inventoryBody}
-          </ScrollView>
-        </AppBox>
-        <AppBox
-          app={SNAPSHOT_APPS.employees}
-          meta={employeeMeta}
-          onOpen={onOpenApp}
-          style={[styles.appRowBox, styles.appRowBoxDesktop]}
-          bodyStyle={styles.appBoxBodyFill}
-        >
-          <ScrollView
-            style={styles.employeeList}
-            contentContainerStyle={styles.boxListContent}
-            nestedScrollEnabled
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-          >
-            {employeesBody}
-          </ScrollView>
-        </AppBox>
-        {showPhone ? (
-          <AppBox
-            app={SNAPSHOT_APPS.phone}
-            meta={periodLabel}
-            onOpen={onOpenApp}
-            style={[styles.appRowBox, styles.appRowBoxDesktop]}
-            bodyStyle={styles.appBoxBodyFill}
-            muted={phoneRatio.rate == null}
-          >
-            <PhoneSnapshotBody
-              storeName={storeName}
-              startKey={startKey}
-              endKey={endKey}
-              periodLabel={periodLabel}
-              calls={phoneCalls}
+      {desktopHeader}
+      <View style={styles.homeTxTable}>
+        <TxTableHeader />
+        {txRows.length === 0 ? (
+          <Text style={styles.homeTxEmpty}>
+            {`No transactions ${periodLabel === 'Today' ? 'today' : 'in this period'}.`}
+          </Text>
+        ) : (
+          txRows.map((item, index) => (
+            <TransactionRow
+              key={item.id}
+              item={item}
+              last={index === txRows.length - 1}
+              onPress={onOpenTransaction}
+              cashSaved={cashSlips.isSaved(item)}
+              onCashPress={cashSlips.openEditor}
+              priceCheck={priceChecks.get(item.id)}
+              onPricePress={setPriceReview}
+              employeePerson={employeePersonForTx(item, employeesByName, staff)}
+              onAmountHover={onAmountHover}
             />
-          </AppBox>
-        ) : null}
-        {showEmails ? (
-          <AppBox
-            app={SNAPSHOT_APPS.emails}
-            meta={periodLabel}
-            onOpen={onOpenApp}
-            style={[styles.appRowBox, styles.appRowBoxDesktop]}
-            bodyStyle={styles.appBoxBodyFill}
-            muted={!emailCapture || emailCapture.customerCount === 0}
-          >
-            <ScrollView
-              style={styles.employeeList}
-              contentContainerStyle={styles.boxListContent}
-              nestedScrollEnabled
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-            >
-              <EmailsSnapshotBody
-                storeName={storeName}
-                txRows={txRows}
-                periodLabel={periodLabel}
-                ready={ready}
-              />
-            </ScrollView>
-          </AppBox>
-        ) : null}
+          ))
+        )}
       </View>
-
-      <AppBox
-        app={SNAPSHOT_APPS.transactions}
-        meta={txMeta}
-        onOpen={onOpenApp}
-        style={styles.txAppBox}
-      >
-        {transactionsBody}
-      </AppBox>
     </>
   );
 
@@ -2047,7 +1935,10 @@ function StoreSnapshotPanel({
         contentContainerStyle={[
           styles.scrollContent,
           isMobile && styles.scrollContentMobile,
-          { paddingTop: topInset + 8, paddingBottom: isMobile ? 104 : 32 },
+          {
+            paddingTop: isMobile ? topInset + 8 : desktopHeader ? 0 : 8,
+            paddingBottom: isMobile ? 104 : 32,
+          },
         ]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
@@ -2093,15 +1984,17 @@ export default memo(
     prev.onFilterTop === next.onFilterTop &&
     prev.filterSlotWidth === next.filterSlotWidth &&
     prev.topInset === next.topInset &&
-    prev.ready === next.ready,
+    prev.ready === next.ready &&
+    prev.onHeaderStats === next.onHeaderStats &&
+    prev.desktopHeader === next.desktopHeader,
 );
 
 const styles = StyleSheet.create({
   body: {
     flex: 1,
     minHeight: 0,
-    backgroundColor: '#f2f2f7',
-    paddingHorizontal: 16,
+    backgroundColor: CANVAS,
+    paddingHorizontal: 24,
   },
   bodyMobile: {
     paddingHorizontal: 0,
@@ -2229,9 +2122,9 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(60,60,67,0.08)',
   },
   dashIcon: {
-    width: 46,
-    height: 46,
-    borderRadius: 13,
+    width: 22,
+    height: 22,
+    borderRadius: 6,
     marginLeft: 16,
     alignItems: 'center',
     justifyContent: 'center',
@@ -2576,9 +2469,11 @@ const styles = StyleSheet.create({
   },
   appBox: {
     backgroundColor: '#fff',
-    borderRadius: 14,
+    borderRadius: 8,
     overflow: 'hidden',
     flexDirection: 'column',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: SEPARATOR,
   },
   appBoxHead: {
     flexDirection: 'row',
@@ -2597,9 +2492,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#f7f7f8',
   },
   appBoxIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
+    width: 22,
+    height: 22,
+    borderRadius: 6,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -2612,10 +2507,10 @@ const styles = StyleSheet.create({
   },
   appBoxTitle: {
     fontFamily,
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: '600',
     color: LABEL,
-    letterSpacing: -0.2,
+    letterSpacing: 0,
   },
   appBoxMeta: {
     fontFamily,
@@ -2657,51 +2552,129 @@ const styles = StyleSheet.create({
     minWidth: '100%',
   },
   txTable: {
-    minWidth: 1160,
     width: '100%',
   },
-  txTableHeader: {
+  tillRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 34,
-    paddingHorizontal: 12,
-    backgroundColor: '#f7f7f8',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: SEPARATOR,
-  },
-  txTableHeaderLabel: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: SECONDARY,
-    letterSpacing: -0.04,
-    flexShrink: 1,
-  },
-  txTableRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 48,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: SEPARATOR,
+    gap: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    marginBottom: 8,
+    alignSelf: 'flex-start',
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
+  tillRowHovered: {
+    opacity: 0.72,
+  },
+  tillAmount: {
+    fontFamily,
+    fontSize: 22,
+    fontWeight: '600',
+    color: LABEL,
+    letterSpacing: -0.4,
+    fontVariant: ['tabular-nums'],
+  },
+  tillLabel: {
+    fontFamily,
+    fontSize: 13,
+    color: SECONDARY,
+  },
+  homeTxTable: {
+    alignSelf: 'stretch',
+    width: '100%',
+  },
+  homeTxHeader: {
+    backgroundColor: 'transparent',
+    minHeight: 36,
+    paddingLeft: 8,
+  },
+  homeTxHeaderLabel: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.08,
+    textTransform: 'uppercase',
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  homeTxHeaderRule: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: SEPARATOR,
+  },
+  homeTxEmpty: {
+    fontFamily,
+    fontSize: 13,
+    color: SECONDARY,
+    paddingHorizontal: 8,
+    paddingVertical: 28,
+  },
+  homeTxRowHovered: {
+    backgroundColor: '#f5f5f5',
+  },
+  txTableHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 36,
+    paddingLeft: 8,
+    backgroundColor: 'transparent',
+  },
+  txTableHeaderLabel: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.08,
+    flexShrink: 1,
+  },
+  txTableRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 64,
+    paddingLeft: 8,
+    ...Platform.select({
+      web: {
+        cursor: 'pointer',
+        transitionProperty: 'background-color',
+        transitionDuration: '120ms',
+      },
+      default: {},
+    }),
+  },
+  txTableRowBody: {
+    flex: 1,
+    minWidth: 0,
+    alignSelf: 'stretch',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+    marginLeft: 12,
+    paddingRight: 16,
+  },
+  txTableRowDivider: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: SEPARATOR,
+  },
   txCell: {
     fontFamily,
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '400',
     color: LABEL,
-    letterSpacing: -0.2,
+    letterSpacing: 0,
   },
   txCellPrimary: {
     fontWeight: '500',
   },
   txCellSecondary: {
     color: SECONDARY,
+  },
+  txTimeUnder: {
+    fontSize: 12,
+    marginTop: 1,
   },
   txRef: {
     flexDirection: 'row',
@@ -2719,49 +2692,43 @@ const styles = StyleSheet.create({
   colPhoto: {
     width: 36,
     flexShrink: 0,
-    paddingRight: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   colDate: {
-    flex: 1.05,
-    minWidth: 88,
-    paddingRight: 12,
+    flex: 1.1,
+    minWidth: 0,
+    justifyContent: 'center',
   },
   colTime: {
     flex: 0.75,
-    minWidth: 58,
-    paddingRight: 12,
+    minWidth: 0,
   },
   colRef: {
     flex: 1.2,
-    minWidth: 108,
-    paddingRight: 12,
+    minWidth: 0,
   },
   colCustomer: {
     flex: 1.8,
-    minWidth: 120,
-    paddingRight: 12,
+    minWidth: 0,
   },
   colItems: {
     flex: 2.2,
-    minWidth: 140,
-    paddingRight: 12,
+    minWidth: 0,
   },
   colPayment: {
     flex: 1.2,
-    minWidth: 96,
-    paddingRight: 12,
+    minWidth: 0,
   },
   colAmount: {
     flex: 1.15,
-    minWidth: 108,
-    paddingRight: 12,
+    minWidth: 0,
     justifyContent: 'flex-end',
     textAlign: 'right',
   },
   colEmployee: {
-    flex: 1.55,
-    minWidth: 132,
-    paddingRight: 12,
+    flex: 1.6,
+    minWidth: 0,
   },
   txEmployee: {
     flexDirection: 'row',
@@ -2771,7 +2738,7 @@ const styles = StyleSheet.create({
   },
   colCheck: {
     flex: 1.1,
-    minWidth: 118,
+    minWidth: 0,
     alignItems: 'flex-end',
     textAlign: 'right',
   },
@@ -2834,22 +2801,25 @@ const styles = StyleSheet.create({
   searchField: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    minHeight: 36,
-    marginHorizontal: 16,
+    gap: 8,
+    minHeight: 40,
+    marginHorizontal: 12,
     marginTop: 10,
     marginBottom: 4,
-    paddingHorizontal: 10,
-    borderRadius: 9,
-    backgroundColor: FILL,
+    paddingLeft: 12,
+    paddingRight: 8,
+    borderRadius: 8,
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: SEPARATOR,
   },
   searchInput: {
     flex: 1,
     fontFamily,
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: '400',
     color: LABEL,
-    paddingVertical: 6,
+    paddingVertical: 10,
     ...Platform.select({
       web: { outlineStyle: 'none' },
       default: {},

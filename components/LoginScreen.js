@@ -1,3 +1,4 @@
+import { Ionicons } from '@expo/vector-icons';
 import {
   ActivityIndicator,
   Image,
@@ -8,10 +9,11 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { useIsMobile } from '../lib/mobileUi';
+import { CANVAS, useIsMobile } from '../lib/mobileUi';
 import { MobileSafeTop } from './MobileChrome';
 
 const fontFamily = 'Sohne';
+const ICON = '#8e8e93';
 
 export default function LoginScreen({
   loginId,
@@ -40,34 +42,50 @@ export default function LoginScreen({
 
         <View style={[styles.card, isMobile && styles.cardMobile]}>
           <View style={[styles.fields, isMobile && styles.fieldsMobile]}>
-            <TextInput
-              style={[styles.input, isMobile && styles.inputMobile]}
-              value={loginId}
-              onChangeText={onChangeLoginId}
-              placeholder="Email or User Id"
-              placeholderTextColor="#8e8e93"
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="email-address"
-              textContentType="username"
-              editable={!submitting}
-              returnKeyType="next"
-            />
+            <View style={[styles.fieldRow, isMobile && styles.fieldRowMobile]}>
+              <Ionicons
+                name="mail-outline"
+                size={isMobile ? 20 : 16}
+                color={ICON}
+                style={styles.fieldIcon}
+              />
+              <TextInput
+                style={[styles.input, isMobile && styles.inputMobile]}
+                value={loginId}
+                onChangeText={onChangeLoginId}
+                placeholder="Email or User Id"
+                placeholderTextColor="#8e8e93"
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="email-address"
+                textContentType="username"
+                editable={!submitting}
+                returnKeyType="next"
+              />
+            </View>
             <View style={[styles.fieldDivider, isMobile && styles.fieldDividerMobile]} />
-            <TextInput
-              style={[styles.input, isMobile && styles.inputMobile]}
-              value={password}
-              onChangeText={onChangePassword}
-              placeholder="Password"
-              placeholderTextColor="#8e8e93"
-              secureTextEntry
-              textContentType="password"
-              editable={!submitting}
-              returnKeyType="done"
-              onSubmitEditing={() => {
-                if (canSubmit) onSubmit();
-              }}
-            />
+            <View style={[styles.fieldRow, isMobile && styles.fieldRowMobile]}>
+              <Ionicons
+                name="lock-closed-outline"
+                size={isMobile ? 20 : 16}
+                color={ICON}
+                style={styles.fieldIcon}
+              />
+              <TextInput
+                style={[styles.input, isMobile && styles.inputMobile]}
+                value={password}
+                onChangeText={onChangePassword}
+                placeholder="Password"
+                placeholderTextColor="#8e8e93"
+                secureTextEntry
+                textContentType="password"
+                editable={!submitting}
+                returnKeyType="done"
+                onSubmitEditing={() => {
+                  if (canSubmit) onSubmit();
+                }}
+              />
+            </View>
           </View>
 
           {error ? <Text style={[styles.errorText, isMobile && styles.errorTextMobile]}>{error}</Text> : null}
@@ -84,7 +102,15 @@ export default function LoginScreen({
             {submitting ? (
               <ActivityIndicator color="#fff" />
             ) : (
-              <Text style={[styles.buttonText, isMobile && styles.buttonTextMobile]}>Log in</Text>
+              <View style={styles.buttonInner}>
+                <Ionicons
+                  name="log-in-outline"
+                  size={isMobile ? 20 : 16}
+                  color="#fff"
+                  style={styles.fieldIcon}
+                />
+                <Text style={[styles.buttonText, isMobile && styles.buttonTextMobile]}>Log in</Text>
+              </View>
             )}
           </Pressable>
         </View>
@@ -96,15 +122,16 @@ export default function LoginScreen({
 const styles = StyleSheet.create({
   page: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
     paddingHorizontal: 24,
+    paddingTop: 72,
   },
   pageMobile: {
-    justifyContent: 'flex-start',
     paddingHorizontal: 0,
-    backgroundColor: '#f2f2f7',
+    paddingTop: 0,
+    backgroundColor: CANVAS,
   },
   inner: {
     width: '100%',
@@ -112,17 +139,18 @@ const styles = StyleSheet.create({
   },
   innerMobile: {
     flex: 1,
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
     paddingHorizontal: 28,
+    paddingTop: 64,
     paddingBottom: 48,
   },
   logoSlot: {
     width: '100%',
     alignItems: 'center',
-    marginBottom: 36,
+    marginBottom: 120,
   },
   logoSlotMobile: {
-    marginBottom: 28,
+    marginBottom: 108,
   },
   card: {
     width: '100%',
@@ -133,15 +161,15 @@ const styles = StyleSheet.create({
     maxWidth: 400,
   },
   logo: {
-    width: 112,
-    height: 112,
-    borderRadius: 56,
+    width: 72,
+    height: 72,
+    borderRadius: 36,
     overflow: 'hidden',
   },
   logoMobile: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
   },
   fields: {
     borderWidth: StyleSheet.hairlineWidth,
@@ -154,27 +182,40 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderColor: 'rgba(60,60,67,0.18)',
   },
+  fieldRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingLeft: 12,
+  },
+  fieldRowMobile: {
+    paddingLeft: 14,
+  },
+  fieldIcon: {
+    marginRight: 8,
+  },
   input: {
     fontFamily,
+    flex: 1,
     fontSize: 13,
     color: '#1a1a1a',
-    paddingHorizontal: 12,
+    paddingRight: 12,
     paddingVertical: 12,
     outlineStyle: 'none',
   },
   inputMobile: {
     fontSize: 17,
-    paddingHorizontal: 16,
+    paddingRight: 16,
     paddingVertical: 14,
     color: '#1d1d1f',
   },
   fieldDivider: {
     height: StyleSheet.hairlineWidth,
     backgroundColor: '#d0d0d0',
+    marginLeft: 36,
   },
   fieldDividerMobile: {
     backgroundColor: 'rgba(60,60,67,0.18)',
-    marginLeft: 16,
+    marginLeft: 42,
   },
   errorText: {
     fontFamily,
@@ -191,6 +232,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#1a1a1a',
     borderRadius: 8,
     paddingVertical: 10,
+    paddingHorizontal: 12,
     alignItems: 'center',
     minHeight: 40,
     justifyContent: 'center',
@@ -201,9 +243,15 @@ const styles = StyleSheet.create({
   },
   buttonMobile: {
     marginTop: 20,
-    borderRadius: 14,
+    borderRadius: 12,
     minHeight: 50,
     paddingVertical: 14,
+    paddingHorizontal: 14,
+  },
+  buttonInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   buttonDisabled: {
     opacity: 0.7,

@@ -22,7 +22,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { MOBILE, mobileSafeBottom, mobileSafeTop, useIsMobile } from '../lib/mobileUi';
+import { CANVAS, mobileSafeBottom, mobileSafeTop, useIsMobile } from '../lib/mobileUi';
 import { ClockedInMark, useIsClockedIn } from '../lib/clockedIn';
 
 export const FONT = Platform.select({
@@ -32,19 +32,19 @@ export const FONT = Platform.select({
 });
 
 export const T = {
-  bg: '#FFFFFF',
+  bg: CANVAS,
   card: '#FFFFFF',
-  text: '#1D1D1F',
-  secondary: '#8E8E93',
+  text: '#1a1a1a',
+  secondary: '#8e8e93',
   tertiary: '#C7C7CC',
-  fill: '#E8E8ED',
-  fillSoft: 'rgba(118,118,128,0.12)',
-  hairline: 'rgba(60, 60, 67, 0.18)',
-  blue: MOBILE.blue,
-  green: '#34C759',
-  orange: '#FF9500',
-  red: '#FF3B30',
-  purple: '#AF52DE',
+  fill: '#ffffff',
+  fillSoft: 'rgba(0,0,0,0.04)',
+  hairline: '#d0d0d0',
+  blue: '#1a1a1a',
+  green: '#1F8A4E',
+  orange: '#C2410C',
+  red: '#B91C1C',
+  purple: '#6D28D9',
 };
 
 if (Platform.OS === 'web' && typeof document !== 'undefined') {
@@ -57,18 +57,19 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
   }
   style.textContent = [
     '.cgold-triage-btn{cursor:pointer;}',
-    '.cgold-triage-btn:hover{background-color:#f5f5f7!important;}',
-    '.cgold-triage-btn.cgold-triage-btn-green:hover{background-color:#1A7344!important;}',
+    '.cgold-triage-btn:hover{background-color:#f5f5f5!important;}',
+    '.cgold-triage-btn.cgold-triage-btn-fill:hover{background-color:#333!important;}',
+    '.cgold-triage-btn.cgold-triage-btn-green:hover{background-color:#176b3c!important;}',
   ].join('');
 }
 
 export const TONES = {
-  neutral: { fg: T.secondary, bg: 'rgba(142,142,147,0.14)' },
-  blue: { fg: T.blue, bg: 'rgba(0,122,255,0.12)' },
-  green: { fg: '#248A3D', bg: 'rgba(52,199,89,0.16)' },
-  orange: { fg: '#C93400', bg: 'rgba(255,149,0,0.18)' },
-  red: { fg: '#D70015', bg: 'rgba(255,59,48,0.14)' },
-  purple: { fg: '#8944AB', bg: 'rgba(175,82,222,0.14)' },
+  neutral: { fg: T.secondary, bg: 'rgba(0,0,0,0.05)' },
+  blue: { fg: T.text, bg: 'rgba(0,0,0,0.06)' },
+  green: { fg: '#15803D', bg: 'rgba(31,138,78,0.12)' },
+  orange: { fg: '#C2410C', bg: 'rgba(194,65,12,0.10)' },
+  red: { fg: '#B91C1C', bg: 'rgba(185,28,28,0.10)' },
+  purple: { fg: '#6D28D9', bg: 'rgba(109,40,217,0.10)' },
 };
 
 export const DRAWER_OPEN_MS = 280;
@@ -536,7 +537,7 @@ export function SegmentedSlider({ options, value, onChange, style, fill = false 
   const index = matched ? found : 0;
   const [trackW, setTrackW] = useState(0);
   const slide = useRef(new Animated.Value(index)).current;
-  const inset = 2;
+  const inset = 0;
   const count = Math.max(keys.length, 1);
   const segW = Math.max(0, (trackW - inset * 2) / count);
 
@@ -625,7 +626,13 @@ export function BarButton({ label, icon, onPress, disabled, accessibilityLabel, 
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel || label}
       {...(Platform.OS === 'web'
-        ? { className: green ? 'cgold-triage-btn cgold-triage-btn-green' : 'cgold-triage-btn' }
+        ? {
+            className: green
+              ? 'cgold-triage-btn cgold-triage-btn-green'
+              : fill
+                ? 'cgold-triage-btn cgold-triage-btn-fill'
+                : 'cgold-triage-btn',
+          }
         : null)}
     >
       {icon ? <Ionicons name={icon} size={large ? 18 : 15} color={iconColor} /> : null}
@@ -647,7 +654,7 @@ export function TextAction({ label, icon, onPress, disabled, destructive, strong
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel || label}
     >
-      {icon ? <Ionicons name={icon} size={17} color={destructive ? T.red : T.blue} /> : null}
+      {icon ? <Ionicons name={icon} size={17} color={destructive ? T.red : T.text} /> : null}
       <Text
         style={[
           styles.textActionLabel,
@@ -672,7 +679,7 @@ export function IconAction({ icon, onPress, accessibilityLabel, active, size = 1
       accessibilityLabel={accessibilityLabel}
       accessibilityState={active != null ? { selected: Boolean(active) } : undefined}
     >
-      <Ionicons name={icon} size={size} color={T.blue} />
+      <Ionicons name={icon} size={size} color={T.text} />
     </Pressable>
   );
 }
@@ -899,7 +906,7 @@ export function MobileCameraButton({ count = 0, busy = false, disabled = false, 
         accessibilityLabel || (count ? `Take a photo, ${count} attached` : 'Take a photo')
       }
     >
-      <Ionicons name={busy ? 'ellipsis-horizontal' : 'camera'} size={22} color={disabled ? T.secondary : T.blue} />
+      <Ionicons name={busy ? 'ellipsis-horizontal' : 'camera'} size={22} color={disabled ? T.secondary : T.text} />
       {count > 0 ? (
         <View style={styles.mobileCamBadge} pointerEvents="none">
           <Text style={styles.mobileCamBadgeText}>{count > 9 ? '9+' : count}</Text>
@@ -1038,7 +1045,7 @@ const styles = StyleSheet.create({
     color: '#C2410C',
   },
   navBtnPrimary: {
-    backgroundColor: T.blue,
+    backgroundColor: T.text,
   },
   navBtnDone: {
     backgroundColor: T.green,
@@ -1132,10 +1139,12 @@ const styles = StyleSheet.create({
   emptyIcon: {
     width: 56,
     height: 56,
-    borderRadius: 28,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: T.fillSoft,
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
     marginBottom: 6,
   },
   emptyTitle: {
@@ -1193,9 +1202,10 @@ const styles = StyleSheet.create({
     flexDirection: 'column',
     alignItems: 'stretch',
     gap: 8,
-    paddingHorizontal: 12,
+    paddingHorizontal: 16,
     paddingTop: 8,
     paddingBottom: 10,
+    backgroundColor: T.bg,
   },
   tabs: {
     flex: 1,
@@ -1345,7 +1355,7 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   barButton: {
-    minHeight: 32,
+    minHeight: 38,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
@@ -1365,8 +1375,8 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   barButtonFill: {
-    backgroundColor: T.blue,
-    borderColor: T.blue,
+    backgroundColor: T.text,
+    borderColor: T.text,
   },
   barButtonGreen: {
     backgroundColor: '#1F8A4E',
@@ -1401,7 +1411,7 @@ const styles = StyleSheet.create({
     fontFamily: FONT,
     fontSize: 14,
     fontWeight: '400',
-    color: T.blue,
+    color: T.text,
   },
   textActionStrong: {
     fontWeight: '600',
@@ -1418,7 +1428,7 @@ const styles = StyleSheet.create({
     ...webCursor,
   },
   iconActionActive: {
-    backgroundColor: 'rgba(0,122,255,0.12)',
+    backgroundColor: 'rgba(0,0,0,0.06)',
   },
   pill: {
     alignSelf: 'flex-start',
@@ -1470,7 +1480,7 @@ const styles = StyleSheet.create({
     ...webCursor,
   },
   statActive: {
-    backgroundColor: 'rgba(0,122,255,0.06)',
+    backgroundColor: '#f5f5f5',
   },
   statLabel: {
     fontFamily: FONT,
@@ -1549,7 +1559,7 @@ const styles = StyleSheet.create({
   },
   group: {
     backgroundColor: T.card,
-    borderRadius: 12,
+    borderRadius: 8,
     overflow: 'hidden',
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: T.hairline,
@@ -1584,35 +1594,39 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    minHeight: 32,
-    paddingHorizontal: 10,
+    minHeight: 40,
+    paddingHorizontal: 12,
     borderRadius: 8,
-    backgroundColor: '#e8e8ed',
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
   },
   searchLg: {
-    minHeight: 44,
+    minHeight: 40,
     paddingHorizontal: 12,
-    borderRadius: 12,
+    borderRadius: 8,
     gap: 8,
   },
   searchInput: {
     flex: 1,
     minWidth: 0,
     fontFamily: FONT,
-    fontSize: 14,
+    fontSize: 13,
     color: T.text,
-    paddingVertical: 4,
+    paddingVertical: 10,
     outlineStyle: 'none',
   },
   searchInputLg: {
-    fontSize: 17,
-    paddingVertical: 8,
+    fontSize: 16,
+    paddingVertical: 10,
   },
   mobileCam: {
     width: 48,
     height: 48,
-    borderRadius: 24,
-    backgroundColor: 'rgba(0,122,255,0.12)',
+    borderRadius: 8,
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
@@ -1644,21 +1658,24 @@ const styles = StyleSheet.create({
   mobileList: {
     backgroundColor: '#fff',
     overflow: 'hidden',
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
   },
   mobileListRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    minHeight: 76,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    minHeight: 68,
+    paddingHorizontal: 12,
+    paddingVertical: 14,
     backgroundColor: '#fff',
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(60,60,67,0.24)',
+    borderBottomColor: T.hairline,
     ...webCursor,
   },
   mobileListRowSelected: {
-    backgroundColor: '#f2f2f7',
+    backgroundColor: '#f5f5f5',
   },
   mobileListRowLast: {
     borderBottomWidth: 0,
@@ -1669,19 +1686,19 @@ const styles = StyleSheet.create({
   mobileListCopy: {
     flex: 1,
     minWidth: 0,
-    gap: 2,
+    gap: 3,
   },
   mobileListTitle: {
     fontFamily: FONT,
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: '600',
     color: T.text,
-    letterSpacing: -0.3,
+    letterSpacing: 0,
   },
   mobileListSub: {
     fontFamily: FONT,
-    fontSize: 14,
-    lineHeight: 18,
+    fontSize: 13,
+    lineHeight: 17,
     color: T.secondary,
   },
   mobileListMeta: {
@@ -1742,11 +1759,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'stretch',
     alignSelf: 'center',
-    height: 32,
+    height: 38,
     minWidth: 220,
-    padding: 2,
+    padding: 0,
     borderRadius: 8,
-    backgroundColor: '#e8e8ed',
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
+    overflow: 'hidden',
   },
   segmentedSliderFill: {
     alignSelf: 'stretch',
@@ -1754,26 +1774,16 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   segmentedSliderMobile: {
-    height: 36,
-    borderRadius: 10,
+    height: 38,
+    borderRadius: 8,
   },
   segmentedThumb: {
     position: 'absolute',
-    top: 2,
-    bottom: 2,
-    left: 2,
-    borderRadius: 7,
-    backgroundColor: '#fff',
-    ...Platform.select({
-      web: { boxShadow: '0 1px 3px rgba(0,0,0,0.12), 0 1px 1px rgba(0,0,0,0.04)' },
-      default: {
-        shadowColor: '#000',
-        shadowOpacity: 0.12,
-        shadowRadius: 3,
-        shadowOffset: { width: 0, height: 1 },
-        elevation: 2,
-      },
-    }),
+    top: 0,
+    bottom: 0,
+    left: 0,
+    borderRadius: 0,
+    backgroundColor: T.text,
   },
   segmentedHit: {
     flex: 1,
@@ -1791,12 +1801,13 @@ const styles = StyleSheet.create({
   segmentedLabel: {
     fontFamily: FONT,
     fontSize: 13,
-    fontWeight: '500',
-    color: T.text,
-    letterSpacing: -0.2,
+    fontWeight: '400',
+    color: T.secondary,
+    letterSpacing: 0,
   },
   segmentedLabelActive: {
     fontWeight: '600',
+    color: '#fff',
   },
   segmentedCount: {
     fontFamily: FONT,
@@ -1806,6 +1817,6 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
   },
   segmentedCountActive: {
-    color: T.text,
+    color: 'rgba(255,255,255,0.78)',
   },
 });

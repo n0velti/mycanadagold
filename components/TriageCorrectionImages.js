@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { MAX_REVIEW_IMAGES, normalizeReviewImages } from '../lib/triageDraft';
-import { MOBILE, mobileSafeBottom, useIsMobile } from '../lib/mobileUi';
+import { mobileSafeBottom, useIsMobile } from '../lib/mobileUi';
 import { getVideoElement, useWebcam, webcamSupported } from '../lib/webcam';
 
 const fontFamily = Platform.select({
@@ -20,10 +20,10 @@ const fontFamily = Platform.select({
   default: 'Sohne',
 });
 
-const ACCENT = MOBILE.blue;
-const TEXT = '#1d1d1f';
+const ACCENT = '#1a1a1a';
+const TEXT = '#1a1a1a';
 const SECONDARY = '#8e8e93';
-const FILL = '#e8e8ed';
+const FILL = '#f5f5f5';
 
 const PICKER_OPTIONS = {
   mediaTypes: ['images'],

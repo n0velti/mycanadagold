@@ -3518,27 +3518,28 @@ const styles = StyleSheet.create({
     backgroundColor: T.bg,
   },
   bodyMobile: {
-    backgroundColor: '#fff',
+    backgroundColor: T.bg,
   },
   mobileList: {
     flex: 1,
     minHeight: 0,
-    backgroundColor: '#fff',
+    backgroundColor: T.bg,
   },
   mobileListContent: {
     paddingTop: 0,
     paddingBottom: 40,
     flexGrow: 1,
-    backgroundColor: '#fff',
+    backgroundColor: T.bg,
+    paddingHorizontal: 16,
   },
   mobileGroupStart: {
-    borderTopLeftRadius: 12,
-    borderTopRightRadius: 12,
+    borderTopLeftRadius: 8,
+    borderTopRightRadius: 8,
     overflow: 'hidden',
   },
   mobileGroupEnd: {
-    borderBottomLeftRadius: 12,
-    borderBottomRightRadius: 12,
+    borderBottomLeftRadius: 8,
+    borderBottomRightRadius: 8,
     overflow: 'hidden',
   },
   mobileReceive: {

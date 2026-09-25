@@ -5,6 +5,7 @@ import {
   Animated,
   Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -57,6 +58,8 @@ const fontFamily = Platform.select({
   android: 'Sohne',
   default: 'Sohne',
 });
+
+const titleFontFamily = 'SohneLeicht';
 
 const BLUE = '#0A84FF';
 const INBOX_WIDTH = 340;
@@ -784,6 +787,7 @@ export default function MessagesScreen({
   const [aiThinkingId, setAiThinkingId] = useState(null);
   const [error, setError] = useState('');
   const [photoPerson, setPhotoPerson] = useState(null);
+  const [menuConversation, setMenuConversation] = useState(null);
   const [menuMessageId, setMenuMessageId] = useState(null);
   const threadRef = useRef(null);
   const sendScale = useRef(new Animated.Value(1)).current;
@@ -1099,11 +1103,6 @@ export default function MessagesScreen({
       return hay.includes(q);
     });
   }, [teams, query]);
-
-  const onlinePeople = useMemo(
-    () => peopleIndex.filter((person) => person.isOnline && person.id !== myId),
-    [peopleIndex, myId],
-  );
 
   useEffect(() => {
     if (!menuMessageId || Platform.OS !== 'web' || typeof window === 'undefined') return undefined;
@@ -1496,55 +1495,57 @@ export default function MessagesScreen({
           : row.isGroup
           ? 'New group chat'
           : 'Start the conversation';
+      const openMenu = (event) => {
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        setMenuConversation(row);
+      };
       return (
-        <View
+        <Pressable
           key={row.conversationId}
+          onPress={() => openConversation(row.conversationId)}
+          onLongPress={openMenu}
+          delayLongPress={380}
           {...(Platform.OS === 'web'
-            ? { className: selected ? 'cgold-dm-row cgold-dm-row-active' : 'cgold-dm-row' }
+            ? {
+                className: selected ? 'cgold-dm-row cgold-dm-row-active' : 'cgold-dm-row',
+                onContextMenu: openMenu,
+              }
             : null)}
-          style={[styles.personRow, selected && styles.personRowSelected]}
+          style={({ pressed }) => [
+            styles.personRow,
+            selected && styles.personRowSelected,
+            pressed && styles.rowPressed,
+          ]}
+          accessibilityLabel={`Conversation with ${conversationTitle(row)}`}
         >
-          <Pressable
-            onPress={() => openConversation(row.conversationId)}
-            onLongPress={() => confirmDeleteConversation(row, () => handleDeleteConversation(row))}
-            style={({ pressed }) => [styles.rowOpen, pressed && styles.rowPressed]}
-          >
-            <ConversationAvatar conversation={row} size={52} />
-            <View style={styles.personCopy}>
-              <View style={styles.personTop}>
-                <Text style={[styles.personName, unread && styles.personNameUnread]} numberOfLines={1}>
-                  {conversationTitle(row)}
-                </Text>
-                <Text style={[styles.personTime, unread && styles.personTimeUnread]}>
-                  {formatInboxTime(row.lastMessageAt)}
-                </Text>
-              </View>
-              <View style={styles.personBottom}>
-                <Text
-                  style={[styles.personSub, unread && styles.personPreviewUnread]}
-                  numberOfLines={1}
-                >
-                  {preview}
-                </Text>
-                {unread ? (
-                  <View style={styles.unreadPill}>
-                    <Text style={styles.unreadPillText}>
-                      {row.unreadCount > 9 ? '9+' : row.unreadCount}
-                    </Text>
-                  </View>
-                ) : null}
-              </View>
+          <ConversationAvatar conversation={row} size={52} />
+          <View style={styles.personCopy}>
+            <View style={styles.personTop}>
+              <Text style={[styles.personName, unread && styles.personNameUnread]} numberOfLines={1}>
+                {conversationTitle(row)}
+              </Text>
+              <Text style={[styles.personTime, unread && styles.personTimeUnread]}>
+                {formatInboxTime(row.lastMessageAt)}
+              </Text>
             </View>
-          </Pressable>
-          <Pressable
-            onPress={() => confirmDeleteConversation(row, () => handleDeleteConversation(row))}
-            hitSlop={8}
-            style={styles.rowDelete}
-            accessibilityLabel={`Delete chat with ${conversationTitle(row)}`}
-          >
-            <Ionicons name="trash-outline" size={18} color="#8e8e93" />
-          </Pressable>
-        </View>
+            <View style={styles.personBottom}>
+              <Text
+                style={[styles.personSub, unread && styles.personPreviewUnread]}
+                numberOfLines={1}
+              >
+                {preview}
+              </Text>
+              {unread ? (
+                <View style={styles.unreadPill}>
+                  <Text style={styles.unreadPillText}>
+                    {row.unreadCount > 9 ? '9+' : row.unreadCount}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          </View>
+        </Pressable>
       );
     });
   };
@@ -1557,31 +1558,9 @@ export default function MessagesScreen({
       {showInbox ? (
         <View style={[styles.inbox, isMobile && styles.inboxMobile]}>
           <View style={[styles.inboxHeader, isMobile && styles.inboxHeaderMobile]}>
-            <Text style={[styles.inboxTitle, isMobile && styles.inboxTitleMobile]} numberOfLines={1}>
+            <Text style={styles.inboxTitle} numberOfLines={1}>
               {composeOpen ? 'New' : 'Messages'}
             </Text>
-            <View style={styles.inboxHeaderActions}>
-              <Pressable
-                onPress={() => {
-                  setComposeOpen((current) => !current);
-                  setSelectedIds([]);
-                  setGroupName('');
-                  setQuery('');
-                  if (isMobile && !composeOpen) setActiveId(null);
-                }}
-                style={({ hovered, pressed }) => [
-                  styles.composeButton,
-                  (hovered || pressed) && styles.composeButtonHover,
-                ]}
-                accessibilityLabel={composeOpen ? 'Close compose' : 'Start a conversation'}
-              >
-                <Ionicons
-                  name={composeOpen ? 'close' : 'create-outline'}
-                  size={isMobile ? 22 : 18}
-                  color={BLUE}
-                />
-              </Pressable>
-            </View>
           </View>
           {composeOpen && selectedPeople.length > 0 ? (
             <View style={[styles.recipientBar, isMobile && styles.recipientBarMobile]}>
@@ -1634,46 +1613,45 @@ export default function MessagesScreen({
               />
             </View>
           ) : null}
-          {isMobile && !composeOpen && onlinePeople.length > 0 ? (
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              style={styles.storiesScroll}
-              contentContainerStyle={styles.storiesRow}
-            >
-              {onlinePeople.map((person) => (
-                <Pressable
-                  key={person.id}
-                  onPress={() => openDirect(person.id)}
-                  style={styles.storyItem}
-                  accessibilityLabel={`Message ${firstNameOf(person)}`}
-                >
-                  <View style={styles.storyRing}>
-                    <PersonAvatar person={person} size={56} showOnline />
-                  </View>
-                  <Text style={styles.storyName} numberOfLines={1}>
-                    {firstNameOf(person)}
-                  </Text>
+          <View style={styles.searchToolbar}>
+            <View style={styles.searchWrap}>
+              <Ionicons name="search" size={15} color="#8e8e93" />
+              <TextInput
+                style={styles.searchInput}
+                value={query}
+                onChangeText={setQuery}
+                placeholder={composeOpen ? 'Search people or teams' : 'Search'}
+                placeholderTextColor="#8e8e93"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              {query ? (
+                <Pressable onPress={() => setQuery('')} hitSlop={8}>
+                  <Ionicons name="close-circle" size={16} color="#c7c7cc" />
                 </Pressable>
-              ))}
-            </ScrollView>
-          ) : null}
-          <View style={styles.searchWrap}>
-            <Ionicons name="search" size={15} color="#8e8e93" />
-            <TextInput
-              style={styles.searchInput}
-              value={query}
-              onChangeText={setQuery}
-              placeholder={composeOpen ? 'Search people or teams' : 'Search'}
-              placeholderTextColor="#8e8e93"
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-            {query ? (
-              <Pressable onPress={() => setQuery('')} hitSlop={8}>
-                <Ionicons name="close-circle" size={16} color="#c7c7cc" />
-              </Pressable>
-            ) : null}
+              ) : null}
+            </View>
+            <Pressable
+              onPress={() => {
+                setComposeOpen((current) => !current);
+                setSelectedIds([]);
+                setGroupName('');
+                setQuery('');
+                if (isMobile && !composeOpen) setActiveId(null);
+              }}
+              style={({ pressed }) => [
+                styles.composeButton,
+                pressed && styles.composeButtonPressed,
+              ]}
+              hitSlop={8}
+              accessibilityLabel={composeOpen ? 'Close compose' : 'Start a conversation'}
+            >
+              <Ionicons
+                name={composeOpen ? 'close' : 'pencil'}
+                size={28}
+                color={BLUE}
+              />
+            </Pressable>
           </View>
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
           <ScrollView
@@ -2077,6 +2055,58 @@ export default function MessagesScreen({
           )}
         </View>
       ) : null}
+      <Modal
+        visible={Boolean(menuConversation)}
+        transparent
+        animationType={isMobile ? 'slide' : 'fade'}
+        onRequestClose={() => setMenuConversation(null)}
+      >
+        <View style={[styles.actionSheetRoot, !isMobile && styles.actionSheetRootDesktop]}>
+          <Pressable
+            style={styles.actionSheetBackdrop}
+            onPress={() => setMenuConversation(null)}
+            accessibilityLabel="Close"
+          />
+          <View style={[styles.actionSheetCard, isMobile && styles.actionSheetCardMobile]}>
+            <Text style={styles.actionSheetTitle} numberOfLines={1}>
+              {menuConversation ? conversationTitle(menuConversation) : ''}
+            </Text>
+            <Text style={styles.actionSheetBody}>
+              {menuConversation?.isAi
+                ? 'This chat will be removed from your messages.'
+                : menuConversation?.isGroup
+                  ? 'This chat will be removed from your messages. Everyone else will still have it.'
+                  : `This chat will be removed from your messages. ${
+                      menuConversation ? conversationTitle(menuConversation) : 'They'
+                    } will still have it.`}
+            </Text>
+            <Pressable
+              onPress={() => {
+                const thread = menuConversation;
+                setMenuConversation(null);
+                if (thread) void handleDeleteConversation(thread);
+              }}
+              style={({ pressed }) => [
+                styles.actionSheetDelete,
+                pressed && styles.actionSheetDeletePressed,
+              ]}
+              accessibilityLabel="Delete conversation"
+            >
+              <Text style={styles.actionSheetDeleteText}>Delete</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setMenuConversation(null)}
+              style={({ pressed }) => [
+                styles.actionSheetCancel,
+                pressed && styles.actionSheetCancelPressed,
+              ]}
+              accessibilityLabel="Cancel"
+            >
+              <Text style={styles.actionSheetCancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
       <ProfilePhotoModal
         visible={Boolean(photoPerson)}
         onClose={() => setPhotoPerson(null)}
@@ -2119,70 +2149,19 @@ const styles = StyleSheet.create({
     backgroundColor: CANVAS,
   },
   inboxHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingTop: 18,
-    paddingBottom: 8,
+    paddingBottom: 16,
   },
   inboxHeaderMobile: {
-    paddingTop: 8,
-  },
-  storiesScroll: {
-    flexGrow: 0,
-    flexShrink: 0,
-    height: 96,
-    maxHeight: 96,
-  },
-  storiesRow: {
-    paddingHorizontal: 14,
-    paddingVertical: 4,
-    gap: 14,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    flexGrow: 0,
-  },
-  storyItem: {
-    width: 68,
-    alignItems: 'center',
-    gap: 6,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  storyRing: {
-    padding: 2,
-    borderRadius: 34,
-    borderWidth: 2,
-    borderColor: '#E8C36A',
-  },
-  storyName: {
-    fontFamily,
-    fontSize: 11,
-    fontWeight: '500',
-    color: '#1d1d1f',
-    width: '100%',
-    textAlign: 'center',
+    paddingTop: 4,
   },
   inboxTitle: {
-    fontFamily,
-    fontSize: 28,
-    fontWeight: '700',
+    fontFamily: titleFontFamily,
+    fontSize: 34,
+    fontWeight: '400',
     color: '#1d1d1f',
-    letterSpacing: -0.6,
-    flex: 1,
-    minWidth: 0,
-  },
-  inboxTitleMobile: {
-    fontSize: 22,
-    letterSpacing: -0.4,
-  },
-  inboxHeaderActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+    letterSpacing: -0.8,
   },
   recipientBar: {
     flexDirection: 'row',
@@ -2286,22 +2265,30 @@ const styles = StyleSheet.create({
     outlineStyle: 'none',
   },
   composeButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#eef4ff',
+    flexShrink: 0,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
-  composeButtonHover: {
-    backgroundColor: '#dceaff',
+  composeButtonPressed: {
+    opacity: 0.55,
+  },
+  searchToolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 16,
+    marginBottom: 8,
   },
   searchWrap: {
+    flex: 1,
+    minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginHorizontal: 12,
-    marginBottom: 8,
     paddingHorizontal: 10,
     height: 36,
     borderRadius: 10,
@@ -2379,19 +2366,6 @@ const styles = StyleSheet.create({
   },
   rowPressed: {
     backgroundColor: '#f5f5f7',
-  },
-  rowOpen: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  rowDelete: {
-    width: 32,
-    height: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   personCopy: {
     flex: 1,
@@ -3114,5 +3088,79 @@ const styles = StyleSheet.create({
   aiBusy: {
     alignSelf: 'flex-start',
     marginTop: 4,
+  },
+  actionSheetRoot: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  actionSheetRootDesktop: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  actionSheetBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.36)',
+  },
+  actionSheetCard: {
+    marginHorizontal: 12,
+    marginBottom: 28,
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 14,
+    borderRadius: 16,
+    backgroundColor: '#fff',
+    gap: 8,
+    width: 360,
+    maxWidth: '92%',
+    alignSelf: 'center',
+  },
+  actionSheetCardMobile: {
+    marginBottom: 18,
+    maxWidth: '100%',
+  },
+  actionSheetTitle: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    textAlign: 'center',
+  },
+  actionSheetBody: {
+    fontFamily,
+    fontSize: 14,
+    lineHeight: 19,
+    color: '#8e8e93',
+    textAlign: 'center',
+    paddingBottom: 6,
+  },
+  actionSheetDelete: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 48,
+    borderRadius: 12,
+    backgroundColor: '#fff1f0',
+  },
+  actionSheetDeletePressed: {
+    backgroundColor: '#ffe3e0',
+  },
+  actionSheetDeleteText: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#ff3b30',
+  },
+  actionSheetCancel: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
+  },
+  actionSheetCancelPressed: {
+    opacity: 0.6,
+  },
+  actionSheetCancelText: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '500',
+    color: BLUE,
   },
 });
