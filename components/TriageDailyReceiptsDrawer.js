@@ -684,14 +684,14 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   cellBoxHover: {
-    backgroundColor: '#EEF3FB',
-    borderColor: '#C9D8F0',
+    backgroundColor: '#f5f5f5',
+    borderColor: T.hairline,
   },
   cellBoxFocused: {
     borderStyle: 'solid',
-    borderColor: T.blue,
+    borderColor: T.text,
     backgroundColor: '#fff',
-    ...Platform.select({ web: { boxShadow: '0 0 0 3px rgba(0,122,255,0.18)' }, default: {} }),
+    ...Platform.select({ web: { boxShadow: '0 0 0 3px rgba(0,0,0,0.10)' }, default: {} }),
   },
   cellInput: {
     fontFamily: FONT,

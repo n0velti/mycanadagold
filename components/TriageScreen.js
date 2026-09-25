@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { BlurView } from 'expo-blur';
 import { Ionicons } from '@expo/vector-icons';
 import TriageAccuracyPanel from './TriageAccuracyPanel';
 import TriagePoCapture from './TriagePoCapture';
@@ -7,7 +8,7 @@ import TriageDailyReceiptsDrawer from './TriageDailyReceiptsDrawer';
 import TriageDeletedPanel from './TriageDeletedPanel';
 import TriageTransfersPanel from './TriageTransfersPanel';
 import { BarButton, EmptyState, FONT, IconAction, SearchField, SegmentedSlider, T, TextTabs } from './TriageKit';
-import { useIsMobile } from '../lib/mobileUi';
+import { CANVAS, useIsMobile } from '../lib/mobileUi';
 import {
   buildDailyReceiptGrid,
   dailyReceiptStatus,
@@ -33,13 +34,13 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
   }
   style.textContent = [
     '.cgold-triage-row{cursor:pointer;background-color:transparent;}',
-    '.cgold-triage-table-row:hover,.cgold-triage-table-row:has(:hover),.cgold-triage-table-row.is-hover{background-color:rgba(60,60,67,0.08)!important;}',
+    '.cgold-triage-table-row:hover,.cgold-triage-table-row:has(:hover),.cgold-triage-table-row.is-hover{background-color:#f5f5f5!important;}',
     '.cgold-triage-table-row:hover > *,.cgold-triage-table-row:has(:hover) > *,.cgold-triage-table-row.is-hover > *{background-color:transparent!important;}',
-    '.cgold-triage-row-selected,.cgold-triage-row-selected:hover{background-color:#f2f2f7!important;}',
-    '.cgold-accuracy-row:hover{background-color:rgba(60,60,67,0.08)!important;}',
+    '.cgold-triage-row-selected,.cgold-triage-row-selected:hover{background-color:#f5f5f5!important;}',
+    '.cgold-accuracy-row:hover{background-color:#f5f5f5!important;}',
     '.cgold-chrome-stats-btn{cursor:pointer;transition:background-color .12s ease;}',
-    '.cgold-chrome-stats-btn:hover{background-color:#dedee3;}',
-    '.cgold-chrome-stats-btn-attention:hover{background-color:rgba(0,122,255,0.16);}',
+    '.cgold-chrome-stats-btn:hover{background-color:#f5f5f5;}',
+    '.cgold-chrome-stats-btn-attention:hover{background-color:#f0f0f0;}',
   ].join('');
 }
 
@@ -95,7 +96,7 @@ function ChromeStats({ items, onPress, accessibilityLabel, wide = false, actionL
       {body}
       <View style={styles.chromeStatsCta}>
         {actionLabel ? <Text style={styles.chromeStatsAction}>{actionLabel}</Text> : null}
-        <Ionicons name="chevron-forward" size={15} color={T.blue} />
+        <Ionicons name="chevron-forward" size={15} color={T.secondary} />
       </View>
     </Pressable>
   );
@@ -409,7 +410,7 @@ export default function TriageScreen({
           </View>
           <View style={styles.mobileStatCta}>
             <Text style={styles.mobileStatAction}>{dailySummary.allChecked ? 'Open' : 'Check'}</Text>
-            <Ionicons name="chevron-forward" size={16} color={T.blue} />
+            <Ionicons name="chevron-forward" size={16} color={T.secondary} />
           </View>
         </Pressable>
         {storeTab === 'melt' ? (
@@ -448,7 +449,7 @@ export default function TriageScreen({
           </View>
           <View style={styles.mobileStatCta}>
             <Text style={styles.mobileStatAction}>Details</Text>
-            <Ionicons name="chevron-forward" size={16} color={T.blue} />
+            <Ionicons name="chevron-forward" size={16} color={T.secondary} />
           </View>
         </Pressable>
       </View>
@@ -462,9 +463,18 @@ export default function TriageScreen({
       {isMobile ? (
         mobileChrome
       ) : leading || trailing ? (
-        <View style={styles.pageChrome}>
-          <View style={styles.pageChromeStart}>{leading}</View>
-          {trailing ? <View style={styles.pageChromeEnd}>{trailing}</View> : null}
+        <View style={styles.pageChromeFloat}>
+          <BlurView
+            intensity={72}
+            tint="light"
+            style={styles.pageChromeBlur}
+            {...(Platform.OS === 'web' ? { className: 'cgold-home-toolbar-blur' } : null)}
+          >
+            <View style={styles.pageChrome}>
+              <View style={styles.pageChromeStart}>{leading}</View>
+              {trailing ? <View style={styles.pageChromeEnd}>{trailing}</View> : null}
+            </View>
+          </BlurView>
         </View>
       ) : null}
 
@@ -538,10 +548,10 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
     position: 'relative',
-    backgroundColor: T.bg,
+    backgroundColor: CANVAS,
   },
   bodyMobile: {
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
   },
   bodyEmbedded: {
     width: '100%',
@@ -566,12 +576,13 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     alignItems: 'flex-end',
     paddingBottom: 2,
+    backgroundColor: CANVAS,
   },
   localNavRowMobile: {
     justifyContent: 'flex-start',
     alignItems: 'stretch',
     paddingBottom: 0,
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
   },
   mobileChrome: {
     flexShrink: 0,
@@ -579,6 +590,7 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 10,
     gap: 10,
+    backgroundColor: CANVAS,
   },
   mobileActions: {
     flexDirection: 'row',
@@ -591,11 +603,14 @@ const styles = StyleSheet.create({
     minHeight: 72,
     paddingHorizontal: 14,
     paddingVertical: 12,
-    borderRadius: 12,
-    backgroundColor: '#f2f2f7',
+    borderRadius: 8,
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
   },
   mobileStatCardOn: {
-    backgroundColor: 'rgba(0,122,255,0.10)',
+    backgroundColor: '#fff',
+    borderColor: T.text,
   },
   mobileStatCopy: {
     flex: 1,
@@ -608,11 +623,11 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: T.secondary,
     textTransform: 'uppercase',
-    letterSpacing: 0.3,
+    letterSpacing: -0.08,
   },
   mobileStatTitle: {
     fontFamily: FONT,
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '600',
     color: T.text,
     letterSpacing: -0.3,
@@ -630,20 +645,42 @@ const styles = StyleSheet.create({
   },
   mobileStatAction: {
     fontFamily: FONT,
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: '600',
-    color: T.blue,
+    color: T.text,
+  },
+  pageChromeFloat: {
+    flexShrink: 0,
+    marginTop: 16,
+    marginHorizontal: 20,
+    marginBottom: 8,
+    borderRadius: 16,
+    ...Platform.select({
+      web: { boxShadow: '0 8px 28px rgba(0,0,0,0.12)' },
+      default: {
+        shadowColor: '#000',
+        shadowOpacity: 0.12,
+        shadowRadius: 16,
+        shadowOffset: { width: 0, height: 6 },
+        elevation: 6,
+      },
+    }),
+  },
+  pageChromeBlur: {
+    overflow: 'hidden',
+    borderRadius: 16,
+    backgroundColor: Platform.OS === 'web' ? 'transparent' : 'rgba(255,255,255,0.62)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(0,0,0,0.08)',
   },
   pageChrome: {
     flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 16,
-    paddingTop: 16,
-    paddingBottom: 12,
-    backgroundColor: '#fff',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(0,0,0,0.06)',
+    gap: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    backgroundColor: 'transparent',
   },
   pageChromeStart: {
     flexShrink: 1,
@@ -679,7 +716,7 @@ const styles = StyleSheet.create({
     maxWidth: 520,
   },
   chromeStatsHit: {
-    minHeight: 32,
+    minHeight: 40,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
@@ -687,7 +724,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 8,
-    backgroundColor: '#e8e8ed',
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -697,15 +736,15 @@ const styles = StyleSheet.create({
     maxWidth: 640,
   },
   chromeStatsHitPressed: {
-    backgroundColor: '#dedee3',
+    backgroundColor: '#f5f5f5',
   },
   chromeStatsHitAttention: {
-    backgroundColor: 'rgba(0,122,255,0.10)',
+    backgroundColor: '#fff',
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(0,122,255,0.38)',
+    borderColor: T.text,
   },
   chromeStatsHitAttentionPressed: {
-    backgroundColor: 'rgba(0,122,255,0.16)',
+    backgroundColor: '#f5f5f5',
   },
   chromeStatsCta: {
     flexDirection: 'row',
@@ -718,8 +757,8 @@ const styles = StyleSheet.create({
     fontFamily: FONT,
     fontSize: 13,
     fontWeight: '600',
-    color: T.blue,
-    letterSpacing: -0.15,
+    color: T.text,
+    letterSpacing: 0,
   },
   chromeStat: {
     flexDirection: 'row',
@@ -742,13 +781,13 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
   },
   chromeStatGreen: {
-    color: '#248A3D',
+    color: '#15803D',
   },
   chromeStatRed: {
-    color: '#D70015',
+    color: '#B91C1C',
   },
   chromeStatOrange: {
-    color: '#C93400',
+    color: '#C2410C',
   },
   pageVisible: {
     flex: 1,

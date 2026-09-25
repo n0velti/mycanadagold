@@ -247,7 +247,7 @@ function ErrorTypePicker({ types, value, onChange, onAdd, disabled }) {
             accessibilityState={{ selected }}
           >
             <Text style={styles.groupLabel}>{label}</Text>
-            {selected ? <Ionicons name="checkmark" size={20} color="#007AFF" /> : null}
+            {selected ? <Ionicons name="checkmark" size={20} color="#1a1a1a" /> : null}
           </Pressable>
         );
       })}
@@ -282,7 +282,7 @@ function ErrorTypePicker({ types, value, onChange, onAdd, disabled }) {
           accessibilityRole="button"
           accessibilityLabel="Add error type"
         >
-          <Ionicons name="add" size={18} color="#007AFF" />
+          <Ionicons name="add" size={18} color="#1a1a1a" />
           <Text style={styles.typeAddLink}>Add error type</Text>
         </Pressable>
       )}
@@ -751,7 +751,7 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
               accessibilityRole="button"
               accessibilityLabel="Back to PO details"
             >
-              <Ionicons name="chevron-back" size={26} color="#007AFF" />
+              <Ionicons name="chevron-back" size={26} color="#1a1a1a" />
               <Text style={styles.pageBackText}>Details</Text>
             </Pressable>
             <Text style={styles.pageTitle}>Error</Text>
@@ -824,7 +824,7 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
               accessibilityRole="button"
               accessibilityLabel="Back to camera"
             >
-              <Ionicons name="chevron-back" size={26} color="#007AFF" />
+              <Ionicons name="chevron-back" size={26} color="#1a1a1a" />
               <Text style={styles.pageBackText}>Camera</Text>
             </Pressable>
             <Text style={styles.pageTitle} numberOfLines={1}>{po.reference || 'PO'}</Text>
@@ -900,7 +900,7 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
               accessibilityRole="button"
               accessibilityLabel="Back to camera"
             >
-              <Ionicons name="chevron-back" size={26} color="#007AFF" />
+              <Ionicons name="chevron-back" size={26} color="#1a1a1a" />
               <Text style={styles.pageBackText}>Camera</Text>
             </Pressable>
             <Text style={styles.pageTitle}>Choose PO</Text>
@@ -1040,7 +1040,7 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
                         accessibilityRole="button"
                         accessibilityLabel="Look up PO"
                       >
-                        {busy ? <ActivityIndicator color="#007AFF" /> : <Text style={styles.poEntryGo}>Go</Text>}
+                        {busy ? <ActivityIndicator color="#1a1a1a" /> : <Text style={styles.poEntryGo}>Go</Text>}
                       </Pressable>
                     ) : null}
                   </BlurView>
@@ -2023,7 +2023,7 @@ const styles = StyleSheet.create({
     fontFamily: FONT,
     fontSize: 16,
     fontWeight: '600',
-    color: '#007AFF',
+    color: '#1a1a1a',
   },
   snapPhase: {
     fontFamily: FONT,
@@ -2097,7 +2097,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#34C759',
+    backgroundColor: '#1F8A4E',
   },
   addedText: {
     flexShrink: 1,
@@ -2109,14 +2109,14 @@ const styles = StyleSheet.create({
   },
   page: {
     flex: 1,
-    backgroundColor: '#F2F2F7',
+    backgroundColor: '#f5f5f5',
   },
   pageNav: {
     position: 'relative',
     minHeight: 52,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#F2F2F7',
+    backgroundColor: '#f5f5f5',
   },
   pageNavNative: {
     paddingTop: mobileSafeTop(),
@@ -2134,7 +2134,7 @@ const styles = StyleSheet.create({
   pageBackText: {
     fontFamily: FONT,
     fontSize: 17,
-    color: '#007AFF',
+    color: '#1a1a1a',
     marginLeft: -2,
   },
   pageTitle: {
@@ -2191,7 +2191,7 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingHorizontal: 16,
     paddingTop: 10,
-    backgroundColor: '#F2F2F7',
+    backgroundColor: '#f5f5f5',
   },
   pagePrimary: {
     flex: 1,
@@ -2259,12 +2259,12 @@ const styles = StyleSheet.create({
     fontFamily: FONT,
     fontSize: 17,
     fontWeight: '600',
-    color: '#007AFF',
+    color: '#1a1a1a',
   },
   typeAddLink: {
     fontFamily: FONT,
     fontSize: 17,
-    color: '#007AFF',
+    color: '#1a1a1a',
   },
   typeAddError: {
     paddingHorizontal: 16,
@@ -2294,7 +2294,7 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 240,
     borderRadius: 8,
-    backgroundColor: '#F2F2F7',
+    backgroundColor: '#f5f5f5',
   },
   lineEdit: {
     gap: 8,
@@ -2328,7 +2328,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 8,
-    backgroundColor: '#F2F2F7',
+    backgroundColor: '#f5f5f5',
     fontFamily: FONT,
     fontSize: 17,
     color: '#000',

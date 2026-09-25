@@ -27,9 +27,9 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     document.head.appendChild(style);
   }
   style.textContent = [
-    '.cgold-triage-table-blur{background-color:#fff!important;}',
+    '.cgold-triage-table-blur{background-color:rgb(252,252,251)!important;}',
     '.cgold-triage-table-row{cursor:pointer;background-color:transparent;}',
-    '.cgold-triage-table-row:hover,.cgold-triage-table-row:has(:hover),.cgold-triage-table-row.is-hover{background-color:rgba(60,60,67,0.08)!important;}',
+    '.cgold-triage-table-row:hover,.cgold-triage-table-row:has(:hover),.cgold-triage-table-row.is-hover{background-color:#f5f5f5!important;}',
     '.cgold-triage-table-row:hover > *,.cgold-triage-table-row:has(:hover) > *,.cgold-triage-table-row.is-hover > *{background-color:transparent!important;}',
   ].join('');
 }
@@ -62,9 +62,9 @@ const fontFamily = FONT;
 
 const TEXT = T.text;
 const SECONDARY = T.secondary;
-const FILL = T.fill;
-const HAIRLINE = '#e5e5ea';
-const BLUE = T.blue;
+const FILL = '#f5f5f5';
+const HAIRLINE = T.hairline;
+const BLUE = T.text;
 
 export function uniqueLabels(values) {
   const seen = new Set();
@@ -142,8 +142,8 @@ export function TableCell({ children, flex = 1, minWidth = 88, width, last, alig
   return (
     <View
       style={[
-        styles.tableCell,
-        wrap && styles.tableCellWrap,
+        styles.tableCellBase,
+        wrap ? styles.tableCellWrap : styles.tableCell,
         width ? { width, flexGrow: 0, flexShrink: 0 } : { flex, minWidth },
         last && styles.tableCellLast,
         alignStyle,
@@ -173,10 +173,10 @@ export function TableStrong({ children, align }) {
 
 const STATUS_TONES = {
   neutral: T.secondary,
-  blue: T.blue,
-  green: '#248A3D',
-  orange: '#C93400',
-  red: '#D70015',
+  blue: T.text,
+  green: '#15803D',
+  orange: '#C2410C',
+  red: '#B91C1C',
 };
 
 /** Compact status text with a leading dot, coloured by tone. */
@@ -255,7 +255,7 @@ export function LastEditedAvatar({ editor, staffProfiles, size = 26 }) {
 export function TableRowPressable({ last, onPress, accessibilityLabel, children }) {
   return (
     <Pressable
-      style={[styles.tableRow, last && styles.tableRowLast]}
+      style={[styles.tableRowBase, styles.tableRow, last && styles.tableRowLast]}
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
@@ -271,8 +271,8 @@ export function TableRow({ last, children, style, webClassName, wrap = false }) 
   return (
     <View
       style={[
-        styles.tableRow,
-        wrap && styles.tableRowWrap,
+        styles.tableRowBase,
+        wrap ? styles.tableRowWrap : styles.tableRow,
         last && styles.tableRowLast,
         hovered && styles.tableRowHover,
         style,
@@ -288,10 +288,10 @@ export function TableRow({ last, children, style, webClassName, wrap = false }) 
   );
 }
 
-export function TableRowMain({ onPress, accessibilityLabel, children }) {
+export function TableRowMain({ onPress, accessibilityLabel, children, wrap = false }) {
   return (
     <Pressable
-      style={styles.tableRowMain}
+      style={[styles.tableRowMain, wrap && styles.tableRowMainWrap]}
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
@@ -734,7 +734,7 @@ const styles = StyleSheet.create({
   tableCard: {
     flex: 1,
     minHeight: 0,
-    backgroundColor: '#fff',
+    backgroundColor: T.bg,
     overflow: 'visible',
   },
   tableCardBuy: {},
@@ -745,20 +745,20 @@ const styles = StyleSheet.create({
     right: 0,
     zIndex: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(60,60,67,0.18)',
-    backgroundColor: '#fff',
+    borderBottomColor: T.hairline,
+    backgroundColor: T.bg,
     ...Platform.select({
       web: { height: 'fit-content' },
       default: {},
     }),
   },
   tableChromeBuy: {
-    backgroundColor: '#fff',
-    borderBottomColor: 'rgba(60,60,67,0.18)',
+    backgroundColor: T.bg,
+    borderBottomColor: T.hairline,
   },
   tableLeading: {
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(60,60,67,0.12)',
+    borderBottomColor: T.hairline,
   },
   tableToolbarInner: {
     flexDirection: 'row',
@@ -769,7 +769,7 @@ const styles = StyleSheet.create({
     paddingLeft: 14,
     paddingRight: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(60,60,67,0.12)',
+    borderBottomColor: T.hairline,
   },
   tableHeader: {
     flexDirection: 'row',
@@ -807,24 +807,25 @@ const styles = StyleSheet.create({
   tableBodyContent: {
     flexGrow: 1,
   },
-  tableRow: {
+  tableRowBase: {
     flexDirection: 'row',
-    alignItems: 'center',
-    height: TABLE_ROW_HEIGHT,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(60,60,67,0.24)',
+    borderBottomColor: T.hairline,
     backgroundColor: 'transparent',
   },
+  tableRow: {
+    alignItems: 'center',
+    height: TABLE_ROW_HEIGHT,
+  },
   tableRowWrap: {
-    height: undefined,
-    minHeight: TABLE_ROW_HEIGHT,
     alignItems: 'stretch',
+    minHeight: TABLE_ROW_HEIGHT,
   },
   tableRowHover: {
-    backgroundColor: 'rgba(60,60,67,0.08)',
+    backgroundColor: '#f5f5f5',
   },
   tableRowMainHover: {
-    backgroundColor: 'rgba(60,60,67,0.08)',
+    backgroundColor: '#f5f5f5',
   },
   tableRowLast: {
     borderBottomWidth: 0,
@@ -840,13 +841,18 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  tableCell: {
-    height: TABLE_ROW_HEIGHT,
+  tableRowMainWrap: {
+    alignItems: 'stretch',
+    alignSelf: 'stretch',
+  },
+  tableCellBase: {
     paddingHorizontal: 8,
     justifyContent: 'center',
   },
+  tableCell: {
+    height: TABLE_ROW_HEIGHT,
+  },
   tableCellWrap: {
-    height: undefined,
     minHeight: TABLE_ROW_HEIGHT,
     paddingVertical: 8,
   },
@@ -858,9 +864,9 @@ const styles = StyleSheet.create({
   },
   tableCellText: {
     fontFamily,
-    fontSize: 15,
+    fontSize: 13,
     color: TEXT,
-    letterSpacing: -0.2,
+    letterSpacing: 0,
   },
   tableCellTextRight: {
     textAlign: 'right',
@@ -934,10 +940,10 @@ const styles = StyleSheet.create({
   },
   tableCellStrong: {
     fontFamily,
-    fontSize: 16,
+    fontSize: 13,
     fontWeight: '600',
     color: TEXT,
-    letterSpacing: -0.24,
+    letterSpacing: 0,
   },
   tableCellMuted: {
     fontFamily,
@@ -1017,7 +1023,7 @@ const styles = StyleSheet.create({
     }),
   },
   colFilterHitOpen: {
-    backgroundColor: 'rgba(0, 122, 255, 0.08)',
+    backgroundColor: '#f5f5f5',
   },
   colFilterLabel: {
     fontFamily,
@@ -1036,12 +1042,14 @@ const styles = StyleSheet.create({
     top: 34,
     left: 4,
     width: 248,
-    backgroundColor: 'rgba(255,255,255,0.96)',
-    borderRadius: 14,
+    backgroundColor: '#fff',
+    borderRadius: 8,
     overflow: 'hidden',
     zIndex: 40,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
     ...Platform.select({
-      web: { boxShadow: '0 12px 40px rgba(0,0,0,0.18)', backdropFilter: 'blur(20px)' },
+      web: { boxShadow: '0 8px 28px rgba(0,0,0,0.12)' },
       default: { elevation: 8 },
     }),
   },

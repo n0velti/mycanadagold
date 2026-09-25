@@ -1861,7 +1861,7 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 8,
-    backgroundColor: '#e8e8ed',
+    backgroundColor: '#f5f5f5',
     flexShrink: 0,
     ...Platform.select({
       web: { cursor: 'pointer' },
@@ -3067,7 +3067,7 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 16,
     fontWeight: '600',
-    color: '#007AFF',
+    color: '#1a1a1a',
   },
   editModalTitle: {
     flex: 1,
@@ -3090,7 +3090,7 @@ const styles = StyleSheet.create({
     minHeight: 30,
     paddingHorizontal: 12,
     borderRadius: 16,
-    backgroundColor: '#f2f2f7',
+    backgroundColor: '#f5f5f5',
     alignItems: 'center',
     justifyContent: 'center',
     ...Platform.select({
@@ -3099,7 +3099,7 @@ const styles = StyleSheet.create({
     }),
   },
   columnChipOn: {
-    backgroundColor: '#007AFF',
+    backgroundColor: '#1a1a1a',
   },
   columnChipText: {
     fontFamily,

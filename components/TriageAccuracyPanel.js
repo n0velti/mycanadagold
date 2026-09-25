@@ -19,8 +19,8 @@ import {
   TableCell,
   TableEmpty,
   TableFrame,
-  TableHead,
   TablePhotoCell,
+  TableMuted,
   TableRow,
   TableRowMain,
   TableStrong,
@@ -51,7 +51,6 @@ const COL = {
   received: { flex: 0.95, minWidth: 100 },
   error: { flex: 1.15, minWidth: 120 },
   amount: { flex: 0.85, minWidth: 88 },
-  details: { flex: 1.8, minWidth: 180 },
 };
 
 const EMPTY_FILTERS = {
@@ -72,14 +71,6 @@ const SORTERS = {
   received: (row) => row.triageDateLabel || row.amountLabel,
   amount: (row) => Number(String(row?.review?.errorAmount || '').replace(/[^0-9.-]/g, '')) || 0,
 };
-
-function namesMatch(a, b) {
-  return (
-    String(a || '')
-      .trim()
-      .localeCompare(String(b || '').trim(), undefined, { sensitivity: 'base' }) === 0
-  );
-}
 
 function staffName(row) {
   const name = String(row?.employeeName || '').trim();
@@ -104,6 +95,11 @@ function errorDetailParts(review) {
     .filter(Boolean);
   const photos = normalizeReviewImages(review?.images);
   return { note, amount, edits, photos };
+}
+
+function errorDetailSummary(review) {
+  const detail = errorDetailParts(review);
+  return [detail.note, ...detail.edits].filter(Boolean).join(' · ');
 }
 
 function errorPlace(row) {
@@ -216,38 +212,38 @@ function ErrorDetailBlock({ review }) {
 
 const AccuracyTableRow = memo(function AccuracyTableRow({ row, last, showError, onOpen }) {
   const detail = errorDetailParts(row.review);
+  const summary = showError ? errorDetailSummary(row.review) : '';
+  const referenceCol = showError ? { flex: 1.8, minWidth: 220 } : COL.reference;
   return (
-    <TableRow last={last} wrap>
+    <TableRow last={last}>
       <TablePhotoCell>
         <PoThumb urls={row.imageUrls} label={row.reference} />
       </TablePhotoCell>
       <TableRowMain onPress={() => onOpen(row)} accessibilityLabel={`Open ${row.reference || 'document'}`}>
-        <TableCell flex={COL.reference.flex} minWidth={COL.reference.minWidth} wrap>
+        <TableCell flex={referenceCol.flex} minWidth={referenceCol.minWidth}>
           <TableStrong>{row.reference || 'Document'}</TableStrong>
+          {summary ? <TableMuted>{summary}</TableMuted> : null}
         </TableCell>
-        <TableCell flex={COL.date.flex} minWidth={COL.date.minWidth} wrap>
+        <TableCell flex={COL.date.flex} minWidth={COL.date.minWidth}>
           {row.dateLabel || '—'}
         </TableCell>
-        <TableCell flex={COL.person.flex} minWidth={COL.person.minWidth} wrap>
+        <TableCell flex={COL.person.flex} minWidth={COL.person.minWidth}>
           {staffName(row) || '—'}
         </TableCell>
-        <TableCell flex={COL.store.flex} minWidth={COL.store.minWidth} wrap>
+        <TableCell flex={COL.store.flex} minWidth={COL.store.minWidth}>
           {row.storeName || '—'}
         </TableCell>
         {showError ? (
           <>
-            <TableCell flex={COL.error.flex} minWidth={COL.error.minWidth} wrap>
+            <TableCell flex={COL.error.flex} minWidth={COL.error.minWidth}>
               {errorPlace(row)}
             </TableCell>
-            <TableCell flex={COL.amount.flex} minWidth={COL.amount.minWidth} align="right" wrap>
+            <TableCell flex={COL.amount.flex} minWidth={COL.amount.minWidth} align="right" last>
               {detail.amount || '—'}
-            </TableCell>
-            <TableCell flex={COL.details.flex} minWidth={COL.details.minWidth} wrap last>
-              <ErrorDetailBlock review={row.review} />
             </TableCell>
           </>
         ) : (
-          <TableCell flex={COL.received.flex} minWidth={COL.received.minWidth} align="right" wrap last>
+          <TableCell flex={COL.received.flex} minWidth={COL.received.minWidth} align="right" last>
             {row.triageDateLabel || row.amountLabel || '—'}
           </TableCell>
         )}
@@ -258,7 +254,6 @@ const AccuracyTableRow = memo(function AccuracyTableRow({ row, last, showError, 
 
 export default function TriageAccuracyPanel({
   session,
-  storeFilter,
   accuracyTab = 'correct',
   listQuery = '',
   onStatsChange,
@@ -275,11 +270,7 @@ export default function TriageAccuracyPanel({
   const [photoError, setPhotoError] = useState('');
   const showError = accuracyTab === 'incorrect';
 
-  const accuracyRows = useMemo(() => {
-    const rows = collectAccuracyTriagePos(triage);
-    if (!storeFilter) return rows;
-    return rows.filter((row) => namesMatch(row.storeName, storeFilter));
-  }, [storeFilter, triage]);
+  const accuracyRows = useMemo(() => collectAccuracyTriagePos(triage), [triage]);
 
   const setFilter = useCallback((key, value) => {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -556,12 +547,12 @@ export default function TriageAccuracyPanel({
         />
       ) : (
       <TableFrame
-        minWidth={showError ? 1120 : 780}
+        minWidth={showError ? 920 : 780}
         data={visible}
         renderItem={renderRow}
         keyExtractor={accuracyKey}
         extraData={`${showError}-${visible.length}-${sort?.key || ''}-${sort?.dir || ''}`}
-        fixedRowHeight={false}
+        fixedRowHeight
         toolbar={
           filtersActive || sort ? (
             <View style={styles.toolbarEnd}>
@@ -589,7 +580,7 @@ export default function TriageAccuracyPanel({
               options={referenceOptions}
               openKey={openFilter}
               onOpenKey={setOpenFilter}
-              style={COL.reference}
+              style={showError ? { flex: 1.8, minWidth: 220 } : COL.reference}
               {...sortProps('reference')}
             />
             <ColumnFilter
@@ -649,7 +640,6 @@ export default function TriageAccuracyPanel({
                   style={{ ...COL.amount, alignItems: 'flex-end' }}
                   {...sortProps('amount')}
                 />
-                <TableHead label="Error details" flex={COL.details.flex} minWidth={COL.details.minWidth} />
               </>
             ) : (
               <ColumnFilter
@@ -762,7 +752,7 @@ const styles = StyleSheet.create({
     backgroundColor: T.bg,
   },
   bodyMobile: {
-    backgroundColor: '#fff',
+    backgroundColor: T.bg,
   },
   mobileList: {
     flex: 1,
@@ -772,7 +762,8 @@ const styles = StyleSheet.create({
     paddingTop: 0,
     paddingBottom: 40,
     flexGrow: 1,
-    backgroundColor: '#fff',
+    backgroundColor: T.bg,
+    paddingHorizontal: 16,
   },
   mobileHint: {
     fontFamily,
@@ -788,8 +779,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   mobileDetailLast: {
-    borderBottomLeftRadius: 12,
-    borderBottomRightRadius: 12,
+    borderBottomLeftRadius: 8,
+    borderBottomRightRadius: 8,
   },
   detailBlock: {
     gap: 4,
@@ -811,7 +802,7 @@ const styles = StyleSheet.create({
     width: 64,
     height: 64,
     borderRadius: 8,
-    backgroundColor: '#F2F2F7',
+    backgroundColor: '#f5f5f5',
   },
   mobilePhotoError: {
     fontFamily,
@@ -821,13 +812,13 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
   },
   mobileGroupStart: {
-    borderTopLeftRadius: 12,
-    borderTopRightRadius: 12,
+    borderTopLeftRadius: 8,
+    borderTopRightRadius: 8,
     overflow: 'hidden',
   },
   mobileGroupEnd: {
-    borderBottomLeftRadius: 12,
-    borderBottomRightRadius: 12,
+    borderBottomLeftRadius: 8,
+    borderBottomRightRadius: 8,
     overflow: 'hidden',
   },
   toolbarEnd: {

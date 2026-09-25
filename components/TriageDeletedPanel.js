@@ -217,18 +217,19 @@ const styles = StyleSheet.create({
     backgroundColor: T.bg,
   },
   bodyMobile: {
-    backgroundColor: '#fff',
+    backgroundColor: T.bg,
   },
   content: {
     paddingHorizontal: 0,
     paddingTop: 8,
     paddingBottom: 24,
     flexGrow: 1,
-    backgroundColor: '#fff',
+    backgroundColor: T.bg,
   },
   contentMobile: {
+    paddingHorizontal: 16,
     paddingBottom: 40,
-    backgroundColor: '#fff',
+    backgroundColor: T.bg,
   },
   row: {
     flexDirection: 'row',
