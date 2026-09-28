@@ -16,7 +16,7 @@ import {
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
 import { textMatchesQuery } from '../lib/itemSearch';
-import { fetchTransferStores } from '../lib/locations';
+import { fetchTransferStores, posAuthForStore, preferStoreByName, uniquePreferredStores } from '../lib/locations';
 import { findStaffByEmployeeName, listStaffProfiles, staffDisplayName } from '../lib/permissions';
 import { storeLocationFromSession } from '../lib/profiles';
 import { createClient, searchClients } from '../lib/triageLookups';
@@ -222,6 +222,20 @@ function TicketField({ label, last, raised, compactLabel, children }) {
   );
 }
 
+function HoverMenuItem({ onPress, children, active }) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <Pressable
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
+      onPress={onPress}
+      style={[styles.menuItem, (hovered || active) && styles.menuItemHover]}
+    >
+      {children}
+    </Pressable>
+  );
+}
+
 function SuggestField({
   label,
   last,
@@ -232,52 +246,54 @@ function SuggestField({
   onChange,
   options,
   loading,
-  wideMenu,
   compactLabel,
   onAdd,
+  selectedId,
 }) {
-  const typed = value.trim().length > 0;
-  const showMenu = open && typed;
+  const typed = String(value || '').trim();
+  const showMenu = open && typed.length > 0;
+  const emptyHint = typed.length < 2 ? 'Keep typing' : loading ? 'Searching…' : 'No matches';
 
   return (
-    <TicketField label={label} last={last} raised={showMenu} compactLabel={compactLabel}>
-      <View style={styles.suggestRow}>
-        <TextInput
-          style={[styles.fieldInput, styles.suggestInput]}
-          value={value}
-          onChangeText={(text) => {
-            onChange(text);
-            onOpen();
-          }}
-          onFocus={onOpen}
-          placeholder={placeholder}
-          placeholderTextColor="#c7c7cc"
-          autoCorrect={false}
-          autoCapitalize="words"
-        />
-        {onAdd ? (
-          <Pressable
-            onPress={onAdd}
-            hitSlop={6}
-            style={styles.customerAddBtn}
-            accessibilityLabel="Add customer"
-          >
-            <Ionicons name="add" size={18} color="#8e8e93" />
-          </Pressable>
-        ) : null}
+    <View style={[styles.fieldRow, last && styles.fieldRowLast, showMenu && styles.fieldRowRaised]}>
+      <Text style={[styles.fieldLabel, compactLabel && styles.fieldLabelCompact]}>{label}</Text>
+      <View style={styles.fieldControl}>
+        <View style={styles.suggestRow}>
+          <TextInput
+            style={[styles.fieldInput, styles.suggestInput]}
+            value={value}
+            onChangeText={(text) => {
+              onChange(text);
+              onOpen();
+            }}
+            onFocus={onOpen}
+            placeholder={placeholder}
+            placeholderTextColor="#c7c7cc"
+            autoCorrect={false}
+            autoCapitalize="words"
+          />
+          {onAdd ? (
+            <Pressable
+              onPress={onAdd}
+              hitSlop={6}
+              style={styles.customerAddBtn}
+              accessibilityLabel="Add customer"
+            >
+              <Ionicons name="add" size={18} color="#8e8e93" />
+            </Pressable>
+          ) : null}
+        </View>
       </View>
       {showMenu ? (
-        <View style={[styles.menu, wideMenu && styles.menuWide]}>
-          {loading ? (
-            <Text style={styles.menuEmpty}>Searching…</Text>
-          ) : options.length === 0 ? (
-            <Text style={styles.menuEmpty}>{value.trim().length < 2 ? 'Keep typing' : 'No matches'}</Text>
+        <View style={[styles.menu, styles.customerMenu]}>
+          {options.length === 0 ? (
+            <Text style={styles.menuEmpty}>{emptyHint}</Text>
           ) : (
-            <ScrollView style={styles.menuList} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
+            <ScrollView style={styles.customerMenuList} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
               {options.map((option) => (
-                <Pressable
+                <HoverMenuItem
                   key={option.id || option.label}
-                  style={styles.menuItem}
+                  active={selectedId != null && String(option.id) === String(selectedId)}
                   onPress={() => onChange(option.label, option)}
                 >
                   <Text style={styles.menuItemLabel} numberOfLines={1}>
@@ -288,13 +304,19 @@ function SuggestField({
                       {option.sub}
                     </Text>
                   ) : null}
-                </Pressable>
+                </HoverMenuItem>
               ))}
             </ScrollView>
           )}
+          {onAdd && typed.length >= 2 ? (
+            <Pressable onPress={onAdd} style={styles.customerMenuAdd} accessibilityLabel="Add customer">
+              <Ionicons name="add-circle-outline" size={16} color="#1F8A4E" />
+              <Text style={styles.customerMenuAddText}>Add new customer</Text>
+            </Pressable>
+          ) : null}
         </View>
       ) : null}
-    </TicketField>
+    </View>
   );
 }
 
@@ -543,7 +565,7 @@ function TimeField({ value, onChange, onFocus }) {
   );
 }
 
-function NewCustomerModal({ visible, seed, session, onClose, onCreated }) {
+function NewCustomerModal({ visible, seed, session, pos, onClose, onCreated }) {
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
@@ -570,7 +592,9 @@ function NewCustomerModal({ visible, seed, session, onClose, onCreated }) {
       setError('First name, last name, and email are required.');
       return;
     }
-    if (!session?.token) {
+    const token = pos?.token || session?.token;
+    const baseUrl = pos?.baseUrl || session?.baseUrl;
+    if (!token) {
       setError('Sign in to add a customer.');
       return;
     }
@@ -578,9 +602,10 @@ function NewCustomerModal({ visible, seed, session, onClose, onCreated }) {
     setError('');
     try {
       const created = await createClient(
-        session.token,
+        token,
         { firstName: first, lastName: last, email: mail, phone },
-        session.baseUrl,
+        baseUrl,
+        pos,
       );
       onCreated(created);
     } catch (err) {
@@ -826,6 +851,7 @@ function TicketTotals({ subtotal, total, compact }) {
 
 function BuyTicketFields({ session, compact, subtotal = 0, total = 0 }) {
   const [customer, setCustomer] = useState('');
+  const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [orderType, setOrderType] = useState('Standard');
   const [status, setStatus] = useState('Open');
   const [employee, setEmployee] = useState(() => sessionEmployeeName(session));
@@ -902,36 +928,42 @@ function BuyTicketFields({ session, compact, subtotal = 0, total = 0 }) {
     return rows;
   }, [employee, employeeAvatar, session, staff]);
 
+  const preferredStores = useMemo(() => uniquePreferredStores(stores), [stores]);
+
   const branchOptions = useMemo(() => {
-    const rows = uniqueNamed(
-      (stores || []).map((store) => ({
-        id: store.id,
-        label: store.name,
-        sub: [store.city, store.state].filter(Boolean).join(', '),
-      })),
-    );
+    const rows = preferredStores.map((store) => ({
+      id: store.id,
+      label: store.name,
+      sub: [store.city, store.state].filter(Boolean).join(', '),
+      store,
+    }));
     if (branch && !rows.some((row) => row.label === branch)) {
       rows.unshift({ id: 'current', label: branch });
     }
     return rows;
-  }, [branch, stores]);
+  }, [branch, preferredStores]);
+
+  const activeStore = useMemo(
+    () => preferStoreByName(stores, branch) || preferStoreByName(stores, storeLocationFromSession(session)),
+    [branch, session, stores],
+  );
+  const pos = useMemo(() => posAuthForStore(session, activeStore), [activeStore, session]);
 
   useEffect(() => {
     if (openKey !== 'customer') {
-      setCustomerHits([]);
       setCustomerBusy(false);
-      return;
+      return undefined;
     }
     const query = customer.trim();
-    if (query.length < 2 || !session?.token) {
+    if (query.length < 2 || !pos.token) {
       setCustomerHits([]);
       setCustomerBusy(false);
-      return;
+      return undefined;
     }
     let cancelled = false;
     setCustomerBusy(true);
     const timer = setTimeout(() => {
-      searchClients(session.token, query, session.baseUrl)
+      searchClients(pos.token, query, pos.baseUrl, pos)
         .then((rows) => {
           if (!cancelled) setCustomerHits(rows || []);
         })
@@ -941,12 +973,23 @@ function BuyTicketFields({ session, compact, subtotal = 0, total = 0 }) {
         .finally(() => {
           if (!cancelled) setCustomerBusy(false);
         });
-    }, 200);
+    }, 120);
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [customer, openKey, session]);
+  }, [customer, openKey, pos.baseUrl, pos.systemKey, pos.token]);
+
+  useEffect(() => {
+    setCustomerHits([]);
+    setSelectedCustomer((current) => {
+      if (current?.systemKey && pos.systemKey && current.systemKey !== pos.systemKey) {
+        setCustomer('');
+        return null;
+      }
+      return current;
+    });
+  }, [pos.systemKey]);
 
   const closeMenus = useCallback(() => setOpenKey(''), []);
   const toggleMenu = (key) => setOpenKey((current) => (current === key ? '' : key));
@@ -955,10 +998,9 @@ function BuyTicketFields({ session, compact, subtotal = 0, total = 0 }) {
     <View style={[styles.ticketBar, compact && styles.ticketBarStack]}>
       <TicketTotals compact={compact} subtotal={subtotal} total={total} />
       <View style={[styles.metaRow, compact && styles.metaRowStack]}>
-        <View style={[styles.ticketCard, styles.customerCard, compact && styles.customerCardCompact]}>
+        <View style={[styles.ticketCard, styles.customerCard, compact && styles.customerCardCompact, openKey === 'customer' && styles.customerCardOpen]}>
         <SuggestField
           label="Customer"
-          wideMenu
           compactLabel
           value={customer}
           placeholder="Name or phone"
@@ -966,10 +1008,12 @@ function BuyTicketFields({ session, compact, subtotal = 0, total = 0 }) {
           onOpen={() => setOpenKey('customer')}
           onChange={(value, option) => {
             setCustomer(value);
+            setSelectedCustomer(option || null);
             if (option) closeMenus();
           }}
           options={customerHits}
           loading={customerBusy}
+          selectedId={selectedCustomer?.id}
           onAdd={() => {
             closeMenus();
             setCustomerModalOpen(true);
@@ -1043,6 +1087,16 @@ function BuyTicketFields({ session, compact, subtotal = 0, total = 0 }) {
           onToggle={() => toggleMenu('branch')}
           options={branchOptions}
           onSelect={(option) => {
+            const nextStore = option.store || preferStoreByName(stores, option.label);
+            if (
+              selectedCustomer?.systemKey &&
+              nextStore?.systemKey &&
+              selectedCustomer.systemKey !== nextStore.systemKey
+            ) {
+              setCustomer('');
+              setSelectedCustomer(null);
+              setCustomerHits([]);
+            }
             setBranch(option.label);
             closeMenus();
           }}
@@ -1071,9 +1125,11 @@ function BuyTicketFields({ session, compact, subtotal = 0, total = 0 }) {
         visible={customerModalOpen}
         seed={customer}
         session={session}
+        pos={pos}
         onClose={() => setCustomerModalOpen(false)}
         onCreated={(created) => {
           setCustomer(created.label);
+          setSelectedCustomer(created);
           setCustomerModalOpen(false);
           closeMenus();
         }}
@@ -2071,6 +2127,7 @@ const styles = StyleSheet.create({
   stepPane: {
     flex: 1,
     minHeight: 0,
+    overflow: 'visible',
   },
   stepHidden: {
     display: 'none',
@@ -2095,6 +2152,7 @@ const styles = StyleSheet.create({
     width: '88%',
     maxWidth: 980,
     alignSelf: 'center',
+    overflow: 'visible',
     zIndex: 14,
   },
   ticketBarStack: {
@@ -2176,6 +2234,10 @@ const styles = StyleSheet.create({
     flexGrow: 0,
     flexShrink: 1,
     zIndex: 16,
+    overflow: 'visible',
+  },
+  customerCardOpen: {
+    zIndex: 32,
   },
   customerCardCompact: {
     width: '100%',
@@ -2624,13 +2686,15 @@ const styles = StyleSheet.create({
     gap: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#ececef',
+    position: 'relative',
+    overflow: 'visible',
     zIndex: 1,
   },
   fieldRowLast: {
     borderBottomWidth: 0,
   },
   fieldRowRaised: {
-    zIndex: 20,
+    zIndex: 40,
   },
   fieldLabel: {
     fontFamily,
@@ -2948,6 +3012,36 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
+  customerMenu: {
+    left: 10,
+    right: 10,
+    width: 'auto',
+    minWidth: 0,
+    maxHeight: 320,
+    overflow: 'hidden',
+  },
+  customerMenuList: {
+    maxHeight: 260,
+  },
+  customerMenuAdd: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#ececef',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  customerMenuAddText: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1F8A4E',
+  },
   menuWide: {
     left: 0,
     width: 'auto',
@@ -2971,6 +3065,9 @@ const styles = StyleSheet.create({
       web: { cursor: 'pointer' },
       default: {},
     }),
+  },
+  menuItemHover: {
+    backgroundColor: '#f6f6f9',
   },
   menuItemLabel: {
     fontFamily,

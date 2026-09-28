@@ -13,8 +13,10 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { persistOwnLocation } from '../lib/auth';
 import {
+  isSyntheticWorkshopLocation,
   listAssignableEmployeeLocations,
   updateAureusEmployeeLocation,
+  withWorkshopLocation,
 } from '../lib/aureusEmployees';
 
 const fontFamily = Platform.select({
@@ -33,6 +35,7 @@ export default function ProfileLocationPicker({
   session,
   selectedId,
   selectedName,
+  includeWorkshop = false,
   onClose,
   onChanged,
 }) {
@@ -61,7 +64,7 @@ export default function ProfileLocationPicker({
     let cancelled = false;
     setLoading(true);
     setError('');
-    listAssignableEmployeeLocations(token, baseUrl)
+    listAssignableEmployeeLocations(token, baseUrl, { includeWorkshop })
       .then((rows) => {
         if (cancelled) return;
         const list = Array.isArray(rows) ? rows : [];
@@ -74,7 +77,7 @@ export default function ProfileLocationPicker({
       })
       .catch((err) => {
         if (cancelled) return;
-        setStores([]);
+        setStores(includeWorkshop ? withWorkshopLocation([]) : []);
         setError(err?.message || 'Could not load store locations.');
       })
       .finally(() => {
@@ -84,7 +87,7 @@ export default function ProfileLocationPicker({
     return () => {
       cancelled = true;
     };
-  }, [visible, session?.token, session?.baseUrl, selectedId, selectedName]);
+  }, [visible, session?.token, session?.baseUrl, selectedId, selectedName, includeWorkshop]);
 
   const visibleStores = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -109,14 +112,18 @@ export default function ProfileLocationPicker({
     setSavingId(store.id);
     setError('');
     try {
-      const mapped = await updateAureusEmployeeLocation(
-        session.token,
-        employeeId,
-        { locationId: store.id, tillId: store.tillId, locationName: store.name },
-        session.baseUrl,
-      );
-      const locationId = asString(mapped?.locationId || store.id);
-      const locationName = asString(mapped?.locationName || store.name);
+      let locationId = asString(store.id);
+      let locationName = asString(store.name);
+      if (!isSyntheticWorkshopLocation(store)) {
+        const mapped = await updateAureusEmployeeLocation(
+          session.token,
+          employeeId,
+          { locationId: store.id, tillId: store.tillId, locationName: store.name },
+          session.baseUrl,
+        );
+        locationId = asString(mapped?.locationId || store.id);
+        locationName = asString(mapped?.locationName || store.name);
+      }
       try {
         await persistOwnLocation(session, { locationId, locationName });
       } catch {

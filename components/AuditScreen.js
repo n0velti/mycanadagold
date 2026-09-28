@@ -3657,7 +3657,7 @@ const styles = StyleSheet.create({
     minHeight: 0,
     width: '100%',
     maxWidth: '100%',
-    backgroundColor: PAGE,
+    backgroundColor: 'transparent',
   },
   localNavRow: {
     flexShrink: 0,

@@ -13,7 +13,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { fetchStoreCashPosition } from '../lib/cashTill';
+import { fetchStoreCashPosition, peekStoreCashPosition } from '../lib/cashTill';
 import { checkTransactionPrices, formatPriceTolerance } from '../lib/priceCheck';
 import {
   capturePurchasePriceCatalog,
@@ -34,7 +34,7 @@ import {
   parseDateParam,
 } from '../lib/transactions';
 import { useTxnCashBreakdowns } from '../lib/txnCashBreakdowns';
-import { callPartyLabel, callsForStore, fetchPhoneHistory, inboundCallRatio, isPhoneRateLimitMessage, mergeCallLog } from '../lib/phoneCalls';
+import { callPartyLabel, callsForStore, fetchPhoneHistory, formatCallWhen, formatDuration, inboundCallRatio, isPhoneRateLimitMessage, mergeCallLog, peekPhoneHistory, phoneHistoryNeeded, resultLabel } from '../lib/phoneCalls';
 import { formatPhoneNumber } from '../lib/ringcentral';
 import { storeKeyFromName } from '../lib/storeSettings';
 import { CANVAS, MOBILE_FILTER_INSET, MOBILE_FILTER_SIZE, useIsMobile } from '../lib/mobileUi';
@@ -1237,33 +1237,114 @@ function storeEmailCapture(txRows, storeName) {
   return rows.find((row) => namesMatch(row.store, storeName)) || (rows.length === 1 ? rows[0] : null);
 }
 
-function EmailsSnapshotBody({ storeName, txRows, periodLabel, ready }) {
+function PhoneLogRow({ call, last }) {
+  const label = callPartyLabel(call, { formatPhone: formatPhoneNumber });
+  const when = formatCallWhen(call.startTime);
+  const result = resultLabel(call.result) || call.direction || '—';
+  const duration = call.duration ? formatDuration(call.duration) : '';
+  return (
+    <View style={[styles.row, styles.rowStatic, last && styles.rowLast]}>
+      <View style={styles.rowCopy}>
+        <Text style={styles.rowTitle} numberOfLines={1}>
+          {label || 'Unknown'}
+        </Text>
+        <Text style={styles.rowSubtitle} numberOfLines={1}>
+          {[when, call.direction, duration].filter(Boolean).join(' · ')}
+        </Text>
+      </View>
+      <Text style={styles.rowValue} numberOfLines={1}>
+        {result}
+      </Text>
+    </View>
+  );
+}
+
+function EmailsSnapshotBody({ storeName, txRows, periodLabel, ready, full = false }) {
   const capture = useMemo(() => storeEmailCapture(txRows, storeName), [storeName, txRows]);
+  const people = capture?.people || [];
   const missing = useMemo(
-    () => (capture?.people || []).filter((person) => !person.hasEmail),
-    [capture],
+    () => people.filter((person) => !person.hasEmail),
+    [people],
   );
   const periodText = periodLabel === 'Today' ? 'today' : 'in this period';
 
   if (!ready && !capture) return <LoadingRow />;
 
   if (!capture || capture.totalTransactions === 0) {
-    return <EmptyRow text={`No customers ${periodText}.`} />;
+    return full ? (
+      <Text style={styles.homeTxEmpty}>{`No customers ${periodText}.`}</Text>
+    ) : (
+      <EmptyRow text={`No customers ${periodText}.`} />
+    );
+  }
+
+  const hero = (
+    <View style={styles.emailHero}>
+      <Text style={styles.emailHeroLabel}>Email capture</Text>
+      <Text style={[styles.emailHeroValue, capture.customerCount === 0 && styles.rowValueMuted]}>
+        {capture.customerCount === 0 ? '—' : capture.rateLabel}
+      </Text>
+      <Text style={styles.emailHeroMeta}>
+        {capture.customerCount === 0
+          ? `${capture.walkInCount} walk-in · no named customers ${periodText}`
+          : `${capture.withEmail} of ${capture.customerCount} named with email · ${capture.walkInCount} walk-in`}
+      </Text>
+    </View>
+  );
+
+  if (full) {
+    if (people.length === 0) {
+      return (
+        <>
+          {hero}
+          <Text style={styles.homeTxEmpty}>{`No named customers ${periodText}.`}</Text>
+        </>
+      );
+    }
+    return (
+      <>
+        {hero}
+        <View style={[styles.txTableHeader, styles.homeTabHeader]}>
+          <Text style={[styles.homeTxHeaderLabel, styles.homeTabColPerson]} numberOfLines={1}>
+            Person
+          </Text>
+          <Text style={[styles.homeTxHeaderLabel, styles.homeTabColEmail]} numberOfLines={1}>
+            Email
+          </Text>
+          <Text style={[styles.homeTxHeaderLabel, styles.homeTabColEmployee]} numberOfLines={1}>
+            Employee
+          </Text>
+        </View>
+        {people.map((person, index) => (
+          <View
+            key={person.id || `${person.customerName}-${index}`}
+            style={[styles.homeTabRow, index === people.length - 1 && styles.rowLast]}
+          >
+            <Text style={[styles.txCell, styles.txCellPrimary, styles.homeTabColPerson]} numberOfLines={1}>
+              {person.customerName || '—'}
+            </Text>
+            <Text
+              style={[
+                styles.txCell,
+                styles.homeTabColEmail,
+                !person.hasEmail && styles.rowValueMuted,
+              ]}
+              numberOfLines={1}
+            >
+              {person.emailLabel || '—'}
+            </Text>
+            <Text style={[styles.txCell, styles.txCellSecondary, styles.homeTabColEmployee]} numberOfLines={1}>
+              {person.employeeName || '—'}
+            </Text>
+          </View>
+        ))}
+      </>
+    );
   }
 
   return (
     <>
-      <View style={styles.emailHero}>
-        <Text style={styles.emailHeroLabel}>Email capture</Text>
-        <Text style={[styles.emailHeroValue, capture.customerCount === 0 && styles.rowValueMuted]}>
-          {capture.customerCount === 0 ? '—' : capture.rateLabel}
-        </Text>
-        <Text style={styles.emailHeroMeta}>
-          {capture.customerCount === 0
-            ? `${capture.walkInCount} walk-in · no named customers ${periodText}`
-            : `${capture.withEmail} of ${capture.customerCount} named with email · ${capture.walkInCount} walk-in`}
-        </Text>
-      </View>
+      {hero}
       {capture.customerCount > 0 ? (
         missing.length === 0 ? (
           <View style={[styles.row, styles.rowStatic, styles.rowLast]}>
@@ -1327,6 +1408,7 @@ function StoreSnapshotPanel({
   ready = true,
   onHeaderStats,
   desktopHeader = null,
+  focusTab = 'overview',
 }) {
   const storeName = store?.store || '';
   const isMobile = useIsMobile();
@@ -1337,8 +1419,8 @@ function StoreSnapshotPanel({
   const showFinancials = hasApp('financials');
   const [inventoryQuery, setInventoryQuery] = useState('');
   const [inventoryLimit, setInventoryLimit] = useState(INVENTORY_PAGE);
-  const [cash, setCash] = useState(null);
-  const [cashLoading, setCashLoading] = useState(false);
+  const [cash, setCash] = useState(() => peekStoreCashPosition(session, { storeName: store?.store || '' }));
+  const [cashLoading, setCashLoading] = useState(() => !peekStoreCashPosition(session, { storeName: store?.store || '' }));
   const [cashError, setCashError] = useState('');
   const [inventoryStores, setInventoryStores] = useState([]);
   const [inventoryRows, setInventoryRows] = useState([]);
@@ -1374,6 +1456,11 @@ function StoreSnapshotPanel({
       setCashError('');
     }
     try {
+      const cached = peekStoreCashPosition(session, { storeName });
+      if (cached) {
+        setCash(keepIfSame(cached));
+        setCashLoading(false);
+      }
       const result = await fetchStoreCashPosition(session, { storeName });
       if (id !== cashRequestId.current) return;
       setCash(keepIfSame(result));
@@ -1446,10 +1533,11 @@ function StoreSnapshotPanel({
 
   useEffect(() => {
     setInventoryQuery('');
-    setInventoryLimit(INVENTORY_PAGE);
-    setCash(null);
+    const cached = peekStoreCashPosition(session, { storeName });
+    setCash(cached);
     setCashError('');
-  }, [storeName]);
+    setCashLoading(!cached);
+  }, [session, storeName]);
 
   useEffect(() => {
     loadCash();
@@ -1478,8 +1566,8 @@ function StoreSnapshotPanel({
   const searching = Boolean(inventoryQuery.trim());
 
   useEffect(() => {
-    setInventoryLimit(INVENTORY_PAGE);
-  }, [inventoryQuery]);
+    setInventoryLimit(focusTab === 'inventory' ? 80 : INVENTORY_PAGE);
+  }, [focusTab, inventoryQuery, storeName]);
 
   const txIdKey = txRows.map((row) => row.id).join('\n');
   const pricedKey = txRows
@@ -1649,19 +1737,21 @@ function StoreSnapshotPanel({
 
   const storeKey = storeKeyFromName(storeName);
   const [historyCalls, setHistoryCalls] = useState([]);
-  const incomingCalls = useMemo(
-    () => (phone.incoming || []).filter((call) => call.storeKey === storeKey),
-    [phone.incoming, storeKey],
-  );
+  useEffect(() => {
+    if (storeKey) phone.refreshInbox?.(storeKey, { silent: true }).catch(() => {});
+  }, [phone.refreshInbox, storeKey]);
   useEffect(() => {
     if (!storeName || !startKey || !endKey) {
       setHistoryCalls([]);
       return undefined;
     }
-    let cancelled = false;
     const dateFrom = parseDateParam(startKey);
     const dateTo = parseDateParam(endKey);
     dateTo.setDate(dateTo.getDate() + 1);
+    const peeked = peekPhoneHistory(storeName, { dateFrom, dateTo });
+    setHistoryCalls(peeked?.calls || []);
+    if (!phoneHistoryNeeded(startKey, endKey)) return undefined;
+    let cancelled = false;
     fetchPhoneHistory(storeName, { dateFrom, dateTo })
       .then((payload) => {
         if (!cancelled) setHistoryCalls(payload.calls || []);
@@ -1928,6 +2018,81 @@ function StoreSnapshotPanel({
     </>
   );
 
+  const listWrap = isMobile ? styles.dashList : styles.homeTxTable;
+  const emptyPeriod = `No transactions ${periodLabel === 'Today' ? 'today' : 'in this period'}.`;
+  const focusedContent =
+    focusTab === 'transactions' ? (
+      isMobile ? (
+        <View style={styles.dashList}>{mappedTxRows}</View>
+      ) : (
+        <View style={styles.homeTxTable}>
+          <TxTableHeader />
+          {txRows.length === 0 ? (
+            <Text style={styles.homeTxEmpty}>{emptyPeriod}</Text>
+          ) : (
+            txRows.map((item, index) => (
+              <TransactionRow
+                key={item.id}
+                item={item}
+                last={index === txRows.length - 1}
+                onPress={onOpenTransaction}
+                cashSaved={cashSlips.isSaved(item)}
+                onCashPress={cashSlips.openEditor}
+                priceCheck={priceChecks.get(item.id)}
+                onPricePress={setPriceReview}
+                employeePerson={employeePersonForTx(item, employeesByName, staff)}
+                onAmountHover={onAmountHover}
+              />
+            ))
+          )}
+        </View>
+      )
+    ) : focusTab === 'inventory' ? (
+      <View style={listWrap}>
+        <InventorySearch value={inventoryQuery} onChangeText={setInventoryQuery} />
+        {inventoryBody}
+      </View>
+    ) : focusTab === 'financials' ? (
+      <View style={listWrap}>{financialsBody}</View>
+    ) : focusTab === 'employees' ? (
+      <View style={listWrap}>{employeesBody}</View>
+    ) : focusTab === 'phone' ? (
+      <View style={listWrap}>
+        <PhoneSnapshotBody
+          storeName={storeName}
+          startKey={startKey}
+          endKey={endKey}
+          periodLabel={periodLabel}
+          calls={phoneCalls}
+        />
+        {phoneCalls.map((call, index) => (
+          <PhoneLogRow
+            key={call.id || `${call.startTime}-${index}`}
+            call={call}
+            last={index === phoneCalls.length - 1}
+          />
+        ))}
+      </View>
+    ) : focusTab === 'emails' ? (
+      <View style={listWrap}>
+        <EmailsSnapshotBody
+          storeName={storeName}
+          txRows={txRows}
+          periodLabel={periodLabel}
+          ready={ready}
+          full
+        />
+      </View>
+    ) : focusTab === 'supplies' ? (
+      <Text style={styles.homeTxEmpty}>
+        {`No supplies recorded for ${storeName || 'this store'}.`}
+      </Text>
+    ) : isMobile ? (
+      mobileContent
+    ) : (
+      desktopContent
+    );
+
   return (
     <View style={[styles.body, isMobile && styles.bodyMobile]}>
       <ScrollView
@@ -1944,7 +2109,7 @@ function StoreSnapshotPanel({
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
       >
-        {isMobile ? mobileContent : desktopContent}
+        {focusTab === 'overview' ? (isMobile ? mobileContent : desktopContent) : focusedContent}
       </ScrollView>
       <TxnCashBreakdownModal
         visible={Boolean(cashSlips.editorRow)}
@@ -1986,7 +2151,8 @@ export default memo(
     prev.topInset === next.topInset &&
     prev.ready === next.ready &&
     prev.onHeaderStats === next.onHeaderStats &&
-    prev.desktopHeader === next.desktopHeader,
+    prev.desktopHeader === next.desktopHeader &&
+    prev.focusTab === next.focusTab,
 );
 
 const styles = StyleSheet.create({
@@ -2612,6 +2778,33 @@ const styles = StyleSheet.create({
     color: SECONDARY,
     paddingHorizontal: 8,
     paddingVertical: 28,
+  },
+  homeTabHeader: {
+    paddingLeft: 8,
+    paddingRight: 8,
+    gap: 12,
+  },
+  homeTabRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 52,
+    paddingLeft: 8,
+    paddingRight: 8,
+    gap: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: SEPARATOR,
+  },
+  homeTabColPerson: {
+    flex: 1.2,
+    minWidth: 0,
+  },
+  homeTabColEmail: {
+    flex: 1.4,
+    minWidth: 0,
+  },
+  homeTabColEmployee: {
+    flex: 1,
+    minWidth: 0,
   },
   homeTxRowHovered: {
     backgroundColor: '#f5f5f5',

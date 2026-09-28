@@ -13,7 +13,15 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { uploadOwnAvatar } from '../lib/profiles';
-import { categoryLabel, findStaffByEmployeeName, findStaffById, listStaffProfiles } from '../lib/permissions';
+import {
+  canSwitchAppRoles,
+  canUseWorkshopLocation,
+  categoryLabel,
+  findStaffByEmployeeName,
+  findStaffById,
+  listStaffProfiles,
+  selectableAppRoles,
+} from '../lib/permissions';
 import { listTeams, teamMemberName } from '../lib/teams';
 import { fetchAureusEmployee } from '../lib/aureusEmployees';
 import { CANVAS, MOBILE, useIsMobile } from '../lib/mobileUi';
@@ -22,6 +30,7 @@ import { formatPhoneNumber } from '../lib/ringcentral';
 import ProfilePhotoModal from './ProfilePhotoModal';
 import ProfilePhotoPicker from './ProfilePhotoPicker';
 import ProfileLocationPicker from './ProfileLocationPicker';
+import ProfileRolePicker from './ProfileRolePicker';
 import ProfileTeamPicker from './ProfileTeamPicker';
 import ProfileNotesTable from './ProfileNotesTable';
 import { usePhoneCalls } from './PhoneCallProvider';
@@ -346,6 +355,7 @@ export default function ProfileScreen({
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
   const [avatarViewerOpen, setAvatarViewerOpen] = useState(false);
   const [locationPickerOpen, setLocationPickerOpen] = useState(false);
+  const [rolePickerOpen, setRolePickerOpen] = useState(false);
   const [teamPickerOpen, setTeamPickerOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -465,6 +475,8 @@ export default function ProfileScreen({
   const accessLabel = viewingOther ? categoryLabel(profile) : categoryLabel(profile);
   const avatarSize = isMobile ? 100 : 152;
   const canEdit = !viewingOther;
+  const canSwitchRole = canEdit && canSwitchAppRoles(profile);
+  const switchableRoles = canSwitchRole ? selectableAppRoles(profile) : [];
   const canCall = canPhone && Boolean(phoneNumber);
   const messageEnabled = canMessage && Boolean(profileId) && viewingOther;
   const canMail = Boolean(email);
@@ -504,7 +516,14 @@ export default function ProfileScreen({
             : 'Not set',
         onPress: () => setTeamPickerOpen(true),
       },
-      accessLabel ? { key: 'category', label: 'Category', value: accessLabel } : null,
+      accessLabel
+        ? {
+            key: 'category',
+            label: canSwitchRole ? 'Role' : 'Category',
+            value: accessLabel,
+            onPress: canSwitchRole ? () => setRolePickerOpen(true) : undefined,
+          }
+        : null,
       profile?.employeeType
         ? { key: 'employeeType', label: 'Employee type', value: profile.employeeType }
         : null,
@@ -512,7 +531,7 @@ export default function ProfileScreen({
         ? { key: 'role', label: 'Aureus role', value: profile.role }
         : null,
     ].filter(Boolean);
-  }, [viewingOther, locationName, profile, accessLabel]);
+  }, [viewingOther, locationName, profile, accessLabel, canSwitchRole]);
 
   const handlePickAvatar = () => {
     if (!canEdit || avatarBusy) return;
@@ -724,7 +743,14 @@ export default function ProfileScreen({
           profile?.role && profile.role !== profile.employeeType
             ? { key: 'role', caption: 'Aureus role', value: profile.role }
             : null,
-          accessLabel ? { key: 'category', caption: 'category', value: accessLabel } : null,
+          accessLabel
+            ? {
+                key: 'category',
+                caption: canSwitchRole ? 'role' : 'category',
+                value: accessLabel,
+                onPress: canSwitchRole ? () => setRolePickerOpen(true) : undefined,
+              }
+            : null,
         ]
           .filter(Boolean)
           .map((row, index, rows) => (
@@ -734,6 +760,7 @@ export default function ProfileScreen({
               value={row.value}
               placeholder={row.placeholder}
               onPress={row.onPress}
+              link={Boolean(row.onPress)}
               last={index === rows.length - 1}
             />
           ))}
@@ -1056,11 +1083,24 @@ export default function ProfileScreen({
             session={session}
             selectedId={own?.locationId}
             selectedName={locationName}
+            includeWorkshop={canUseWorkshopLocation(profile)}
             onClose={() => setLocationPickerOpen(false)}
             onChanged={({ locationId, locationName: nextName }) => {
               onProfileChange?.({
                 locationId: locationId || own?.locationId,
                 locationName: nextName || own?.locationName,
+              });
+            }}
+          />
+          <ProfileRolePicker
+            visible={rolePickerOpen}
+            roles={switchableRoles}
+            selectedRole={profile?.appRole}
+            onClose={() => setRolePickerOpen(false)}
+            onChanged={(updated) => {
+              onProfileChange?.({
+                appRole: updated?.appRole || profile?.appRole,
+                allowedAppRoles: updated?.allowedAppRoles || profile?.allowedAppRoles,
               });
             }}
           />

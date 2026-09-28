@@ -33,6 +33,7 @@ import {
   hideDmConversation,
   hideDmMessage,
   initialsFromName,
+  isDefaultAiTitle,
   leaveDmGroup,
   listDmContacts,
   listDmInbox,
@@ -793,6 +794,7 @@ export default function MessagesScreen({
   const sendScale = useRef(new Animated.Value(1)).current;
   const typingRef = useRef(null);
   const activeIdRef = useRef(null);
+  const titledAiRef = useRef(new Set());
   const inboxRef = useRef(inbox);
   inboxRef.current = inbox;
   activeIdRef.current = activeId;
@@ -1195,10 +1197,12 @@ export default function MessagesScreen({
       useNativeDriver: true,
     }).start();
     if (activeThread?.isAi) {
+      const conversationId = activeId;
+      const threadTitle = activeThread.title;
       setDraft('');
       setEmojiOpen(false);
       setSending(true);
-      setAiThinkingId(activeId);
+      setAiThinkingId(conversationId);
       const history = messages
         .filter((item) => item.body && !String(item.id).startsWith('temp-'))
         .map((item) => ({
@@ -1211,7 +1215,7 @@ export default function MessagesScreen({
           id: tempId,
           localKey,
           justSent: true,
-          conversationId: activeId,
+          conversationId,
           senderId: myId,
           body: text,
           createdAt: new Date().toISOString(),
@@ -1222,9 +1226,9 @@ export default function MessagesScreen({
         },
       ]);
       try {
-        const saved = await sendDmMessage(activeId, text);
+        const saved = await sendDmMessage(conversationId, text);
         setMessages((current) => mergeSentMessage(current, localKey, tempId, saved));
-        const prepared = ensureAiSession(activeId);
+        const prepared = ensureAiSession(conversationId);
         const result = await sendAiChatMessage({
           seedMessages: prepared.seedMessages,
           turns: history,
@@ -1238,7 +1242,7 @@ export default function MessagesScreen({
         if (result.sources?.length) {
           prepared.context = { ...prepared.context, lastSources: result.sources };
         }
-        const reply = await sendDmMessage(activeId, result.text || 'I could not answer that.', {
+        const reply = await sendDmMessage(conversationId, result.text || 'I could not answer that.', {
           assistant: true,
         });
         setMessages((current) => (
@@ -1246,6 +1250,25 @@ export default function MessagesScreen({
         ));
         setAiThinkingId(null);
         await refreshInbox();
+        if (isDefaultAiTitle(threadTitle) && !titledAiRef.current.has(conversationId)) {
+          titledAiRef.current.add(conversationId);
+          void titleAiChat(
+            [
+              ...history,
+              { role: 'user', content: text },
+              { role: 'assistant', content: result.text || '' },
+            ],
+            AI_MODEL,
+          )
+            .then(async (title) => {
+              if (!title) return;
+              await renameDmGroup(conversationId, title);
+              await refreshInbox();
+            })
+            .catch(() => {
+              titledAiRef.current.delete(conversationId);
+            });
+        }
       } catch (err) {
         setAiThinkingId(null);
         setMessages((current) => current.filter((item) => item.id !== tempId));
@@ -1361,7 +1384,7 @@ export default function MessagesScreen({
               Talk to AI
             </Text>
             <Text style={styles.personSub} numberOfLines={1}>
-              MyCanadaGold AI
+              Start a new conversation
             </Text>
           </View>
         </Pressable>
@@ -1490,7 +1513,9 @@ export default function MessagesScreen({
         ? row.isGroup || row.lastMessageSenderId === myId
           ? `${senderName}: ${row.lastMessagePreview}`
           : row.lastMessagePreview
-        : row.isTeam
+        : row.isAi
+          ? 'New AI chat'
+          : row.isTeam
           ? 'New team chat'
           : row.isGroup
           ? 'New group chat'

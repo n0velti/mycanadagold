@@ -8,7 +8,10 @@ import TriageDailyReceiptsDrawer from './TriageDailyReceiptsDrawer';
 import TriageDeletedPanel from './TriageDeletedPanel';
 import TriageTransfersPanel from './TriageTransfersPanel';
 import { BarButton, EmptyState, FONT, IconAction, SearchField, SegmentedSlider, T, TextTabs } from './TriageKit';
-import { CANVAS, useIsMobile } from '../lib/mobileUi';
+import { MobileFilterLines, MobileNavButton } from './MobileChrome';
+import { ensureLinkedPosSessions } from '../lib/auth';
+import { fetchTransferStores } from '../lib/locations';
+import { CANVAS, MOBILE_FILTER_INSET, useIsMobile } from '../lib/mobileUi';
 import {
   buildDailyReceiptGrid,
   dailyReceiptStatus,
@@ -16,7 +19,6 @@ import {
   useDailyReceipts,
 } from '../lib/triageDailyReceipts';
 import {
-  batchStats,
   collectAccuracyTriagePos,
   isStandaloneTriage,
   syncTransferWorkflowRemote,
@@ -109,6 +111,7 @@ export default function TriageScreen({
   embedded = false,
   onStoreBackChange,
   onNavTabs,
+  onMobileHeader,
 }) {
   const isMobile = useIsMobile();
   const { triage, deleted = [] } = useTransferWorkflow();
@@ -125,6 +128,7 @@ export default function TriageScreen({
   const [canLeaveStore, setCanLeaveStore] = useState(false);
   const [batchContext, setBatchContext] = useState(null);
   const [dailyOpen, setDailyOpen] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const leaveStoreRef = useRef(null);
   const openScanRef = useRef(() => {});
   const onStoreBackChangeRef = useRef(onStoreBackChange);
@@ -134,33 +138,30 @@ export default function TriageScreen({
   useEffect(() => {
     if (!session?.supabaseUserId && !session?.token) return undefined;
     syncTransferWorkflowRemote().catch(() => {});
+    if (session?.token) {
+      ensureLinkedPosSessions(session).catch(() => {});
+      fetchTransferStores(session).catch(() => {});
+    }
     return undefined;
   }, [session?.supabaseUserId, session?.token]);
 
-  const tabOptions = useMemo(() => {
-    let openDocs = 0;
-    for (const batch of triage) openDocs += batchStats(batch).open;
-    const flagged = collectAccuracyTriagePos(triage).filter(triagePoNeedsCorrection).length;
-    return TRIAGE_TABS.map((tab) => {
-      if (tab.key === 'transfers' && openDocs > 0) return { ...tab, count: openDocs };
-      if (tab.key === 'accuracy' && flagged > 0) return { ...tab, count: flagged };
-      if (tab.key === 'deleted' && deleted.length > 0) return { ...tab, count: deleted.length };
-      return tab;
-    });
-  }, [deleted.length, triage]);
-
-  const dashTabOptions = useMemo(() => {
+  const dashCounts = useMemo(() => {
     let poCount = 0;
     let batchCount = 0;
     for (const row of triage) {
       if (isStandaloneTriage(row)) poCount += 1;
       else batchCount += 1;
     }
-    return [
-      { key: 'poso', label: 'PO / SO', ...(poCount ? { count: poCount } : {}) },
-      { key: 'batch', label: 'Batch', ...(batchCount ? { count: batchCount } : {}) },
-    ];
+    return { poCount, batchCount };
   }, [triage]);
+
+  const dashTabOptions = useMemo(
+    () => [
+      { key: 'poso', label: 'PO / SO', ...(dashCounts.poCount ? { count: dashCounts.poCount } : {}) },
+      { key: 'batch', label: 'Batch', ...(dashCounts.batchCount ? { count: dashCounts.batchCount } : {}) },
+    ],
+    [dashCounts],
+  );
 
   const accuracyTabOptions = useMemo(
     () => [
@@ -178,6 +179,7 @@ export default function TriageScreen({
     setListQuery('');
     setAccuracyBreakdownOpen(false);
     setDailyOpen(false);
+    setFiltersOpen(false);
   }, []);
 
   const changeDashTab = useCallback((key) => {
@@ -204,6 +206,20 @@ export default function TriageScreen({
   }, []);
 
   const inBatch = activeTab === 'transfers' && canLeaveStore && Boolean(batchContext);
+  const dashVisibleCount = inBatch
+    ? batchContext?.stats?.documents || 0
+    : dashTab === 'batch'
+      ? dashCounts.batchCount
+      : dashCounts.poCount;
+  const tabOptions = useMemo(() => {
+    const flagged = collectAccuracyTriagePos(triage).filter(triagePoNeedsCorrection).length;
+    return TRIAGE_TABS.map((tab) => {
+      if (tab.key === 'transfers' && dashVisibleCount > 0) return { ...tab, count: dashVisibleCount };
+      if (tab.key === 'accuracy' && flagged > 0) return { ...tab, count: flagged };
+      if (tab.key === 'deleted' && deleted.length > 0) return { ...tab, count: deleted.length };
+      return tab;
+    });
+  }, [dashVisibleCount, deleted.length, triage]);
   const dailyBatch = inBatch ? batchContext?.batch || null : null;
   const daily = useDailyReceipts(dailyBatch?.id, Boolean(session?.token && dailyBatch));
   const dailyGrid = useMemo(() => buildDailyReceiptGrid(dailyBatch), [dailyBatch]);
@@ -213,6 +229,13 @@ export default function TriageScreen({
   useEffect(() => {
     if (!dailyBatch) setDailyOpen(false);
   }, [dailyBatch]);
+
+  const openBatch = useCallback(() => {
+    setDashTab('batch');
+    setListQuery('');
+    setCreateTransferOpen(true);
+    setFiltersOpen(false);
+  }, []);
 
   const scanButton = (size) => (
     <BarButton
@@ -242,6 +265,14 @@ export default function TriageScreen({
     />
   ) : null;
 
+  const storeTabOptions = useMemo(() => {
+    const melt = batchContext?.stats?.expected || 0;
+    return [
+      { key: 'melt', label: 'Melt', ...(melt ? { count: melt } : {}) },
+      { key: 'bullion', label: 'Bullion' },
+    ];
+  }, [batchContext]);
+
   const trailing =
     session?.token && activeTab === 'transfers' && transferView === 'list' ? (
       <>
@@ -250,11 +281,7 @@ export default function TriageScreen({
         <BarButton
           icon="add"
           label="Add Batch"
-          onPress={() => {
-            setDashTab('batch');
-            setListQuery('');
-            setCreateTransferOpen(true);
-          }}
+          onPress={openBatch}
           accessibilityLabel="Add a new batch"
         />
       </>
@@ -313,14 +340,6 @@ export default function TriageScreen({
       searchField
     ) : null;
 
-  const storeTabOptions = useMemo(() => {
-    const melt = batchContext?.stats?.expected || 0;
-    return [
-      { key: 'melt', label: 'Melt', ...(melt ? { count: melt } : {}) },
-      { key: 'bullion', label: 'Bullion' },
-    ];
-  }, [batchContext]);
-
   const leading =
     session?.token && activeTab === 'transfers' && transferView === 'list' ? (
       <SegmentedSlider
@@ -362,6 +381,16 @@ export default function TriageScreen({
   );
 
   const portalNav = Boolean(onNavTabs) && !isMobile;
+  const canAdd =
+    Boolean(session?.token) &&
+    ((activeTab === 'transfers' && transferView === 'list') || (inBatch && storeTab === 'melt'));
+  const filtersActive = Boolean(listQuery.trim()) || activeTab !== 'transfers';
+  const filterShow =
+    session?.token && activeTab === 'transfers' && transferView === 'list'
+      ? { options: dashTabOptions, value: dashTab, onChange: changeDashTab }
+      : session?.token && inBatch
+        ? { options: storeTabOptions, value: storeTab, onChange: changeStoreTab }
+        : null;
 
   useLayoutEffect(() => {
     if (!portalNav) return undefined;
@@ -369,30 +398,57 @@ export default function TriageScreen({
     return () => onNavTabs(null);
   }, [navTabs, onNavTabs, portalNav]);
 
-  const mobileChrome =
-    !session?.token ? null : activeTab === 'transfers' && transferView === 'list' ? (
-      <View style={styles.mobileChrome}>
-        <SegmentedSlider fill options={dashTabOptions} value={dashTab} onChange={changeDashTab} />
-        {searchField}
-        <View style={styles.mobileActions}>
-          {scanButton('lg')}
-          <BarButton
-            size="lg"
-            fill={dashTab === 'batch'}
-            icon="add"
-            label="Add Batch"
-            onPress={() => {
-              setDashTab('batch');
-              setListQuery('');
-              setCreateTransferOpen(true);
-            }}
-            accessibilityLabel="Add a new batch"
-          />
+  const mobileHeader = useMemo(() => {
+    if (!isMobile || !session?.token) return null;
+    return {
+      trailing: (
+        <View style={styles.headerActions}>
+          {activeTab === 'accuracy' ? (
+            <SegmentedSlider
+              compact
+              options={[
+                { key: 'correct', label: 'Correct' },
+                { key: 'incorrect', label: 'Incorrect' },
+              ]}
+              value={accuracyTab}
+              onChange={changeAccuracyTab}
+              style={styles.accuracyHeaderToggle}
+            />
+          ) : canAdd ? (
+            <MobileNavButton
+              label="Add"
+              tone="green"
+              onPress={() => {
+                setFiltersOpen(false);
+                openScanRef.current();
+              }}
+              accessibilityLabel="Add a PO"
+            >
+              <Ionicons name="add" size={18} color="#fff" />
+            </MobileNavButton>
+          ) : null}
+          <MobileNavButton
+            active={filtersOpen || filtersActive}
+            onPress={() => setFiltersOpen((open) => !open)}
+            accessibilityLabel="Triage filters"
+            accessibilityState={{ expanded: filtersOpen }}
+          >
+            <MobileFilterLines color={filtersOpen || filtersActive ? T.text : T.secondary} />
+          </MobileNavButton>
         </View>
-      </View>
-    ) : inBatch ? (
+      ),
+    };
+  }, [accuracyTab, activeTab, canAdd, changeAccuracyTab, filtersActive, filtersOpen, isMobile, session?.token]);
+
+  useLayoutEffect(() => {
+    if (!onMobileHeader) return undefined;
+    onMobileHeader(mobileHeader);
+    return () => onMobileHeader(null);
+  }, [mobileHeader, onMobileHeader]);
+
+  const mobileChrome =
+    !session?.token ? null : inBatch ? (
       <View style={styles.mobileChrome}>
-        <SegmentedSlider fill options={storeTabOptions} value={storeTab} onChange={changeStoreTab} />
         <Pressable
           style={[styles.mobileStatCard, !dailySummary.allChecked && dailySummary.cells > 0 && styles.mobileStatCardOn]}
           onPress={() => setDailyOpen(true)}
@@ -422,14 +478,11 @@ export default function TriageScreen({
               onPress={() => batchContext.onOpenFeed?.()}
               accessibilityLabel="Open feed view"
             />
-            {scanButton('lg')}
           </View>
         ) : null}
       </View>
     ) : activeTab === 'accuracy' ? (
       <View style={styles.mobileChrome}>
-        <SegmentedSlider fill options={accuracyTabOptions} value={accuracyTab} onChange={changeAccuracyTab} />
-        {searchField}
         <Pressable
           style={styles.mobileStatCard}
           onPress={() => setAccuracyBreakdownOpen(true)}
@@ -453,13 +506,12 @@ export default function TriageScreen({
           </View>
         </Pressable>
       </View>
-    ) : activeTab === 'deleted' ? (
-      <View style={styles.mobileChrome}>{searchField}</View>
     ) : null;
 
   return (
     <View style={[styles.body, embedded && styles.bodyEmbedded, isMobile && styles.bodyMobile]}>
-      {portalNav ? null : <View style={[styles.localNavRow, isMobile && styles.localNavRowMobile]}>{navTabs}</View>}
+      <View style={styles.pageVisible}>
+      {portalNav || isMobile ? null : <View style={styles.localNavRow}>{navTabs}</View>}
       {isMobile ? (
         mobileChrome
       ) : leading || trailing ? (
@@ -517,16 +569,65 @@ export default function TriageScreen({
           />
         </View>
       ) : null}
+      </View>
 
       {session?.token ? (
         <TriagePoCapture
           session={session}
           openerRef={openScanRef}
           batchId={dailyBatch?.id || ''}
+          onAddBatch={inBatch ? undefined : openBatch}
           onCounted={(finishedBatchId) => {
             if (finishedBatchId && finishedBatchId === dailyBatch?.id) daily.reload();
           }}
         />
+      ) : null}
+
+      {isMobile && filtersOpen ? (
+        <View style={styles.filterLayer}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setFiltersOpen(false)}
+            accessibilityLabel="Close filters"
+          />
+          <View style={styles.filterCard}>
+            <Text style={styles.filterLabel}>Search</Text>
+            {searchField}
+            <Text style={styles.filterLabel}>View</Text>
+            {tabOptions.map((tab) => {
+              const selected = tab.key === activeTab;
+              return (
+                <Pressable
+                  key={tab.key}
+                  style={styles.filterRow}
+                  onPress={() => changeTab(tab.key)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  accessibilityLabel={tab.label}
+                >
+                  <Text style={[styles.filterRowLabel, selected && styles.filterRowLabelOn]}>{tab.label}</Text>
+                  {tab.count != null ? <Text style={styles.filterRowCount}>{tab.count}</Text> : null}
+                  {selected ? <Ionicons name="checkmark" size={18} color={T.text} /> : <View style={styles.filterRowCheck} />}
+                </Pressable>
+              );
+            })}
+            {filterShow ? (
+              <>
+                <View style={styles.filterDivider} />
+                <Text style={styles.filterLabel}>Show</Text>
+                <SegmentedSlider
+                  fill
+                  options={filterShow.options}
+                  value={filterShow.value}
+                  onChange={(key) => {
+                    filterShow.onChange(key);
+                    setFiltersOpen(false);
+                  }}
+                />
+              </>
+            ) : null}
+          </View>
+        </View>
       ) : null}
 
       <TriageDailyReceiptsDrawer
@@ -595,6 +696,88 @@ const styles = StyleSheet.create({
   mobileActions: {
     flexDirection: 'row',
     gap: 8,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  accuracyHeaderToggle: {
+    width: 176,
+  },
+  filterLayer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 30,
+  },
+  filterCard: {
+    position: 'absolute',
+    top: 8,
+    right: MOBILE_FILTER_INSET,
+    width: 300,
+    maxWidth: '92%',
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    padding: 12,
+    gap: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
+    ...Platform.select({
+      web: { boxShadow: '0 10px 32px rgba(0,0,0,0.16)' },
+      default: {
+        shadowColor: '#000',
+        shadowOpacity: 0.16,
+        shadowRadius: 16,
+        shadowOffset: { width: 0, height: 8 },
+        elevation: 8,
+      },
+    }),
+  },
+  filterLabel: {
+    fontFamily: FONT,
+    fontSize: 12,
+    fontWeight: '600',
+    color: T.secondary,
+    letterSpacing: -0.08,
+    textTransform: 'uppercase',
+    paddingHorizontal: 4,
+  },
+  filterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minHeight: 40,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  filterRowLabel: {
+    flex: 1,
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '600',
+    color: T.text,
+    letterSpacing: -0.15,
+  },
+  filterRowLabelOn: {
+    color: T.text,
+  },
+  filterRowCount: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '600',
+    color: T.secondary,
+    fontVariant: ['tabular-nums'],
+  },
+  filterRowCheck: {
+    width: 18,
+  },
+  filterDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: T.hairline,
+    marginHorizontal: 4,
   },
   mobileStatCard: {
     flexDirection: 'row',

@@ -95,6 +95,12 @@ function isMicrophoneError(err) {
 
 /** How long Call Control may take to land the replacement INVITE in this tab. */
 const ANSWER_SETTLE_MS = 20_000;
+/** How long Call/Answer wait for a softphone that is still registering before giving up on it. */
+const WEB_PHONE_WAIT_MS = 8_000;
+/** A second RingOut for the same store this soon is a double tap, not a new call. */
+const RINGOUT_COOLDOWN_MS = 20_000;
+/** Re-provisioning mints a RingCentral device; never do it more often than this per store. */
+const WEB_PHONE_RESET_MIN_MS = 60_000;
 /** A call that ends this soon after answering almost always means no audio path. */
 const EARLY_DROP_MS = 12_000;
 
@@ -247,6 +253,15 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
   const [error, setError] = useState('');
   const [muted, setMuted] = useState(false);
   const [webPhoneStatus, setWebPhoneStatus] = useState({});
+  const webPhoneStatusRef = useRef(webPhoneStatus);
+  webPhoneStatusRef.current = webPhoneStatus;
+  // Bumped to make the registration effect run again after a line was reset.
+  const [webPhoneEpoch, setWebPhoneEpoch] = useState(0);
+  const webPhoneResetAtRef = useRef(new Map());
+  // resetWebPhone is defined after the registration effect that needs it.
+  const resetWebPhoneRef = useRef(null);
+  // storeKey → when RingOut last rang the store phone from this tab.
+  const lastRingOutRef = useRef(new Map());
 
   // The one registry of live calls (softphone + verified presence).
   const [callState, setCallState] = useState(createCallState);
@@ -676,16 +691,23 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     let cancelled = false;
     const keys = connectedKeyList.split(',').filter(Boolean);
     (async () => {
-      for (const key of keys) {
-        if (cancelled) return;
-        const cached = inboxByStoreRef.current[key];
-        if (cached && Date.now() - (cached.at || 0) < 60_000) continue;
-        try {
-          await refreshInbox(key, { silent: true });
-        } catch {
-          // Keep showing whatever we already have for this store.
-        }
-      }
+      let next = 0;
+      const workers = Math.min(6, keys.length);
+      await Promise.all(
+        Array.from({ length: workers }, async () => {
+          while (next < keys.length && !cancelled) {
+            const key = keys[next];
+            next += 1;
+            const cached = inboxByStoreRef.current[key];
+            if (cached && Date.now() - (cached.at || 0) < 60_000) continue;
+            try {
+              await refreshInbox(key, { silent: true });
+            } catch {
+              // Keep showing whatever we already have for this store.
+            }
+          }
+        }),
+      );
     })();
     return () => {
       cancelled = true;
@@ -958,6 +980,12 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
               // Only the live registration for this store may report its state
               // (handles outlive this effect run, so `cancelled` is not checked).
               if (handle && webPhonesRef.current.get(storeKey) !== handle) return;
+              if (state === 'rejected' && handle) {
+                // RingCentral dropped this device: the cached SIP credentials
+                // are dead. Provision again rather than sit on a line that
+                // looks fine but never rings.
+                if (resetWebPhoneRef.current?.(storeKey)) return;
+              }
               setStorePhoneStatus(storeKey, { state, message: message || '' });
             },
           });
@@ -1034,7 +1062,8 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
       window.removeEventListener('pagehide', onHide);
       window.removeEventListener('pageshow', onShow);
     };
-  }, [active, ringKeyList, onSipAnswerError, onSipAudio, onSipCall, onSipChange, setStorePhoneStatus]);
+    // webPhoneEpoch: a reset line has been disposed and needs registering again.
+  }, [active, ringKeyList, webPhoneEpoch, onSipAnswerError, onSipAudio, onSipCall, onSipChange, setStorePhoneStatus]);
 
   useEffect(
     () => () => {
@@ -1108,12 +1137,15 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
   /** The registration that rings for this store, and this browser's device on it. */
   const webPhoneFor = useCallback(
     (storeKey) => {
-      const status = webPhoneStatus[storeKey];
+      // Read through the ref: callers that just waited for the line need the
+      // state as it is now, not as it was when they were rendered.
+      const status = webPhoneStatusRef.current[storeKey];
       const owner = status?.state === 'shared' && status.sharedWith ? status.sharedWith : storeKey;
       const handle = webPhonesRef.current.get(owner) || null;
       const ids = webCallerIdRef.current.get(storeKey) || webCallerIdRef.current.get(owner) || {};
       return {
         handle,
+        owner,
         deviceId: webDeviceIdRef.current.get(storeKey) || webDeviceIdRef.current.get(owner) || '',
         state: status?.state || '',
         callerId: ids.defaultCallerId || '',
@@ -1121,8 +1153,67 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
         ready: Boolean(handle && handle.isConnected() && (status?.state === 'ready' || status?.state === 'shared')),
       };
     },
+    // webPhoneStatus: consumers re-render (and re-read) whenever a line changes state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [webPhoneStatus],
   );
+
+  /**
+   * A softphone that is still registering (page just loaded, or reconnecting
+   * after a drop) becomes ready within a few seconds; give it that long before
+   * treating the browser as "not the phone" and falling back to RingOut.
+   */
+  const waitForWebPhone = useCallback(
+    async (storeKey) => {
+      let line = webPhoneFor(storeKey);
+      if (Platform.OS !== 'web') return line;
+      const deadline = Date.now() + WEB_PHONE_WAIT_MS;
+      while (!line.ready && (line.state === 'connecting' || line.state === 'reconnecting') && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        line = webPhoneFor(storeKey);
+      }
+      return line;
+    },
+    [webPhoneFor],
+  );
+
+  /**
+   * RingCentral no longer accepts this browser's line (it refused to move a
+   * call to the device it registered as): drop the registration and the cached
+   * SIP credentials and provision again. Rate-limited, because every provision
+   * mints a RingCentral device.
+   */
+  const resetWebPhone = useCallback(
+    (storeKey) => {
+      if (Platform.OS !== 'web') return false;
+      const { owner } = webPhoneFor(storeKey);
+      const last = webPhoneResetAtRef.current.get(owner) || 0;
+      if (Date.now() - last < WEB_PHONE_RESET_MIN_MS) return false;
+      webPhoneResetAtRef.current.set(owner, Date.now());
+      console.warn('[phone] resetting the browser line for', storeKey, owner !== storeKey ? `(via ${owner})` : '');
+      const handle = webPhonesRef.current.get(owner);
+      if (handle) handle.dispose().catch(() => {});
+      webPhonesRef.current.delete(owner);
+      // Stores riding on this line hold their own cached provision for the
+      // same extension; it is just as suspect, so they provision afresh too.
+      const riders = Object.entries(webPhoneStatusRef.current)
+        .filter(([, status]) => status?.state === 'shared' && status.sharedWith === owner)
+        .map(([key]) => key);
+      for (const key of new Set([owner, storeKey, ...riders])) {
+        webDeviceIdRef.current.delete(key);
+        webCallerIdRef.current.delete(key);
+        writeSipCache(key, null);
+      }
+      for (const [extId, who] of [...webPhoneByExtensionRef.current.entries()]) {
+        if (who === owner) webPhoneByExtensionRef.current.delete(extId);
+      }
+      setStorePhoneStatus(owner, { state: 'connecting', message: '' });
+      setWebPhoneEpoch((n) => n + 1);
+      return true;
+    },
+    [setStorePhoneStatus, webPhoneFor],
+  );
+  resetWebPhoneRef.current = resetWebPhone;
 
   const canDialInBrowser = useCallback(
     (storeKey) => Platform.OS === 'web' && webPhoneFor(storeKey || selectedStoreKey).ready,
@@ -1334,7 +1425,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
         // moves the party to a device id: RingCentral cancels the ringing leg
         // and sends a new INVITE with "Alert-Info: Auto Answer" to that device.
         // That only works if the device is registered *now*, so prove it first.
-        const line = webPhoneFor(call.storeKey);
+        const line = await waitForWebPhone(call.storeKey);
         const useBrowser = Platform.OS === 'web' && Boolean(line.handle && line.deviceId);
         if (useBrowser) {
           try {
@@ -1363,6 +1454,15 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
             throw err;
           }
           revert();
+          if (useBrowser && err?.code === 'ringcentral_device_rejected') {
+            // RingCentral says the party is still ringing but will not hand it
+            // to the device this tab registered as: that registration is dead
+            // on their side. Provision and register again so the next call
+            // (or the next press of Answer) rings here.
+            console.warn('[phone] answer: RingCentral rejected this browser’s device', line.deviceId);
+            resetWebPhone(call.storeKey);
+            throw new Error(err.message);
+          }
           throw new Error(webPhoneFallbackReason(call.storeKey, err));
         }
         updateCalls((state) =>
@@ -1391,7 +1491,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
         }, ANSWER_SETTLE_MS);
         return { ok: true };
       }),
-    [perform, runControl, updateCalls, webHandleFor, webPhoneFallbackReason, webPhoneFor],
+    [perform, resetWebPhone, runControl, updateCalls, waitForWebPhone, webHandleFor, webPhoneFallbackReason],
   );
 
   /** Re-try playing the far end after the browser blocked autoplay (call from a click). */
@@ -1550,7 +1650,10 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
         if (!callee) throw new Error('Enter a number to call.');
         if (activeCall) throw new Error('Finish the current call before placing another.');
 
-        const line = webPhoneFor(storeKey);
+        // Right after a reload the softphone is still registering; a RingOut
+        // placed in that window rings the store phone (this very browser) and
+        // shows up as a confusing incoming call. Give the line a moment.
+        const line = await waitForWebPhone(storeKey);
         if (Platform.OS === 'web' && line.ready && line.deviceId) {
           // Still inside the click: unlock speaker + microphone before any await,
           // because the auto-answered leg needs both without a second gesture.
@@ -1628,11 +1731,21 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
           }
         }
 
+        // RingOut takes a few seconds to show up in presence, so `activeCall`
+        // cannot stop a second tap in that window; three RingOuts in twenty
+        // seconds is never intended.
+        const lastRingOut = lastRingOutRef.current.get(storeKey) || 0;
+        if (Date.now() - lastRingOut < RINGOUT_COOLDOWN_MS) {
+          throw new Error(
+            'RingCentral is already placing a call from this store’s phone. Wait for it to ring (or hang it up) before dialling again.',
+          );
+        }
+        lastRingOutRef.current.set(storeKey, Date.now());
         const result = await startRingOut(storeKey, to, from);
         updateCalls((state) => applyPresence(state, storeKey, result.liveCalls || []));
         return { web: false, ringOut: result.ringOut };
       }),
-    [activeCall, connectedStores, perform, selectedStoreKey, updateCalls, webPhoneFor],
+    [activeCall, connectedStores, perform, selectedStoreKey, updateCalls, waitForWebPhone],
   );
 
   const ringOut = useCallback((to, from) => dial(to, { from }), [dial]);

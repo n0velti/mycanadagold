@@ -15,6 +15,7 @@ import {
   USER_CATEGORY_KEYS,
   accessListsEqual,
   applyFilterablePatch,
+  canSwitchPmaAndTriage,
   clearUserAppAccess,
   defaultAccessByRole,
   getCategory,
@@ -477,6 +478,7 @@ function PersonDetail({
   onClose,
   onRoleChange,
   onToggleAdmin,
+  onToggleSwitchRoles,
   onToggleActive,
   onToggleApp,
   onToggleFilter,
@@ -487,6 +489,8 @@ function PersonDetail({
   const lockedPerson = hasFullAppAccess(row);
   const isSelf = row.id === actorId;
   const showAdminToggle = row.appRole === 'general_manager';
+  const showSwitchRoles = row.isActive && row.appRole !== 'system_admin';
+  const switchRolesOn = canSwitchPmaAndTriage(row);
   const custom = Boolean(userAccessMap[row.id]);
   const title = staffTitle(row);
 
@@ -523,6 +527,21 @@ function PersonDetail({
           disabled={busy || !row.isActive}
           onChange={onRoleChange}
         />
+        {showSwitchRoles ? (
+          <Pressable
+            style={[styles.flagButton, switchRolesOn && styles.flagButtonOn]}
+            onPress={onToggleSwitchRoles}
+            disabled={busy}
+          >
+            <Text style={[styles.flagButtonText, switchRolesOn && styles.flagButtonTextOn]}>
+              {switchRolesOn ? 'PMA + Triage switch on' : 'Allow PMA + Triage Analyst'}
+            </Text>
+          </Pressable>
+        ) : null}
+        <Text style={styles.fieldHint}>
+          When this is on, they can open their profile and work as a PMA or a Triage Analyst.
+          Only people with the Triage Analyst role see the Triage app.
+        </Text>
         <View style={styles.actionRow}>
           {showAdminToggle && row.isActive ? (
             <Pressable
@@ -879,7 +898,28 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
           ? Boolean(patch.isSystemAdmin ?? row.isSystemAdmin)
           : false;
     const nextActive = patch.isActive ?? row.isActive;
-    const optimistic = { ...row, appRole: nextRole, isSystemAdmin: nextAdmin, isActive: nextActive };
+    const nextAllowed =
+      patch.canSwitchRoles === true
+        ? undefined
+        : patch.canSwitchRoles === false
+          ? []
+          : Array.isArray(patch.allowedAppRoles)
+            ? patch.allowedAppRoles
+            : row.allowedAppRoles;
+    const optimistic = {
+      ...row,
+      appRole: nextRole,
+      isSystemAdmin: nextAdmin,
+      isActive: nextActive,
+      allowedAppRoles:
+        patch.canSwitchRoles === true
+          ? ['precious_metal_analyst', 'triage', nextRole].filter(
+              (role, index, list) => list.indexOf(role) === index,
+            )
+          : nextAllowed === undefined
+            ? row.allowedAppRoles
+            : nextAllowed,
+    };
 
     setUpdatingId(row.id);
     setError('');
@@ -896,6 +936,8 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
         appRole: nextRole,
         isSystemAdmin: nextAdmin,
         isActive: nextActive,
+        canSwitchRoles: patch.canSwitchRoles,
+        allowedAppRoles: Array.isArray(patch.allowedAppRoles) ? patch.allowedAppRoles : undefined,
       });
       setStaff((current) => current.map((entry) => (entry.id === updated.id ? { ...entry, ...updated } : entry)));
       onStaffAccessSaved?.(updated);
@@ -1163,6 +1205,12 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
         handleStaffChange(selectedRow, {
           appRole: selectedRow.appRole,
           isSystemAdmin: !selectedRow.isSystemAdmin,
+        })
+      }
+      onToggleSwitchRoles={() =>
+        handleStaffChange(selectedRow, {
+          appRole: selectedRow.appRole,
+          canSwitchRoles: !canSwitchPmaAndTriage(selectedRow),
         })
       }
       onToggleActive={() => handleStaffChange(selectedRow, { isActive: !selectedRow.isActive })}

@@ -64,16 +64,26 @@ import {
   loadOwnUserAppAccess,
   loadRoleAppAccess,
   loadUserAppAccessMap,
+  canUseWorkshopLocation,
+  shouldPrefetchTriage,
   useAppAccess,
   visibleAppKeysForProfile,
 } from './lib/permissions';
 import { clearInventoryCache, prefetchInventoryMatrix } from './lib/inventory';
+import { clearCashTillCache, prefetchStoreCashPositions } from './lib/cashTill';
+import { clearLocationCache } from './lib/locations';
 import {
   buildEmailCaptureByStore,
   defaultDateRange,
   fetchHomeStoreSummaries,
   fetchTransactionDetail,
   fetchTransactions,
+  HOME_FAST_EXTRAS,
+  HOME_STORES,
+  HOME_SUMMARY_EXTRAS,
+  mergeHomeSummaryEmails,
+  peekHomeEmailRows,
+  rememberHomeEmailRows,
   FINTRAC_CASH_THRESHOLD,
   formatAmount,
   formatUnitCost,
@@ -95,7 +105,7 @@ import { readRipplingOAuthCallback, readRipplingOAuthState } from './lib/ripplin
 import { readHoursOAuthCallback } from './lib/ripplingTime';
 import { readGmailOAuthCallback } from './lib/gmail';
 import { clearClockedIn, ClockedInMark, startClockedInSync, useIsClockedIn } from './lib/clockedIn';
-import StoreSnapshotPanel, { StoreTransactionRow, OverviewHero } from './components/StoreSnapshotPanel';
+import StoreSnapshotPanel from './components/StoreSnapshotPanel';
 import TxnCashBreakdownModal, { TxnCashIcon } from './components/TxnCashBreakdownModal';
 import { AUREUS_TX_LIVE_MS, useLiveRefresh } from './lib/liveRefresh';
 import { capturePurchasePriceCatalog } from './lib/priceCheckSettings';
@@ -112,7 +122,15 @@ import { profileTargetFromPerson } from './lib/profileTarget';
 import ProfileLocationPicker from './components/ProfileLocationPicker';
 import { PhoneCallProvider, PhoneIncomingDock, usePhoneCalls } from './components/PhoneCallProvider';
 import MobilePhoneDock from './components/MobilePhoneDock';
-import { callsForStore, fetchPhoneHistory, inboundCallRatio, mergeCallLog } from './lib/phoneCalls';
+import {
+  callsForStore,
+  clearPhoneHistoryCache,
+  fetchPhoneHistory,
+  inboundCallRatio,
+  mergeCallLog,
+  peekPhoneHistory,
+  phoneHistoryNeeded,
+} from './lib/phoneCalls';
 import {
   emptyStoreSettings,
   isStoreOpenNow,
@@ -795,9 +813,19 @@ const STORE_DRAWER_TAB_KEYS = [
   'emails',
   'audit',
   'supplies',
-  'serphint',
   'settings',
 ];
+
+const STORE_SNAPSHOT_TABS = new Set([
+  'overview',
+  'transactions',
+  'inventory',
+  'financials',
+  'employees',
+  'phone',
+  'emails',
+  'supplies',
+]);
 
 const STORE_DRAWER_TABS = STORE_DRAWER_TAB_KEYS.map((key) =>
   TOOL_CARDS.find((tool) => tool.key === key),
@@ -929,9 +957,10 @@ function rowMatchesAllocatedStore(row, storeName) {
   return a.includes(b) || b.includes(a);
 }
 
-function ProfileAvatar({ uri, name, size = 24, style, showClock = true }) {
+function ProfileAvatar({ uri, name, size = 24, style, showClock = true, clockMark = 'ring' }) {
   const [failed, setFailed] = useState(false);
   const clockedIn = useIsClockedIn(name);
+  const ringClock = showClock && clockedIn && clockMark === 'ring';
 
   useEffect(() => {
     setFailed(false);
@@ -942,7 +971,7 @@ function ProfileAvatar({ uri, name, size = 24, style, showClock = true }) {
 
   const face = (
       <View
-        accessibilityLabel={clockedIn ? undefined : name || 'Profile'}
+        accessibilityLabel={ringClock ? undefined : name || 'Profile'}
         style={[
           {
             width: size,
@@ -954,7 +983,7 @@ function ProfileAvatar({ uri, name, size = 24, style, showClock = true }) {
             overflow: 'hidden',
           },
           style,
-          clockedIn ? { borderWidth: 0 } : null,
+          ringClock ? { borderWidth: 0 } : null,
         ]}
       >
         {showImage ? (
@@ -981,7 +1010,11 @@ function ProfileAvatar({ uri, name, size = 24, style, showClock = true }) {
   );
 
   if (!showClock) return face;
-  return <ClockedInMark name={name} size={size}>{face}</ClockedInMark>;
+  return (
+    <ClockedInMark name={name} size={size} variant={clockMark}>
+      {face}
+    </ClockedInMark>
+  );
 }
 
 function ToolCard({
@@ -1334,6 +1367,7 @@ function AppsLibrary({
   const titleRowRef = useRef({ y: 20, height: 46 });
   const [toolbarHeight, setToolbarHeight] = useState(0);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [pinFilter, setPinFilter] = useState('all');
   const [filterTop, setFilterTop] = useState(36);
   const [filterWidth, setFilterWidth] = useState(MOBILE_FILTER_SIZE);
   const [filterAnchor, setFilterAnchor] = useState({ top: 0, right: MOBILE_FILTER_INSET });
@@ -1341,7 +1375,20 @@ function AppsLibrary({
   const pinnedCount = tools.filter((tool) => pinnedKeys.includes(tool.key)).length;
   const moreCount = Math.max(0, tools.length - pinnedCount);
   const searching = Boolean(query.trim());
-  const filtersActive = searching;
+  const filtersActive = searching || pinFilter !== 'all';
+  const chromeLabel = pinFilter === 'pinned' ? 'Pinned' : pinFilter === 'more' ? 'More' : 'Apps';
+  const visibleTools = tools.filter((tool) => {
+    if (pinFilter === 'pinned') return pinnedKeys.includes(tool.key);
+    if (pinFilter === 'more') return !pinnedKeys.includes(tool.key);
+    return true;
+  });
+  const emptyCopy = searching
+    ? `No apps match “${query.trim()}”.`
+    : pinFilter === 'pinned'
+      ? 'No pinned apps.'
+      : pinFilter === 'more'
+        ? 'No other apps.'
+        : 'No apps are available.';
 
   const compactControls = !isMobile;
   const segmentStyle = [
@@ -1360,29 +1407,54 @@ function AppsLibrary({
     isMobile && styles.igSegmentText,
   ];
 
-  const viewSegment = (
-    <View style={segmentStyle} accessibilityRole="tablist">
-      <Pressable
-        style={[...segmentButtonStyle, appsView === 'list' && styles.homeSegmentButtonActive]}
-        onPress={() => onSelectView('list')}
-        accessibilityRole="tab"
-        accessibilityState={{ selected: appsView === 'list' }}
-      >
-        <Text style={[...segmentTextStyle, appsView === 'list' && styles.homeSegmentTextActive]}>
-          List
-        </Text>
-      </Pressable>
-      <Pressable
-        style={[...segmentButtonStyle, appsView === 'grid' && styles.homeSegmentButtonActive]}
-        onPress={() => onSelectView('grid')}
-        accessibilityRole="tab"
-        accessibilityState={{ selected: appsView === 'grid' }}
-      >
-        <Text style={[...segmentTextStyle, appsView === 'grid' && styles.homeSegmentTextActive]}>
-          Grid
-        </Text>
-      </Pressable>
+  const renderSegment = (options, value, onChange, fill = false) => (
+    <View
+      style={[...segmentStyle, fill && styles.igSegmentFill, fill && styles.igAppsFilterSegment]}
+      accessibilityRole="tablist"
+    >
+      {options.map((option) => (
+        <Pressable
+          key={option.key}
+          style={[
+            ...segmentButtonStyle,
+            fill && styles.igSegmentButtonFill,
+            value === option.key && styles.homeSegmentButtonActive,
+          ]}
+          onPress={() => onChange(option.key)}
+          accessibilityRole="tab"
+          accessibilityState={{ selected: value === option.key }}
+        >
+          <Text
+            style={[
+              ...segmentTextStyle,
+              value === option.key && styles.homeSegmentTextActive,
+            ]}
+          >
+            {option.label}
+          </Text>
+        </Pressable>
+      ))}
     </View>
+  );
+
+  const pinSegment = renderSegment(
+    [
+      { key: 'all', label: 'All' },
+      { key: 'pinned', label: 'Pinned' },
+      { key: 'more', label: 'More' },
+    ],
+    pinFilter,
+    setPinFilter,
+    isMobile,
+  );
+  const viewSegment = renderSegment(
+    [
+      { key: 'list', label: 'List' },
+      { key: 'grid', label: 'Grid' },
+    ],
+    appsView,
+    onSelectView,
+    isMobile,
   );
 
   const searchField = (
@@ -1415,7 +1487,10 @@ function AppsLibrary({
   const appsToolbar = (
     <View style={styles.homeToolbar}>
       {searchField}
-      <View style={styles.homeToolbarFilters}>{viewSegment}</View>
+      <View style={styles.homeToolbarFilters}>
+        {pinSegment}
+        {viewSegment}
+      </View>
     </View>
   );
 
@@ -1466,15 +1541,15 @@ function AppsLibrary({
         {...(Platform.OS === 'web' ? { className: 'cgold-mobile-filter-blur' } : null)}
       >
         <HomeFilterLines color={filtersOpen || filtersActive ? TAB_INK : TAB_ICON_COLOR} />
-        <FilterChromeLabel text="Apps" />
+        <FilterChromeLabel text={chromeLabel} />
       </BlurView>
     </Pressable>
   ) : null;
 
   const appsBody =
-    tools.length === 0 ? (
+    visibleTools.length === 0 ? (
       <Text style={[styles.toolsEmpty, isMobile && styles.igHomeScrollEnd]}>
-        {searching ? `No apps match “${query.trim()}”.` : 'No apps are available.'}
+        {emptyCopy}
       </Text>
     ) : appsView === 'grid' ? (
       <View
@@ -1486,7 +1561,7 @@ function AppsLibrary({
         ]}
       >
         <ToolsGrid
-          tools={tools}
+          tools={visibleTools}
           pinnedKeys={pinnedKeys}
           onOpen={onOpen}
           onTogglePin={onTogglePin}
@@ -1510,7 +1585,7 @@ function AppsLibrary({
         ]}
       >
         <ToolsList
-          tools={tools}
+          tools={visibleTools}
           pinnedKeys={pinnedKeys}
           onOpen={onOpen}
           onTogglePin={onTogglePin}
@@ -1543,7 +1618,6 @@ function AppsLibrary({
               syncFilterTop();
             }}
           >
-            <Text style={styles.igHomeHeroLabel}>{searching ? 'Search' : 'Your apps'}</Text>
             <View
               style={styles.igHomeHeroAmountRow}
               onLayout={(event) => {
@@ -1562,33 +1636,6 @@ function AppsLibrary({
                 ]}
               />
             </View>
-            <View style={styles.igHomeHeroStats}>
-              <View style={styles.igHomeHeroStat}>
-                <Text style={styles.igHomeHeroStatValue}>{tools.length}</Text>
-                <Text style={styles.igHomeHeroStatLabel}>
-                  App{tools.length === 1 ? '' : 's'}
-                </Text>
-              </View>
-              <View style={styles.igHomeHeroStatDivider} />
-              <View style={styles.igHomeHeroStat}>
-                <Text style={styles.igHomeHeroStatValue}>{pinnedCount}</Text>
-                <Text style={styles.igHomeHeroStatLabel}>Pinned</Text>
-              </View>
-              <View style={styles.igHomeHeroStatDivider} />
-              <View style={styles.igHomeHeroStat}>
-                <Text style={styles.igHomeHeroStatValue}>{moreCount}</Text>
-                <Text style={styles.igHomeHeroStatLabel}>More</Text>
-              </View>
-            </View>
-          </View>
-        ) : null}
-
-        {isMobile && tools.length > 0 ? (
-          <View style={styles.igSectionHeaderRow}>
-            <Text style={styles.igSectionHeader}>{appsView === 'grid' ? 'Grid' : 'Library'}</Text>
-            <Text style={styles.igSectionHeaderMeta}>
-              {tools.length} app{tools.length === 1 ? '' : 's'}
-            </Text>
           </View>
         ) : null}
 
@@ -1625,6 +1672,47 @@ function AppsLibrary({
           >
             <Text style={styles.igFilterLabel}>Search</Text>
             {searchField}
+            <View style={styles.igFilterDivider} />
+            <Text style={styles.igFilterLabel}>Show</Text>
+            {[
+              { key: 'all', label: 'All apps', count: tools.length },
+              { key: 'pinned', label: 'Pinned', count: pinnedCount },
+              { key: 'more', label: 'More', count: moreCount },
+            ].map((option) => {
+              const selected = pinFilter === option.key;
+              return (
+                <Pressable
+                  key={option.key}
+                  onPress={() => setPinFilter(option.key)}
+                  style={({ pressed }) => [
+                    styles.igFilterAction,
+                    selected && styles.storeAppsRowSelected,
+                    pressed && styles.storeAppsRowPressed,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  accessibilityLabel={`${option.label}, ${option.count}`}
+                >
+                  <Text
+                    style={[
+                      styles.igFilterActionLabel,
+                      styles.igAppsFilterOptionLabel,
+                      selected && styles.storeAppsLabelSelected,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {option.label}
+                  </Text>
+                  <Text style={styles.igAppsFilterOptionCount}>{option.count}</Text>
+                  <Ionicons
+                    name="checkmark"
+                    size={16}
+                    color={selected ? TAB_INK : 'transparent'}
+                  />
+                </Pressable>
+              );
+            })}
+            <View style={styles.igFilterDivider} />
             <Text style={styles.igFilterLabel}>View</Text>
             {viewSegment}
           </View>
@@ -2933,12 +3021,18 @@ function StoreHeaderFace({ person, index, size, overlap }) {
         width: size,
         height: size,
         marginLeft: index === 0 ? 0 : -overlap,
-        zIndex: index + 1,
-        opacity: clockedIn ? 1 : 0.35,
+        zIndex: clockedIn ? 30 + index : index + 1,
+        overflow: 'visible',
       }}
-      accessibilityLabel={clockedIn ? person.name : `${person.name}, clocked out`}
+      accessibilityLabel={clockedIn ? `${person.name}, clocked in` : person.name}
     >
-      <ProfileAvatar uri={person.photoUrl} name={person.name} size={size} showClock={false} />
+      <ProfileAvatar
+        uri={person.photoUrl}
+        name={person.name}
+        size={size}
+        style={styles.storeHeaderAvatar}
+        clockMark="badge"
+      />
     </View>
   );
 }
@@ -3071,10 +3165,7 @@ function HomeStoreDrawer({
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
   const detailRequestId = useRef(0);
-  const txHeroYRef = useRef(0);
-  const txAmountRowRef = useRef(null);
   const paymentCache = useRef({});
-  const [staff, setStaff] = useState([]);
 
   const lastStoreNameRef = useRef(store?.store);
   const incomingTxKey = (store?.transactions || []).map((row) => row.id).join('\n');
@@ -3083,14 +3174,6 @@ function HomeStoreDrawer({
       setActiveTab(key);
     }
   }, [hasApp]);
-  // Point the embedded Emails app at this store and the drawer's period.
-  const emailsFocus = useMemo(
-    () =>
-      storeName
-        ? { key: `${storeName}|${startKey || ''}|${endKey || ''}`, storeName, startDate: startKey, endDate: endKey }
-        : null,
-    [endKey, startKey, storeName],
-  );
 
   useEffect(() => {
     const storeChanged = lastStoreNameRef.current !== store?.store;
@@ -3149,38 +3232,6 @@ function HomeStoreDrawer({
     }
   }, [visible, mounted, store?.store]);
 
-  const employeeCounts = useMemo(() => {
-    const counts = {};
-    for (const row of txRows) {
-      const key = row.employeeName || '—';
-      counts[key] = (counts[key] || 0) + 1;
-    }
-    return counts;
-  }, [txRows]);
-
-  const employeePhotos = useMemo(() => {
-    const map = {};
-    for (const row of txRows) {
-      const name = row.employeeName || '';
-      if (!name || map[name] != null) continue;
-      map[name] = findStaffByEmployeeName(staff, name)?.avatarUrl || '';
-    }
-    return map;
-  }, [txRows, staff]);
-
-  useEffect(() => {
-    let cancelled = false;
-    listStaffProfiles()
-      .then((rows) => {
-        if (cancelled) return;
-        setStaff((rows || []).filter((row) => row.isActive !== false));
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   useEffect(() => {
     if (!visible || !session) return undefined;
     const queue = (store?.transactions || []).filter(needsLineItemEnrichment);
@@ -3226,8 +3277,6 @@ function HomeStoreDrawer({
       cancelled = true;
     };
   }, [visible, session, store?.store, incomingTxKey]);
-
-  const cashSlips = useTxnCashBreakdowns(txRows);
 
   const closeDetail = useCallback(() => {
     setSelectedRow(null);
@@ -3297,11 +3346,6 @@ function HomeStoreDrawer({
   );
 
   if (!mounted || !heldStore) return null;
-
-  const activeTool =
-    activeTab === 'overview'
-      ? overviewTab
-      : drawerTabs.find((tab) => tab.key === activeTab) || drawerTabs[0];
 
   const pageHeader = isMobile ? null : (
     <View
@@ -3407,37 +3451,27 @@ function HomeStoreDrawer({
               )}
               <View style={styles.storeDrawerMain}>
               {isMobile || activeTab === 'overview' ? null : pageHeader}
-              {activeTab === 'overview' ||
-              activeTab === 'inventory' ||
-              activeTab === 'preorders' ||
-              activeTab === 'financials' ||
-              activeTab === 'employees' ||
-              activeTab === 'debit' ||
-              activeTab === 'audit' ||
-              activeTab === 'triage' ||
-              activeTab === 'phone' ||
-              activeTab === 'emails' ||
-              activeTab === 'settings' ? (
-                <View style={[styles.drawerBody, styles.drawerBodyFill]}>
-                  {activeTab === 'overview' ? (
-                    <StoreSnapshotPanel
-                      session={session}
-                      store={heldStore}
-                      periodLabel={periodLabel}
-                      startKey={startKey}
-                      endKey={endKey}
-                      txRows={txRows}
-                      onOpenTransaction={openDetail}
-                      onOpenApp={openApp}
-                      onAmountHover={ensurePaymentBreakdown}
-                      onFilterTop={alignFilter}
-                      filterSlotWidth={mobileChromeWidth}
-                      topInset={topInset}
-                      ready={settled}
-                      onHeaderStats={onHeaderStats}
-                      desktopHeader={pageHeader}
-                    />
-                  ) : (
+              <View style={[styles.drawerBody, styles.drawerBodyFill]}>
+                {STORE_SNAPSHOT_TABS.has(activeTab) ? (
+                  <StoreSnapshotPanel
+                    session={session}
+                    store={heldStore}
+                    periodLabel={periodLabel}
+                    startKey={startKey}
+                    endKey={endKey}
+                    txRows={txRows}
+                    onOpenTransaction={openDetail}
+                    onOpenApp={openApp}
+                    onAmountHover={ensurePaymentBreakdown}
+                    onFilterTop={alignFilter}
+                    filterSlotWidth={mobileChromeWidth}
+                    topInset={isMobile && activeTab !== 'overview' ? filterTop + HOME_FILTER_SIZE : topInset}
+                    ready={settled}
+                    onHeaderStats={onHeaderStats}
+                    desktopHeader={activeTab === 'overview' ? pageHeader : null}
+                    focusTab={activeTab}
+                  />
+                ) : (
                   <View
                     style={[
                       styles.drawerBodyContentInventory,
@@ -3447,212 +3481,27 @@ function HomeStoreDrawer({
                     ]}
                   >
                     <ScreenGate resetKey={activeTab}>
-                    {activeTab === 'inventory' ? (
-                      <InventoryScreen
-                        session={session}
-                        storeFilter={heldStore.store}
-                        embedded
-                      />
-                    ) : activeTab === 'preorders' ? (
-                      <PreordersScreen />
-                    ) : activeTab === 'financials' ? (
-                      <FinancialsScreen
-                        session={session}
-                        storeFilter={heldStore.store}
-                        embedded
-                      />
-                    ) : activeTab === 'debit' ? (
-                      <DebitScreen
-                        session={session}
-                        storeFilter={heldStore.store}
-                        embedded
-                      />
-                    ) : activeTab === 'audit' ? (
-                      <AuditScreen
-                        key={heldStore.store}
-                        session={session}
-                        storeFilter={heldStore.store}
-                        initialDate={date}
-                        embedded
-                      />
-                    ) : activeTab === 'triage' ? (
-                      <TriageScreen
-                        session={session}
-                        storeFilter={heldStore.store}
-                        embedded
-                      />
-                    ) : activeTab === 'employees' ? (
-                      <EmployeesScreen
-                        session={session}
-                        storeFilter={heldStore.store}
-                        embedded
-                      />
-                    ) : activeTab === 'phone' ? (
-                      <PhoneScreen
-                        session={session}
-                        storeFilter={heldStore.store}
-                        embedded
-                      />
-                    ) : activeTab === 'emails' ? (
-                      <EmailsScreen
-                        session={session}
-                        focus={emailsFocus}
-                        storeFilter={heldStore.store}
-                        embedded
-                        capture={
-                          <EmailCaptureScreen
-                            session={session}
-                            focus={emailsFocus}
-                            storeFilter={heldStore.store}
-                          />
-                        }
-                      />
-                    ) : (
-                      <StoreSettingsPanel
-                        session={session}
-                        storeName={heldStore.store}
-                        embedded
-                      />
-                    )}
+                      {activeTab === 'preorders' ? (
+                        <PreordersScreen storeFilter={heldStore.store} embedded />
+                      ) : activeTab === 'audit' ? (
+                        <AuditScreen
+                          key={heldStore.store}
+                          session={session}
+                          storeFilter={heldStore.store}
+                          initialDate={date}
+                          embedded
+                        />
+                      ) : (
+                        <StoreSettingsPanel
+                          session={session}
+                          storeName={heldStore.store}
+                          embedded
+                        />
+                      )}
                     </ScreenGate>
                   </View>
-                  )}
-                </View>
-              ) : (
-              <ScrollView
-                style={styles.drawerBody}
-                contentContainerStyle={[
-                  isMobile ? styles.storeDrawerFeedMobile : styles.drawerBodyContent,
-                  { paddingTop: isMobile ? (activeTab === 'transactions' ? 8 : filterTop + HOME_FILTER_SIZE + 12) : topInset + 8 },
-                ]}
-                showsVerticalScrollIndicator={false}
-              >
-                {activeTab === 'transactions' ? (
-                  isMobile ? (
-                    <>
-                      <View
-                        onLayout={(event) => {
-                          txHeroYRef.current = event.nativeEvent.layout.y;
-                          const row = txAmountRowRef.current;
-                          if (row) alignFilter(txHeroYRef.current + row.y + (row.height - HOME_FILTER_SIZE) / 2);
-                        }}
-                      >
-                        <OverviewHero
-                          store={heldStore}
-                          periodLabel={periodLabel}
-                          plain
-                          filterSlotWidth={mobileChromeWidth}
-                          onAmountLayout={(row) => {
-                            txAmountRowRef.current = row;
-                            alignFilter(txHeroYRef.current + row.y + (row.height - HOME_FILTER_SIZE) / 2);
-                          }}
-                        />
-                      </View>
-                      <View style={styles.storeTxMobileList}>
-                        {txRows.length === 0 ? (
-                          <Text style={[styles.invoiceEmptyLine, styles.storeTxMobileEmpty]}>
-                            No transactions in this period.
-                          </Text>
-                        ) : (
-                          txRows.map((item, index) => (
-                            <StoreTransactionRow
-                              key={item.id}
-                              item={item}
-                              last={index === txRows.length - 1}
-                              onPress={openDetail}
-                              cashSaved={cashSlips.isSaved(item)}
-                              onCashPress={cashSlips.openEditor}
-                              employeePerson={{
-                                name: item.employeeName || '—',
-                                photoUrl: employeePhotos[item.employeeName] || '',
-                              }}
-                              onAmountHover={ensurePaymentBreakdown}
-                              stacked
-                            />
-                          ))
-                        )}
-                      </View>
-                    </>
-                  ) : (
-                  <>
-                    <View style={styles.invoiceHeaderRow}>
-                      <View style={styles.invoiceHeaderLeft}>
-                        <Text style={styles.invoiceNumber}>Transactions</Text>
-                        <Text style={styles.emailDrawerSubtitle}>
-                          {periodLabel} · {heldStore.txCount} transaction
-                          {heldStore.txCount === 1 ? '' : 's'}
-                        </Text>
-                      </View>
-                      <View style={styles.invoiceHeaderRight}>
-                        <Text style={styles.invoiceTotalLabelTop}>Total</Text>
-                        <Text style={styles.invoiceTotalHero}>
-                          {formatAmount(heldStore.totalAmount)}
-                        </Text>
-                      </View>
-                    </View>
-
-                    <View style={styles.invoiceInfoGrid}>
-                      <View style={styles.invoiceInfoCard}>
-                        <Text style={styles.invoiceSectionLabel}>Sales</Text>
-                        <Text style={styles.invoicePartyName}>{heldStore.saleCount}</Text>
-                        <Text style={styles.invoicePartyDetail}>
-                          {formatAmount(heldStore.soAmount)} SO
-                        </Text>
-                      </View>
-                      <View style={styles.invoiceInfoCard}>
-                        <Text style={styles.invoiceSectionLabel}>Purchases</Text>
-                        <Text style={styles.invoicePartyName}>{heldStore.purchaseCount}</Text>
-                        <Text style={styles.invoicePartyDetail}>
-                          {formatAmount(heldStore.poAmount)} PO
-                        </Text>
-                      </View>
-                    </View>
-
-                    <View style={styles.invoiceSection}>
-                      <Text style={styles.invoiceSectionLabel}>Transactions</Text>
-                      <View style={[styles.txListWrap, styles.txDrawerTable]}>
-                        {txRows.length === 0 ? (
-                          <Text style={styles.homeTxEmpty}>No transactions in this period.</Text>
-                        ) : (
-                          <>
-                            <TxTableHeader hideStore interactive={false} />
-                            {txRows.map((item) => (
-                              <TransactionListRow
-                                key={item.id}
-                                item={item}
-                                selected={selectedRow?.id === item.id}
-                                onPress={openDetail}
-                                employeeCount={employeeCounts[item.employeeName] || 0}
-                                employeePhotoUrl={employeePhotos[item.employeeName] || ''}
-                                onAmountHover={ensurePaymentBreakdown}
-                                hideStore
-                                cashSaved={cashSlips.isSaved(item)}
-                                onCashPress={cashSlips.openEditor}
-                              />
-                            ))}
-                          </>
-                        )}
-                      </View>
-                    </View>
-                  </>
-                  )
-                ) : activeTool ? (
-                  <View style={styles.storeDrawerPlaceholder}>
-                    <Ionicons name={activeTool.icon} size={22} color="#8e8e93" />
-                    <Text style={styles.storeDrawerPlaceholderTitle}>{activeTool.label}</Text>
-                    <Text style={styles.storeDrawerPlaceholderBody}>
-                      {activeTool.label} for {heldStore.store} is coming soon.
-                    </Text>
-                  </View>
-                ) : (
-                  <View style={styles.storeDrawerPlaceholder}>
-                    <Text style={styles.storeDrawerPlaceholderBody}>
-                      No apps are available for this store.
-                    </Text>
-                  </View>
                 )}
-              </ScrollView>
-              )}
+              </View>
 
               {isMobile && appsOpen ? (
                 <View style={styles.storeAppsLayer}>
@@ -3724,14 +3573,6 @@ function HomeStoreDrawer({
         loading={detailLoading}
         error={detailError}
         onClose={closeDetail}
-      />
-      <TxnCashBreakdownModal
-        visible={Boolean(cashSlips.editorRow)}
-        session={session}
-        row={cashSlips.editorRow}
-        initialSheet={cashSlips.editorSheet}
-        onClose={cashSlips.closeEditor}
-        onSaved={cashSlips.onSaved}
       />
     </>
   );
@@ -4323,6 +4164,7 @@ function HomePersonFace({
       name={person.name}
       size={size}
       style={styles.homePeopleAvatarRing}
+      clockMark="badge"
     />
   );
 
@@ -4593,6 +4435,36 @@ function HomeStoreTableRow({
   );
 }
 
+const HOME_PHONE_STORES = [...HOME_STORES, 'Montreal', 'Quebec', 'Laval'];
+const HOME_EMAIL_REFRESH_MS = 15_000;
+
+function prefetchHomePhoneInboxes(refreshInbox, names) {
+  const keys = [];
+  const seen = new Set();
+  for (const name of names || []) {
+    const key = storeKeyFromName(name);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    keys.push(key);
+  }
+  if (!keys.length || typeof refreshInbox !== 'function') return Promise.resolve();
+  let next = 0;
+  const workers = Math.min(6, keys.length);
+  return Promise.all(
+    Array.from({ length: workers }, async () => {
+      while (next < keys.length) {
+        const key = keys[next];
+        next += 1;
+        try {
+          await refreshInbox(key, { silent: true });
+        } catch {
+          // Live refresh retries a store that rate-limited or failed.
+        }
+      }
+    }),
+  );
+}
+
 function HomeStoresTable({
   rows,
   selectedStore,
@@ -4650,30 +4522,44 @@ function HomeStoresTable({
       setCallHistoryByStore({});
       return undefined;
     }
-    let cancelled = false;
-    const names = storeNamesKey.split('\n');
+    const names = storeNamesKey.split('\n').filter(Boolean);
     const dateFrom = parseDateParam(startKey);
     const dateTo = parseDateParam(endKey);
     dateTo.setDate(dateTo.getDate() + 1);
-    (async () => {
-      const next = {};
-      await Promise.all(
-        names.map(async (name) => {
+    const needHistory = phoneHistoryNeeded(startKey, endKey);
+    const seeded = {};
+    for (const name of names) {
+      const key = storeKeyFromName(name);
+      if (!key) continue;
+      const peeked = peekPhoneHistory(name, { dateFrom, dateTo });
+      if (peeked?.calls) seeded[key] = peeked.calls;
+    }
+    setCallHistoryByStore(seeded);
+    prefetchHomePhoneInboxes(phone.refreshInbox, names);
+    if (!needHistory) return undefined;
+    let cancelled = false;
+    let historyNext = 0;
+    const historyWorkers = Math.min(4, names.length);
+    Promise.all(
+      Array.from({ length: historyWorkers }, async () => {
+        while (historyNext < names.length && !cancelled) {
+          const name = names[historyNext];
+          historyNext += 1;
           try {
             const payload = await fetchPhoneHistory(name, { dateFrom, dateTo });
             const key = storeKeyFromName(name);
-            if (key) next[key] = payload.calls || [];
+            if (cancelled || !key) continue;
+            setCallHistoryByStore((current) => ({ ...current, [key]: payload.calls || [] }));
           } catch {
             // The live inbox still covers this store.
           }
-        }),
-      );
-      if (!cancelled) setCallHistoryByStore(next);
-    })();
+        }
+      }),
+    );
     return () => {
       cancelled = true;
     };
-  }, [endKey, startKey, storeNamesKey]);
+  }, [endKey, phone.refreshInbox, startKey, storeNamesKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -4924,6 +4810,8 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson, onBuy, onSell, home
   const [staff, setStaff] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const requestId = useRef(0);
+  const emailFetchedAt = useRef(0);
+  const phone = usePhoneCalls();
 
   const todayKey = formatDateParam(parseDateParam(new Date()));
   const startKey = dateRestricted ? todayKey : formatDateParam(startDate);
@@ -4953,17 +4841,46 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson, onBuy, onSell, home
       }
 
       try {
-        const result = await fetchHomeStoreSummaries(session, {
+        const needEmail = !silent || Date.now() - emailFetchedAt.current > HOME_EMAIL_REFRESH_MS;
+        const emailPromise = needEmail
+          ? fetchHomeStoreSummaries(session, {
+              startDate: startKey,
+              endDate: endKey,
+              extras: HOME_SUMMARY_EXTRAS,
+            })
+          : null;
+        const fast = await fetchHomeStoreSummaries(session, {
           startDate: startKey,
           endDate: endKey,
+          extras: HOME_FAST_EXTRAS,
         });
         if (id !== requestId.current) return;
-        setStoreRows(result.rows);
+        setStoreRows((current) => {
+          const seeded = current.length ? current : peekHomeEmailRows(startKey, endKey) || [];
+          return mergeHomeSummaryEmails(fast.rows, seeded);
+        });
         setSelectedStore((current) => {
           if (!current) return null;
-          return result.rows.find((row) => row.store === current.store) || null;
+          return fast.rows.find((row) => row.store === current.store) || current;
         });
-        setError(result.warning || '');
+        setError(fast.warning || '');
+        if (!silent) setLoading(false);
+
+        if (!emailPromise) return;
+        try {
+          const rich = await emailPromise;
+          if (id !== requestId.current) return;
+          emailFetchedAt.current = Date.now();
+          rememberHomeEmailRows(startKey, endKey, rich.rows);
+          setStoreRows(rich.rows);
+          setSelectedStore((current) => {
+            if (!current) return null;
+            return rich.rows.find((row) => row.store === current.store) || current;
+          });
+          setError(rich.warning || '');
+        } catch {
+          // Totals already painted; email rates retry on the next pass.
+        }
       } catch (err) {
         if (id !== requestId.current) return;
         if (!silent) {
@@ -4987,8 +4904,36 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson, onBuy, onSell, home
   }, [dateRestricted]);
 
   useEffect(() => {
+    emailFetchedAt.current = 0;
+    const cached = peekHomeEmailRows(startKey, endKey);
+    if (cached?.length) {
+      setStoreRows((current) => (current.length ? current : cached));
+    }
+  }, [endKey, startKey]);
+
+  useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    prefetchHomePhoneInboxes(phone.refreshInbox, HOME_PHONE_STORES);
+  }, [phone.refreshInbox]);
+
+  useEffect(() => {
+    if (!session?.token) return;
+    prefetchStoreCashPositions(session);
+  }, [session]);
+
+  const homeStoreNamesKey = storeRows.map((row) => row.store).filter(Boolean).join('\n');
+  useEffect(() => {
+    if (!session?.token || !homeStoreNamesKey) return;
+    prefetchStoreCashPositions(session, homeStoreNamesKey.split('\n'));
+  }, [homeStoreNamesKey, session]);
+
+  useEffect(() => {
+    if (!homeStoreNamesKey) return;
+    prefetchHomePhoneInboxes(phone.refreshInbox, homeStoreNamesKey.split('\n'));
+  }, [homeStoreNamesKey, phone.refreshInbox]);
 
   useEffect(() => {
     let cancelled = false;
@@ -5349,6 +5294,7 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson, onBuy, onSell, home
               isMobile ? styles.toolsSection : styles.homeTableSection,
               isMobile && styles.toolsSectionMobile,
               isMobile && styles.igHomeSection,
+              isMobile && styles.igHomeTableSection,
             ]}
           >
             <HomeStoresTable
@@ -5627,6 +5573,7 @@ function EmailCaptureScreen({
       const result = await fetchTransactions(session.token, {
         startDate: startKey,
         endDate: endKey,
+        extras: HOME_SUMMARY_EXTRAS,
       });
       if (id !== requestId.current) return;
       setRows(result.rows);
@@ -7101,6 +7048,7 @@ export default function App() {
   const [triageStoreBack, setTriageStoreBack] = useState(null);
   const [triageBatch, setTriageBatch] = useState(null);
   const [triageNav, setTriageNav] = useState(null);
+  const [triageMobileHeader, setTriageMobileHeader] = useState(null);
   const [settingsPanel, setSettingsPanel] = useState(null);
   const [analyticsMini, setAnalyticsMini] = useState(null);
   const [toolsQuery, setToolsQuery] = useState('');
@@ -7264,6 +7212,9 @@ export default function App() {
 
   const resetToSignedOut = useCallback(() => {
     clearInventoryCache();
+    clearCashTillCache();
+    clearLocationCache();
+    clearPhoneHistoryCache();
     setSession(null);
     setPinnedKeys([]);
     setAppsView(DEFAULT_APPS_VIEW);
@@ -7340,6 +7291,12 @@ export default function App() {
         setAccessByRole(access.byRole);
         setOwnUserAccess(userAccess);
         prefetchInventoryMatrix(restored);
+        prefetchStoreCashPositions(restored);
+        if (shouldPrefetchTriage(restored.profile)) {
+          import('./lib/transferWorkflow')
+            .then((mod) => mod.warmTriageWorkflow())
+            .catch(() => {});
+        }
         const reopenKey = storedOpenTool();
         const reopen = TOOL_CARDS.find((tool) => tool.key === reopenKey);
         if (reopen) {
@@ -7666,6 +7623,12 @@ export default function App() {
       setAccessByRole(access.byRole);
       setOwnUserAccess(userAccess);
       prefetchInventoryMatrix(next);
+      prefetchStoreCashPositions(next);
+      if (shouldPrefetchTriage(next.profile)) {
+        import('./lib/transferWorkflow')
+          .then((mod) => mod.warmTriageWorkflow())
+          .catch(() => {});
+      }
       setPassword('');
       setActiveTab('home');
       setActiveTool(null);
@@ -7797,7 +7760,13 @@ export default function App() {
             onProfileChange={(patch) => {
               setSession((current) => {
                 if (!current?.profile) return current;
-                return { ...current, profile: { ...current.profile, ...patch } };
+                const profile = { ...current.profile, ...patch };
+                if (shouldPrefetchTriage(profile)) {
+                  import('./lib/transferWorkflow')
+                    .then((mod) => mod.warmTriageWorkflow())
+                    .catch(() => {});
+                }
+                return { ...current, profile };
               });
             }}
           />
@@ -7824,7 +7793,7 @@ export default function App() {
                 storeFilter={scopedStore || undefined}
               />
             ) : activeTool.key === 'preorders' ? (
-              <PreordersScreen />
+              <PreordersScreen storeFilter={scopedStore || undefined} />
             ) : activeTool.key === 'financials' ? (
               <FinancialsScreen
                 session={session}
@@ -7888,15 +7857,19 @@ export default function App() {
                 onStaffAccessSaved={(staff) => {
                   setSession((current) => {
                     if (!current?.profile || current.profile.id !== staff.id) return current;
-                    return {
-                      ...current,
-                      profile: {
-                        ...current.profile,
-                        appRole: staff.appRole,
-                        isSystemAdmin: staff.isSystemAdmin,
-                        isActive: staff.isActive ?? current.profile.isActive,
-                      },
+                    const profile = {
+                      ...current.profile,
+                      appRole: staff.appRole,
+                      allowedAppRoles: staff.allowedAppRoles || current.profile.allowedAppRoles || [],
+                      isSystemAdmin: staff.isSystemAdmin,
+                      isActive: staff.isActive ?? current.profile.isActive,
                     };
+                    if (shouldPrefetchTriage(profile)) {
+                      import('./lib/transferWorkflow')
+                        .then((mod) => mod.warmTriageWorkflow())
+                        .catch(() => {});
+                    }
+                    return { ...current, profile };
                   });
                 }}
                 onUserAccessSaved={(userId, access) => {
@@ -7998,6 +7971,7 @@ export default function App() {
                   setTriageBatch(context || null);
                 }}
                 onNavTabs={setTriageNav}
+                onMobileHeader={setTriageMobileHeader}
               />
             ) : activeTool.key === 'messages' ? (
               <View style={styles.messagesHost}>
@@ -8211,6 +8185,10 @@ export default function App() {
                   ? triageBatch.storeNames
                   : undefined
               }
+              titleAction={
+                activeTool.key === 'triage' ? triageMobileHeader?.titleAction : null
+              }
+              trailing={activeTool.key === 'triage' ? triageMobileHeader?.trailing : null}
               onBack={() => {
                 if (activeTool.key === 'settings' && settingsPanel) {
                   setSettingsPanel(null);
@@ -8347,6 +8325,7 @@ export default function App() {
         session={session}
         selectedId={session?.profile?.locationId}
         selectedName={storeLocationFromSession(session)}
+        includeWorkshop={canUseWorkshopLocation(session?.profile)}
         onClose={() => setLocationPickerOpen(false)}
         onChanged={applyOwnLocation}
       />
@@ -10158,6 +10137,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingLeft: 4,
+    overflow: 'visible',
+  },
+  storeHeaderAvatar: {
+    borderWidth: 2,
+    borderColor: '#fff',
+    backgroundColor: '#e8e8ed',
   },
   storeHeaderPeopleMore: {
     alignItems: 'center',
@@ -12810,6 +12795,20 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     width: '100%',
   },
+  igAppsFilterSegment: {
+    alignSelf: 'stretch',
+  },
+  igAppsFilterOptionLabel: {
+    flex: 1,
+    minWidth: 0,
+  },
+  igAppsFilterOptionCount: {
+    fontFamily,
+    fontSize: 13,
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+    fontVariant: ['tabular-nums'],
+  },
   igFilterLabel: {
     fontFamily,
     fontSize: 12,
@@ -12983,13 +12982,15 @@ const styles = StyleSheet.create({
     paddingBottom: 104,
     borderTopWidth: 0,
   },
+  igHomeTableSection: {
+    paddingHorizontal: 0,
+  },
   igStoreList: {
     backgroundColor: '#fff',
-    borderRadius: 8,
+    borderRadius: 0,
     overflow: 'hidden',
     width: '100%',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: TAB_BORDER,
+    alignSelf: 'stretch',
   },
   igStoreCard: {
     position: 'relative',
@@ -12997,7 +12998,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
     minHeight: 68,
-    paddingLeft: 12,
+    paddingLeft: 16,
     backgroundColor: '#fff',
     ...Platform.select({
       web: { cursor: 'pointer' },

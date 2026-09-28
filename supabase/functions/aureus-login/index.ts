@@ -55,7 +55,20 @@ const MAX_FAILURES_PER_IP = 40;
 const THROTTLE_WINDOW = '15 minutes';
 
 const PROFILE_COLUMNS =
+  'id, aureus_user_id, aureus_login, email, first_name, last_name, full_name, role, employee_type, location_id, location_name, app_role, allowed_app_roles, is_system_admin, is_active, pinned_tools, apps_view, avatar_url, team_id, is_team_intake, last_login_at, created_at';
+
+const PROFILE_COLUMNS_LEGACY =
   'id, aureus_user_id, aureus_login, email, first_name, last_name, full_name, role, employee_type, location_id, location_name, app_role, is_system_admin, is_active, pinned_tools, apps_view, avatar_url, team_id, is_team_intake, last_login_at, created_at';
+
+async function selectProfileById(admin: SupabaseClient, userId: string) {
+  const full = await admin.from('profiles').select(PROFILE_COLUMNS).eq('id', userId).single();
+  if (!full.error && full.data) return { data: full.data as ProfileRow, error: null };
+  if (full.error && !/allowed_app_roles/i.test(full.error.message || '')) {
+    return { data: null, error: full.error };
+  }
+  const fallback = await admin.from('profiles').select(PROFILE_COLUMNS_LEGACY).eq('id', userId).single();
+  return { data: (fallback.data as ProfileRow) || null, error: fallback.error };
+}
 
 interface LoginBody {
   action?: string;
@@ -82,6 +95,7 @@ interface ProfileRow {
   team_id: string | null;
   is_team_intake: boolean;
   app_role: string;
+  allowed_app_roles?: unknown;
   is_system_admin: boolean;
   is_active: boolean;
   pinned_tools: unknown;
@@ -261,23 +275,28 @@ async function upsertProfile(
   }
 
   if (existing) {
-    const { data, error: updateError } = await admin
-      .from('profiles')
-      .update(row)
-      .eq('id', userId)
-      .select(PROFILE_COLUMNS)
-      .single();
-    if (updateError) throw updateError;
-    return { profile: data as ProfileRow, firstLogin };
+    const updated = await admin.from('profiles').update(row).eq('id', userId).select(PROFILE_COLUMNS).single();
+    if (!updated.error && updated.data) return { profile: updated.data as ProfileRow, firstLogin };
+    if (updated.error && !/allowed_app_roles/i.test(updated.error.message || '')) throw updated.error;
+    const fallback = await admin.from('profiles').update(row).eq('id', userId).select(PROFILE_COLUMNS_LEGACY).single();
+    if (fallback.error) throw fallback.error;
+    return { profile: fallback.data as ProfileRow, firstLogin };
   }
 
-  const { data, error: insertError } = await admin
+  const inserted = await admin
     .from('profiles')
     .insert({ id: userId, created_at: now, ...row })
     .select(PROFILE_COLUMNS)
     .single();
-  if (insertError) throw insertError;
-  return { profile: data as ProfileRow, firstLogin };
+  if (!inserted.error && inserted.data) return { profile: inserted.data as ProfileRow, firstLogin };
+  if (inserted.error && !/allowed_app_roles/i.test(inserted.error.message || '')) throw inserted.error;
+  const fallback = await admin
+    .from('profiles')
+    .insert({ id: userId, created_at: now, ...row })
+    .select(PROFILE_COLUMNS_LEGACY)
+    .single();
+  if (fallback.error) throw fallback.error;
+  return { profile: fallback.data as ProfileRow, firstLogin };
 }
 
 async function mintSession(admin: SupabaseClient, email: string) {
@@ -332,6 +351,9 @@ function publicProfile(row: ProfileRow) {
     teamName: row.team_name || '',
     isTeamIntake: Boolean(row.is_team_intake),
     appRole: row.app_role || '',
+    allowedAppRoles: Array.isArray(row.allowed_app_roles)
+      ? row.allowed_app_roles.filter((role): role is string => typeof role === 'string')
+      : [],
     isSystemAdmin: Boolean(row.is_system_admin),
     isActive: Boolean(row.is_active),
     pinnedTools: Array.isArray(row.pinned_tools) ? row.pinned_tools : null,
@@ -579,11 +601,7 @@ async function handleSyncStaff(req: Request, body: LoginBody): Promise<Response>
 
   try {
     const updated = await applyDirectoryToProfiles(staff.admin, directory);
-    const { data: profile, error: profileError } = await staff.admin
-      .from('profiles')
-      .select(PROFILE_COLUMNS)
-      .eq('id', staff.userId)
-      .single();
+    const { data: profile, error: profileError } = await selectProfileById(staff.admin, staff.userId);
     if (profileError || !profile) {
       return json(req, 200, { updated, profile: null });
     }
@@ -617,16 +635,19 @@ async function handleSetLocation(req: Request, body: LoginBody): Promise<Respons
     locationName = await lookupLocationName(AUREUS_BASE_URL, aureusToken, locationId);
   }
 
-  const { data: profile, error: updateError } = await staff.admin
+  const update = await staff.admin
     .from('profiles')
     .update({
       location_id: locationId,
       location_name: locationName || null,
       updated_at: new Date().toISOString(),
     })
-    .eq('id', staff.userId)
-    .select(PROFILE_COLUMNS)
-    .single();
+    .eq('id', staff.userId);
+  if (update.error) {
+    console.error('set-location update failed', update.error.message || update.error);
+    return error(req, 500, 'Could not save that location.', 'sync_failed');
+  }
+  const { data: profile, error: updateError } = await selectProfileById(staff.admin, staff.userId);
   if (updateError || !profile) {
     console.error('set-location update failed', updateError?.message || updateError);
     return error(req, 500, 'Could not save that location.', 'sync_failed');

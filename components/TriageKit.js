@@ -529,7 +529,7 @@ export function TextTabs({ options, value, onChange, leading, trailing, size = '
 }
 
 /** iOS segmented slider: gray track with a sliding white thumb. */
-export function SegmentedSlider({ options, value, onChange, style, fill = false }) {
+export function SegmentedSlider({ options, value, onChange, style, fill = false, compact = false }) {
   const isMobile = useIsMobile();
   const keys = (options || []).map((option) => option.key);
   const found = keys.indexOf(value);
@@ -557,6 +557,7 @@ export function SegmentedSlider({ options, value, onChange, style, fill = false 
         styles.segmentedSlider,
         fill && styles.segmentedSliderFill,
         isMobile && styles.segmentedSliderMobile,
+        compact && styles.segmentedSliderCompact,
         style,
       ]}
       onLayout={(event) => setTrackW(event.nativeEvent.layout.width)}
@@ -588,13 +589,20 @@ export function SegmentedSlider({ options, value, onChange, style, fill = false 
         return (
           <Pressable
             key={option.key}
-            style={[styles.segmentedHit, isMobile && styles.segmentedHitMobile]}
+            style={[styles.segmentedHit, isMobile && styles.segmentedHitMobile, compact && styles.segmentedHitCompact]}
             onPress={() => onChange(option.key)}
             accessibilityRole="tab"
             accessibilityState={{ selected: active }}
             accessibilityLabel={option.label}
           >
-            <Text style={[styles.segmentedLabel, active && styles.segmentedLabelActive]} numberOfLines={1}>
+            <Text
+              style={[
+                styles.segmentedLabel,
+                compact && styles.segmentedLabelCompact,
+                active && styles.segmentedLabelActive,
+              ]}
+              numberOfLines={1}
+            >
               {option.label}
             </Text>
             {option.count != null ? (
@@ -928,23 +936,32 @@ export function MobileListRow({
   leading,
   trailing,
   onPress,
+  onLongPress,
   last,
   selected,
+  chevron = true,
   accessibilityLabel,
+  accessibilityHint,
 }) {
-  const Row = onPress ? Pressable : View;
-  return (
-    <Row
-      style={[
-        styles.mobileListRow,
-        selected && styles.mobileListRowSelected,
-        last && styles.mobileListRowLast,
-      ]}
-      onPress={onPress}
-      accessibilityRole={onPress ? 'button' : undefined}
-      accessibilityState={onPress ? { selected: Boolean(selected) } : undefined}
-      accessibilityLabel={accessibilityLabel || title}
-    >
+  const highlight = useRef(new Animated.Value(0)).current;
+  const interactive = Boolean(onPress || onLongPress);
+  const restColor = selected ? '#f5f5f5' : '#ffffff';
+  const backgroundColor = highlight.interpolate({
+    inputRange: [0, 1],
+    outputRange: [restColor, '#dcdce2'],
+  });
+
+  const tint = (toValue, duration = 140) => {
+    Animated.timing(highlight, {
+      toValue,
+      duration,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: false,
+    }).start();
+  };
+
+  const body = (
+    <>
       {leading ? <View style={styles.mobileListLead}>{leading}</View> : null}
       <View style={styles.mobileListCopy}>
         <Text style={styles.mobileListTitle} numberOfLines={1}>
@@ -963,9 +980,55 @@ export function MobileListRow({
       </View>
       <View style={styles.mobileListTrail}>
         {trailing}
-        {onPress ? <Ionicons name="chevron-forward" size={18} color={T.tertiary} /> : null}
+        {onPress && chevron ? <Ionicons name="chevron-forward" size={18} color={T.tertiary} /> : null}
       </View>
-    </Row>
+    </>
+  );
+
+  if (!interactive) {
+    return (
+      <View
+        style={[
+          styles.mobileListRow,
+          selected && styles.mobileListRowSelected,
+          last && styles.mobileListRowLast,
+        ]}
+      >
+        {body}
+      </View>
+    );
+  }
+
+  return (
+    <Pressable
+      onPress={onPress}
+      onPressIn={() => tint(1, 80)}
+      onPressOut={() => tint(0, 200)}
+      onLongPress={
+        onLongPress
+          ? () => {
+              tint(1, 60);
+              onLongPress();
+            }
+          : undefined
+      }
+      delayLongPress={380}
+      accessibilityRole="button"
+      accessibilityState={onPress ? { selected: Boolean(selected) } : undefined}
+      accessibilityLabel={accessibilityLabel || title}
+      accessibilityHint={accessibilityHint}
+    >
+      <Animated.View
+        style={[
+          styles.mobileListRow,
+          selected && styles.mobileListRowSelected,
+          last && styles.mobileListRowLast,
+          { backgroundColor },
+        ]}
+      >
+        {body}
+      </Animated.View>
+    </Pressable>
   );
 }
 
@@ -1776,6 +1839,18 @@ const styles = StyleSheet.create({
   segmentedSliderMobile: {
     height: 38,
     borderRadius: 8,
+  },
+  segmentedSliderCompact: {
+    height: 34,
+    minWidth: 0,
+    alignSelf: 'auto',
+  },
+  segmentedHitCompact: {
+    paddingHorizontal: 8,
+  },
+  segmentedLabelCompact: {
+    fontSize: 12,
+    fontWeight: '600',
   },
   segmentedThumb: {
     position: 'absolute',
