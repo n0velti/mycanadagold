@@ -3547,61 +3547,165 @@ async function handleRippling(req: Request, rest: string, search: string): Promi
 // Google local reviews
 // ---------------------------------------------------------------------------
 
+const GOOGLE_CONSENT_COOKIE =
+  'SOCS=CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMwODI5LjA3X3AxGgJlbiADGgYIgOa_pgY';
+const GOOGLE_SESSION_TTL_MS = 20 * 60 * 1000;
+let googleSession: { cookie: string; at: number } | null = null;
+
+function googleBrowserHeaders(cookie: string): Record<string, string> {
+  return {
+    Accept: '*/*',
+    'Accept-Language': 'en-CA,en;q=0.9,fr-CA;q=0.8',
+    'Accept-Encoding': 'identity',
+    'User-Agent':
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+    Referer: 'https://www.google.com/',
+    Cookie: cookie,
+  };
+}
+
+function readSetCookies(headers: Headers): string[] {
+  const withHelper = headers as Headers & { getSetCookie?: () => string[] };
+  if (typeof withHelper.getSetCookie === 'function') return withHelper.getSetCookie();
+  const raw = headers.get('set-cookie');
+  return raw ? [raw] : [];
+}
+
+function cookieFromSetCookie(setCookies: string[], name: string): string {
+  for (const line of setCookies) {
+    const match = line.match(new RegExp(`(?:^|[\\s,])${name}=([^;]+)`));
+    if (match?.[1]) return match[1];
+  }
+  return '';
+}
+
+async function googleCookie(): Promise<string> {
+  const now = Date.now();
+  if (googleSession && now - googleSession.at < GOOGLE_SESSION_TTL_MS) return googleSession.cookie;
+
+  let cookie = GOOGLE_CONSENT_COOKIE;
+  try {
+    const warm = await forward('https://www.google.com/maps?hl=en&gl=ca', {
+      method: 'GET',
+      headers: googleBrowserHeaders(GOOGLE_CONSENT_COOKIE),
+    });
+    const nid = cookieFromSetCookie(readSetCookies(warm.headers), 'NID');
+    if (nid) cookie = `${GOOGLE_CONSENT_COOKIE}; NID=${nid}`;
+    await warm.arrayBuffer();
+  } catch {
+    // Consent cookie alone is enough for the public reviews RPC.
+  }
+  googleSession = { cookie, at: now };
+  return cookie;
+}
+
 function buildGoogleBoqSearch(query: URLSearchParams): string | null {
   const featureId = (query.get('featureId') || '').trim();
-  const mapsId = (query.get('mapsId') || '').trim();
   const token = (query.get('token') || '').trim();
-  if (!/^0x[0-9a-f]+:0x[0-9a-f]+$/i.test(featureId) || !/^\/g\/[0-9a-z_]+$/i.test(mapsId)) return null;
+  if (!/^0x[0-9a-f]+:0x[0-9a-f]+$/i.test(featureId)) return null;
+  if (token && !/^[A-Za-z0-9_\-+/=]+$/.test(token)) return null;
 
-  const reqpld = [
-    null,
-    [
-      null, null, null, null, null, null, null, null, null,
-      [
-        null, 1, null, null, null, null, null, null, null, null, null,
-        [featureId, null, null, mapsId],
-        null, null, '', null,
-        [1, 1, null, [[3], [4], [5], [6], [7]]],
-        null, null,
-        token || null,
-        null, null, null, 0,
-      ],
-    ],
+  // Mode 2 = newest. Page size at [9]; continuation token at [19].
+  const inner: Array<string | number | string[] | null> = [
+    null, 2, null, null, null, null, null, null, null, 20, null, [featureId],
   ];
+  if (token) {
+    while (inner.length < 19) inner.push(null);
+    inner[19] = token;
+  }
 
   return new URLSearchParams({
-    sourceid: 'chrome',
-    reqpld: JSON.stringify(reqpld),
     msc: 'gwsrpc',
-    opi: '89978449',
+    hl: 'en',
+    gl: 'ca',
+    reqpld: JSON.stringify([null, [null, null, null, null, null, null, null, null, null, inner]]),
   }).toString();
+}
+
+function looksLikeGoogleHtml(text: string): boolean {
+  const head = text.slice(0, 800).toLowerCase();
+  return (
+    head.includes('<!doctype') ||
+    head.includes('<html') ||
+    head.includes('consent.google.com') ||
+    head.includes('/sorry/')
+  );
+}
+
+function parseGoogleRpcJson(text: string): unknown {
+  const raw = String(text || '').replace(/^\uFEFF/, '');
+  if (looksLikeGoogleHtml(raw)) {
+    throw new Error('html');
+  }
+  let body = raw.trim();
+  const guard = body.indexOf(")]}'");
+  if (guard >= 0 && guard < 32) body = body.slice(guard + 4).trim();
+  const start = body.search(/[\[{]/);
+  if (start < 0) throw new Error('empty');
+  return JSON.parse(body.slice(start));
+}
+
+function decodeGoogleBody(bytes: Uint8Array, contentType: string): string {
+  const charset = /charset=([^\s;]+)/i.exec(contentType)?.[1]?.replace(/['"]/g, '').toLowerCase() || '';
+  const label = charset === 'iso-8859-1' || charset === 'latin1' || charset === 'windows-1252' ? 'latin1' : 'utf-8';
+  try {
+    return new TextDecoder(label).decode(bytes);
+  } catch {
+    return new TextDecoder('latin1').decode(bytes);
+  }
+}
+
+async function fetchGoogleBoqPayload(search: string, cookie: string): Promise<unknown> {
+  const upstream = await forward(`${GOOGLE_BOQ_URL}?${search}`, {
+    method: 'GET',
+    headers: googleBrowserHeaders(cookie),
+  });
+  const bytes = new Uint8Array(await upstream.arrayBuffer());
+  if (!upstream.ok) {
+    const err = new Error(`Google reviews upstream failed (${upstream.status}).`);
+    err.name = 'GoogleUpstreamError';
+    throw err;
+  }
+  if (/consent\.google|\/sorry\//i.test(upstream.url || '')) {
+    throw new Error('html');
+  }
+  const utf8 = decodeGoogleBody(bytes, upstream.headers.get('content-type') || '');
+  try {
+    return parseGoogleRpcJson(utf8);
+  } catch (first) {
+    if ((first as Error)?.message === 'html') throw first;
+    return parseGoogleRpcJson(new TextDecoder('latin1').decode(bytes));
+  }
 }
 
 async function handleGoogleBoq(req: Request, query: URLSearchParams): Promise<Response> {
   if (req.method !== 'GET') return error(req, 405, 'Use GET.', 'method_not_allowed');
   const search = buildGoogleBoqSearch(query);
-  if (!search) return error(req, 400, 'featureId and mapsId are required.', 'bad_request');
-
-  const upstream = await forward(`${GOOGLE_BOQ_URL}?${search}`, {
-    method: 'GET',
-    headers: {
-      Accept: '*/*',
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36',
-      Referer: 'https://www.google.com/',
-    },
-  });
-
-  let text = await upstream.text();
-  if (text.startsWith(")]}'")) text = text.slice(4).trimStart();
-  if (!upstream.ok) return error(req, 502, `Google reviews upstream failed (${upstream.status}).`, 'upstream_failed');
+  if (!search) return error(req, 400, 'featureId is required.', 'bad_request');
 
   try {
-    const json = JSON.parse(text);
-    return new Response(JSON.stringify(json), {
+    let cookie = await googleCookie();
+    let payload: unknown;
+    try {
+      payload = await fetchGoogleBoqPayload(search, cookie);
+    } catch (first) {
+      if ((first as Error)?.name === 'GoogleUpstreamError') throw first;
+      googleSession = null;
+      cookie = await googleCookie();
+      payload = await fetchGoogleBoqPayload(search, cookie);
+    }
+    return new Response(JSON.stringify(payload), {
       status: 200,
       headers: { ...corsHeaders(req), ...securityHeaders(), 'Content-Type': 'application/json; charset=utf-8' },
     });
-  } catch {
+  } catch (err) {
+    const message = err instanceof Error ? err.message : '';
+    if (message.startsWith('Google reviews upstream failed')) {
+      return error(req, 502, message, 'upstream_failed');
+    }
+    if (message === 'html') {
+      return error(req, 502, 'Google blocked the reviews request. Try again in a moment.', 'upstream_invalid');
+    }
     return error(req, 502, 'Google reviews response was not valid JSON.', 'upstream_invalid');
   }
 }

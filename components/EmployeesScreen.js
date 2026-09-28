@@ -796,6 +796,7 @@ function PersonHero({ name, title, photoUrl, statusLabel, statusTone: tone, onOp
 }
 
 function staffDisplayName(row) {
+  if (!row) return '';
   return (
     row.fullName ||
     [row.firstName, row.lastName].filter(Boolean).join(' ') ||
@@ -814,42 +815,66 @@ function permissionLabel(person) {
   return categoryLabel(person) || '—';
 }
 
-function StaffEmployeeRow({ person, selected, onPress, last, hours, shifts }) {
+function StaffEmployeeCard({ person, selected, onPress, hours, shifts }) {
   const name = staffDisplayName(person);
   const permission = permissionLabel(person);
   const location = person.locationName || '';
   const type = employeeTypeLabel(person);
   const inactive = person.isActive === false || person.profileActive === false;
-  const weekHours = hours?.weekMinutes ? `${formatMinutes(hours.weekMinutes)} this wk` : '';
+  const weekHours = hours?.weekMinutes ? `${formatMinutes(hours.weekMinutes)} this week` : '';
   const todayShift = todayShiftLabel(shifts);
   const clockedIn = Boolean(hours?.clockedIn) || useIsClockedIn(name);
-  const subtitle = [location, type !== '—' ? type : '', permission !== '—' ? permission : '', todayShift, weekHours]
-    .filter(Boolean)
-    .join(' · ');
 
   return (
-    <View style={inactive ? styles.rowInactive : null}>
-      <MobileListRow
-        title={inactive ? `${name} · Inactive` : name}
-        subtitle={subtitle || person.email || person.aureusLogin}
-        leading={
-          <StaffAvatar
-            uri={person.avatarUrl || person.photoUrl}
-            name={name}
-            size={52}
-            ring={clockedIn ? 'green' : undefined}
-          />
-        }
-        selected={selected}
-        last={last}
-        onPress={onPress}
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={name}
+      style={({ pressed, hovered }) => [
+        styles.employeeCard,
+        inactive && styles.employeeCardInactive,
+        selected && styles.employeeCardSelected,
+        (hovered || pressed) && styles.employeeCardHover,
+      ]}
+    >
+      <StaffAvatar
+        uri={person.avatarUrl || person.photoUrl}
+        name={name}
+        size={72}
+        ring={clockedIn ? 'green' : undefined}
       />
-    </View>
+      <Text style={styles.employeeCardName} numberOfLines={1}>
+        {name}
+      </Text>
+      {type !== '—' ? (
+        <Text style={styles.employeeCardRole} numberOfLines={1}>
+          {type}
+        </Text>
+      ) : null}
+      {location ? (
+        <Text style={styles.employeeCardMeta} numberOfLines={1}>
+          {location}
+        </Text>
+      ) : null}
+      <View style={styles.employeeCardPills}>
+        {clockedIn ? <StatusPill label="Clocked in" tone="green" compact /> : null}
+        {inactive ? (
+          <StatusPill label="Inactive" tone="neutral" compact />
+        ) : permission !== '—' ? (
+          <StatusPill label={permission} tone="blue" compact />
+        ) : null}
+      </View>
+      {todayShift || weekHours ? (
+        <Text style={styles.employeeCardHint} numberOfLines={2}>
+          {[todayShift, weekHours].filter(Boolean).join(' · ')}
+        </Text>
+      ) : null}
+    </Pressable>
   );
 }
 
 function StaffEmployeeDetail({ person, onClose, compact, onOpenPhoto, hours, hoursStatus, shifts }) {
-  const name = staffDisplayName(person);
+  const name = staffDisplayName(person) || 'Employee';
   const clockedIn = Boolean(hours?.clockedIn) || useIsClockedIn(name);
   if (!person) {
     return (
@@ -1070,65 +1095,49 @@ function AppEmployeesPanel({ session, onProfileUpdated, storeFilter, hours }) {
           <ActivityIndicator color={T.text} />
         </View>
       ) : (
-        <View style={styles.split}>
-          <View style={styles.listPane}>
-            <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
-              {filtered.length === 0 ? (
-                <EmptyState
-                  icon="people-outline"
-                  title="No employees"
-                  body={
-                    query.trim() || location || lockedLocation
-                      ? 'No employees match the current filters.'
-                      : 'No employees have signed in yet.'
-                  }
-                />
-              ) : (
-                grouped.map(([groupName, rows]) => (
-                  <View key={groupName} style={styles.listGroup}>
-                    <SectionLabel>
-                      {groupName}
-                      {` · ${rows.length}`}
-                    </SectionLabel>
-                    <MobileList>
-                      {rows.map((person, index) => (
-                        <StaffEmployeeRow
-                          key={person.id}
-                          person={person}
-                          hours={hoursForStaff(hoursSummary, person)}
-                          shifts={shiftsForStaff(hours?.shifts, person)}
-                          last={index === rows.length - 1}
-                          selected={!isMobile && selectedId === person.id}
-                          onPress={() => setSelectedId(person.id)}
-                        />
-                      ))}
-                    </MobileList>
-                  </View>
-                ))
-              )}
-            </ScrollView>
-          </View>
-
-          {!isMobile ? (
-            <View style={styles.detailPane}>
-              <StaffEmployeeDetail
-                person={selected}
-                hours={hoursForStaff(hoursSummary, selected)}
-                shifts={shiftsForStaff(hours?.shifts, selected)}
-                hoursStatus={hoursStatus}
-                onOpenPhoto={() => selected && setPhotoPerson(selected)}
-              />
-            </View>
-          ) : null}
-        </View>
+        <ScrollView style={styles.list} contentContainerStyle={styles.gridContent}>
+          {filtered.length === 0 ? (
+            <EmptyState
+              icon="people-outline"
+              title="No employees"
+              body={
+                query.trim() || location || lockedLocation
+                  ? 'No employees match the current filters.'
+                  : 'No employees have signed in yet.'
+              }
+            />
+          ) : (
+            grouped.map(([groupName, rows]) => (
+              <View key={groupName} style={styles.listGroup}>
+                <SectionLabel>
+                  {groupName}
+                  {` · ${rows.length}`}
+                </SectionLabel>
+                <View style={styles.cardGrid}>
+                  {rows.map((person) => (
+                    <StaffEmployeeCard
+                      key={person.id}
+                      person={person}
+                      hours={hoursForStaff(hoursSummary, person)}
+                      shifts={shiftsForStaff(hours?.shifts, person)}
+                      selected={selectedId === person.id}
+                      onPress={() => setSelectedId(person.id)}
+                    />
+                  ))}
+                </View>
+              </View>
+            ))
+          )}
+        </ScrollView>
       )}
 
-      {isMobile ? (
-        <Modal
-          visible={Boolean(selected)}
-          animationType="slide"
-          onRequestClose={() => setSelectedId(null)}
-        >
+      <Modal
+        visible={Boolean(selected)}
+        animationType={isMobile ? 'slide' : 'fade'}
+        transparent={!isMobile}
+        onRequestClose={() => setSelectedId(null)}
+      >
+        {isMobile ? (
           <View
             style={styles.mobileDetail}
             {...(Platform.OS === 'web' ? { className: 'cgold-mobile-sheet-top' } : null)}
@@ -1143,8 +1152,27 @@ function AppEmployeesPanel({ session, onProfileUpdated, storeFilter, hours }) {
               onOpenPhoto={() => selected && setPhotoPerson(selected)}
             />
           </View>
-        </Modal>
-      ) : null}
+        ) : (
+          <View style={styles.detailModalRoot}>
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={() => setSelectedId(null)}
+              accessibilityLabel="Close"
+            />
+            <View style={styles.detailModalCard}>
+              <StaffEmployeeDetail
+                person={selected}
+                hours={hoursForStaff(hoursSummary, selected)}
+                shifts={shiftsForStaff(hours?.shifts, selected)}
+                hoursStatus={hoursStatus}
+                compact
+                onClose={() => setSelectedId(null)}
+                onOpenPhoto={() => selected && setPhotoPerson(selected)}
+              />
+            </View>
+          </View>
+        )}
+      </Modal>
       <ProfilePhotoModal
         visible={Boolean(photoPerson)}
         onClose={() => setPhotoPerson(null)}
@@ -2263,6 +2291,112 @@ const styles = StyleSheet.create({
   listContent: {
     paddingBottom: 32,
     gap: 4,
+  },
+  gridContent: {
+    paddingBottom: 40,
+    gap: 16,
+  },
+  cardGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    ...Platform.select({
+      web: {
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fill, minmax(196px, 1fr))',
+      },
+    }),
+  },
+  employeeCard: {
+    alignItems: 'center',
+    paddingVertical: 18,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    backgroundColor: T.card,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
+    gap: 4,
+    minWidth: 168,
+    flexGrow: 1,
+    flexBasis: 196,
+    ...Platform.select({
+      web: {
+        minWidth: 0,
+        flexGrow: 0,
+        flexBasis: 'auto',
+        cursor: 'pointer',
+      },
+    }),
+  },
+  employeeCardHover: {
+    backgroundColor: '#F7F7F8',
+  },
+  employeeCardSelected: {
+    borderColor: T.text,
+  },
+  employeeCardInactive: {
+    opacity: 0.55,
+  },
+  employeeCardName: {
+    fontFamily: FONT,
+    fontSize: 16,
+    fontWeight: '700',
+    color: T.text,
+    letterSpacing: -0.3,
+    textAlign: 'center',
+    marginTop: 8,
+    alignSelf: 'stretch',
+  },
+  employeeCardRole: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '500',
+    color: T.secondary,
+    textAlign: 'center',
+    alignSelf: 'stretch',
+  },
+  employeeCardMeta: {
+    fontFamily: FONT,
+    fontSize: 13,
+    color: T.secondary,
+    textAlign: 'center',
+    alignSelf: 'stretch',
+  },
+  employeeCardPills: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 6,
+  },
+  employeeCardHint: {
+    fontFamily: FONT,
+    fontSize: 12,
+    lineHeight: 16,
+    color: T.tertiary,
+    textAlign: 'center',
+    marginTop: 4,
+    alignSelf: 'stretch',
+  },
+  detailModalRoot: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  detailModalCard: {
+    width: '100%',
+    maxWidth: 440,
+    height: '90%',
+    maxHeight: 760,
+    minHeight: 0,
+    backgroundColor: '#F2F2F7',
+    borderRadius: 16,
+    overflow: 'hidden',
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    zIndex: 1,
   },
   listGroup: {
     marginBottom: 8,

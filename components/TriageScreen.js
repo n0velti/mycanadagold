@@ -51,7 +51,7 @@ export function clearTriageCache() {}
 
 const TRIAGE_TABS = [
   { key: 'transfers', label: 'Dashboard', icon: 'grid-outline' },
-  { key: 'accuracy', label: 'Accuracy', icon: 'checkmark-done-outline' },
+  { key: 'accuracy', label: 'Results', icon: 'folder-outline' },
   { key: 'allocation', label: 'Allocation', icon: 'git-branch-outline' },
   { key: 'deleted', label: 'Deleted', icon: 'trash-outline' },
 ];
@@ -118,8 +118,9 @@ export default function TriageScreen({
   const [activeTab, setActiveTab] = useState('transfers');
   const [dashTab, setDashTab] = useState('poso');
   const [accuracyTab, setAccuracyTab] = useState('correct');
-  const [accuracyStats, setAccuracyStats] = useState({ correct: 0, incorrect: 0, total: 0, ratio: '0/0', percent: 0 });
+  const [accuracyStats, setAccuracyStats] = useState({ correct: 0, incorrect: 0, total: 0, lots: 0, ratio: '0/0', percent: 0 });
   const [accuracyBreakdownOpen, setAccuracyBreakdownOpen] = useState(false);
+  const [resultsLotId, setResultsLotId] = useState('');
   const [storeTab, setStoreTab] = useState('melt');
   const [createTransferOpen, setCreateTransferOpen] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
@@ -147,21 +148,11 @@ export default function TriageScreen({
 
   const dashCounts = useMemo(() => {
     let poCount = 0;
-    let batchCount = 0;
     for (const row of triage) {
       if (isStandaloneTriage(row)) poCount += 1;
-      else batchCount += 1;
     }
-    return { poCount, batchCount };
+    return { poCount };
   }, [triage]);
-
-  const dashTabOptions = useMemo(
-    () => [
-      { key: 'poso', label: 'PO / SO', ...(dashCounts.poCount ? { count: dashCounts.poCount } : {}) },
-      { key: 'batch', label: 'Batch', ...(dashCounts.batchCount ? { count: dashCounts.batchCount } : {}) },
-    ],
-    [dashCounts],
-  );
 
   const accuracyTabOptions = useMemo(
     () => [
@@ -180,6 +171,7 @@ export default function TriageScreen({
     setAccuracyBreakdownOpen(false);
     setDailyOpen(false);
     setFiltersOpen(false);
+    setResultsLotId('');
   }, []);
 
   const changeDashTab = useCallback((key) => {
@@ -208,9 +200,7 @@ export default function TriageScreen({
   const inBatch = activeTab === 'transfers' && canLeaveStore && Boolean(batchContext);
   const dashVisibleCount = inBatch
     ? batchContext?.stats?.documents || 0
-    : dashTab === 'batch'
-      ? dashCounts.batchCount
-      : dashCounts.poCount;
+    : dashCounts.poCount;
   const tabOptions = useMemo(() => {
     const flagged = collectAccuracyTriagePos(triage).filter(triagePoNeedsCorrection).length;
     return TRIAGE_TABS.map((tab) => {
@@ -230,13 +220,6 @@ export default function TriageScreen({
     if (!dailyBatch) setDailyOpen(false);
   }, [dailyBatch]);
 
-  const openBatch = useCallback(() => {
-    setDashTab('batch');
-    setListQuery('');
-    setCreateTransferOpen(true);
-    setFiltersOpen(false);
-  }, []);
-
   const scanButton = (size) => (
     <BarButton
       tone="green"
@@ -253,12 +236,12 @@ export default function TriageScreen({
       onChangeText={setListQuery}
       placeholder={
         activeTab === 'accuracy'
-          ? 'PO / person / store'
+          ? resultsLotId
+            ? 'PO / person / store'
+            : 'Lot / store'
           : activeTab === 'deleted'
-            ? 'Batch / PO'
-            : dashTab === 'batch'
-              ? 'Batch / store'
-              : 'PO / SO'
+            ? 'PO / store'
+            : 'PO / SO'
       }
       size={isMobile ? 'lg' : undefined}
       style={[styles.tabSearch, isMobile && styles.tabSearchMobile]}
@@ -278,12 +261,6 @@ export default function TriageScreen({
       <>
         {searchField}
         {scanButton()}
-        <BarButton
-          icon="add"
-          label="Add Batch"
-          onPress={openBatch}
-          accessibilityLabel="Add a new batch"
-        />
       </>
     ) : session?.token && inBatch ? (
       <>
@@ -320,6 +297,7 @@ export default function TriageScreen({
     ) : session?.token && activeTab === 'accuracy' ? (
       <ChromeStats
         items={[
+          ...(resultsLotId ? [] : [{ label: 'Lots', value: String(accuracyStats.lots || 0) }]),
           { label: 'Correct', value: String(accuracyStats.correct) },
           {
             label: 'Incorrect',
@@ -341,14 +319,7 @@ export default function TriageScreen({
     ) : null;
 
   const leading =
-    session?.token && activeTab === 'transfers' && transferView === 'list' ? (
-      <SegmentedSlider
-        options={dashTabOptions}
-        value={dashTab}
-        onChange={changeDashTab}
-        style={styles.tabSlider}
-      />
-    ) : session?.token && inBatch ? (
+    session?.token && inBatch ? (
       <SegmentedSlider
         options={storeTabOptions}
         value={storeTab}
@@ -357,12 +328,14 @@ export default function TriageScreen({
       />
     ) : session?.token && activeTab === 'accuracy' ? (
       <View style={styles.accuracyLead}>
-        <SegmentedSlider
-          options={accuracyTabOptions}
-          value={accuracyTab}
-          onChange={changeAccuracyTab}
-          style={styles.tabSlider}
-        />
+        {resultsLotId ? (
+          <SegmentedSlider
+            options={accuracyTabOptions}
+            value={accuracyTab}
+            onChange={changeAccuracyTab}
+            style={styles.tabSlider}
+          />
+        ) : null}
         {searchField}
       </View>
     ) : null;
@@ -386,10 +359,10 @@ export default function TriageScreen({
     ((activeTab === 'transfers' && transferView === 'list') || (inBatch && storeTab === 'melt'));
   const filtersActive = Boolean(listQuery.trim()) || activeTab !== 'transfers';
   const filterShow =
-    session?.token && activeTab === 'transfers' && transferView === 'list'
-      ? { options: dashTabOptions, value: dashTab, onChange: changeDashTab }
-      : session?.token && inBatch
-        ? { options: storeTabOptions, value: storeTab, onChange: changeStoreTab }
+    session?.token && inBatch
+      ? { options: storeTabOptions, value: storeTab, onChange: changeStoreTab }
+      : session?.token && activeTab === 'accuracy' && resultsLotId
+        ? { options: accuracyTabOptions, value: accuracyTab, onChange: changeAccuracyTab }
         : null;
 
   useLayoutEffect(() => {
@@ -403,7 +376,7 @@ export default function TriageScreen({
     return {
       trailing: (
         <View style={styles.headerActions}>
-          {activeTab === 'accuracy' ? (
+          {activeTab === 'accuracy' && resultsLotId ? (
             <SegmentedSlider
               compact
               options={[
@@ -438,7 +411,7 @@ export default function TriageScreen({
         </View>
       ),
     };
-  }, [accuracyTab, activeTab, canAdd, changeAccuracyTab, filtersActive, filtersOpen, isMobile, session?.token]);
+  }, [accuracyTab, activeTab, canAdd, changeAccuracyTab, filtersActive, filtersOpen, isMobile, resultsLotId, session?.token]);
 
   useLayoutEffect(() => {
     if (!onMobileHeader) return undefined;
@@ -490,14 +463,16 @@ export default function TriageScreen({
           accessibilityLabel="Open errors breakdown"
         >
           <View style={styles.mobileStatCopy}>
-            <Text style={styles.mobileStatKicker}>Accuracy</Text>
+            <Text style={styles.mobileStatKicker}>{resultsLotId || 'Results'}</Text>
             <Text style={styles.mobileStatTitle}>
               {accuracyStats.total ? `${accuracyStats.percent}% correct` : 'No purchases yet'}
             </Text>
             <Text style={styles.mobileStatMeta}>
-              {accuracyStats.incorrect
-                ? `${accuracyStats.incorrect} incorrect · tap for details`
-                : `${accuracyStats.correct} correct`}
+              {resultsLotId
+                ? accuracyStats.incorrect
+                  ? `${accuracyStats.incorrect} incorrect · tap for details`
+                  : `${accuracyStats.correct} correct`
+                : `${accuracyStats.lots || 0} ${accuracyStats.lots === 1 ? 'lot' : 'lots'}`}
             </Text>
           </View>
           <View style={styles.mobileStatCta}>
@@ -534,11 +509,12 @@ export default function TriageScreen({
         <TriageTransfersPanel
           session={session}
           onRequireLogin={onRequireLogin}
-          createOpen={createTransferOpen}
+          active={activeTab === 'transfers'}
+          createOpen={false}
           onCreateOpenChange={setCreateTransferOpen}
           quickAddOpen={quickAddOpen}
           onQuickAddOpenChange={setQuickAddOpen}
-          dashTab={dashTab}
+          dashTab="poso"
           onDashTabChange={changeDashTab}
           onViewChange={setTransferView}
           onBackChange={handleBackChange}
@@ -557,6 +533,13 @@ export default function TriageScreen({
           onStatsChange={setAccuracyStats}
           breakdownOpen={accuracyBreakdownOpen}
           onBreakdownOpenChange={setAccuracyBreakdownOpen}
+          openLotId={resultsLotId}
+          onOpenLotChange={(id) => {
+            setResultsLotId(id || '');
+            setListQuery('');
+            setAccuracyTab('correct');
+          }}
+          onBackChange={handleBackChange}
         />
       ) : activeTab === 'deleted' ? (
         <TriageDeletedPanel session={session} query={listQuery} />
@@ -575,11 +558,6 @@ export default function TriageScreen({
         <TriagePoCapture
           session={session}
           openerRef={openScanRef}
-          batchId={dailyBatch?.id || ''}
-          onAddBatch={inBatch ? undefined : openBatch}
-          onCounted={(finishedBatchId) => {
-            if (finishedBatchId && finishedBatchId === dailyBatch?.id) daily.reload();
-          }}
         />
       ) : null}
 

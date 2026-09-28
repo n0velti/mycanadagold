@@ -152,6 +152,7 @@ const SCREEN_LOADERS = {
   analytics: () => import('./components/AnalyticsScreen'),
   audit: () => import('./components/AuditScreen'),
   bonuses: () => import('./components/BonusesScreen'),
+  calendar: () => import('./components/CalendarScreen'),
   debit: () => import('./components/DebitScreen'),
   emails: () => import('./components/EmailsScreen'),
   employees: () => import('./components/EmployeesScreen'),
@@ -167,6 +168,7 @@ const SCREEN_LOADERS = {
   preorders: () => import('./components/PreordersScreen'),
   pricing: () => import('./components/PricingScreen'),
   profile: () => import('./components/ProfileScreen'),
+  reviews: () => import('./components/ReviewsScreen'),
   serphint: () => import('./components/SerphintScreen'),
   settings: () => import('./components/SettingsScreen'),
   'shared-services': () => import('./components/SharedServicesScreen'),
@@ -181,6 +183,7 @@ const AccountingScreen = lazy(SCREEN_LOADERS.accounting);
 const AnalyticsScreen = lazy(SCREEN_LOADERS.analytics);
 const AuditScreen = lazy(SCREEN_LOADERS.audit);
 const BonusesScreen = lazy(SCREEN_LOADERS.bonuses);
+const CalendarScreen = lazy(SCREEN_LOADERS.calendar);
 const DebitScreen = lazy(SCREEN_LOADERS.debit);
 const EmailsScreen = lazy(SCREEN_LOADERS.emails);
 const EmployeesScreen = lazy(SCREEN_LOADERS.employees);
@@ -196,6 +199,7 @@ const PhoneScreen = lazy(SCREEN_LOADERS.phone);
 const PreordersScreen = lazy(SCREEN_LOADERS.preorders);
 const PricingScreen = lazy(SCREEN_LOADERS.pricing);
 const ProfileScreen = lazy(SCREEN_LOADERS.profile);
+const ReviewsScreen = lazy(SCREEN_LOADERS.reviews);
 const SerphintScreen = lazy(SCREEN_LOADERS.serphint);
 const SettingsScreen = lazy(SCREEN_LOADERS.settings);
 const SharedServicesScreen = lazy(SCREEN_LOADERS['shared-services']);
@@ -822,7 +826,6 @@ const STORE_SNAPSHOT_TABS = new Set([
   'inventory',
   'financials',
   'employees',
-  'phone',
   'emails',
   'supplies',
 ]);
@@ -1365,30 +1368,18 @@ function AppsLibrary({
   const filterButtonRef = useRef(null);
   const heroTopRef = useRef(0);
   const titleRowRef = useRef({ y: 20, height: 46 });
-  const [toolbarHeight, setToolbarHeight] = useState(0);
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [pinFilter, setPinFilter] = useState('all');
   const [filterTop, setFilterTop] = useState(36);
   const [filterWidth, setFilterWidth] = useState(MOBILE_FILTER_SIZE);
   const [filterAnchor, setFilterAnchor] = useState({ top: 0, right: MOBILE_FILTER_INSET });
 
-  const pinnedCount = tools.filter((tool) => pinnedKeys.includes(tool.key)).length;
-  const moreCount = Math.max(0, tools.length - pinnedCount);
   const searching = Boolean(query.trim());
-  const filtersActive = searching || pinFilter !== 'all';
-  const chromeLabel = pinFilter === 'pinned' ? 'Pinned' : pinFilter === 'more' ? 'More' : 'Apps';
-  const visibleTools = tools.filter((tool) => {
-    if (pinFilter === 'pinned') return pinnedKeys.includes(tool.key);
-    if (pinFilter === 'more') return !pinnedKeys.includes(tool.key);
-    return true;
-  });
+  const filtersActive = searching;
+  const chromeLabel = 'Apps';
+  const visibleTools = tools;
   const emptyCopy = searching
     ? `No apps match “${query.trim()}”.`
-    : pinFilter === 'pinned'
-      ? 'No pinned apps.'
-      : pinFilter === 'more'
-        ? 'No other apps.'
-        : 'No apps are available.';
+    : 'No apps are available.';
 
   const compactControls = !isMobile;
   const segmentStyle = [
@@ -1437,16 +1428,6 @@ function AppsLibrary({
     </View>
   );
 
-  const pinSegment = renderSegment(
-    [
-      { key: 'all', label: 'All' },
-      { key: 'pinned', label: 'Pinned' },
-      { key: 'more', label: 'More' },
-    ],
-    pinFilter,
-    setPinFilter,
-    isMobile,
-  );
   const viewSegment = renderSegment(
     [
       { key: 'list', label: 'List' },
@@ -1458,15 +1439,24 @@ function AppsLibrary({
   );
 
   const searchField = (
-    <View style={[styles.homeSearch, isMobile && styles.igSearchField, isMobile && styles.igFilterSearch]}>
+    <View
+      style={[
+        isMobile ? styles.homeSearch : styles.homePageSearch,
+        isMobile && styles.igSearchField,
+        isMobile && styles.igFilterSearch,
+      ]}
+    >
       <Ionicons
-        name="search"
-        size={compactControls ? 14 : 16}
+        name={isMobile ? 'search' : 'search-outline'}
+        size={16}
         color="#8e8e93"
         style={styles.homeSearchIcon}
       />
       <TextInput
-        style={[styles.toolsSearchInput, compactControls && styles.homeSearchInput, isMobile && styles.igSearchInput]}
+        style={[
+          styles.toolsSearchInput,
+          isMobile ? styles.igSearchInput : styles.homePageSearchInput,
+        ]}
         value={query}
         onChangeText={onQueryChange}
         placeholder={isMobile ? 'Search apps' : 'Search'}
@@ -1478,21 +1468,24 @@ function AppsLibrary({
       />
       {query ? (
         <Pressable onPress={() => onQueryChange('')} hitSlop={8} accessibilityLabel="Clear search">
-          <Ionicons name="close-circle" size={compactControls ? 16 : 18} color="#c7c7cc" />
+          <Ionicons name="close-circle" size={isMobile ? 18 : 16} color="#c7c7cc" />
         </Pressable>
       ) : null}
     </View>
   );
 
-  const appsToolbar = (
-    <View style={styles.homeToolbar}>
-      {searchField}
-      <View style={styles.homeToolbarFilters}>
-        {pinSegment}
+  const appsPageHeader = !isMobile ? (
+    <View style={styles.homePageHeader}>
+      <View style={styles.homePageTitleWrap}>
+        <View style={styles.homeStoreIconSpacer} />
+        <Text style={styles.homePageTitle}>Apps</Text>
+      </View>
+      <View style={styles.homePageControls}>
+        {searchField}
         {viewSegment}
       </View>
     </View>
-  );
+  ) : null;
 
   const closeFilters = () => setFiltersOpen(false);
 
@@ -1605,11 +1598,11 @@ function AppsLibrary({
           styles.toolsScrollContent,
           isMobile && styles.igHomeScroll,
           !isMobile && styles.homeScrollContent,
-          !isMobile && { paddingTop: (toolbarHeight || 72) + 28 },
         ]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
+        {appsPageHeader}
         {isMobile ? (
           <View
             style={styles.igHomeHero}
@@ -1642,25 +1635,6 @@ function AppsLibrary({
         {appsBody}
       </ScrollView>
 
-      {isMobile ? null : (
-        <View
-          style={styles.homeToolbarFloat}
-          onLayout={(event) => {
-            const next = Math.ceil(event.nativeEvent.layout.height);
-            if (next > 0 && next !== toolbarHeight) setToolbarHeight(next);
-          }}
-        >
-          <BlurView
-            intensity={72}
-            tint="light"
-            style={styles.homeToolbarBlur}
-            {...(Platform.OS === 'web' ? { className: 'cgold-home-toolbar-blur' } : null)}
-          >
-            {appsToolbar}
-          </BlurView>
-        </View>
-      )}
-
       {isMobile && filtersOpen ? (
         <View style={styles.igHomeFilterLayer}>
           <Pressable style={StyleSheet.absoluteFill} onPress={closeFilters} accessibilityLabel="Close filters" />
@@ -1672,46 +1646,6 @@ function AppsLibrary({
           >
             <Text style={styles.igFilterLabel}>Search</Text>
             {searchField}
-            <View style={styles.igFilterDivider} />
-            <Text style={styles.igFilterLabel}>Show</Text>
-            {[
-              { key: 'all', label: 'All apps', count: tools.length },
-              { key: 'pinned', label: 'Pinned', count: pinnedCount },
-              { key: 'more', label: 'More', count: moreCount },
-            ].map((option) => {
-              const selected = pinFilter === option.key;
-              return (
-                <Pressable
-                  key={option.key}
-                  onPress={() => setPinFilter(option.key)}
-                  style={({ pressed }) => [
-                    styles.igFilterAction,
-                    selected && styles.storeAppsRowSelected,
-                    pressed && styles.storeAppsRowPressed,
-                  ]}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected }}
-                  accessibilityLabel={`${option.label}, ${option.count}`}
-                >
-                  <Text
-                    style={[
-                      styles.igFilterActionLabel,
-                      styles.igAppsFilterOptionLabel,
-                      selected && styles.storeAppsLabelSelected,
-                    ]}
-                    numberOfLines={1}
-                  >
-                    {option.label}
-                  </Text>
-                  <Text style={styles.igAppsFilterOptionCount}>{option.count}</Text>
-                  <Ionicons
-                    name="checkmark"
-                    size={16}
-                    color={selected ? TAB_INK : 'transparent'}
-                  />
-                </Pressable>
-              );
-            })}
             <View style={styles.igFilterDivider} />
             <Text style={styles.igFilterLabel}>View</Text>
             {viewSegment}
@@ -3481,7 +3415,14 @@ function HomeStoreDrawer({
                     ]}
                   >
                     <ScreenGate resetKey={activeTab}>
-                      {activeTab === 'preorders' ? (
+                      {activeTab === 'phone' ? (
+                        <PhoneScreen
+                          key={heldStore.store}
+                          session={session}
+                          storeFilter={heldStore.store}
+                          embedded
+                        />
+                      ) : activeTab === 'preorders' ? (
                         <PreordersScreen storeFilter={heldStore.store} embedded />
                       ) : activeTab === 'audit' ? (
                         <AuditScreen
@@ -7914,6 +7855,17 @@ export default function App() {
                 onOpenEmails={openEmailsFromBonuses}
                 storeFilter={scopedStore || undefined}
               />
+            ) : activeTool.key === 'reviews' ? (
+              <ReviewsScreen
+                session={session}
+                onRequireLogin={() => selectTab('profile')}
+                storeFilter={scopedStore || undefined}
+              />
+            ) : activeTool.key === 'calendar' ? (
+              <CalendarScreen
+                session={session}
+                storeFilter={scopedStore || undefined}
+              />
             ) : activeTool.key === 'phone' ? (
               <PhoneScreen
                 session={session}
@@ -8070,6 +8022,8 @@ export default function App() {
       activeTool?.key === 'fintrac' ||
       activeTool?.key === 'pricing' ||
       activeTool?.key === 'bonuses' ||
+      activeTool?.key === 'reviews' ||
+      activeTool?.key === 'calendar' ||
       activeTool?.key === 'employees' ||
       activeTool?.key === 'analytics' ||
       activeTool?.key === 'triage'));
@@ -9061,46 +9015,6 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     outlineStyle: 'none',
   },
-  homeToolbarFloat: {
-    position: 'absolute',
-    top: 16,
-    left: 20,
-    right: 20,
-    zIndex: 3,
-    borderRadius: 16,
-    ...Platform.select({
-      web: { boxShadow: '0 8px 28px rgba(0,0,0,0.12)' },
-      default: {
-        shadowColor: '#000',
-        shadowOpacity: 0.12,
-        shadowRadius: 16,
-        shadowOffset: { width: 0, height: 6 },
-        elevation: 6,
-      },
-    }),
-  },
-  homeToolbarBlur: {
-    overflow: 'hidden',
-    borderRadius: 16,
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    backgroundColor: Platform.OS === 'web' ? 'transparent' : 'rgba(255,255,255,0.62)',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(0,0,0,0.08)',
-  },
-  homeToolbar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    width: '100%',
-    alignSelf: 'center',
-  },
-  homeToolbarFilters: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexShrink: 0,
-    gap: 8,
-  },
   homeSearch: {
     flex: 1,
     flexDirection: 'row',
@@ -9115,11 +9029,6 @@ const styles = StyleSheet.create({
   },
   homeSearchIcon: {
     marginRight: 8,
-  },
-  homeSearchInput: {
-    fontSize: 13,
-    paddingVertical: 10,
-    color: '#1a1a1a',
   },
   homeScrollContent: {
     paddingHorizontal: 0,
@@ -12797,17 +12706,6 @@ const styles = StyleSheet.create({
   },
   igAppsFilterSegment: {
     alignSelf: 'stretch',
-  },
-  igAppsFilterOptionLabel: {
-    flex: 1,
-    minWidth: 0,
-  },
-  igAppsFilterOptionCount: {
-    fontFamily,
-    fontSize: 13,
-    color: '#8e8e93',
-    letterSpacing: -0.08,
-    fontVariant: ['tabular-nums'],
   },
   igFilterLabel: {
     fontFamily,

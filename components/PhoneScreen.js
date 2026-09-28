@@ -33,9 +33,7 @@ import { isConnectedStatus } from '../lib/callState';
 import {
   canManageRingCentral,
   connectionLabel,
-  formatCheckedAt,
   formatPhoneNumber,
-  formatUsageType,
   listRingCentralAccounts,
 } from '../lib/ringcentral';
 import { storeKeyFromName } from '../lib/storeSettings';
@@ -272,16 +270,6 @@ function PhoneCrumb({ storeName, onStores }) {
           </Text>
         </>
       ) : null}
-    </View>
-  );
-}
-
-function DetailRow({ label, value }) {
-  if (!value) return null;
-  return (
-    <View style={styles.detailRow}>
-      <Text style={styles.detailLabel}>{label}</Text>
-      <Text style={styles.detailValue}>{value}</Text>
     </View>
   );
 }
@@ -873,32 +861,6 @@ function RatioDayChart({ calls, anchor = null, label = 'today' }) {
   );
 }
 
-/** One-line state of this browser's softphone registration for a store. */
-function browserPhoneLabel(status) {
-  if (Platform.OS !== 'web') return 'Use the RingCentral app or desk phone';
-  if (!status) return 'Waiting…';
-  switch (status.state) {
-    case 'ready':
-      return status.extensionName ? `Ready in this browser · ${status.extensionName}` : 'Ready in this browser';
-    case 'connecting':
-      return 'Registering this browser…';
-    case 'reconnecting':
-      return status.message || 'Reconnecting to RingCentral…';
-    case 'shared':
-      return status.message || 'Rings through another store’s line';
-    case 'other':
-      return status.message || 'Needs this store’s own JWT';
-    case 'unsupported':
-      return status.message || 'Not supported in this browser';
-    case 'error':
-      return status.message ? `Not registered: ${status.message}` : 'Not registered';
-    case 'rejected':
-      return 'RingCentral dropped this browser’s line. Reload the page to register again.';
-    default:
-      return '';
-  }
-}
-
 export default function PhoneScreen({ session, onRequireLogin, storeFilter, onStoreBackChange, embedded = false }) {
   const canManage = canManageRingCentral(session?.profile);
   const isMobile = useIsMobile();
@@ -919,8 +881,6 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
   const [warning, setWarning] = useState('');
   const [query, setQuery] = useState('');
   const [selectedKey, setSelectedKey] = useState('');
-  const [details, setDetails] = useState(null);
-  const [detailsLoading, setDetailsLoading] = useState(false);
   const [showStores, setShowStores] = useState(!storeFilter);
   const [digits, setDigits] = useState('');
   const [callingId, setCallingId] = useState('');
@@ -929,9 +889,10 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
   const audioRef = useRef(null);
   const objectUrlRef = useRef('');
   const requestId = useRef(0);
-  const detailsRequest = useRef(0);
 
   const storeKey = phone.selectedStoreKey;
+  const lockedStoreKey = storeFilter ? storeKeyFromName(storeFilter) : '';
+  const viewStoreKey = lockedStoreKey || selectedKey || storeKey;
   const refreshInbox = phone.refreshInbox;
   const applyStoreAccount = phone.applyStoreAccount;
   const syncStoreAccounts = phone.syncStoreAccounts;
@@ -958,12 +919,12 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
     },
     [historyFor, needsHistory, phone.mergedCallsByStore],
   );
-  const calls = useMemo(() => sourceCalls(storeKey), [sourceCalls, storeKey]);
+  const calls = useMemo(() => sourceCalls(viewStoreKey), [sourceCalls, viewStoreKey]);
   const voicemails = useMemo(
-    () => (needsHistory ? historyFor(storeKey)?.voicemails || [] : phone.inboxByStore?.[storeKey]?.voicemails || []),
-    [historyFor, needsHistory, phone.inboxByStore, storeKey],
+    () => (needsHistory ? historyFor(viewStoreKey)?.voicemails || [] : phone.inboxByStore?.[viewStoreKey]?.voicemails || []),
+    [historyFor, needsHistory, phone.inboxByStore, viewStoreKey],
   );
-  const inboxLoading = Boolean(phone.inboxFetching?.[storeKey]) || (needsHistory && Boolean(historyLoading[storeKey]));
+  const inboxLoading = Boolean(phone.inboxFetching?.[viewStoreKey]) || (needsHistory && Boolean(historyLoading[viewStoreKey]));
 
   const load = useCallback(async () => {
     if (!session?.token) {
@@ -1008,22 +969,22 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
   }, [load]);
 
   const loadInbox = useCallback(async () => {
-    if (!storeKey) return;
+    if (!viewStoreKey) return;
     // Drop this store's cached history so the effect refetches the chosen dates.
     setHistoryByStore((current) => {
-      if (!current[storeKey]) return current;
+      if (!current[viewStoreKey]) return current;
       const next = { ...current };
-      delete next[storeKey];
+      delete next[viewStoreKey];
       return next;
     });
     setHistoryReload((n) => n + 1);
     try {
-      await refreshInbox(storeKey, { force: true });
+      await refreshInbox(viewStoreKey, { force: true });
       setError('');
     } catch (err) {
       setError(err?.message || 'Could not load calls.');
     }
-  }, [refreshInbox, storeKey]);
+  }, [refreshInbox, viewStoreKey]);
 
   const selectDateMode = useCallback(
     (mode) => {
@@ -1129,7 +1090,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
     return filtered;
   }, [accounts, accountByKey, query, storeFilter, stores]);
 
-  const selected = rows.find((row) => row.key === selectedKey) || null;
+  const selected = rows.find((row) => row.key === viewStoreKey) || rows.find((row) => row.key === selectedKey) || null;
   const connectedStores = useMemo(() => {
     const map = new Map();
     for (const row of rows) {
@@ -1148,16 +1109,14 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
       String(a.storeName || '').localeCompare(String(b.storeName || ''), undefined, { sensitivity: 'base' }),
     );
   }, [phone.stores, rows, storeFilter]);
-  const activeAccount = phone.stores.find((row) => row.storeKey === storeKey) || accountByKey.get(storeKey) || null;
+  const activeAccount = phone.stores.find((row) => row.storeKey === viewStoreKey) || accountByKey.get(viewStoreKey) || selected?.account || null;
   const incomingLive = useMemo(() => {
     const all = phone.incoming || [];
     const activeId = phone.activeCall?.id;
     const withoutActive = activeId ? all.filter((call) => call.id !== activeId) : all;
-    if (!storeFilter) return withoutActive;
-    const locked = storeKeyFromName(storeFilter);
-    if (!locked) return withoutActive;
-    return withoutActive.filter((call) => call.storeKey === locked);
-  }, [phone.activeCall?.id, phone.incoming, storeFilter]);
+    if (showStores || !viewStoreKey) return withoutActive;
+    return withoutActive.filter((call) => call.storeKey === viewStoreKey);
+  }, [phone.activeCall?.id, phone.incoming, showStores, viewStoreKey]);
   const rangeLabel = windowCopy(dateMode, startDate, endDate);
   const rangeShort = windowCopy(dateMode, startDate, endDate, { sentence: false });
   const visibleCalls = useMemo(
@@ -1171,20 +1130,22 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
   const inboundCalls = useMemo(() => inboundCallsUnique(visibleCalls), [visibleCalls]);
   const todayCalls = useMemo(() => {
     const today = todayWindow();
-    return callsForStore(phone.mergedCallsByStore, storeKey).filter((row) => inWindow(row.startTime, today));
-  }, [phone.mergedCallsByStore, storeKey]);
+    return callsForStore(phone.mergedCallsByStore, viewStoreKey).filter((row) => inWindow(row.startTime, today));
+  }, [phone.mergedCallsByStore, viewStoreKey]);
 
   // Stores whose history the chosen dates need: the open store first so its
   // tabs fill quickly, then the rest for the store chips and ratio list.
   const historyStoreKeys = useMemo(() => {
     if (!needsHistory) return [];
     const keys = [];
-    if (storeKey && !showStores) keys.push(storeKey);
-    for (const row of connectedStores) {
-      if (row?.storeKey && !keys.includes(row.storeKey)) keys.push(row.storeKey);
+    if (viewStoreKey && !showStores) keys.push(viewStoreKey);
+    if (!storeFilter) {
+      for (const row of connectedStores) {
+        if (row?.storeKey && !keys.includes(row.storeKey)) keys.push(row.storeKey);
+      }
     }
     return keys;
-  }, [connectedStores, needsHistory, showStores, storeKey]);
+  }, [connectedStores, needsHistory, showStores, storeFilter, viewStoreKey]);
 
   useEffect(() => {
     if (!historyStoreKeys.length) return undefined;
@@ -1282,7 +1243,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
       setTab('dial');
       setError('');
       try {
-        await phone.dial(number, { storeKey: row.storeKey || storeKey, from: activeAccount?.mainNumber });
+        await phone.dial(number, { storeKey: row.storeKey || viewStoreKey, from: activeAccount?.mainNumber });
         if (String(row?.direction || '') !== 'Outbound' && !isAnsweredInbound(row)) {
           setReturnedLocally((current) => ({ ...current, [id]: Date.now() }));
         }
@@ -1292,15 +1253,12 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
         setCallingId((current) => (current === id ? '' : current));
       }
     },
-    [activeAccount?.mainNumber, phone, storeKey],
+    [activeAccount?.mainNumber, phone, viewStoreKey],
   );
 
   const goToStoreList = useCallback(() => {
     if (storeFilter) return;
-    detailsRequest.current += 1;
     setSelectedKey('');
-    setDetails(null);
-    setDetailsLoading(false);
     setShowStores(true);
     setError('');
   }, [storeFilter]);
@@ -1312,20 +1270,18 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
     const account =
       (row?.account?.hasJwt && row.account) ||
       (phone.stores || []).find((item) => item.storeKey === lockedKey && item.hasJwt);
+    setShowStores(false);
     if (account?.hasJwt) {
-      setShowStores(false);
+      setSelectedKey('');
       if (phone.selectedStoreKey !== lockedKey) {
         applyStoreAccount?.(account, { select: true, watch: true });
       }
       return;
     }
-    if (row) {
-      setSelectedKey(row.key);
-      setShowStores(true);
-    }
+    if (row) setSelectedKey(row.key);
   }, [applyStoreAccount, phone.selectedStoreKey, phone.stores, rows, storeFilter]);
 
-  const storeCrumbName = showStores && selected ? selected.storeName : !showStores ? activeAccount?.storeName : '';
+  const storeCrumbName = !showStores ? activeAccount?.storeName || selected?.storeName || '' : '';
   const useOuterCrumb = Boolean(onStoreBackChange) && !isMobile;
   const hideStoreNav = useOuterCrumb || embedded || Boolean(storeFilter);
   const onStoreBackChangeRef = useRef(onStoreBackChange);
@@ -1363,27 +1319,24 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
   const openStore = useCallback(
     (row) => {
       if (!row?.key) return;
-      if (row.account?.hasJwt) {
-        applyStoreAccount?.(row.account, { select: true, watch: true });
-        setShowStores(false);
+      const account =
+        (row.account?.hasJwt && row.account) ||
+        (phone.stores || []).find((item) => item.storeKey === row.key && item.hasJwt);
+      setShowStores(false);
+      setError('');
+      if (account?.hasJwt) {
         setSelectedKey('');
-        setDetails(null);
-        setError('');
+        applyStoreAccount?.(account, { select: true, watch: true });
         return;
       }
-
-      detailsRequest.current += 1;
       setSelectedKey(row.key);
-      setShowStores(true);
-      setDetails(null);
-      setError('');
     },
-    [applyStoreAccount],
+    [applyStoreAccount, phone.stores],
   );
 
   const activeCall = phone.activeCall || null;
   // One outbound call at a time: every Call back button waits while one is starting or live.
-  const callbackLocked = Boolean(callingId) || Boolean(activeCall) || !storeKey;
+  const callbackLocked = Boolean(callingId) || Boolean(activeCall) || !viewStoreKey;
   const callbackProps = (row) => {
     const id = historyRowKey(row);
     return {
@@ -1393,7 +1346,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
     };
   };
   const inBrowserCall = Boolean(activeCall?.web);
-  const browserDialing = Boolean(phone.canDialInBrowser?.(storeKey));
+  const browserDialing = Boolean(phone.canDialInBrowser?.(viewStoreKey));
 
   const appendDigit = (value) => {
     if (inBrowserCall && isConnectedStatus(activeCall?.status)) {
@@ -1412,7 +1365,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
       return;
     }
     try {
-      await phone.dial(number, { storeKey, from: activeAccount?.mainNumber });
+      await phone.dial(number, { storeKey: viewStoreKey, from: activeAccount?.mainNumber });
       setError('');
       setDigits('');
     } catch (err) {
@@ -1445,7 +1398,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
         URL.revokeObjectURL(objectUrlRef.current);
         objectUrlRef.current = '';
       }
-      const url = await fetchVoicemailAudioUrl(row.storeKey || storeKey, row.id, row.attachmentId);
+      const url = await fetchVoicemailAudioUrl(row.storeKey || viewStoreKey, row.id, row.attachmentId);
       objectUrlRef.current = url;
       if (typeof Audio === 'undefined') {
         setPlayError('Voicemail playback is available in the browser.');
@@ -1523,122 +1476,10 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
     );
   }
 
-  if (storeFilter && loading && !storeKey && !selectedKey) {
+  if (storeFilter && loading && !viewStoreKey) {
     return (
       <View style={[styles.screen, styles.centered, embedded && styles.screenEmbedded, { flex: 1 }]}>
         <ActivityIndicator color={ACCENT} />
-      </View>
-    );
-  }
-
-  if (showStores && selected) {
-    const account = details?.store || selected.account;
-    const status = connectionLabel(account);
-    const numbers = details?.numbers || [];
-    const extensions = details?.extensions || [];
-    return (
-      <View style={[styles.screen, embedded && styles.screenEmbedded]}>
-        <ScrollView style={styles.list} contentContainerStyle={[styles.listContent, embedded && styles.listContentEmbedded]} showsVerticalScrollIndicator={false}>
-          <View style={styles.headerRow}>
-            {hideStoreNav ? <View style={styles.headerCopy} /> : <PhoneCrumb storeName={selected.storeName} onStores={goToStoreList} />}
-            {headerActions}
-          </View>
-          {selected.address ? <Text style={styles.sectionMeta}>{selected.address}</Text> : null}
-
-          <View style={styles.statusCard}>
-            <Text style={[styles.statusValue, statusTone(account)]}>{status}</Text>
-            <DetailRow
-              label="Number"
-              value={
-                account?.mainNumber
-                  ? formatPhoneNumber(account.mainNumber)
-                  : selected.posPhone
-                    ? formatPhoneNumber(selected.posPhone)
-                    : ''
-              }
-            />
-            <DetailRow label="Account" value={account?.companyName} />
-            <DetailRow label="Account ID" value={account?.accountId} />
-            <DetailRow
-              label="Extensions"
-              value={account?.extensionCount ? String(account.extensionCount) : ''}
-            />
-            <DetailRow label="Checked" value={formatCheckedAt(account?.lastCheckedAt)} />
-            {account?.hasJwt ? (
-              <DetailRow label="Answer here" value={browserPhoneLabel(phone.webPhoneStatus?.[selected.key])} />
-            ) : null}
-            {selected.key === storeKey ? (
-              <>
-                <Text style={styles.detailLabel}>Answered to missed</Text>
-                <RatioStrip stats={ratio} compact rangeLabel={rangeLabel} rangeShort={rangeShort} />
-              </>
-            ) : null}
-            {account?.lastError ? <Text style={styles.cellError}>{account.lastError}</Text> : null}
-            {!account?.hasJwt ? (
-              <Text style={styles.sectionMeta}>
-                {canManage
-                  ? 'Add this store’s RingCentral JWT in Settings → RingCentral, then open it again.'
-                  : 'This store is not connected yet.'}
-              </Text>
-            ) : null}
-          </View>
-
-          {error && account?.lastStatus !== 'error' ? (
-            <View style={styles.errorBanner}>
-              <Text style={styles.errorText}>{error}</Text>
-            </View>
-          ) : null}
-
-          {detailsLoading ? (
-            <View style={styles.centered}>
-              <ActivityIndicator color={ACCENT} />
-              <Text style={styles.sectionMeta}>Loading numbers and extensions…</Text>
-            </View>
-          ) : null}
-
-          {numbers.length > 0 ? (
-            <View style={styles.section}>
-              <Text style={styles.blockTitle}>Numbers</Text>
-              {numbers.map((row) => (
-                <View key={`${row.phoneNumber}-${row.usageType}`} style={styles.itemRow}>
-                  <View style={styles.itemText}>
-                    <Text style={styles.itemTitle}>{formatPhoneNumber(row.phoneNumber)}</Text>
-                    <Text style={styles.itemMeta}>
-                      {[formatUsageType(row.usageType), row.extensionNumber ? `ext ${row.extensionNumber}` : '', row.extensionName]
-                        .filter(Boolean)
-                        .join(' · ')}
-                    </Text>
-                  </View>
-                </View>
-              ))}
-            </View>
-          ) : null}
-
-          {extensions.length > 0 ? (
-            <View style={styles.section}>
-              <Text style={styles.blockTitle}>Extensions</Text>
-              {extensions.map((row) => (
-                <View key={row.id || row.extensionNumber} style={styles.itemRow}>
-                  <View style={styles.extBadge}>
-                    <Text style={styles.extBadgeText}>{row.extensionNumber || '—'}</Text>
-                  </View>
-                  <View style={styles.itemText}>
-                    <Text style={styles.itemTitle}>{row.name || 'Extension'}</Text>
-                    <Text style={styles.itemMeta}>
-                      {[row.type, row.status, row.email].filter(Boolean).join(' · ')}
-                    </Text>
-                  </View>
-                </View>
-              ))}
-            </View>
-          ) : null}
-
-          {account?.hasJwt ? (
-            <Pressable style={styles.refreshLink} onPress={() => openStore(selected)} disabled={detailsLoading}>
-              <Text style={styles.link}>{detailsLoading ? 'Refreshing…' : 'Refresh'}</Text>
-            </Pressable>
-          ) : null}
-        </ScrollView>
       </View>
     );
   }
@@ -1732,9 +1573,9 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
       <ScrollView style={styles.list} contentContainerStyle={[styles.listContent, embedded && styles.listContentEmbedded]} showsVerticalScrollIndicator={false}>
         <View style={styles.headerRow}>
           <View style={styles.headerCopy}>
-            {hideStoreNav ? null : activeAccount?.storeName || storeKey ? (
+            {hideStoreNav ? null : activeAccount?.storeName || selected?.storeName || viewStoreKey ? (
               <PhoneCrumb
-                storeName={activeAccount?.storeName || 'Store'}
+                storeName={activeAccount?.storeName || selected?.storeName || 'Store'}
                 onStores={goToStoreList}
               />
             ) : (
@@ -1744,16 +1585,19 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
           {headerActions}
         </View>
 
-        {connectedStores.length > 1 ? (
+        {connectedStores.length > 1 && !storeFilter ? (
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.storeChips}>
             {connectedStores.map((row) => {
-              const active = row.storeKey === storeKey;
+              const active = row.storeKey === viewStoreKey;
               const storeRatio = storeRatios[row.storeKey];
               return (
                 <Pressable
                   key={row.storeKey}
                   style={[styles.chip, active && styles.chipActive]}
-                  onPress={() => applyStoreAccount?.(row, { select: true, watch: true })}
+                  onPress={() => {
+                    setSelectedKey('');
+                    applyStoreAccount?.(row, { select: true, watch: true });
+                  }}
                 >
                   <Text style={[styles.chipText, active && styles.chipTextActive]}>{row.storeName}</Text>
                   <Text style={[styles.chipRatio, active && styles.chipRatioActive]}>
@@ -1781,6 +1625,13 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
               </Text>
             ) : null}
           </Pressable>
+        ) : null}
+        {viewStoreKey && !activeAccount?.hasJwt ? (
+          <Text style={styles.sectionMeta}>
+            {canManage
+              ? 'Add this store’s RingCentral JWT in Settings → RingCentral to make and receive calls here.'
+              : 'This store is not connected yet. Incoming, missed, and voicemail still show this store only.'}
+          </Text>
         ) : null}
 
         {dateFilter}
@@ -1895,7 +1746,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
         ) : null}
         {warning ? <Text style={styles.warningText}>{warning}</Text> : null}
 
-        {!storeKey ? (
+        {!viewStoreKey ? (
           <Text style={styles.emptyText}>
             {canManage
               ? 'Connect a store in Settings → RingCentral to make and receive calls.'
@@ -2166,8 +2017,8 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
 
         {tab === 'recordings' ? (
           <CallRecordingsPanel
-            storeKey={storeKey}
-            storeName={activeAccount?.storeName || storeKey}
+            storeKey={viewStoreKey}
+            storeName={activeAccount?.storeName || selected?.storeName || viewStoreKey}
             calls={visibleCalls}
             loading={inboxLoading}
             rangeLabel={rangeLabel}
@@ -2177,16 +2028,19 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
 
         {tab === 'stats' ? (
           <View style={styles.section}>
-            {connectedStores.length > 1 ? (
+            {connectedStores.length > 1 && !storeFilter ? (
               <View style={styles.storeRatioList}>
                 {connectedStores.map((row) => {
                   const storeRatio = storeRatios[row.storeKey] || inboundCallRatio([]);
-                  const selected = row.storeKey === storeKey;
+                  const selected = row.storeKey === viewStoreKey;
                   return (
                     <Pressable
                       key={row.storeKey}
                       style={[styles.storeRatioRow, selected && styles.storeRatioRowActive]}
-                      onPress={() => applyStoreAccount?.(row, { select: true, watch: true })}
+                      onPress={() => {
+                        setSelectedKey('');
+                        applyStoreAccount?.(row, { select: true, watch: true });
+                      }}
                     >
                       <Text style={[styles.storeRatioName, selected && styles.chipTextActive]} numberOfLines={1}>
                         {row.storeName}

@@ -1,7 +1,7 @@
 /**
  * Shared building blocks for the Triage app.
  *
- * Every triage surface (dashboard, batch detail, accuracy, review drawer)
+ * Every triage surface (dashboard, results lots, review drawer)
  * pulls its tokens and primitives from here so the app reads as one product:
  * one type ramp, one set of status colours, one drawer, one empty state.
  */

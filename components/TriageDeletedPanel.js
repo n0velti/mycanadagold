@@ -1,7 +1,6 @@
 /**
- * Deleted tab: archived date batches, Quick Add POs, and individual PO / SO
- * lines. Restore puts them back on the dashboard without recreating a live row
- * from a stale sync.
+ * Deleted tab: archived POs and documents. Restore puts them back on the
+ * dashboard without recreating a live row from a stale sync.
  */
 import { useCallback, useMemo } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -119,7 +118,7 @@ function deletedRowProps(entry) {
   const stats = batchStats(entry.payload);
   const stores = (entry.payload?.stores || []).map((store) => store.name).filter(Boolean);
   return {
-    title: entry.payload?.dateLabel || entry.sourceDateLabel || 'Batch',
+    title: entry.payload?.dateLabel || entry.sourceDateLabel || 'Item',
     subtitle: stores.length
       ? `${stores.join(', ')}  ·  ${stats.documents} ${docNoun(flattenBatchPos(entry.payload), stats.documents)}`
       : 'No stores',
@@ -159,7 +158,7 @@ export default function TriageDeletedPanel({ session, query = '' }) {
   const purge = useCallback((entry) => {
     const label =
       entry.kind === 'batch'
-        ? entry.payload?.dateLabel || entry.sourceDateLabel || 'this batch'
+        ? entry.payload?.dateLabel || entry.sourceDateLabel || 'this item'
         : entry.item?.reference || flattenBatchPos(entry.payload)[0]?.reference || 'this PO';
     confirmDestructive(
       `Fully delete ${label}?`,
@@ -175,7 +174,7 @@ export default function TriageDeletedPanel({ session, query = '' }) {
   if (!session?.token) {
     return (
       <View style={styles.body}>
-        <EmptyState icon="lock-closed-outline" title="Sign in to triage" body="Log in to see deleted batches and documents." />
+        <EmptyState icon="lock-closed-outline" title="Sign in to triage" body="Log in to see deleted POs and documents." />
       </View>
     );
   }
@@ -189,7 +188,7 @@ export default function TriageDeletedPanel({ session, query = '' }) {
           body={
             query.trim()
               ? `Nothing matches “${query.trim()}”.`
-              : 'Batches, Quick Add POs, and documents you remove from the dashboard land here and stay off the live list.'
+              : 'POs and documents you remove from the dashboard land here and stay off the live list.'
           }
         />
       ) : (
