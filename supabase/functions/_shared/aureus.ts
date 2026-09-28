@@ -5,6 +5,29 @@
 
 export const AUREUS_BASE_URL = 'https://canadagoldeast.aureuspos.com/api';
 
+export const POS_SYSTEMS = [
+  { key: 'east', label: 'Canada Gold East', baseUrl: AUREUS_BASE_URL },
+  { key: 'gta', label: 'Canada Gold GTA', baseUrl: 'https://gta.aureuspos.com/api' },
+  { key: 'pmx', label: 'Canadian PMX', baseUrl: 'https://canadianpmx.com/api' },
+] as const;
+
+export type PosSystemKey = (typeof POS_SYSTEMS)[number]['key'];
+
+export function posSystemFromBaseUrl(baseUrl: string): (typeof POS_SYSTEMS)[number] | null {
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return POS_SYSTEMS.find((system) => {
+      try {
+        return new URL(system.baseUrl).hostname.toLowerCase() === host;
+      } catch {
+        return false;
+      }
+    }) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 const JSON_HEADERS = {
   Accept: 'application/json, text/plain, */*',
   'Content-Type': 'application/json;charset=utf-8',
@@ -17,6 +40,8 @@ export interface AureusSession {
   user: Record<string, unknown> | null;
   login: string;
   baseUrl: string;
+  systemKey: PosSystemKey;
+  systemLabel: string;
 }
 
 export interface LinkedPosSystem {
@@ -95,7 +120,38 @@ export async function loginToPos(baseUrl: string, login: string, password: strin
     throw new AureusError(message, status === 0 ? 502 : status >= 500 ? 502 : 401);
   }
 
-  return { token: String(token), user, login: login.trim(), baseUrl: root };
+  const system = posSystemFromBaseUrl(root);
+  return {
+    token: String(token),
+    user,
+    login: login.trim(),
+    baseUrl: root,
+    systemKey: system?.key ?? 'east',
+    systemLabel: system?.label ?? 'Canada Gold East',
+  };
+}
+
+/**
+ * Staff sign-in across East, GTA, and PMX. First host that accepts the
+ * password wins so GTA / Richmond Hill logins work the same as East.
+ */
+export async function loginToStaffPos(login: string, password: string): Promise<AureusSession> {
+  const results = await Promise.allSettled(
+    POS_SYSTEMS.map((system) => loginToPos(system.baseUrl, login, password)),
+  );
+
+  for (const result of results) {
+    if (result.status === 'fulfilled') return result.value;
+  }
+
+  const errors = results
+    .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+    .map((result) => result.reason);
+  const authError = errors.find((err) => err instanceof AureusError && err.status === 401);
+  if (authError instanceof AureusError) throw authError;
+  const aureusError = errors.find((err) => err instanceof AureusError);
+  if (aureusError instanceof AureusError) throw aureusError;
+  throw new AureusError('Aureus POS is unavailable. Try again shortly.', 502);
 }
 
 export async function fetchUserData(baseUrl: string, token: string): Promise<Record<string, unknown> | null> {
@@ -210,35 +266,67 @@ export async function fetchEmployeeDirectory(baseUrl: string, token: string): Pr
 /**
  * Linked POS systems whose shared inventory credentials live in Edge Function
  * secrets (CGOLD_LINKED_POS_SYSTEMS as a JSON array). Never in the app bundle.
+ * East can also be supplied via CGOLD_EAST_POS_LOGIN / CGOLD_EAST_POS_PASSWORD
+ * so GTA and PMX staff still load every store.
  */
 export function linkedPosSystems(): LinkedPosSystem[] {
+  const byKey = new Map<string, LinkedPosSystem>();
+
   const raw = Deno.env.get('CGOLD_LINKED_POS_SYSTEMS');
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((entry) => ({
-        key: String(entry?.key || '').trim(),
-        label: String(entry?.label || '').trim(),
-        baseUrl: String(entry?.baseUrl || '').trim(),
-        login: String(entry?.login || '').trim(),
-        password: String(entry?.password || ''),
-      }))
-      .filter((entry) => entry.key && entry.label && entry.baseUrl && entry.login && entry.password)
-      .map((entry) => ({ ...entry, baseUrl: assertHttps(entry.baseUrl) }));
-  } catch {
-    console.error('CGOLD_LINKED_POS_SYSTEMS is not valid JSON; linked POS disabled.');
-    return [];
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        for (const entry of parsed) {
+          const key = String(entry?.key || '').trim();
+          const label = String(entry?.label || '').trim();
+          const baseUrl = String(entry?.baseUrl || '').trim();
+          const login = String(entry?.login || '').trim();
+          const password = String(entry?.password || '');
+          if (!key || !label || !baseUrl || !login || !password) continue;
+          byKey.set(key, { key, label, baseUrl: assertHttps(baseUrl), login, password });
+        }
+      }
+    } catch {
+      console.error('CGOLD_LINKED_POS_SYSTEMS is not valid JSON; linked POS disabled.');
+    }
   }
+
+  const eastLogin = (Deno.env.get('CGOLD_EAST_POS_LOGIN') || '').trim();
+  const eastPassword = Deno.env.get('CGOLD_EAST_POS_PASSWORD') || '';
+  if (eastLogin && eastPassword && !byKey.has('east')) {
+    byKey.set('east', {
+      key: 'east',
+      label: 'Canada Gold East',
+      baseUrl: AUREUS_BASE_URL,
+      login: eastLogin,
+      password: eastPassword,
+    });
+  }
+
+  return [...byKey.values()];
 }
 
-export async function loginLinkedPosSystems(): Promise<Record<string, LinkedPosResult>> {
+export async function loginLinkedPosSystems(
+  options: { exceptKey?: string; include?: AureusSession | null } = {},
+): Promise<Record<string, LinkedPosResult>> {
   const systems = linkedPosSystems();
   const linked: Record<string, LinkedPosResult> = {};
+  const include = options.include;
+  if (include?.token && include.systemKey) {
+    linked[include.systemKey] = {
+      key: include.systemKey,
+      label: include.systemLabel || include.systemKey,
+      baseUrl: include.baseUrl,
+      token: include.token,
+      user: include.user,
+    };
+  }
 
   await Promise.all(
     systems.map(async (system) => {
+      if (system.key === options.exceptKey) return;
+      if (linked[system.key]?.token) return;
       try {
         const session = await loginToPos(system.baseUrl, system.login, system.password);
         linked[system.key] = {
