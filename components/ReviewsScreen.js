@@ -10,11 +10,13 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useIsMobile } from '../lib/mobileUi';
 import { useAppAccess } from '../lib/permissions';
 import {
   GOOGLE_STORE_PLACES,
   currentReviewMonth,
   fetchAllGoogleStoreReviews,
+  getGooglePlaceForStore,
   reviewMonthRange,
   reviewPeriodLabel,
   summarizeReviews,
@@ -111,48 +113,74 @@ function RatingBreakdown({ breakdown, total }) {
   );
 }
 
-function StoreCard({ store, selected, onPress }) {
+function StoreCard({ store, selected, onPress, compact, fill }) {
   const summary = summarizeReviews(store.reviews);
   return (
     <Pressable
       onPress={onPress}
-      style={[styles.storeCard, selected && styles.storeCardSelected]}
+      accessibilityRole="button"
+      accessibilityState={{ selected }}
+      style={[
+        styles.storeCard,
+        compact && styles.storeCardCompact,
+        fill && styles.storeCardFill,
+        selected && styles.storeCardSelected,
+      ]}
     >
       <View style={styles.storeCardTop}>
-        <Text style={styles.storeCardName} numberOfLines={1}>
+        <Text
+          style={[styles.storeCardName, compact && styles.storeCardNameCompact]}
+          numberOfLines={1}
+        >
           {store.storeName}
         </Text>
         {store.place ? (
           <View style={styles.liveBadge}>
             <Ionicons name="logo-google" size={11} color="#1a1a1a" />
-            <Text style={styles.liveBadgeText}>Google</Text>
+            {!compact ? <Text style={styles.liveBadgeText}>Google</Text> : null}
           </View>
         ) : (
           <Text style={styles.mutedBadge}>No Google link</Text>
         )}
       </View>
-      <Text style={styles.storeAverage}>
+      <Text style={[styles.storeAverage, compact && styles.storeAverageCompact]}>
         {summary.count ? formatAverage(summary.average) : '—'}
       </Text>
-      <Text style={styles.storeAverageLabel}>
+      <Text style={styles.storeAverageLabel} numberOfLines={1}>
         {summary.count} review{summary.count === 1 ? '' : 's'}
         {store.loading ? ' · loading…' : ''}
       </Text>
       {store.error ? <Text style={styles.storeError}>{store.error}</Text> : null}
-      <RatingBreakdown breakdown={summary.breakdown} total={summary.count} />
+      {compact ? null : <RatingBreakdown breakdown={summary.breakdown} total={summary.count} />}
     </Pressable>
   );
 }
 
-function ReviewCard({ review, storeName, showStore }) {
+function ChipRow({ mobile, children }) {
+  if (!mobile) return <View style={styles.filterRow}>{children}</View>;
+  return (
+    <ScrollView
+      horizontal
+      nestedScrollEnabled
+      showsHorizontalScrollIndicator={false}
+      style={styles.hScroll}
+      contentContainerStyle={styles.chipRowMobile}
+    >
+      {children}
+    </ScrollView>
+  );
+}
+
+function ReviewCard({ review, storeName, showStore, compact }) {
   return (
     <View
       style={[
         styles.reviewRow,
+        compact && styles.reviewRowCompact,
         review.rating <= 2 && styles.reviewRowNegative,
       ]}
     >
-      <View style={styles.reviewTop}>
+      <View style={[styles.reviewTop, compact && styles.reviewTopCompact]}>
         <Avatar uri={review.avatarUrl} name={review.author} />
         <View style={styles.reviewIdentity}>
           <Text style={styles.reviewAuthor} numberOfLines={1}>
@@ -160,7 +188,9 @@ function ReviewCard({ review, storeName, showStore }) {
           </Text>
           <Text style={styles.reviewStars}>{starsLabel(review.rating)}</Text>
         </View>
-        <Text style={styles.reviewWhen}>{formatWhen(review)}</Text>
+        <Text style={[styles.reviewWhen, compact && styles.reviewWhenCompact]} numberOfLines={2}>
+          {formatWhen(review)}
+        </Text>
       </View>
       {showStore && storeName ? (
         <Text style={styles.reviewStore}>{storeName}</Text>
@@ -191,13 +221,16 @@ function ReviewCard({ review, storeName, showStore }) {
 }
 
 export default function ReviewsScreen({ session, onRequireLogin, storeFilter }) {
+  const isMobile = useIsMobile();
   const { canFilter } = useAppAccess();
   const allowFilters = canFilter('reviews');
   const initialPeriod = useMemo(() => currentReviewMonth(), []);
   const [startDate, setStartDate] = useState(initialPeriod.startDate);
   const [endDate, setEndDate] = useState(initialPeriod.endDate);
   const [dateMode, setDateMode] = useState('range');
-  const [selectedStore, setSelectedStore] = useState(storeFilter || null);
+  const [selectedStore, setSelectedStore] = useState(
+    () => getGooglePlaceForStore(storeFilter)?.storeName || storeFilter || null,
+  );
   const [ratingFilter, setRatingFilter] = useState(0);
   const [needsReplyOnly, setNeedsReplyOnly] = useState(false);
   const [results, setResults] = useState([]);
@@ -217,7 +250,7 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter }) 
 
   useEffect(() => {
     if (storeFilter) {
-      setSelectedStore(storeFilter);
+      setSelectedStore(getGooglePlaceForStore(storeFilter)?.storeName || storeFilter);
       return;
     }
     if (!allowFilters) setSelectedStore(null);
@@ -233,7 +266,7 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter }) 
     const id = ++requestId.current;
     const places = storeFilter
       ? GOOGLE_STORE_PLACES.filter(
-          (place) => place.storeName.toLowerCase() === String(storeFilter).trim().toLowerCase(),
+          (place) => place.storeName === (getGooglePlaceForStore(storeFilter)?.storeName || storeFilter),
         )
       : GOOGLE_STORE_PLACES;
 
@@ -325,9 +358,115 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter }) 
     applyPeriod(currentMonth.start, currentMonth.end, 'range');
   };
 
+  const summaryLine = combined.count
+    ? `${formatAverage(combined.average)} average · ${combined.count} in ${periodLabel}`
+    : stillLoading
+      ? `Loading ${periodLabel} from Google…`
+      : `No reviews in ${periodLabel}`;
+
+  const storeChips =
+    allowFilters && !storeFilter ? (
+      <ChipRow mobile={isMobile}>
+        <Pressable
+          style={[styles.chip, isMobile && styles.chipMobile, !selectedStore && styles.chipActive]}
+          onPress={() => setSelectedStore(null)}
+          accessibilityRole="button"
+          accessibilityState={{ selected: !selectedStore }}
+        >
+          <Text style={[styles.chipText, !selectedStore && styles.chipTextActive]}>
+            All stores
+          </Text>
+        </Pressable>
+        {GOOGLE_STORE_PLACES.map((place) => (
+          <Pressable
+            key={place.storeName}
+            style={[
+              styles.chip,
+              isMobile && styles.chipMobile,
+              selectedStore === place.storeName && styles.chipActive,
+            ]}
+            onPress={() =>
+              setSelectedStore((current) =>
+                current === place.storeName ? null : place.storeName,
+              )
+            }
+            accessibilityRole="button"
+            accessibilityState={{ selected: selectedStore === place.storeName }}
+          >
+            <Text
+              style={[
+                styles.chipText,
+                selectedStore === place.storeName && styles.chipTextActive,
+              ]}
+            >
+              {place.storeName}
+            </Text>
+          </Pressable>
+        ))}
+      </ChipRow>
+    ) : null;
+
+  const ratingChips = (
+    <ChipRow mobile={isMobile}>
+      <Pressable
+        style={[styles.chip, isMobile && styles.chipMobile, ratingFilter === 0 && styles.chipActive]}
+        onPress={() => setRatingFilter(0)}
+        accessibilityRole="button"
+        accessibilityState={{ selected: ratingFilter === 0 }}
+      >
+        <Text style={[styles.chipText, ratingFilter === 0 && styles.chipTextActive]}>
+          All ratings
+        </Text>
+      </Pressable>
+      {[5, 4, 3, 2, 1].map((star) => (
+        <Pressable
+          key={star}
+          style={[
+            styles.chip,
+            isMobile && styles.chipMobile,
+            ratingFilter === star && styles.chipActive,
+          ]}
+          onPress={() => setRatingFilter((current) => (current === star ? 0 : star))}
+          accessibilityRole="button"
+          accessibilityState={{ selected: ratingFilter === star }}
+        >
+          <Text style={[styles.chipText, ratingFilter === star && styles.chipTextActive]}>
+            {star}★
+          </Text>
+        </Pressable>
+      ))}
+      <Pressable
+        style={[styles.chip, isMobile && styles.chipMobile, needsReplyOnly && styles.chipActive]}
+        onPress={() => setNeedsReplyOnly((current) => !current)}
+        accessibilityRole="button"
+        accessibilityState={{ selected: needsReplyOnly }}
+      >
+        <Text style={[styles.chipText, needsReplyOnly && styles.chipTextActive]}>
+          Needs reply
+        </Text>
+      </Pressable>
+    </ChipRow>
+  );
+
+  const refreshButton = (
+    <Pressable
+      style={[styles.refresh, isMobile && styles.refreshMobile]}
+      onPress={load}
+      hitSlop={8}
+      accessibilityRole="button"
+      accessibilityLabel="Refresh reviews"
+    >
+      {stillLoading ? (
+        <ActivityIndicator size="small" color={ACCENT} />
+      ) : (
+        <Ionicons name="refresh" size={isMobile ? 18 : 16} color="#8a8a8a" />
+      )}
+    </Pressable>
+  );
+
   if (!session?.token) {
     return (
-      <View style={styles.body}>
+      <View style={[styles.body, isMobile && styles.bodyMobile]}>
         <Text style={styles.hint}>
           Sign in to load Google reviews for each store.{' '}
           {onRequireLogin ? (
@@ -341,37 +480,34 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter }) 
   }
 
   return (
-    <View style={styles.body}>
-      <View style={styles.toolbar}>
-        <View style={styles.toolbarCopy}>
-          <Text style={styles.toolbarTitle}>Google reviews</Text>
-          <Text style={styles.toolbarSub}>
-            {combined.count
-              ? `${formatAverage(combined.average)} average · ${combined.count} in ${periodLabel}`
-              : stillLoading
-                ? `Loading ${periodLabel} from Google…`
-                : `No reviews in ${periodLabel}`}
+    <View style={[styles.body, isMobile && styles.bodyMobile]}>
+      {isMobile ? (
+        <View style={styles.mobileSummary}>
+          <Text style={styles.mobileSummaryText} numberOfLines={2}>
+            {summaryLine}
           </Text>
+          {refreshButton}
         </View>
-        <Pressable style={styles.refresh} onPress={load} hitSlop={8}>
-          {stillLoading ? (
-            <ActivityIndicator size="small" color={ACCENT} />
-          ) : (
-            <Ionicons name="refresh" size={16} color="#8a8a8a" />
-          )}
-        </Pressable>
-      </View>
+      ) : (
+        <View style={styles.toolbar}>
+          <View style={styles.toolbarCopy}>
+            <Text style={styles.toolbarTitle}>Google reviews</Text>
+            <Text style={styles.toolbarSub}>{summaryLine}</Text>
+          </View>
+          {refreshButton}
+        </View>
+      )}
 
       {error ? (
-        <View style={styles.errorBanner}>
+        <View style={[styles.errorBanner, isMobile && styles.errorBannerMobile]}>
           <Text style={styles.errorText}>{error}</Text>
         </View>
       ) : null}
 
-      <View style={styles.periodBar}>
-        <View style={styles.monthNav}>
+      <View style={[styles.periodBar, isMobile && styles.periodBarMobile]}>
+        <View style={[styles.monthNav, isMobile && styles.monthNavMobile]}>
           <Pressable
-            style={styles.monthBtn}
+            style={[styles.monthBtn, isMobile && styles.monthBtnMobile]}
             onPress={() => goMonth(-1)}
             hitSlop={8}
             accessibilityLabel="Previous month"
@@ -383,8 +519,10 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter }) 
             onPress={() => applyPeriod(selectedMonth.start, selectedMonth.end, 'range')}
             accessibilityLabel={selectedMonth.label}
           >
-            <Text style={styles.monthLabel}>{selectedMonth.label}</Text>
-            <Text style={styles.monthSub}>
+            <Text style={[styles.monthLabel, isMobile && styles.monthLabelMobile]} numberOfLines={1}>
+              {selectedMonth.label}
+            </Text>
+            <Text style={styles.monthSub} numberOfLines={1}>
               {isFullMonth
                 ? isCurrentMonth
                   ? 'Current month'
@@ -393,7 +531,11 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter }) 
             </Text>
           </Pressable>
           <Pressable
-            style={[styles.monthBtn, !canGoForward && styles.monthBtnDisabled]}
+            style={[
+              styles.monthBtn,
+              isMobile && styles.monthBtnMobile,
+              !canGoForward && styles.monthBtnDisabled,
+            ]}
             onPress={() => goMonth(1)}
             disabled={!canGoForward}
             hitSlop={8}
@@ -406,117 +548,89 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter }) 
             />
           </Pressable>
         </View>
-        <View style={styles.periodPicker}>
-          <HomeDatePicker
-            startDate={startDate}
-            endDate={endDate}
-            dateMode={dateMode}
-            onChange={({ mode, start: nextStart, end: nextEnd }) =>
-              applyPeriod(nextStart, nextEnd, mode)
-            }
-            maximumDate={new Date()}
-            compact
-            fill
-          />
+        <View style={[styles.periodTools, isMobile && styles.periodToolsMobile]}>
+          <View style={[styles.periodPicker, isMobile && styles.periodPickerMobile]}>
+            <HomeDatePicker
+              startDate={startDate}
+              endDate={endDate}
+              dateMode={dateMode}
+              onChange={({ mode, start: nextStart, end: nextEnd }) =>
+                applyPeriod(nextStart, nextEnd, mode)
+              }
+              maximumDate={new Date()}
+              compact
+              fill
+            />
+          </View>
+          {!isCurrentMonth ? (
+            <Pressable
+              style={[styles.chip, isMobile && styles.chipMobile]}
+              onPress={goToCurrentMonth}
+              accessibilityRole="button"
+              accessibilityLabel="Jump to this month"
+            >
+              <Text style={styles.chipText}>This month</Text>
+            </Pressable>
+          ) : null}
         </View>
-        {!isCurrentMonth ? (
-          <Pressable style={styles.chip} onPress={goToCurrentMonth}>
-            <Text style={styles.chipText}>This month</Text>
-          </Pressable>
-        ) : null}
       </View>
 
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, isMobile && styles.scrollContentMobile]}
         showsVerticalScrollIndicator={false}
       >
-        {allowFilters && !storeFilter ? (
-          <View style={styles.filterRow}>
-            <Pressable
-              style={[styles.chip, !selectedStore && styles.chipActive]}
-              onPress={() => setSelectedStore(null)}
-            >
-              <Text style={[styles.chipText, !selectedStore && styles.chipTextActive]}>
-                All stores
-              </Text>
-            </Pressable>
-            {GOOGLE_STORE_PLACES.map((place) => (
-              <Pressable
-                key={place.storeName}
-                style={[styles.chip, selectedStore === place.storeName && styles.chipActive]}
+        {isMobile && results.length > 1 ? null : storeChips}
+        {ratingChips}
+
+        {isMobile && results.length > 1 ? (
+          <ScrollView
+            horizontal
+            nestedScrollEnabled
+            showsHorizontalScrollIndicator={false}
+            style={styles.hScroll}
+            contentContainerStyle={styles.storeStrip}
+          >
+            {results.map((store) => (
+              <StoreCard
+                key={store.storeName}
+                store={store}
+                compact
+                selected={selectedStore === store.storeName}
                 onPress={() =>
                   setSelectedStore((current) =>
-                    current === place.storeName ? null : place.storeName,
+                    current === store.storeName && !storeFilter ? null : store.storeName,
                   )
                 }
-              >
-                <Text
-                  style={[
-                    styles.chipText,
-                    selectedStore === place.storeName && styles.chipTextActive,
-                  ]}
-                >
-                  {place.storeName}
-                </Text>
-              </Pressable>
+              />
+            ))}
+          </ScrollView>
+        ) : (
+          <View style={[styles.storeGrid, isMobile && styles.paddedBlock]}>
+            {visibleStores.map((store) => (
+              <StoreCard
+                key={store.storeName}
+                store={store}
+                fill={isMobile}
+                selected={selectedStore === store.storeName}
+                onPress={() =>
+                  setSelectedStore((current) =>
+                    current === store.storeName && !storeFilter ? null : store.storeName,
+                  )
+                }
+              />
             ))}
           </View>
-        ) : null}
-
-        <View style={styles.filterRow}>
-          <Pressable
-            style={[styles.chip, ratingFilter === 0 && styles.chipActive]}
-            onPress={() => setRatingFilter(0)}
-          >
-            <Text style={[styles.chipText, ratingFilter === 0 && styles.chipTextActive]}>
-              All ratings
-            </Text>
-          </Pressable>
-          {[5, 4, 3, 2, 1].map((star) => (
-            <Pressable
-              key={star}
-              style={[styles.chip, ratingFilter === star && styles.chipActive]}
-              onPress={() => setRatingFilter((current) => (current === star ? 0 : star))}
-            >
-              <Text style={[styles.chipText, ratingFilter === star && styles.chipTextActive]}>
-                {star}★
-              </Text>
-            </Pressable>
-          ))}
-          <Pressable
-            style={[styles.chip, needsReplyOnly && styles.chipActive]}
-            onPress={() => setNeedsReplyOnly((current) => !current)}
-          >
-            <Text style={[styles.chipText, needsReplyOnly && styles.chipTextActive]}>
-              Needs reply
-            </Text>
-          </Pressable>
-        </View>
-
-        <View style={styles.storeGrid}>
-          {visibleStores.map((store) => (
-            <StoreCard
-              key={store.storeName}
-              store={store}
-              selected={selectedStore === store.storeName}
-              onPress={() =>
-                setSelectedStore((current) =>
-                  current === store.storeName && !storeFilter ? null : store.storeName,
-                )
-              }
-            />
-          ))}
-        </View>
+        )}
 
         {stillLoading && !combined.count ? (
-          <View style={styles.loadingBlock}>
+          <View style={[styles.loadingBlock, isMobile && styles.paddedBlock]}>
             <ActivityIndicator color={ACCENT} />
             <Text style={styles.loadingText}>Loading {periodLabel}…</Text>
           </View>
         ) : null}
 
-        <View style={styles.detailHeader}>
+        <View style={[styles.detailHeader, isMobile && styles.paddedBlock]}>
           <Text style={styles.sectionTitle}>
             {selectedStore || 'All stores'}
           </Text>
@@ -528,18 +642,19 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter }) 
         </View>
 
         {feed.length ? (
-          <View style={styles.reviewList}>
+          <View style={[styles.reviewList, isMobile && styles.paddedBlock]}>
             {feed.map(({ review, storeName }) => (
               <ReviewCard
                 key={`${storeName}-${review.id}`}
                 review={review}
                 storeName={storeName}
+                compact={isMobile}
                 showStore={!selectedStore && results.length > 1}
               />
             ))}
           </View>
         ) : stillLoading ? null : (
-          <View style={styles.emptyBlock}>
+          <View style={[styles.emptyBlock, isMobile && styles.paddedBlock]}>
             <Text style={styles.emptyText}>
               No reviews in {periodLabel}
               {ratingFilter || needsReplyOnly ? ' match these filters' : ''}.
@@ -555,6 +670,13 @@ const styles = StyleSheet.create({
   body: {
     flex: 1,
     minHeight: 0,
+  },
+  bodyMobile: {
+    backgroundColor: '#fff',
+    ...Platform.select({
+      web: { overflowX: 'hidden' },
+      default: {},
+    }),
   },
   hint: {
     fontFamily,
@@ -599,12 +721,36 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  refreshMobile: {
+    width: 44,
+    height: 44,
+  },
+  mobileSummary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 8,
+  },
+  mobileSummaryText: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily,
+    fontSize: 13,
+    lineHeight: 18,
+    color: '#8a8a8a',
+  },
   errorBanner: {
     marginHorizontal: 16,
     marginTop: 10,
     padding: 10,
     borderRadius: 8,
     backgroundColor: '#FEF2F2',
+  },
+  errorBannerMobile: {
+    marginTop: 0,
+    marginBottom: 4,
   },
   errorText: {
     fontFamily,
@@ -619,6 +765,12 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
     gap: 14,
   },
+  scrollContentMobile: {
+    paddingHorizontal: 0,
+    paddingTop: 12,
+    paddingBottom: 28,
+    gap: 12,
+  },
   periodBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -630,12 +782,25 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#e8e8e8',
   },
+  periodBarMobile: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    flexWrap: 'nowrap',
+    gap: 10,
+    paddingTop: 4,
+    paddingBottom: 12,
+  },
   monthNav: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
     flexGrow: 1,
     minWidth: 220,
+  },
+  monthNavMobile: {
+    minWidth: 0,
+    width: '100%',
+    flexGrow: 0,
   },
   monthLabelWrap: {
     flex: 1,
@@ -647,16 +812,35 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#1a1a1a',
   },
+  monthLabelMobile: {
+    fontSize: 17,
+  },
   monthSub: {
     fontFamily,
     fontSize: 11,
     color: '#8a8a8a',
     marginTop: 1,
   },
+  periodTools: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    flexGrow: 1,
+  },
+  periodToolsMobile: {
+    flexWrap: 'nowrap',
+    width: '100%',
+  },
   periodPicker: {
     minWidth: 168,
     maxWidth: 240,
     flexGrow: 1,
+  },
+  periodPickerMobile: {
+    minWidth: 0,
+    maxWidth: '100%',
+    flex: 1,
   },
   monthBtn: {
     width: 32,
@@ -666,6 +850,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#f4f4f4',
   },
+  monthBtnMobile: {
+    width: 44,
+    height: 44,
+  },
   monthBtnDisabled: {
     opacity: 0.5,
   },
@@ -674,11 +862,24 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 8,
   },
+  hScroll: {
+    flexGrow: 0,
+  },
+  chipRowMobile: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+  },
   chip: {
     paddingHorizontal: 12,
     paddingVertical: 7,
     borderRadius: 999,
     backgroundColor: '#f3f3f3',
+  },
+  chipMobile: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
   },
   chipActive: {
     backgroundColor: '#1a1a1a',
@@ -697,6 +898,12 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 12,
   },
+  storeStrip: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 10,
+    paddingHorizontal: 16,
+  },
   storeCard: {
     width: '100%',
     maxWidth: 320,
@@ -708,9 +915,25 @@ const styles = StyleSheet.create({
     padding: 14,
     gap: 4,
   },
+  storeCardCompact: {
+    width: 156,
+    maxWidth: 156,
+    flexGrow: 0,
+    flexShrink: 0,
+    padding: 12,
+  },
+  storeCardFill: {
+    maxWidth: '100%',
+  },
   storeCardSelected: {
     borderColor: ACCENT,
     backgroundColor: '#FFFEF7',
+  },
+  storeCardNameCompact: {
+    fontSize: 14,
+  },
+  storeAverageCompact: {
+    fontSize: 24,
   },
   storeCardTop: {
     flexDirection: 'row',
@@ -842,6 +1065,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     gap: 6,
   },
+  reviewRowCompact: {
+    padding: 14,
+    gap: 8,
+  },
   reviewRowNegative: {
     borderColor: '#F0D6D6',
     backgroundColor: '#FFF8F8',
@@ -850,6 +1077,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+  },
+  reviewTopCompact: {
+    alignItems: 'flex-start',
+  },
+  paddedBlock: {
+    paddingHorizontal: 16,
   },
   avatar: {
     width: 36,
@@ -894,6 +1127,12 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 11,
     color: '#9a9a9a',
+  },
+  reviewWhenCompact: {
+    maxWidth: 92,
+    textAlign: 'right',
+    lineHeight: 14,
+    flexShrink: 0,
   },
   reviewStore: {
     fontFamily,

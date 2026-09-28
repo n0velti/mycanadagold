@@ -1,54 +1,191 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
+  Image,
+  Modal,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppAccess } from '../lib/permissions';
+import { CANVAS, MOBILE_BREAKPOINT, mobileSafeBottom, useIsMobile } from '../lib/mobileUi';
+import { useHeldValue, useRightDrawerAnimation } from './TriageKit';
 import {
   buildBonusBoard,
+  canViewAllBonusCounts,
+  canonicalBonusStoreName,
   currentBonusMonth,
   formatMoney,
   monthRange,
   NEGATIVE_COLUMNS,
   PHOTO_BONUS,
+  restrictBonusBoardToViewer,
 } from '../lib/bonuses';
-import { GOOGLE_STORE_PLACES } from '../lib/googleReviews';
-import {
-  fetchTransactionsAcrossPos,
-  formatDateParam,
-} from '../lib/transactions';
-
-const fontFamily = Platform.select({
-  ios: 'Sohne',
-  android: 'Sohne',
-  default: 'Sohne',
-});
+import { reviewMonthRange, reviewPeriodLabel } from '../lib/googleReviews';
+import { formatDateParam, fetchTransactionsAcrossPos, parseDateParam } from '../lib/transactions';
+import { FONT, FONT_LIGHT } from '../lib/typography';
+import HomeDatePicker from './HomeDatePicker';
 
 const ACCENT = '#A16207';
 const ACCENT_SOFT = '#FEF9C3';
+const TAB_BORDER = '#d0d0d0';
+const RATE_EMPTY = '#c7c7cc';
 
-function shiftMonth(year, monthIndex, delta) {
-  const date = new Date(year, monthIndex + delta, 1);
-  return { year: date.getFullYear(), monthIndex: date.getMonth() };
+const STORE_ACCENTS = {
+  Laval: '#0F766E',
+  Montreal: '#1D4ED8',
+  Quebec: '#B45309',
+  Hamilton: '#2F6FED',
+  Mississauga: '#C47A12',
+  Toronto: '#2F8A4E',
+  'Richmond Hill': '#6B4DE6',
+};
+
+const STORE_ACCENT_FALLBACKS = [
+  '#1D4ED8',
+  '#0F766E',
+  '#B91C1C',
+  '#B45309',
+  '#6D28D9',
+  '#047857',
+];
+
+function storeAccent(name) {
+  if (STORE_ACCENTS[name]) return STORE_ACCENTS[name];
+  const value = String(name || '');
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+  }
+  return STORE_ACCENT_FALLBACKS[hash % STORE_ACCENT_FALLBACKS.length];
+}
+
+function storeInitials(name) {
+  const parts = String(name || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!parts.length) return '?';
+  return parts
+    .slice(0, 2)
+    .map((part) => part[0].toUpperCase())
+    .join('');
+}
+
+function rateColor(rate, empty = false) {
+  if (empty || rate == null || !Number.isFinite(Number(rate))) return RATE_EMPTY;
+  return Number(rate) < 80 ? '#B91C1C' : '#15803D';
 }
 
 function starsLabel(rating) {
-  return `${'★'.repeat(rating)}${'☆'.repeat(Math.max(0, 5 - rating))}`;
+  const value = Math.max(0, Math.min(5, Number(rating) || 0));
+  return `${'★'.repeat(value)}${'☆'.repeat(5 - value)}`;
+}
+
+function initialsFromName(name) {
+  const parts = String(name || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!parts.length) return '?';
+  return parts
+    .slice(0, 2)
+    .map((part) => part[0].toUpperCase())
+    .join('');
+}
+
+function formatWhen(review) {
+  if (review?.relativeTime) return review.relativeTime;
+  if (review?.date instanceof Date && !Number.isNaN(review.date.getTime())) {
+    return review.date.toLocaleDateString('en-CA', { month: 'short', day: 'numeric' });
+  }
+  return '';
+}
+
+function mergeBoard(current, store, range, matrix) {
+  const stores = current?.stores ? [...current.stores] : [];
+  const index = stores.findIndex((row) => row.storeName === store.storeName);
+  if (index >= 0) stores[index] = store;
+  else stores.push(store);
+  return { range: current?.range || range, matrix: current?.matrix || matrix, stores };
+}
+
+function boardTotals(stores) {
+  return (stores || []).reduce(
+    (acc, store) => {
+      acc.totalPayout += Number(store.totalPayout) || 0;
+      acc.withEmail += Number(store.withEmail) || 0;
+      acc.customerCount += Number(store.customerCount) || 0;
+      acc.eligibleCount += Number(store.eligibleCount) || 0;
+      acc.negativeCount += Number(store.negativeCount) || 0;
+      acc.reviewCount += Number(store.reviewCount) || 0;
+      acc.fiveStarCount += Number(store.fiveStarCount) || 0;
+      return acc;
+    },
+    {
+      totalPayout: 0,
+      withEmail: 0,
+      customerCount: 0,
+      eligibleCount: 0,
+      negativeCount: 0,
+      reviewCount: 0,
+      fiveStarCount: 0,
+    },
+  );
+}
+
+function StoreIcon({ name, size = 46 }) {
+  const accent = storeAccent(name);
+  const radius = size >= 40 ? 13 : 7;
+  return (
+    <View
+      style={[
+        styles.storeIcon,
+        {
+          width: size,
+          height: size,
+          borderRadius: radius,
+          backgroundColor: accent,
+        },
+      ]}
+    >
+      <Text style={[styles.storeIconText, size < 40 && styles.storeIconTextSmall]}>
+        {storeInitials(name)}
+      </Text>
+    </View>
+  );
+}
+
+function Avatar({ uri, name }) {
+  const [failed, setFailed] = useState(false);
+  const showImage = Boolean(uri) && !failed;
+
+  useEffect(() => {
+    setFailed(false);
+  }, [uri]);
+
+  return (
+    <View style={[styles.avatar, !showImage && styles.avatarFallback]}>
+      {showImage ? (
+        <Image source={{ uri }} style={styles.avatarImage} onError={() => setFailed(true)} />
+      ) : (
+        <Text style={styles.avatarInitials}>{initialsFromName(name)}</Text>
+      )}
+    </View>
+  );
 }
 
 function RatingBreakdown({ breakdown, total }) {
   const max = Math.max(1, ...[5, 4, 3, 2, 1].map((star) => breakdown?.[star] || 0));
   return (
     <View style={styles.ratingBreakdown}>
-      <Text style={styles.ratingBreakdownTitle}>
-        Reviews this month{total != null ? ` · ${total}` : ''}
-      </Text>
       {[5, 4, 3, 2, 1].map((star) => {
         const count = breakdown?.[star] || 0;
         const widthPct = total > 0 ? (count / max) * 100 : 0;
@@ -72,74 +209,207 @@ function RatingBreakdown({ breakdown, total }) {
   );
 }
 
-function StoreBonusCard({ store, selected, onPress, onOpenEmails }) {
-  const tier = store.payout?.tier;
-  const column = store.payout?.column;
+function StoreMetric({ icon, value, empty, tone }) {
   return (
-    <View
-      style={[
-        styles.storeCard,
-        selected && styles.storeCardSelected,
-      ]}
-    >
-      <Pressable onPress={onPress}>
-        <View style={styles.storeCardTop}>
-          <Text style={styles.storeCardName} numberOfLines={1}>
-            {store.storeName}
-          </Text>
-          {store.googleConfigured ? (
-            <View style={styles.liveBadge}>
-              <Ionicons name="logo-google" size={11} color="#1a1a1a" />
-              <Text style={styles.liveBadgeText}>Reviews</Text>
-            </View>
-          ) : (
-            <Text style={styles.mutedBadge}>No Google link</Text>
-          )}
-        </View>
-
-        <Text style={styles.perReviewAmount}>{formatMoney(store.perReviewBonus)}</Text>
-        <Text style={styles.perReviewLabel}>per eligible 5★ review</Text>
-      </Pressable>
-
-      <View style={styles.metricRow}>
-        <Pressable
-          style={[styles.metric, styles.metricPressable]}
-          onPress={() => onOpenEmails?.(store)}
-        >
-          <Text style={[styles.metricValue, styles.metricLink]}>{store.emailRateLabel}</Text>
-          <Text style={styles.metricLabel}>Email rate</Text>
-          <Text style={styles.metricHint}>
-            {store.withEmail}/{store.customerCount} named
-          </Text>
-        </Pressable>
-        <Pressable style={styles.metric} onPress={onPress}>
-          <Text style={styles.metricValue}>{store.negativeCount}</Text>
-          <Text style={styles.metricLabel}>Negatives</Text>
-          <Text style={styles.metricHint}>1–2★ live</Text>
-        </Pressable>
-        <Pressable style={styles.metric} onPress={onPress}>
-          <Text style={styles.metricValue}>{store.eligibleCount}</Text>
-          <Text style={styles.metricLabel}>Eligible</Text>
-          <Text style={styles.metricHint}>{store.fiveStarCount} five-star</Text>
-        </Pressable>
-      </View>
-
-      <Pressable onPress={onPress}>
-        <RatingBreakdown breakdown={store.ratingBreakdown} total={store.reviewCount} />
-
-        <View style={styles.tierChipRow}>
-          <Text style={styles.tierChip}>{tier?.label || '—'} email</Text>
-          <Text style={styles.tierChip}>{column?.label || '—'}</Text>
-        </View>
-
-        <Text style={styles.storeTotal}>
-          Est. {formatMoney(store.totalPayout)}
-          {store.photoReviewCount > 0
-            ? ` · ${store.photoReviewCount} photo × ${formatMoney(PHOTO_BONUS)}`
-            : ''}
+    <View style={styles.storeMetric}>
+      <Ionicons name={icon} size={14} color={tone || (empty ? RATE_EMPTY : '#8e8e93')} />
+      {empty ? null : (
+        <Text style={[styles.storeMetricText, tone ? { color: tone } : null]} numberOfLines={1}>
+          {value}
         </Text>
-      </Pressable>
+      )}
     </View>
+  );
+}
+
+function StoreRow({ store, selected, last, compact, onPress }) {
+  const emailEmpty = !store.customerCount;
+  const reviewsLoading = Boolean(store.reviewsLoading);
+  const meta = reviewsLoading
+    ? `${store.emailRateLabel} email · loading reviews…`
+    : `${store.emailRateLabel} email · ${store.eligibleCount} eligible · ${store.negativeCount} neg`;
+
+  const body = (
+    <>
+      <StoreIcon name={store.storeName} size={compact ? 46 : 28} />
+      <View style={[compact ? styles.igStoreBody : styles.desktopStoreBody, !last && styles.rowDivider]}>
+        <View style={styles.storeBodyMain}>
+          <View style={styles.storeCopy}>
+            <Text style={compact ? styles.igStoreName : styles.desktopStoreName} numberOfLines={1}>
+              {store.storeName}
+            </Text>
+            <Text style={styles.storeMeta} numberOfLines={1}>
+              {store.googleConfigured ? meta : `${store.emailRateLabel} email · no Google link`}
+            </Text>
+          </View>
+          <View style={styles.storeTrailing}>
+            <Text style={compact ? styles.igStoreAmount : styles.desktopAmount} numberOfLines={1}>
+              {formatMoney(store.totalPayout)}
+            </Text>
+            <Text style={styles.storePerReview} numberOfLines={1}>
+              {formatMoney(store.perReviewBonus)} / 5★
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+        </View>
+        {compact ? (
+          <View style={styles.storeMetrics}>
+            <StoreMetric
+              icon="mail"
+              value={store.emailRateLabel}
+              empty={emailEmpty}
+              tone={rateColor(store.emailRate, emailEmpty)}
+            />
+            <StoreMetric
+              icon="star"
+              value={`${store.eligibleCount}`}
+              empty={reviewsLoading && store.reviewCount === 0}
+              tone={store.negativeCount > 1 ? '#B91C1C' : '#8e8e93'}
+            />
+          </View>
+        ) : null}
+      </View>
+    </>
+  );
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ hovered, pressed }) => [
+        compact ? styles.igStoreCard : styles.desktopStoreRow,
+        selected && styles.storeRowSelected,
+        (hovered || pressed) && styles.storeRowPressed,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={`${store.storeName}, ${formatMoney(store.totalPayout)} estimated`}
+    >
+      {body}
+    </Pressable>
+  );
+}
+
+function DesktopStoreTable({ stores, selectedStore, onOpenStore, totals }) {
+  const emailEmpty = !totals.customerCount;
+  const emailRate = totals.customerCount > 0 ? (totals.withEmail / totals.customerCount) * 100 : 0;
+  return (
+    <ScrollView
+      horizontal
+      nestedScrollEnabled
+      showsHorizontalScrollIndicator={false}
+      style={styles.desktopTableScroll}
+      contentContainerStyle={styles.desktopTableScrollContent}
+    >
+      <View style={styles.desktopTable}>
+        <View style={[styles.desktopStoreRow, styles.desktopHeaderRow]}>
+          <View style={styles.desktopIconSpacer} />
+          <View style={[styles.desktopStoreBody, styles.desktopHeaderRule]}>
+            <Text style={[styles.desktopHeader, styles.colStore]}>Store</Text>
+            <Text style={[styles.desktopHeader, styles.colRate]}>Email</Text>
+            <Text style={[styles.desktopHeader, styles.colRate]}>Eligible</Text>
+            <Text style={[styles.desktopHeader, styles.colRate]}>Negatives</Text>
+            <Text style={[styles.desktopHeader, styles.colMoney]}>Payout</Text>
+            <View style={styles.desktopChevron} />
+          </View>
+        </View>
+        {stores.map((store, index) => (
+          <Pressable
+            key={store.storeName}
+            onPress={() => onOpenStore(store)}
+            style={({ hovered, pressed }) => [
+              styles.desktopStoreRow,
+              selectedStore === store.storeName && styles.storeRowSelected,
+              (hovered || pressed) && styles.storeRowPressed,
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={`${store.storeName} bonus`}
+          >
+            <View style={styles.desktopIconWrap}>
+              <StoreIcon name={store.storeName} size={28} />
+            </View>
+            <View
+              style={[
+                styles.desktopStoreBody,
+                index < stores.length - 1 && styles.rowDivider,
+              ]}
+            >
+              <View style={styles.colStore}>
+                <Text style={styles.desktopStoreName} numberOfLines={1}>
+                  {store.storeName}
+                </Text>
+                <Text style={styles.storeMeta} numberOfLines={1}>
+                  {store.reviewsLoading
+                    ? 'Loading Google reviews…'
+                    : `${store.reviewCount} review${store.reviewCount === 1 ? '' : 's'} · ${formatMoney(store.perReviewBonus)} / eligible`}
+                </Text>
+              </View>
+              <Text
+                style={[
+                  styles.desktopRate,
+                  styles.colRate,
+                  { color: rateColor(store.emailRate, !store.customerCount) },
+                ]}
+                numberOfLines={1}
+              >
+                {store.customerCount ? store.emailRateLabel : '—'}
+              </Text>
+              <Text style={[styles.desktopRate, styles.colRate]} numberOfLines={1}>
+                {store.reviewsLoading && !store.reviewCount ? '…' : store.eligibleCount}
+              </Text>
+              <Text
+                style={[
+                  styles.desktopRate,
+                  styles.colRate,
+                  store.negativeCount > 1 && styles.rateLow,
+                ]}
+                numberOfLines={1}
+              >
+                {store.reviewsLoading && !store.reviewCount ? '…' : store.negativeCount}
+              </Text>
+              <Text style={[styles.desktopAmount, styles.colMoney]} numberOfLines={1}>
+                {formatMoney(store.totalPayout)}
+              </Text>
+              <View style={styles.desktopChevron}>
+                <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+              </View>
+            </View>
+          </Pressable>
+        ))}
+        <View style={[styles.desktopStoreRow, styles.desktopTotalRow]}>
+          <View style={styles.desktopIconSpacer} />
+          <View style={[styles.desktopStoreBody, styles.desktopTotalRule]}>
+            <View style={styles.colStore}>
+              <Text style={styles.desktopStoreName}>Total</Text>
+              <Text style={styles.storeMeta}>
+                {totals.reviewCount} review{totals.reviewCount === 1 ? '' : 's'}
+              </Text>
+            </View>
+            <Text
+              style={[
+                styles.desktopRate,
+                styles.colRate,
+                { color: rateColor(emailRate, emailEmpty) },
+              ]}
+            >
+              {emailEmpty ? '—' : `${emailRate.toFixed(1)}%`}
+            </Text>
+            <Text style={[styles.desktopRate, styles.colRate]}>{totals.eligibleCount}</Text>
+            <Text
+              style={[
+                styles.desktopRate,
+                styles.colRate,
+                totals.negativeCount > 1 && styles.rateLow,
+              ]}
+            >
+              {totals.negativeCount}
+            </Text>
+            <Text style={[styles.desktopAmount, styles.colMoney]}>
+              {formatMoney(totals.totalPayout)}
+            </Text>
+            <View style={styles.desktopChevron} />
+          </View>
+        </View>
+      </View>
+    </ScrollView>
   );
 }
 
@@ -148,12 +418,12 @@ function PayoutMatrix({ matrix, activeTierId, activeColumnId }) {
     <View style={styles.matrixWrap}>
       <Text style={styles.sectionTitle}>Payout grid</Text>
       <Text style={styles.sectionHint}>
-        Base bonus by email collection, adjusted by 1–2★ reviews still live this month.
+        Email collection sets the base. Live 1–2★ reviews adjust it for the period.
       </Text>
       <ScrollView horizontal showsHorizontalScrollIndicator={false}>
         <View>
           <View style={styles.matrixRow}>
-            <Text style={[styles.matrixCorner, styles.matrixHead]}>Email rate</Text>
+            <Text style={[styles.matrixCorner, styles.matrixHead]}>Email</Text>
             {NEGATIVE_COLUMNS.map((column) => (
               <Text
                 key={column.id}
@@ -200,168 +470,397 @@ function PayoutMatrix({ matrix, activeTierId, activeColumnId }) {
   );
 }
 
-function EmployeeGrid({ employees }) {
+function EmployeeList({ employees, selfOnly, onOpenEmployee }) {
   if (!employees.length) {
     return (
       <View style={styles.emptyBlock}>
-        <Text style={styles.emptyText}>No eligible employee payouts for this month yet.</Text>
+        <Text style={styles.emptyText}>
+          {selfOnly
+            ? 'No eligible reviews for you in this period yet.'
+            : 'No eligible employee payouts for this period yet.'}
+        </Text>
       </View>
     );
   }
 
   return (
-    <View style={styles.employeeGrid}>
-      {employees.map((row) => (
-        <View key={row.employeeName} style={styles.employeeCard}>
-          <Text style={styles.employeeName} numberOfLines={1}>
-            {row.employeeName}
-          </Text>
-          <Text style={styles.employeeTotal}>{formatMoney(row.total)}</Text>
-          <Text style={styles.employeeMeta}>
-            {row.eligibleCount} review{row.eligibleCount === 1 ? '' : 's'}
-            {row.photoCount > 0 ? ` · ${row.photoCount} photo` : ''}
-          </Text>
-          <Text style={styles.employeeBreakdown}>
-            {formatMoney(row.reviewBonus)} reviews
-            {row.photoBonus > 0 ? ` + ${formatMoney(row.photoBonus)} photos` : ''}
-          </Text>
-        </View>
+    <View style={styles.employeeList}>
+      {employees.map((row, index) => (
+        <Pressable
+          key={row.employeeName}
+          onPress={() => onOpenEmployee?.(row)}
+          style={({ hovered, pressed }) => [
+            styles.employeeRow,
+            index === employees.length - 1 && styles.employeeRowLast,
+            (hovered || pressed) && styles.employeeRowPressed,
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel={`${row.employeeName}, ${formatMoney(row.total)}`}
+        >
+          <View style={[styles.employeeAvatar, { backgroundColor: storeAccent(row.employeeName) }]}>
+            <Text style={styles.employeeAvatarText}>{initialsFromName(row.employeeName)}</Text>
+          </View>
+          <View style={styles.employeeCopy}>
+            <Text style={styles.employeeName} numberOfLines={1}>
+              {row.employeeName}
+            </Text>
+            <Text style={styles.employeeMeta} numberOfLines={1}>
+              {row.eligibleCount} review{row.eligibleCount === 1 ? '' : 's'}
+              {row.photoCount > 0 ? ` · ${row.photoCount} photo` : ''}
+            </Text>
+          </View>
+          <View style={styles.employeeTrailing}>
+            <Text style={styles.employeeTotal}>{formatMoney(row.total)}</Text>
+            <Text style={styles.employeeBreakdown}>
+              {formatMoney(row.reviewBonus)}
+              {row.photoBonus > 0 ? ` + ${formatMoney(row.photoBonus)}` : ''}
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+        </Pressable>
       ))}
     </View>
   );
 }
 
-function ReviewList({ reviews }) {
-  if (!reviews.length) {
-    return (
-      <View style={styles.emptyBlock}>
-        <Text style={styles.emptyText}>No Google reviews in this month.</Text>
+function shareLabel(share) {
+  const value = Number(share);
+  if (!Number.isFinite(value) || value >= 0.999) return '';
+  if (Math.abs(value - 0.5) < 0.01) return 'Split 50%';
+  return `Split ${Math.round(value * 100)}%`;
+}
+
+function ReviewCard({ review, showCount = false }) {
+  const counted = showCount && review.eligible;
+  const split = shareLabel(review.share);
+  return (
+    <View
+      style={[
+        styles.reviewRow,
+        review.eligible && styles.reviewRowEligible,
+        review.rating <= 2 && styles.reviewRowNegative,
+        showCount && !review.eligible && styles.reviewRowSkipped,
+      ]}
+    >
+      <View style={styles.reviewTop}>
+        <Avatar uri={review.avatarUrl} name={review.author} />
+        <View style={styles.reviewIdentity}>
+          <Text style={styles.reviewAuthor} numberOfLines={1}>
+            {review.author || 'Anonymous'}
+          </Text>
+          <Text style={styles.reviewStars}>{starsLabel(review.rating)}</Text>
+        </View>
+        <Text style={styles.reviewWhen}>{formatWhen(review)}</Text>
       </View>
+      <Text style={styles.reviewText}>
+        {review.text || '(No comment — 5★ still eligible)'}
+      </Text>
+      <View style={styles.reviewFlags}>
+        {review.eligible ? (
+          <Text style={styles.flagGood}>Eligible</Text>
+        ) : (
+          <Text style={styles.flagBad}>{review.ineligibleReason || 'Ineligible'}</Text>
+        )}
+        {review.hasPhotos ? (
+          <Text style={styles.flagPhoto}>
+            +{formatMoney(PHOTO_BONUS)} photo
+            {review.photoCount > 1 ? ` · ${review.photoCount}` : ''}
+          </Text>
+        ) : null}
+        {review.attributionSource === 'named' && review.namedEmployees?.length ? (
+          <Text style={styles.flagNames}>Named: {review.namedEmployees.join(', ')}</Text>
+        ) : null}
+        {review.attributionSource === 'transaction' && review.transactionMatch ? (
+          <Text style={styles.flagMatched}>
+            Matched via txn → {review.attributedEmployees.join(', ')}
+          </Text>
+        ) : null}
+        {review.attributionSource === 'unassigned' ? (
+          <Text style={styles.flagNames}>Unassigned</Text>
+        ) : null}
+      </View>
+      {review.attributionSource === 'transaction' && review.transactionMatch ? (
+        <Text style={styles.matchDetail}>
+          Reviewer “{review.author}” matched customer {review.transactionMatch.customerName}
+          {review.transactionMatch.reference ? ` · ${review.transactionMatch.reference}` : ''}
+          {review.transactionMatch.dateLabel ? ` · ${review.transactionMatch.dateLabel}` : ''}.
+        </Text>
+      ) : null}
+      {review.ownerReply ? (
+        <View style={styles.ownerReply}>
+          <Text style={styles.ownerReplyLabel}>Owner reply</Text>
+          <Text style={styles.ownerReplyText}>{review.ownerReply}</Text>
+        </View>
+      ) : null}
+      {counted ? (
+        <View style={styles.countBox}>
+          <Text style={styles.countBoxTotal}>Counted {formatMoney(review.payout)}</Text>
+          <Text style={styles.countBoxMeta}>
+            {formatMoney(review.reviewShare)} review
+            {review.photoShare > 0 ? ` + ${formatMoney(review.photoShare)} photo` : ''}
+            {split ? ` · ${split}` : ''}
+          </Text>
+        </View>
+      ) : null}
+      {showCount && !review.eligible ? (
+        <View style={styles.skipBox}>
+          <Text style={styles.skipBoxText}>
+            Not counted · {review.ineligibleReason || 'Ineligible'}
+          </Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function reviewsNamedForEmployee(reviews, employeeName) {
+  const key = String(employeeName || '').trim();
+  if (!key) return [];
+  return (reviews || []).filter((review) => {
+    const names = [
+      ...(review.attributedEmployees || []),
+      ...(review.namedEmployees || []),
+    ];
+    return names.some(
+      (name) => name.localeCompare(key, undefined, { sensitivity: 'base' }) === 0,
     );
-  }
+  });
+}
+
+function EmployeeBonusDrawer({ visible, employee, store, onClose }) {
+  const { width: windowWidth } = useWindowDimensions();
+  const isMobile = windowWidth < MOBILE_BREAKPOINT;
+  const panelWidth = isMobile
+    ? Math.max(windowWidth, 240)
+    : Math.min(Math.max(Math.round(windowWidth * 0.46), 400), 560);
+  const { mounted, slide, backdrop } = useRightDrawerAnimation(visible, panelWidth);
+  const heldEmployee = useHeldValue(employee);
+  const heldStore = useHeldValue(store);
+
+  if (!mounted || !heldEmployee) return null;
+
+  const counted = heldEmployee.reviews || [];
+  const countedIds = new Set(counted.map((review) => review.id));
+  const named = reviewsNamedForEmployee(heldStore?.reviews, heldEmployee.employeeName);
+  const notCounted = named.filter((review) => !countedIds.has(review.id));
+  const splitCount = counted.filter((review) => Number(review.share) < 0.999).length;
 
   return (
-    <View style={styles.reviewList}>
-      {reviews.map((review) => (
-        <View
-          key={review.id}
+    <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose}>
+      <View style={styles.drawerRoot}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close">
+          <Animated.View style={[styles.drawerBackdrop, { opacity: backdrop }]} />
+        </Pressable>
+        <Animated.View
           style={[
-            styles.reviewRow,
-            review.eligible && styles.reviewRowEligible,
-            review.rating <= 2 && styles.reviewRowNegative,
+            styles.drawerPanel,
+            isMobile && styles.drawerPanelMobile,
+            { width: panelWidth, transform: [{ translateX: slide }] },
           ]}
         >
-          <View style={styles.reviewTop}>
-            <Text style={styles.reviewStars}>{starsLabel(review.rating)}</Text>
-            <Text style={styles.reviewAuthor} numberOfLines={1}>
-              {review.author || 'Anonymous'}
+          <View
+            style={[styles.drawerTopBar, isMobile && styles.drawerTopBarMobile]}
+            {...(Platform.OS === 'web' && isMobile ? { className: 'cgold-mobile-sheet-top' } : null)}
+          >
+            <Text style={styles.drawerTitle} numberOfLines={1}>
+              {heldEmployee.employeeName}
             </Text>
-            <Text style={styles.reviewWhen}>{review.relativeTime || ''}</Text>
+            <Pressable
+              onPress={onClose}
+              hitSlop={8}
+              style={styles.drawerClose}
+              accessibilityLabel="Close"
+            >
+              <Ionicons name="close" size={18} color="#1a1a1a" />
+            </Pressable>
           </View>
-          <Text style={styles.reviewText}>
-            {review.text || '(No comment — 5★ still eligible)'}
-          </Text>
-          <View style={styles.reviewFlags}>
-            {review.eligible ? (
-              <Text style={styles.flagGood}>Eligible</Text>
-            ) : (
-              <Text style={styles.flagBad}>{review.ineligibleReason || 'Ineligible'}</Text>
-            )}
-            {review.hasPhotos ? <Text style={styles.flagPhoto}>+ photo bonus</Text> : null}
-            {review.attributionSource === 'named' && review.namedEmployees?.length ? (
-              <Text style={styles.flagNames}>Named: {review.namedEmployees.join(', ')}</Text>
-            ) : null}
-            {review.attributionSource === 'transaction' && review.transactionMatch ? (
-              <Text style={styles.flagMatched}>
-                Matched via txn → {review.attributedEmployees.join(', ')}
+
+          <ScrollView
+            style={styles.drawerBody}
+            contentContainerStyle={[
+              styles.drawerBodyContent,
+              isMobile && styles.drawerBodyContentMobile,
+            ]}
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={styles.drawerHero}>
+              <Text style={styles.drawerHeroLabel}>
+                {heldStore?.storeName || 'Bonus'}
               </Text>
-            ) : null}
-            {review.attributionSource === 'unassigned' ? (
-              <Text style={styles.flagNames}>Unassigned</Text>
-            ) : null}
-          </View>
-          {review.attributionSource === 'transaction' && review.transactionMatch ? (
-            <Text style={styles.matchDetail}>
-              Reviewer “{review.author}” matched customer{' '}
-              {review.transactionMatch.customerName}
-              {review.transactionMatch.reference
-                ? ` · ${review.transactionMatch.reference}`
-                : ''}
-              {review.transactionMatch.dateLabel
-                ? ` · ${review.transactionMatch.dateLabel}`
-                : ''}
-              . No employee named in review — credited from Aureus transaction.
+              <Text style={styles.drawerHeroAmount}>{formatMoney(heldEmployee.total)}</Text>
+              <View style={styles.drawerHeroStats}>
+                <View style={styles.drawerHeroStat}>
+                  <Text style={styles.drawerHeroStatValue}>{heldEmployee.eligibleCount}</Text>
+                  <Text style={styles.drawerHeroStatLabel}>Counted</Text>
+                </View>
+                <View style={styles.drawerHeroStatDivider} />
+                <View style={styles.drawerHeroStat}>
+                  <Text style={styles.drawerHeroStatValue}>
+                    {formatMoney(heldStore?.perReviewBonus || 0)}
+                  </Text>
+                  <Text style={styles.drawerHeroStatLabel}>Per review</Text>
+                </View>
+                <View style={styles.drawerHeroStatDivider} />
+                <View style={styles.drawerHeroStat}>
+                  <Text style={styles.drawerHeroStatValue}>
+                    {heldEmployee.photoCount > 0 ? heldEmployee.photoCount : '—'}
+                  </Text>
+                  <Text style={styles.drawerHeroStatLabel}>Photos</Text>
+                </View>
+              </View>
+              <Text style={styles.drawerHeroMeta}>
+                {formatMoney(heldEmployee.reviewBonus)} reviews
+                {heldEmployee.photoBonus > 0
+                  ? ` + ${formatMoney(heldEmployee.photoBonus)} photos`
+                  : ''}
+                {splitCount
+                  ? ` · ${splitCount} shared with another teammate`
+                  : ''}
+              </Text>
+            </View>
+
+            <Text style={styles.drawerSectionTitle}>Counted toward bonus</Text>
+            <Text style={styles.drawerSectionHint}>
+              Eligible 5★ reviews attributed to {heldEmployee.employeeName}
+              {heldStore?.storeName ? ` at ${heldStore.storeName}` : ''}.
             </Text>
-          ) : null}
-        </View>
-      ))}
-    </View>
+            {counted.length ? (
+              <View style={styles.reviewList}>
+                {counted.map((review) => (
+                  <ReviewCard key={review.id} review={review} showCount />
+                ))}
+              </View>
+            ) : (
+              <View style={styles.emptyBlock}>
+                <Text style={styles.emptyText}>No reviews were counted for this person.</Text>
+              </View>
+            )}
+
+            {notCounted.length ? (
+              <>
+                <Text style={[styles.drawerSectionTitle, styles.drawerSectionSpaced]}>
+                  Mentioned, not counted
+                </Text>
+                <Text style={styles.drawerSectionHint}>
+                  These reviews name them but did not add to the payout.
+                </Text>
+                <View style={styles.reviewList}>
+                  {notCounted.map((review) => (
+                    <ReviewCard key={review.id} review={review} showCount />
+                  ))}
+                </View>
+              </>
+            ) : null}
+          </ScrollView>
+        </Animated.View>
+      </View>
+    </Modal>
   );
 }
 
 export default function BonusesScreen({ session, onRequireLogin, onOpenEmails, storeFilter }) {
+  const isMobile = useIsMobile();
   const { canFilter } = useAppAccess();
   const allowFilters = canFilter('bonuses');
+  const viewAllCounts = canViewAllBonusCounts(session?.profile);
   const initial = useMemo(() => currentBonusMonth(), []);
-  const [year, setYear] = useState(() => parseInt(initial.startDate.slice(0, 4), 10));
-  const [monthIndex, setMonthIndex] = useState(
-    () => parseInt(initial.startDate.slice(5, 7), 10) - 1,
-  );
+  const [startDate, setStartDate] = useState(initial.startDate);
+  const [endDate, setEndDate] = useState(initial.endDate);
+  const [dateMode, setDateMode] = useState('range');
   const [board, setBoard] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
-  const [selectedStore, setSelectedStore] = useState(
-    () => storeFilter || GOOGLE_STORE_PLACES[0]?.storeName || null,
+  const [selectedStore, setSelectedStore] = useState(() =>
+    storeFilter ? canonicalBonusStoreName(storeFilter) : null,
   );
+  const [selectedEmployeeName, setSelectedEmployeeName] = useState(null);
   const requestId = useRef(0);
+  const displayBoard = useMemo(
+    () => (viewAllCounts ? board : restrictBonusBoardToViewer(board, session?.profile)),
+    [board, session?.profile, viewAllCounts],
+  );
 
-  const range = useMemo(() => monthRange(year, monthIndex), [year, monthIndex]);
-  const now = currentBonusMonth();
+  const periodLabel = reviewPeriodLabel(startDate, endDate, dateMode);
+  const currentMonth = currentBonusMonth();
+  const start = parseDateParam(startDate);
+  const selectedMonth = reviewMonthRange(start.getFullYear(), start.getMonth());
+  const nextMonthStart = formatDateParam(new Date(start.getFullYear(), start.getMonth() + 1, 1));
+  const canGoForward = nextMonthStart <= currentMonth.startDate;
   const isCurrentMonth =
-    range.startDate === now.startDate && range.endDate === now.endDate;
+    startDate === currentMonth.startDate && endDate === currentMonth.endDate;
+  const isFullMonth =
+    startDate === selectedMonth.startDate && endDate === selectedMonth.endDate;
 
-  const load = useCallback(async () => {
-    if (!session?.token) {
-      setBoard(null);
-      setError('');
-      return;
-    }
+  const applyPeriod = (nextStart, nextEnd, mode) => {
+    const startKey = formatDateParam(nextStart);
+    const endKey = formatDateParam(nextEnd || nextStart);
+    setStartDate(startKey);
+    setEndDate(endKey);
+    setDateMode(mode === 'day' || startKey === endKey ? 'day' : 'range');
+  };
 
-    const id = ++requestId.current;
-    setLoading(true);
-    setError('');
+  const load = useCallback(
+    async ({ silent = false } = {}) => {
+      if (!session?.token) {
+        setBoard(null);
+        setError('');
+        return;
+      }
 
-    try {
-      const tx = await fetchTransactionsAcrossPos(session, {
-        startDate: range.startDate,
-        endDate: range.endDate,
-      });
-      if (id !== requestId.current) return;
+      const id = ++requestId.current;
+      if (!silent) {
+        setLoading(true);
+        setError('');
+      }
 
-      const next = await buildBonusBoard({
-        transactionRows: tx.rows || [],
-        year,
-        monthIndex,
-        storeFilter: storeFilter || null,
-      });
-      if (id !== requestId.current) return;
+      try {
+        const tx = await fetchTransactionsAcrossPos(session, {
+          startDate,
+          endDate,
+        });
+        if (id !== requestId.current) return;
 
-      setBoard(next);
-      setSelectedStore((current) => {
-        if (current && next.stores.some((store) => store.storeName === current)) {
-          return current;
+        const cursor = parseDateParam(startDate);
+        const next = await buildBonusBoard({
+          transactionRows: tx.rows || [],
+          year: cursor.getFullYear(),
+          monthIndex: cursor.getMonth(),
+          startDate,
+          endDate,
+          storeFilter: storeFilter || null,
+          onStore: (store) => {
+            if (id !== requestId.current) return;
+            setBoard((current) =>
+              mergeBoard(current, store, monthRange(cursor.getFullYear(), cursor.getMonth()), null),
+            );
+          },
+        });
+        if (id !== requestId.current) return;
+
+        setBoard(next);
+        setSelectedStore((current) => {
+          if (storeFilter) return canonicalBonusStoreName(storeFilter);
+          if (current && next.stores.some((store) => store.storeName === current)) {
+            return current;
+          }
+          if (isMobile && !storeFilter) return current;
+          const laval = next.stores.find((store) => store.storeName === 'Laval');
+          return laval?.storeName || next.stores[0]?.storeName || null;
+        });
+      } catch (err) {
+        if (id !== requestId.current) return;
+        setBoard(null);
+        setError(err?.message || 'Failed to load bonuses.');
+      } finally {
+        if (id === requestId.current) {
+          setLoading(false);
+          setRefreshing(false);
         }
-        const laval = next.stores.find((store) => store.storeName === 'Laval');
-        return laval?.storeName || next.stores[0]?.storeName || null;
-      });
-    } catch (err) {
-      if (id !== requestId.current) return;
-      setBoard(null);
-      setError(err?.message || 'Failed to load bonuses.');
-    } finally {
-      if (id === requestId.current) setLoading(false);
-    }
-  }, [session, range.startDate, range.endDate, year, monthIndex, storeFilter]);
+      }
+    },
+    [session, startDate, endDate, storeFilter, isMobile],
+  );
 
   useEffect(() => {
     load();
@@ -369,276 +868,568 @@ export default function BonusesScreen({ session, onRequireLogin, onOpenEmails, s
 
   useEffect(() => {
     if (storeFilter) {
-      setSelectedStore(storeFilter);
+      setSelectedStore(canonicalBonusStoreName(storeFilter));
       return;
     }
-    if (!allowFilters) setSelectedStore(null);
-  }, [allowFilters, storeFilter]);
+    if (!allowFilters && !isMobile) setSelectedStore(null);
+  }, [allowFilters, storeFilter, isMobile]);
 
-  const storeNames = useMemo(
-    () => (board?.stores || []).map((store) => store.storeName),
-    [board],
-  );
+  const visibleStores = useMemo(() => {
+    const stores = displayBoard?.stores || [];
+    if (storeFilter) {
+      const wanted = canonicalBonusStoreName(storeFilter);
+      return stores.filter((store) => store.storeName === wanted);
+    }
+    return stores;
+  }, [displayBoard, storeFilter]);
 
   const activeStore = useMemo(() => {
-    if (!board?.stores?.length) return null;
-    return (
-      board.stores.find((store) => store.storeName === selectedStore) || board.stores[0]
-    );
-  }, [board, selectedStore]);
+    if (!visibleStores.length) return null;
+    if (isMobile && !selectedStore && !storeFilter) return null;
+    return visibleStores.find((store) => store.storeName === selectedStore) || visibleStores[0];
+  }, [visibleStores, selectedStore, isMobile, storeFilter]);
+
+  const selectedPerson = useMemo(() => {
+    if (!selectedEmployeeName) return null;
+    for (const store of visibleStores) {
+      const employee = (store.employees || []).find(
+        (row) => row.employeeName === selectedEmployeeName,
+      );
+      if (employee) return { employee, store };
+    }
+    return { employee: { employeeName: selectedEmployeeName, reviews: [], total: 0, eligibleCount: 0, photoCount: 0, reviewBonus: 0, photoBonus: 0 }, store: activeStore };
+  }, [selectedEmployeeName, visibleStores, activeStore]);
+
+  const totals = useMemo(() => boardTotals(visibleStores), [visibleStores]);
+  const emailRate = totals.customerCount > 0 ? (totals.withEmail / totals.customerCount) * 100 : 0;
+  const emailRateLabel = totals.customerCount ? `${emailRate.toFixed(1)}%` : '—';
+  const stillLoading = loading || visibleStores.some((store) => store.reviewsLoading);
+  const showMobileDetail = Boolean(isMobile && activeStore && (selectedStore || storeFilter));
 
   const goMonth = (delta) => {
-    const next = shiftMonth(year, monthIndex, delta);
-    const nextRange = monthRange(next.year, next.monthIndex);
-    const todayKey = formatDateParam(new Date());
-    if (nextRange.startDate > todayKey) return;
-    setYear(next.year);
-    setMonthIndex(next.monthIndex);
+    const next = new Date(start.getFullYear(), start.getMonth() + delta, 1);
+    if (formatDateParam(next) > currentMonth.startDate) return;
+    const period = reviewMonthRange(next.getFullYear(), next.getMonth());
+    applyPeriod(period.start, period.end, 'range');
+  };
+
+  const refresh = useCallback(async () => {
+    setRefreshing(true);
+    await load({ silent: true });
+  }, [load]);
+
+  const openStore = (store) => {
+    setSelectedStore(store.storeName);
+  };
+
+  const closeStore = () => {
+    if (storeFilter) return;
+    setSelectedStore(null);
   };
 
   if (!session?.token) {
     return (
-      <View style={styles.body}>
-        <Text style={styles.hint}>
-          Sign in to load email capture rates and estimate bonus payouts.{' '}
+      <View style={styles.screen}>
+        <View style={styles.loginWrap}>
+          <Text style={styles.pageTitle}>Bonuses</Text>
+          <Text style={styles.loginHint}>
+            Sign in to load email capture and Google reviews for each store.
+          </Text>
           {onRequireLogin ? (
-            <Text style={styles.link} onPress={onRequireLogin}>
-              Go to Profile
-            </Text>
+            <Pressable style={styles.loginButton} onPress={onRequireLogin}>
+              <Text style={styles.loginButtonText}>Log in</Text>
+            </Pressable>
           ) : null}
-        </Text>
+        </View>
       </View>
     );
   }
 
-  return (
-    <View style={styles.body}>
-      <View style={styles.toolbar}>
-        <View style={styles.monthNav}>
-          <Pressable style={styles.monthBtn} onPress={() => goMonth(-1)} hitSlop={8}>
-            <Ionicons name="chevron-back" size={18} color="#1a1a1a" />
-          </Pressable>
-          <View style={styles.monthLabelWrap}>
-            <Text style={styles.monthLabel}>{range.label}</Text>
-            <Text style={styles.monthSub}>
-              {isCurrentMonth ? 'Current bonus month' : 'Bonus month'} · policy Aug 1, 2026
-            </Text>
-          </View>
-          <Pressable
-            style={[styles.monthBtn, isCurrentMonth && styles.monthBtnDisabled]}
-            onPress={() => goMonth(1)}
-            disabled={isCurrentMonth}
-            hitSlop={8}
-          >
-            <Ionicons
-              name="chevron-forward"
-              size={18}
-              color={isCurrentMonth ? '#c4c4c4' : '#1a1a1a'}
-            />
-          </Pressable>
-        </View>
+  const datePicker = (
+    <HomeDatePicker
+      startDate={startDate}
+      endDate={endDate}
+      dateMode={dateMode}
+      onChange={({ mode, start: nextStart, end: nextEnd }) =>
+        applyPeriod(nextStart, nextEnd, mode)
+      }
+      maximumDate={new Date()}
+      compact={!isMobile}
+      fill={isMobile}
+    />
+  );
 
-        <Pressable style={styles.refresh} onPress={load} hitSlop={8}>
-          {loading ? (
-            <ActivityIndicator size="small" color={ACCENT} />
-          ) : (
-            <Ionicons name="refresh" size={16} color="#8a8a8a" />
-          )}
+  const periodBar = (
+    <View style={[styles.periodBar, isMobile && styles.periodBarMobile]}>
+      <View style={styles.monthNav}>
+        <Pressable
+          style={styles.monthBtn}
+          onPress={() => goMonth(-1)}
+          hitSlop={8}
+          accessibilityLabel="Previous month"
+        >
+          <Ionicons name="chevron-back" size={18} color="#1a1a1a" />
+        </Pressable>
+        <Pressable
+          style={styles.monthLabelWrap}
+          onPress={() => applyPeriod(selectedMonth.start, selectedMonth.end, 'range')}
+          accessibilityLabel={selectedMonth.label}
+        >
+          <Text style={styles.monthLabel}>{selectedMonth.label}</Text>
+          <Text style={styles.monthSub}>
+            {isFullMonth ? (isCurrentMonth ? 'Current month' : 'Selected month') : periodLabel}
+          </Text>
+        </Pressable>
+        <Pressable
+          style={[styles.monthBtn, !canGoForward && styles.monthBtnDisabled]}
+          onPress={() => goMonth(1)}
+          disabled={!canGoForward}
+          hitSlop={8}
+          accessibilityLabel="Next month"
+        >
+          <Ionicons
+            name="chevron-forward"
+            size={18}
+            color={canGoForward ? '#1a1a1a' : '#c4c4c4'}
+          />
         </Pressable>
       </View>
+      <View style={styles.periodPicker}>{datePicker}</View>
+      {!isCurrentMonth ? (
+        <Pressable
+          style={styles.chip}
+          onPress={() => applyPeriod(currentMonth.start, currentMonth.end, 'range')}
+        >
+          <Text style={styles.chipText}>This month</Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
 
-      {error ? (
-        <View style={styles.errorBanner}>
-          <Text style={styles.errorText}>{error}</Text>
+  const hero = (
+    <View style={styles.hero}>
+      <Text style={styles.heroLabel}>
+        {viewAllCounts ? periodLabel : `Your bonus · ${periodLabel}`}
+      </Text>
+      <Text style={styles.heroAmount} numberOfLines={1} adjustsFontSizeToFit>
+        {formatMoney(totals.totalPayout)}
+      </Text>
+      <View style={styles.heroStats}>
+        <View style={styles.heroStat}>
+          <Text style={[styles.heroStatValue, { color: rateColor(emailRate, !totals.customerCount) }]}>
+            {emailRateLabel}
+          </Text>
+          <Text style={styles.heroStatLabel}>Email</Text>
+        </View>
+        <View style={styles.heroStatDivider} />
+        <View style={styles.heroStat}>
+          <Text style={styles.heroStatValue}>{totals.eligibleCount}</Text>
+          <Text style={styles.heroStatLabel}>Eligible</Text>
+        </View>
+        <View style={styles.heroStatDivider} />
+        <View style={styles.heroStat}>
+          <Text style={[styles.heroStatValue, totals.negativeCount > 1 && styles.rateLow]}>
+            {totals.negativeCount}
+          </Text>
+          <Text style={styles.heroStatLabel}>Negatives</Text>
+        </View>
+      </View>
+      {stillLoading ? <Text style={styles.heroMeta}>Updating reviews…</Text> : null}
+    </View>
+  );
+
+  const storeHero = activeStore ? (
+    <View style={styles.hero}>
+      {isMobile && !storeFilter ? (
+        <Pressable onPress={closeStore} style={styles.backRow} hitSlop={8}>
+          <Ionicons name="chevron-back" size={18} color="#1a1a1a" />
+          <Text style={styles.backText}>Stores</Text>
+        </Pressable>
+      ) : null}
+      <Text style={styles.heroLabel}>{activeStore.storeName}</Text>
+      <Text style={styles.heroAmount} numberOfLines={1} adjustsFontSizeToFit>
+        {formatMoney(activeStore.totalPayout)}
+      </Text>
+      <View style={styles.heroStats}>
+        <View style={styles.heroStat}>
+          <Text
+            style={[
+              styles.heroStatValue,
+              { color: rateColor(activeStore.emailRate, !activeStore.customerCount) },
+            ]}
+          >
+            {activeStore.emailRateLabel}
+          </Text>
+          <Text style={styles.heroStatLabel}>Email</Text>
+        </View>
+        <View style={styles.heroStatDivider} />
+        <View style={styles.heroStat}>
+          <Text style={styles.heroStatValue}>{activeStore.eligibleCount}</Text>
+          <Text style={styles.heroStatLabel}>Eligible</Text>
+        </View>
+        <View style={styles.heroStatDivider} />
+        <View style={styles.heroStat}>
+          <Text style={styles.heroStatValue}>{formatMoney(activeStore.perReviewBonus)}</Text>
+          <Text style={styles.heroStatLabel}>Per review</Text>
+        </View>
+      </View>
+    </View>
+  ) : null;
+
+  const detail = activeStore ? (
+    <View style={styles.detail}>
+      {displayBoard?.matrix ? (
+        <PayoutMatrix
+          matrix={displayBoard.matrix}
+          activeTierId={activeStore.payout?.tier?.id}
+          activeColumnId={activeStore.payout?.column?.id}
+        />
+      ) : null}
+
+      <Pressable
+        style={styles.emailJump}
+        onPress={() =>
+          onOpenEmails?.({
+            storeName: activeStore.storeName,
+            startDate,
+            endDate,
+          })
+        }
+      >
+        <Ionicons name="mail-outline" size={16} color={ACCENT} />
+        <Text style={styles.emailJumpText}>
+          {activeStore.withEmail}/{activeStore.customerCount} named emails · {activeStore.emailRateLabel}
+        </Text>
+        <Ionicons name="chevron-forward" size={16} color={ACCENT} />
+      </Pressable>
+
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>{viewAllCounts ? 'Employees' : 'Your payout'}</Text>
+        <Text style={styles.sectionHint}>
+          {formatMoney(activeStore.perReviewBonus)} / eligible 5★
+          {activeStore.photoReviewCount
+            ? ` · ${activeStore.photoReviewCount} photo × ${formatMoney(PHOTO_BONUS)}`
+            : ''}
+        </Text>
+      </View>
+      <EmployeeList
+        employees={activeStore.employees}
+        selfOnly={!viewAllCounts}
+        onOpenEmployee={(row) => setSelectedEmployeeName(row.employeeName)}
+      />
+
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>{viewAllCounts ? 'Reviews' : 'Your reviews'}</Text>
+        <Text style={styles.sectionHint}>
+          {activeStore.reviews.length} in {periodLabel}
+          {activeStore.reviewsLoading ? ' · loading…' : ''}
+          {activeStore.ineligibleFiveStarCount
+            ? ` · ${activeStore.ineligibleFiveStarCount} name-only 5★ excluded`
+            : ''}
+          {activeStore.transactionAttributedCount
+            ? ` · ${activeStore.transactionAttributedCount} matched via txn`
+            : ''}
+        </Text>
+      </View>
+      <RatingBreakdown breakdown={activeStore.ratingBreakdown} total={activeStore.reviewCount} />
+      {activeStore.reviewsError && !activeStore.reviews.length ? (
+        <Text style={styles.storeError}>{activeStore.reviewsError}</Text>
+      ) : null}
+      <View style={styles.reviewList}>
+        {activeStore.reviews.map((review) => (
+          <ReviewCard key={review.id} review={review} />
+        ))}
+      </View>
+      {!activeStore.reviews.length && !activeStore.reviewsLoading ? (
+        <View style={styles.emptyBlock}>
+          <Text style={styles.emptyText}>
+            {viewAllCounts
+              ? `No Google reviews in ${periodLabel}.`
+              : `No reviews attributed to you in ${periodLabel}.`}
+          </Text>
+        </View>
+      ) : null}
+    </View>
+  ) : null;
+
+  return (
+    <View style={styles.screen}>
+      {!isMobile ? (
+        <View style={styles.pageHeader}>
+          <View style={styles.pageTitleWrap}>
+            <View style={styles.pageTitleSpacer} />
+            <Text style={styles.pageTitle}>Bonuses</Text>
+          </View>
+          <View style={styles.pageControls}>
+            {stillLoading ? <ActivityIndicator size="small" color="#8e8e93" /> : null}
+            <Pressable style={styles.refresh} onPress={() => load()} hitSlop={8} accessibilityLabel="Refresh bonuses">
+              <Ionicons name="refresh" size={16} color="#8e8e93" />
+            </Pressable>
+          </View>
         </View>
       ) : null}
 
+      {error ? <Text style={styles.errorText}>{error}</Text> : null}
+
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, isMobile && styles.scrollContentMobile]}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          isMobile ? (
+            <RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor="#8e8e93" />
+          ) : undefined
+        }
       >
-        <Text style={styles.pageIntro}>
-          Track where each store sits on the Google review bonus grid — email collection rate
-          × negative reviews — and how payouts split across employees.
-        </Text>
+        {isMobile ? (showMobileDetail ? storeHero : hero) : periodBar}
 
-        {allowFilters && !storeFilter ? (
-        <View style={styles.storeFilterRow}>
-          <Pressable
-            style={[styles.storeChip, !selectedStore && styles.storeChipActive]}
-            onPress={() => setSelectedStore(null)}
-          >
-            <Text
-              style={[styles.storeChipText, !selectedStore && styles.storeChipTextActive]}
-            >
-              All stores
-            </Text>
-          </Pressable>
-          {storeNames.map((name) => (
-            <Pressable
-              key={name}
-              style={[
-                styles.storeChip,
-                selectedStore === name && styles.storeChipActive,
-              ]}
-              onPress={() =>
-                setSelectedStore((current) => (current === name ? null : name))
-              }
-            >
-              <Text
-                style={[
-                  styles.storeChipText,
-                  selectedStore === name && styles.storeChipTextActive,
-                ]}
-              >
-                {name}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-        ) : null}
+        {isMobile && !showMobileDetail ? periodBar : null}
 
-        {loading && !board ? (
+        {loading && !visibleStores.length ? (
           <View style={styles.loadingBlock}>
-            <ActivityIndicator color={ACCENT} />
+            <ActivityIndicator color="#1d1d1f" />
             <Text style={styles.loadingText}>Loading email rates and Google reviews…</Text>
           </View>
         ) : null}
 
-        <View style={styles.storeGrid}>
-          {(selectedStore
-            ? board?.stores.filter((store) => store.storeName === selectedStore)
-            : board?.stores || []
-          )?.map((store) => (
-            <StoreBonusCard
-              key={store.storeName}
-              store={store}
-              selected={activeStore?.storeName === store.storeName}
-              onPress={() => setSelectedStore(store.storeName)}
-              onOpenEmails={(target) =>
-                onOpenEmails?.({
-                  storeName: target.storeName,
-                  startDate: range.startDate,
-                  endDate: range.endDate,
-                })
-              }
-            />
-          ))}
-        </View>
-
-        {board && activeStore ? (
-          <>
-            <PayoutMatrix
-              matrix={board.matrix}
-              activeTierId={activeStore.payout?.tier?.id}
-              activeColumnId={activeStore.payout?.column?.id}
-            />
-
-            <View style={styles.detailHeader}>
-              <Text style={styles.sectionTitle}>{activeStore.storeName} email rate</Text>
-              <Text style={styles.sectionHint}>
-                {activeStore.withEmail} with email ÷ {activeStore.customerCount} named customers
-                (walk-ins excluded) = {activeStore.emailRateLabel}. Tap the email rate on a store
-                card for the full month breakdown.
-              </Text>
-            </View>
-
-            <Pressable
-              style={styles.emailJump}
-              onPress={() =>
-                onOpenEmails?.({
-                  storeName: activeStore.storeName,
-                  startDate: range.startDate,
-                  endDate: range.endDate,
-                })
-              }
-            >
-              <Ionicons name="mail-outline" size={16} color={ACCENT} />
-              <Text style={styles.emailJumpText}>
-                Open Emails · {activeStore.storeName} · {range.label}
-              </Text>
-              <Ionicons name="chevron-forward" size={16} color={ACCENT} />
-            </Pressable>
-
-            <View style={styles.detailHeader}>
-              <Text style={styles.sectionTitle}>{activeStore.storeName} employees</Text>
-              <Text style={styles.sectionHint}>
-                {formatMoney(activeStore.perReviewBonus)} / eligible review
-                {activeStore.reviewsError ? ` · ${activeStore.reviewsError}` : ''}
-              </Text>
-            </View>
-
-            <View style={styles.summaryStrip}>
-              <Text style={styles.summaryStripText}>
-                {activeStore.withEmail}/{activeStore.customerCount} emails ·{' '}
-                {activeStore.fiveStarCount} five-star · {activeStore.eligibleCount} eligible ·{' '}
-                {activeStore.transactionAttributedCount
-                  ? `${activeStore.transactionAttributedCount} matched via txn · `
-                  : ''}
-                {activeStore.negativeCount} negative · est.{' '}
-                {formatMoney(activeStore.totalPayout)}
-              </Text>
-            </View>
-
-            <EmployeeGrid employees={activeStore.employees} />
-
-            <View style={styles.detailHeader}>
-              <Text style={styles.sectionTitle}>{activeStore.storeName} reviews</Text>
-              <Text style={styles.sectionHint}>
-                {activeStore.reviews.length} in {range.label}
-                {activeStore.reviewsLoaded
-                  ? ` · ${activeStore.reviewsLoaded} loaded from Google`
-                  : ''}
-                {activeStore.ineligibleFiveStarCount
-                  ? ` · ${activeStore.ineligibleFiveStarCount} name-only 5★ excluded`
-                  : ''}
-              </Text>
-            </View>
-            <RatingBreakdown
-              breakdown={activeStore.ratingBreakdown}
-              total={activeStore.reviewCount}
-            />
-            <ReviewList reviews={activeStore.reviews} />
-          </>
+        {!isMobile && visibleStores.length ? (
+          <DesktopStoreTable
+            stores={visibleStores}
+            selectedStore={activeStore?.storeName}
+            onOpenStore={openStore}
+            totals={totals}
+          />
         ) : null}
+
+        {isMobile && !showMobileDetail && visibleStores.length ? (
+          <View style={styles.igStoreList}>
+            {visibleStores.map((store, index) => (
+              <StoreRow
+                key={store.storeName}
+                store={store}
+                selected={selectedStore === store.storeName}
+                last={false}
+                compact
+                onPress={() => openStore(store)}
+              />
+            ))}
+            <View style={[styles.igStoreCard, styles.igStoreTotalCard]}>
+              <View style={[styles.igStoreBody, styles.igStoreBodyLast]}>
+                <View style={styles.storeBodyMain}>
+                  <View style={styles.storeCopy}>
+                    <Text style={styles.igStoreName}>Total</Text>
+                    <Text style={styles.storeMeta}>
+                      {totals.reviewCount} review{totals.reviewCount === 1 ? '' : 's'}
+                    </Text>
+                  </View>
+                  <View style={styles.storeTrailing}>
+                    <Text style={styles.igStoreAmount}>{formatMoney(totals.totalPayout)}</Text>
+                  </View>
+                </View>
+                <View style={styles.storeMetrics}>
+                  <StoreMetric
+                    icon="mail"
+                    value={emailRateLabel}
+                    empty={!totals.customerCount}
+                    tone={rateColor(emailRate, !totals.customerCount)}
+                  />
+                  <StoreMetric icon="star" value={`${totals.eligibleCount}`} />
+                </View>
+              </View>
+            </View>
+          </View>
+        ) : null}
+
+        {!isMobile || showMobileDetail ? detail : null}
       </ScrollView>
+      <EmployeeBonusDrawer
+        visible={Boolean(selectedEmployeeName)}
+        employee={selectedPerson?.employee}
+        store={selectedPerson?.store}
+        onClose={() => setSelectedEmployeeName(null)}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  body: {
+  screen: {
     flex: 1,
     minHeight: 0,
+    backgroundColor: CANVAS,
   },
-  hint: {
-    fontFamily,
+  loginWrap: {
+    flex: 1,
+    justifyContent: 'center',
+    padding: 24,
+    gap: 12,
+  },
+  loginHint: {
+    fontFamily: FONT,
     fontSize: 14,
     lineHeight: 20,
     color: '#5a5a5a',
-    padding: 16,
   },
-  link: {
-    color: ACCENT,
+  loginButton: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#1a1a1a',
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  loginButtonText: {
+    fontFamily: FONT,
+    fontSize: 14,
     fontWeight: '600',
+    color: '#fff',
   },
-  toolbar: {
+  pageHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e8e8e8',
+    flexWrap: 'wrap',
     gap: 12,
+    paddingLeft: 8,
+    paddingRight: 32,
+    paddingTop: 24,
+    paddingBottom: 16,
+    flexShrink: 0,
+  },
+  pageTitleWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 0,
+  },
+  pageTitleSpacer: {
+    width: 56,
+    flexShrink: 0,
+  },
+  pageTitle: {
+    fontFamily: FONT_LIGHT,
+    fontSize: 28,
+    fontWeight: '400',
+    color: '#1a1a1a',
+    letterSpacing: -0.5,
+    marginLeft: 12,
+  },
+  pageControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginLeft: 'auto',
+  },
+  refresh: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  errorText: {
+    fontFamily: FONT,
+    fontSize: 13,
+    color: '#B91C1C',
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+  },
+  scroll: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingBottom: 40,
+  },
+  scrollContentMobile: {
+    paddingBottom: 104,
+  },
+  hero: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 14,
+  },
+  heroLabel: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+  },
+  heroAmount: {
+    fontFamily: FONT_LIGHT,
+    fontSize: 40,
+    lineHeight: 46,
+    fontWeight: '400',
+    color: '#1a1a1a',
+    letterSpacing: -1.2,
+    fontVariant: ['tabular-nums'],
+    marginTop: 2,
+  },
+  heroStats: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: TAB_BORDER,
+  },
+  heroStat: {
+    flex: 1,
+    minWidth: 0,
+    gap: 1,
+  },
+  heroStatDivider: {
+    width: StyleSheet.hairlineWidth,
+    height: 28,
+    marginHorizontal: 12,
+    backgroundColor: TAB_BORDER,
+  },
+  heroStatValue: {
+    fontFamily: FONT,
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    letterSpacing: -0.3,
+    fontVariant: ['tabular-nums'],
+  },
+  heroStatLabel: {
+    fontFamily: FONT,
+    fontSize: 12,
+    color: '#8e8e93',
+  },
+  heroMeta: {
+    fontFamily: FONT,
+    fontSize: 13,
+    color: '#8e8e93',
+    marginTop: 10,
+  },
+  backRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    marginBottom: 8,
+    alignSelf: 'flex-start',
+  },
+  backText: {
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1a1a1a',
+  },
+  periodBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+  },
+  periodBarMobile: {
+    paddingTop: 4,
   },
   monthNav: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    flex: 1,
+    flexGrow: 1,
+    minWidth: 200,
   },
   monthBtn: {
     width: 32,
@@ -656,305 +1447,295 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
   monthLabel: {
-    fontFamily,
-    fontSize: 16,
+    fontFamily: FONT,
+    fontSize: 15,
     fontWeight: '700',
     color: '#1a1a1a',
   },
   monthSub: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 11,
-    color: '#8a8a8a',
+    color: '#8e8e93',
     marginTop: 1,
   },
-  refresh: {
-    width: 32,
-    height: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
+  periodPicker: {
+    minWidth: 168,
+    maxWidth: 240,
+    flexGrow: 1,
   },
-  errorBanner: {
-    marginHorizontal: 16,
-    marginTop: 10,
-    padding: 10,
-    borderRadius: 8,
-    backgroundColor: '#FEF2F2',
-  },
-  errorText: {
-    fontFamily,
-    fontSize: 13,
-    color: '#B91C1C',
-  },
-  scroll: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: 16,
-    paddingBottom: 40,
-    gap: 14,
-  },
-  pageIntro: {
-    fontFamily,
-    fontSize: 13,
-    lineHeight: 19,
-    color: '#5a5a5a',
-  },
-  storeFilterRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  storeChip: {
+  chip: {
     paddingHorizontal: 12,
     paddingVertical: 7,
     borderRadius: 999,
     backgroundColor: '#f3f3f3',
   },
-  storeChipActive: {
-    backgroundColor: '#1a1a1a',
-  },
-  storeChipText: {
-    fontFamily,
+  chipText: {
+    fontFamily: FONT,
     fontSize: 12,
     fontWeight: '600',
     color: '#4a4a4a',
   },
-  storeChipTextActive: {
-    color: '#fff',
-  },
   loadingBlock: {
-    paddingVertical: 28,
+    paddingVertical: 36,
     alignItems: 'center',
     gap: 10,
   },
   loadingText: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 13,
-    color: '#8a8a8a',
+    color: '#8e8e93',
   },
-  storeGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-  },
-  storeCard: {
-    width: '100%',
-    maxWidth: 320,
-    flexGrow: 1,
+  igStoreList: {
     backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: '#ececec',
-    borderRadius: 14,
-    padding: 14,
-    gap: 4,
+    width: '100%',
   },
-  storeCardHover: {
-    borderColor: '#ddd',
-    backgroundColor: '#fafafa',
-  },
-  storeCardSelected: {
-    borderColor: ACCENT,
-    backgroundColor: '#FFFEF7',
-    shadowColor: ACCENT,
-    shadowOpacity: 0.08,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 2 },
-  },
-  storeCardTop: {
+  igStoreCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-    marginBottom: 6,
+    gap: 12,
+    minHeight: 68,
+    paddingLeft: 16,
+    backgroundColor: '#fff',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
-  storeCardName: {
-    fontFamily,
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1a1a1a',
+  desktopTableScroll: {
+    width: '100%',
+  },
+  desktopTableScrollContent: {
+    flexGrow: 1,
+  },
+  desktopTable: {
+    flexGrow: 1,
+    minWidth: 760,
+    width: '100%',
+  },
+  desktopTotalRow: {
+    minHeight: 64,
+    backgroundColor: '#f5f5f5',
+    ...Platform.select({
+      web: { cursor: 'default' },
+      default: {},
+    }),
+  },
+  desktopTotalRule: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: TAB_BORDER,
+  },
+  desktopStoreRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 64,
+    paddingLeft: 8,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  desktopHeaderRow: {
+    minHeight: 36,
+    ...Platform.select({
+      web: { cursor: 'default' },
+      default: {},
+    }),
+  },
+  desktopHeaderRule: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: TAB_BORDER,
+  },
+  desktopHeader: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '400',
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+    textTransform: 'uppercase',
+  },
+  desktopIconWrap: {
+    width: 48,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  desktopIconSpacer: {
+    width: 56,
+    flexShrink: 0,
+  },
+  desktopStoreBody: {
     flex: 1,
-  },
-  liveBadge: {
+    minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    backgroundColor: ACCENT_SOFT,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
+    gap: 16,
+    marginLeft: 12,
+    paddingRight: 16,
+    alignSelf: 'stretch',
   },
-  liveBadgeText: {
-    fontFamily,
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#1a1a1a',
-  },
-  mutedBadge: {
-    fontFamily,
-    fontSize: 10,
-    color: '#9a9a9a',
-  },
-  perReviewAmount: {
-    fontFamily,
-    fontSize: 28,
-    fontWeight: '800',
-    color: '#1a1a1a',
-    letterSpacing: -0.5,
-  },
-  perReviewLabel: {
-    fontFamily,
-    fontSize: 12,
-    color: '#7a7a7a',
-    marginBottom: 8,
-  },
-  metricRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 4,
-  },
-  metric: {
+  igStoreBody: {
     flex: 1,
-    backgroundColor: '#f7f7f7',
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 8,
-  },
-  metricValue: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#1a1a1a',
-  },
-  metricLink: {
-    color: ACCENT,
-    textDecorationLine: 'underline',
-  },
-  metricPressable: {
-    borderWidth: 1,
-    borderColor: '#ead9a8',
-    backgroundColor: '#FFFEF7',
-  },
-  metricLabel: {
-    fontFamily,
-    fontSize: 10,
-    color: '#8a8a8a',
-    marginTop: 2,
-  },
-  metricHint: {
-    fontFamily,
-    fontSize: 10,
-    color: '#9a9a9a',
-    marginTop: 2,
-  },
-  ratingBreakdown: {
-    marginTop: 10,
-    gap: 4,
-  },
-  ratingBreakdownTitle: {
-    fontFamily,
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#6a6a6a',
-    marginBottom: 2,
-  },
-  ratingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    minWidth: 0,
+    paddingVertical: 14,
+    paddingRight: 16,
     gap: 6,
   },
-  ratingStarLabel: {
-    fontFamily,
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#5a5a5a',
-    width: 22,
+  igStoreBodyLast: {
+    borderBottomWidth: 0,
   },
-  ratingBarTrack: {
-    flex: 1,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#efefef',
-    overflow: 'hidden',
+  igStoreTotalCard: {
+    backgroundColor: '#f5f5f5',
+    ...Platform.select({
+      web: { cursor: 'default' },
+      default: {},
+    }),
   },
-  ratingBarFill: {
-    height: 6,
-    borderRadius: 3,
+  rowDivider: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: TAB_BORDER,
+  },
+  storeRowSelected: {
+    backgroundColor: '#f5f5f5',
+  },
+  storeRowPressed: {
+    backgroundColor: '#f5f5f5',
+  },
+  storeBodyMain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
     minWidth: 0,
   },
-  ratingBarPos: {
-    backgroundColor: '#C9A227',
+  storeCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
   },
-  ratingBarNeg: {
-    backgroundColor: '#C45C5C',
-  },
-  ratingCount: {
-    fontFamily,
-    fontSize: 11,
+  igStoreName: {
+    fontFamily: FONT,
+    fontSize: 15,
     fontWeight: '600',
-    color: '#5a5a5a',
-    width: 18,
-    textAlign: 'right',
+    color: '#1a1a1a',
   },
-  emailJump: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#ead9a8',
-    backgroundColor: '#FFFEF7',
-  },
-  emailJumpText: {
-    fontFamily,
+  desktopStoreName: {
+    fontFamily: FONT,
     fontSize: 13,
     fontWeight: '600',
-    color: '#7A4E03',
-    flex: 1,
+    color: '#1a1a1a',
   },
-  tierChipRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-    marginTop: 10,
+  storeMeta: {
+    fontFamily: FONT,
+    fontSize: 13,
+    color: '#8e8e93',
   },
-  tierChip: {
-    fontFamily,
+  storeTrailing: {
+    alignItems: 'flex-end',
+    gap: 1,
+    flexShrink: 0,
+  },
+  igStoreAmount: {
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    fontVariant: ['tabular-nums'],
+  },
+  desktopAmount: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    fontVariant: ['tabular-nums'],
+    textAlign: 'right',
+  },
+  storePerReview: {
+    fontFamily: FONT,
     fontSize: 11,
-    fontWeight: '600',
-    color: '#6b5a1e',
-    backgroundColor: ACCENT_SOFT,
-    overflow: 'hidden',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
+    color: '#8e8e93',
   },
-  storeTotal: {
-    fontFamily,
-    fontSize: 12,
+  storeMetrics: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  storeMetric: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  storeMetricText: {
+    fontFamily: FONT,
+    fontSize: 14,
     fontWeight: '600',
-    color: '#3a3a3a',
-    marginTop: 10,
+    fontVariant: ['tabular-nums'],
+  },
+  storeIcon: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  storeIconText: {
+    fontFamily: FONT,
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  storeIconTextSmall: {
+    fontSize: 11,
+  },
+  colStore: {
+    flex: 1,
+    minWidth: 180,
+  },
+  colRate: {
+    width: 88,
+    textAlign: 'right',
+  },
+  colMoney: {
+    width: 88,
+    textAlign: 'right',
+  },
+  desktopRate: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    fontVariant: ['tabular-nums'],
+    textAlign: 'right',
+  },
+  desktopChevron: {
+    width: 18,
+    alignItems: 'flex-end',
+  },
+  rateLow: {
+    color: '#B91C1C',
+  },
+  detail: {
+    paddingHorizontal: 16,
+    paddingTop: 20,
+    gap: 14,
   },
   matrixWrap: {
-    borderWidth: 1,
-    borderColor: '#ececec',
+    backgroundColor: '#fff',
     borderRadius: 14,
     padding: 14,
-    backgroundColor: '#fff',
     gap: 8,
   },
+  sectionHeader: {
+    gap: 2,
+    marginTop: 4,
+  },
   sectionTitle: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 15,
     fontWeight: '700',
     color: '#1a1a1a',
   },
   sectionHint: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 12,
-    color: '#8a8a8a',
+    color: '#8e8e93',
     lineHeight: 17,
   },
   matrixRow: {
@@ -965,7 +1746,7 @@ const styles = StyleSheet.create({
     width: 88,
   },
   matrixHead: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 11,
     fontWeight: '700',
     color: '#6a6a6a',
@@ -977,13 +1758,12 @@ const styles = StyleSheet.create({
     color: ACCENT,
   },
   matrixLabel: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 12,
     fontWeight: '600',
     color: '#3a3a3a',
     paddingVertical: 10,
     paddingHorizontal: 6,
-    textAlign: 'left',
   },
   matrixLabelActive: {
     color: ACCENT,
@@ -999,7 +1779,7 @@ const styles = StyleSheet.create({
     backgroundColor: ACCENT_SOFT,
   },
   matrixValue: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 14,
     fontWeight: '700',
     color: '#1a1a1a',
@@ -1007,115 +1787,376 @@ const styles = StyleSheet.create({
   matrixValueActive: {
     color: '#7A4E03',
   },
-  detailHeader: {
-    gap: 2,
-    marginTop: 4,
-  },
-  summaryStrip: {
-    backgroundColor: '#f6f6f6',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  summaryStripText: {
-    fontFamily,
-    fontSize: 12,
-    color: '#4a4a4a',
-    lineHeight: 17,
-  },
-  employeeGrid: {
+  emailJump: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  employeeCard: {
-    width: '100%',
-    maxWidth: 220,
-    flexGrow: 1,
-    borderWidth: 1,
-    borderColor: '#ececec',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
     borderRadius: 12,
-    padding: 12,
     backgroundColor: '#fff',
-    gap: 2,
+  },
+  emailJumpText: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#7A4E03',
+    flex: 1,
+  },
+  employeeList: {
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    overflow: 'hidden',
+  },
+  employeeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: TAB_BORDER,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  employeeRowLast: {
+    borderBottomWidth: 0,
+  },
+  employeeRowPressed: {
+    backgroundColor: '#f5f5f5',
+  },
+  employeeAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  employeeAvatarText: {
+    fontFamily: FONT,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  employeeCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 1,
   },
   employeeName: {
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '700',
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '600',
     color: '#1a1a1a',
-  },
-  employeeTotal: {
-    fontFamily,
-    fontSize: 22,
-    fontWeight: '800',
-    color: '#1a1a1a',
-    marginTop: 4,
   },
   employeeMeta: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 12,
-    color: '#6a6a6a',
+    color: '#8e8e93',
+  },
+  employeeTrailing: {
+    alignItems: 'flex-end',
+  },
+  employeeTotal: {
+    fontFamily: FONT,
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1a1a1a',
+    fontVariant: ['tabular-nums'],
   },
   employeeBreakdown: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 11,
-    color: '#9a9a9a',
-    marginTop: 4,
+    color: '#8e8e93',
   },
-  emptyBlock: {
-    paddingVertical: 18,
-    paddingHorizontal: 8,
+  ratingBreakdown: {
+    gap: 5,
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    padding: 14,
   },
-  emptyText: {
-    fontFamily,
-    fontSize: 13,
-    color: '#8a8a8a',
+  ratingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  ratingStarLabel: {
+    fontFamily: FONT,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#6a6a6a',
+    width: 22,
+  },
+  ratingBarTrack: {
+    flex: 1,
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: '#f0f0f0',
+    overflow: 'hidden',
+  },
+  ratingBarFill: {
+    height: '100%',
+    borderRadius: 999,
+  },
+  ratingBarPos: {
+    backgroundColor: ACCENT,
+  },
+  ratingBarNeg: {
+    backgroundColor: '#DC2626',
+  },
+  ratingCount: {
+    fontFamily: FONT,
+    fontSize: 11,
+    color: '#6a6a6a',
+    width: 24,
+    textAlign: 'right',
   },
   reviewList: {
     gap: 8,
   },
   reviewRow: {
-    borderWidth: 1,
-    borderColor: '#ececec',
-    borderRadius: 12,
+    borderRadius: 14,
     padding: 12,
     backgroundColor: '#fff',
     gap: 6,
   },
   reviewRowEligible: {
-    borderColor: '#D8E7D3',
     backgroundColor: '#F7FBF6',
   },
   reviewRowNegative: {
-    borderColor: '#F0D6D6',
     backgroundColor: '#FFF8F8',
+  },
+  reviewRowSkipped: {
+    backgroundColor: '#FAFAFA',
+    opacity: 0.96,
+  },
+  countBox: {
+    backgroundColor: '#F7FBF6',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 2,
+  },
+  countBoxTotal: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#2F8A4E',
+  },
+  countBoxMeta: {
+    fontFamily: FONT,
+    fontSize: 12,
+    color: '#3a3a3a',
+  },
+  skipBox: {
+    backgroundColor: '#FFF1E7',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  skipBoxText: {
+    fontFamily: FONT,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#9A3412',
+  },
+  drawerRoot: {
+    ...StyleSheet.absoluteFillObject,
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+  },
+  drawerBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.28)',
+  },
+  drawerPanel: {
+    height: '100%',
+    maxHeight: '100%',
+    flexDirection: 'column',
+    overflow: 'hidden',
+    backgroundColor: CANVAS,
+    ...Platform.select({
+      web: { boxShadow: '-12px 0 32px rgba(0,0,0,0.18)' },
+      default: { elevation: 12 },
+    }),
+  },
+  drawerPanelMobile: {
+    paddingBottom: Platform.OS === 'ios' ? Math.max(20, mobileSafeBottom()) : 12,
+  },
+  drawerTopBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 8,
+    gap: 12,
+  },
+  drawerTopBarMobile: {
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 54 : 18,
+    paddingBottom: 10,
+  },
+  drawerTitle: {
+    fontFamily: FONT,
+    flex: 1,
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    letterSpacing: -0.4,
+  },
+  drawerClose: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#e8e8ed',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  drawerBody: {
+    flex: 1,
+    minHeight: 0,
+  },
+  drawerBodyContent: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    paddingBottom: 48,
+    gap: 8,
+  },
+  drawerBodyContentMobile: {
+    paddingHorizontal: 16,
+    paddingBottom: 32,
+  },
+  drawerHero: {
+    marginBottom: 12,
+    gap: 6,
+  },
+  drawerHeroLabel: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#8e8e93',
+  },
+  drawerHeroAmount: {
+    fontFamily: FONT_LIGHT,
+    fontSize: 40,
+    lineHeight: 46,
+    fontWeight: '400',
+    color: '#1a1a1a',
+    letterSpacing: -1.2,
+    fontVariant: ['tabular-nums'],
+  },
+  drawerHeroStats: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: TAB_BORDER,
+  },
+  drawerHeroStat: {
+    flex: 1,
+    minWidth: 0,
+    gap: 1,
+  },
+  drawerHeroStatDivider: {
+    width: StyleSheet.hairlineWidth,
+    height: 28,
+    marginHorizontal: 12,
+    backgroundColor: TAB_BORDER,
+  },
+  drawerHeroStatValue: {
+    fontFamily: FONT,
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    fontVariant: ['tabular-nums'],
+  },
+  drawerHeroStatLabel: {
+    fontFamily: FONT,
+    fontSize: 12,
+    color: '#8e8e93',
+  },
+  drawerHeroMeta: {
+    fontFamily: FONT,
+    fontSize: 13,
+    color: '#8e8e93',
+    marginTop: 4,
+  },
+  drawerSectionTitle: {
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#1a1a1a',
+    marginTop: 8,
+  },
+  drawerSectionSpaced: {
+    marginTop: 18,
+  },
+  drawerSectionHint: {
+    fontFamily: FONT,
+    fontSize: 12,
+    color: '#8e8e93',
+    lineHeight: 17,
+    marginBottom: 4,
   },
   reviewTop: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
+  },
+  avatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    overflow: 'hidden',
+    backgroundColor: '#e8e8ed',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarFallback: {
+    backgroundColor: ACCENT_SOFT,
+  },
+  avatarImage: {
+    width: 36,
+    height: 36,
+  },
+  avatarInitials: {
+    fontFamily: FONT,
+    fontSize: 12,
+    fontWeight: '700',
+    color: ACCENT,
+  },
+  reviewIdentity: {
+    flex: 1,
+    minWidth: 0,
+    gap: 1,
+  },
+  reviewAuthor: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1a1a1a',
   },
   reviewStars: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 12,
     color: ACCENT,
     fontWeight: '700',
   },
-  reviewAuthor: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#1a1a1a',
-    flex: 1,
-  },
   reviewWhen: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 11,
-    color: '#9a9a9a',
+    color: '#8e8e93',
   },
   reviewText: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 13,
     lineHeight: 18,
     color: '#3a3a3a',
@@ -1124,10 +2165,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 6,
-    marginTop: 2,
   },
   flagGood: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 11,
     fontWeight: '700',
     color: '#2F8A4E',
@@ -1138,7 +2178,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   flagBad: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 11,
     fontWeight: '600',
     color: '#9A3412',
@@ -1149,7 +2189,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   flagPhoto: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 11,
     fontWeight: '600',
     color: '#1D4ED8',
@@ -1160,7 +2200,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   flagNames: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 11,
     fontWeight: '600',
     color: '#5a5a5a',
@@ -1171,7 +2211,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   flagMatched: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 11,
     fontWeight: '700',
     color: '#6D28D9',
@@ -1182,7 +2222,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   matchDetail: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 12,
     lineHeight: 17,
     color: '#5B21B6',
@@ -1190,6 +2230,38 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 10,
     paddingVertical: 8,
-    marginTop: 2,
+  },
+  ownerReply: {
+    backgroundColor: '#f6f6f6',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 2,
+  },
+  ownerReplyLabel: {
+    fontFamily: FONT,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#6a6a6a',
+  },
+  ownerReplyText: {
+    fontFamily: FONT,
+    fontSize: 12,
+    lineHeight: 17,
+    color: '#3a3a3a',
+  },
+  emptyBlock: {
+    paddingVertical: 18,
+    paddingHorizontal: 8,
+  },
+  emptyText: {
+    fontFamily: FONT,
+    fontSize: 13,
+    color: '#8e8e93',
+  },
+  storeError: {
+    fontFamily: FONT,
+    fontSize: 13,
+    color: '#B91C1C',
   },
 });

@@ -26,6 +26,8 @@ import {
   inboundCallsUnique,
   inboundCallRatio,
   isAnsweredInbound,
+  missedResolutionIndex,
+  resolveMissedInbound,
   resultLabel,
   callsForStore,
 } from '../lib/phoneCalls';
@@ -290,34 +292,21 @@ function callbackNumber(row) {
   return String((inbound ? row?.from : row?.to) || '').trim();
 }
 
-function last10(value) {
-  const digits = String(value || '').replace(/\D/g, '');
-  return digits.length > 10 ? digits.slice(-10) : digits;
-}
-
 /** Whether the row has something to dial: a number or an internal extension, not anonymous / blocked. */
 function canCallBack(row) {
   return String(callbackNumber(row)).replace(/\D/g, '').length >= 3;
 }
 
 /**
- * For each missed inbound call, the first later outbound call to that number.
- * Keyed by historyRowKey so the list can say "Called back 2:15 PM".
+ * For each missed inbound call, the first later outbound callback or later
+ * answered inbound from that number. Keyed by historyRowKey for the list.
  */
-function returnedCalls(missed, allCalls) {
-  const outbound = (Array.isArray(allCalls) ? allCalls : [])
-    .filter((row) => row?.direction === 'Outbound' && last10(row.to))
-    .map((row) => ({ number: last10(row.to), at: Date.parse(row.startTime) || 0 }))
-    .filter((row) => row.at)
-    .sort((a, b) => a.at - b.at);
+function resolvedMissedByKey(missed, allCalls) {
+  const lookup = missedResolutionIndex(allCalls);
   const map = {};
-  if (!outbound.length) return map;
   for (const row of Array.isArray(missed) ? missed : []) {
-    const number = last10(row?.from);
-    const at = Date.parse(row?.startTime) || 0;
-    if (!number || !at) continue;
-    const hit = outbound.find((call) => call.number === number && call.at > at);
-    if (hit) map[historyRowKey(row)] = hit.at;
+    const hit = resolveMissedInbound(row, allCalls, lookup);
+    if (hit) map[historyRowKey(row)] = hit;
   }
   return map;
 }
@@ -355,15 +344,22 @@ function CallHistoryRow({
   callbackBusy,
   callbackDisabled,
   callbackLabel,
-  returnedAt = 0,
+  resolution = null,
 }) {
   const missed = inbound && !isAnsweredInbound(row);
+  const resolvedAt = resolution?.at || 0;
   const icon = !inbound ? 'arrow-up' : missed ? 'call-outline' : 'arrow-down';
   const label = partyLine(row, inbound);
+  const resolvedNote =
+    resolvedAt && resolution?.kind === 'answered'
+      ? `Eventually answered at ${formatCallWhen(resolvedAt)}`
+      : resolvedAt
+        ? `Called back ${formatCallWhen(resolvedAt)}`
+        : '';
   return (
     <View style={styles.itemRow}>
       <View style={styles.callIcon}>
-        <Ionicons name={icon} size={14} color={missed && !returnedAt ? '#B91C1C' : ACCENT} />
+        <Ionicons name={icon} size={14} color={missed && !resolvedAt ? '#B91C1C' : ACCENT} />
       </View>
       <View style={styles.itemText}>
         <Text style={styles.itemTitle}>{label}</Text>
@@ -378,9 +374,7 @@ function CallHistoryRow({
             .filter(Boolean)
             .join(' · ')}
         </Text>
-        {returnedAt ? (
-          <Text style={styles.returnedMeta}>Called back {formatCallWhen(returnedAt)}</Text>
-        ) : null}
+        {resolvedNote ? <Text style={styles.returnedMeta}>{resolvedNote}</Text> : null}
       </View>
       {hasRecording(row) ? (
         <Ionicons name="recording-outline" size={14} color="#8a8a8a" accessibilityLabel="Recorded" />
@@ -493,9 +487,14 @@ function chartDay(calls, now = Date.now()) {
   return { openHour, closeHour, start: hourMs(now, openHour), end: hourMs(now, closeHour) };
 }
 
-function inboundToday(calls, day) {
+function inboundToday(calls, day, resolveFrom = calls) {
+  const lookup = missedResolutionIndex(resolveFrom);
   return inboundCallsUnique(calls)
-    .map((row) => ({ row, time: Date.parse(row.startTime), answered: isAnsweredInbound(row) }))
+    .map((row) => ({
+      row,
+      time: Date.parse(row.startTime),
+      answered: isAnsweredInbound(row) || Boolean(resolveMissedInbound(row, resolveFrom, lookup)),
+    }))
     .filter((item) => Number.isFinite(item.time) && item.time >= day.start && item.time < day.end)
     .sort((a, b) => a.time - b.time);
 }
@@ -552,14 +551,14 @@ function ChartLineSegment({ x1, y1, x2, y2, color, width = 2 }) {
   );
 }
 
-function RatioDayChart({ calls, anchor = null, label = 'today' }) {
+function RatioDayChart({ calls, resolveFrom = calls, anchor = null, label = 'today' }) {
   const [width, setWidth] = useState(0);
   const [pickedHour, setPickedHour] = useState(null);
   const now = Date.now();
   // `anchor` is any instant inside the day to draw; defaults to today.
   const at = anchor ?? now;
   const day = useMemo(() => chartDay(calls, at), [calls, at]);
-  const inbound = useMemo(() => inboundToday(calls, day), [calls, day]);
+  const inbound = useMemo(() => inboundToday(calls, day, resolveFrom), [calls, day, resolveFrom]);
   const callPoints = useMemo(() => runningAnswerPoints(inbound), [inbound]);
   const bins = useMemo(() => hourlyBins(inbound, day), [inbound, day]);
   const current = callPoints[callPoints.length - 1] || null;
@@ -1193,7 +1192,6 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
     // historyByStore is read for cache hits only; re-running on its change would loop.
   }, [historyReload, historyStoreKeys, span.end, span.key, span.start]); // eslint-disable-line react-hooks/exhaustive-deps
   const outboundCalls = visibleCalls.filter((row) => row.direction === 'Outbound');
-  const ratio = useMemo(() => inboundCallRatio(visibleCalls), [visibleCalls]);
   const storeRatios = useMemo(() => {
     const next = {};
     const names = new Set();
@@ -1206,8 +1204,9 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
       if (row?.storeName) names.add(row.storeName);
     }
     for (const name of names) {
-      const storeCalls = sourceCalls(name).filter((call) => inWindow(call.startTime, span));
-      next[storeKeyFromName(name)] = inboundCallRatio(storeCalls);
+      const allStoreCalls = sourceCalls(name);
+      const storeCalls = allStoreCalls.filter((call) => inWindow(call.startTime, span));
+      next[storeKeyFromName(name)] = inboundCallRatio(storeCalls, allStoreCalls);
     }
     return next;
   }, [connectedStores, rows, sourceCalls, span]);
@@ -1221,10 +1220,28 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
 
   // Missed calls returned from this screen, before the call log catches up.
   const [returnedLocally, setReturnedLocally] = useState({});
-  const returnedAtByKey = useMemo(
-    () => ({ ...returnedCalls(missedCalls, calls), ...returnedLocally }),
-    [calls, missedCalls, returnedLocally],
+  const resolveCalls = useMemo(() => {
+    const extras = Object.entries(returnedLocally)
+      .map(([id, resolution]) => {
+        if (resolution?.kind !== 'callback' || !resolution.at) return null;
+        const row = missedCalls.find((item) => historyRowKey(item) === id);
+        if (!row) return null;
+        return {
+          id: `local-callback:${id}`,
+          storeKey: row.storeKey,
+          direction: 'Outbound',
+          to: callbackNumber(row),
+          startTime: new Date(resolution.at).toISOString(),
+        };
+      })
+      .filter(Boolean);
+    return extras.length ? [...calls, ...extras] : calls;
+  }, [calls, missedCalls, returnedLocally]);
+  const resolutionByKey = useMemo(
+    () => ({ ...resolvedMissedByKey(missedCalls, resolveCalls), ...returnedLocally }),
+    [missedCalls, resolveCalls, returnedLocally],
   );
+  const ratio = useMemo(() => inboundCallRatio(visibleCalls, resolveCalls), [resolveCalls, visibleCalls]);
 
   const callBack = useCallback(
     async (row) => {
@@ -1245,7 +1262,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
       try {
         await phone.dial(number, { storeKey: row.storeKey || viewStoreKey, from: activeAccount?.mainNumber });
         if (String(row?.direction || '') !== 'Outbound' && !isAnsweredInbound(row)) {
-          setReturnedLocally((current) => ({ ...current, [id]: Date.now() }));
+          setReturnedLocally((current) => ({ ...current, [id]: { at: Date.now(), kind: 'callback' } }));
         }
       } catch (err) {
         setError(err?.message || 'Could not start the call.');
@@ -1796,7 +1813,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
                   key={historyRowKey(row)}
                   row={row}
                   inbound
-                  returnedAt={returnedAtByKey[historyRowKey(row)] || 0}
+                  resolution={resolutionByKey[historyRowKey(row)] || null}
                   {...callbackProps(row)}
                 />
               ))
@@ -1820,7 +1837,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
                     key={id}
                     row={row}
                     inbound
-                    returnedAt={returnedAtByKey[id] || 0}
+                    resolution={resolutionByKey[id] || null}
                     {...callbackProps(row)}
                   />
                 );
@@ -1844,7 +1861,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
                   row={row}
                   inbound={row.direction !== 'Outbound'}
                   showDirection
-                  returnedAt={returnedAtByKey[historyRowKey(row)] || 0}
+                  resolution={resolutionByKey[historyRowKey(row)] || null}
                   {...callbackProps(row)}
                 />
               ))
@@ -2058,6 +2075,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
             {dateMode === 'range' && formatDateParam(startDate) !== formatDateParam(endDate) ? null : (
               <RatioDayChart
                 calls={dateMode === 'today' ? todayCalls : visibleCalls}
+                resolveFrom={resolveCalls}
                 anchor={span.start + 12 * 60 * 60 * 1000}
                 label={rangeLabel}
               />
@@ -2089,7 +2107,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
                   key={historyRowKey(row)}
                   row={row}
                   inbound
-                  returnedAt={returnedAtByKey[historyRowKey(row)] || 0}
+                  resolution={resolutionByKey[historyRowKey(row)] || null}
                   {...callbackProps(row)}
                 />
               ))

@@ -1529,7 +1529,11 @@ function StoreSnapshotPanel({
     const history = callsInRange(historyCalls, startKey, endKey);
     return mergeCallLog(history, inbox);
   }, [endKey, historyCalls, phone.mergedCallsByStore, startKey, storeName]);
-  const phoneRatio = useMemo(() => inboundCallRatio(phoneCalls), [phoneCalls]);
+  const allPhoneCalls = useMemo(
+    () => mergeCallLog(historyCalls, callsForStore(phone.mergedCallsByStore, storeName)),
+    [historyCalls, phone.mergedCallsByStore, storeName],
+  );
+  const phoneRatio = useMemo(() => inboundCallRatio(phoneCalls, allPhoneCalls), [allPhoneCalls, phoneCalls]);
   const emailCapture = useMemo(
     () => storeEmailCapture(txRows, storeName),
     [storeName, txRows],

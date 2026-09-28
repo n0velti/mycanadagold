@@ -3971,8 +3971,15 @@ function homeCallsForStore(mergedCallsByStore, historyByStore, storeName, startK
   return mergeCallLog(history, inbox);
 }
 
+function homeCallsForStoreAll(mergedCallsByStore, historyByStore, storeName) {
+  return mergeCallLog(callsForStore(historyByStore, storeName), callsForStore(mergedCallsByStore, storeName));
+}
+
 function phoneRatioForStore(mergedCallsByStore, historyByStore, storeName, startKey, endKey) {
-  return inboundCallRatio(homeCallsForStore(mergedCallsByStore, historyByStore, storeName, startKey, endKey));
+  return inboundCallRatio(
+    homeCallsForStore(mergedCallsByStore, historyByStore, storeName, startKey, endKey),
+    homeCallsForStoreAll(mergedCallsByStore, historyByStore, storeName),
+  );
 }
 
 function emailRatioFromTransactions(transactions) {
@@ -4445,7 +4452,8 @@ function HomeStoresTable({
     const calls = rows.flatMap((row) =>
       homeCallsForStore(phone.mergedCallsByStore, callHistoryByStore, row.store, startKey, endKey),
     );
-    return inboundCallRatio(calls);
+    const resolveFrom = rows.flatMap((row) => homeCallsForStoreAll(phone.mergedCallsByStore, callHistoryByStore, row.store));
+    return inboundCallRatio(calls, resolveFrom);
   }, [callHistoryByStore, endKey, phone.mergedCallsByStore, rows, startKey]);
   const emailByStore = useMemo(() => {
     const next = new Map();
