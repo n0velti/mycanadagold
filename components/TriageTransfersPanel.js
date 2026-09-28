@@ -22,7 +22,8 @@ import {
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
 import { mobileSafeBottom, mobileSafeTop, useIsMobile } from '../lib/mobileUi';
-import { fetchTransferStores } from '../lib/locations';
+import { ensureLinkedPosSessions } from '../lib/auth';
+import { fetchPosLocations, fetchTransferStores } from '../lib/locations';
 import { findStaffByEmployeeName, listStaffProfiles } from '../lib/permissions';
 import {
   collectRecordImageUrls,
@@ -528,8 +529,14 @@ async function fillMissingPoDetails(token, baseUrl, rows) {
           baseUrl,
         });
         const enriched = withLineItems(row, detail);
+        const storeName =
+          (enriched.storeName && enriched.storeName !== '—' && enriched.storeName) ||
+          detail?.location_name ||
+          detail?.location?.name ||
+          enriched.storeName;
         const imageUrls = (row.imageUrls || []).length ? row.imageUrls : collectRecordImageUrls(detail);
-        updates.set(row.id, imageUrls.length ? { ...enriched, imageUrls } : enriched);
+        const next = storeName && storeName !== enriched.storeName ? { ...enriched, storeName } : enriched;
+        updates.set(row.id, imageUrls.length ? { ...next, imageUrls } : next);
       } catch {
         // Keep the row as-is if detail lookup fails.
       }
@@ -833,10 +840,11 @@ function SpecificDocSearch({ stores, session, existingIds, onAdd, allStores = fa
         return;
       }
 
-      const searchGroups = allStores ? posGroupsFromSession(session) : uniqueSystemGroups(stores);
+      const authed = await ensureLinkedPosSessions(session);
+      const searchGroups = allStores ? posGroupsFromSession(authed) : uniqueSystemGroups(stores);
       if (
         searchGroups.length === 0 ||
-        searchGroups.every((group) => !resolvePosAuthForRow(session, { systemKey: group.systemKey }).token)
+        searchGroups.every((group) => !resolvePosAuthForRow(authed, { systemKey: group.systemKey }).token)
       ) {
         setError('Sign in to search PO / SO.');
         setResults([]);
@@ -862,31 +870,45 @@ function SpecificDocSearch({ stores, session, existingIds, onAdd, allStores = fa
         let otherStore = '';
         let otherKind = 'PO';
 
-        for (const doc of candidates.filter(Boolean)) {
-          for (const group of searchGroups) {
-            const auth = resolvePosAuthForRow(session, { systemKey: group.systemKey });
-            if (!auth.token) continue;
-            try {
-              const system = { key: group.systemKey, label: group.systemLabel, baseUrl: auth.baseUrl };
-              const detail = await fetchTransactionDetail(auth.token, {
-                type: doc.type,
-                sourceId: doc.sourceId,
-                baseUrl: auth.baseUrl,
-              });
-              const row = rowFromDocument(detail, doc.type, system);
-              if (!row?.id || seen.has(row.id)) continue;
-              if (!allStores && !storeInList(stores, row.storeName)) {
-                otherStore = row.storeName || 'another store';
-                otherKind = row.type === 'purchase' ? 'PO' : 'SO';
-                continue;
+        await Promise.all(
+          candidates.filter(Boolean).flatMap((doc) =>
+            searchGroups.map(async (group) => {
+              const auth = resolvePosAuthForRow(authed, { systemKey: group.systemKey });
+              if (!auth.token) return;
+              try {
+                const system = { key: group.systemKey, label: group.systemLabel, baseUrl: auth.baseUrl };
+                const locationsPromise = fetchPosLocations(auth.baseUrl, auth.token).catch(() => []);
+                const detail = await fetchTransactionDetail(auth.token, {
+                  type: doc.type,
+                  sourceId: doc.sourceId,
+                  baseUrl: auth.baseUrl,
+                });
+                let row = rowFromDocument(detail, doc.type, system);
+                if (!row.storeName || row.storeName === '—') {
+                  const locations = await locationsPromise;
+                  const locationId = row.locationId ?? detail?.location_id ?? detail?.location?.id;
+                  const hit = (locations || []).find((location) => String(location.id) === String(locationId));
+                  const name = String(hit?.name || '').trim();
+                  if (name) row = { ...row, storeName: name };
+                }
+                if (!row?.id || seen.has(row.id)) return;
+                if (!allStores && !storeInList(stores, row.storeName)) {
+                  otherStore = row.storeName || 'another store';
+                  otherKind = row.type === 'purchase' ? 'PO' : 'SO';
+                  return;
+                }
+                seen.add(row.id);
+                found.push(row);
+                if (gen === searchGen.current) {
+                  setResults([...found]);
+                  setError('');
+                }
+              } catch {
+                // This host does not have that document, or it timed out.
               }
-              seen.add(row.id);
-              found.push(row);
-            } catch {
-              // Try the next POS system or PO/SO candidate.
-            }
-          }
-        }
+            }),
+          ),
+        );
 
         if (gen !== searchGen.current) return;
         setResults(found);
@@ -1572,12 +1594,15 @@ function MeltTab({
         if (!bySystem.has(key)) bySystem.set(key, []);
         bySystem.get(key).push(row);
       }
-      const enriched = [];
-      for (const [key, groupRows] of bySystem) {
-        const auth = resolvePosAuthForRow(session, { systemKey: key });
-        if (!auth.token) continue;
-        enriched.push(...(await fillMissingPoDetails(auth.token, auth.baseUrl, groupRows)));
-      }
+      const enriched = (
+        await Promise.all(
+          [...bySystem.entries()].map(async ([key, groupRows]) => {
+            const auth = resolvePosAuthForRow(session, { systemKey: key });
+            if (!auth.token) return [];
+            return fillMissingPoDetails(auth.token, auth.baseUrl, groupRows);
+          }),
+        )
+      ).flat();
       if (cancelled || !enriched.length) return;
       patchTriagePosDetails(batch.id, enriched);
       const byId = new Map(enriched.map((row) => [row.id, row]));
@@ -1618,30 +1643,34 @@ function MeltTab({
       setBusy(true);
       setError('');
       try {
-        const collected = [];
         const errors = [];
-        for (const group of groups) {
-          const auth = resolvePosAuthForRow(session, { systemKey: group.systemKey });
-          if (!auth.token) {
-            errors.push(`Sign in to load purchases for ${group.systemLabel}.`);
-            continue;
-          }
-          try {
-            const result = await fetchTransactions(auth.token, {
-              startDate,
-              endDate,
-              baseUrl: auth.baseUrl,
-              includePurchases: true,
-              includeOrders: false,
-              system: { key: group.systemKey, label: group.systemLabel, baseUrl: auth.baseUrl },
-            });
-            collected.push(
-              ...result.rows.filter((row) => row.type === 'purchase' && storeInList(group.stores, row.storeName)),
-            );
-          } catch (err) {
-            errors.push(err?.message || `Failed to load ${group.systemLabel}.`);
-          }
-        }
+        const collected = (
+          await Promise.all(
+            groups.map(async (group) => {
+              const auth = resolvePosAuthForRow(session, { systemKey: group.systemKey });
+              if (!auth.token) {
+                errors.push(`Sign in to load purchases for ${group.systemLabel}.`);
+                return [];
+              }
+              try {
+                const result = await fetchTransactions(auth.token, {
+                  startDate,
+                  endDate,
+                  baseUrl: auth.baseUrl,
+                  includePurchases: true,
+                  includeOrders: false,
+                  system: { key: group.systemKey, label: group.systemLabel, baseUrl: auth.baseUrl },
+                });
+                return result.rows.filter(
+                  (row) => row.type === 'purchase' && storeInList(group.stores, row.storeName),
+                );
+              } catch (err) {
+                errors.push(err?.message || `Failed to load ${group.systemLabel}.`);
+                return [];
+              }
+            }),
+          )
+        ).flat();
         if (collected.length === 0) {
           setError(errors[0] || `No purchases in that range for ${batchLabel}.`);
           return;
@@ -2715,11 +2744,61 @@ const BatchDashTableRow = memo(function BatchDashTableRow({ row, last, onOpen, o
   );
 });
 
+function HoldLineSheet({ item, onClose, onEdit, onDelete }) {
+  const isMobile = useIsMobile();
+  if (!item) return null;
+  return (
+    <Modal visible transparent animationType={isMobile ? 'slide' : 'fade'} onRequestClose={onClose}>
+      <View style={[styles.modalBackdrop, isMobile && styles.sheetBackdropBottom]}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close" />
+        <View style={[styles.holdSheet, isMobile && styles.holdSheetMobile]}>
+          {isMobile ? <View style={styles.sheetGrabber} /> : null}
+          <Text style={styles.holdSheetTitle} numberOfLines={1}>
+            {item.document}
+          </Text>
+          {item.storeNames?.length ? (
+            <Text style={styles.holdSheetSub} numberOfLines={1}>
+              {item.storeNames.join(', ')}
+            </Text>
+          ) : null}
+          <Pressable
+            style={styles.holdAction}
+            onPress={onEdit}
+            accessibilityRole="button"
+            accessibilityLabel="Edit"
+          >
+            <Ionicons name="create-outline" size={20} color={TEXT} />
+            <Text style={styles.holdActionText}>Edit</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.holdAction, styles.holdActionLast]}
+            onPress={onDelete}
+            accessibilityRole="button"
+            accessibilityLabel="Delete"
+          >
+            <Ionicons name="trash-outline" size={20} color={T.red} />
+            <Text style={[styles.holdActionText, styles.holdActionDanger]}>Delete</Text>
+          </Pressable>
+          <Pressable
+            style={styles.holdCancel}
+            onPress={onClose}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel"
+          >
+            <Text style={styles.holdCancelText}>Cancel</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function PoSoList({ transfers, query = '', onOpenPo, onDelete }) {
   const [openFilter, setOpenFilter] = useState(null);
   const [filters, setFilters] = useState(EMPTY_DASH_FILTERS);
   const [sort, setSort] = useState(null);
   const [staffProfiles, setStaffProfiles] = useState([]);
+  const [held, setHeld] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -2757,6 +2836,7 @@ function PoSoList({ transfers, query = '', onOpenPo, onDelete }) {
           photoUrls: po?.imageUrls,
           editor: triageReviewEditor(po?.review),
           status: poSoStatus(po, stats),
+          addedLabel: formatStamp(po?.addedAt || batch.addedAt),
           openLabel: `Open ${po?.reference || type}`,
           deleteLabel: `Remove ${po?.reference || type}`,
         };
@@ -2830,6 +2910,7 @@ function PoSoList({ transfers, query = '', onOpenPo, onDelete }) {
 
   if (isMobile) {
     return (
+      <>
       <FlatList
         style={styles.mobileList}
         contentContainerStyle={styles.mobileListContent}
@@ -2851,29 +2932,37 @@ function PoSoList({ transfers, query = '', onOpenPo, onDelete }) {
               meta={item.valueLabel}
               last={index === visible.length - 1}
               onPress={() => item.po && onOpenPo(item.po)}
+              onLongPress={() => setHeld(item)}
               accessibilityLabel={item.openLabel}
+              accessibilityHint="Touch and hold for Edit or Delete"
               leading={<PoThumb urls={item.photoUrls} label={item.document} size={52} />}
               trailing={
-                <>
-                  <StatusPill label={item.status.label} tone={item.status.tone} compact />
-                  <Pressable
-                    style={styles.dashDelete}
-                    onPress={(event) => {
-                      event?.stopPropagation?.();
-                      onDelete(item.batch);
-                    }}
-                    hitSlop={10}
-                    accessibilityRole="button"
-                    accessibilityLabel={item.deleteLabel}
-                  >
-                    <Ionicons name="trash-outline" size={18} color={T.red} />
-                  </Pressable>
-                </>
+                item.addedLabel ? (
+                  <View style={styles.addedStamp}>
+                    <Ionicons name="time-outline" size={14} color={T.secondary} />
+                    <Text style={styles.addedStampText}>{item.addedLabel}</Text>
+                  </View>
+                ) : null
               }
             />
           </View>
         )}
       />
+      <HoldLineSheet
+        item={held}
+        onClose={() => setHeld(null)}
+        onEdit={() => {
+          const po = held?.po;
+          setHeld(null);
+          if (po) onOpenPo(po);
+        }}
+        onDelete={() => {
+          const batch = held?.batch;
+          setHeld(null);
+          if (batch) onDelete(batch);
+        }}
+      />
+      </>
     );
   }
 
@@ -3245,6 +3334,48 @@ export default function TriageTransfersPanel({
   );
   const poRows = useMemo(() => transfers.filter(isStandaloneTriage), [transfers]);
   const batchRows = useMemo(() => transfers.filter((row) => !isStandaloneTriage(row)), [transfers]);
+
+  useEffect(() => {
+    if (!session?.token) return undefined;
+    const need = poRows
+      .map((batch) => ({ batch, item: flattenBatchPos(batch)[0] }))
+      .filter(
+        ({ item }) =>
+          item &&
+          item.type !== 'order' &&
+          (!(item.pricedLines || []).length || !item.storeName || item.storeName === '—'),
+      );
+    if (!need.length) return undefined;
+    let cancelled = false;
+    (async () => {
+      const bySystem = new Map();
+      for (const entry of need) {
+        const key = entry.item.systemKey || 'east';
+        if (!bySystem.has(key)) bySystem.set(key, []);
+        bySystem.get(key).push(entry);
+      }
+      await Promise.all(
+        [...bySystem.entries()].map(async ([key, group]) => {
+          const auth = resolvePosAuthForRow(session, { systemKey: key });
+          if (!auth.token) return;
+          const enriched = await fillMissingPoDetails(
+            auth.token,
+            auth.baseUrl,
+            group.map((entry) => entry.item),
+          );
+          if (cancelled) return;
+          const byId = new Map(enriched.map((row) => [row.id, row]));
+          for (const entry of group) {
+            const next = byId.get(entry.item.id);
+            if (next && next !== entry.item) patchTriagePosDetails(entry.batch.id, [next]);
+          }
+        }),
+      );
+    })().catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [poRows, session]);
   const existingPoIds = useMemo(
     () => transfers.flatMap((row) => flattenBatchPos(row).map((item) => item.id)),
     [transfers],
@@ -3636,6 +3767,90 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     ...webCursor,
+  },
+  addedStamp: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  addedStampText: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: SECONDARY,
+    fontVariant: ['tabular-nums'],
+  },
+  holdSheet: {
+    width: '100%',
+    maxWidth: 400,
+    backgroundColor: T.bg,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingTop: 12,
+    paddingBottom: 12,
+    gap: 2,
+  },
+  holdSheetMobile: {
+    maxWidth: '100%',
+    borderRadius: 0,
+    borderTopLeftRadius: 14,
+    borderTopRightRadius: 14,
+    paddingTop: 10,
+    paddingBottom: Math.max(16, mobileSafeBottom()),
+  },
+  holdSheetTitle: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: TEXT,
+    letterSpacing: -0.3,
+    textAlign: 'center',
+    paddingHorizontal: 8,
+    paddingTop: 4,
+  },
+  holdSheetSub: {
+    fontFamily,
+    fontSize: 13,
+    color: SECONDARY,
+    textAlign: 'center',
+    paddingHorizontal: 8,
+    paddingBottom: 8,
+  },
+  holdAction: {
+    minHeight: 50,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: '#fff',
+    ...webCursor,
+  },
+  holdActionLast: {
+    marginBottom: 8,
+  },
+  holdActionText: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: TEXT,
+  },
+  holdActionDanger: {
+    color: T.red,
+  },
+  holdCancel: {
+    minHeight: 50,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    backgroundColor: '#fff',
+    ...webCursor,
+  },
+  holdCancelText: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: BLUE,
   },
 
   /* tables */

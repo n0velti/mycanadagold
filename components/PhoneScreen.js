@@ -302,14 +302,80 @@ function callbackNumber(row) {
   return String((inbound ? row?.from : row?.to) || '').trim();
 }
 
-function CallHistoryRow({ row, inbound = true, showDirection = false, onCallback, callbackBusy, callbackDisabled }) {
+function last10(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  return digits.length > 10 ? digits.slice(-10) : digits;
+}
+
+/** Whether the row has something to dial: a number or an internal extension, not anonymous / blocked. */
+function canCallBack(row) {
+  return String(callbackNumber(row)).replace(/\D/g, '').length >= 3;
+}
+
+/**
+ * For each missed inbound call, the first later outbound call to that number.
+ * Keyed by historyRowKey so the list can say "Called back 2:15 PM".
+ */
+function returnedCalls(missed, allCalls) {
+  const outbound = (Array.isArray(allCalls) ? allCalls : [])
+    .filter((row) => row?.direction === 'Outbound' && last10(row.to))
+    .map((row) => ({ number: last10(row.to), at: Date.parse(row.startTime) || 0 }))
+    .filter((row) => row.at)
+    .sort((a, b) => a.at - b.at);
+  const map = {};
+  if (!outbound.length) return map;
+  for (const row of Array.isArray(missed) ? missed : []) {
+    const number = last10(row?.from);
+    const at = Date.parse(row?.startTime) || 0;
+    if (!number || !at) continue;
+    const hit = outbound.find((call) => call.number === number && call.at > at);
+    if (hit) map[historyRowKey(row)] = hit.at;
+  }
+  return map;
+}
+
+function CallbackButton({ row, label, onPress, busy, disabled, compact = false }) {
+  if (!onPress || !canCallBack(row)) return null;
+  const text = label || (String(row?.direction || '') === 'Outbound' ? 'Call again' : 'Call back');
+  return (
+    <Pressable
+      style={[styles.callbackBtn, compact && styles.callbackBtnCompact, (busy || disabled) && styles.callbackBtnDisabled]}
+      onPress={(event) => {
+        event?.stopPropagation?.();
+        onPress(row);
+      }}
+      disabled={busy || disabled}
+      accessibilityLabel={`${text} ${partyLine(row, String(row?.direction || '') !== 'Outbound')}`}
+    >
+      {busy ? (
+        <ActivityIndicator size="small" color="#fff" />
+      ) : (
+        <>
+          <Ionicons name="call" size={12} color="#fff" />
+          {compact ? null : <Text style={styles.callbackText}>{text}</Text>}
+        </>
+      )}
+    </Pressable>
+  );
+}
+
+function CallHistoryRow({
+  row,
+  inbound = true,
+  showDirection = false,
+  onCallback,
+  callbackBusy,
+  callbackDisabled,
+  callbackLabel,
+  returnedAt = 0,
+}) {
   const missed = inbound && !isAnsweredInbound(row);
   const icon = !inbound ? 'arrow-up' : missed ? 'call-outline' : 'arrow-down';
   const label = partyLine(row, inbound);
   return (
     <View style={styles.itemRow}>
       <View style={styles.callIcon}>
-        <Ionicons name={icon} size={14} color={missed ? '#B91C1C' : ACCENT} />
+        <Ionicons name={icon} size={14} color={missed && !returnedAt ? '#B91C1C' : ACCENT} />
       </View>
       <View style={styles.itemText}>
         <Text style={styles.itemTitle}>{label}</Text>
@@ -324,30 +390,20 @@ function CallHistoryRow({ row, inbound = true, showDirection = false, onCallback
             .filter(Boolean)
             .join(' · ')}
         </Text>
+        {returnedAt ? (
+          <Text style={styles.returnedMeta}>Called back {formatCallWhen(returnedAt)}</Text>
+        ) : null}
       </View>
       {hasRecording(row) ? (
         <Ionicons name="recording-outline" size={14} color="#8a8a8a" accessibilityLabel="Recorded" />
       ) : null}
-      {onCallback ? (
-        <Pressable
-          style={[styles.callbackBtn, (callbackBusy || callbackDisabled) && styles.callbackBtnDisabled]}
-          onPress={(event) => {
-            event?.stopPropagation?.();
-            onCallback(row);
-          }}
-          disabled={callbackBusy || callbackDisabled}
-          accessibilityLabel={`Call back ${label}`}
-        >
-          {callbackBusy ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <>
-              <Ionicons name="call" size={12} color="#fff" />
-              <Text style={styles.callbackText}>Call back</Text>
-            </>
-          )}
-        </Pressable>
-      ) : null}
+      <CallbackButton
+        row={row}
+        label={callbackLabel}
+        onPress={onCallback}
+        busy={callbackBusy}
+        disabled={callbackDisabled}
+      />
     </View>
   );
 }
@@ -836,6 +892,8 @@ function browserPhoneLabel(status) {
       return status.message || 'Not supported in this browser';
     case 'error':
       return status.message ? `Not registered: ${status.message}` : 'Not registered';
+    case 'rejected':
+      return 'RingCentral dropped this browser’s line. Reload the page to register again.';
     default:
       return '';
   }
@@ -1200,11 +1258,22 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
     return rows;
   }, [visibleCalls]);
 
+  // Missed calls returned from this screen, before the call log catches up.
+  const [returnedLocally, setReturnedLocally] = useState({});
+  const returnedAtByKey = useMemo(
+    () => ({ ...returnedCalls(missedCalls, calls), ...returnedLocally }),
+    [calls, missedCalls, returnedLocally],
+  );
+
   const callBack = useCallback(
     async (row) => {
       const number = callbackNumber(row);
-      if (!String(number).replace(/\D/g, '')) {
+      if (!canCallBack(row)) {
         setError('That call has no number to return.');
+        return;
+      }
+      if (phone.activeCall) {
+        setError('Finish the current call before placing another.');
         return;
       }
       const id = historyRowKey(row);
@@ -1214,13 +1283,16 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
       setError('');
       try {
         await phone.dial(number, { storeKey: row.storeKey || storeKey, from: activeAccount?.mainNumber });
+        if (String(row?.direction || '') !== 'Outbound' && !isAnsweredInbound(row)) {
+          setReturnedLocally((current) => ({ ...current, [id]: Date.now() }));
+        }
       } catch (err) {
         setError(err?.message || 'Could not start the call.');
       } finally {
         setCallingId((current) => (current === id ? '' : current));
       }
     },
-    [activeAccount?.mainNumber, phone.dial, storeKey],
+    [activeAccount?.mainNumber, phone, storeKey],
   );
 
   const goToStoreList = useCallback(() => {
@@ -1310,6 +1382,16 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
   );
 
   const activeCall = phone.activeCall || null;
+  // One outbound call at a time: every Call back button waits while one is starting or live.
+  const callbackLocked = Boolean(callingId) || Boolean(activeCall) || !storeKey;
+  const callbackProps = (row) => {
+    const id = historyRowKey(row);
+    return {
+      onCallback: callBack,
+      callbackBusy: callingId === id,
+      callbackDisabled: callbackLocked && callingId !== id,
+    };
+  };
   const inBrowserCall = Boolean(activeCall?.web);
   const browserDialing = Boolean(phone.canDialInBrowser?.(storeKey));
 
@@ -1858,7 +1940,15 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
             ) : inboundCalls.length === 0 && incomingLive.length === 0 ? (
               <Text style={styles.emptyText}>No incoming calls {rangeLabel}.</Text>
             ) : (
-              inboundCalls.map((row) => <CallHistoryRow key={row.id} row={row} inbound />)
+              inboundCalls.map((row) => (
+                <CallHistoryRow
+                  key={historyRowKey(row)}
+                  row={row}
+                  inbound
+                  returnedAt={returnedAtByKey[historyRowKey(row)] || 0}
+                  {...callbackProps(row)}
+                />
+              ))
             )}
           </View>
         ) : null}
@@ -1879,9 +1969,8 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
                     key={id}
                     row={row}
                     inbound
-                    onCallback={callBack}
-                    callbackBusy={callingId === id}
-                    callbackDisabled={Boolean(callingId) && callingId !== id}
+                    returnedAt={returnedAtByKey[id] || 0}
+                    {...callbackProps(row)}
                   />
                 );
               })
@@ -1900,10 +1989,12 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
             ) : (
               callLog.map((row) => (
                 <CallHistoryRow
-                  key={row.id}
+                  key={historyRowKey(row)}
                   row={row}
                   inbound={row.direction !== 'Outbound'}
                   showDirection
+                  returnedAt={returnedAtByKey[historyRowKey(row)] || 0}
+                  {...callbackProps(row)}
                 />
               ))
             )}
@@ -1991,25 +2082,39 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
             {outboundCalls.length === 0 ? (
               <Text style={styles.emptyText}>No outbound calls {rangeLabel}.</Text>
             ) : (
-              outboundCalls.map((row) => (
-                <Pressable
-                  key={row.id}
-                  style={styles.itemRow}
-                  onPress={() => setDigits((row.to || '').replace(/\D/g, '').slice(-10))}
-                >
-                  <View style={styles.callIcon}>
-                    <Ionicons name="arrow-up" size={14} color={ACCENT} />
-                  </View>
-                  <View style={styles.itemText}>
-                    <Text style={styles.itemTitle}>{partyLine(row, false)}</Text>
-                    <Text style={styles.itemMeta}>
-                      {[resultLabel(row.result), formatCallWhen(row.startTime), row.duration ? formatDuration(row.duration) : '']
-                        .filter(Boolean)
-                        .join(' · ')}
-                    </Text>
-                  </View>
-                </Pressable>
-              ))
+              outboundCalls.map((row) => {
+                const props = callbackProps(row);
+                return (
+                  <Pressable
+                    key={historyRowKey(row)}
+                    style={styles.itemRow}
+                    onPress={() => {
+                      if (inBrowserCall) return;
+                      setDigits((row.to || '').replace(/\D/g, '').slice(-10));
+                    }}
+                    accessibilityLabel={`Fill the keypad with ${partyLine(row, false)}`}
+                  >
+                    <View style={styles.callIcon}>
+                      <Ionicons name="arrow-up" size={14} color={ACCENT} />
+                    </View>
+                    <View style={styles.itemText}>
+                      <Text style={styles.itemTitle}>{partyLine(row, false)}</Text>
+                      <Text style={styles.itemMeta}>
+                        {[resultLabel(row.result), formatCallWhen(row.startTime), row.duration ? formatDuration(row.duration) : '']
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </Text>
+                    </View>
+                    <CallbackButton
+                      row={row}
+                      label="Call again"
+                      onPress={props.onCallback}
+                      busy={props.callbackBusy}
+                      disabled={props.callbackDisabled}
+                    />
+                  </Pressable>
+                );
+              })
             )}
           </View>
         ) : null}
@@ -2026,6 +2131,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
             ) : (
               visibleVoicemails.map((row) => {
                 const unread = row.readStatus === 'Unread';
+                const props = callbackProps(row);
                 return (
                   <View key={row.id} style={styles.itemRow}>
                     <Pressable style={styles.playBtn} onPress={() => playVoicemail(row)} accessibilityLabel={playingId === row.id ? 'Pause voicemail' : 'Play voicemail'}>
@@ -2045,6 +2151,12 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
                           .join(' · ')}
                       </Text>
                     </View>
+                    <CallbackButton
+                      row={row}
+                      onPress={props.onCallback}
+                      busy={props.callbackBusy}
+                      disabled={props.callbackDisabled}
+                    />
                   </View>
                 );
               })
@@ -2111,19 +2223,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
               <Text style={styles.emptyText}>No answered inbound calls {rangeLabel}.</Text>
             ) : (
               answeredCalls.map((row) => (
-                <View key={row.id} style={styles.itemRow}>
-                  <View style={styles.callIcon}>
-                    <Ionicons name="arrow-down" size={14} color={ACCENT} />
-                  </View>
-                  <View style={styles.itemText}>
-                    <Text style={styles.itemTitle}>{partyLine(row, true)}</Text>
-                    <Text style={styles.itemMeta}>
-                      {[resultLabel(row.result), formatCallWhen(row.startTime), row.duration ? formatDuration(row.duration) : '']
-                        .filter(Boolean)
-                        .join(' · ')}
-                    </Text>
-                  </View>
-                </View>
+                <CallHistoryRow key={historyRowKey(row)} row={row} inbound {...callbackProps(row)} />
               ))
             )}
             <Text style={[styles.blockTitle, styles.blockTitleSpaced]}>Missed</Text>
@@ -2131,19 +2231,13 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
               <Text style={styles.emptyText}>No missed inbound calls {rangeLabel}.</Text>
             ) : (
               missedCalls.map((row) => (
-                <View key={row.id} style={styles.itemRow}>
-                  <View style={styles.callIcon}>
-                    <Ionicons name="call-outline" size={14} color="#B91C1C" />
-                  </View>
-                  <View style={styles.itemText}>
-                    <Text style={styles.itemTitle}>{partyLine(row, true)}</Text>
-                    <Text style={styles.itemMeta}>
-                      {[resultLabel(row.result), formatCallWhen(row.startTime), row.duration ? formatDuration(row.duration) : '']
-                        .filter(Boolean)
-                        .join(' · ')}
-                    </Text>
-                  </View>
-                </View>
+                <CallHistoryRow
+                  key={historyRowKey(row)}
+                  row={row}
+                  inbound
+                  returnedAt={returnedAtByKey[historyRowKey(row)] || 0}
+                  {...callbackProps(row)}
+                />
               ))
             )}
           </View>
@@ -2483,6 +2577,11 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
+  callbackBtnCompact: {
+    width: 28,
+    paddingHorizontal: 0,
+    justifyContent: 'center',
+  },
   callbackBtnDisabled: {
     opacity: 0.6,
   },
@@ -2491,6 +2590,13 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     color: '#fff',
+  },
+  returnedMeta: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: ACCENT,
+    marginTop: 2,
   },
   tabs: {
     flexDirection: 'row',

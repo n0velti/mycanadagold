@@ -27,7 +27,7 @@ import {
   saveRipplingSession,
 } from '../lib/rippling';
 import { syncStaffRoles } from '../lib/auth';
-import { reloadClockedIn } from '../lib/clockedIn';
+import { reloadClockedIn, useIsClockedIn } from '../lib/clockedIn';
 import { mergeEmployeesWithProfiles } from '../lib/aureusEmployees';
 import { getGmailRedirectUri, loadGmailOAuthApp } from '../lib/gmail';
 import { categoryLabel, listStaffProfiles, useAppAccess } from '../lib/permissions';
@@ -188,6 +188,7 @@ function HoursSection({ hours, status }) {
   const [history, setHistory] = useState(null);
   const [showAll, setShowAll] = useState(false);
   const employeeId = hours?.id || '';
+  const clockedIn = Boolean(hours?.clockedIn) || useIsClockedIn(hours?.name);
 
   useEffect(() => {
     let cancelled = false;
@@ -237,7 +238,7 @@ function HoursSection({ hours, status }) {
         <SectionLabel trailing={updated ? <Text style={styles.hoursUpdated}>{`Updated ${updated}`}</Text> : null}>
           Hours
         </SectionLabel>
-        {hours?.clockedIn ? (
+        {clockedIn ? (
           <View style={styles.hoursNow}>
             <StatusPill
               label={hours.openSince ? `Clocked in · since ${formatClock(hours.openSince)}` : 'Clocked in'}
@@ -821,6 +822,7 @@ function StaffEmployeeRow({ person, selected, onPress, last, hours, shifts }) {
   const inactive = person.isActive === false || person.profileActive === false;
   const weekHours = hours?.weekMinutes ? `${formatMinutes(hours.weekMinutes)} this wk` : '';
   const todayShift = todayShiftLabel(shifts);
+  const clockedIn = Boolean(hours?.clockedIn) || useIsClockedIn(name);
   const subtitle = [location, type !== '—' ? type : '', permission !== '—' ? permission : '', todayShift, weekHours]
     .filter(Boolean)
     .join(' · ');
@@ -835,7 +837,7 @@ function StaffEmployeeRow({ person, selected, onPress, last, hours, shifts }) {
             uri={person.avatarUrl || person.photoUrl}
             name={name}
             size={52}
-            ring={hours?.clockedIn ? 'green' : undefined}
+            ring={clockedIn ? 'green' : undefined}
           />
         }
         selected={selected}
@@ -847,13 +849,14 @@ function StaffEmployeeRow({ person, selected, onPress, last, hours, shifts }) {
 }
 
 function StaffEmployeeDetail({ person, onClose, compact, onOpenPhoto, hours, hoursStatus, shifts }) {
+  const name = staffDisplayName(person);
+  const clockedIn = Boolean(hours?.clockedIn) || useIsClockedIn(name);
   if (!person) {
     return (
       <EmptyState icon="people-outline" title="Employee" body="Select someone to see their profile." />
     );
   }
 
-  const name = staffDisplayName(person);
   const photoUri = person.avatarUrl || person.photoUrl || '';
   const inactive = person.isActive === false || person.profileActive === false;
 
@@ -872,7 +875,7 @@ function StaffEmployeeDetail({ person, onClose, compact, onOpenPhoto, hours, hou
         onOpenPhoto={onOpenPhoto}
         compact={compact}
         onClose={onClose}
-        clockedIn={Boolean(hours?.clockedIn)}
+        clockedIn={clockedIn}
       />
       <FieldGroup
         title="Work"
@@ -1240,6 +1243,7 @@ function ConnectModal({ visible, onClose, onSaved, canManage }) {
 }
 
 function EmployeeDetail({ employee, onClose, compact, hours, hoursStatus, shifts, flow }) {
+  const clockedIn = Boolean(hours?.clockedIn) || useIsClockedIn(employee?.name);
   if (!employee) {
     return (
       <EmptyState
@@ -1270,7 +1274,7 @@ function EmployeeDetail({ employee, onClose, compact, hours, hoursStatus, shifts
         compact={compact}
         onClose={onClose}
         heading="Profile"
-        clockedIn={Boolean(hours?.clockedIn)}
+        clockedIn={clockedIn}
       />
       <FieldGroup
         title="Contact"
@@ -1313,6 +1317,7 @@ function EmployeeDetail({ employee, onClose, compact, hours, hoursStatus, shifts
 
 function EmployeeRow({ employee, selected, onPress, last, hours }) {
   const subtitle = [employee.title, employee.department, employee.location].filter(Boolean).join(' · ');
+  const clockedIn = Boolean(hours?.clockedIn) || useIsClockedIn(employee.name);
   return (
     <MobileListRow
       title={employee.name}
@@ -1322,7 +1327,7 @@ function EmployeeRow({ employee, selected, onPress, last, hours }) {
           uri={employee.photoUrl}
           name={employee.name}
           size={52}
-          ring={hours?.clockedIn ? 'green' : undefined}
+          ring={clockedIn ? 'green' : undefined}
         />
       }
       trailing={<StatusPill label={employee.statusLabel} tone={statusTone(employee.status)} compact />}

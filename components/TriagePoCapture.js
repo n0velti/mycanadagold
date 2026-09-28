@@ -33,7 +33,7 @@ import { listTriageErrorTypes, mergeErrorTypes, saveTriageErrorType } from '../l
 import { uploadTriageErrorPhotos } from '../lib/triageErrorPhotos';
 import { lookupPurchasesByPoNumber, normalizePoNumber, readPoNumberFromPhoto } from '../lib/triagePoRead';
 import { formatAmount } from '../lib/transactions';
-import { ensurePurchaseOnDateBatch, saveTriagePoReview, setTriagePoReceived, triageEditorFromSession, useTransferWorkflow } from '../lib/transferWorkflow';
+import { addStandaloneTriagePo, ensurePurchaseOnDateBatch, persistTransferWorkflowNow, saveTriagePoReview, setTriagePoReceived, triageEditorFromSession, useTransferWorkflow } from '../lib/transferWorkflow';
 import { getVideoElement, useWebcam, webcamSupported } from '../lib/webcam';
 import { catalogNameForPurchaseLine, fetchWebsitePrices } from '../lib/websitePrices';
 import { FONT, T } from './TriageKit';
@@ -291,7 +291,7 @@ function ErrorTypePicker({ types, value, onChange, onAdd, disabled }) {
   );
 }
 
-export default function TriagePoCapture({ session, openerRef, batchId = '', onCounted }) {
+export default function TriagePoCapture({ session, openerRef, batchId = '', onAddBatch, onCounted }) {
   const isMobile = useIsMobile();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const { triage } = useTransferWorkflow();
@@ -409,7 +409,14 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
     setMatches([]);
     setPo(null);
     setResultOpen(false);
-    const rows = await lookupPurchasesByPoNumber(session, id);
+    const rows = await lookupPurchasesByPoNumber(session, id, {
+      onHit: (_row, all) => {
+        if (token !== requestRef.current) return;
+        setMatches(all);
+        setPo(all[0]);
+        setPhase('Checking other stores…');
+      },
+    });
     if (token !== requestRef.current) return;
     setPhase('');
     if (!rows.length) {
@@ -594,11 +601,34 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
       return;
     }
     const actor = actorNameOf(session);
-    const place = ensurePurchaseOnDateBatch(po, actor);
     const day = poDateKey(po);
     setFinishing(true);
     setResultError('');
     try {
+      if (!batchId) {
+        const result = addStandaloneTriagePo(po);
+        if (!result.ok) {
+          const where = result.batch?.dateLabel || 'the dashboard';
+          setResultError(`${po.reference || 'This PO'} is already on ${where}.`);
+          return;
+        }
+        if (withError) {
+          const poId = result.item?.id || po.id;
+          const images = photos.length ? await uploadTriageErrorPhotos(photos, poId) : [];
+          saveTriagePoReview(
+            poId,
+            { note, errorType, errorAmount: formatErrorAmount(amount), images, lineEdits },
+            triageEditorFromSession(session),
+          );
+        }
+        persistTransferWorkflowNow().catch(() => {});
+        const label = po.reference || `PO#${normalizePoNumber(poInput) || po.id}`;
+        setToast({ id: Date.now(), label: `${label} added` });
+        nextPo();
+        return;
+      }
+
+      const place = ensurePurchaseOnDateBatch(po, actor);
       if (withError) {
         const poId = place?.item?.id || po.id;
         const images = photos.length ? await uploadTriageErrorPhotos(photos, poId) : [];
@@ -728,8 +758,17 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
       ))}
     </View>
   ) : null;
-  const place = po ? placePurchaseOnBatch(triage, po, batchId) : null;
+  const place = po && batchId ? placePurchaseOnBatch(triage, po, batchId) : null;
   const placeLabel = place ? [place.store?.name, po?.dateLabel].filter(Boolean).join(' · ') : '';
+  const placeLine = batchId
+    ? placeLabel
+      ? `Counts toward ${placeLabel}`
+      : po?.dateLabel
+        ? `Starts the ${po.dateLabel} batch for this store.`
+        : 'This purchase has no date to file.'
+    : po?.storeName && po.storeName !== '—'
+      ? `Adds ${po.storeName} to the PO / SO list.`
+      : 'Adds this purchase to the PO / SO list.';
   if (openerRef) openerRef.current = openCapture;
 
   const pagePad = Platform.OS === 'web' ? { className: 'cgold-mobile-sheet-top' } : null;
@@ -858,13 +897,7 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
             ) : (
               <Text style={styles.detailMeta}>No line items on this purchase.</Text>
             )}
-            <Text style={styles.placeLine}>
-              {placeLabel
-                ? `Counts toward ${placeLabel}`
-                : po?.dateLabel
-                  ? `Starts the ${po.dateLabel} batch for this store.`
-                  : 'This purchase has no date to file.'}
-            </Text>
+            <Text style={styles.placeLine}>{placeLine}</Text>
             {resultError ? <Text style={styles.error}>{resultError}</Text> : null}
           </ScrollView>
           <View style={[styles.pageFooter, { paddingBottom: dockPad }]}>
@@ -962,13 +995,30 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
               <Pressable onPress={close} hitSlop={10} accessibilityRole="button" accessibilityLabel="Close">
                 <Ionicons name="close" size={34} color="#fff" />
               </Pressable>
-              {photoUri ? (
-                <Pressable onPress={retake} disabled={busy} accessibilityRole="button" accessibilityLabel="Retake photo">
-                  <Text style={styles.snapRetake}>Retake</Text>
-                </Pressable>
-              ) : (
-                <View style={styles.snapRetakeSpacer} />
-              )}
+              <View style={styles.snapTopActions}>
+                {onAddBatch && !photoUri ? (
+                  <Pressable
+                    onPress={() => {
+                      close();
+                      onAddBatch();
+                    }}
+                    disabled={busy}
+                    accessibilityRole="button"
+                    accessibilityLabel="Add a new batch"
+                  >
+                    <BlurView intensity={48} tint="light" style={styles.snapBatchBlur}>
+                      <Text style={styles.snapBatchText}>Add batch</Text>
+                    </BlurView>
+                  </Pressable>
+                ) : null}
+                {photoUri ? (
+                  <Pressable onPress={retake} disabled={busy} accessibilityRole="button" accessibilityLabel="Retake photo">
+                    <Text style={styles.snapRetake}>Retake</Text>
+                  </Pressable>
+                ) : onAddBatch ? null : (
+                  <View style={styles.snapRetakeSpacer} />
+                )}
+              </View>
             </View>
             {toast ? <AddedToast key={toast.id} label={toast.label} onDone={() => setToast(null)} /> : null}
             {phase || error ? (
@@ -1286,13 +1336,7 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onCo
               <Text style={styles.detailMeta}>No line items on this purchase.</Text>
             )}
 
-            <Text style={styles.placeLine}>
-              {placeLabel
-                ? `Counts toward ${placeLabel}`
-                : po?.dateLabel
-                  ? `Starts the ${po.dateLabel} batch for this store.`
-                  : 'This purchase has no date to file.'}
-            </Text>
+            <Text style={styles.placeLine}>{placeLine}</Text>
 
             {errorMode ? (
               <View style={styles.errorBox}>
@@ -1922,6 +1966,29 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 12,
     minHeight: 52,
+  },
+  snapTopActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  snapBatchBlur: {
+    minHeight: 34,
+    paddingHorizontal: 12,
+    borderRadius: 17,
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.42)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.72)',
+  },
+  snapBatchText: {
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#1d1d1f',
+    letterSpacing: -0.2,
   },
   snapRetake: {
     fontFamily: FONT,

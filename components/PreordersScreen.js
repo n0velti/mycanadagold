@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -8,26 +7,23 @@ const fontFamily = Platform.select({
   default: 'Sohne',
 });
 
-const ACCENT = '#EA580C';
+const SECONDARY = '#8e8e93';
 const HAIRLINE = '#e6e6e6';
 
 const TABS = [
   {
     key: 'open',
     label: 'Open',
-    icon: 'cart-outline',
     empty: 'Customer deposits waiting on product will appear here.',
   },
   {
     key: 'arrived',
     label: 'Arrived',
-    icon: 'cube-outline',
     empty: 'Preorders whose stock has landed, ready to fulfill.',
   },
   {
     key: 'fulfilled',
     label: 'Fulfilled',
-    icon: 'checkmark-circle-outline',
     empty: 'Completed preorders will be listed here.',
   },
 ];
@@ -56,20 +52,18 @@ function TabBar({ options, value, onChange }) {
   );
 }
 
-export default function PreordersScreen() {
+export default function PreordersScreen({ storeFilter = '', embedded = false }) {
   const [activeTab, setActiveTab] = useState('open');
   const tab = TABS.find((item) => item.key === activeTab) || TABS[0];
+  const storeName = String(storeFilter || '').trim();
+  const empty = storeName
+    ? `No ${tab.label.toLowerCase()} preorders at ${storeName}.`
+    : tab.empty;
 
   return (
-    <View style={styles.screen}>
+    <View style={[styles.screen, embedded && styles.screenEmbedded]}>
       <TabBar options={TABS} value={activeTab} onChange={setActiveTab} />
-      <View style={styles.emptyPanel}>
-        <View style={styles.emptyIcon}>
-          <Ionicons name={tab.icon} size={22} color={ACCENT} />
-        </View>
-        <Text style={styles.emptyTitle}>{tab.label}</Text>
-        <Text style={styles.emptyBody}>{tab.empty}</Text>
-      </View>
+      <Text style={styles.emptyText}>{empty}</Text>
     </View>
   );
 }
@@ -77,18 +71,19 @@ export default function PreordersScreen() {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: 'rgb(252, 252, 251)',
+  },
+  screenEmbedded: {
+    backgroundColor: 'transparent',
   },
   tabBar: {
     flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'stretch',
-    paddingHorizontal: 20,
+    paddingHorizontal: 8,
     marginTop: 8,
     marginBottom: 8,
-    maxWidth: 860,
     width: '100%',
-    alignSelf: 'center',
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: HAIRLINE,
   },
@@ -107,50 +102,25 @@ const styles = StyleSheet.create({
     }),
   },
   tabActive: {
-    borderBottomColor: ACCENT,
+    borderBottomColor: '#1a1a1a',
   },
   tabLabel: {
     fontFamily,
-    fontSize: 15,
-    fontWeight: '500',
-    color: '#6b6b6b',
-    letterSpacing: -0.2,
+    fontSize: 13,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.08,
+    textTransform: 'uppercase',
   },
   tabLabelActive: {
     color: '#1a1a1a',
     fontWeight: '600',
   },
-  emptyPanel: {
-    flex: 1,
-    minHeight: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 24,
-    paddingBottom: 48,
-  },
-  emptyIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 14,
-    backgroundColor: '#FFF7ED',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
-  },
-  emptyTitle: {
+  emptyText: {
     fontFamily,
-    fontSize: 20,
-    fontWeight: '600',
-    color: '#1a1a1a',
-    letterSpacing: -0.3,
-    marginBottom: 6,
-  },
-  emptyBody: {
-    fontFamily,
-    fontSize: 15,
-    lineHeight: 21,
-    color: '#6b6b6b',
-    textAlign: 'center',
-    maxWidth: 320,
+    fontSize: 13,
+    color: SECONDARY,
+    paddingHorizontal: 8,
+    paddingVertical: 28,
   },
 });

@@ -4282,9 +4282,99 @@ function noteRcRateHeaders(scope: string, result: RcJsonResult): void {
   }
 }
 
-async function rcJson(url: string, init: RequestInit): Promise<RcJsonResult> {
+// Access token → store key, so a 401 can be traced back to the line that
+// minted it. RingCentral revokes every outstanding token when an app's scopes
+// change (or a JWT is deleted); the token is then dead long before its
+// expiry, and only RingCentral's 401 tells us.
+const rcTokenOwner = new Map<string, string>();
+const rcRevokedTokens = new Set<string>();
+
+function rcIssue(storeKey: string, token: string): string {
+  if (token) {
+    rcTokenOwner.set(token, storeKey);
+    if (rcTokenOwner.size > 200) {
+      const first = rcTokenOwner.keys().next().value;
+      if (first) rcTokenOwner.delete(first);
+    }
+  }
+  return token;
+}
+
+function rcBearerOf(init: RequestInit): string {
+  const headers = init.headers;
+  let raw = '';
+  if (headers instanceof Headers) raw = headers.get('Authorization') || '';
+  else if (Array.isArray(headers)) raw = (headers.find(([name]) => /^authorization$/i.test(name)) || [])[1] || '';
+  else if (headers && typeof headers === 'object') {
+    const record = headers as Record<string, string>;
+    raw = record.Authorization || record.authorization || '';
+  }
+  const match = /^Bearer\s+(.+)$/i.exec(String(raw).trim());
+  return match ? match[1] : '';
+}
+
+/**
+ * RingCentral said the bearer token is dead. Forget it everywhere, mint a
+ * replacement for the same store, and hand back headers carrying it. The
+ * caller's own header object is updated in place too, so the rest of that
+ * request keeps working without each call hitting a 401 first.
+ */
+async function rcRecoverToken(init: RequestInit): Promise<Record<string, string> | null> {
+  const dead = rcBearerOf(init);
+  const storeKey = dead ? rcTokenOwner.get(dead) : '';
+  if (!dead || !storeKey) return null;
+  rcRevokedTokens.add(dead);
+  if (rcRevokedTokens.size > 200) {
+    const first = rcRevokedTokens.values().next().value;
+    if (first) rcRevokedTokens.delete(first);
+  }
+  rcTokenOwner.delete(dead);
+  if (rcTokenCache.get(storeKey)?.token === dead) rcTokenCache.delete(storeKey);
+  try {
+    // Only clear the row if it still holds this token; another isolate may
+    // already have stored a good one.
+    await adminClient()
+      .from('ringcentral_accounts')
+      .update({ access_token: '', refresh_token: '', token_expires_at: null, updated_at: new Date().toISOString() })
+      .eq('store_key', storeKey)
+      .eq('access_token', dead);
+  } catch (err) {
+    console.error('ringcentral revoked-token clear failed', err instanceof Error ? err.message : err);
+  }
+  try {
+    const account = await loadRingCentralAccount(storeKey);
+    if (!account) return null;
+    const token = await ringCentralAccessToken(account);
+    if (!token || token === dead) return null;
+    const next = { Authorization: `Bearer ${token}` } as Record<string, string>;
+    const headers = init.headers;
+    if (headers && !(headers instanceof Headers) && !Array.isArray(headers) && typeof headers === 'object') {
+      const record = headers as Record<string, string>;
+      for (const [name, value] of Object.entries(record)) {
+        if (/^authorization$/i.test(name)) record[name] = next.Authorization;
+        else next[name] = value;
+      }
+      if (!Object.keys(record).some((name) => /^authorization$/i.test(name))) record.Authorization = next.Authorization;
+    } else if (headers instanceof Headers) {
+      headers.forEach((value, name) => {
+        if (!/^authorization$/i.test(name)) next[name] = value;
+      });
+    }
+    console.warn('ringcentral token revoked; minted a replacement for', storeKey);
+    return next;
+  } catch (err) {
+    console.error('ringcentral token recovery failed', storeKey, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+async function rcJson(url: string, init: RequestInit, allowRecovery = true): Promise<RcJsonResult> {
   const upstream = await forward(url, init, 30_000);
   const payload = await upstream.json().catch(() => null);
+  if (upstream.status === 401 && allowRecovery) {
+    const headers = await rcRecoverToken(init);
+    if (headers) return rcJson(url, { ...init, headers }, false);
+  }
   const retryAfter = Number(rcHeader(upstream, 'Retry-After'));
   const remainingRaw = rcHeader(upstream, 'X-Rate-Limit-Remaining');
   const remaining = remainingRaw === '' ? null : Number(remainingRaw);
@@ -4555,42 +4645,46 @@ async function mintRingCentralToken(account: RingCentralAccount, stored: RcCache
 
 async function ringCentralAccessToken(account: RingCentralAccount): Promise<string> {
   const storeKey = account.store_key;
+  const alive = (row: RcCachedToken | null | undefined) => Boolean(row?.token && !rcRevokedTokens.has(row.token));
   const freshEnough = (row: RcCachedToken | null | undefined) =>
-    Boolean(row?.token && row.expiresAt > Date.now() + 30_000);
+    Boolean(alive(row) && row!.expiresAt > Date.now() + 30_000);
   const usableStale = (row: RcCachedToken | null | undefined) =>
-    Boolean(row?.token && row.expiresAt > Date.now() - 5 * 60_000);
+    Boolean(alive(row) && row!.expiresAt > Date.now() - 5 * 60_000);
 
   const memory = rcTokenCache.get(storeKey);
-  if (freshEnough(memory)) return memory!.token;
+  if (freshEnough(memory)) return rcIssue(storeKey, memory!.token);
 
   const inflight = rcTokenInflight.get(storeKey);
   if (inflight) return inflight;
 
   const pending = (async () => {
     const again = rcTokenCache.get(storeKey);
-    if (freshEnough(again)) return again!.token;
+    if (freshEnough(again)) return rcIssue(storeKey, again!.token);
 
-    const stored = memory || tokenFromAccount(account);
+    // A token RingCentral has already rejected must not be adopted from the
+    // row, and its refresh token is dead with it: go straight to the JWT.
+    const candidate = alive(memory) ? memory : tokenFromAccount(account);
+    const stored = alive(candidate) ? candidate : null;
     if (stored && freshEnough(stored)) {
       rcTokenCache.set(storeKey, stored);
-      return stored.token;
+      return rcIssue(storeKey, stored.token);
     }
 
     const backoffUntil = rcTokenBackoffUntil.get(storeKey) || 0;
     if (backoffUntil > Date.now() || rcGroupBlocked(storeKey, 'auth')) {
-      if (usableStale(stored) && stored) return stored.token;
+      if (usableStale(stored) && stored) return rcIssue(storeKey, stored.token);
       throw new Error(RC_RATE_LIMIT_MESSAGE);
     }
 
     try {
-      return await mintRingCentralToken(account, stored);
+      return rcIssue(storeKey, await mintRingCentralToken(account, stored));
     } catch (err) {
       const message = err instanceof Error ? err.message : '';
       if (isRingCentralRateLimit(0, null, message)) {
         rcTokenBackoffUntil.set(storeKey, Date.now() + RC_TOKEN_RETRY_MS);
         if (usableStale(stored) && stored) {
           rcTokenCache.set(storeKey, stored);
-          return stored.token;
+          return rcIssue(storeKey, stored.token);
         }
       }
       throw err;
@@ -6549,6 +6643,12 @@ function rcCallOutLiveCall(account: RingCentralAccount, payload: unknown, ext: S
   };
 }
 
+/** TAS-106: the party cannot be moved to the named device (answered elsewhere, or the device is not registered). */
+function isRingCentralNotAllowed(result: RcJsonResult): boolean {
+  const raw = `${rcErrorMessage(result.payload, '')} ${JSON.stringify(result.payload ?? '')}`;
+  return /TAS-106|Operation is not allowed/i.test(raw);
+}
+
 /** RingCentral refused the device itself (unregistered, wrong type): the browser should dial over SIP instead. */
 function isRingCentralDeviceRejected(result: RcJsonResult): boolean {
   const raw = `${rcErrorMessage(result.payload, '')} ${JSON.stringify(result.payload ?? '')}`;
@@ -7179,6 +7279,20 @@ async function handleRingCentralPhone(req: Request, staff: StaffContext): Promis
         rcPresenceCache.delete(storeKey);
         account.live_calls_at = null;
         if (isRingCentralWrongState(result)) return gone();
+        if (action === 'answer' && isRingCentralNotAllowed(result)) {
+          // TAS-106 "Operation is not allowed": RingCentral will not move the
+          // party to that device. Either another phone picked the call up in
+          // the meantime (the party is no longer ringing), or the device the
+          // browser named is not a registered line any more.
+          const again = await rcResolveStoreParty(account, origin, headers, telephonySessionId, partyId);
+          if (again.gone || (again.party && !rcPartyIsRinging(again.party.status))) return gone();
+          return error(
+            req,
+            400,
+            'RingCentral would not send this call to the browser’s phone line (its registration may have lapsed). The app is re-registering the line; press Answer again in a moment, or pick up on the RingCentral app.',
+            'ringcentral_device_rejected',
+          );
+        }
         const fallbackMessage =
           action === 'answer'
             ? 'Could not answer on a RingCentral device. The line’s only device (the RingCentral app) is offline; the browser phone needs microphone access to take the call.'
