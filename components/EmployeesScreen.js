@@ -22,7 +22,6 @@ import {
   fetchRipplingCompany,
   loadRipplingOAuthApp,
   loadRipplingSession,
-  readRipplingOAuthCallback,
   saveCompanyRipplingSession,
   saveRipplingSession,
 } from '../lib/rippling';
@@ -61,7 +60,8 @@ import {
   setHoursFeedSource,
 } from '../lib/ripplingTime';
 import { useLiveRefresh } from '../lib/liveRefresh';
-import { useIsMobile } from '../lib/mobileUi';
+import { CANVAS, useIsMobile } from '../lib/mobileUi';
+import { FONT_LIGHT } from '../lib/typography';
 import ProfilePhotoModal from './ProfilePhotoModal';
 import {
   BarButton,
@@ -77,18 +77,12 @@ import {
   StaffAvatar,
   StatusPill,
   T,
-  TextTabs,
 } from './TriageKit';
 
 const STATUS_FILTERS = [
   { key: WORKER_STATUS.ACTIVE, label: 'Active' },
   { key: 'ALL', label: 'All' },
   { key: WORKER_STATUS.TERMINATED, label: 'Terminated' },
-];
-
-const EMPLOYEE_TABS = [
-  { key: 'employees', label: 'Employees' },
-  { key: 'rippling', label: 'Rippling' },
 ];
 
 function statusTone(status) {
@@ -840,7 +834,7 @@ function StaffEmployeeCard({ person, selected, onPress, hours, shifts }) {
       <StaffAvatar
         uri={person.avatarUrl || person.photoUrl}
         name={name}
-        size={72}
+        size={104}
         ring={clockedIn ? 'green' : undefined}
       />
       <Text style={styles.employeeCardName} numberOfLines={1}>
@@ -949,6 +943,82 @@ function groupRows(rows, keyFor) {
   return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
 }
 
+const FILTER_MENU_WIDTH = 220;
+
+function FilterDropdown({ value, options, onChange, accessibilityLabel = 'Filter' }) {
+  const fieldRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [anchor, setAnchor] = useState(null);
+  const selected = options.find((option) => option.key === value) || options[0];
+  const label = selected?.label || 'All';
+
+  const openMenu = () => {
+    fieldRef.current?.measureInWindow?.((x, y, width, height) => {
+      setAnchor({ x, y, width, height });
+      setOpen(true);
+    });
+  };
+
+  const close = () => setOpen(false);
+
+  const menuLeft = anchor
+    ? Math.max(12, anchor.x + anchor.width - FILTER_MENU_WIDTH)
+    : 12;
+  const menuTop = anchor ? anchor.y + anchor.height + 8 : 48;
+
+  return (
+    <>
+      <Pressable
+        ref={fieldRef}
+        onPress={openMenu}
+        style={styles.filterField}
+        accessibilityRole="button"
+        accessibilityLabel={accessibilityLabel}
+        accessibilityState={{ expanded: open }}
+      >
+        <Ionicons name="funnel-outline" size={13} color="#8e8e93" />
+        <Text style={styles.filterFieldValue} numberOfLines={1}>
+          {label}
+        </Text>
+        <Ionicons name="chevron-down" size={14} color="#8e8e93" />
+      </Pressable>
+      <Modal visible={open} transparent animationType="fade" onRequestClose={close}>
+        <View style={styles.filterModalRoot} pointerEvents="box-none">
+          <Pressable style={StyleSheet.absoluteFill} onPress={close} accessibilityLabel="Close filter" />
+          <View style={[styles.filterMenu, { top: menuTop, left: menuLeft }]}>
+            <ScrollView style={styles.filterMenuScroll} keyboardShouldPersistTaps="handled">
+            {options.map((option) => {
+              const on = option.key === value;
+              return (
+                <Pressable
+                  key={String(option.key)}
+                  onPress={() => {
+                    onChange(option.key);
+                    close();
+                  }}
+                  style={({ hovered, pressed }) => [
+                    styles.filterOption,
+                    on && styles.filterOptionOn,
+                    (hovered || pressed) && styles.filterOptionHover,
+                  ]}
+                  accessibilityRole="menuitem"
+                  accessibilityState={{ selected: on }}
+                >
+                  <Text style={[styles.filterOptionText, on && styles.filterOptionTextOn]} numberOfLines={1}>
+                    {option.label}
+                  </Text>
+                  {on ? <Ionicons name="checkmark" size={16} color={T.text} /> : null}
+                </Pressable>
+              );
+            })}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+    </>
+  );
+}
+
 function AppEmployeesPanel({ session, onProfileUpdated, storeFilter, hours }) {
   const isMobile = useIsMobile();
   const hoursSummary = hours?.summary || null;
@@ -1054,48 +1124,78 @@ function AppEmployeesPanel({ session, onProfileUpdated, storeFilter, hours }) {
     [filtered],
   );
 
-  return (
-    <View style={styles.body}>
-      <View style={styles.toolbar}>
-        <SearchField
-          value={query}
-          onChangeText={setQuery}
-          placeholder="Search name, location, type…"
-          size={isMobile ? 'lg' : undefined}
-          style={styles.searchField}
-        />
-        <BarButton
-          label="Refresh"
-          onPress={() => {
-            load();
-            hours?.refresh?.();
-          }}
-          disabled={loading}
-        />
-      </View>
+  const locationOptions = useMemo(
+    () => [{ key: null, label: 'All locations' }, ...locations.map((name) => ({ key: name, label: name }))],
+    [locations],
+  );
 
-      {allowFilters && locations.length > 1 ? (
-        <View style={styles.filterRow}>
-          <Chip label="All locations" selected={!location} onPress={() => setLocation(null)} />
-          {locations.map((name) => (
-            <Chip
-              key={name}
-              label={name}
-              selected={location === name}
-              onPress={() => setLocation((current) => (current === name ? null : name))}
-            />
-          ))}
-        </View>
+  const searchField = (
+    <View style={[styles.pageSearch, isMobile && styles.pageSearchMobile]}>
+      <Ionicons
+        name={isMobile ? 'search' : 'search-outline'}
+        size={16}
+        color="#8e8e93"
+        style={styles.pageSearchIcon}
+      />
+      <TextInput
+        style={[styles.pageSearchInput, isMobile && styles.pageSearchInputMobile]}
+        value={query}
+        onChangeText={setQuery}
+        placeholder={isMobile ? 'Search employees' : 'Search'}
+        placeholderTextColor="#8e8e93"
+        autoCapitalize="none"
+        autoCorrect={false}
+        clearButtonMode="while-editing"
+        returnKeyType="search"
+        accessibilityLabel="Search employees"
+      />
+      {query ? (
+        <Pressable onPress={() => setQuery('')} hitSlop={8} accessibilityLabel="Clear search">
+          <Ionicons name="close-circle" size={isMobile ? 18 : 16} color="#c7c7cc" />
+        </Pressable>
       ) : null}
+    </View>
+  );
 
-      {error ? <Text style={styles.errorText}>{error}</Text> : null}
+  const filterDropdown =
+    allowFilters && locations.length > 1 ? (
+      <FilterDropdown
+        value={location}
+        options={locationOptions}
+        onChange={setLocation}
+        accessibilityLabel="Filter by location"
+      />
+    ) : null;
+
+  return (
+    <View style={styles.homeScreen}>
+      {isMobile ? (
+        <View style={styles.mobileToolbar}>
+          {searchField}
+          {filterDropdown}
+        </View>
+      ) : (
+        <View style={styles.pageHeader}>
+          <View style={styles.pageTitleWrap}>
+            <View style={styles.pageTitleSpacer} />
+            <Text style={styles.pageTitle}>Employees</Text>
+          </View>
+          <View style={styles.pageControls}>
+            {searchField}
+            {filterDropdown}
+            {loading && people.length > 0 ? <ActivityIndicator size="small" color="#8e8e93" /> : null}
+          </View>
+        </View>
+      )}
+
+      {error ? <Text style={[styles.errorText, styles.pageError]}>{error}</Text> : null}
 
       {loading && people.length === 0 ? (
         <View style={styles.centered}>
           <ActivityIndicator color={T.text} />
         </View>
       ) : (
-        <ScrollView style={styles.list} contentContainerStyle={styles.gridContent}>
+        <ScrollView style={styles.list} contentContainerStyle={styles.homeGridContent}>
           {filtered.length === 0 ? (
             <EmptyState
               icon="people-outline"
@@ -1663,7 +1763,9 @@ function RipplingReport({ report, status }) {
   );
 }
 
-function RipplingPanel({ profile, hours }) {
+export function RipplingPanel({ profile, hours: hoursProp }) {
+  const ownedHours = useHoursSummary(!hoursProp);
+  const hours = hoursProp || ownedHours;
   const isMobile = useIsMobile();
   const { canFilter } = useAppAccess();
   const allowFilters = canFilter('employees');
@@ -1863,7 +1965,7 @@ function RipplingPanel({ profile, hours }) {
 
   if (!bootstrapped) {
     return (
-      <View style={styles.body}>
+      <View style={styles.screen}>
         <View style={styles.centered}>
           <ActivityIndicator color={T.text} />
         </View>
@@ -1872,7 +1974,7 @@ function RipplingPanel({ profile, hours }) {
   }
 
   return (
-    <>
+    <View style={styles.screen}>
     <ScrollView
       style={styles.bodyScroll}
       contentContainerStyle={styles.pageContent}
@@ -2045,7 +2147,7 @@ function RipplingPanel({ profile, hours }) {
         setError('');
       }}
     />
-    </>
+    </View>
   );
 }
 
@@ -2053,29 +2155,16 @@ export default function EmployeesScreen({
   session,
   onProfileUpdated,
   storeFilter,
-  embedded = false,
 }) {
-  const [activeTab, setActiveTab] = useState(() =>
-    !embedded && (readRipplingOAuthCallback() || readHoursOAuthCallback()) ? 'rippling' : 'employees',
-  );
   const hours = useHoursSummary(true);
 
   return (
-    <View style={styles.screen}>
-      {embedded ? null : (
-        <TextTabs options={EMPLOYEE_TABS} value={activeTab} onChange={setActiveTab} size="lg" />
-      )}
-      {activeTab === 'employees' ? (
-        <AppEmployeesPanel
-          session={session}
-          onProfileUpdated={onProfileUpdated}
-          storeFilter={storeFilter}
-          hours={hours}
-        />
-      ) : (
-        <RipplingPanel profile={session?.profile} hours={hours} />
-      )}
-    </View>
+    <AppEmployeesPanel
+      session={session}
+      onProfileUpdated={onProfileUpdated}
+      storeFilter={storeFilter}
+      hours={hours}
+    />
   );
 }
 
@@ -2084,6 +2173,176 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
     backgroundColor: '#F2F2F7',
+  },
+  homeScreen: {
+    flex: 1,
+    minHeight: 0,
+    backgroundColor: CANVAS,
+  },
+  pageHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 12,
+    paddingLeft: 8,
+    paddingRight: 32,
+    paddingTop: 24,
+    paddingBottom: 16,
+    flexShrink: 0,
+  },
+  pageTitleWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 0,
+  },
+  pageTitleSpacer: {
+    width: 56,
+    flexShrink: 0,
+  },
+  pageTitle: {
+    fontFamily: FONT_LIGHT,
+    fontSize: 28,
+    fontWeight: '400',
+    color: '#1a1a1a',
+    letterSpacing: -0.5,
+    flexShrink: 0,
+    marginLeft: 12,
+  },
+  pageControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 1,
+    marginLeft: 'auto',
+  },
+  pageSearch: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: 240,
+    flexShrink: 0,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#d0d0d0',
+    backgroundColor: '#fff',
+    paddingLeft: 12,
+    paddingRight: 8,
+    minHeight: 40,
+    overflow: 'hidden',
+  },
+  pageSearchMobile: {
+    flex: 1,
+    width: undefined,
+    minWidth: 0,
+  },
+  pageSearchIcon: {
+    marginRight: 8,
+  },
+  pageSearchInput: {
+    flex: 1,
+    fontFamily: FONT,
+    fontSize: 13,
+    color: '#1a1a1a',
+    paddingRight: 8,
+    paddingVertical: 12,
+    ...Platform.select({
+      web: { outlineStyle: 'none' },
+      default: {},
+    }),
+  },
+  pageSearchInputMobile: {
+    fontSize: 16,
+    paddingVertical: 10,
+  },
+  mobileToolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 10,
+  },
+  pageError: {
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+  },
+  filterField: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 0,
+    gap: 8,
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#d0d0d0',
+    paddingHorizontal: 12,
+    minHeight: 40,
+    maxWidth: 200,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  filterFieldValue: {
+    fontFamily: FONT,
+    fontSize: 13,
+    color: '#1a1a1a',
+    flexShrink: 1,
+  },
+  filterModalRoot: {
+    flex: 1,
+  },
+  filterMenu: {
+    position: 'absolute',
+    width: FILTER_MENU_WIDTH,
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#d0d0d0',
+    paddingVertical: 6,
+    overflow: 'hidden',
+    ...Platform.select({
+      web: {
+        boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOpacity: 0.12,
+        shadowRadius: 16,
+        shadowOffset: { width: 0, height: 8 },
+        elevation: 6,
+      },
+    }),
+  },
+  filterMenuScroll: {
+    maxHeight: 320,
+  },
+  filterOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  filterOptionOn: {
+    backgroundColor: 'rgba(0,0,0,0.04)',
+  },
+  filterOptionHover: {
+    backgroundColor: 'rgba(0,0,0,0.04)',
+  },
+  filterOptionText: {
+    fontFamily: FONT,
+    fontSize: 14,
+    color: '#1a1a1a',
+    flex: 1,
+  },
+  filterOptionTextOn: {
+    fontWeight: '600',
   },
   body: {
     flex: 1,
@@ -2296,29 +2555,34 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
     gap: 16,
   },
+  homeGridContent: {
+    paddingHorizontal: 16,
+    paddingBottom: 40,
+    gap: 20,
+  },
   cardGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 12,
+    gap: 14,
     ...Platform.select({
       web: {
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fill, minmax(196px, 1fr))',
+        gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
       },
     }),
   },
   employeeCard: {
     alignItems: 'center',
-    paddingVertical: 18,
-    paddingHorizontal: 14,
-    borderRadius: 14,
+    paddingVertical: 22,
+    paddingHorizontal: 16,
+    borderRadius: 12,
     backgroundColor: T.card,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: T.hairline,
     gap: 4,
-    minWidth: 168,
+    minWidth: 188,
     flexGrow: 1,
-    flexBasis: 196,
+    flexBasis: 220,
     ...Platform.select({
       web: {
         minWidth: 0,
@@ -2344,7 +2608,7 @@ const styles = StyleSheet.create({
     color: T.text,
     letterSpacing: -0.3,
     textAlign: 'center',
-    marginTop: 8,
+    marginTop: 12,
     alignSelf: 'stretch',
   },
   employeeCardRole: {

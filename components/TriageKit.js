@@ -826,7 +826,7 @@ export function StaffAvatar({ uri, name, size = 24, ring }) {
           onError={() => setFailed(true)}
         />
       ) : (
-        <Text style={[styles.staffAvatarInitials, { fontSize: size > 28 ? 12 : 10 }]}>
+        <Text style={[styles.staffAvatarInitials, { fontSize: Math.max(10, Math.round(size * 0.32)) }]}>
           {initialsFromName(name)}
         </Text>
       )}
