@@ -20,20 +20,13 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { assetToDataUrl } from '../lib/avatarCartoon';
 import { mobileSafeBottom, mobileSafeTop, useIsMobile } from '../lib/mobileUi';
-import {
-  batchStoreKey,
-  buildDailyReceiptGrid,
-  countDailyReceiptPo,
-  dailyCellKey,
-  placePurchaseOnBatch,
-  poDateKey,
-} from '../lib/triageDailyReceipts';
 import { formatErrorAmount, isListedErrorType, normalizeReviewImages } from '../lib/triageDraft';
 import { listTriageErrorTypes, mergeErrorTypes, saveTriageErrorType } from '../lib/triageErrorTypes';
 import { uploadTriageErrorPhotos } from '../lib/triageErrorPhotos';
 import { lookupPurchasesByPoNumber, normalizePoNumber, readPoNumberFromPhoto } from '../lib/triagePoRead';
 import { formatAmount } from '../lib/transactions';
-import { addStandaloneTriagePo, ensurePurchaseOnDateBatch, persistTransferWorkflowNow, saveTriagePoReview, setTriagePoReceived, triageEditorFromSession, useTransferWorkflow } from '../lib/transferWorkflow';
+import { lotFromPo } from '../lib/triageLots';
+import { fileTriagePoToLot, persistTransferWorkflowNow, saveTriagePoReview, triageEditorFromSession } from '../lib/transferWorkflow';
 import { getVideoElement, useWebcam, webcamSupported } from '../lib/webcam';
 import { catalogNameForPurchaseLine, fetchWebsitePrices } from '../lib/websitePrices';
 import { FONT, T } from './TriageKit';
@@ -291,10 +284,9 @@ function ErrorTypePicker({ types, value, onChange, onAdd, disabled }) {
   );
 }
 
-export default function TriagePoCapture({ session, openerRef, batchId = '', onAddBatch, onCounted }) {
+export default function TriagePoCapture({ session, openerRef }) {
   const isMobile = useIsMobile();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
-  const { triage } = useTransferWorkflow();
   const liveCamera = !prefersDeviceCamera() && webcamSupported();
   const [open, setOpen] = useState(false);
   const [poInput, setPoInput] = useState('');
@@ -601,36 +593,16 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onAd
       return;
     }
     const actor = actorNameOf(session);
-    const day = poDateKey(po);
     setFinishing(true);
     setResultError('');
     try {
-      if (!batchId) {
-        const result = addStandaloneTriagePo(po);
-        if (!result.ok) {
-          const where = result.batch?.dateLabel || 'the dashboard';
-          setResultError(`${po.reference || 'This PO'} is already on ${where}.`);
-          return;
-        }
-        if (withError) {
-          const poId = result.item?.id || po.id;
-          const images = photos.length ? await uploadTriageErrorPhotos(photos, poId) : [];
-          saveTriagePoReview(
-            poId,
-            { note, errorType, errorAmount: formatErrorAmount(amount), images, lineEdits },
-            triageEditorFromSession(session),
-          );
-        }
-        persistTransferWorkflowNow().catch(() => {});
-        const label = po.reference || `PO#${normalizePoNumber(poInput) || po.id}`;
-        setToast({ id: Date.now(), label: `${label} added` });
-        nextPo();
+      const result = fileTriagePoToLot(po, actor);
+      if (!result.ok) {
+        setResultError(`${po.reference || 'This PO'} could not be added to a lot.`);
         return;
       }
-
-      const place = ensurePurchaseOnDateBatch(po, actor);
       if (withError) {
-        const poId = place?.item?.id || po.id;
+        const poId = result.item?.id || po.id;
         const images = photos.length ? await uploadTriageErrorPhotos(photos, poId) : [];
         saveTriagePoReview(
           poId,
@@ -638,30 +610,13 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onAd
           triageEditorFromSession(session),
         );
       }
-      if (!place?.batch || !place.store || !day) {
-        setResultError('This purchase has no store or date to count.');
-        return;
-      }
-      if (place.item) setTriagePoReceived(place.batch.id, place.item.id, true, actor);
-      const grid = buildDailyReceiptGrid(place.batch);
-      const storeKey = batchStoreKey(place.store);
-      const counted = await countDailyReceiptPo(
-        place.batch.id,
-        {
-          dayKey: day,
-          storeKey,
-          storeName: place.store.name,
-          expected: grid.expected[dailyCellKey(day, storeKey)] || 0,
-          poId: place.item?.id || po.id,
-        },
-        actorNameOf(session),
-      );
-      onCounted?.(place.batch.id);
+      persistTransferWorkflowNow().catch(() => {});
       const label = po.reference || `PO#${normalizePoNumber(poInput) || po.id}`;
-      setToast({ id: Date.now(), label: counted.counted ? `${label} added` : `${label} already counted` });
+      const lotName = result.lot?.id || lotFromPo(po).id;
+      setToast({ id: Date.now(), label: `${label} added to ${lotName}` });
       nextPo();
     } catch (err) {
-      setResultError(err?.message || 'Could not update the count.');
+      setResultError(err?.message || 'Could not add this PO to a lot.');
     } finally {
       setFinishing(false);
     }
@@ -758,17 +713,10 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onAd
       ))}
     </View>
   ) : null;
-  const place = po && batchId ? placePurchaseOnBatch(triage, po, batchId) : null;
-  const placeLabel = place ? [place.store?.name, po?.dateLabel].filter(Boolean).join(' · ') : '';
-  const placeLine = batchId
-    ? placeLabel
-      ? `Counts toward ${placeLabel}`
-      : po?.dateLabel
-        ? `Starts the ${po.dateLabel} batch for this store.`
-        : 'This purchase has no date to file.'
-    : po?.storeName && po.storeName !== '—'
-      ? `Adds ${po.storeName} to the PO / SO list.`
-      : 'Adds this purchase to the PO / SO list.';
+  const destLot = po ? lotFromPo(po) : null;
+  const placeLine = destLot
+    ? `Adds to ${destLot.id}`
+    : 'Adds this purchase to its lot on Results.';
   if (openerRef) openerRef.current = openCapture;
 
   const pagePad = Platform.OS === 'web' ? { className: 'cgold-mobile-sheet-top' } : null;
@@ -996,26 +944,11 @@ export default function TriagePoCapture({ session, openerRef, batchId = '', onAd
                 <Ionicons name="close" size={34} color="#fff" />
               </Pressable>
               <View style={styles.snapTopActions}>
-                {onAddBatch && !photoUri ? (
-                  <Pressable
-                    onPress={() => {
-                      close();
-                      onAddBatch();
-                    }}
-                    disabled={busy}
-                    accessibilityRole="button"
-                    accessibilityLabel="Add a new batch"
-                  >
-                    <BlurView intensity={48} tint="light" style={styles.snapBatchBlur}>
-                      <Text style={styles.snapBatchText}>Add batch</Text>
-                    </BlurView>
-                  </Pressable>
-                ) : null}
                 {photoUri ? (
                   <Pressable onPress={retake} disabled={busy} accessibilityRole="button" accessibilityLabel="Retake photo">
                     <Text style={styles.snapRetake}>Retake</Text>
                   </Pressable>
-                ) : onAddBatch ? null : (
+                ) : (
                   <View style={styles.snapRetakeSpacer} />
                 )}
               </View>

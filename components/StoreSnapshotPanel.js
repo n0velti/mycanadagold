@@ -34,12 +34,10 @@ import {
   parseDateParam,
 } from '../lib/transactions';
 import { useTxnCashBreakdowns } from '../lib/txnCashBreakdowns';
-import { callPartyLabel, callsForStore, fetchPhoneHistory, formatCallWhen, formatDuration, inboundCallRatio, isPhoneRateLimitMessage, mergeCallLog, peekPhoneHistory, phoneHistoryNeeded, resultLabel } from '../lib/phoneCalls';
-import { formatPhoneNumber } from '../lib/ringcentral';
+import { callsForStore, fetchPhoneHistory, inboundCallRatio, mergeCallLog, peekPhoneHistory, phoneHistoryNeeded } from '../lib/phoneCalls';
 import { storeKeyFromName } from '../lib/storeSettings';
 import { CANVAS, MOBILE_FILTER_INSET, MOBILE_FILTER_SIZE, useIsMobile } from '../lib/mobileUi';
-import { activeCallKicker, formatCallClock, usePhoneCalls } from './PhoneCallProvider';
-import { isConnectedStatus } from '../lib/callState';
+import { usePhoneCalls } from './PhoneCallProvider';
 import TxnCashBreakdownModal, { TxnCashIcon } from './TxnCashBreakdownModal';
 
 const fontFamily = Platform.select({
@@ -417,21 +415,19 @@ function EmployeeAvatar({ person, size = 32, ring = false }) {
   );
 }
 
-function EmployeeRow({ person, last, dashboard = false }) {
+function EmployeeCard({ person }) {
   const subtitle = person.txCount
     ? `${person.txCount} transaction${person.txCount === 1 ? '' : 's'} today`
     : person.role || 'Assigned to this store';
   return (
-    <View style={[dashboard ? styles.dashPersonRow : styles.row, styles.rowStatic, last && styles.rowLast]}>
-      <EmployeeAvatar person={person} size={dashboard ? 46 : 32} />
-      <View style={styles.rowCopy}>
-        <Text style={dashboard ? styles.dashTitle : styles.rowTitle} numberOfLines={1}>
-          {person.name}
-        </Text>
-        <Text style={dashboard ? styles.dashMeta : styles.rowSubtitle} numberOfLines={1}>
-          {subtitle}
-        </Text>
-      </View>
+    <View style={styles.employeeCard}>
+      <EmployeeAvatar person={person} size={64} />
+      <Text style={styles.employeeCardName} numberOfLines={1}>
+        {person.name}
+      </Text>
+      <Text style={styles.employeeCardMeta} numberOfLines={2}>
+        {subtitle}
+      </Text>
     </View>
   );
 }
@@ -1020,243 +1016,10 @@ function callsInRange(calls, startKey, endKey) {
   });
 }
 
-function PhoneIncomingRow({ call, busy, onAnswer, onReject, last }) {
-  const label = callPartyLabel(call, { formatPhone: formatPhoneNumber });
-  return (
-    <View style={[styles.phoneLiveRow, last && styles.rowLast]}>
-      <View style={styles.rowCopy}>
-        <Text style={styles.phoneLiveKicker}>Incoming</Text>
-        <Text style={styles.rowTitle} numberOfLines={1}>
-          {label}
-        </Text>
-      </View>
-      <View style={styles.phoneLiveActions}>
-        <Pressable
-          onPress={() => onReject(call)}
-          disabled={busy}
-          style={[styles.phoneLiveBtn, styles.phoneRejectBtn]}
-          accessibilityRole="button"
-          accessibilityLabel="Reject call"
-        >
-          <Text style={styles.phoneLiveBtnText}>Reject</Text>
-        </Pressable>
-        <Pressable
-          onPress={() => onAnswer(call)}
-          disabled={busy}
-          style={[styles.phoneLiveBtn, styles.phoneAnswerBtn]}
-          accessibilityRole="button"
-          accessibilityLabel="Answer call"
-        >
-          {busy ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <Text style={styles.phoneLiveBtnText}>Answer</Text>
-          )}
-        </Pressable>
-      </View>
-    </View>
-  );
-}
-
-function PhoneActiveRow({ call, busy, muted, audioState, onMute, onHangup, onEnableSound, last }) {
-  const label = callPartyLabel(call, { formatPhone: formatPhoneNumber });
-  const connected = isConnectedStatus(call.status);
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!connected) return undefined;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [connected]);
-  const since = call.answeredAt || Date.parse(call.startTime) || now;
-  return (
-    <View style={[styles.phoneLiveRow, styles.phoneActiveRow, last && styles.rowLast]}>
-      <View style={styles.rowCopy}>
-        <Text style={styles.phoneLiveKicker}>
-          {activeCallKicker(call)}
-          {connected ? ` · ${formatCallClock(now - since)}` : ' · Connecting…'}
-        </Text>
-        <Text style={styles.rowTitle} numberOfLines={1}>
-          {label}
-        </Text>
-        {audioState === 'blocked' ? (
-          <Text style={styles.phoneError}>The browser blocked the call audio. Tap Sound to hear the caller.</Text>
-        ) : null}
-      </View>
-      <View style={styles.phoneLiveActions}>
-        {audioState === 'blocked' ? (
-          <Pressable
-            onPress={onEnableSound}
-            style={[styles.phoneLiveBtn, styles.phoneSoundBtn]}
-            accessibilityRole="button"
-            accessibilityLabel="Enable sound for this call"
-          >
-            <Text style={[styles.phoneLiveBtnText, styles.phoneSoundBtnText]}>Sound</Text>
-          </Pressable>
-        ) : call.web ? (
-          <Pressable
-            onPress={onMute}
-            disabled={busy || !connected}
-            style={[styles.phoneLiveBtn, styles.phoneMuteBtn, muted && styles.phoneMuteBtnOn]}
-            accessibilityRole="button"
-            accessibilityLabel={muted ? 'Unmute microphone' : 'Mute microphone'}
-          >
-            <Text style={[styles.phoneLiveBtnText, styles.phoneMuteBtnText]}>{muted ? 'Unmute' : 'Mute'}</Text>
-          </Pressable>
-        ) : null}
-        <Pressable
-          onPress={onHangup}
-          disabled={busy}
-          style={[styles.phoneLiveBtn, styles.phoneRejectBtn]}
-          accessibilityRole="button"
-          accessibilityLabel="Hang up"
-        >
-          {busy ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.phoneLiveBtnText}>Hang up</Text>}
-        </Pressable>
-      </View>
-    </View>
-  );
-}
-
-function PhoneSnapshotBody({ storeName, startKey, endKey, periodLabel, calls = null }) {
-  const phone = usePhoneCalls();
-  const storeKey = storeKeyFromName(storeName);
-  const activeCall = phone.activeCall && phone.activeCall.storeKey === storeKey ? phone.activeCall : null;
-  const incoming = useMemo(
-    () =>
-      (phone.incoming || []).filter(
-        (call) => call.storeKey === storeKey && call.id !== phone.activeCall?.id,
-      ),
-    [phone.activeCall?.id, phone.incoming, storeKey],
-  );
-  const recentAnswered = useMemo(
-    () => (phone.recentAnswered || []).filter((row) => row.storeKey === storeKey),
-    [phone.recentAnswered, storeKey],
-  );
-  const ratio = useMemo(() => {
-    if (calls) return inboundCallRatio(calls);
-    return inboundCallRatio(callsInRange(callsForStore(phone.mergedCallsByStore, storeName), startKey, endKey));
-  }, [calls, endKey, phone.mergedCallsByStore, startKey, storeName]);
-  const inboxLoading = Boolean(phone.inboxFetching?.[storeKey]);
-  const phoneError = isPhoneRateLimitMessage(phone.error) ? '' : phone.error;
-
-  const answer = async (call) => {
-    try {
-      await phone.answer(call);
-    } catch {
-      // Error is shown from phone context.
-    }
-  };
-  const reject = async (call) => {
-    try {
-      await phone.reject(call);
-    } catch {
-      // Keep the live row so they can retry.
-    }
-  };
-  const hangUp = async () => {
-    try {
-      await phone.hangup(activeCall);
-    } catch {
-      // Error is shown from phone context.
-    }
-  };
-  const enableSound = () => {
-    phone.resumeAudio?.().catch?.(() => {});
-  };
-
-  if (incoming.length || activeCall) {
-    return (
-      <>
-        {activeCall ? (
-          <PhoneActiveRow
-            call={activeCall}
-            busy={phone.busy}
-            muted={phone.muted}
-            audioState={phone.audioState}
-            onMute={phone.toggleMute}
-            onHangup={hangUp}
-            onEnableSound={enableSound}
-            last={!incoming.length && !ratio.total && !phoneError}
-          />
-        ) : null}
-        {incoming.map((call, index) => (
-          <PhoneIncomingRow
-            key={`${call.storeKey}-${call.id}`}
-            call={call}
-            busy={phone.busy}
-            onAnswer={answer}
-            onReject={reject}
-            last={index === incoming.length - 1 && !ratio.total && !phoneError}
-          />
-        ))}
-        {phoneError ? (
-          <Text style={styles.phoneError}>{phoneError}</Text>
-        ) : ratio.total ? (
-          <Text style={[styles.phoneRateMeta, styles.phoneRateMetaPad]}>
-            {ratio.ratio} answered · {periodLabel}
-          </Text>
-        ) : null}
-      </>
-    );
-  }
-
-  if (inboxLoading && !ratio.total && !recentAnswered.length) {
-    return <LoadingRow />;
-  }
-
-  return (
-    <View style={styles.phoneIdle}>
-      {recentAnswered.map((row) => (
-        <Text key={row.id} style={styles.phoneAnswered} numberOfLines={1}>
-          Answered{row.label ? ` · ${row.label}` : ''}
-        </Text>
-      ))}
-      <Text
-        style={[
-          styles.phoneRateValue,
-          ratio.rate == null && styles.rowValueMuted,
-          ratio.rate != null && ratio.rate < 80 && styles.phoneRateLow,
-          ratio.rate != null && ratio.rate >= 80 && styles.phoneRateHigh,
-        ]}
-      >
-        {ratio.ratio}
-      </Text>
-      <Text style={styles.phoneRateMeta}>
-        {ratio.total
-          ? `${ratio.answered} answered · ${ratio.missed} missed · ${periodLabel}`
-          : `No inbound calls ${periodLabel === 'Today' ? 'today' : 'in this period'}.`}
-      </Text>
-      {phoneError ? <Text style={styles.phoneError}>{phoneError}</Text> : null}
-    </View>
-  );
-}
-
 function storeEmailCapture(txRows, storeName) {
   const rows = buildEmailCaptureByStore(Array.isArray(txRows) ? txRows : []);
   if (!rows.length) return null;
   return rows.find((row) => namesMatch(row.store, storeName)) || (rows.length === 1 ? rows[0] : null);
-}
-
-function PhoneLogRow({ call, last }) {
-  const label = callPartyLabel(call, { formatPhone: formatPhoneNumber });
-  const when = formatCallWhen(call.startTime);
-  const result = resultLabel(call.result) || call.direction || '—';
-  const duration = call.duration ? formatDuration(call.duration) : '';
-  return (
-    <View style={[styles.row, styles.rowStatic, last && styles.rowLast]}>
-      <View style={styles.rowCopy}>
-        <Text style={styles.rowTitle} numberOfLines={1}>
-          {label || 'Unknown'}
-        </Text>
-        <Text style={styles.rowSubtitle} numberOfLines={1}>
-          {[when, call.direction, duration].filter(Boolean).join(' · ')}
-        </Text>
-      </View>
-      <Text style={styles.rowValue} numberOfLines={1}>
-        {result}
-      </Text>
-    </View>
-  );
 }
 
 function EmailsSnapshotBody({ storeName, txRows, periodLabel, ready, full = false }) {
@@ -1882,14 +1645,11 @@ function StoreSnapshotPanel({
   ) : presentEmployees.length === 0 ? (
     <EmptyRow text="No employees at this store right now." />
   ) : (
-    presentEmployees.map((person, index) => (
-      <EmployeeRow
-        key={`${person.name}-${index}`}
-        person={person}
-        dashboard={isMobile}
-        last={index === presentEmployees.length - 1}
-      />
-    ))
+    <View style={styles.employeeCardGrid}>
+      {presentEmployees.map((person, index) => (
+        <EmployeeCard key={`${person.name}-${index}`} person={person} />
+      ))}
+    </View>
   );
 
   const mappedTxRows =
@@ -2055,24 +1815,7 @@ function StoreSnapshotPanel({
     ) : focusTab === 'financials' ? (
       <View style={listWrap}>{financialsBody}</View>
     ) : focusTab === 'employees' ? (
-      <View style={listWrap}>{employeesBody}</View>
-    ) : focusTab === 'phone' ? (
-      <View style={listWrap}>
-        <PhoneSnapshotBody
-          storeName={storeName}
-          startKey={startKey}
-          endKey={endKey}
-          periodLabel={periodLabel}
-          calls={phoneCalls}
-        />
-        {phoneCalls.map((call, index) => (
-          <PhoneLogRow
-            key={call.id || `${call.startTime}-${index}`}
-            call={call}
-            last={index === phoneCalls.length - 1}
-          />
-        ))}
-      </View>
+      <View style={styles.employeeCardWrap}>{employeesBody}</View>
     ) : focusTab === 'emails' ? (
       <View style={listWrap}>
         <EmailsSnapshotBody
@@ -2975,6 +2718,61 @@ const styles = StyleSheet.create({
     color: SECONDARY,
     letterSpacing: -0.08,
     fontVariant: ['tabular-nums'],
+  },
+  employeeCardWrap: {
+    alignSelf: 'stretch',
+    width: '100%',
+    paddingHorizontal: 8,
+    paddingTop: 8,
+  },
+  employeeCardGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    ...Platform.select({
+      web: {
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fill, minmax(168px, 1fr))',
+      },
+    }),
+  },
+  employeeCard: {
+    alignItems: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: SEPARATOR,
+    gap: 4,
+    minWidth: 148,
+    flexGrow: 1,
+    flexBasis: 168,
+    ...Platform.select({
+      web: {
+        minWidth: 0,
+        flexGrow: 0,
+        flexBasis: 'auto',
+      },
+    }),
+  },
+  employeeCardName: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '700',
+    color: LABEL,
+    letterSpacing: -0.3,
+    textAlign: 'center',
+    marginTop: 8,
+    alignSelf: 'stretch',
+  },
+  employeeCardMeta: {
+    fontFamily,
+    fontSize: 12,
+    lineHeight: 16,
+    color: SECONDARY,
+    textAlign: 'center',
+    alignSelf: 'stretch',
   },
   employeeAvatar: {
     overflow: 'hidden',

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -161,6 +161,43 @@ function firstNameOf(person) {
   const first = String(person?.firstName || '').trim();
   if (first) return first;
   return contactName(person).split(/\s+/)[0] || 'Teammate';
+}
+
+function ComposeIcon({ size = 24, color = '#1d1d1f' }) {
+  if (Platform.OS === 'web') {
+    return createElement(
+      'svg',
+      {
+        width: size,
+        height: size,
+        viewBox: '0 0 24 24',
+        fill: 'none',
+        'aria-hidden': true,
+      },
+      createElement('path', {
+        d: 'M12.2 3.2H5.25A3 3 0 0 0 2.25 6.2v12.55a3 3 0 0 0 3 3h12.55a3 3 0 0 0 3-3V11.8',
+        stroke: color,
+        strokeWidth: 2,
+        strokeLinecap: 'round',
+        strokeLinejoin: 'round',
+      }),
+      createElement('path', {
+        d: 'M10 17.23H6.77v-3.23L18.61 2.17a1.42 1.42 0 0 1 2 0l1.23 1.22a1.42 1.42 0 0 1 0 2.01z',
+        stroke: color,
+        strokeWidth: 2,
+        strokeLinecap: 'round',
+        strokeLinejoin: 'round',
+      }),
+      createElement('path', {
+        d: 'M10 13 18.83 4.17',
+        stroke: color,
+        strokeWidth: 2,
+        strokeLinecap: 'round',
+        strokeLinejoin: 'round',
+      }),
+    );
+  }
+  return <Ionicons name="create-outline" size={size} color={color} />;
 }
 
 function ConversationAvatar({ conversation, size = 52 }) {
@@ -792,12 +829,16 @@ export default function MessagesScreen({
   const [menuMessageId, setMenuMessageId] = useState(null);
   const threadRef = useRef(null);
   const sendScale = useRef(new Animated.Value(1)).current;
+  const composerScale = useRef(new Animated.Value(1)).current;
+  const composerAccent = useRef(new Animated.Value(0)).current;
+  const draftRef = useRef('');
   const typingRef = useRef(null);
   const activeIdRef = useRef(null);
   const titledAiRef = useRef(new Set());
   const inboxRef = useRef(inbox);
   inboxRef.current = inbox;
   activeIdRef.current = activeId;
+  draftRef.current = draft;
   const onUnreadChangeRef = useRef(onUnreadChange);
   onUnreadChangeRef.current = onUnreadChange;
   const refreshInboxRef = useRef(async () => []);
@@ -1311,7 +1352,30 @@ export default function MessagesScreen({
     }
   };
 
+  const pulseComposer = () => {
+    composerScale.stopAnimation();
+    composerAccent.stopAnimation();
+    composerScale.setValue(1.038);
+    composerAccent.setValue(1);
+    Animated.parallel([
+      Animated.spring(composerScale, {
+        toValue: 1,
+        friction: 3.6,
+        tension: 420,
+        useNativeDriver: true,
+      }),
+      Animated.spring(composerAccent, {
+        toValue: 0,
+        friction: 5,
+        tension: 360,
+        useNativeDriver: false,
+      }),
+    ]).start();
+  };
+
   const onChangeDraft = (value) => {
+    if (value.length > draftRef.current.length) pulseComposer();
+    draftRef.current = value;
     setDraft(value);
     if (value.trim()) typingRef.current?.pulse?.(myName);
     else typingRef.current?.stop?.(myName);
@@ -1586,6 +1650,27 @@ export default function MessagesScreen({
             <Text style={styles.inboxTitle} numberOfLines={1}>
               {composeOpen ? 'New' : 'Messages'}
             </Text>
+            <Pressable
+              onPress={() => {
+                setComposeOpen((current) => !current);
+                setSelectedIds([]);
+                setGroupName('');
+                setQuery('');
+                if (isMobile && !composeOpen) setActiveId(null);
+              }}
+              style={({ pressed }) => [
+                styles.composeButton,
+                pressed && styles.composeButtonPressed,
+              ]}
+              hitSlop={8}
+              accessibilityLabel={composeOpen ? 'Close compose' : 'Start a conversation'}
+            >
+              {composeOpen ? (
+                <Ionicons name="close" size={26} color="#1d1d1f" />
+              ) : (
+                <ComposeIcon size={26} color="#1d1d1f" />
+              )}
+            </Pressable>
           </View>
           {composeOpen && selectedPeople.length > 0 ? (
             <View style={[styles.recipientBar, isMobile && styles.recipientBarMobile]}>
@@ -1656,27 +1741,6 @@ export default function MessagesScreen({
                 </Pressable>
               ) : null}
             </View>
-            <Pressable
-              onPress={() => {
-                setComposeOpen((current) => !current);
-                setSelectedIds([]);
-                setGroupName('');
-                setQuery('');
-                if (isMobile && !composeOpen) setActiveId(null);
-              }}
-              style={({ pressed }) => [
-                styles.composeButton,
-                pressed && styles.composeButtonPressed,
-              ]}
-              hitSlop={8}
-              accessibilityLabel={composeOpen ? 'Close compose' : 'Start a conversation'}
-            >
-              <Ionicons
-                name={composeOpen ? 'close' : 'pencil'}
-                size={28}
-                color={BLUE}
-              />
-            </Pressable>
           </View>
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
           <ScrollView
@@ -2005,8 +2069,7 @@ export default function MessagesScreen({
                   <EmojiPicker
                     visible={emojiOpen}
                     onPick={(emoji) => {
-                      setDraft((current) => `${current}${emoji}`);
-                      typingRef.current?.pulse?.(myName);
+                      onChangeDraft(`${draft}${emoji}`);
                     }}
                   />
 
@@ -2025,7 +2088,27 @@ export default function MessagesScreen({
                         color={emojiOpen ? BLUE : '#8e8e93'}
                       />
                     </Pressable>
-                    <View style={[styles.composerField, isMobile && styles.composerFieldMobile]}>
+                    <Animated.View
+                      style={[
+                        styles.composerField,
+                        isMobile && styles.composerFieldMobile,
+                        {
+                          borderColor: composerAccent.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: ['#d1d1d6', BLUE],
+                          }),
+                          transform: [
+                            { scaleX: composerScale },
+                            {
+                              scaleY: composerScale.interpolate({
+                                inputRange: [1, 1.038],
+                                outputRange: [1, 1.018],
+                              }),
+                            },
+                          ],
+                        },
+                      ]}
+                    >
                       <TextInput
                         style={[styles.composerInput, isMobile && styles.composerInputMobile]}
                         value={draft}
@@ -2049,7 +2132,7 @@ export default function MessagesScreen({
                             }
                           : null)}
                       />
-                    </View>
+                    </Animated.View>
                     <Animated.View style={{ transform: [{ scale: sendScale }] }}>
                       <Pressable
                         onPress={handleSend}
@@ -2174,6 +2257,9 @@ const styles = StyleSheet.create({
     backgroundColor: CANVAS,
   },
   inboxHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingTop: 18,
     paddingBottom: 16,
@@ -2182,6 +2268,8 @@ const styles = StyleSheet.create({
     paddingTop: 4,
   },
   inboxTitle: {
+    flex: 1,
+    minWidth: 0,
     fontFamily: titleFontFamily,
     fontSize: 34,
     fontWeight: '400',
@@ -2293,6 +2381,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
+    width: 36,
+    height: 36,
+    marginRight: -6,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -2304,7 +2395,6 @@ const styles = StyleSheet.create({
   searchToolbar: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
     paddingHorizontal: 16,
     marginBottom: 8,
   },

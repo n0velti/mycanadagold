@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { FlatList, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import {
   applyTriageReviewToPo,
   collectAccuracyTriagePos,
@@ -8,6 +9,7 @@ import {
   triagePoNeedsCorrection,
   useTransferWorkflow,
 } from '../lib/transferWorkflow';
+import { groupPosIntoLots, lotMatchesQuery, lotPeriodLabel } from '../lib/triageLots';
 import { MAX_REVIEW_IMAGES, normalizeReviewImages } from '../lib/triageDraft';
 import { captureTriagePhoto } from './TriageCorrectionImages';
 import {
@@ -210,6 +212,45 @@ function ErrorDetailBlock({ review }) {
   );
 }
 
+const LOT_COL = {
+  lot: { flex: 1.6, minWidth: 200 },
+  location: { flex: 1.1, minWidth: 110 },
+  period: { flex: 1, minWidth: 120 },
+  documents: { flex: 0.7, minWidth: 72 },
+  accuracy: { flex: 0.95, minWidth: 96 },
+};
+
+const LotTableRow = memo(function LotTableRow({ lot, last, onOpen }) {
+  const total = lot.correct + lot.incorrect;
+  const percent = total ? Math.round((lot.correct / total) * 100) : 0;
+  return (
+    <TableRow last={last}>
+      <TablePhotoCell>
+        <View style={styles.lotIcon}>
+          <Ionicons name="folder-outline" size={22} color={T.text} />
+        </View>
+      </TablePhotoCell>
+      <TableRowMain onPress={() => onOpen(lot)} accessibilityLabel={`Open ${lot.id}`}>
+        <TableCell flex={LOT_COL.lot.flex} minWidth={LOT_COL.lot.minWidth}>
+          <TableStrong>{lot.id}</TableStrong>
+        </TableCell>
+        <TableCell flex={LOT_COL.location.flex} minWidth={LOT_COL.location.minWidth}>
+          {lot.location}
+        </TableCell>
+        <TableCell flex={LOT_COL.period.flex} minWidth={LOT_COL.period.minWidth}>
+          {lotPeriodLabel(lot)}
+        </TableCell>
+        <TableCell flex={LOT_COL.documents.flex} minWidth={LOT_COL.documents.minWidth}>
+          {String(lot.pos.length)}
+        </TableCell>
+        <TableCell flex={LOT_COL.accuracy.flex} minWidth={LOT_COL.accuracy.minWidth} align="right" last>
+          {total ? `${lot.correct}/${total} · ${percent}%` : '—'}
+        </TableCell>
+      </TableRowMain>
+    </TableRow>
+  );
+});
+
 const AccuracyTableRow = memo(function AccuracyTableRow({ row, last, showError, onOpen }) {
   const detail = errorDetailParts(row.review);
   const summary = showError ? errorDetailSummary(row.review) : '';
@@ -259,6 +300,9 @@ export default function TriageAccuracyPanel({
   onStatsChange,
   breakdownOpen = false,
   onBreakdownOpenChange,
+  openLotId = '',
+  onOpenLotChange,
+  onBackChange,
 }) {
   const { triage } = useTransferWorkflow();
   const isMobile = useIsMobile();
@@ -271,6 +315,33 @@ export default function TriageAccuracyPanel({
   const showError = accuracyTab === 'incorrect';
 
   const accuracyRows = useMemo(() => collectAccuracyTriagePos(triage), [triage]);
+  const lots = useMemo(() => groupPosIntoLots(accuracyRows), [accuracyRows]);
+  const visibleLots = useMemo(
+    () => lots.filter((lot) => lotMatchesQuery(lot, listQuery)),
+    [listQuery, lots],
+  );
+  const openLot = useMemo(
+    () => lots.find((lot) => lot.id === openLotId) || null,
+    [lots, openLotId],
+  );
+  const lotRows = useMemo(() => (openLot ? openLot.pos : accuracyRows), [accuracyRows, openLot]);
+
+  const closeLot = useCallback(() => {
+    onOpenLotChange?.(null);
+  }, [onOpenLotChange]);
+
+  useEffect(() => {
+    if (!openLot) {
+      onBackChange?.(null, null);
+      return undefined;
+    }
+    onBackChange?.(closeLot, { dateLabel: openLot.id, storeNames: openLot.location });
+    return () => onBackChange?.(null, null);
+  }, [closeLot, onBackChange, openLot]);
+
+  useEffect(() => {
+    if (openLotId && !openLot) onOpenLotChange?.(null);
+  }, [openLot, openLotId, onOpenLotChange]);
 
   const setFilter = useCallback((key, value) => {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -284,17 +355,17 @@ export default function TriageAccuracyPanel({
 
   const rowMatchesShared = useCallback(
     (row, skip) =>
-      rowMatchesQuery(row, listQuery) &&
+      (!openLot || rowMatchesQuery(row, listQuery)) &&
       (skip === 'reference' || matchesSelectedLabel(row.reference, filters.reference)) &&
       (skip === 'dateLabel' || matchesSelectedLabel(row.dateLabel, filters.dateLabel)) &&
       (skip === 'person' || matchesSelectedLabel(staffName(row), filters.person)) &&
       (skip === 'store' || matchesSelectedLabel(row.storeName, filters.store)),
-    [filters.dateLabel, filters.person, filters.reference, filters.store, listQuery],
+    [filters.dateLabel, filters.person, filters.reference, filters.store, listQuery, openLot],
   );
 
   const scoped = useMemo(
-    () => accuracyRows.filter((row) => rowMatchesShared(row)),
-    [accuracyRows, rowMatchesShared],
+    () => lotRows.filter((row) => rowMatchesShared(row)),
+    [lotRows, rowMatchesShared],
   );
 
   const errorRows = useMemo(
@@ -322,10 +393,11 @@ export default function TriageAccuracyPanel({
       correct,
       incorrect,
       total,
+      lots: lots.length,
       ratio: total ? `${correct}/${total}` : '0/0',
       percent: total ? Math.round((correct / total) * 100) : 0,
     };
-  }, [filters.error, filters.received, scoped]);
+  }, [filters.error, filters.received, lots.length, scoped]);
 
   useEffect(() => {
     onStatsChange?.(stats);
@@ -350,12 +422,12 @@ export default function TriageAccuracyPanel({
 
   const optionsPool = useMemo(
     () =>
-      accuracyRows.filter(
+      lotRows.filter(
         (row) =>
-          rowMatchesQuery(row, listQuery) &&
+          (!openLot || rowMatchesQuery(row, listQuery)) &&
           (showError ? triagePoNeedsCorrection(row) : Boolean(row.received) && !triagePoNeedsCorrection(row)),
       ),
-    [accuracyRows, listQuery, showError],
+    [listQuery, lotRows, openLot, showError],
   );
 
   const rowMatchesOptions = useCallback(
@@ -446,14 +518,113 @@ export default function TriageAccuracyPanel({
     [openFromTable, showError, visible.length],
   );
 
+  const openLotFolder = useCallback(
+    (lot) => {
+      setOpenFilter(null);
+      setFilters(EMPTY_FILTERS);
+      setSort(null);
+      onOpenLotChange?.(lot.id);
+    },
+    [onOpenLotChange],
+  );
+
+  const renderLotRow = useCallback(
+    ({ item, index }) => (
+      <LotTableRow lot={item} last={index === visibleLots.length - 1} onOpen={openLotFolder} />
+    ),
+    [openLotFolder, visibleLots.length],
+  );
+
   if (accuracyRows.length === 0) {
     return (
       <View style={[styles.body, isMobile && styles.bodyMobile]}>
         <EmptyState
-          icon="checkmark-done-outline"
-          title="Accuracy"
-          body="Received POs and reviewed corrections will appear here."
+          icon="folder-outline"
+          title="Results"
+          body="Finish a PO to create its lot. Lots group every PO / SO from the same store and month."
         />
+      </View>
+    );
+  }
+
+  if (!openLot) {
+    const lotEmpty = (
+      <EmptyState
+        icon="folder-outline"
+        title={listQuery.trim() ? 'No matches' : 'No lots'}
+        body={
+          listQuery.trim()
+            ? `No lot matches “${listQuery.trim()}”.`
+            : 'Finish a PO to create its lot folder.'
+        }
+      />
+    );
+    return (
+      <View style={[styles.body, isMobile && styles.bodyMobile]}>
+        {isMobile ? (
+          <FlatList
+            style={styles.mobileList}
+            contentContainerStyle={styles.mobileListContent}
+            data={visibleLots}
+            keyExtractor={(lot) => lot.id}
+            keyboardShouldPersistTaps="handled"
+            ListEmptyComponent={lotEmpty}
+            renderItem={({ item, index }) => {
+              const total = item.correct + item.incorrect;
+              const percent = total ? Math.round((item.correct / total) * 100) : 0;
+              return (
+                <View style={[index === 0 && styles.mobileGroupStart, index === visibleLots.length - 1 && styles.mobileGroupEnd]}>
+                  <MobileListRow
+                    title={item.id}
+                    subtitle={[item.location, lotPeriodLabel(item)].filter(Boolean).join(' · ')}
+                    meta={`${item.pos.length} ${item.pos.length === 1 ? 'PO' : 'POs'}${total ? ` · ${percent}% correct` : ''}`}
+                    last={index === visibleLots.length - 1}
+                    onPress={() => openLotFolder(item)}
+                    accessibilityLabel={`Open ${item.id}`}
+                    leading={
+                      <View style={styles.lotIconMobile}>
+                        <Ionicons name="folder-outline" size={22} color={T.text} />
+                      </View>
+                    }
+                  />
+                </View>
+              );
+            }}
+          />
+        ) : (
+          <TableFrame
+            minWidth={780}
+            data={visibleLots}
+            renderItem={renderLotRow}
+            keyExtractor={(lot) => lot.id}
+            extraData={`${visibleLots.length}`}
+            ListEmptyComponent={
+              <TableEmpty>
+                {listQuery.trim() ? `No lot matches “${listQuery.trim()}”.` : 'No lots yet.'}
+              </TableEmpty>
+            }
+            header={
+              <>
+                <TablePhotoCell />
+                <View style={[styles.lotHead, { flex: LOT_COL.lot.flex, minWidth: LOT_COL.lot.minWidth }]}>
+                  <Text style={styles.lotHeadText}>Lot</Text>
+                </View>
+                <View style={[styles.lotHead, { flex: LOT_COL.location.flex, minWidth: LOT_COL.location.minWidth }]}>
+                  <Text style={styles.lotHeadText}>Store</Text>
+                </View>
+                <View style={[styles.lotHead, { flex: LOT_COL.period.flex, minWidth: LOT_COL.period.minWidth }]}>
+                  <Text style={styles.lotHeadText}>Period</Text>
+                </View>
+                <View style={[styles.lotHead, { flex: LOT_COL.documents.flex, minWidth: LOT_COL.documents.minWidth }]}>
+                  <Text style={styles.lotHeadText}>POs</Text>
+                </View>
+                <View style={[styles.lotHead, styles.lotHeadEnd, { flex: LOT_COL.accuracy.flex, minWidth: LOT_COL.accuracy.minWidth }]}>
+                  <Text style={styles.lotHeadText}>Results</Text>
+                </View>
+              </>
+            }
+          />
+        )}
       </View>
     );
   }
@@ -464,9 +635,9 @@ export default function TriageAccuracyPanel({
       title={
         listQuery.trim() || filtersActive
           ? 'No matches'
-          : showError
-            ? 'No incorrect purchases'
-            : 'No correct purchases'
+            : showError
+            ? 'No incorrect purchases in this lot'
+            : 'No correct purchases in this lot'
       }
       body={
         listQuery.trim() || filtersActive
@@ -665,7 +836,7 @@ export default function TriageAccuracyPanel({
         session={session}
         row={openRow}
         review={openRow?.review || null}
-        extraRows={accuracyRows}
+        extraRows={lotRows}
         onClose={() => setOpenRow(null)}
         onSave={saveReview}
       />
@@ -690,7 +861,7 @@ export default function TriageAccuracyPanel({
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.breakHero}>
-            <Text style={styles.breakHeroLabel}>Accuracy</Text>
+            <Text style={styles.breakHeroLabel}>Results</Text>
             <Text style={styles.breakHeroValue}>{stats.total ? `${stats.percent}%` : '—'}</Text>
             <Text style={styles.breakHeroMeta}>
               {stats.ratio} correct
@@ -823,6 +994,37 @@ const styles = StyleSheet.create({
   },
   toolbarEnd: {
     marginLeft: 'auto',
+  },
+  lotIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f5f5f5',
+  },
+  lotIconMobile: {
+    width: 52,
+    height: 52,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f5f5f5',
+  },
+  lotHead: {
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+  },
+  lotHeadEnd: {
+    alignItems: 'flex-end',
+  },
+  lotHeadText: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: T.secondary,
+    letterSpacing: 0.2,
+    textTransform: 'uppercase',
   },
   breakBody: {
     flex: 1,

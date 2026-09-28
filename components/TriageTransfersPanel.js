@@ -1,7 +1,7 @@
 /**
- * Triage dashboard: Quick Add POs/SOs and date batches of stores shipping melt
- * to the Workshop. Batches live in Supabase via lib/transferWorkflow; this panel
- * is presentational and delegates every mutation to that store.
+ * Triage dashboard: the working PO / SO list. Finished POs are filed into lots
+ * on the Results tab. This panel is presentational and delegates mutations to
+ * lib/transferWorkflow.
  */
 import { createElement, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -3308,6 +3308,7 @@ function BatchDetail({ session, batch, transfers, storeTab, addMeltOpen, onAddMe
 export default function TriageTransfersPanel({
   session,
   onRequireLogin,
+  active = true,
   createOpen,
   onCreateOpenChange,
   quickAddOpen,
@@ -3333,7 +3334,6 @@ export default function TriageTransfersPanel({
     [selectedId, transfers],
   );
   const poRows = useMemo(() => transfers.filter(isStandaloneTriage), [transfers]);
-  const batchRows = useMemo(() => transfers.filter((row) => !isStandaloneTriage(row)), [transfers]);
 
   useEffect(() => {
     if (!session?.token) return undefined;
@@ -3408,9 +3408,10 @@ export default function TriageTransfersPanel({
   }, [onViewChange, view]);
 
   useEffect(() => {
+    if (!active) return undefined;
     onBackChange?.(selected ? goBackToList : null, batchContext);
     return () => onBackChange?.(null, null);
-  }, [batchContext, goBackToList, onBackChange, selected]);
+  }, [active, batchContext, goBackToList, onBackChange, selected]);
 
   const openBatch = useCallback((row) => {
     if (isStandaloneTriage(row)) {
@@ -3436,7 +3437,7 @@ export default function TriageTransfersPanel({
     if (!result.ok) {
       const where = isStandaloneTriage(result.batch)
         ? 'PO / SO'
-        : result.batch?.dateLabel || 'a batch';
+        : result.batch?.dateLabel || 'Results';
       setQuickAddError(`${row.reference} is already on ${where}.`);
       return;
     }
@@ -3536,7 +3537,7 @@ export default function TriageTransfersPanel({
         <EmptyState
           icon="lock-closed-outline"
           title="Sign in to triage"
-          body="Log in to open batches, receive melt, and check bullion transfers."
+          body="Log in to add POs and review them in Results."
           action={<TextAction label="Go to Profile" strong onPress={onRequireLogin} />}
         />
       </View>
@@ -3566,22 +3567,11 @@ export default function TriageTransfersPanel({
   return (
     <View style={[styles.body, styles.bodyTinted, isMobile && styles.bodyMobile]}>
       <View style={styles.body}>
-        {dashTab === 'batch' ? (
-          batchRows.length === 0 && !listQuery.trim() ? (
-            <EmptyState
-              icon="calendar-outline"
-              title="No batches yet"
-              body="A batch is one date plus the stores shipping to the Workshop."
-              action={<BarButton icon="add" label="Add Batch" onPress={() => onCreateOpenChange(true)} />}
-            />
-          ) : (
-            <BatchDashList transfers={batchRows} query={listQuery} onOpen={openBatch} onDelete={deleteBatch} />
-          )
-        ) : poRows.length === 0 && !listQuery.trim() ? (
+        {poRows.length === 0 && !listQuery.trim() ? (
           <EmptyState
             icon="document-text-outline"
             title="No PO / SO yet"
-            body="A PO you add lands here, not inside a date batch."
+            body="A PO you add lands here. Finish files it into a lot on Results."
           />
         ) : (
           <PoSoList transfers={poRows} query={listQuery} onOpenPo={openStandalonePo} onDelete={deleteBatch} />
