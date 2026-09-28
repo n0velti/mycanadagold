@@ -209,207 +209,140 @@ function RatingBreakdown({ breakdown, total }) {
   );
 }
 
-function StoreMetric({ icon, value, empty, tone }) {
-  return (
-    <View style={styles.storeMetric}>
-      <Ionicons name={icon} size={14} color={tone || (empty ? RATE_EMPTY : '#8e8e93')} />
-      {empty ? null : (
-        <Text style={[styles.storeMetricText, tone ? { color: tone } : null]} numberOfLines={1}>
-          {value}
-        </Text>
-      )}
-    </View>
-  );
-}
-
-function StoreRow({ store, selected, last, compact, onPress }) {
+function StoreSelectCard({ store, selected, onPress, compact }) {
   const emailEmpty = !store.customerCount;
   const reviewsLoading = Boolean(store.reviewsLoading);
-  const meta = reviewsLoading
-    ? `${store.emailRateLabel} email · loading reviews…`
-    : `${store.emailRateLabel} email · ${store.eligibleCount} eligible · ${store.negativeCount} neg`;
-
-  const body = (
-    <>
-      <StoreIcon name={store.storeName} size={compact ? 46 : 28} />
-      <View style={[compact ? styles.igStoreBody : styles.desktopStoreBody, !last && styles.rowDivider]}>
-        <View style={styles.storeBodyMain}>
-          <View style={styles.storeCopy}>
-            <Text style={compact ? styles.igStoreName : styles.desktopStoreName} numberOfLines={1}>
-              {store.storeName}
-            </Text>
-            <Text style={styles.storeMeta} numberOfLines={1}>
-              {store.googleConfigured ? meta : `${store.emailRateLabel} email · no Google link`}
-            </Text>
-          </View>
-          <View style={styles.storeTrailing}>
-            <Text style={compact ? styles.igStoreAmount : styles.desktopAmount} numberOfLines={1}>
-              {formatMoney(store.totalPayout)}
-            </Text>
-            <Text style={styles.storePerReview} numberOfLines={1}>
-              {formatMoney(store.perReviewBonus)} / 5★
-            </Text>
-          </View>
-          <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
-        </View>
-        {compact ? (
-          <View style={styles.storeMetrics}>
-            <StoreMetric
-              icon="mail"
-              value={store.emailRateLabel}
-              empty={emailEmpty}
-              tone={rateColor(store.emailRate, emailEmpty)}
-            />
-            <StoreMetric
-              icon="star"
-              value={`${store.eligibleCount}`}
-              empty={reviewsLoading && store.reviewCount === 0}
-              tone={store.negativeCount > 1 ? '#B91C1C' : '#8e8e93'}
-            />
-          </View>
-        ) : null}
-      </View>
-    </>
-  );
-
   return (
     <Pressable
       onPress={onPress}
       style={({ hovered, pressed }) => [
-        compact ? styles.igStoreCard : styles.desktopStoreRow,
-        selected && styles.storeRowSelected,
-        (hovered || pressed) && styles.storeRowPressed,
+        styles.storeSelectCard,
+        compact && styles.storeSelectCardMobile,
+        selected && styles.storeSelectCardSelected,
+        (hovered || pressed) && styles.storeSelectCardPressed,
       ]}
       accessibilityRole="button"
-      accessibilityLabel={`${store.storeName}, ${formatMoney(store.totalPayout)} estimated`}
+      accessibilityState={{ selected }}
+      accessibilityLabel={`${store.storeName}, ${formatMoney(store.totalPayout)}`}
     >
-      {body}
+      <View style={styles.storeSelectTop}>
+        <StoreIcon name={store.storeName} size={44} />
+        <View style={styles.storeSelectIdentity}>
+          <Text style={styles.storeSelectName} numberOfLines={1}>
+            {store.storeName}
+          </Text>
+          <Text style={styles.storeSelectMeta} numberOfLines={1}>
+            {reviewsLoading
+              ? 'Loading reviews…'
+              : store.googleConfigured
+                ? `${store.reviewCount} review${store.reviewCount === 1 ? '' : 's'}`
+                : 'No Google link'}
+          </Text>
+        </View>
+        {selected ? (
+          <View style={styles.storeSelectCheck}>
+            <Ionicons name="checkmark" size={14} color="#fff" />
+          </View>
+        ) : null}
+      </View>
+
+      <Text style={styles.storeSelectAmount}>{formatMoney(store.totalPayout)}</Text>
+      <Text style={styles.storeSelectPerReview}>
+        {formatMoney(store.perReviewBonus)} per eligible 5★
+      </Text>
+
+      <View style={styles.storeSelectMetrics}>
+        <View style={styles.storeSelectMetric}>
+          <Text
+            style={[
+              styles.storeSelectMetricValue,
+              { color: rateColor(store.emailRate, emailEmpty) },
+            ]}
+          >
+            {emailEmpty ? '—' : store.emailRateLabel}
+          </Text>
+          <Text style={styles.storeSelectMetricLabel}>Email</Text>
+        </View>
+        <View style={styles.storeSelectMetric}>
+          <Text style={styles.storeSelectMetricValue}>
+            {reviewsLoading && !store.reviewCount ? '…' : store.eligibleCount}
+          </Text>
+          <Text style={styles.storeSelectMetricLabel}>Eligible</Text>
+        </View>
+        <View style={styles.storeSelectMetric}>
+          <Text
+            style={[
+              styles.storeSelectMetricValue,
+              store.negativeCount > 1 && styles.rateLow,
+            ]}
+          >
+            {reviewsLoading && !store.reviewCount ? '…' : store.negativeCount}
+          </Text>
+          <Text style={styles.storeSelectMetricLabel}>Negatives</Text>
+        </View>
+      </View>
     </Pressable>
   );
 }
 
-function DesktopStoreTable({ stores, selectedStore, onOpenStore, totals }) {
-  const emailEmpty = !totals.customerCount;
-  const emailRate = totals.customerCount > 0 ? (totals.withEmail / totals.customerCount) * 100 : 0;
+function StoreCardGrid({ stores, selectedStore, onOpenStore, totals, compact }) {
+  const emailEmpty = !totals?.customerCount;
+  const emailRate = totals?.customerCount > 0 ? (totals.withEmail / totals.customerCount) * 100 : 0;
   return (
-    <ScrollView
-      horizontal
-      nestedScrollEnabled
-      showsHorizontalScrollIndicator={false}
-      style={styles.desktopTableScroll}
-      contentContainerStyle={styles.desktopTableScrollContent}
-    >
-      <View style={styles.desktopTable}>
-        <View style={[styles.desktopStoreRow, styles.desktopHeaderRow]}>
-          <View style={styles.desktopIconSpacer} />
-          <View style={[styles.desktopStoreBody, styles.desktopHeaderRule]}>
-            <Text style={[styles.desktopHeader, styles.colStore]}>Store</Text>
-            <Text style={[styles.desktopHeader, styles.colRate]}>Email</Text>
-            <Text style={[styles.desktopHeader, styles.colRate]}>Eligible</Text>
-            <Text style={[styles.desktopHeader, styles.colRate]}>Negatives</Text>
-            <Text style={[styles.desktopHeader, styles.colMoney]}>Payout</Text>
-            <View style={styles.desktopChevron} />
-          </View>
-        </View>
-        {stores.map((store, index) => (
-          <Pressable
-            key={store.storeName}
-            onPress={() => onOpenStore(store)}
-            style={({ hovered, pressed }) => [
-              styles.desktopStoreRow,
-              selectedStore === store.storeName && styles.storeRowSelected,
-              (hovered || pressed) && styles.storeRowPressed,
-            ]}
-            accessibilityRole="button"
-            accessibilityLabel={`${store.storeName} bonus`}
-          >
-            <View style={styles.desktopIconWrap}>
-              <StoreIcon name={store.storeName} size={28} />
-            </View>
-            <View
-              style={[
-                styles.desktopStoreBody,
-                index < stores.length - 1 && styles.rowDivider,
-              ]}
-            >
-              <View style={styles.colStore}>
-                <Text style={styles.desktopStoreName} numberOfLines={1}>
-                  {store.storeName}
-                </Text>
-                <Text style={styles.storeMeta} numberOfLines={1}>
-                  {store.reviewsLoading
-                    ? 'Loading Google reviews…'
-                    : `${store.reviewCount} review${store.reviewCount === 1 ? '' : 's'} · ${formatMoney(store.perReviewBonus)} / eligible`}
-                </Text>
-              </View>
+    <View style={[styles.storeCardGrid, compact && styles.storeCardGridMobile]}>
+      {stores.map((store) => (
+        <StoreSelectCard
+          key={store.storeName}
+          store={store}
+          selected={selectedStore === store.storeName}
+          onPress={() => onOpenStore(store)}
+          compact={compact}
+        />
+      ))}
+      {totals ? (
+        <View
+          style={[
+            styles.storeSelectCard,
+            compact && styles.storeSelectCardMobile,
+            styles.storeSelectTotalCard,
+          ]}
+        >
+          <Text style={styles.storeSelectMeta}>All stores</Text>
+          <Text style={styles.storeSelectAmount}>{formatMoney(totals.totalPayout)}</Text>
+          <Text style={styles.storeSelectPerReview}>
+            {totals.reviewCount} review{totals.reviewCount === 1 ? '' : 's'}
+          </Text>
+          <View style={styles.storeSelectMetrics}>
+            <View style={styles.storeSelectMetric}>
               <Text
                 style={[
-                  styles.desktopRate,
-                  styles.colRate,
-                  { color: rateColor(store.emailRate, !store.customerCount) },
+                  styles.storeSelectMetricValue,
+                  { color: rateColor(emailRate, emailEmpty) },
                 ]}
-                numberOfLines={1}
               >
-                {store.customerCount ? store.emailRateLabel : '—'}
+                {emailEmpty ? '—' : `${emailRate.toFixed(1)}%`}
               </Text>
-              <Text style={[styles.desktopRate, styles.colRate]} numberOfLines={1}>
-                {store.reviewsLoading && !store.reviewCount ? '…' : store.eligibleCount}
-              </Text>
+              <Text style={styles.storeSelectMetricLabel}>Email</Text>
+            </View>
+            <View style={styles.storeSelectMetric}>
+              <Text style={styles.storeSelectMetricValue}>{totals.eligibleCount}</Text>
+              <Text style={styles.storeSelectMetricLabel}>Eligible</Text>
+            </View>
+            <View style={styles.storeSelectMetric}>
               <Text
                 style={[
-                  styles.desktopRate,
-                  styles.colRate,
-                  store.negativeCount > 1 && styles.rateLow,
+                  styles.storeSelectMetricValue,
+                  totals.negativeCount > 1 && styles.rateLow,
                 ]}
-                numberOfLines={1}
               >
-                {store.reviewsLoading && !store.reviewCount ? '…' : store.negativeCount}
+                {totals.negativeCount}
               </Text>
-              <Text style={[styles.desktopAmount, styles.colMoney]} numberOfLines={1}>
-                {formatMoney(store.totalPayout)}
-              </Text>
-              <View style={styles.desktopChevron}>
-                <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
-              </View>
+              <Text style={styles.storeSelectMetricLabel}>Negatives</Text>
             </View>
-          </Pressable>
-        ))}
-        <View style={[styles.desktopStoreRow, styles.desktopTotalRow]}>
-          <View style={styles.desktopIconSpacer} />
-          <View style={[styles.desktopStoreBody, styles.desktopTotalRule]}>
-            <View style={styles.colStore}>
-              <Text style={styles.desktopStoreName}>Total</Text>
-              <Text style={styles.storeMeta}>
-                {totals.reviewCount} review{totals.reviewCount === 1 ? '' : 's'}
-              </Text>
-            </View>
-            <Text
-              style={[
-                styles.desktopRate,
-                styles.colRate,
-                { color: rateColor(emailRate, emailEmpty) },
-              ]}
-            >
-              {emailEmpty ? '—' : `${emailRate.toFixed(1)}%`}
-            </Text>
-            <Text style={[styles.desktopRate, styles.colRate]}>{totals.eligibleCount}</Text>
-            <Text
-              style={[
-                styles.desktopRate,
-                styles.colRate,
-                totals.negativeCount > 1 && styles.rateLow,
-              ]}
-            >
-              {totals.negativeCount}
-            </Text>
-            <Text style={[styles.desktopAmount, styles.colMoney]}>
-              {formatMoney(totals.totalPayout)}
-            </Text>
-            <View style={styles.desktopChevron} />
           </View>
         </View>
-      </View>
-    </ScrollView>
+      ) : null}
+    </View>
   );
 }
 
@@ -1192,52 +1125,14 @@ export default function BonusesScreen({ session, onRequireLogin, onOpenEmails, s
           </View>
         ) : null}
 
-        {!isMobile && visibleStores.length ? (
-          <DesktopStoreTable
+        {visibleStores.length && (!isMobile || !showMobileDetail) ? (
+          <StoreCardGrid
             stores={visibleStores}
             selectedStore={activeStore?.storeName}
             onOpenStore={openStore}
             totals={totals}
+            compact={isMobile}
           />
-        ) : null}
-
-        {isMobile && !showMobileDetail && visibleStores.length ? (
-          <View style={styles.igStoreList}>
-            {visibleStores.map((store, index) => (
-              <StoreRow
-                key={store.storeName}
-                store={store}
-                selected={selectedStore === store.storeName}
-                last={false}
-                compact
-                onPress={() => openStore(store)}
-              />
-            ))}
-            <View style={[styles.igStoreCard, styles.igStoreTotalCard]}>
-              <View style={[styles.igStoreBody, styles.igStoreBodyLast]}>
-                <View style={styles.storeBodyMain}>
-                  <View style={styles.storeCopy}>
-                    <Text style={styles.igStoreName}>Total</Text>
-                    <Text style={styles.storeMeta}>
-                      {totals.reviewCount} review{totals.reviewCount === 1 ? '' : 's'}
-                    </Text>
-                  </View>
-                  <View style={styles.storeTrailing}>
-                    <Text style={styles.igStoreAmount}>{formatMoney(totals.totalPayout)}</Text>
-                  </View>
-                </View>
-                <View style={styles.storeMetrics}>
-                  <StoreMetric
-                    icon="mail"
-                    value={emailRateLabel}
-                    empty={!totals.customerCount}
-                    tone={rateColor(emailRate, !totals.customerCount)}
-                  />
-                  <StoreMetric icon="star" value={`${totals.eligibleCount}`} />
-                </View>
-              </View>
-            </View>
-          </View>
         ) : null}
 
         {!isMobile || showMobileDetail ? detail : null}
@@ -1483,6 +1378,120 @@ const styles = StyleSheet.create({
   loadingText: {
     fontFamily: FONT,
     fontSize: 13,
+    color: '#8e8e93',
+  },
+  storeCardGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    paddingHorizontal: 16,
+    width: '100%',
+  },
+  storeCardGridMobile: {
+    gap: 10,
+  },
+  storeSelectCardMobile: {
+    flexBasis: '100%',
+    minWidth: '100%',
+  },
+  storeSelectCard: {
+    flexGrow: 1,
+    flexBasis: 260,
+    minWidth: 240,
+    maxWidth: '100%',
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#ececec',
+    gap: 2,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  storeSelectCardSelected: {
+    borderColor: ACCENT,
+    backgroundColor: '#FFFEF7',
+  },
+  storeSelectCardPressed: {
+    backgroundColor: '#f7f7f7',
+  },
+  storeSelectTotalCard: {
+    backgroundColor: '#f5f5f5',
+    borderColor: 'transparent',
+    ...Platform.select({
+      web: { cursor: 'default' },
+      default: {},
+    }),
+  },
+  storeSelectTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 10,
+  },
+  storeSelectIdentity: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  storeSelectName: {
+    fontFamily: FONT,
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1a1a1a',
+  },
+  storeSelectMeta: {
+    fontFamily: FONT,
+    fontSize: 13,
+    color: '#8e8e93',
+  },
+  storeSelectCheck: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: ACCENT,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  storeSelectAmount: {
+    fontFamily: FONT_LIGHT,
+    fontSize: 32,
+    lineHeight: 38,
+    fontWeight: '400',
+    color: '#1a1a1a',
+    letterSpacing: -0.8,
+    fontVariant: ['tabular-nums'],
+  },
+  storeSelectPerReview: {
+    fontFamily: FONT,
+    fontSize: 13,
+    color: '#8e8e93',
+    marginBottom: 12,
+  },
+  storeSelectMetrics: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  storeSelectMetric: {
+    flex: 1,
+    backgroundColor: '#f7f7f7',
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    gap: 1,
+  },
+  storeSelectMetricValue: {
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#1a1a1a',
+    fontVariant: ['tabular-nums'],
+  },
+  storeSelectMetricLabel: {
+    fontFamily: FONT,
+    fontSize: 11,
     color: '#8e8e93',
   },
   igStoreList: {
