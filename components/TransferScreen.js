@@ -15,7 +15,7 @@ import {
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
-import { persistOwnLocation } from '../lib/auth';
+import { persistOwnLocation, posEmployeeId as sessionPosEmployeeId } from '../lib/auth';
 import { fetchTransferStores } from '../lib/locations';
 import { CANVAS, useIsMobile } from '../lib/mobileUi';
 import { rowMatchesQuery } from '../lib/itemSearch';
@@ -600,7 +600,7 @@ function SplitsEditor({
 }
 
 function posEmployeeId(session) {
-  return session?.profile?.aureusUserId || session?.user?.id;
+  return sessionPosEmployeeId(session?.profile?.aureusUserId) || session?.user?.id;
 }
 
 async function persistSwitchedLocation(session, onLocationChanged, { locationId, locationName }) {
@@ -2776,7 +2776,7 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
     if (!session?.token) {
       throw new Error('Sign in required.');
     }
-    const employeeId = session?.profile?.aureusUserId || session?.user?.id;
+    const employeeId = sessionPosEmployeeId(session?.profile?.aureusUserId) || session?.user?.id;
     if (!employeeId) {
       throw new Error('Your POS user is missing, so the transfer cannot be created.');
     }

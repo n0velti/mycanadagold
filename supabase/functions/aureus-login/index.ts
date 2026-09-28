@@ -3,15 +3,15 @@
  *
  *   POST { action: "login", login, password }
  *     1. Throttles by IP + login.
- *     2. Verifies the credentials against Aureus POS.
+ *     2. Verifies the credentials against East, GTA, and PMX.
  *     3. Finds or creates the matching Supabase Auth user (email pre-confirmed,
  *        so no confirmation mail is ever sent) and stamps app_metadata with the
  *        Aureus identity (`aureus_user_id`) that RLS and the proxy check.
  *     4. Upserts the staff profile with the service role.
  *     5. Refuses deactivated staff.
  *     6. Mints a Supabase session via a one-time token hash (never emailed).
- *     7. Signs in to linked GTA and PMX POS systems with server-held shared
- *        credentials so every staff session can load those stores.
+ *     7. Signs in to the other POS systems with server-held shared credentials
+ *        so every staff session can load every store.
  *
  *   POST { action: "refresh-linked" }   Authorization: Bearer <user JWT>
  *     Re-issues linked POS tokens for an already signed-in, active staff member.
@@ -32,8 +32,9 @@ import {
   loginLinkedPosSystems,
   fetchEmployeeById,
   fetchEmployeeDirectory,
-  loginToPos,
+  loginToStaffPos,
   lookupLocationName,
+  posSystemFromBaseUrl,
 } from '../_shared/aureus.ts';
 import {
   authEmailForIdentity,
@@ -41,6 +42,8 @@ import {
   findEmployeeRecord,
   inferAppRole,
   mergeEmployeeIntoIdentity,
+  namespaceAureusUserId,
+  rawAureusUserId,
   type AureusIdentity,
 } from '../_shared/identity.ts';
 
@@ -77,6 +80,7 @@ interface LoginBody {
   aureusToken?: string;
   locationId?: string;
   locationName?: string;
+  baseUrl?: string;
 }
 
 interface ProfileRow {
@@ -363,7 +367,11 @@ function publicProfile(row: ProfileRow) {
   };
 }
 
-async function applyDirectoryToProfiles(admin: SupabaseClient, directory: unknown[]): Promise<number> {
+async function applyDirectoryToProfiles(
+  admin: SupabaseClient,
+  directory: unknown[],
+  systemKey = 'east',
+): Promise<number> {
   if (!directory.length) return 0;
   const { data: profiles, error: listError } = await admin
     .from('profiles')
@@ -374,8 +382,15 @@ async function applyDirectoryToProfiles(admin: SupabaseClient, directory: unknow
   let updated = 0;
   await Promise.all(
     (profiles || []).map(async (profile) => {
+      const storedId = String(profile.aureus_user_id || '');
+      const namespaced = /^(east|gta|pmx):/i.test(storedId);
+      const rawId = namespaced
+        ? rawAureusUserId(storedId, systemKey)
+        : systemKey === 'east'
+          ? storedId
+          : '';
       const match = findEmployeeRecord(directory, {
-        aureusUserId: String(profile.aureus_user_id || ''),
+        aureusUserId: rawId,
         aureusLogin: String(profile.aureus_login || ''),
         email: String(profile.email || ''),
       });
@@ -444,7 +459,7 @@ async function handleLogin(req: Request, body: LoginBody): Promise<Response> {
 
   let aureus;
   try {
-    aureus = await loginToPos(AUREUS_BASE_URL, login, password);
+    aureus = await loginToStaffPos(login, password);
   } catch (err) {
     await recordAttempt(admin, ipHash, loginHash, false);
     if (err instanceof AureusError && err.status === 401) {
@@ -468,16 +483,25 @@ async function handleLogin(req: Request, body: LoginBody): Promise<Response> {
     await recordAttempt(admin, ipHash, loginHash, false);
     return error(req, 502, 'Aureus did not return a user identity.', 'pos_identity');
   }
+  const rawUserId = identity.aureusUserId;
+  identity = {
+    ...identity,
+    aureusUserId: namespaceAureusUserId(aureus.systemKey, rawUserId),
+  };
 
   let directory: unknown[] = [];
   try {
     const [byId, rows] = await Promise.all([
-      fetchEmployeeById(aureus.baseUrl, aureus.token, identity.aureusUserId),
+      fetchEmployeeById(aureus.baseUrl, aureus.token, rawUserId),
       fetchEmployeeDirectory(aureus.baseUrl, aureus.token),
     ]);
     directory = rows;
-    const employee = byId || findEmployeeRecord(directory, identity);
+    const employee = byId || findEmployeeRecord(directory, { ...identity, aureusUserId: rawUserId });
     if (employee) identity = mergeEmployeeIntoIdentity(identity, employee);
+    identity = {
+      ...identity,
+      aureusUserId: namespaceAureusUserId(aureus.systemKey, identity.aureusUserId || rawUserId),
+    };
   } catch (err) {
     console.error('aureus employees lookup failed', err instanceof Error ? err.message : err);
   }
@@ -494,7 +518,7 @@ async function handleLogin(req: Request, body: LoginBody): Promise<Response> {
   try {
     userId = await ensureAuthUser(admin, identity, email);
     if (directory.length) {
-      await applyDirectoryToProfiles(admin, directory).catch((err) => {
+      await applyDirectoryToProfiles(admin, directory, aureus.systemKey).catch((err) => {
         console.error('staff role sync failed', err instanceof Error ? err.message : err);
       });
     }
@@ -525,7 +549,10 @@ async function handleLogin(req: Request, body: LoginBody): Promise<Response> {
     return error(req, 500, 'Could not start your session. Try again.', 'session_failed');
   }
 
-  const linked = await loginLinkedPosSystems();
+  const linked = await loginLinkedPosSystems({
+    exceptKey: aureus.systemKey,
+    include: aureus,
+  });
 
   await recordAttempt(admin, ipHash, loginHash, true);
 
@@ -536,6 +563,8 @@ async function handleLogin(req: Request, body: LoginBody): Promise<Response> {
       user: identity.payload,
       login: aureus.login,
       baseUrl: aureus.baseUrl,
+      systemKey: aureus.systemKey,
+      systemLabel: aureus.systemLabel,
     },
     linked,
     profile: publicProfile(await withTeamName(admin, profile)),
@@ -577,6 +606,21 @@ async function handleRefreshLinked(req: Request): Promise<Response> {
   return json(req, 200, { linked });
 }
 
+function posBaseUrlFromBody(body: LoginBody): string {
+  const requested = String(body.baseUrl || '').trim();
+  if (requested) {
+    try {
+      const parsed = new URL(requested);
+      if (parsed.protocol === 'https:' && posSystemFromBaseUrl(parsed.toString())) {
+        return parsed.toString().replace(/\/$/, '');
+      }
+    } catch {
+      // Fall through to East.
+    }
+  }
+  return AUREUS_BASE_URL;
+}
+
 async function handleSyncStaff(req: Request, body: LoginBody): Promise<Response> {
   let staff;
   try {
@@ -591,16 +635,19 @@ async function handleSyncStaff(req: Request, body: LoginBody): Promise<Response>
     return error(req, 400, 'Aureus session missing.', 'missing_token');
   }
 
+  const baseUrl = posBaseUrlFromBody(body);
+  const systemKey = posSystemFromBaseUrl(baseUrl)?.key || 'east';
+
   let directory: unknown[] = [];
   try {
-    directory = await fetchEmployeeDirectory(AUREUS_BASE_URL, aureusToken);
+    directory = await fetchEmployeeDirectory(baseUrl, aureusToken);
   } catch (err) {
     console.error('sync-staff directory failed', err instanceof Error ? err.message : err);
     return error(req, 502, 'Could not load employees from Aureus.', 'pos_unavailable');
   }
 
   try {
-    const updated = await applyDirectoryToProfiles(staff.admin, directory);
+    const updated = await applyDirectoryToProfiles(staff.admin, directory, systemKey);
     const { data: profile, error: profileError } = await selectProfileById(staff.admin, staff.userId);
     if (profileError || !profile) {
       return json(req, 200, { updated, profile: null });
@@ -632,7 +679,7 @@ async function handleSetLocation(req: Request, body: LoginBody): Promise<Respons
   let locationName = String(body.locationName || '').trim().slice(0, 200);
   const aureusToken = String(body.aureusToken || '').trim();
   if (!locationName && aureusToken) {
-    locationName = await lookupLocationName(AUREUS_BASE_URL, aureusToken, locationId);
+    locationName = await lookupLocationName(posBaseUrlFromBody(body), aureusToken, locationId);
   }
 
   const update = await staff.admin

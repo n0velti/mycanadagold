@@ -251,6 +251,26 @@ function collectLocation(raw: AnyRecord): { locationId: string; locationName: st
   return { locationId, locationName };
 }
 
+const POS_ID_PREFIX = /^(east|gta|pmx):/i;
+
+/** East keeps the raw POS id so existing profiles stay stable. GTA/PMX are prefixed. */
+export function namespaceAureusUserId(systemKey: string, rawId: string): string {
+  const id = asString(rawId);
+  if (!id) return '';
+  if (!systemKey || systemKey === 'east') return id;
+  if (POS_ID_PREFIX.test(id)) return id;
+  return `${systemKey}:${id}`;
+}
+
+/** POS employee id for API calls. Strips a gta:/pmx:/east: prefix when present. */
+export function rawAureusUserId(storedId: string, systemKey = ''): string {
+  const id = asString(storedId);
+  const match = /^(east|gta|pmx):(.+)$/i.exec(id);
+  if (!match) return id;
+  if (systemKey && match[1].toLowerCase() !== systemKey.toLowerCase()) return '';
+  return match[2];
+}
+
 export function extractAureusIdentity(user: unknown, loginId: string): AureusIdentity {
   const raw = (user && typeof user === 'object' ? user : {}) as AnyRecord;
   const nestedUser = (raw.user && typeof raw.user === 'object' ? raw.user : raw) as AnyRecord;

@@ -23,6 +23,7 @@ import {
   selectableAppRoles,
 } from '../lib/permissions';
 import { listTeams, teamMemberName } from '../lib/teams';
+import { posEmployeeId } from '../lib/auth';
 import { fetchAureusEmployee } from '../lib/aureusEmployees';
 import { CANVAS, MOBILE, useIsMobile } from '../lib/mobileUi';
 import { IOS } from './IosSettings';
@@ -424,7 +425,7 @@ export default function ProfileScreen({
     }
   }, [openSettings]);
 
-  const employeeId = viewingOther ? staff?.aureusUserId : own?.aureusUserId;
+  const employeeId = posEmployeeId(viewingOther ? staff?.aureusUserId : own?.aureusUserId);
   useEffect(() => {
     if (!session?.token || !employeeId) {
       setPhoneNumber('');

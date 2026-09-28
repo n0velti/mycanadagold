@@ -13,9 +13,14 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAppAccess } from '../lib/permissions';
 import {
   GOOGLE_STORE_PLACES,
+  currentReviewMonth,
   fetchAllGoogleStoreReviews,
+  reviewMonthRange,
+  reviewPeriodLabel,
   summarizeReviews,
 } from '../lib/googleReviews';
+import { formatDateParam, parseDateParam } from '../lib/transactions';
+import HomeDatePicker from './HomeDatePicker';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -188,6 +193,10 @@ function ReviewCard({ review, storeName, showStore }) {
 export default function ReviewsScreen({ session, onRequireLogin, storeFilter }) {
   const { canFilter } = useAppAccess();
   const allowFilters = canFilter('reviews');
+  const initialPeriod = useMemo(() => currentReviewMonth(), []);
+  const [startDate, setStartDate] = useState(initialPeriod.startDate);
+  const [endDate, setEndDate] = useState(initialPeriod.endDate);
+  const [dateMode, setDateMode] = useState('range');
   const [selectedStore, setSelectedStore] = useState(storeFilter || null);
   const [ratingFilter, setRatingFilter] = useState(0);
   const [needsReplyOnly, setNeedsReplyOnly] = useState(false);
@@ -195,6 +204,16 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter }) 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const requestId = useRef(0);
+  const periodLabel = reviewPeriodLabel(startDate, endDate, dateMode);
+  const currentMonth = currentReviewMonth();
+  const start = parseDateParam(startDate);
+  const selectedMonth = reviewMonthRange(start.getFullYear(), start.getMonth());
+  const nextMonthStart = formatDateParam(new Date(start.getFullYear(), start.getMonth() + 1, 1));
+  const canGoForward = nextMonthStart <= currentMonth.startDate;
+  const isCurrentMonth =
+    startDate === currentMonth.startDate && endDate === currentMonth.endDate;
+  const isFullMonth =
+    startDate === selectedMonth.startDate && endDate === selectedMonth.endDate;
 
   useEffect(() => {
     if (storeFilter) {
@@ -233,6 +252,8 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter }) 
     try {
       const next = await fetchAllGoogleStoreReviews({
         storeName: storeFilter || undefined,
+        startDate,
+        endDate,
         onPage: ({ storeName, reviews, done }) => {
           if (id !== requestId.current) return;
           setResults((current) =>
@@ -253,7 +274,7 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter }) 
     } finally {
       if (id === requestId.current) setLoading(false);
     }
-  }, [session?.token, storeFilter]);
+  }, [session?.token, storeFilter, startDate, endDate]);
 
   useEffect(() => {
     load();
@@ -284,6 +305,26 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter }) 
 
   const stillLoading = loading || results.some((row) => row.loading);
 
+  const applyPeriod = (nextStart, nextEnd, mode) => {
+    const startKey = formatDateParam(nextStart);
+    const endKey = formatDateParam(nextEnd || nextStart);
+    setStartDate(startKey);
+    setEndDate(endKey);
+    setDateMode(mode === 'day' || startKey === endKey ? 'day' : 'range');
+  };
+
+  const goMonth = (delta) => {
+    const cursor = parseDateParam(startDate);
+    const next = new Date(cursor.getFullYear(), cursor.getMonth() + delta, 1);
+    if (formatDateParam(next) > currentMonth.startDate) return;
+    const period = reviewMonthRange(next.getFullYear(), next.getMonth());
+    applyPeriod(period.start, period.end, 'range');
+  };
+
+  const goToCurrentMonth = () => {
+    applyPeriod(currentMonth.start, currentMonth.end, 'range');
+  };
+
   if (!session?.token) {
     return (
       <View style={styles.body}>
@@ -306,10 +347,10 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter }) 
           <Text style={styles.toolbarTitle}>Google reviews</Text>
           <Text style={styles.toolbarSub}>
             {combined.count
-              ? `${formatAverage(combined.average)} average · ${combined.count} loaded`
+              ? `${formatAverage(combined.average)} average · ${combined.count} in ${periodLabel}`
               : stillLoading
-                ? 'Loading from Google…'
-                : 'No reviews loaded'}
+                ? `Loading ${periodLabel} from Google…`
+                : `No reviews in ${periodLabel}`}
           </Text>
         </View>
         <Pressable style={styles.refresh} onPress={load} hitSlop={8}>
@@ -326,6 +367,64 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter }) 
           <Text style={styles.errorText}>{error}</Text>
         </View>
       ) : null}
+
+      <View style={styles.periodBar}>
+        <View style={styles.monthNav}>
+          <Pressable
+            style={styles.monthBtn}
+            onPress={() => goMonth(-1)}
+            hitSlop={8}
+            accessibilityLabel="Previous month"
+          >
+            <Ionicons name="chevron-back" size={18} color="#1a1a1a" />
+          </Pressable>
+          <Pressable
+            style={styles.monthLabelWrap}
+            onPress={() => applyPeriod(selectedMonth.start, selectedMonth.end, 'range')}
+            accessibilityLabel={selectedMonth.label}
+          >
+            <Text style={styles.monthLabel}>{selectedMonth.label}</Text>
+            <Text style={styles.monthSub}>
+              {isFullMonth
+                ? isCurrentMonth
+                  ? 'Current month'
+                  : 'Selected month'
+                : periodLabel}
+            </Text>
+          </Pressable>
+          <Pressable
+            style={[styles.monthBtn, !canGoForward && styles.monthBtnDisabled]}
+            onPress={() => goMonth(1)}
+            disabled={!canGoForward}
+            hitSlop={8}
+            accessibilityLabel="Next month"
+          >
+            <Ionicons
+              name="chevron-forward"
+              size={18}
+              color={canGoForward ? '#1a1a1a' : '#c4c4c4'}
+            />
+          </Pressable>
+        </View>
+        <View style={styles.periodPicker}>
+          <HomeDatePicker
+            startDate={startDate}
+            endDate={endDate}
+            dateMode={dateMode}
+            onChange={({ mode, start: nextStart, end: nextEnd }) =>
+              applyPeriod(nextStart, nextEnd, mode)
+            }
+            maximumDate={new Date()}
+            compact
+            fill
+          />
+        </View>
+        {!isCurrentMonth ? (
+          <Pressable style={styles.chip} onPress={goToCurrentMonth}>
+            <Text style={styles.chipText}>This month</Text>
+          </Pressable>
+        ) : null}
+      </View>
 
       <ScrollView
         style={styles.scroll}
@@ -413,7 +512,7 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter }) 
         {stillLoading && !combined.count ? (
           <View style={styles.loadingBlock}>
             <ActivityIndicator color={ACCENT} />
-            <Text style={styles.loadingText}>Loading Google reviews…</Text>
+            <Text style={styles.loadingText}>Loading {periodLabel}…</Text>
           </View>
         ) : null}
 
@@ -422,7 +521,7 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter }) 
             {selectedStore || 'All stores'}
           </Text>
           <Text style={styles.sectionHint}>
-            {feed.length} shown
+            {feed.length} shown · {periodLabel}
             {ratingFilter ? ` · ${ratingFilter}★` : ''}
             {needsReplyOnly ? ' · unreplied' : ''}
           </Text>
@@ -441,7 +540,10 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter }) 
           </View>
         ) : stillLoading ? null : (
           <View style={styles.emptyBlock}>
-            <Text style={styles.emptyText}>No reviews match these filters.</Text>
+            <Text style={styles.emptyText}>
+              No reviews in {periodLabel}
+              {ratingFilter || needsReplyOnly ? ' match these filters' : ''}.
+            </Text>
           </View>
         )}
       </ScrollView>
@@ -516,6 +618,56 @@ const styles = StyleSheet.create({
     padding: 16,
     paddingBottom: 40,
     gap: 14,
+  },
+  periodBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e8e8e8',
+  },
+  monthNav: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    flexGrow: 1,
+    minWidth: 220,
+  },
+  monthLabelWrap: {
+    flex: 1,
+    paddingHorizontal: 8,
+  },
+  monthLabel: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#1a1a1a',
+  },
+  monthSub: {
+    fontFamily,
+    fontSize: 11,
+    color: '#8a8a8a',
+    marginTop: 1,
+  },
+  periodPicker: {
+    minWidth: 168,
+    maxWidth: 240,
+    flexGrow: 1,
+  },
+  monthBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f4f4f4',
+  },
+  monthBtnDisabled: {
+    opacity: 0.5,
   },
   filterRow: {
     flexDirection: 'row',

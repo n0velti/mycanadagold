@@ -11,7 +11,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { persistOwnLocation } from '../lib/auth';
+import { persistOwnLocation, posEmployeeId } from '../lib/auth';
 import {
   isSyntheticWorkshopLocation,
   listAssignableEmployeeLocations,
@@ -99,7 +99,7 @@ export default function ProfileLocationPicker({
   }, [stores, query]);
 
   const handleSelect = async (store) => {
-    const employeeId = asString(session?.profile?.aureusUserId);
+    const employeeId = posEmployeeId(session?.profile?.aureusUserId);
     if (!session?.token || !employeeId) {
       setError('Sign in to change your location.');
       return;

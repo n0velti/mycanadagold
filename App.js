@@ -40,6 +40,7 @@ import {
   logout as logoutRequest,
   onAureusSessionExpired,
   onSessionRevoked,
+  posEmployeeId,
   restoreSession,
   watchAureusToken,
 } from './lib/auth';
@@ -7318,7 +7319,7 @@ export default function App() {
 
   useEffect(() => {
     const token = session?.token;
-    const employeeId = session?.profile?.aureusUserId;
+    const employeeId = posEmployeeId(session?.profile?.aureusUserId);
     const baseUrl = session?.baseUrl;
     if (!token || !employeeId) return undefined;
 
