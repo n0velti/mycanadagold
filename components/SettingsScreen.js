@@ -17,6 +17,7 @@ import { getSupabaseConnectionStatus } from '../lib/supabase';
 import StoreSettingsPanel from './StoreSettingsPanel';
 import RingCentralSettingsPanel from './RingCentralSettingsPanel';
 import PermissionsPanel from './PermissionsPanel';
+import { RipplingPanel } from './EmployeesScreen';
 import { canManageRingCentral } from '../lib/ringcentral';
 import { IosActionRow, IosGroup, IosPage, IosRow } from './IosSettings';
 import {
@@ -45,6 +46,7 @@ function SettingsHome({
   onOpenStoreSettings,
   onOpenPriceCheck,
   onOpenRingCentral,
+  onOpenRippling,
   canManageAiKeys,
   canManagePhone,
   showRingCentral,
@@ -109,7 +111,7 @@ function SettingsHome({
 
         <IosGroup
           header="Company"
-          footer="Who can open each app, purchase price-check tolerance, and the shared keys used for portraits, Serphint, and chat."
+          footer="Who can open each app, purchase price-check tolerance, Rippling, and the shared keys used for portraits, Serphint, and chat."
         >
           {canManageAiKeys ? (
             <IosRow
@@ -130,6 +132,13 @@ function SettingsHome({
             iconColor="#C47A12"
             label="Price Check"
             onPress={onOpenPriceCheck}
+          />
+          <IosRow
+            icon="people"
+            iconColor="#0D9488"
+            label="Rippling"
+            value="HR"
+            onPress={onOpenRippling}
           />
         </IosGroup>
 
@@ -204,6 +213,19 @@ function SettingsHome({
             <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
           </Pressable>
         ) : null}
+
+        <Pressable style={styles.menuRow} onPress={onOpenRippling}>
+          <View style={[styles.menuIcon, { backgroundColor: '#ECFDF5' }]}>
+            <Ionicons name="people-outline" size={16} color="#0F766E" />
+          </View>
+          <View style={styles.menuTextWrap}>
+            <Text style={styles.menuLabel}>Rippling</Text>
+            <Text style={styles.menuHint}>
+              Company HR connection, hours inbox, and the imported time report
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
+        </Pressable>
 
         {canManageAiKeys ? (
           <Pressable style={styles.menuRow} onPress={onOpenAiModels}>
@@ -808,6 +830,10 @@ export default function SettingsScreen({
     return <RingCentralSettingsPanel session={session} storeName={storeName} />;
   }
 
+  if (panel === 'rippling') {
+    return <RipplingPanel profile={session?.profile} />;
+  }
+
   return (
     <SettingsHome
       onOpenAiModels={() => onOpenPanel('ai-models')}
@@ -816,6 +842,7 @@ export default function SettingsScreen({
       onOpenStoreSettings={() => onOpenPanel('store-settings')}
       onOpenPriceCheck={() => onOpenPanel('price-check')}
       onOpenRingCentral={() => onOpenPanel('ringcentral')}
+      onOpenRippling={() => onOpenPanel('rippling')}
       canManageAiKeys={canManageAiKeys}
       canManagePhone={canManagePhone}
       showRingCentral={showRingCentral}

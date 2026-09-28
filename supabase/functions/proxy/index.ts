@@ -3201,7 +3201,7 @@ async function importRipplingCsvFiles(input: {
     const shift = parseShiftRoleReport(file.csv, hint);
     const table = snapshotFromCsv(file.csv);
     // Emailed shift reports refresh employee calendars. They do not replace
-    // the hours CSV on the Rippling tab. A file dropped in the app still shows.
+    // the hours CSV on the Rippling settings screen. A file dropped in the app still shows.
     const hideShiftSnapshot = input.snapshotMode === 'largest' && Boolean(shift);
     if (table.headers.length && !hideShiftSnapshot) {
       const replace = input.snapshotMode === 'last' || !snapshot || table.total > snapshot.total;

@@ -7370,11 +7370,11 @@ export default function App() {
     const hoursCallback = readHoursOAuthCallback();
     const expected = readRipplingOAuthState();
     if (!hoursCallback && (!expected || expected !== callback.state)) return;
-    if (!hasApp('employees')) return;
-    const employeesTool = TOOL_CARDS.find((tool) => tool.key === 'employees');
+    if (!hasApp('settings')) return;
+    const settingsTool = TOOL_CARDS.find((tool) => tool.key === 'settings');
     setActiveTab('tools');
-    setActiveTool(employeesTool || { key: 'employees', label: 'Employees' });
-    setSettingsPanel(null);
+    setActiveTool(settingsTool || { key: 'settings', label: 'Settings' });
+    setSettingsPanel('rippling');
     setToolsQuery('');
   }, [bootstrapping, session?.token, hasApp]);
 
@@ -7606,12 +7606,16 @@ export default function App() {
       'store-settings': 'Store Settings',
       'price-check': 'Price Check',
       ringcentral: 'Phone',
+      rippling: 'Rippling',
     };
     const settingsSubPanelLabel =
       activeTool.key === 'settings' ? settingsSubPanels[settingsPanel] : null;
     const nestedLabel = settingsSubPanelLabel;
 
     if (isMobile) {
+      return null;
+    }
+    if (activeTool.key === 'employees') {
       return null;
     }
 
@@ -8037,6 +8041,7 @@ export default function App() {
     'store-settings': 'Store Settings',
     'price-check': 'Price Check',
     ringcentral: 'Phone',
+    rippling: 'Rippling',
   };
   const mobileToolTitle =
     activeTool?.key === 'settings'
@@ -8059,6 +8064,7 @@ export default function App() {
     styles.contentScrollFix,
     isAppsLibrary && styles.contentAppsLibrary,
     !isMobile && activeTab === 'home' && styles.contentAppsLibrary,
+    !isMobile && activeTab === 'tools' && activeTool?.key === 'employees' && styles.contentAppsLibrary,
     (groupedMobileTab || showingSettings) && styles.contentMobileGrouped,
     canvasMobileTab && styles.canvasFill,
     isMobile && activeTab !== 'home' && !isAppsLibrary && styles.contentMobileTabInset,
