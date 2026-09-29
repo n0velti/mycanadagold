@@ -418,6 +418,7 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-home-top-blur{background:transparent!important;-webkit-backdrop-filter:saturate(140%) blur(18px);backdrop-filter:saturate(140%) blur(18px);-webkit-mask-image:linear-gradient(to bottom,#000 0%,rgba(0,0,0,0.5) 38%,transparent 100%);mask-image:linear-gradient(to bottom,#000 0%,rgba(0,0,0,0.5) 38%,transparent 100%);}',
     '.cgold-home-overlay-scroll{position:relative;z-index:4;}',
     '.cgold-home-overlay-scroll,.cgold-home-overlay-scroll>div{background:transparent!important;overscroll-behavior:none;}',
+    '@media (max-width:767px){.cgold-home-overlay-scroll{-webkit-overflow-scrolling:touch;touch-action:pan-y;overflow-y:auto!important;}}',
     '.cgold-store-overlay-scroll,.cgold-store-overlay-scroll *{pointer-events:none!important;}',
     '.cgold-store-sheet,.cgold-store-sheet *{pointer-events:auto!important;}',
     '.cgold-home-chip-blur{-webkit-backdrop-filter:saturate(140%) blur(10px);backdrop-filter:saturate(140%) blur(10px);background-color:rgba(255,255,255,0.56)!important;border-radius:999px;}',
@@ -5938,7 +5939,7 @@ function HomeScreen({
         </View>
       ) : null}
       <ScrollView
-        pointerEvents="box-none"
+        pointerEvents={isMobile ? 'auto' : 'box-none'}
         style={[styles.toolsScroll, styles.igHomeOverlayScroll]}
         contentContainerStyle={[
           styles.igHomeScroll,

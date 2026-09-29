@@ -1129,7 +1129,7 @@ export default function ProfileScreen({
           {profileHero}
         </View>
         <ScrollView
-          pointerEvents="box-none"
+          pointerEvents={isMobile ? 'auto' : 'box-none'}
           style={styles.overlayScroll}
           contentContainerStyle={{
             flexGrow: 1,
