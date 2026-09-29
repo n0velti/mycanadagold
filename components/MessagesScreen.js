@@ -47,11 +47,14 @@ import {
   toggleDmLike,
   unhideDmConversation,
 } from '../lib/messages';
+import { fetchAureusEmployee } from '../lib/aureusEmployees';
 import { prepareAiChatSession, sendAiChatMessage, titleAiChat } from '../lib/aiChat';
 import { OPENROUTER_MODELS } from '../lib/openrouter';
 import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
-import { CANVAS } from '../lib/mobileUi';
+import { CANVAS, mobileSafeBottom } from '../lib/mobileUi';
+import { listStaffProfiles, useAppAccess } from '../lib/permissions';
 import ProfilePhotoModal from './ProfilePhotoModal';
+import { usePhoneCalls } from './PhoneCallProvider';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -858,9 +861,13 @@ export default function MessagesScreen({
   openUserId,
   onOpenedUser,
   onOpenProfile,
+  onConversationOpenChange,
 }) {
   const isMobile = useIsMobile();
   const tabBarScroll = useMobileTabBarScrollProps();
+  const phone = usePhoneCalls();
+  const { hasApp } = useAppAccess();
+  const canPhone = hasApp('phone');
   const myId = session?.supabaseUserId || session?.profile?.id || '';
   const myName =
     session?.profile?.fullName ||
@@ -892,6 +899,7 @@ export default function MessagesScreen({
   const threadRef = useRef(null);
   const sendScale = useRef(new Animated.Value(1)).current;
   const draftRef = useRef('');
+  const sendingRef = useRef(false);
   const typingRef = useRef(null);
   const activeIdRef = useRef(null);
   const titledAiRef = useRef(new Set());
@@ -901,7 +909,17 @@ export default function MessagesScreen({
   draftRef.current = draft;
   const onUnreadChangeRef = useRef(onUnreadChange);
   onUnreadChangeRef.current = onUnreadChange;
+  const onConversationOpenChangeRef = useRef(onConversationOpenChange);
+  onConversationOpenChangeRef.current = onConversationOpenChange;
   const refreshInboxRef = useRef(async () => []);
+
+  useEffect(() => {
+    onConversationOpenChangeRef.current?.(Boolean(isMobile && activeId));
+  }, [isMobile, activeId]);
+
+  useEffect(() => {
+    return () => onConversationOpenChangeRef.current?.(false);
+  }, []);
 
   const activeThread = inbox.find((row) => row.conversationId === activeId) || null;
 
@@ -1002,6 +1020,38 @@ export default function MessagesScreen({
       return;
     }
     setPhotoPerson(person);
+  };
+
+  const handleCallThread = async () => {
+    if (activeThread?.isAi || activeThread?.isGroup) {
+      setError('Call a person from their profile.');
+      return;
+    }
+    if (!canPhone) {
+      setError('You don’t have access to Phone.');
+      return;
+    }
+    const person = activeThread?.other;
+    if (!person?.id) {
+      setError('No one to call in this chat.');
+      return;
+    }
+    try {
+      const staff = (await listStaffProfiles()).find((row) => row.id === person.id);
+      const employeeId = staff?.aureusUserId;
+      let number = '';
+      if (session?.token && employeeId) {
+        const { mapped } = await fetchAureusEmployee(session.token, employeeId, session.baseUrl);
+        number = mapped?.phone || '';
+      }
+      if (!number) {
+        setError('No phone number on file.');
+        return;
+      }
+      await phone.ringOut(number);
+    } catch (err) {
+      setError(err.message || 'Could not start the call.');
+    }
   };
 
   const openedUserRef = useRef('');
@@ -1263,7 +1313,8 @@ export default function MessagesScreen({
 
   const handleSend = async () => {
     const text = draft.trim();
-    if (!text || !activeId || sending) return;
+    if (!text || !activeId || sending || sendingRef.current) return;
+    sendingRef.current = true;
     const localKey = `local-${Date.now()}`;
     const tempId = `temp-${localKey}`;
     sendScale.setValue(0.82);
@@ -1356,6 +1407,7 @@ export default function MessagesScreen({
         setDraft(text);
         setError(err.message || 'Could not get an answer.');
       } finally {
+        sendingRef.current = false;
         setSending(false);
       }
       return;
@@ -1383,6 +1435,7 @@ export default function MessagesScreen({
       const saved = await sendDmMessage(activeId, text);
       setMessages((current) => mergeSentMessage(current, localKey, tempId, saved));
       await refreshInbox();
+      sendingRef.current = false;
       setSending(false);
       if (!mentionsAi(text)) return;
       const conversationId = activeId;
@@ -1433,8 +1486,16 @@ export default function MessagesScreen({
       setDraft(text);
       setError(err.message || 'Could not send that message.');
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
+  };
+
+  const submitFromKeyboard = (event) => {
+    const key = event?.nativeEvent?.key || event?.key;
+    if (key !== 'Enter') return;
+    event?.preventDefault?.();
+    void handleSend();
   };
 
   const onChangeDraft = (value) => {
@@ -1807,7 +1868,7 @@ export default function MessagesScreen({
         <View style={[styles.thread, isMobile && styles.canvasMobile]}>
           {threadLive ? (
             <>
-              <View style={styles.threadHeader}>
+              <View style={[styles.threadHeader, isMobile && styles.threadHeaderMobile]}>
                 {isMobile ? (
                   <Pressable
                     onPress={() => {
@@ -1826,7 +1887,7 @@ export default function MessagesScreen({
                 <View style={styles.threadHeaderMain}>
                   <Pressable
                     onPress={() => {
-                      if (activeThread.isGroup) {
+                      if (activeThread.isGroup || activeThread.isAi) {
                         setTitleDraft(activeThread.title || '');
                         setDetailsOpen(true);
                         setAddingMembers(false);
@@ -1844,7 +1905,6 @@ export default function MessagesScreen({
                   </Pressable>
                   <Pressable
                     onPress={() => {
-                      if (!activeThread.isGroup) return;
                       setTitleDraft(activeThread.title || '');
                       setDetailsOpen(true);
                       setAddingMembers(false);
@@ -1867,36 +1927,32 @@ export default function MessagesScreen({
                   </Pressable>
                 </View>
                 <Pressable
-                  onPress={() =>
-                    confirmDeleteConversation(activeThread, () => handleDeleteConversation(activeThread))
-                  }
+                  onPress={() => void handleCallThread()}
                   style={styles.infoButton}
-                  accessibilityLabel="Delete chat"
+                  accessibilityLabel="Call"
                 >
-                  <Ionicons name="trash-outline" size={20} color="#8e8e93" />
+                  <Ionicons name="call-outline" size={20} color={BLUE} />
                 </Pressable>
-                {activeThread.isGroup ? (
-                  <Pressable
-                    onPress={() => {
-                      setDetailsOpen((current) => {
-                        if (!current) setTitleDraft(activeThread.title || '');
-                        return !current;
-                      });
-                      setAddingMembers(false);
-                    }}
-                    style={styles.infoButton}
-                    accessibilityLabel="Group details"
-                  >
-                    <Ionicons
-                      name={detailsOpen ? 'close-circle' : 'information-circle-outline'}
-                      size={22}
-                      color={BLUE}
-                    />
-                  </Pressable>
-                ) : null}
+                <Pressable
+                  onPress={() => {
+                    setDetailsOpen((current) => {
+                      if (!current) setTitleDraft(activeThread.title || '');
+                      return !current;
+                    });
+                    setAddingMembers(false);
+                  }}
+                  style={styles.infoButton}
+                  accessibilityLabel="Chat details"
+                >
+                  <Ionicons
+                    name={detailsOpen ? 'close-circle' : 'information-circle-outline'}
+                    size={22}
+                    color={BLUE}
+                  />
+                </Pressable>
               </View>
 
-              {detailsOpen && activeThread.isGroup ? (
+              {detailsOpen ? (
                 <ScrollView
                   style={styles.detailsPanel}
                   contentContainerStyle={[
@@ -1905,12 +1961,17 @@ export default function MessagesScreen({
                   ]}
                   keyboardShouldPersistTaps="handled"
                 >
-                  {activeThread.isTeam ? (
+                  {activeThread.isAi ? (
+                    <>
+                      <Text style={styles.detailsLabel}>Chat</Text>
+                      <Text style={styles.detailsTeamName}>{conversationTitle(activeThread)}</Text>
+                    </>
+                  ) : activeThread.isTeam ? (
                     <>
                       <Text style={styles.detailsLabel}>Team</Text>
                       <Text style={styles.detailsTeamName}>{conversationTitle(activeThread)}</Text>
                     </>
-                  ) : (
+                  ) : activeThread.isGroup ? (
                     <>
                       <Text style={styles.detailsLabel}>Group name</Text>
                       <TextInput
@@ -1939,10 +2000,17 @@ export default function MessagesScreen({
                         }}
                       />
                     </>
+                  ) : (
+                    <>
+                      <Text style={styles.detailsLabel}>Chat</Text>
+                      <Text style={styles.detailsTeamName}>{conversationTitle(activeThread)}</Text>
+                    </>
                   )}
-                  <Text style={styles.detailsLabel}>
-                    {activeThread.members.length + 1} people
-                  </Text>
+                  {!activeThread.isAi ? (
+                    <Text style={styles.detailsLabel}>
+                      {activeThread.members.length + 1} people
+                    </Text>
+                  ) : null}
                   {activeThread.members.map((person) => (
                     <Pressable
                       key={person.id}
@@ -1967,7 +2035,7 @@ export default function MessagesScreen({
                       ) : null}
                     </Pressable>
                   ))}
-                  {!activeThread.isTeam && !activeThread.isAi ? (
+                  {activeThread.isGroup && !activeThread.isTeam && !activeThread.isAi ? (
                     <>
                       <Pressable
                         onPress={() => setAddingMembers((current) => !current)}
@@ -2008,7 +2076,7 @@ export default function MessagesScreen({
                       {activeThread.isAi ? 'Delete chat' : 'Delete for you'}
                     </Text>
                   </Pressable>
-                  {!activeThread.isAi ? (
+                  {activeThread.isGroup && !activeThread.isAi ? (
                     <Pressable
                       onPress={async () => {
                         try {
@@ -2157,17 +2225,8 @@ export default function MessagesScreen({
                         returnKeyType="send"
                         maxLength={4000}
                         blurOnSubmit={false}
-                        onSubmitEditing={Platform.OS === 'web' ? undefined : handleSend}
-                        {...(Platform.OS === 'web'
-                          ? {
-                              onKeyDown: (event) => {
-                                if (event.key === 'Enter') {
-                                  event.preventDefault();
-                                  handleSend();
-                                }
-                              },
-                            }
-                          : null)}
+                        onSubmitEditing={() => void handleSend()}
+                        onKeyPress={submitFromKeyboard}
                       />
                     </View>
                     <Animated.View style={{ transform: [{ scale: sendScale }] }}>
@@ -2631,8 +2690,11 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingHorizontal: 14,
     paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e5e5ea',
+    backgroundColor: 'transparent',
+    borderBottomWidth: 0,
+  },
+  threadHeaderMobile: {
+    backgroundColor: 'transparent',
   },
   threadHeaderMain: {
     flex: 1,
@@ -2772,7 +2834,7 @@ const styles = StyleSheet.create({
     paddingBottom: 32,
   },
   detailsContentMobile: {
-    paddingBottom: mobileTabBarReserve() + 32,
+    paddingBottom: mobileSafeBottom() + 32,
   },
   detailsLabel: {
     fontFamily,
@@ -3111,7 +3173,7 @@ const styles = StyleSheet.create({
   },
   composerMobile: {
     paddingTop: 6,
-    paddingBottom: 8 + mobileTabBarReserve(),
+    paddingBottom: 8 + mobileSafeBottom(),
     alignItems: 'center',
   },
   composerFieldMobile: {

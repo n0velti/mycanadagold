@@ -446,6 +446,21 @@ export default function TriageScreen({
           >
             <MobileFilterLines color={filtersOpen || filtersActive ? T.text : T.secondary} />
           </MobileCircleButton>
+          <Text style={styles.mobileTitle} numberOfLines={1}>
+            {dashPage === 'errors'
+              ? 'Errors'
+              : dashPage === 'shipments'
+                ? 'Transfers'
+                : dashPage === 'allocation'
+                  ? 'Allocation'
+                  : dashPage === 'return'
+                    ? 'Expected Return'
+                    : activeTab === 'accuracy'
+                      ? resultsLotId || 'Results'
+                      : activeTab === 'deleted'
+                        ? 'Deleted'
+                        : 'Triage'}
+          </Text>
           {canAdd ? (
             <MobileCircleButton
               tone="green"
@@ -457,7 +472,9 @@ export default function TriageScreen({
             >
               <Ionicons name="add" size={22} color="#fff" />
             </MobileCircleButton>
-          ) : null}
+          ) : (
+            <View style={styles.mobileTitleSpacer} />
+          )}
         </View>
       ) : null}
       <View style={styles.pageVisible}>
@@ -660,6 +677,21 @@ const styles = StyleSheet.create({
   mobileFabSlot: {
     height: 56,
     flexShrink: 0,
+  },
+  mobileTitle: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: FONT,
+    fontSize: 17,
+    fontWeight: '600',
+    color: T.text,
+    textAlign: 'center',
+    letterSpacing: -0.3,
+    paddingHorizontal: 8,
+  },
+  mobileTitleSpacer: {
+    width: 40,
+    height: 40,
   },
   filterLayer: {
     ...StyleSheet.absoluteFillObject,

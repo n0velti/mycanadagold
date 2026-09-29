@@ -147,7 +147,7 @@ import {
 import { captureTokenFromLocation } from './lib/qrCode';
 import { fetchAureusEmployee } from './lib/aureusEmployees';
 import { useDirectMessages } from './lib/messages';
-import { CANVAS, MOBILE_FILTER_INSET, MOBILE_FILTER_SIZE } from './lib/mobileUi';
+import { CANVAS, MOBILE_FILTER_INSET, MOBILE_FILTER_SIZE, mobileSafeBottom } from './lib/mobileUi';
 import { FONT, FONT_LIGHT, SOHNE_NATIVE_FONTS, SOHNE_WEB_FONTS } from './lib/typography';
 
 // Every tool screen is loaded on demand. On web, Metro turns each `import()`
@@ -397,7 +397,7 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-mobile-inset-top{height:max(12px,env(safe-area-inset-top,0px))!important;}',
     '.cgold-mobile-tab-bar-dock{padding-bottom:max(14px,calc(env(safe-area-inset-bottom,0px) + 10px))!important;}',
     '.cgold-mobile-tab-bar{-webkit-backdrop-filter:saturate(180%) blur(22px);backdrop-filter:saturate(180%) blur(22px);background-color:rgba(255,255,255,0.56)!important;border-radius:999px;}',
-    '.cgold-mobile-tab-active{-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);background-color:rgba(255,255,255,0.78)!important;border-radius:999px;}',
+    '.cgold-mobile-tab-active{-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);background-color:rgba(22,22,24,0.36)!important;border-radius:999px;}',
     '.cgold-mobile-filter-blur{background-color:#fff!important;}',
     '.cgold-mobile-chrome-blur{-webkit-backdrop-filter:saturate(180%) blur(22px);backdrop-filter:saturate(180%) blur(22px);background-color:rgba(242,242,247,0.72)!important;}',
     '.cgold-mobile-sheet-top{padding-top:max(18px,env(safe-area-inset-top,0px))!important;}',
@@ -7117,6 +7117,7 @@ export default function App() {
   const [ownUserAccess, setOwnUserAccess] = useState(null);
   const [viewedProfile, setViewedProfile] = useState(null);
   const [dmFocusUserId, setDmFocusUserId] = useState('');
+  const [dmConversationOpen, setDmConversationOpen] = useState(false);
   const [teamsFocusId, setTeamsFocusId] = useState('');
   const [profileReturnTo, setProfileReturnTo] = useState(null);
   const [locationPickerOpen, setLocationPickerOpen] = useState(false);
@@ -7226,6 +7227,7 @@ export default function App() {
     setAnalyticsMini(null);
     setViewedProfile(null);
     setDmFocusUserId('');
+    setDmConversationOpen(false);
     setTeamsFocusId('');
     setProfileReturnTo(null);
     setLocationPickerOpen(false);
@@ -7993,6 +7995,7 @@ export default function App() {
                   openUserId={dmFocusUserId}
                   onOpenedUser={() => setDmFocusUserId('')}
                   onOpenProfile={openPersonProfile}
+                  onConversationOpenChange={setDmConversationOpen}
                 />
               </View>
             ) : (
@@ -8035,6 +8038,7 @@ export default function App() {
               openUserId={dmFocusUserId}
               onOpenedUser={() => setDmFocusUserId('')}
               onOpenProfile={openPersonProfile}
+              onConversationOpenChange={setDmConversationOpen}
             />
           </ScreenGate>
         </View>
@@ -8222,17 +8226,25 @@ export default function App() {
             />
           ) : null}
           <View style={contentStyle}>{renderContent()}</View>
-          <View pointerEvents="box-none" style={styles.mobilePhoneDockSlot}>
+          <View
+            pointerEvents="box-none"
+            style={[
+              styles.mobilePhoneDockSlot,
+              dmConversationOpen && styles.mobilePhoneDockSlotThread,
+            ]}
+          >
             <MobilePhoneDock />
           </View>
-          <MobileTabBar
-            tabs={mobileTabs}
-            activeKey={activeTab}
-            onSelect={selectTab}
-            messagesUnread={messagesUnread}
-            profileAvatarUrl={session?.profile?.avatarUrl || ''}
-            profileName={userLabel}
-          />
+          {dmConversationOpen ? null : (
+            <MobileTabBar
+              tabs={mobileTabs}
+              activeKey={activeTab}
+              onSelect={selectTab}
+              messagesUnread={messagesUnread}
+              profileAvatarUrl={session?.profile?.avatarUrl || ''}
+              profileName={userLabel}
+            />
+          )}
         </View>
       </PhoneCallProvider>
       </AppAccessContext.Provider>
@@ -8950,6 +8962,9 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: mobileTabBarReserve(),
     zIndex: 50,
+  },
+  mobilePhoneDockSlotThread: {
+    bottom: mobileSafeBottom(),
   },
   contentMobilePadded: {
     paddingHorizontal: 16,

@@ -2,7 +2,7 @@
  * Triage dashboard: Errors, Allocation, and Expected Return.
  * Mobile matches the Home tab: hero, stat row, full-bleed list.
  */
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
@@ -21,18 +21,8 @@ import { groupPosIntoLots, lotPeriodLabel } from '../lib/triageLots';
 import { formatAmount } from '../lib/transactions';
 import { formatErrorAmount } from '../lib/triageDraft';
 import { CANVAS, useIsMobile } from '../lib/mobileUi';
-import { EmptyState, FONT, Group, ProgressBar, SectionLabel, T, TextAction } from './TriageKit';
-import {
-  PoThumb,
-  TableCell,
-  TableEmpty,
-  TableFrame,
-  TableMuted,
-  TablePhotoCell,
-  TableRow,
-  TableRowMain,
-  TableStrong,
-} from './TriageTable';
+import { EmptyState, FONT, Group, ProgressBar, T, TextAction } from './TriageKit';
+import { PoThumb } from './TriageTable';
 import TriageReviewDrawer from './TriageReviewDrawer';
 
 const fontFamily = FONT;
@@ -172,12 +162,6 @@ function matchesQuery(row, query) {
     .includes(q);
 }
 
-function errorSummaryLine(row) {
-  const note = String(row?.review?.note || '').trim();
-  const amount = formatErrorAmount(row?.review?.errorAmount || '');
-  return [errorTypeOf(row), amount, note].filter(Boolean).join(' · ');
-}
-
 function HomeHero({ label, value, stats }) {
   return (
     <View style={styles.hero}>
@@ -269,52 +253,24 @@ function HomeRow({
   );
 }
 
-const ErrorTableRow = memo(function ErrorTableRow({ row, last, onOpen }) {
-  return (
-    <TableRow last={last}>
-      <TablePhotoCell>
-        <PoThumb urls={row.imageUrls} label={row.reference} />
-      </TablePhotoCell>
-      <TableRowMain onPress={() => onOpen(row)} accessibilityLabel={`Open ${row.reference || 'error'}`}>
-        <TableCell flex={1.6} minWidth={160}>
-          <TableStrong>{row.reference || 'Document'}</TableStrong>
-          <TableMuted>{errorSummaryLine(row)}</TableMuted>
-        </TableCell>
-        <TableCell flex={1} minWidth={110}>
-          {row.storeName || '—'}
-        </TableCell>
-        <TableCell flex={1} minWidth={110}>
-          {staffName(row) || '—'}
-        </TableCell>
-        <TableCell flex={0.85} minWidth={92}>
-          {row.dateLabel || '—'}
-        </TableCell>
-        <TableCell flex={0.8} minWidth={88} align="right" last>
-          {formatErrorAmount(row?.review?.errorAmount || '') || '—'}
-        </TableCell>
-      </TableRowMain>
-    </TableRow>
-  );
-});
-
-function DashCard({ title, value, meta, tone, icon, onPress }) {
+function DashCard({ title, value, meta, tone, icon, onPress, compact = false }) {
   return (
     <Pressable
       onPress={onPress}
-      style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
+      style={({ pressed }) => [styles.card, compact && styles.cardCompact, pressed && styles.cardPressed]}
       accessibilityRole="button"
       accessibilityLabel={`${title}. ${value}. ${meta || ''}`}
       accessibilityHint={`Opens ${title}`}
       {...(Platform.OS === 'web' ? { className: 'cgold-dash-card' } : null)}
     >
       <View style={styles.cardTop}>
-        <View style={styles.cardIcon}>
-          <Ionicons name={icon} size={20} color={T.text} />
+        <View style={[styles.cardIcon, compact && styles.cardIconCompact]}>
+          <Ionicons name={icon} size={compact ? 18 : 20} color={T.text} />
         </View>
         <Ionicons name="chevron-forward" size={18} color={T.secondary} />
       </View>
       <Text style={styles.cardKicker}>{title}</Text>
-      <Text style={[styles.cardValue, tone === 'red' && styles.cardValueRed]} numberOfLines={1}>
+      <Text style={[styles.cardValue, compact && styles.cardValueCompact, tone === 'red' && styles.cardValueRed]} numberOfLines={1}>
         {value}
       </Text>
       {meta ? (
@@ -330,6 +286,10 @@ function ErrorsPage({ rows, query, onOpen, isMobile }) {
   const visible = useMemo(() => rows.filter((row) => matchesQuery(row, query)), [query, rows]);
   const types = useMemo(() => rankCounts(visible, errorTypeOf), [visible]);
   const amount = useMemo(() => visible.reduce((sum, row) => sum + errorAmountOf(row), 0), [visible]);
+  const storeCount = useMemo(
+    () => new Set(visible.map((row) => String(row.storeName || '').trim()).filter((name) => name && name !== '—')).size,
+    [visible],
+  );
 
   if (!rows.length) {
     return (
@@ -342,129 +302,44 @@ function ErrorsPage({ rows, query, onOpen, isMobile }) {
   }
 
   const empty = query.trim() ? `No error matches “${query.trim()}”.` : 'No errors.';
-  const storeCount = new Set(visible.map((row) => String(row.storeName || '').trim()).filter((name) => name && name !== '—')).size;
-
-  if (isMobile) {
-    return (
-      <ScrollView
-        style={styles.mobileScroll}
-        contentContainerStyle={styles.mobileScrollContent}
-        keyboardShouldPersistTaps="handled"
-      >
-        <HomeHero
-          label="Errors"
-          value={amount ? formatAmount(amount) : String(visible.length)}
-          stats={[
-            { label: visible.length === 1 ? 'Error' : 'Errors', value: String(visible.length) },
-            { label: storeCount === 1 ? 'Store' : 'Stores', value: String(storeCount) },
-            { label: types[0]?.label || 'Type', value: types[0] ? String(types[0].count) : '—' },
-          ]}
-        />
-        {types.length ? (
-          <HomeSection title="By type" meta={`${types.length}`}>
-            {types.map((row, index) => (
-              <HomeRow
-                key={row.label}
-                title={row.label}
-                meta={`${row.count} of ${visible.length} · ${Math.round((row.count / visible.length) * 100)}%`}
-                value={String(row.count)}
-                icon="alert-circle"
-                iconColor="#C2410C"
-                last={index === types.length - 1}
-                chevron={false}
-              />
-            ))}
-          </HomeSection>
-        ) : null}
-        <HomeSection title="Documents" meta={String(visible.length)}>
-          {visible.length ? (
-            visible.map((row, index) => (
-              <HomeRow
-                key={`${row.triageId}-${row.id}`}
-                title={row.reference || 'Document'}
-                meta={[errorTypeOf(row), row.storeName, staffName(row)].filter(Boolean).join(' · ')}
-                value={formatErrorAmount(row?.review?.errorAmount || '') || ''}
-                leading={<PoThumb urls={row.imageUrls} label={row.reference} size={46} />}
-                last={index === visible.length - 1}
-                onPress={() => onOpen(row)}
-              />
-            ))
-          ) : (
-            <Text style={styles.emptyCopy}>{empty}</Text>
-          )}
-        </HomeSection>
-      </ScrollView>
-    );
-  }
 
   return (
-    <View style={styles.page}>
-      <View style={styles.pageIntro}>
-        <Text style={styles.pageSub}>
-          {visible.length} {visible.length === 1 ? 'error' : 'errors'}
-          {amount ? ` · ${formatAmount(amount)}` : ''}
-          {types[0] ? ` · ${types[0].label} most common` : ''}
-        </Text>
-      </View>
-
-      {types.length ? (
-        <View style={styles.breakBlock}>
-          <SectionLabel>By type</SectionLabel>
-          <Group>
-            {types.map((row, index) => (
-              <View key={row.label} style={[styles.breakRow, index === types.length - 1 && styles.breakRowLast]}>
-                <View style={styles.breakCopy}>
-                  <Text style={styles.breakLabel} numberOfLines={1}>
-                    {row.label}
-                  </Text>
-                  <Text style={styles.breakCount}>
-                    {row.count}
-                    {visible.length ? ` · ${Math.round((row.count / visible.length) * 100)}%` : ''}
-                  </Text>
-                </View>
-                <ProgressBar value={row.count} total={visible.length || row.count} tone="orange" height={4} />
-              </View>
-            ))}
-          </Group>
-        </View>
-      ) : null}
-
-      <TableFrame
-        minWidth={860}
-        data={visible}
-        keyExtractor={(row) => `${row.triageId}-${row.id}`}
-        renderItem={({ item, index }) => (
-          <ErrorTableRow row={item} last={index === visible.length - 1} onOpen={onOpen} />
-        )}
-        ListEmptyComponent={<TableEmpty>{empty}</TableEmpty>}
-        toolbar={
-          <Text style={styles.tableMeta}>
-            {visible.length} {visible.length === 1 ? 'error' : 'errors'}
-            {query.trim() ? ` of ${rows.length}` : ''}
-          </Text>
-        }
-        header={
-          <>
-            <TablePhotoCell />
-            <TableCell flex={1.6} minWidth={160}>
-              <Text style={styles.headText}>PO / SO</Text>
-            </TableCell>
-            <TableCell flex={1} minWidth={110}>
-              <Text style={styles.headText}>Store</Text>
-            </TableCell>
-            <TableCell flex={1} minWidth={110}>
-              <Text style={styles.headText}>Person</Text>
-            </TableCell>
-            <TableCell flex={0.85} minWidth={92}>
-              <Text style={styles.headText}>Date</Text>
-            </TableCell>
-            <TableCell flex={0.8} minWidth={88} align="right" last>
-              <Text style={styles.headText}>Amount</Text>
-            </TableCell>
-          </>
-        }
+    <ScrollView
+      style={styles.mobileScroll}
+      contentContainerStyle={[styles.mobileScrollContent, !isMobile && styles.desktopHomeContent]}
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
+    >
+      <HomeHero
+        label={isMobile ? undefined : 'Errors'}
+        value={amount ? formatAmount(amount) : String(visible.length)}
+        stats={[
+          { label: visible.length === 1 ? 'Error' : 'Errors', value: String(visible.length) },
+          { label: storeCount === 1 ? 'Store' : 'Stores', value: String(storeCount) },
+          { label: types.length === 1 ? 'Type' : 'Types', value: String(types.length) },
+        ]}
       />
-    </View>
+      <HomeSection
+        title="Errors"
+        meta={`${visible.length} error${visible.length === 1 ? '' : 's'}`}
+      >
+        {visible.length ? (
+          visible.map((row, index) => (
+            <HomeRow
+              key={`${row.triageId}-${row.id}`}
+              title={row.reference || 'Document'}
+              meta={[errorTypeOf(row), row.storeName, staffName(row), row.dateLabel].filter(Boolean).join(' · ')}
+              value={formatErrorAmount(row?.review?.errorAmount || '') || ''}
+              leading={<PoThumb urls={row.imageUrls} label={row.reference} size={46} />}
+              last={index === visible.length - 1}
+              onPress={() => onOpen(row)}
+            />
+          ))
+        ) : (
+          <Text style={styles.emptyCopy}>{empty}</Text>
+        )}
+      </HomeSection>
+    </ScrollView>
   );
 }
 
@@ -732,69 +607,74 @@ export default function TriageDashboardPanel({
     );
   }
 
+  const cards = (
+    <>
+      <DashCard
+        compact={isMobile}
+        title="Errors"
+        icon="alert-circle-outline"
+        value={errors.count ? String(errors.count) : '0'}
+        tone={errors.count ? 'red' : undefined}
+        meta={
+          errors.count
+            ? [
+                errors.topType ? `${errors.topType.label} most common` : null,
+                errors.amount ? formatAmount(errors.amount) : null,
+                errors.stores ? `${errors.stores} ${errors.stores === 1 ? 'store' : 'stores'}` : null,
+              ]
+                .filter(Boolean)
+                .join(' · ')
+            : 'No flagged POs yet'
+        }
+        onPress={() => openPage('errors')}
+      />
+      <DashCard
+        compact={isMobile}
+        title="Transfers"
+        icon="swap-horizontal-outline"
+        value={String(transferSummary.count)}
+        meta={
+          transferSummary.count
+            ? `${transferSummary.open} open · ${transferSummary.partial} partial · ${transferSummary.received} received`
+            : 'No transfers yet'
+        }
+        onPress={() => openPage('shipments')}
+      />
+      <DashCard
+        compact={isMobile}
+        title="Allocation"
+        icon="git-branch-outline"
+        value={lots.length ? String(lots.length) : '0'}
+        meta={
+          lots.length
+            ? `${lots.length} ${lots.length === 1 ? 'lot' : 'lots'} · none allocated`
+            : 'Nothing to allocate yet'
+        }
+        onPress={() => openPage('allocation')}
+      />
+      <DashCard
+        compact={isMobile}
+        title="Expected Return"
+        icon="trending-up-outline"
+        value={lotSummary.expected ? String(lotSummary.expected) : '0'}
+        meta={
+          lotSummary.expected
+            ? `${lotSummary.evaluated} evaluated · ${lotSummary.percent}% · ${lotSummary.lots} ${lotSummary.lots === 1 ? 'lot' : 'lots'}`
+            : 'No expected melt yet'
+        }
+        onPress={() => openPage('return')}
+      />
+    </>
+  );
+
   const home = isMobile ? (
     <ScrollView
       style={styles.mobileScroll}
-      contentContainerStyle={styles.mobileScrollContent}
+      contentContainerStyle={styles.mobileCardContent}
       keyboardShouldPersistTaps="handled"
       showsVerticalScrollIndicator={false}
     >
-      <HomeHero
-        label="Triage"
-        value={errors.amount ? formatAmount(errors.amount) : String(errors.count)}
-        stats={[
-          { label: errors.count === 1 ? 'Error' : 'Errors', value: String(errors.count) },
-          { label: transferSummary.count === 1 ? 'Transfer' : 'Transfers', value: String(transferSummary.count) },
-          { label: 'Expected', value: String(lotSummary.expected) },
-        ]}
-      />
-      <HomeSection title="Overview" meta="4">
-        <HomeRow
-          title="Errors"
-          meta={
-            errors.count
-              ? [errors.topType?.label, errors.stores ? `${errors.stores} stores` : null].filter(Boolean).join(' · ')
-              : 'No flagged POs yet'
-          }
-          value={String(errors.count)}
-          icon="alert-circle"
-          iconColor="#C2410C"
-          onPress={() => openPage('errors')}
-        />
-        <HomeRow
-          title="Transfers"
-          meta={
-            transferSummary.count
-              ? `${transferSummary.open} open · ${transferSummary.received} received`
-              : 'No transfers yet'
-          }
-          value={String(transferSummary.count)}
-          icon="swap-horizontal"
-          iconColor="#1F7A9A"
-          onPress={() => openPage('shipments')}
-        />
-        <HomeRow
-          title="Allocation"
-          meta={lots.length ? `${lots.length} ${lots.length === 1 ? 'lot' : 'lots'} · none allocated` : 'Nothing to allocate yet'}
-          value={String(lots.length)}
-          icon="git-branch"
-          iconColor="#3A3A3C"
-          onPress={() => openPage('allocation')}
-        />
-        <HomeRow
-          title="Expected Return"
-          meta={
-            lotSummary.expected
-              ? `${lotSummary.evaluated} evaluated · ${lotSummary.percent}%`
-              : 'No expected melt yet'
-          }
-          value={String(lotSummary.expected)}
-          icon="trending-up"
-          iconColor="#1F8A4E"
-          last
-          onPress={() => openPage('return')}
-        />
-      </HomeSection>
+      <View style={styles.mobileCardGrid}>{cards}</View>
     </ScrollView>
   ) : (
     <ScrollView
@@ -802,59 +682,7 @@ export default function TriageDashboardPanel({
       contentContainerStyle={styles.homeContent}
       keyboardShouldPersistTaps="handled"
     >
-      <View style={styles.grid}>
-        <DashCard
-          title="Errors"
-          icon="alert-circle-outline"
-          value={errors.count ? String(errors.count) : '0'}
-          tone={errors.count ? 'red' : undefined}
-          meta={
-            errors.count
-              ? [
-                  errors.topType ? `${errors.topType.label} most common` : null,
-                  errors.amount ? formatAmount(errors.amount) : null,
-                  errors.stores ? `${errors.stores} ${errors.stores === 1 ? 'store' : 'stores'}` : null,
-                ]
-                  .filter(Boolean)
-                  .join(' · ')
-              : 'No flagged POs yet'
-          }
-          onPress={() => openPage('errors')}
-        />
-        <DashCard
-          title="Transfers"
-          icon="swap-horizontal-outline"
-          value={String(transferSummary.count)}
-          meta={
-            transferSummary.count
-              ? `${transferSummary.open} open · ${transferSummary.partial} partial · ${transferSummary.received} received`
-              : 'No transfers yet'
-          }
-          onPress={() => openPage('shipments')}
-        />
-        <DashCard
-          title="Allocation"
-          icon="git-branch-outline"
-          value={lots.length ? String(lots.length) : '0'}
-          meta={
-            lots.length
-              ? `${lots.length} ${lots.length === 1 ? 'lot' : 'lots'} · none allocated`
-              : 'Nothing to allocate yet'
-          }
-          onPress={() => openPage('allocation')}
-        />
-        <DashCard
-          title="Expected Return"
-          icon="trending-up-outline"
-          value={lotSummary.expected ? String(lotSummary.expected) : '0'}
-          meta={
-            lotSummary.expected
-              ? `${lotSummary.evaluated} evaluated · ${lotSummary.percent}% · ${lotSummary.lots} ${lotSummary.lots === 1 ? 'lot' : 'lots'}`
-              : 'No expected melt yet'
-          }
-          onPress={() => openPage('return')}
-        />
-      </View>
+      <View style={styles.grid}>{cards}</View>
     </ScrollView>
   );
 
@@ -903,6 +731,17 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 40,
   },
+  mobileCardContent: {
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 104,
+    backgroundColor: CANVAS,
+  },
+  mobileCardGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
   grid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -927,6 +766,12 @@ const styles = StyleSheet.create({
   cardPressed: {
     backgroundColor: '#f5f5f5',
   },
+  cardCompact: {
+    flexBasis: '47%',
+    minWidth: 0,
+    minHeight: 148,
+    padding: 14,
+  },
   cardTop: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -940,6 +785,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#f5f5f5',
+  },
+  cardIconCompact: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+  },
+  cardValueCompact: {
+    fontSize: 26,
+    letterSpacing: -0.6,
   },
   cardKicker: {
     fontFamily,
@@ -976,6 +830,13 @@ const styles = StyleSheet.create({
   mobileScrollContent: {
     paddingBottom: 104,
     backgroundColor: CANVAS,
+  },
+  desktopHomeContent: {
+    paddingTop: 8,
+    paddingBottom: 40,
+    maxWidth: 1100,
+    width: '100%',
+    alignSelf: 'center',
   },
   hero: {
     alignSelf: 'stretch',
@@ -1024,7 +885,7 @@ const styles = StyleSheet.create({
   heroStatDivider: {
     width: StyleSheet.hairlineWidth,
     height: 28,
-    marginRight: 12,
+    marginHorizontal: 12,
     backgroundColor: 'rgba(60,60,67,0.18)',
   },
   heroStatValue: {
@@ -1159,53 +1020,6 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 14,
     color: T.secondary,
-  },
-  breakBlock: {
-    marginBottom: 16,
-    gap: 8,
-  },
-  breakRow: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    gap: 6,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: T.hairline,
-  },
-  breakRowLast: {
-    borderBottomWidth: 0,
-  },
-  breakCopy: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  breakLabel: {
-    flex: 1,
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '600',
-    color: T.text,
-  },
-  breakCount: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: T.secondary,
-    fontVariant: ['tabular-nums'],
-  },
-  tableMeta: {
-    fontFamily,
-    fontSize: 13,
-    color: T.secondary,
-  },
-  headText: {
-    fontFamily,
-    fontSize: 11,
-    fontWeight: '600',
-    color: T.secondary,
-    letterSpacing: 0.2,
-    textTransform: 'uppercase',
   },
   lotRow: {
     flexDirection: 'row',
