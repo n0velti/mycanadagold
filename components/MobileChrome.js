@@ -293,8 +293,8 @@ export function MobileTabBar({
               ]}
             >
               <BlurView
-                intensity={88}
-                tint="light"
+                intensity={72}
+                tint="dark"
                 style={styles.tabActiveBlur}
                 {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-active' } : null)}
               />
@@ -341,7 +341,7 @@ export function MobileTabBar({
                       <Ionicons
                         name={isActive ? tab.iconActive : tab.icon}
                         size={26}
-                        color={isActive ? MOBILE.label : MOBILE.secondary}
+                        color={isActive ? '#fff' : MOBILE.secondary}
                       />
                     )}
                     {badge ? (
@@ -616,10 +616,10 @@ const styles = StyleSheet.create({
   tabActiveBlur: {
     ...StyleSheet.absoluteFillObject,
     overflow: 'hidden',
-    backgroundColor: 'rgba(255,255,255,0.78)',
+    backgroundColor: 'rgba(22,22,24,0.36)',
     borderRadius: 999,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.9)',
+    borderColor: 'rgba(255,255,255,0.16)',
     ...Platform.select({
       web: {
         backdropFilter: 'saturate(180%) blur(20px)',
@@ -665,7 +665,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   tabAvatarRingActive: {
-    borderColor: MOBILE.label,
+    borderColor: '#fff',
   },
   tabAvatar: {
     width: 30,
