@@ -3,7 +3,7 @@
  * dashboard without recreating a live row from a stale sync.
  */
 import { useCallback, useMemo } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import {
   batchStats,
   flattenBatchPos,
@@ -12,7 +12,7 @@ import {
   restoreTriageDeleted,
   useTransferWorkflow,
 } from '../lib/transferWorkflow';
-import { confirmDestructive, EmptyState, FONT, Group, MobileListRow, T } from './TriageKit';
+import { ChromeHero, ChromePage, confirmDestructive, EmptyState, FONT, MobileListRow, T } from './TriageKit';
 import { useIsMobile } from '../lib/mobileUi';
 import { docNoun, PoThumb } from './TriageTable';
 
@@ -180,32 +180,43 @@ export default function TriageDeletedPanel({ session, query = '' }) {
   }
 
   return (
-    <ScrollView style={[styles.body, isMobile && styles.bodyMobile]} contentContainerStyle={[styles.content, isMobile && styles.contentMobile]} showsVerticalScrollIndicator={false}>
-      {visible.length === 0 ? (
-        <EmptyState
-          icon="trash-outline"
-          title={query.trim() ? 'No matches' : 'Nothing deleted'}
-          body={
-            query.trim()
-              ? `Nothing matches “${query.trim()}”.`
-              : 'POs and documents you remove from the dashboard land here and stay off the live list.'
-          }
+    <ChromePage
+      hero={
+        <ChromeHero
+          value={String(visible.length)}
+          stats={[
+            { label: visible.length === 1 ? 'Item' : 'Items', value: String(visible.length) },
+            { label: 'Deleted', value: String(rows.length) },
+          ]}
         />
-      ) : (
-        <Group>
-          {visible.map((entry, index) => (
-            <DeletedRow
-              key={entry.id}
-              last={index === visible.length - 1}
-              {...deletedRowProps(entry)}
-              meta={[`Deleted ${formatDeletedAt(entry.deletedAt)}`, entry.deletedBy].filter(Boolean).join(' · ')}
-              onRestore={() => restore(entry)}
-              onPurge={() => purge(entry)}
-            />
-          ))}
-        </Group>
-      )}
-    </ScrollView>
+      }
+      title="Deleted"
+      meta={`${visible.length} ${visible.length === 1 ? 'item' : 'items'}`}
+      empty={
+        visible.length === 0 ? (
+          <EmptyState
+            icon="trash-outline"
+            title={query.trim() ? 'No matches' : 'Nothing deleted'}
+            body={
+              query.trim()
+                ? `Nothing matches “${query.trim()}”.`
+                : 'POs and documents you remove from the dashboard land here and stay off the live list.'
+            }
+          />
+        ) : null
+      }
+    >
+      {visible.map((entry, index) => (
+        <DeletedRow
+          key={entry.id}
+          last={index === visible.length - 1}
+          {...deletedRowProps(entry)}
+          meta={[`Deleted ${formatDeletedAt(entry.deletedAt)}`, entry.deletedBy].filter(Boolean).join(' · ')}
+          onRestore={() => restore(entry)}
+          onPurge={() => purge(entry)}
+        />
+      ))}
+    </ChromePage>
   );
 }
 

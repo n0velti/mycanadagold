@@ -1,4 +1,5 @@
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { BlurView } from 'expo-blur';
 import {
   ActivityIndicator,
   Alert,
@@ -1726,41 +1727,55 @@ export default function MessagesScreen({
     });
   };
 
-  const composeButton = (
-    <Pressable
-      onPress={() => {
-        setComposeOpen((current) => !current);
-        setSelectedIds([]);
-        setGroupName('');
-        setQuery('');
-        if (isMobile && !composeOpen) setActiveId(null);
-      }}
-      style={({ pressed }) => [
-        styles.composeButton,
-        isMobile && styles.composeButtonMobile,
-        pressed && styles.composeButtonPressed,
-      ]}
-      hitSlop={8}
-      accessibilityLabel={composeOpen ? 'Close compose' : 'Start a conversation'}
-    >
-      {composeOpen ? (
-        <Ionicons name="close" size={26} color="#1d1d1f" />
+  const searchField = (
+    <View style={isMobile ? styles.searchWrap : styles.chromeSearchChip}>
+      {isMobile ? (
+        <>
+          <Ionicons name="search" size={15} color="#8e8e93" />
+          <TextInput
+            style={styles.searchInput}
+            value={query}
+            onChangeText={setQuery}
+            placeholder={composeOpen ? 'Search people' : 'Search'}
+            placeholderTextColor="#8e8e93"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          {query ? (
+            <Pressable onPress={() => setQuery('')} hitSlop={8}>
+              <Ionicons name="close-circle" size={16} color="#c7c7cc" />
+            </Pressable>
+          ) : null}
+        </>
       ) : (
-        <ComposeIcon size={26} color="#1d1d1f" />
+        <BlurView
+          intensity={32}
+          tint="light"
+          style={styles.chromeSearchBlur}
+          {...(Platform.OS === 'web' ? { className: 'cgold-home-chip-blur' } : null)}
+        >
+          <Ionicons name="search" size={16} color="#8e8e93" />
+          <TextInput
+            style={styles.chromeSearchInput}
+            value={query}
+            onChangeText={setQuery}
+            placeholder={composeOpen ? 'Search people' : 'Search messages'}
+            placeholderTextColor="#8e8e93"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          {query ? (
+            <Pressable onPress={() => setQuery('')} hitSlop={8}>
+              <Ionicons name="close-circle" size={16} color="#c7c7cc" />
+            </Pressable>
+          ) : null}
+        </BlurView>
       )}
-    </Pressable>
+    </View>
   );
 
-  const inboxChrome = (
+  const inboxExtras = (
     <>
-      {!isMobile ? (
-        <View style={styles.inboxHeader}>
-          <Text style={styles.inboxTitle} numberOfLines={1}>
-            {composeOpen ? 'New' : 'Messages'}
-          </Text>
-          {composeButton}
-        </View>
-      ) : null}
       {composeOpen && selectedPeople.length > 0 ? (
         <View style={[styles.recipientBar, isMobile && styles.recipientBarMobile]}>
           <Text style={styles.recipientLabel}>To</Text>
@@ -1812,60 +1827,108 @@ export default function MessagesScreen({
           />
         </View>
       ) : null}
-      <View style={[styles.searchToolbar, isMobile && styles.searchToolbarMobile]}>
-        <View style={styles.searchWrap}>
-          <Ionicons name="search" size={15} color="#8e8e93" />
-          <TextInput
-            style={styles.searchInput}
-            value={query}
-            onChangeText={setQuery}
-                      placeholder={composeOpen ? 'Search people' : 'Search'}
-            placeholderTextColor="#8e8e93"
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-          {query ? (
-            <Pressable onPress={() => setQuery('')} hitSlop={8}>
-              <Ionicons name="close-circle" size={16} color="#c7c7cc" />
-            </Pressable>
-          ) : null}
-        </View>
-        {isMobile ? composeButton : null}
-      </View>
+      {isMobile ? (
+        <View style={styles.searchToolbarMobile}>{searchField}</View>
+      ) : null}
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
     </>
   );
 
+  const inboxList = (
+    <ScrollView
+      style={styles.inboxList}
+      contentContainerStyle={[
+        styles.inboxListContent,
+        isMobile && {
+          flexGrow: 1,
+          paddingTop: 56,
+          paddingBottom: mobileTabBarReserve() + 16,
+        },
+        !isMobile && { flexGrow: 1, paddingTop: 8 },
+      ]}
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
+      {...(isMobile ? tabBarScroll : null)}
+    >
+      {inboxExtras}
+      {renderInboxList()}
+    </ScrollView>
+  );
+
   return (
     <KeyboardAvoidingView
-      style={[styles.root, isMobile && styles.canvasMobile]}
+      style={[styles.root, styles.canvasRoot, isMobile && styles.canvasMobile]}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       {showInbox ? (
-        <View style={[styles.inbox, isMobile && styles.inboxMobile]}>
-          {isMobile ? null : inboxChrome}
-          <ScrollView
-            style={[styles.inboxList, isMobile && styles.inboxListMobile]}
-            contentContainerStyle={[
-              styles.inboxListContent,
-              isMobile && styles.inboxListContentMobile,
-            ]}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-            {...(isMobile ? tabBarScroll : null)}
-          >
-            {isMobile ? inboxChrome : null}
-            {isMobile ? (
-              <View style={styles.inboxListFill}>{renderInboxList()}</View>
-            ) : (
-              renderInboxList()
-            )}
-          </ScrollView>
+        <View style={[styles.inbox, isMobile && styles.inboxMobile, !isMobile && styles.inboxDesktop]}>
+          {!isMobile ? (
+            <View pointerEvents="box-none" style={styles.chromeRow}>
+              <View style={styles.chromeTitle} accessibilityRole="image" accessibilityLabel="Direct Messages">
+                <Ionicons name="chatbubbles" size={22} color="#6B5E3A" />
+              </View>
+              {searchField}
+              <Pressable
+                onPress={() => {
+                  setComposeOpen((current) => !current);
+                  setSelectedIds([]);
+                  setGroupName('');
+                  setQuery('');
+                }}
+                style={styles.chromeCompose}
+                accessibilityLabel={composeOpen ? 'Close compose' : 'Start a conversation'}
+              >
+                <BlurView
+                  intensity={32}
+                  tint="light"
+                  style={styles.chromeComposeBlur}
+                  {...(Platform.OS === 'web' ? { className: 'cgold-home-chip-blur' } : null)}
+                >
+                  {composeOpen ? (
+                    <Ionicons name="close" size={18} color="#1d1d1f" />
+                  ) : (
+                    <ComposeIcon size={18} color="#1d1d1f" />
+                  )}
+                </BlurView>
+              </Pressable>
+            </View>
+          ) : null}
+          <View style={styles.stage}>
+            {inboxList}
+          </View>
+          {isMobile ? (
+            <View pointerEvents="box-none" style={styles.filterDock}>
+              <Pressable
+                onPress={() => {
+                  setComposeOpen((current) => !current);
+                  setSelectedIds([]);
+                  setGroupName('');
+                  setQuery('');
+                  if (!composeOpen) setActiveId(null);
+                }}
+                style={styles.chromeCircle}
+                accessibilityLabel={composeOpen ? 'Close compose' : 'Start a conversation'}
+              >
+                <BlurView
+                  intensity={32}
+                  tint="light"
+                  style={styles.chromeCircleBlur}
+                  {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-bar' } : null)}
+                >
+                  {composeOpen ? (
+                    <Ionicons name="close" size={22} color="#1d1d1f" />
+                  ) : (
+                    <ComposeIcon size={22} color="#1d1d1f" />
+                  )}
+                </BlurView>
+              </Pressable>
+            </View>
+          ) : null}
         </View>
       ) : null}
 
       {showThread ? (
-        <View style={[styles.thread, isMobile && styles.canvasMobile]}>
+        <View style={[styles.thread, isMobile && styles.canvasMobile, !isMobile && styles.threadDesktop]}>
           {threadLive ? (
             <>
               <View style={[styles.threadHeader, isMobile && styles.threadHeaderMobile]}>
@@ -1877,11 +1940,18 @@ export default function MessagesScreen({
                       setDetailsOpen(false);
                       setAddingMembers(false);
                     }}
-                    style={styles.backButton}
+                    style={styles.threadBackCircle}
                     hitSlop={8}
                     accessibilityLabel="Back to messages"
                   >
-                    <Ionicons name="chevron-back" size={22} color={BLUE} />
+                    <BlurView
+                      intensity={32}
+                      tint="light"
+                      style={styles.chromeCircleBlur}
+                      {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-bar' } : null)}
+                    >
+                      <Ionicons name="chevron-back" size={22} color="#1d1d1f" />
+                    </BlurView>
                   </Pressable>
                 ) : null}
                 <View style={styles.threadHeaderMain}>
@@ -2332,16 +2402,21 @@ const styles = StyleSheet.create({
     minHeight: 0,
     height: '100%',
     flexDirection: 'row',
-    backgroundColor: '#fff',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#e5e5ea',
+    backgroundColor: CANVAS,
+  },
+  canvasRoot: {
+    backgroundColor: CANVAS,
   },
   inbox: {
     width: INBOX_WIDTH,
-    borderRightWidth: StyleSheet.hairlineWidth,
-    borderRightColor: '#e5e5ea',
-    backgroundColor: '#fff',
+    borderRightWidth: 0,
+    backgroundColor: 'transparent',
     minHeight: 0,
+  },
+  inboxDesktop: {
+    width: 380,
+    maxWidth: 420,
+    flexShrink: 0,
   },
   inboxMobile: {
     width: '100%',
@@ -2354,6 +2429,125 @@ const styles = StyleSheet.create({
   },
   canvasMobile: {
     backgroundColor: CANVAS,
+  },
+  chromeRow: {
+    zIndex: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 12,
+  },
+  chromeTitle: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: 'center',
+  },
+  chromeSearchChip: {
+    width: 220,
+    height: 40,
+    borderRadius: 20,
+    ...Platform.select({
+      web: {
+        boxShadow: '0 10px 28px rgba(0,0,0,0.14), 0 1px 3px rgba(0,0,0,0.08)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.16,
+        shadowRadius: 18,
+        elevation: 12,
+      },
+    }),
+  },
+  chromeSearchBlur: {
+    flex: 1,
+    height: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingLeft: 12,
+    paddingRight: 10,
+    borderRadius: 20,
+    overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(0,0,0,0.08)',
+    backgroundColor: 'rgba(255,255,255,0.56)',
+  },
+  chromeSearchInput: {
+    flex: 1,
+    minWidth: 0,
+    height: 40,
+    fontFamily,
+    fontSize: 15,
+    color: '#1a1a1a',
+    outlineStyle: 'none',
+  },
+  chromeCompose: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    overflow: 'hidden',
+    ...Platform.select({
+      web: {
+        cursor: 'pointer',
+        boxShadow: '0 10px 28px rgba(0,0,0,0.14), 0 1px 3px rgba(0,0,0,0.08)',
+      },
+      default: {},
+    }),
+  },
+  chromeComposeBlur: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 20,
+    overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(0,0,0,0.08)',
+    backgroundColor: 'rgba(255,255,255,0.56)',
+  },
+  stage: {
+    flex: 1,
+    minHeight: 0,
+    position: 'relative',
+  },
+  chromeCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    overflow: 'hidden',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  chromeCircleBlur: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 22,
+    overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(0,0,0,0.08)',
+    backgroundColor: 'rgba(255,255,255,0.56)',
+  },
+  threadBackCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    overflow: 'hidden',
+    marginRight: 4,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  filterDock: {
+    position: 'absolute',
+    top: 6,
+    right: 22,
+    zIndex: 24,
   },
   inboxHeader: {
     flexDirection: 'row',
@@ -2590,8 +2784,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    minHeight: 68,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: '#fff',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
   personRowCompact: {
     gap: 10,
@@ -2682,19 +2882,38 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     minHeight: 0,
+    backgroundColor: CANVAS,
+  },
+  threadDesktop: {
+    marginTop: 16,
+    marginRight: 16,
+    marginBottom: 16,
     backgroundColor: '#fff',
+    borderRadius: 24,
+    overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(0,0,0,0.08)',
+    ...Platform.select({
+      web: {
+        boxShadow: '0 8px 24px rgba(18,16,12,0.08)',
+      },
+      default: {},
+    }),
   },
   threadHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
     backgroundColor: 'transparent',
-    borderBottomWidth: 0,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(0,0,0,0.08)',
   },
   threadHeaderMobile: {
-    backgroundColor: 'transparent',
+    paddingTop: 8,
+    backgroundColor: CANVAS,
+    borderBottomWidth: 0,
   },
   threadHeaderMain: {
     flex: 1,

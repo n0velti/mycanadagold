@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { BlurView } from 'expo-blur';
 import {
   Modal,
   Platform,
@@ -80,6 +81,8 @@ export default function HomeDatePicker({
   compact = false,
   fill = false,
   disabled = false,
+  blur = false,
+  dark = false,
 }) {
   const fieldRef = useRef(null);
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
@@ -203,27 +206,48 @@ export default function HomeDatePicker({
     return above > 12 ? above : Math.max(12, (windowHeight - height) / 2);
   })();
 
+  const field = (
+    <Pressable
+      ref={fieldRef}
+      onPress={openCalendar}
+      disabled={disabled}
+      style={[
+        styles.field,
+        compact && styles.fieldCompact,
+        fill && styles.fieldFill,
+        blur && styles.fieldBlur,
+        disabled && styles.fieldDisabled,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={`Date ${label}`}
+      accessibilityState={{ disabled, expanded: open }}
+    >
+      <Ionicons name="calendar-outline" size={iconSize} color={dark ? '#E8D5A3' : '#8e8e93'} />
+      <Text
+        style={[styles.fieldValue, { fontSize: valueSize }, dark && styles.fieldValueDark]}
+        numberOfLines={1}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  );
+
   return (
     <>
-      <Pressable
-        ref={fieldRef}
-        onPress={openCalendar}
-        disabled={disabled}
-        style={[
-          styles.field,
-          compact && styles.fieldCompact,
-          fill && styles.fieldFill,
-          disabled && styles.fieldDisabled,
-        ]}
-        accessibilityRole="button"
-        accessibilityLabel={`Date ${label}`}
-        accessibilityState={{ disabled, expanded: open }}
-      >
-        <Ionicons name="calendar-outline" size={iconSize} color="#8e8e93" />
-        <Text style={[styles.fieldValue, { fontSize: valueSize }]} numberOfLines={1}>
-          {label}
-        </Text>
-      </Pressable>
+      {blur ? (
+        <View style={styles.blurLift}>
+          <BlurView
+            intensity={32}
+            tint="light"
+            style={styles.blurWrap}
+            {...(Platform.OS === 'web' ? { className: 'cgold-home-chip-blur' } : null)}
+          >
+            {field}
+          </BlurView>
+        </View>
+      ) : (
+        field
+      )}
 
       <Modal visible={open} transparent animationType="fade" onRequestClose={close}>
         <View style={styles.modalRoot} pointerEvents="box-none">
@@ -383,7 +407,43 @@ const styles = StyleSheet.create({
     }),
   },
   fieldCompact: {
+    height: 40,
     minHeight: 40,
+  },
+  fieldBlur: {
+    backgroundColor: 'transparent',
+    borderWidth: 0,
+    borderRadius: 20,
+  },
+  blurLift: {
+    height: 40,
+    borderRadius: 20,
+    flexShrink: 0,
+    backgroundColor: 'transparent',
+    ...Platform.select({
+      web: {
+        boxShadow: '0 10px 28px rgba(0,0,0,0.14), 0 1px 3px rgba(0,0,0,0.08)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.16,
+        shadowRadius: 18,
+        elevation: 12,
+      },
+    }),
+  },
+  blurWrap: {
+    height: 40,
+    borderRadius: 20,
+    overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(0,0,0,0.08)',
+    backgroundColor: 'rgba(255,255,255,0.56)',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
   fieldFill: {
     flex: 1,
@@ -397,6 +457,9 @@ const styles = StyleSheet.create({
     fontFamily: FONT,
     color: '#1a1a1a',
     letterSpacing: 0,
+  },
+  fieldValueDark: {
+    color: '#F6F1E6',
   },
   modalRoot: {
     flex: 1,

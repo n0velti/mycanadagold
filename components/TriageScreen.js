@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
-import { BlurView } from 'expo-blur';
 import { Ionicons } from '@expo/vector-icons';
 import TriageAccuracyPanel from './TriageAccuracyPanel';
 import TriagePoCapture from './TriagePoCapture';
 import TriageDailyReceiptsDrawer from './TriageDailyReceiptsDrawer';
 import TriageDashboardPanel from './TriageDashboardPanel';
 import TriageDeletedPanel from './TriageDeletedPanel';
-import { BarButton, EmptyState, FONT, IconAction, SearchField, SegmentedSlider, T, TextTabs } from './TriageKit';
+import { BarButton, EmptyState, FONT, SearchField, SegmentedSlider, T, TextTabs } from './TriageKit';
 import { MobileCircleButton, MobileFilterLines } from './MobileChrome';
 import { ensureLinkedPosSessions } from '../lib/auth';
 import { fetchTransferStores } from '../lib/locations';
@@ -278,8 +277,9 @@ export default function TriageScreen({
         />
         {storeTab === 'melt' ? (
           <>
-            <IconAction
+            <BarButton
               icon="phone-portrait-outline"
+              label="Feed"
               onPress={() => batchContext.onOpenFeed?.()}
               accessibilityLabel="Open feed view"
             />
@@ -288,25 +288,10 @@ export default function TriageScreen({
         ) : null}
       </>
     ) : session?.token && activeTab === 'accuracy' ? (
-      <ChromeStats
-        items={[
-          ...(resultsLotId ? [] : [{ label: 'Lots', value: String(accuracyStats.lots || 0) }]),
-          { label: 'Correct', value: String(accuracyStats.correct) },
-          {
-            label: 'Incorrect',
-            value: String(accuracyStats.incorrect),
-            tone: accuracyStats.incorrect ? 'red' : undefined,
-          },
-          {
-            label: 'Ratio',
-            value: accuracyStats.total ? `${accuracyStats.ratio} · ${accuracyStats.percent}%` : '0/0',
-            tone: accuracyStats.percent >= 90 ? 'green' : undefined,
-          },
-        ]}
-        onPress={() => setAccuracyBreakdownOpen(true)}
-        actionLabel="Details"
-        accessibilityLabel="Open errors breakdown"
-      />
+      <View style={styles.deskChromeActions}>
+        {searchField}
+        <BarButton label="Details" onPress={() => setAccuracyBreakdownOpen(true)} accessibilityLabel="Open errors breakdown" />
+      </View>
     ) : session?.token && activeTab === 'deleted' ? (
       searchField
     ) : null;
@@ -370,70 +355,6 @@ export default function TriageScreen({
     return () => onMobileHeader(null);
   }, [onMobileHeader]);
 
-  const mobileChrome =
-    !session?.token ? null : inBatch ? (
-      <View style={styles.mobileChrome}>
-        <Pressable
-          style={[styles.mobileStatCard, !dailySummary.allChecked && dailySummary.cells > 0 && styles.mobileStatCardOn]}
-          onPress={() => setDailyOpen(true)}
-          accessibilityRole="button"
-          accessibilityLabel="Open the daily receipt check"
-        >
-          <View style={styles.mobileStatCopy}>
-            <Text style={styles.mobileStatKicker}>Daily check</Text>
-            <Text style={styles.mobileStatTitle}>
-              {batchContext.stats?.expected
-                ? `${batchContext.stats.received}/${batchContext.stats.expected} received`
-                : 'No PO / SO yet'}
-            </Text>
-            <Text style={styles.mobileStatMeta}>{dailyStatus.label}</Text>
-          </View>
-          <View style={styles.mobileStatCta}>
-            <Text style={styles.mobileStatAction}>{dailySummary.allChecked ? 'Open' : 'Check'}</Text>
-            <Ionicons name="chevron-forward" size={16} color={T.secondary} />
-          </View>
-        </Pressable>
-        {storeTab === 'melt' ? (
-          <View style={styles.mobileActions}>
-            <BarButton
-              size="lg"
-              icon="phone-portrait-outline"
-              label="Feed"
-              onPress={() => batchContext.onOpenFeed?.()}
-              accessibilityLabel="Open feed view"
-            />
-          </View>
-        ) : null}
-      </View>
-    ) : activeTab === 'accuracy' ? (
-      <View style={styles.mobileChrome}>
-        <Pressable
-          style={styles.mobileStatCard}
-          onPress={() => setAccuracyBreakdownOpen(true)}
-          accessibilityRole="button"
-          accessibilityLabel="Open errors breakdown"
-        >
-          <View style={styles.mobileStatCopy}>
-            <Text style={styles.mobileStatKicker}>{resultsLotId || 'Results'}</Text>
-            <Text style={styles.mobileStatTitle}>
-              {accuracyStats.total ? `${accuracyStats.percent}% correct` : 'No purchases yet'}
-            </Text>
-            <Text style={styles.mobileStatMeta}>
-              {resultsLotId
-                ? accuracyStats.incorrect
-                  ? `${accuracyStats.incorrect} incorrect · tap for details`
-                  : `${accuracyStats.correct} correct`
-                : `${accuracyStats.lots || 0} ${accuracyStats.lots === 1 ? 'lot' : 'lots'}`}
-            </Text>
-          </View>
-          <View style={styles.mobileStatCta}>
-            <Text style={styles.mobileStatAction}>Details</Text>
-            <Ionicons name="chevron-forward" size={16} color={T.secondary} />
-          </View>
-        </Pressable>
-      </View>
-    ) : null;
-
   return (
     <View style={[styles.body, embedded && styles.bodyEmbedded, isMobile && styles.bodyMobile]}>
       {isMobile && session?.token ? (
@@ -480,23 +401,11 @@ export default function TriageScreen({
       <View style={styles.pageVisible}>
       {portalNav || isMobile ? null : <View style={styles.localNavRow}>{navTabs}</View>}
       {isMobile ? (
-        <>
-          <View style={styles.mobileFabSlot} />
-          {mobileChrome}
-        </>
+        <View style={styles.mobileFabSlot} />
       ) : leading || trailing ? (
-        <View style={styles.pageChromeFloat}>
-          <BlurView
-            intensity={72}
-            tint="light"
-            style={styles.pageChromeBlur}
-            {...(Platform.OS === 'web' ? { className: 'cgold-home-toolbar-blur' } : null)}
-          >
-            <View style={styles.pageChrome}>
-              <View style={styles.pageChromeStart}>{leading}</View>
-              {trailing ? <View style={styles.pageChromeEnd}>{trailing}</View> : null}
-            </View>
-          </BlurView>
+        <View style={styles.deskChrome}>
+          <View style={styles.deskChromeStart}>{leading}</View>
+          {trailing ? <View style={styles.deskChromeEnd}>{trailing}</View> : null}
         </View>
       ) : null}
 
@@ -682,12 +591,43 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     fontFamily: FONT,
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: '600',
-    color: T.text,
+    color: '#6B5E3A',
     textAlign: 'center',
-    letterSpacing: -0.3,
+    letterSpacing: 0.2,
     paddingHorizontal: 8,
+  },
+  deskChrome: {
+    zIndex: 24,
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingHorizontal: 32,
+    paddingTop: 8,
+    paddingBottom: 8,
+    backgroundColor: 'transparent',
+  },
+  deskChromeStart: {
+    flexShrink: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  deskChromeEnd: {
+    marginLeft: 'auto',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 0,
+  },
+  deskChromeActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   mobileTitleSpacer: {
     width: 40,
