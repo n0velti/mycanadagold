@@ -48,6 +48,7 @@ import {
 } from '../lib/phoneCalls';
 import { storeKeyFromName } from '../lib/storeSettings';
 import { CANVAS, MOBILE_FILTER_INSET, MOBILE_FILTER_SIZE, useIsMobile } from '../lib/mobileUi';
+import { useMobileTabBarScrollProps } from '../lib/mobileTabBar';
 import { usePhoneCalls } from './PhoneCallProvider';
 import TxnCashBreakdownModal, { TxnCashIcon } from './TxnCashBreakdownModal';
 
@@ -1409,6 +1410,7 @@ function StoreSnapshotPanel({
 }) {
   const storeName = store?.store || '';
   const isMobile = useIsMobile();
+  const tabBarScroll = useMobileTabBarScrollProps();
   const { hasApp } = useAppAccess();
   const phone = usePhoneCalls();
   const showPhone = hasApp('phone');
@@ -2314,19 +2316,21 @@ function StoreSnapshotPanel({
       </View>
       <ScrollView
         ref={pageScrollRef}
-        pointerEvents="box-none"
+        pointerEvents="auto"
         style={[styles.scroll, styles.scrollOverlay]}
-        {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll cgold-store-overlay-scroll' } : null)}
+        {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll' } : null)}
         contentContainerStyle={[
           styles.scrollContent,
           styles.scrollContentMobile,
-          { paddingBottom: 104, pointerEvents: 'box-none' },
+          { paddingBottom: 104 },
         ]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         scrollEventThrottle={16}
+        {...tabBarScroll}
         onScroll={(event) => {
+          tabBarScroll.onScroll?.(event);
           const y = event?.nativeEvent?.contentOffset?.y;
           if (!Number.isFinite(y)) return;
           const reach = Math.max(1, pinnedTopHeight - 12);

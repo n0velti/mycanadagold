@@ -1051,7 +1051,7 @@ export function ChromePage({ hero, title, meta, children, empty, footer }) {
         </View>
       ) : null}
       <ScrollView
-        pointerEvents="box-none"
+        pointerEvents={isMobile ? 'auto' : 'box-none'}
         style={styles.chromeOverlayScroll}
         contentContainerStyle={[
           styles.chromePageContent,
@@ -1069,7 +1069,9 @@ export function ChromePage({ hero, title, meta, children, empty, footer }) {
           const reach = Math.max(1, heroHeight - 12);
           heroLift.setValue(1 - Math.max(0, Math.min(1, y / reach)));
         }}
-        {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll cgold-store-overlay-scroll' } : null)}
+        {...(Platform.OS === 'web'
+          ? { className: isMobile ? 'cgold-home-overlay-scroll' : 'cgold-home-overlay-scroll cgold-store-overlay-scroll' }
+          : null)}
       >
         {hero ? <View pointerEvents="none" style={{ height: raisedOffset }} /> : null}
         {empty || (
@@ -2125,8 +2127,8 @@ const styles = StyleSheet.create({
     top: 0,
     left: 0,
     right: 0,
-    zIndex: 8,
-    elevation: 8,
+    zIndex: 1,
+    elevation: 0,
   },
   chromePinnedLift: {
     ...StyleSheet.absoluteFillObject,
