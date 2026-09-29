@@ -697,6 +697,7 @@ export default function BonusesScreen({
   onOpenEmails,
   storeFilter,
   embedded = false,
+  title = 'Bonuses',
 }) {
   const isMobile = useIsMobile();
   const { canFilter } = useAppAccess();
@@ -870,7 +871,7 @@ export default function BonusesScreen({
     return (
       <View style={styles.screen}>
         <View style={styles.loginWrap}>
-          <Text style={styles.pageTitle}>Bonuses</Text>
+          <Text style={styles.pageTitle}>{title}</Text>
           <Text style={styles.loginHint}>
             Sign in to load email capture and Google reviews for each store.
           </Text>
@@ -1100,11 +1101,11 @@ export default function BonusesScreen({
         <View style={styles.pageHeader}>
           <View style={styles.pageTitleWrap}>
             <View style={styles.pageTitleSpacer} />
-            <Text style={styles.pageTitle}>Bonuses</Text>
+            <Text style={styles.pageTitle}>{title}</Text>
           </View>
           <View style={styles.pageControls}>
             {stillLoading ? <ActivityIndicator size="small" color="#8e8e93" /> : null}
-            <Pressable style={styles.refresh} onPress={() => load()} hitSlop={8} accessibilityLabel="Refresh bonuses">
+            <Pressable style={styles.refresh} onPress={() => load()} hitSlop={8} accessibilityLabel={`Refresh ${title.toLowerCase()}`}>
               <Ionicons name="refresh" size={16} color="#8e8e93" />
             </Pressable>
           </View>
