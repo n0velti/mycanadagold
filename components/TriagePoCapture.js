@@ -639,9 +639,9 @@ export default function TriagePoCapture({ session, openerRef }) {
     setResultError('');
   };
 
-  const finishPo = async () => {
+  const finishPo = async ({ skipAllocation = false } = {}) => {
     if (!po || finishing) return;
-    if (!isAllocationComplete(allocDraft)) {
+    if (!skipAllocation && !isAllocationComplete(allocDraft)) {
       setResultError('Allocate the full object weight of each line before finishing.');
       return;
     }
@@ -649,6 +649,11 @@ export default function TriagePoCapture({ session, openerRef }) {
     const amount = errorAmount.trim();
     const photos = normalizeReviewImages(errorImages);
     const lineEdits = changedLineEdits(lineDrafts, lines, buyCatalog);
+    const saveError = pendingError || errorMode;
+    if (saveError && !note && !errorType && !amount && !photos.length && !lineEdits.length) {
+      setResultError('Add a note, set amount, photo, line change, or pick an error type.');
+      return;
+    }
     const actor = actorNameOf(session);
     const editor = triageEditorFromSession(session);
     setFinishing(true);
@@ -660,7 +665,7 @@ export default function TriagePoCapture({ session, openerRef }) {
         return;
       }
       const poId = result.item?.id || po.id;
-      if (pendingError) {
+      if (saveError) {
         const images = photos.length ? await uploadTriageErrorPhotos(photos, poId) : [];
         saveTriagePoReview(
           poId,
@@ -668,7 +673,9 @@ export default function TriagePoCapture({ session, openerRef }) {
           editor,
         );
       }
-      saveTriagePoAllocation(poId, sanitizeAllocation(allocDraft) || allocDraft, editor);
+      if (!skipAllocation) {
+        saveTriagePoAllocation(poId, sanitizeAllocation(allocDraft) || allocDraft, editor);
+      }
       persistTransferWorkflowNow().catch(() => {});
       const label = po.reference || `PO#${normalizePoNumber(poInput) || po.id}`;
       const lotName = result.lot?.id || lotFromPo(po).id;
@@ -851,6 +858,15 @@ export default function TriagePoCapture({ session, openerRef }) {
           </ScrollView>
           <View style={[styles.pageFooter, { paddingBottom: dockPad }]}>
             <Pressable
+              style={[styles.pageSecondary, finishing && styles.lookupOff]}
+              onPress={() => void finishPo({ skipAllocation: true })}
+              disabled={finishing}
+              accessibilityRole="button"
+              accessibilityLabel="Skip allocation and finish"
+            >
+              <Text style={styles.pageSecondaryText}>{finishing ? 'Saving…' : 'Skip allocation'}</Text>
+            </Pressable>
+            <Pressable
               style={[styles.pagePrimary, finishing && styles.lookupOff]}
               onPress={() => goAllocate(true)}
               disabled={finishing}
@@ -878,12 +894,21 @@ export default function TriagePoCapture({ session, openerRef }) {
           <ScrollView style={styles.pageBody} contentContainerStyle={styles.pageScroll}>
             <Text style={styles.resultKicker}>{po.reference || 'PO'}</Text>
             <Text style={styles.detailMeta}>
-              Split each line by object weight. Totals must match before you finish.
+              Split each line by object weight. Totals must match before you finish, or skip allocation.
             </Text>
             <TriageAllocationForm draft={allocDraft} onChange={setAllocDraft} disabled={finishing} />
             {resultError ? <Text style={styles.error}>{resultError}</Text> : null}
           </ScrollView>
           <View style={[styles.pageFooter, { paddingBottom: dockPad }]}>
+            <Pressable
+              style={[styles.pageSecondary, finishing && styles.lookupOff]}
+              onPress={() => void finishPo({ skipAllocation: true })}
+              disabled={finishing}
+              accessibilityRole="button"
+              accessibilityLabel="Skip allocation and finish"
+            >
+              <Text style={styles.pageSecondaryText}>{finishing ? 'Saving…' : 'Skip allocation'}</Text>
+            </Pressable>
             <Pressable
               style={[styles.pagePrimary, finishing && styles.lookupOff]}
               onPress={() => void finishPo()}
@@ -941,7 +966,7 @@ export default function TriagePoCapture({ session, openerRef }) {
             <Text style={styles.placeLine}>{placeLine}</Text>
             {resultError ? <Text style={styles.error}>{resultError}</Text> : null}
           </ScrollView>
-          <View style={[styles.pageFooter, { paddingBottom: dockPad }]}>
+          <View style={[styles.pageFooter, styles.pageFooterWrap, { paddingBottom: dockPad }]}>
             <Pressable
               style={styles.pageSecondary}
               onPress={() => {
@@ -953,6 +978,15 @@ export default function TriagePoCapture({ session, openerRef }) {
               accessibilityLabel="Add error"
             >
               <Text style={styles.pageSecondaryText}>Add error</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.pageSecondary, finishing && styles.lookupOff]}
+              onPress={() => void finishPo({ skipAllocation: true })}
+              disabled={finishing}
+              accessibilityRole="button"
+              accessibilityLabel="Skip allocation and finish"
+            >
+              <Text style={styles.pageSecondaryText}>{finishing ? 'Saving…' : 'Skip allocation'}</Text>
             </Pressable>
             <Pressable
               style={[styles.pagePrimary, finishing && styles.lookupOff]}
@@ -1364,7 +1398,7 @@ export default function TriagePoCapture({ session, openerRef }) {
               <>
                 <Text style={styles.resultKicker}>{po?.reference || 'PO'}</Text>
                 <Text style={styles.detailMeta}>
-                  Split each line by object weight. Totals must match before you finish.
+                  Split each line by object weight. Totals must match before you finish, or skip allocation.
                 </Text>
                 <TriageAllocationForm draft={allocDraft} onChange={setAllocDraft} disabled={finishing} />
                 {resultError ? <Text style={styles.error}>{resultError}</Text> : null}
@@ -1452,15 +1486,26 @@ export default function TriagePoCapture({ session, openerRef }) {
           </ScrollView>
           <View style={[styles.resultActions, isMobile && styles.resultActionsMobile]}>
             {allocating ? (
-              <Pressable
-                style={[styles.next, finishing && styles.lookupOff]}
-                onPress={() => void finishPo()}
-                disabled={finishing}
-                accessibilityRole="button"
-                accessibilityLabel="Finish"
-              >
-                <Text style={styles.nextText}>{finishing ? 'Saving…' : 'Finish'}</Text>
-              </Pressable>
+              <>
+                <Pressable
+                  style={[styles.secondary, finishing && styles.lookupOff]}
+                  onPress={() => void finishPo({ skipAllocation: true })}
+                  disabled={finishing}
+                  accessibilityRole="button"
+                  accessibilityLabel="Skip allocation and finish"
+                >
+                  <Text style={styles.secondaryText}>{finishing ? 'Saving…' : 'Skip allocation'}</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.next, finishing && styles.lookupOff]}
+                  onPress={() => void finishPo()}
+                  disabled={finishing}
+                  accessibilityRole="button"
+                  accessibilityLabel="Finish"
+                >
+                  <Text style={styles.nextText}>{finishing ? 'Saving…' : 'Finish'}</Text>
+                </Pressable>
+              </>
             ) : errorMode ? (
               <>
                 <Pressable
@@ -1473,6 +1518,15 @@ export default function TriagePoCapture({ session, openerRef }) {
                   accessibilityRole="button"
                 >
                   <Text style={styles.secondaryText}>Back</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.secondary, finishing && styles.lookupOff]}
+                  onPress={() => void finishPo({ skipAllocation: true })}
+                  disabled={finishing}
+                  accessibilityRole="button"
+                  accessibilityLabel="Skip allocation and finish"
+                >
+                  <Text style={styles.secondaryText}>{finishing ? 'Saving…' : 'Skip allocation'}</Text>
                 </Pressable>
                 <Pressable
                   style={[styles.next, finishing && styles.lookupOff]}
@@ -1497,6 +1551,15 @@ export default function TriagePoCapture({ session, openerRef }) {
                   accessibilityLabel="Add error"
                 >
                   <Text style={styles.secondaryText}>Add error</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.secondary, finishing && styles.lookupOff]}
+                  onPress={() => void finishPo({ skipAllocation: true })}
+                  disabled={finishing}
+                  accessibilityRole="button"
+                  accessibilityLabel="Skip allocation and finish"
+                >
+                  <Text style={styles.secondaryText}>{finishing ? 'Saving…' : 'Skip allocation'}</Text>
                 </Pressable>
                 <Pressable
                   style={[styles.next, finishing && styles.lookupOff]}
@@ -1883,6 +1946,7 @@ const styles = StyleSheet.create({
   },
   resultActions: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
     padding: 16,
     borderTopWidth: StyleSheet.hairlineWidth,
@@ -2335,6 +2399,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 10,
     backgroundColor: '#f5f5f5',
+  },
+  pageFooterWrap: {
+    flexWrap: 'wrap',
   },
   pagePrimary: {
     flex: 1,
