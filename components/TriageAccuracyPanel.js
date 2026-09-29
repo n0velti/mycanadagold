@@ -3,7 +3,7 @@ import { FlatList, Image, Pressable, ScrollView, StyleSheet, Text, View } from '
 import { Ionicons } from '@expo/vector-icons';
 import {
   applyTriageReviewToPo,
-  collectAccuracyTriagePos,
+  collectAllTriagePos,
   saveTriagePoReview,
   triageEditorFromSession,
   triagePoNeedsCorrection,
@@ -217,12 +217,37 @@ const LOT_COL = {
   location: { flex: 1.1, minWidth: 110 },
   period: { flex: 1, minWidth: 120 },
   documents: { flex: 0.7, minWidth: 72 },
-  accuracy: { flex: 0.95, minWidth: 96 },
+  progress: { flex: 1.05, minWidth: 112 },
 };
 
+function lotProgressOf(lot) {
+  const expected = Number(lot?.expected) || 0;
+  const evaluated = Number(lot?.evaluated) || 0;
+  const percent = expected ? Math.round((evaluated / expected) * 100) : 0;
+  return { expected, evaluated, percent, done: expected > 0 && evaluated >= expected };
+}
+
+function LotProgress({ lot, compact = false }) {
+  const { expected, evaluated, percent, done } = lotProgressOf(lot);
+  if (!expected) return compact ? null : <TableMuted>—</TableMuted>;
+  return (
+    <View style={[styles.lotProgress, compact && styles.lotProgressCompact]}>
+      <Text style={[styles.lotProgressText, compact && styles.lotProgressTextCompact]} numberOfLines={1}>
+        {compact ? `${evaluated} of ${expected}` : `${evaluated}/${expected} · ${percent}%`}
+      </Text>
+      <ProgressBar
+        value={evaluated}
+        total={expected}
+        tone={done ? 'green' : 'blue'}
+        height={compact ? 4 : 5}
+        style={styles.lotProgressBar}
+      />
+    </View>
+  );
+}
+
 const LotTableRow = memo(function LotTableRow({ lot, last, onOpen }) {
-  const total = lot.correct + lot.incorrect;
-  const percent = total ? Math.round((lot.correct / total) * 100) : 0;
+  const progress = lotProgressOf(lot);
   return (
     <TableRow last={last}>
       <TablePhotoCell>
@@ -230,7 +255,14 @@ const LotTableRow = memo(function LotTableRow({ lot, last, onOpen }) {
           <Ionicons name="folder-outline" size={22} color={T.text} />
         </View>
       </TablePhotoCell>
-      <TableRowMain onPress={() => onOpen(lot)} accessibilityLabel={`Open ${lot.id}`}>
+      <TableRowMain
+        onPress={() => onOpen(lot)}
+        accessibilityLabel={
+          progress.expected
+            ? `Open ${lot.id}, ${progress.evaluated} of ${progress.expected} evaluated`
+            : `Open ${lot.id}`
+        }
+      >
         <TableCell flex={LOT_COL.lot.flex} minWidth={LOT_COL.lot.minWidth}>
           <TableStrong>{lot.id}</TableStrong>
         </TableCell>
@@ -243,8 +275,8 @@ const LotTableRow = memo(function LotTableRow({ lot, last, onOpen }) {
         <TableCell flex={LOT_COL.documents.flex} minWidth={LOT_COL.documents.minWidth}>
           {String(lot.pos.length)}
         </TableCell>
-        <TableCell flex={LOT_COL.accuracy.flex} minWidth={LOT_COL.accuracy.minWidth} align="right" last>
-          {total ? `${lot.correct}/${total} · ${percent}%` : '—'}
+        <TableCell flex={LOT_COL.progress.flex} minWidth={LOT_COL.progress.minWidth} align="right" last>
+          <LotProgress lot={lot} />
         </TableCell>
       </TableRowMain>
     </TableRow>
@@ -314,8 +346,12 @@ export default function TriageAccuracyPanel({
   const [photoError, setPhotoError] = useState('');
   const showError = accuracyTab === 'incorrect';
 
-  const accuracyRows = useMemo(() => collectAccuracyTriagePos(triage), [triage]);
-  const lots = useMemo(() => groupPosIntoLots(accuracyRows), [accuracyRows]);
+  const allRows = useMemo(() => collectAllTriagePos(triage), [triage]);
+  const accuracyRows = useMemo(
+    () => allRows.filter((row) => row.evaluated),
+    [allRows],
+  );
+  const lots = useMemo(() => groupPosIntoLots(accuracyRows, allRows), [accuracyRows, allRows]);
   const visibleLots = useMemo(
     () => lots.filter((lot) => lotMatchesQuery(lot, listQuery)),
     [listQuery, lots],
@@ -569,23 +605,28 @@ export default function TriageAccuracyPanel({
             keyExtractor={(lot) => lot.id}
             keyboardShouldPersistTaps="handled"
             ListEmptyComponent={lotEmpty}
+            extraData={visibleLots.map((lot) => `${lot.id}:${lot.evaluated}/${lot.expected}`).join('|')}
             renderItem={({ item, index }) => {
-              const total = item.correct + item.incorrect;
-              const percent = total ? Math.round((item.correct / total) * 100) : 0;
+              const progress = lotProgressOf(item);
               return (
                 <View style={[index === 0 && styles.mobileGroupStart, index === visibleLots.length - 1 && styles.mobileGroupEnd]}>
                   <MobileListRow
                     title={item.id}
                     subtitle={[item.location, lotPeriodLabel(item)].filter(Boolean).join(' · ')}
-                    meta={`${item.pos.length} ${item.pos.length === 1 ? 'PO' : 'POs'}${total ? ` · ${percent}% correct` : ''}`}
+                    meta={`${item.pos.length} ${item.pos.length === 1 ? 'PO' : 'POs'}`}
                     last={index === visibleLots.length - 1}
                     onPress={() => openLotFolder(item)}
-                    accessibilityLabel={`Open ${item.id}`}
+                    accessibilityLabel={
+                      progress.expected
+                        ? `Open ${item.id}, ${progress.evaluated} of ${progress.expected} evaluated`
+                        : `Open ${item.id}`
+                    }
                     leading={
                       <View style={styles.lotIconMobile}>
                         <Ionicons name="folder-outline" size={22} color={T.text} />
                       </View>
                     }
+                    extra={progress.expected ? <LotProgress lot={item} compact /> : null}
                   />
                 </View>
               );
@@ -597,7 +638,7 @@ export default function TriageAccuracyPanel({
             data={visibleLots}
             renderItem={renderLotRow}
             keyExtractor={(lot) => lot.id}
-            extraData={`${visibleLots.length}`}
+            extraData={visibleLots.map((lot) => `${lot.id}:${lot.evaluated}/${lot.expected}`).join('|')}
             ListEmptyComponent={
               <TableEmpty>
                 {listQuery.trim() ? `No lot matches “${listQuery.trim()}”.` : 'No lots yet.'}
@@ -618,8 +659,8 @@ export default function TriageAccuracyPanel({
                 <View style={[styles.lotHead, { flex: LOT_COL.documents.flex, minWidth: LOT_COL.documents.minWidth }]}>
                   <Text style={styles.lotHeadText}>POs</Text>
                 </View>
-                <View style={[styles.lotHead, styles.lotHeadEnd, { flex: LOT_COL.accuracy.flex, minWidth: LOT_COL.accuracy.minWidth }]}>
-                  <Text style={styles.lotHeadText}>Results</Text>
+                <View style={[styles.lotHead, styles.lotHeadEnd, { flex: LOT_COL.progress.flex, minWidth: LOT_COL.progress.minWidth }]}>
+                  <Text style={styles.lotHeadText}>Progress</Text>
                 </View>
               </>
             }
@@ -1025,6 +1066,32 @@ const styles = StyleSheet.create({
     color: T.secondary,
     letterSpacing: 0.2,
     textTransform: 'uppercase',
+  },
+  lotProgress: {
+    alignSelf: 'stretch',
+    alignItems: 'flex-end',
+    gap: 6,
+    minWidth: 88,
+  },
+  lotProgressCompact: {
+    minWidth: 0,
+    alignItems: 'stretch',
+    gap: 5,
+    marginTop: 4,
+  },
+  lotProgressText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: T.text,
+    fontVariant: ['tabular-nums'],
+  },
+  lotProgressTextCompact: {
+    fontSize: 12,
+    color: T.secondary,
+  },
+  lotProgressBar: {
+    alignSelf: 'stretch',
   },
   breakBody: {
     flex: 1,

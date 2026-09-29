@@ -29,7 +29,6 @@ import {
   formatThreadStamp,
   getOrCreateAiDm,
   getOrCreateDm,
-  getOrCreateTeamDm,
   hideDmConversation,
   hideDmMessage,
   initialsFromName,
@@ -48,9 +47,9 @@ import {
   toggleDmLike,
   unhideDmConversation,
 } from '../lib/messages';
-import { intakeNames, listTeams } from '../lib/teams';
 import { prepareAiChatSession, sendAiChatMessage, titleAiChat } from '../lib/aiChat';
 import { OPENROUTER_MODELS } from '../lib/openrouter';
+import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
 import { CANVAS } from '../lib/mobileUi';
 import ProfilePhotoModal from './ProfilePhotoModal';
 
@@ -63,6 +62,7 @@ const fontFamily = Platform.select({
 const titleFontFamily = 'SohneLeicht';
 
 const BLUE = '#0A84FF';
+const AI_PURPLE = '#6B4DE6';
 const INBOX_WIDTH = 340;
 const MOBILE_BREAKPOINT = 768;
 const AI_MODEL =
@@ -157,6 +157,62 @@ function PersonAvatar({ person, size = 40, showOnline = false }) {
   );
 }
 
+const AI_MENTION_RE = /(^|[\s([{<"'“‘])(@ai)\b/gi;
+
+function mentionsAi(text) {
+  AI_MENTION_RE.lastIndex = 0;
+  return AI_MENTION_RE.test(String(text || ''));
+}
+
+function formatDmThreadForAi({ messages, peopleById, myId, myName, thread }) {
+  const title = conversationTitle(thread);
+  const lines = (messages || [])
+    .slice(-40)
+    .map((item) => {
+      const body = String(item.body || '').replace(/\s+/g, ' ').trim().slice(0, 400);
+      if (!body) return '';
+      const name = item.isAssistant
+        ? 'MyCanadaGold AI'
+        : item.senderId === myId
+          ? myName || 'You'
+          : contactName(peopleById?.get?.(item.senderId)) || 'Teammate';
+      return `${name}: ${body}`;
+    })
+    .filter(Boolean);
+  return [
+    'You are MyCanadaGold AI answering inside a staff Direct Message. Everyone in this chat can see your reply.',
+    `Thread: ${title}`,
+    'Use this conversation as context and answer the latest @AI request. Be concise and specific.',
+    lines.length ? `Recent messages:\n${lines.join('\n')}` : 'No earlier messages.',
+  ].join('\n\n');
+}
+
+function MessageBody({ body, mine }) {
+  const source = String(body || '');
+  const textStyle = [styles.bubbleText, mine && styles.bubbleTextMine];
+  const mentionStyle = mine ? styles.aiMentionOnMine : styles.aiMention;
+  const nodes = [];
+  const re = /(^|[\s([{<"'“‘])(@ai)\b/gi;
+  let last = 0;
+  let key = 0;
+  let match = re.exec(source);
+  while (match) {
+    const start = match.index + match[1].length;
+    const end = start + match[2].length;
+    if (start > last) nodes.push(source.slice(last, start));
+    nodes.push(
+      <Text key={`ai-${key++}`} style={mentionStyle}>
+        {source.slice(start, end)}
+      </Text>,
+    );
+    last = end;
+    match = re.exec(source);
+  }
+  if (!key) return <Text style={textStyle}>{source}</Text>;
+  if (last < source.length) nodes.push(source.slice(last));
+  return <Text style={textStyle}>{nodes}</Text>;
+}
+
 function firstNameOf(person) {
   const first = String(person?.firstName || '').trim();
   if (first) return first;
@@ -210,7 +266,7 @@ function ConversationAvatar({ conversation, size = 52 }) {
             width: size,
             height: size,
             borderRadius: size / 2,
-            backgroundColor: '#6B4DE6',
+            backgroundColor: AI_PURPLE,
           },
         ]}
       >
@@ -506,7 +562,7 @@ function MessageBubble({
               bubbleHover && mine && styles.bubbleHoverMine,
             ]}
           >
-            <Text style={[styles.bubbleText, mine && styles.bubbleTextMine]}>{message.body}</Text>
+            <MessageBody body={message.body} mine={mine} />
             <HeartBurst trigger={burst} />
           </Pressable>
           {showMore ? (
@@ -652,9 +708,15 @@ function AiDmPanel({ session, onClose, onSaved, dismissRef }) {
         endDate: chatContext?.selection?.endDate,
         onLookup: (label) => setProgress(label || ''),
       });
-      if (result.sources?.length) {
+      if (result.sources?.length || result.scope) {
         setChatContext((current) =>
-          current ? { ...current, lastSources: result.sources } : current,
+          current
+            ? {
+                ...current,
+                lastSources: result.sources?.length ? result.sources : current.lastSources,
+                lastScope: result.scope || current.lastScope,
+              }
+            : current,
         );
       }
       setTurns(result.turns || [...nextTurns, { role: 'assistant', content: result.text || '' }]);
@@ -798,6 +860,7 @@ export default function MessagesScreen({
   onOpenProfile,
 }) {
   const isMobile = useIsMobile();
+  const tabBarScroll = useMobileTabBarScrollProps();
   const myId = session?.supabaseUserId || session?.profile?.id || '';
   const myName =
     session?.profile?.fullName ||
@@ -805,7 +868,6 @@ export default function MessagesScreen({
     'You';
   const [inbox, setInbox] = useState([]);
   const [contacts, setContacts] = useState([]);
-  const [teams, setTeams] = useState([]);
   const [query, setQuery] = useState('');
   const [composeOpen, setComposeOpen] = useState(false);
   const aiSessionsRef = useRef(new Map());
@@ -829,8 +891,6 @@ export default function MessagesScreen({
   const [menuMessageId, setMenuMessageId] = useState(null);
   const threadRef = useRef(null);
   const sendScale = useRef(new Animated.Value(1)).current;
-  const composerScale = useRef(new Animated.Value(1)).current;
-  const composerAccent = useRef(new Animated.Value(0)).current;
   const draftRef = useRef('');
   const typingRef = useRef(null);
   const activeIdRef = useRef(null);
@@ -847,14 +907,12 @@ export default function MessagesScreen({
 
   const refreshInbox = useCallback(async () => {
     try {
-      const [rows, people, teamRows] = await Promise.all([
+      const [rows, people] = await Promise.all([
         listDmInbox(),
         listDmContacts(),
-        listTeams().catch(() => []),
       ]);
       setInbox(rows);
       setContacts(people);
-      setTeams(teamRows);
       setError('');
       onUnreadChangeRef.current?.();
       return rows;
@@ -957,20 +1015,6 @@ export default function MessagesScreen({
     void openDirect(openUserId).finally(() => onOpenedUser?.());
   }, [openUserId, openDirect, onOpenedUser]);
 
-  const openTeam = useCallback(
-    async (teamId) => {
-      if (!teamId) return;
-      try {
-        const conversationId = await getOrCreateTeamDm(teamId);
-        await refreshInbox();
-        await openConversation(conversationId);
-      } catch (err) {
-        setError(err.message || 'Could not start that team chat.');
-      }
-    },
-    [openConversation, refreshInbox],
-  );
-
   useEffect(() => {
     refreshInbox();
   }, [refreshInbox]);
@@ -992,6 +1036,7 @@ export default function MessagesScreen({
                 createdAt: row.created_at,
                 likedByMe: false,
                 likeCount: 0,
+                isAssistant: Boolean(row.is_assistant),
               };
               const tempIndex = current.findIndex(
                 (item) =>
@@ -1138,15 +1183,6 @@ export default function MessagesScreen({
     });
   }, [peopleIndex, query]);
 
-  const filteredTeams = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return teams;
-    return teams.filter((team) => {
-      const hay = `${team.name} ${team.description} ${intakeNames(team)}`.toLowerCase();
-      return hay.includes(q);
-    });
-  }, [teams, query]);
-
   useEffect(() => {
     if (!menuMessageId || Platform.OS !== 'web' || typeof window === 'undefined') return undefined;
     const close = () => setMenuMessageId(null);
@@ -1280,8 +1316,12 @@ export default function MessagesScreen({
           startDate: prepared.context?.selection?.startDate,
           endDate: prepared.context?.selection?.endDate,
         });
-        if (result.sources?.length) {
-          prepared.context = { ...prepared.context, lastSources: result.sources };
+        if (result.sources?.length || result.scope) {
+          prepared.context = {
+            ...prepared.context,
+            lastSources: result.sources?.length ? result.sources : prepared.context.lastSources,
+            lastScope: result.scope || prepared.context.lastScope,
+          };
         }
         const reply = await sendDmMessage(conversationId, result.text || 'I could not answer that.', {
           assistant: true,
@@ -1343,6 +1383,51 @@ export default function MessagesScreen({
       const saved = await sendDmMessage(activeId, text);
       setMessages((current) => mergeSentMessage(current, localKey, tempId, saved));
       await refreshInbox();
+      setSending(false);
+      if (!mentionsAi(text)) return;
+      const conversationId = activeId;
+      const thread = activeThread;
+      setAiThinkingId(conversationId);
+      try {
+        const prepared = ensureAiSession(conversationId);
+        const prior = messages.filter((item) => item.body && !String(item.id).startsWith('temp-'));
+        const result = await sendAiChatMessage({
+          seedMessages: prepared.seedMessages,
+          turns: [],
+          userMessage: text,
+          extraContext: formatDmThreadForAi({
+            messages: [...prior, saved],
+            peopleById,
+            myId,
+            myName,
+            thread,
+          }),
+          model: AI_MODEL,
+          session,
+          context: prepared.context,
+          startDate: prepared.context?.selection?.startDate,
+          endDate: prepared.context?.selection?.endDate,
+        });
+        if (result.sources?.length || result.scope) {
+          prepared.context = {
+            ...prepared.context,
+            lastSources: result.sources?.length ? result.sources : prepared.context.lastSources,
+            lastScope: result.scope || prepared.context.lastScope,
+          };
+        }
+        const reply = await sendDmMessage(conversationId, result.text || 'I could not answer that.', {
+          assistant: true,
+        });
+        setMessages((current) => (
+          current.some((item) => item.id === reply.id) ? current : [...current, reply]
+        ));
+        await refreshInbox();
+      } catch (err) {
+        setError(err.message || 'Could not get an AI answer.');
+      } finally {
+        setAiThinkingId(null);
+      }
+      return;
     } catch (err) {
       setMessages((current) => current.filter((item) => item.id !== tempId));
       setDraft(text);
@@ -1352,29 +1437,7 @@ export default function MessagesScreen({
     }
   };
 
-  const pulseComposer = () => {
-    composerScale.stopAnimation();
-    composerAccent.stopAnimation();
-    composerScale.setValue(1.038);
-    composerAccent.setValue(1);
-    Animated.parallel([
-      Animated.spring(composerScale, {
-        toValue: 1,
-        friction: 3.6,
-        tension: 420,
-        useNativeDriver: true,
-      }),
-      Animated.spring(composerAccent, {
-        toValue: 0,
-        friction: 5,
-        tension: 360,
-        useNativeDriver: false,
-      }),
-    ]).start();
-  };
-
   const onChangeDraft = (value) => {
-    if (value.length > draftRef.current.length) pulseComposer();
     draftRef.current = value;
     setDraft(value);
     if (value.trim()) typingRef.current?.pulse?.(myName);
@@ -1389,7 +1452,7 @@ export default function MessagesScreen({
     );
   };
 
-  const aiThinking = Boolean(activeThread?.isAi && aiThinkingId && aiThinkingId === activeId);
+  const aiThinking = Boolean(aiThinkingId && aiThinkingId === activeId);
   const typingNames = Object.values(typingByUser).filter(Boolean);
   const typingLabel =
     typingNames.length === 0
@@ -1453,37 +1516,6 @@ export default function MessagesScreen({
           </View>
         </Pressable>
       ) : null;
-      const teamRows = filteredTeams.map((team) => {
-        const intake = intakeNames(team, 2);
-        return (
-          <Pressable
-            key={`team-${team.id}`}
-            onPress={() => openTeam(team.id)}
-            {...(Platform.OS === 'web' ? { className: 'cgold-dm-row' } : null)}
-            style={({ pressed }) => [
-              styles.personRow,
-              isMobile && styles.personRowCompact,
-              pressed && styles.rowPressed,
-            ]}
-          >
-            <View style={[styles.avatar, styles.teamAvatar, isMobile && styles.teamAvatarCompact]}>
-              <Ionicons name="people" size={20} color="#fff" />
-            </View>
-            <View style={styles.personCopy}>
-              <Text style={styles.personName} numberOfLines={1}>
-                {team.name}
-              </Text>
-              <Text style={styles.personSub} numberOfLines={1}>
-                {team.memberCount
-                  ? `${team.memberCount} ${team.memberCount === 1 ? 'person' : 'people'}`
-                  : 'No members yet'}
-                {intake ? ` · Intake ${intake}` : ''}
-              </Text>
-            </View>
-            <Ionicons name="chevron-forward" size={16} color="#c7c7cc" />
-          </Pressable>
-        );
-      });
 
       const peopleRows = filteredPeople.map((person) => {
         const checked = selectedIds.includes(person.id);
@@ -1518,12 +1550,12 @@ export default function MessagesScreen({
         );
       });
 
-      if (!aiPin && teamRows.length === 0 && peopleRows.length === 0) {
+      if (!aiPin && peopleRows.length === 0) {
         return (
           <Text style={styles.emptyHint}>
-            {peopleIndex.length === 0 && teams.length === 0
-              ? 'No other staff have signed in yet, and no teams have been created.'
-              : 'No matching people or teams.'}
+            {peopleIndex.length === 0
+              ? 'No other staff have signed in yet.'
+              : 'No matching people.'}
           </Text>
         );
       }
@@ -1531,12 +1563,6 @@ export default function MessagesScreen({
       return (
         <>
           {aiPin}
-          {teamRows.length > 0 ? (
-            <>
-              <Text style={styles.composeSection}>Teams</Text>
-              {teamRows}
-            </>
-          ) : null}
           {peopleRows.length > 0 ? (
             <>
               <Text style={styles.composeSection}>People</Text>
@@ -1549,7 +1575,7 @@ export default function MessagesScreen({
 
     if (loadingInbox && inbox.length === 0) {
       return (
-        <View style={styles.inboxCentered}>
+        <View style={[styles.inboxCentered, isMobile && styles.inboxCenteredMobile]}>
           <ActivityIndicator color="#1d1d1f" />
         </View>
       );
@@ -1557,10 +1583,10 @@ export default function MessagesScreen({
 
     if (filteredInbox.length === 0) {
       return (
-        <View style={styles.inboxCentered}>
+        <View style={[styles.inboxCentered, isMobile && styles.inboxCenteredMobile]}>
           <Ionicons name="chatbubbles-outline" size={36} color="#c7c7cc" />
           <Text style={styles.emptyTitle}>No messages yet</Text>
-          <Text style={styles.emptyHint}>Tap the compose button to message a person or a team.</Text>
+          <Text style={styles.emptyHint}>Tap the compose button to message a person.</Text>
         </View>
       );
     }
@@ -1639,6 +1665,116 @@ export default function MessagesScreen({
     });
   };
 
+  const composeButton = (
+    <Pressable
+      onPress={() => {
+        setComposeOpen((current) => !current);
+        setSelectedIds([]);
+        setGroupName('');
+        setQuery('');
+        if (isMobile && !composeOpen) setActiveId(null);
+      }}
+      style={({ pressed }) => [
+        styles.composeButton,
+        isMobile && styles.composeButtonMobile,
+        pressed && styles.composeButtonPressed,
+      ]}
+      hitSlop={8}
+      accessibilityLabel={composeOpen ? 'Close compose' : 'Start a conversation'}
+    >
+      {composeOpen ? (
+        <Ionicons name="close" size={26} color="#1d1d1f" />
+      ) : (
+        <ComposeIcon size={26} color="#1d1d1f" />
+      )}
+    </Pressable>
+  );
+
+  const inboxChrome = (
+    <>
+      {!isMobile ? (
+        <View style={styles.inboxHeader}>
+          <Text style={styles.inboxTitle} numberOfLines={1}>
+            {composeOpen ? 'New' : 'Messages'}
+          </Text>
+          {composeButton}
+        </View>
+      ) : null}
+      {composeOpen && selectedPeople.length > 0 ? (
+        <View style={[styles.recipientBar, isMobile && styles.recipientBarMobile]}>
+          <Text style={styles.recipientLabel}>To</Text>
+          <View style={[styles.recipientBody, isMobile && styles.recipientBodyMobile]}>
+            {selectedPeople.map((person) => (
+              <Pressable
+                key={person.id}
+                onPress={() => toggleSelected(person.id)}
+                style={({ hovered, pressed }) => [
+                  styles.chip,
+                  (hovered || pressed) && styles.chipHover,
+                ]}
+                accessibilityLabel={`Remove ${firstNameOf(person)}`}
+              >
+                <PersonAvatar person={person} size={20} />
+                <Text style={styles.chipText}>{firstNameOf(person)}</Text>
+                <Ionicons name="close" size={11} color={BLUE} />
+              </Pressable>
+            ))}
+            <Pressable
+              onPress={startConversation}
+              style={({ hovered, pressed }) => [
+                styles.createChatButton,
+                (hovered || pressed) && styles.createChatButtonHover,
+              ]}
+              accessibilityLabel={
+                selectedIds.length === 1
+                  ? `Start chat with ${firstNameOf(selectedPeople[0])}`
+                  : 'Create group chat'
+              }
+            >
+              <Text style={styles.createChatButtonText} numberOfLines={1}>
+                {selectedIds.length === 1 ? 'Start chat' : 'Create group'}
+              </Text>
+              <Ionicons name="arrow-forward" size={13} color="#fff" />
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+      {composeOpen && selectedIds.length >= 2 ? (
+        <View style={styles.groupNameWrap}>
+          <TextInput
+            style={styles.groupNameInput}
+            value={groupName}
+            onChangeText={setGroupName}
+            placeholder="Group name (optional)"
+            placeholderTextColor="#8e8e93"
+            maxLength={80}
+          />
+        </View>
+      ) : null}
+      <View style={[styles.searchToolbar, isMobile && styles.searchToolbarMobile]}>
+        <View style={styles.searchWrap}>
+          <Ionicons name="search" size={15} color="#8e8e93" />
+          <TextInput
+            style={styles.searchInput}
+            value={query}
+            onChangeText={setQuery}
+                      placeholder={composeOpen ? 'Search people' : 'Search'}
+            placeholderTextColor="#8e8e93"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          {query ? (
+            <Pressable onPress={() => setQuery('')} hitSlop={8}>
+              <Ionicons name="close-circle" size={16} color="#c7c7cc" />
+            </Pressable>
+          ) : null}
+        </View>
+        {isMobile ? composeButton : null}
+      </View>
+      {error ? <Text style={styles.errorText}>{error}</Text> : null}
+    </>
+  );
+
   return (
     <KeyboardAvoidingView
       style={[styles.root, isMobile && styles.canvasMobile]}
@@ -1646,110 +1782,23 @@ export default function MessagesScreen({
     >
       {showInbox ? (
         <View style={[styles.inbox, isMobile && styles.inboxMobile]}>
-          <View style={[styles.inboxHeader, isMobile && styles.inboxHeaderMobile]}>
-            <Text style={styles.inboxTitle} numberOfLines={1}>
-              {composeOpen ? 'New' : 'Messages'}
-            </Text>
-            <Pressable
-              onPress={() => {
-                setComposeOpen((current) => !current);
-                setSelectedIds([]);
-                setGroupName('');
-                setQuery('');
-                if (isMobile && !composeOpen) setActiveId(null);
-              }}
-              style={({ pressed }) => [
-                styles.composeButton,
-                pressed && styles.composeButtonPressed,
-              ]}
-              hitSlop={8}
-              accessibilityLabel={composeOpen ? 'Close compose' : 'Start a conversation'}
-            >
-              {composeOpen ? (
-                <Ionicons name="close" size={26} color="#1d1d1f" />
-              ) : (
-                <ComposeIcon size={26} color="#1d1d1f" />
-              )}
-            </Pressable>
-          </View>
-          {composeOpen && selectedPeople.length > 0 ? (
-            <View style={[styles.recipientBar, isMobile && styles.recipientBarMobile]}>
-              <Text style={styles.recipientLabel}>To</Text>
-              <View style={[styles.recipientBody, isMobile && styles.recipientBodyMobile]}>
-                {selectedPeople.map((person) => (
-                  <Pressable
-                    key={person.id}
-                    onPress={() => toggleSelected(person.id)}
-                    style={({ hovered, pressed }) => [
-                      styles.chip,
-                      (hovered || pressed) && styles.chipHover,
-                    ]}
-                    accessibilityLabel={`Remove ${firstNameOf(person)}`}
-                  >
-                    <PersonAvatar person={person} size={20} />
-                    <Text style={styles.chipText}>{firstNameOf(person)}</Text>
-                    <Ionicons name="close" size={11} color={BLUE} />
-                  </Pressable>
-                ))}
-                <Pressable
-                  onPress={startConversation}
-                  style={({ hovered, pressed }) => [
-                    styles.createChatButton,
-                    (hovered || pressed) && styles.createChatButtonHover,
-                  ]}
-                  accessibilityLabel={
-                    selectedIds.length === 1
-                      ? `Start chat with ${firstNameOf(selectedPeople[0])}`
-                      : 'Create group chat'
-                  }
-                >
-                  <Text style={styles.createChatButtonText} numberOfLines={1}>
-                    {selectedIds.length === 1 ? 'Start chat' : 'Create group'}
-                  </Text>
-                  <Ionicons name="arrow-forward" size={13} color="#fff" />
-                </Pressable>
-              </View>
-            </View>
-          ) : null}
-          {composeOpen && selectedIds.length >= 2 ? (
-            <View style={styles.groupNameWrap}>
-              <TextInput
-                style={styles.groupNameInput}
-                value={groupName}
-                onChangeText={setGroupName}
-                placeholder="Group name (optional)"
-                placeholderTextColor="#8e8e93"
-                maxLength={80}
-              />
-            </View>
-          ) : null}
-          <View style={styles.searchToolbar}>
-            <View style={styles.searchWrap}>
-              <Ionicons name="search" size={15} color="#8e8e93" />
-              <TextInput
-                style={styles.searchInput}
-                value={query}
-                onChangeText={setQuery}
-                placeholder={composeOpen ? 'Search people or teams' : 'Search'}
-                placeholderTextColor="#8e8e93"
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-              {query ? (
-                <Pressable onPress={() => setQuery('')} hitSlop={8}>
-                  <Ionicons name="close-circle" size={16} color="#c7c7cc" />
-                </Pressable>
-              ) : null}
-            </View>
-          </View>
-          {error ? <Text style={styles.errorText}>{error}</Text> : null}
+          {isMobile ? null : inboxChrome}
           <ScrollView
-            style={styles.inboxList}
-            contentContainerStyle={styles.inboxListContent}
+            style={[styles.inboxList, isMobile && styles.inboxListMobile]}
+            contentContainerStyle={[
+              styles.inboxListContent,
+              isMobile && styles.inboxListContentMobile,
+            ]}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
+            {...(isMobile ? tabBarScroll : null)}
           >
-            {renderInboxList()}
+            {isMobile ? inboxChrome : null}
+            {isMobile ? (
+              <View style={styles.inboxListFill}>{renderInboxList()}</View>
+            ) : (
+              renderInboxList()
+            )}
           </ScrollView>
         </View>
       ) : null}
@@ -1850,7 +1899,10 @@ export default function MessagesScreen({
               {detailsOpen && activeThread.isGroup ? (
                 <ScrollView
                   style={styles.detailsPanel}
-                  contentContainerStyle={styles.detailsContent}
+                  contentContainerStyle={[
+                    styles.detailsContent,
+                    isMobile && styles.detailsContentMobile,
+                  ]}
                   keyboardShouldPersistTaps="handled"
                 >
                   {activeThread.isTeam ? (
@@ -2088,25 +2140,10 @@ export default function MessagesScreen({
                         color={emojiOpen ? BLUE : '#8e8e93'}
                       />
                     </Pressable>
-                    <Animated.View
+                    <View
                       style={[
                         styles.composerField,
                         isMobile && styles.composerFieldMobile,
-                        {
-                          borderColor: composerAccent.interpolate({
-                            inputRange: [0, 1],
-                            outputRange: ['#d1d1d6', BLUE],
-                          }),
-                          transform: [
-                            { scaleX: composerScale },
-                            {
-                              scaleY: composerScale.interpolate({
-                                inputRange: [1, 1.038],
-                                outputRange: [1, 1.018],
-                              }),
-                            },
-                          ],
-                        },
                       ]}
                     >
                       <TextInput
@@ -2132,7 +2169,7 @@ export default function MessagesScreen({
                             }
                           : null)}
                       />
-                    </Animated.View>
+                    </View>
                     <Animated.View style={{ transform: [{ scale: sendScale }] }}>
                       <Pressable
                         onPress={handleSend}
@@ -2157,7 +2194,7 @@ export default function MessagesScreen({
               </View>
               <Text style={styles.emptyTitle}>Direct Messages</Text>
               <Text style={styles.emptyHint}>
-                Pick a conversation, or message a person or a team.
+                Pick a conversation, or message a person.
               </Text>
             </View>
           )}
@@ -2251,6 +2288,9 @@ const styles = StyleSheet.create({
     width: '100%',
     borderRightWidth: 0,
     flex: 1,
+    height: '100%',
+    minHeight: 0,
+    overflow: 'hidden',
     backgroundColor: CANVAS,
   },
   canvasMobile: {
@@ -2263,9 +2303,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 18,
     paddingBottom: 16,
-  },
-  inboxHeaderMobile: {
-    paddingTop: 4,
   },
   inboxTitle: {
     flex: 1,
@@ -2389,6 +2426,9 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
+  composeButtonMobile: {
+    marginRight: -4,
+  },
   composeButtonPressed: {
     opacity: 0.55,
   },
@@ -2397,6 +2437,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 16,
     marginBottom: 8,
+  },
+  searchToolbarMobile: {
+    paddingTop: 4,
+    marginBottom: 4,
+    gap: 8,
   },
   searchWrap: {
     flex: 1,
@@ -2428,8 +2473,21 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
   },
+  inboxListMobile: {
+    flex: 1,
+    height: '100%',
+  },
   inboxListContent: {
     paddingBottom: 24,
+  },
+  inboxListContentMobile: {
+    flexGrow: 1,
+    minHeight: '100%',
+    paddingBottom: mobileTabBarReserve() + 24,
+  },
+  inboxListFill: {
+    flexGrow: 1,
+    minHeight: '100%',
   },
   composeSection: {
     fontFamily,
@@ -2443,7 +2501,7 @@ const styles = StyleSheet.create({
     paddingBottom: 4,
   },
   aiPinAvatar: {
-    backgroundColor: '#6B4DE6',
+    backgroundColor: AI_PURPLE,
   },
   teamAvatar: {
     width: 44,
@@ -2464,6 +2522,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 28,
     paddingTop: 64,
     gap: 8,
+  },
+  inboxCenteredMobile: {
+    flexGrow: 1,
+    paddingTop: 0,
   },
   personRow: {
     flexDirection: 'row',
@@ -2709,6 +2771,9 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     paddingBottom: 32,
   },
+  detailsContentMobile: {
+    paddingBottom: mobileTabBarReserve() + 32,
+  },
   detailsLabel: {
     fontFamily,
     fontSize: 12,
@@ -2878,6 +2943,14 @@ const styles = StyleSheet.create({
   bubbleTextMine: {
     color: '#fff',
   },
+  aiMention: {
+    color: AI_PURPLE,
+    fontWeight: '700',
+  },
+  aiMentionOnMine: {
+    color: '#E4D7FF',
+    fontWeight: '700',
+  },
   heartBurst: {
     position: 'absolute',
     left: 0,
@@ -3038,7 +3111,7 @@ const styles = StyleSheet.create({
   },
   composerMobile: {
     paddingTop: 6,
-    paddingBottom: 8,
+    paddingBottom: 8 + mobileTabBarReserve(),
     alignItems: 'center',
   },
   composerFieldMobile: {

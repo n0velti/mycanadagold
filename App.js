@@ -119,6 +119,12 @@ import {
   MobileSafeTop,
   MobileTabBar,
 } from './components/MobileChrome';
+import {
+  expandMobileTabBar,
+  mobileTabBarReserve,
+  useMobileTabBarCollapse,
+  useMobileTabBarScrollProps,
+} from './lib/mobileTabBar';
 import { profileTargetFromPerson } from './lib/profileTarget';
 import ProfileLocationPicker from './components/ProfileLocationPicker';
 import { PhoneCallProvider, PhoneIncomingDock, usePhoneCalls } from './components/PhoneCallProvider';
@@ -389,7 +395,9 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '@media (max-width:767px){',
     'html,body,#root{background:#fff;}',
     '.cgold-mobile-inset-top{height:max(12px,env(safe-area-inset-top,0px))!important;}',
-    '.cgold-mobile-tab-bar{padding-bottom:max(8px,env(safe-area-inset-bottom,0px))!important;-webkit-backdrop-filter:saturate(180%) blur(22px);backdrop-filter:saturate(180%) blur(22px);background-color:rgba(255,255,255,0.62)!important;}',
+    '.cgold-mobile-tab-bar-dock{padding-bottom:max(14px,calc(env(safe-area-inset-bottom,0px) + 10px))!important;}',
+    '.cgold-mobile-tab-bar{-webkit-backdrop-filter:saturate(180%) blur(22px);backdrop-filter:saturate(180%) blur(22px);background-color:rgba(255,255,255,0.56)!important;border-radius:999px;}',
+    '.cgold-mobile-tab-active{-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);background-color:rgba(255,255,255,0.78)!important;border-radius:999px;}',
     '.cgold-mobile-filter-blur{background-color:#fff!important;}',
     '.cgold-mobile-chrome-blur{-webkit-backdrop-filter:saturate(180%) blur(22px);backdrop-filter:saturate(180%) blur(22px);background-color:rgba(242,242,247,0.72)!important;}',
     '.cgold-mobile-sheet-top{padding-top:max(18px,env(safe-area-inset-top,0px))!important;}',
@@ -1365,18 +1373,18 @@ function AppsLibrary({
   appGrid,
 }) {
   const isMobile = useIsMobile();
+  const tabBarScroll = useMobileTabBarScrollProps();
+  const filterCollapse = useMobileTabBarCollapse();
   const appsRootRef = useRef(null);
   const filterButtonRef = useRef(null);
-  const heroTopRef = useRef(0);
-  const titleRowRef = useRef({ y: 20, height: 46 });
+  const appsScrollYRef = useRef(0);
+  const scrolledAwayRef = useRef(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [filterTop, setFilterTop] = useState(36);
-  const [filterWidth, setFilterWidth] = useState(MOBILE_FILTER_SIZE);
+  const [scrolledAway, setScrolledAway] = useState(false);
   const [filterAnchor, setFilterAnchor] = useState({ top: 0, right: MOBILE_FILTER_INSET });
 
   const searching = Boolean(query.trim());
   const filtersActive = searching;
-  const chromeLabel = 'Apps';
   const visibleTools = tools;
   const emptyCopy = searching
     ? `No apps match “${query.trim()}”.`
@@ -1490,12 +1498,6 @@ function AppsLibrary({
 
   const closeFilters = () => setFiltersOpen(false);
 
-  const syncFilterTop = () => {
-    const row = titleRowRef.current;
-    const next = heroTopRef.current + row.y + (row.height - MOBILE_FILTER_SIZE) / 2;
-    setFilterTop((current) => (Math.abs(current - next) < 0.5 ? current : next));
-  };
-
   const placeFilterMenu = () => {
     const button = filterButtonRef.current;
     const root = appsRootRef.current;
@@ -1510,35 +1512,48 @@ function AppsLibrary({
     });
   };
 
-  const filterButton = isMobile ? (
-    <Pressable
-      ref={filterButtonRef}
-      hitSlop={6}
-      onLayout={(event) => {
-        const next = Math.ceil(event.nativeEvent.layout.width);
-        if (next > 0) setFilterWidth((current) => (current === next ? current : next));
-        placeFilterMenu();
-      }}
-      onPress={() => {
-        placeFilterMenu();
-        setFiltersOpen((open) => !open);
-      }}
-      style={[styles.storeNameButton, styles.homeChromeButton, { top: filterTop }]}
-      accessibilityRole="button"
+  const showStickyFilter = isMobile && scrolledAway;
+  const filterSlide = {
+    transform: [
+      {
+        translateY: filterCollapse.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0, -(MOBILE_FILTER_SIZE + 20)],
+        }),
+      },
+    ],
+  };
+
+  const onAppsScroll = (event) => {
+    tabBarScroll.onScroll?.(event);
+    const y = event?.nativeEvent?.contentOffset?.y;
+    if (!Number.isFinite(y)) return;
+    const dy = y - appsScrollYRef.current;
+    appsScrollYRef.current = y;
+    const away = y > MOBILE_FILTER_SIZE + 28;
+    if (away !== scrolledAwayRef.current) {
+      scrolledAwayRef.current = away;
+      setScrolledAway(away);
+    }
+    if (dy > 4 && filtersOpen) setFiltersOpen(false);
+  };
+
+  const pressAppsFilter = () => {
+    expandMobileTabBar();
+    placeFilterMenu();
+    setFiltersOpen((open) => !open);
+  };
+
+  const appsFilterButton = (ownsRef) => (
+    <HomeFilterCircle
+      buttonRef={ownsRef ? filterButtonRef : undefined}
+      active={filtersOpen || filtersActive}
+      onLayout={ownsRef ? placeFilterMenu : undefined}
+      onPress={pressAppsFilter}
       accessibilityLabel="Apps filters"
       accessibilityState={{ expanded: filtersOpen }}
-    >
-      <BlurView
-        intensity={72}
-        tint="light"
-        style={styles.storeNameBlur}
-        {...(Platform.OS === 'web' ? { className: 'cgold-mobile-filter-blur' } : null)}
-      >
-        <HomeFilterLines color={filtersOpen || filtersActive ? TAB_INK : TAB_ICON_COLOR} />
-        <FilterChromeLabel text={chromeLabel} />
-      </BlurView>
-    </Pressable>
-  ) : null;
+    />
+  );
 
   const appsBody =
     visibleTools.length === 0 ? (
@@ -1602,33 +1617,19 @@ function AppsLibrary({
         ]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        {...tabBarScroll}
+        onScroll={onAppsScroll}
       >
         {appsPageHeader}
         {isMobile ? (
-          <View
-            style={styles.igHomeHero}
-            onLayout={(event) => {
-              heroTopRef.current = event.nativeEvent.layout.y;
-              syncFilterTop();
-            }}
-          >
-            <View
-              style={styles.igHomeHeroAmountRow}
-              onLayout={(event) => {
-                const { y, height } = event.nativeEvent.layout;
-                titleRowRef.current = { y, height };
-                syncFilterTop();
-              }}
-            >
+          <View style={styles.igHomeHero}>
+            <View style={styles.igHomeHeroAmountRow}>
               <Text style={styles.igHomeHeroAmount} numberOfLines={1}>
                 Apps
               </Text>
-              <View
-                style={[
-                  styles.igHomeFilterSlot,
-                  { width: Math.max(filterWidth, MOBILE_FILTER_SIZE) },
-                ]}
-              />
+              <View style={styles.igHomeFilterSlot}>
+                {appsFilterButton(!scrolledAway)}
+              </View>
             </View>
           </View>
         ) : null}
@@ -1654,7 +1655,14 @@ function AppsLibrary({
         </View>
       ) : null}
 
-      {filterButton}
+      {showStickyFilter ? (
+        <Animated.View
+          pointerEvents="box-none"
+          style={[styles.igHomeFilterSticky, filterSlide]}
+        >
+          {appsFilterButton(true)}
+        </Animated.View>
+      ) : null}
     </View>
   );
 }
@@ -4686,38 +4694,6 @@ function HomeStoresTable({
 const HOME_FILTER_SIZE = MOBILE_FILTER_SIZE;
 const HOME_FILTER_RIGHT = MOBILE_FILTER_INSET;
 
-function FilterChromeLabel({ text }) {
-  const opacity = useRef(new Animated.Value(1)).current;
-  const labelRef = useRef(text);
-  const [label, setLabel] = useState(text);
-
-  useEffect(() => {
-    if (text === labelRef.current) return undefined;
-    const fade = Animated.timing(opacity, {
-      toValue: 0,
-      duration: 90,
-      useNativeDriver: false,
-    });
-    fade.start(({ finished }) => {
-      if (!finished) return;
-      labelRef.current = text;
-      setLabel(text);
-      Animated.timing(opacity, {
-        toValue: 1,
-        duration: 160,
-        useNativeDriver: false,
-      }).start();
-    });
-    return () => fade.stop();
-  }, [opacity, text]);
-
-  return (
-    <Animated.Text style={[styles.storeNameLabel, { opacity }]} numberOfLines={1}>
-      {label}
-    </Animated.Text>
-  );
-}
-
 function HomeFilterLines({ color }) {
   return (
     <View style={styles.igFilterLines}>
@@ -4728,20 +4704,56 @@ function HomeFilterLines({ color }) {
   );
 }
 
+function HomeFilterCircle({
+  buttonRef,
+  active = false,
+  onPress,
+  onLayout,
+  accessibilityLabel,
+  accessibilityState,
+  style,
+}) {
+  return (
+    <Pressable
+      ref={buttonRef}
+      hitSlop={6}
+      onLayout={onLayout}
+      onPress={onPress}
+      style={[styles.igHomeFilterCircle, style]}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityState={accessibilityState}
+    >
+      <BlurView
+        intensity={72}
+        tint="light"
+        style={styles.igHomeFilterBlur}
+        {...(Platform.OS === 'web' ? { className: 'cgold-mobile-filter-blur' } : null)}
+      >
+        <HomeFilterLines color={active ? TAB_INK : TAB_ICON_COLOR} />
+      </BlurView>
+    </Pressable>
+  );
+}
+
 function HomeGlyph({ size = 16, color = TAB_INK }) {
   return <Feather name="home" size={size} color={color} />;
 }
 
 function HomeScreen({ session, onRequireLogin, onOpenPerson, onBuy, onSell, homeRootTick = 0 }) {
   const isMobile = useIsMobile();
+  const tabBarScroll = useMobileTabBarScrollProps();
+  const filterCollapse = useMobileTabBarCollapse();
   const appGrid = useAppGridLayout();
   const { canFilter } = useAppAccess();
   const homeRootRef = useRef(null);
   const filterButtonRef = useRef(null);
   const heroTopRef = useRef(0);
   const amountRowRef = useRef({ y: 20, height: 46 });
+  const homeScrollYRef = useRef(0);
+  const scrolledAwayRef = useRef(false);
   const [filterTop, setFilterTop] = useState(36);
-  const [homeFilterWidth, setHomeFilterWidth] = useState(HOME_FILTER_SIZE);
+  const [scrolledAway, setScrolledAway] = useState(false);
   const [storeAppsOpen, setStoreAppsOpen] = useState(false);
   const [storeFilterTop, setStoreFilterTop] = useState(36);
   const [filterAnchor, setFilterAnchor] = useState({ top: 90, right: 16 });
@@ -5082,45 +5094,61 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson, onBuy, onSell, home
     });
   };
 
-  const chromeLabel = selectedStore?.store || 'MyCanadaGold';
-  const chromeTop = selectedStore ? storeFilterTop : filterTop;
-  const chromeActive = selectedStore ? storeAppsOpen : filtersOpen || filtersActive;
-  const filterButton = isMobile ? (
-    <Pressable
-      ref={filterButtonRef}
-      hitSlop={6}
-      onLayout={(event) => {
-        const next = Math.ceil(event.nativeEvent.layout.width);
-        if (next > 0) setHomeFilterWidth((current) => (current === next ? current : next));
-        placeFilterMenu();
-      }}
-      onPress={() => {
-        if (selectedStore) {
-          setStoreAppsOpen((open) => !open);
-          return;
-        }
-        placeFilterMenu();
-        setFiltersOpen((open) => !open);
-      }}
-      style={[styles.storeNameButton, styles.homeChromeButton, { top: chromeTop }]}
-      accessibilityRole="button"
-      accessibilityLabel={selectedStore ? `${chromeLabel} apps` : 'MyCanadaGold filters'}
-      accessibilityState={{ expanded: selectedStore ? storeAppsOpen : filtersOpen }}
-    >
-      <BlurView
-        intensity={72}
-        tint="light"
-        style={styles.storeNameBlur}
-        {...(Platform.OS === 'web' ? { className: 'cgold-mobile-filter-blur' } : null)}
-      >
-        <HomeFilterLines color={chromeActive ? TAB_INK : TAB_ICON_COLOR} />
-        <FilterChromeLabel text={chromeLabel} />
-      </BlurView>
-    </Pressable>
-  ) : null;
-
   const showMobileHero =
     isMobile && !(loading && storeRows.length === 0) && visibleRows.length > 0;
+  const showHeroFilter = showMobileHero && !selectedStore;
+  const showStickyFilter = isMobile && !selectedStore && scrolledAway;
+  const showFallbackFilter = isMobile && !selectedStore && !showMobileHero;
+  const showStoreFilter = isMobile && Boolean(selectedStore);
+  const chromeActive = selectedStore ? storeAppsOpen : filtersOpen || filtersActive;
+  const filterSlide = {
+    transform: [
+      {
+        translateY: filterCollapse.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0, -(HOME_FILTER_SIZE + 20)],
+        }),
+      },
+    ],
+  };
+
+  const onHomeScroll = (event) => {
+    tabBarScroll.onScroll?.(event);
+    const y = event?.nativeEvent?.contentOffset?.y;
+    if (!Number.isFinite(y)) return;
+    const dy = y - homeScrollYRef.current;
+    homeScrollYRef.current = y;
+    const away = y > HOME_FILTER_SIZE + 28;
+    if (away !== scrolledAwayRef.current) {
+      scrolledAwayRef.current = away;
+      setScrolledAway(away);
+    }
+    if (dy > 4) {
+      if (filtersOpen) setFiltersOpen(false);
+      if (storeAppsOpen) setStoreAppsOpen(false);
+    }
+  };
+
+  const pressHomeFilter = () => {
+    expandMobileTabBar();
+    if (selectedStore) {
+      setStoreAppsOpen((open) => !open);
+      return;
+    }
+    placeFilterMenu();
+    setFiltersOpen((open) => !open);
+  };
+
+  const homeFilterButton = (ownsRef) => (
+    <HomeFilterCircle
+      buttonRef={ownsRef ? filterButtonRef : undefined}
+      active={chromeActive}
+      onLayout={ownsRef ? placeFilterMenu : undefined}
+      onPress={pressHomeFilter}
+      accessibilityLabel={selectedStore ? `${selectedStore.store} apps` : 'Filters'}
+      accessibilityState={{ expanded: selectedStore ? storeAppsOpen : filtersOpen }}
+    />
+  );
 
   return (
     <View ref={homeRootRef} style={[styles.toolsScreen, styles.canvasFill, isMobile && styles.igHomeScreen]}>
@@ -5133,6 +5161,8 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson, onBuy, onSell, home
         ]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        {...tabBarScroll}
+        onScroll={onHomeScroll}
         refreshControl={
           isMobile ? (
             <RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor="#8e8e93" />
@@ -5171,12 +5201,9 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson, onBuy, onSell, home
                   {formatAmount(totals.totalAmount)}
                 </HomeLiveValue>
               )}
-              <View
-                style={[
-                  styles.igHomeFilterSlot,
-                  { width: Math.max(homeFilterWidth, HOME_FILTER_SIZE) },
-                ]}
-              />
+              <View style={styles.igHomeFilterSlot}>
+                {showHeroFilter ? homeFilterButton(!scrolledAway) : null}
+              </View>
             </View>
             <View style={styles.igHomeHeroStats}>
               <View style={styles.igHomeHeroStat}>
@@ -5322,10 +5349,30 @@ function HomeScreen({ session, onRequireLogin, onOpenPerson, onBuy, onSell, home
         appsOpen={storeAppsOpen}
         onAppsOpenChange={setStoreAppsOpen}
         onMobileFilterTop={setStoreFilterTop}
-        mobileChromeWidth={homeFilterWidth}
+        mobileChromeWidth={HOME_FILTER_SIZE}
       />
 
-      {filterButton}
+      {showStickyFilter ? (
+        <Animated.View
+          pointerEvents="box-none"
+          style={[styles.igHomeFilterSticky, filterSlide]}
+        >
+          {homeFilterButton(true)}
+        </Animated.View>
+      ) : null}
+      {showFallbackFilter ? (
+        <View style={[styles.igHomeFilterFloat, { top: filterTop }]}>
+          {homeFilterButton(true)}
+        </View>
+      ) : null}
+      {showStoreFilter ? (
+        <Animated.View
+          pointerEvents="box-none"
+          style={[styles.igHomeFilterFloat, { top: storeFilterTop }, filterSlide]}
+        >
+          {homeFilterButton(true)}
+        </Animated.View>
+      ) : null}
     </View>
   );
 }
@@ -8075,7 +8122,7 @@ export default function App() {
     !isMobile && activeTab === 'tools' && activeTool?.key === 'employees' && styles.contentAppsLibrary,
     (groupedMobileTab || showingSettings) && styles.contentMobileGrouped,
     canvasMobileTab && styles.canvasFill,
-    isMobile && activeTab !== 'home' && !isAppsLibrary && styles.contentMobileTabInset,
+    isMobile && activeTab !== 'home' && !isAppsLibrary && !showingMessages && styles.contentMobileTabInset,
     isMobile &&
       !isFullBleedTool &&
       !showingMessages &&
@@ -8140,7 +8187,7 @@ export default function App() {
               onBack={() => selectTab('home')}
             />
           ) : null}
-          {activeTab === 'tools' && activeTool ? (
+          {activeTab === 'tools' && activeTool && activeTool.key !== 'triage' ? (
             <MobileNavHeader
               title={
                 activeTool.key === 'triage' && triageBatch?.dateLabel
@@ -8895,13 +8942,13 @@ const styles = StyleSheet.create({
     backgroundColor: '#f2f2f7',
   },
   contentMobileTabInset: {
-    paddingBottom: 64,
+    paddingBottom: mobileTabBarReserve(),
   },
   mobilePhoneDockSlot: {
     position: 'absolute',
     left: 0,
     right: 0,
-    bottom: 64,
+    bottom: mobileTabBarReserve(),
     zIndex: 50,
   },
   contentMobilePadded: {
@@ -12642,6 +12689,36 @@ const styles = StyleSheet.create({
       },
     }),
   },
+  igHomeFilterCircle: {
+    width: HOME_FILTER_SIZE,
+    height: HOME_FILTER_SIZE,
+    borderRadius: HOME_FILTER_SIZE / 2,
+    overflow: 'hidden',
+    ...Platform.select({
+      web: {
+        cursor: 'pointer',
+        boxShadow: '0 1px 6px rgba(0,0,0,0.1)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOpacity: 0.1,
+        shadowRadius: 6,
+        shadowOffset: { width: 0, height: 1 },
+        elevation: 3,
+      },
+    }),
+  },
+  igHomeFilterFloat: {
+    position: 'absolute',
+    right: HOME_FILTER_RIGHT,
+    zIndex: 24,
+  },
+  igHomeFilterSticky: {
+    position: 'absolute',
+    top: 16,
+    right: HOME_FILTER_RIGHT,
+    zIndex: 24,
+  },
   igHomeFilterBlur: {
     ...StyleSheet.absoluteFillObject,
     borderRadius: HOME_FILTER_SIZE / 2,
@@ -12781,7 +12858,7 @@ const styles = StyleSheet.create({
     backgroundColor: CANVAS,
   },
   igHomeScrollEnd: {
-    paddingBottom: 104,
+    paddingBottom: mobileTabBarReserve() + 40,
   },
   igHomeHero: {
     alignSelf: 'stretch',
@@ -12811,6 +12888,8 @@ const styles = StyleSheet.create({
   igHomeFilterSlot: {
     width: HOME_FILTER_SIZE + (HOME_FILTER_RIGHT - 16),
     height: HOME_FILTER_SIZE,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   igHomeHeroAmount: {
     flex: 1,
