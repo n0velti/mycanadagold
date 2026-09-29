@@ -340,6 +340,16 @@ function PurchaseSummary({
               </View>
               <View style={styles.colProduct}>
                 <ReadValue field={item.name} />
+                {item.objectLabel || item.pureLabel ? (
+                  <Text style={styles.itemWeightMeta}>
+                    {[
+                      item.objectLabel ? `${item.objectLabel} object` : null,
+                      item.pureLabel ? `${item.pureLabel} pure` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </Text>
+                ) : null}
               </View>
               <View style={styles.colQty}>
                 <ReadValue field={item.qty} suffix={item.unitType || 'ea'} />
@@ -2690,6 +2700,12 @@ const styles = StyleSheet.create({
     flex: 2.4,
     minWidth: 0,
     justifyContent: 'center',
+  },
+  itemWeightMeta: {
+    marginTop: 2,
+    fontSize: 12,
+    color: '#8e8e93',
+    fontVariant: ['tabular-nums'],
   },
   colQty: {
     flex: 0.85,

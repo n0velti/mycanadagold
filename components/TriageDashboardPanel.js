@@ -8,14 +8,23 @@ import {
   applyTriageReviewToPo,
   collectAccuracyTriagePos,
   collectAllTriagePos,
+  persistTransferWorkflowNow,
   RECEIVE_STATUS,
   RECEIVE_STATUS_LABELS,
+  saveTriagePoAllocation,
   saveTriagePoReview,
   transferGoesToWorkshop,
   triageEditorFromSession,
   triagePoNeedsCorrection,
   useTransferWorkflow,
 } from '../lib/transferWorkflow';
+import {
+  allocationDraftFromSaved,
+  allocationSummaryLabel,
+  formatGrams,
+  isAllocationComplete,
+  summarizePoAllocations,
+} from '../lib/triageAllocations';
 import {
   formatFineProgress,
   groupPosIntoLots,
@@ -40,6 +49,7 @@ import {
   TriageDrawer,
 } from './TriageKit';
 import { PoThumb } from './TriageTable';
+import TriageAllocationForm from './TriageAllocationForm';
 import TriageReviewDrawer from './TriageReviewDrawer';
 
 const fontFamily = FONT;
@@ -433,37 +443,94 @@ function LotsPage({ lots, allRows, errors, query, onOpen }) {
   );
 }
 
-function AllocationPage({ lots }) {
+function AllocationPage({ rows, session }) {
+  const summary = useMemo(() => summarizePoAllocations(rows), [rows]);
+  const [openPo, setOpenPo] = useState(null);
+  const [draft, setDraft] = useState({ lines: [] });
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const melt = summary.totals.melt?.objectGrams || 0;
+  const rcm = summary.totals.rcm?.objectGrams || 0;
+
+  const open = (po) => {
+    setOpenPo(po);
+    setDraft(allocationDraftFromSaved(po, po.allocation));
+    setError('');
+  };
+
+  const save = () => {
+    if (!openPo || saving) return;
+    if (!isAllocationComplete(draft)) {
+      setError('Allocate the full object weight of each line.');
+      return;
+    }
+    setSaving(true);
+    try {
+      saveTriagePoAllocation(openPo.id, draft, triageEditorFromSession(session));
+      persistTransferWorkflowNow().catch(() => {});
+      setOpenPo(null);
+    } catch (err) {
+      setError(err?.message || 'Could not save allocation.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const listed = [...summary.rows].sort((a, b) => Number(a.complete) - Number(b.complete));
+
   return (
-    <ChromePage
-      hero={
-        <ChromeHero
-          value="0"
-          stats={[
-            { label: lots.length === 1 ? 'Lot' : 'Lots', value: String(lots.length) },
-            { label: 'Allocated', value: '0' },
-            { label: 'Ready', value: String(lots.length) },
-          ]}
-        />
-      }
-      title="Lots"
-      meta={String(lots.length)}
-    >
-      {lots.length
-        ? lots.map((lot, index) => (
-            <ChromeListRow
-              key={lot.id}
-              title={lot.id}
-              meta={[lot.location, lotPeriodLabel(lot)].filter(Boolean).join(' · ')}
-              value="Open"
-              icon="folder"
-              iconColor="#3A3A3C"
-              last={index === lots.length - 1}
-              chevron={false}
-            />
-          ))
-        : emptyCopy('Lots you finish will show up here for allocation.')}
-    </ChromePage>
+    <>
+      <ChromePage
+        hero={
+          <ChromeHero
+            value={String(summary.allocated)}
+            stats={[
+              { label: 'Ready', value: String(summary.ready) },
+              { label: 'Melt', value: `${formatGrams(melt)} g` },
+              { label: 'RCM', value: `${formatGrams(rcm)} g` },
+            ]}
+          />
+        }
+        title="Purchase orders"
+        meta={`${summary.allocated} allocated`}
+      >
+        {listed.length
+          ? listed.map((row, index) => (
+              <ChromeListRow
+                key={row.po.id}
+                title={row.po.reference || row.po.id}
+                meta={
+                  row.complete
+                    ? [allocationSummaryLabel(row.allocation), row.po.storeName].filter(Boolean).join(' · ')
+                    : [row.po.storeName, row.po.dateLabel, 'Needs allocation'].filter(Boolean).join(' · ')
+                }
+                value={row.complete ? 'Allocated' : 'Open'}
+                icon={row.complete ? 'git-branch' : 'ellipse-outline'}
+                iconColor={row.complete ? '#3A3A3C' : '#C2410C'}
+                last={index === listed.length - 1}
+                onPress={() => open(row.po)}
+              />
+            ))
+          : emptyCopy('Finish a PO from Add to allocate Melt and RCM here.')}
+      </ChromePage>
+      <TriageDrawer
+        visible={Boolean(openPo)}
+        onClose={() => setOpenPo(null)}
+        title="Allocate"
+        subtitle={openPo?.reference || ''}
+        leftLabel="Close"
+        onLeft={() => setOpenPo(null)}
+        rightLabel={saving ? 'Saving…' : 'Finish'}
+        onRight={save}
+        widthRatio={0.42}
+        minWidth={380}
+      >
+        <ScrollView style={styles.breakScroll} contentContainerStyle={styles.breakPad} showsVerticalScrollIndicator={false}>
+          <TriageAllocationForm draft={draft} onChange={setDraft} disabled={saving} />
+          {error ? <Text style={styles.allocError}>{error}</Text> : null}
+        </ScrollView>
+      </TriageDrawer>
+    </>
   );
 }
 
@@ -532,6 +599,7 @@ export default function TriageDashboardPanel({
   const lots = useMemo(() => groupPosIntoLots(evaluated, allRows), [allRows, evaluated]);
   const errors = useMemo(() => summarizeErrors(evaluated), [evaluated]);
   const lotSummary = useMemo(() => summarizeLots(lots), [lots]);
+  const allocationSummary = useMemo(() => summarizePoAllocations(allRows), [allRows]);
   const transferSummary = useMemo(() => summarizeTransfers(planned), [planned]);
 
   const openPage = useCallback((key) => onPageChange?.(key || ''), [onPageChange]);
@@ -635,11 +703,11 @@ export default function TriageDashboardPanel({
       <ChromeListRow
         title="Allocation"
         meta={
-          lots.length
-            ? `${lots.length} ${lots.length === 1 ? 'lot' : 'lots'} · none allocated`
+          allocationSummary.total
+            ? `${allocationSummary.allocated} allocated · ${allocationSummary.ready} ready`
             : 'Nothing to allocate yet'
         }
-        value={String(lots.length)}
+        value={String(allocationSummary.allocated)}
         icon="git-branch"
         iconColor="#3A3A3C"
         onPress={() => openPage('allocation')}
@@ -683,7 +751,7 @@ export default function TriageDashboardPanel({
           onOpen={onOpenLot ? (lot) => onOpenLot(lot.id) : undefined}
         />
       ) : page === 'allocation' ? (
-        <AllocationPage lots={lots} />
+        <AllocationPage rows={allRows} session={session} />
       ) : page === 'return' ? (
         <ExpectedReturnPage lots={lots} summary={lotSummary} />
       ) : (
@@ -798,5 +866,11 @@ const styles = StyleSheet.create({
   },
   breakBar: {
     marginTop: 2,
+  },
+  allocError: {
+    marginTop: 12,
+    fontFamily,
+    fontSize: 13,
+    color: T.red,
   },
 });

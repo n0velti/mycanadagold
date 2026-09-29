@@ -25,11 +25,24 @@ import { listTriageErrorTypes, mergeErrorTypes, saveTriageErrorType } from '../l
 import { uploadTriageErrorPhotos } from '../lib/triageErrorPhotos';
 import { lookupPurchasesByPoNumber, normalizePoNumber, readPoNumberFromPhoto } from '../lib/triagePoRead';
 import { formatAmount } from '../lib/transactions';
+import {
+  allocationDraftFromPo,
+  isAllocationComplete,
+  sanitizeAllocation,
+  weightPairLabel,
+} from '../lib/triageAllocations';
 import { lotFromPo } from '../lib/triageLots';
-import { fileTriagePoToLot, persistTransferWorkflowNow, saveTriagePoReview, triageEditorFromSession } from '../lib/transferWorkflow';
+import {
+  fileTriagePoToLot,
+  persistTransferWorkflowNow,
+  saveTriagePoAllocation,
+  saveTriagePoReview,
+  triageEditorFromSession,
+} from '../lib/transferWorkflow';
 import { getVideoElement, useWebcam, webcamSupported } from '../lib/webcam';
 import { catalogNameForPurchaseLine, fetchWebsitePrices } from '../lib/websitePrices';
 import { FONT, T } from './TriageKit';
+import TriageAllocationForm from './TriageAllocationForm';
 import TriageCorrectionImages from './TriageCorrectionImages';
 
 const PAPER_ASPECT = 8.5 / 11;
@@ -97,6 +110,8 @@ function lineTitle(line, catalog) {
 }
 
 function weightLabel(line) {
+  const pair = weightPairLabel(line);
+  if (pair) return pair;
   const raw = line?.weight;
   if (raw == null || raw === '') return '';
   const n = Number(raw);
@@ -110,6 +125,16 @@ function weightLabel(line) {
 function moneyLabel(amount) {
   if (amount == null || !Number.isFinite(Number(amount))) return '—';
   return formatAmount(amount);
+}
+
+function matchStoreLabel(row) {
+  const store = String(row?.storeName || '').trim();
+  if (store && store !== '—') return store;
+  return '';
+}
+
+function matchPoMeta(row) {
+  return [matchStoreLabel(row), row?.dateLabel].filter(Boolean).join(' · ') || 'Store not listed';
 }
 
 function lineAmountNumber(value) {
@@ -297,6 +322,9 @@ export default function TriagePoCapture({ session, openerRef }) {
   const [matches, setMatches] = useState([]);
   const [po, setPo] = useState(null);
   const [resultOpen, setResultOpen] = useState(false);
+  const [allocating, setAllocating] = useState(false);
+  const [allocDraft, setAllocDraft] = useState({ lines: [] });
+  const [pendingError, setPendingError] = useState(false);
   const [errorMode, setErrorMode] = useState(false);
   const [errorNote, setErrorNote] = useState('');
   const [errorType, setErrorType] = useState('');
@@ -335,7 +363,7 @@ export default function TriagePoCapture({ session, openerRef }) {
   const requestRef = useRef(0);
   const openRef = useRef(false);
   openRef.current = open;
-  const onSnapCamera = !isMobile || (!resultOpen && matches.length <= 1);
+  const onSnapCamera = !isMobile || (!resultOpen && !allocating && matches.length <= 1);
   const { videoRef, cameraState, startCamera, stopStream, setVideoNode } = useWebcam({
     active: open && liveCamera && !photoUri && onSnapCamera,
     autoStart: false,
@@ -373,6 +401,9 @@ export default function TriagePoCapture({ session, openerRef }) {
     setMatches([]);
     setPo(null);
     setResultOpen(false);
+    setAllocating(false);
+    setAllocDraft({ lines: [] });
+    setPendingError(false);
     setErrorMode(false);
     setErrorNote('');
     setErrorType('');
@@ -552,6 +583,9 @@ export default function TriagePoCapture({ session, openerRef }) {
     setMatches([]);
     setPo(null);
     setResultOpen(false);
+    setAllocating(false);
+    setAllocDraft({ lines: [] });
+    setPendingError(false);
     setErrorMode(false);
     setErrorNote('');
     setErrorType('');
@@ -566,6 +600,12 @@ export default function TriagePoCapture({ session, openerRef }) {
   };
 
   const leaveMobilePage = () => {
+    if (allocating) {
+      setAllocating(false);
+      setResultError('');
+      if (pendingError) setErrorMode(true);
+      return;
+    }
     if (errorMode) {
       setErrorMode(false);
       setResultError('');
@@ -582,7 +622,7 @@ export default function TriagePoCapture({ session, openerRef }) {
     close();
   };
 
-  const finishPo = async (withError) => {
+  const goAllocate = (withError) => {
     if (!po || finishing) return;
     const note = errorNote.trim();
     const amount = errorAmount.trim();
@@ -592,7 +632,25 @@ export default function TriagePoCapture({ session, openerRef }) {
       setResultError('Add a note, set amount, photo, line change, or pick an error type.');
       return;
     }
+    setPendingError(Boolean(withError));
+    setAllocDraft(allocationDraftFromPo(po, (line) => lineTitle(line, buyCatalog)));
+    setAllocating(true);
+    setErrorMode(false);
+    setResultError('');
+  };
+
+  const finishPo = async () => {
+    if (!po || finishing) return;
+    if (!isAllocationComplete(allocDraft)) {
+      setResultError('Allocate the full object weight of each line before finishing.');
+      return;
+    }
+    const note = errorNote.trim();
+    const amount = errorAmount.trim();
+    const photos = normalizeReviewImages(errorImages);
+    const lineEdits = changedLineEdits(lineDrafts, lines, buyCatalog);
     const actor = actorNameOf(session);
+    const editor = triageEditorFromSession(session);
     setFinishing(true);
     setResultError('');
     try {
@@ -601,15 +659,16 @@ export default function TriagePoCapture({ session, openerRef }) {
         setResultError(`${po.reference || 'This PO'} could not be added to a lot.`);
         return;
       }
-      if (withError) {
-        const poId = result.item?.id || po.id;
+      const poId = result.item?.id || po.id;
+      if (pendingError) {
         const images = photos.length ? await uploadTriageErrorPhotos(photos, poId) : [];
         saveTriagePoReview(
           poId,
           { note, errorType, errorAmount: formatErrorAmount(amount), images, lineEdits },
-          triageEditorFromSession(session),
+          editor,
         );
       }
+      saveTriagePoAllocation(poId, sanitizeAllocation(allocDraft) || allocDraft, editor);
       persistTransferWorkflowNow().catch(() => {});
       const label = po.reference || `PO#${normalizePoNumber(poInput) || po.id}`;
       const lotName = result.lot?.id || lotFromPo(po).id;
@@ -793,15 +852,49 @@ export default function TriagePoCapture({ session, openerRef }) {
           <View style={[styles.pageFooter, { paddingBottom: dockPad }]}>
             <Pressable
               style={[styles.pagePrimary, finishing && styles.lookupOff]}
-              onPress={() => void finishPo(true)}
+              onPress={() => goAllocate(true)}
               disabled={finishing}
               accessibilityRole="button"
-              accessibilityLabel="Save error"
+              accessibilityLabel="Next"
             >
-              <Text style={styles.pagePrimaryText}>{finishing ? 'Saving…' : 'Save error'}</Text>
+              <Text style={styles.pagePrimaryText}>Next</Text>
             </Pressable>
           </View>
         </KeyboardAvoidingView>
+      ) : allocating && po ? (
+        <View style={styles.page}>
+          <View style={[styles.pageNav, Platform.OS !== 'web' && styles.pageNavNative]} {...pagePad}>
+            <Pressable
+              style={styles.pageBack}
+              onPress={leaveMobilePage}
+              accessibilityRole="button"
+              accessibilityLabel="Back to PO"
+            >
+              <Ionicons name="chevron-back" size={26} color="#1a1a1a" />
+              <Text style={styles.pageBackText}>PO</Text>
+            </Pressable>
+            <Text style={styles.pageTitle} numberOfLines={1}>Allocate</Text>
+          </View>
+          <ScrollView style={styles.pageBody} contentContainerStyle={styles.pageScroll}>
+            <Text style={styles.resultKicker}>{po.reference || 'PO'}</Text>
+            <Text style={styles.detailMeta}>
+              Split each line by object weight. Totals must match before you finish.
+            </Text>
+            <TriageAllocationForm draft={allocDraft} onChange={setAllocDraft} disabled={finishing} />
+            {resultError ? <Text style={styles.error}>{resultError}</Text> : null}
+          </ScrollView>
+          <View style={[styles.pageFooter, { paddingBottom: dockPad }]}>
+            <Pressable
+              style={[styles.pagePrimary, finishing && styles.lookupOff]}
+              onPress={() => void finishPo()}
+              disabled={finishing}
+              accessibilityRole="button"
+              accessibilityLabel="Finish"
+            >
+              <Text style={styles.pagePrimaryText}>{finishing ? 'Saving…' : 'Finish'}</Text>
+            </Pressable>
+          </View>
+        </View>
       ) : resultOpen && po ? (
         <View style={styles.page}>
           <View style={[styles.pageNav, Platform.OS !== 'web' && styles.pageNavNative]} {...pagePad}>
@@ -863,12 +956,12 @@ export default function TriagePoCapture({ session, openerRef }) {
             </Pressable>
             <Pressable
               style={[styles.pagePrimary, finishing && styles.lookupOff]}
-              onPress={() => void finishPo(false)}
+              onPress={() => goAllocate(false)}
               disabled={finishing}
               accessibilityRole="button"
-              accessibilityLabel="Finish"
+              accessibilityLabel="Next"
             >
-              <Text style={styles.pagePrimaryText}>{finishing ? 'Saving…' : 'Finish'}</Text>
+              <Text style={styles.pagePrimaryText}>Next</Text>
             </Pressable>
           </View>
         </View>
@@ -899,7 +992,7 @@ export default function TriagePoCapture({ session, openerRef }) {
                   <View style={styles.lineCopy}>
                     <Text style={styles.groupLabel}>{row.reference}</Text>
                     <Text style={styles.lineWeight} numberOfLines={1}>
-                      {[row.storeName, row.systemLabel].filter(Boolean).join(' · ')}
+                      {matchPoMeta(row)}
                     </Text>
                   </View>
                   <Ionicons name="chevron-forward" size={18} color="#C7C7CC" />
@@ -1196,7 +1289,7 @@ export default function TriagePoCapture({ session, openerRef }) {
                       >
                         <Text style={styles.matchTitle}>{row.reference}</Text>
                         <Text style={styles.matchMeta} numberOfLines={1}>
-                          {[row.storeName, row.systemLabel].filter(Boolean).join(' · ')}
+                          {matchPoMeta(row)}
                         </Text>
                       </Pressable>
                     );
@@ -1220,26 +1313,64 @@ export default function TriagePoCapture({ session, openerRef }) {
       visible={open && resultOpen && Boolean(po) && !isMobile}
       transparent
       animationType={isMobile ? 'slide' : 'fade'}
-      onRequestClose={() => setResultOpen(false)}
+      onRequestClose={() => {
+        if (allocating) {
+          setAllocating(false);
+          return;
+        }
+        setResultOpen(false);
+      }}
     >
       <KeyboardAvoidingView
         style={[styles.backdrop, isMobile && styles.backdropSheet]}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <Pressable style={StyleSheet.absoluteFill} onPress={() => setResultOpen(false)} />
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={() => {
+            if (allocating) {
+              setAllocating(false);
+              return;
+            }
+            setResultOpen(false);
+          }}
+        />
         <View style={[styles.resultSheet, isMobile && styles.resultSheetMobile]} accessibilityViewIsModal>
           {isMobile ? <View style={styles.grabber} /> : null}
           <View style={styles.header}>
-            <Text style={styles.title} numberOfLines={1}>{po?.reference || 'PO'}</Text>
-            <Pressable onPress={() => setResultOpen(false)} hitSlop={8} accessibilityLabel="Close">
-              <Text style={styles.resultClose}>Close</Text>
+            <Text style={styles.title} numberOfLines={1}>{allocating ? 'Allocate' : po?.reference || 'PO'}</Text>
+            <Pressable
+              onPress={() => {
+                if (allocating) {
+                  setAllocating(false);
+                  setResultError('');
+                  if (pendingError) setErrorMode(true);
+                  return;
+                }
+                setResultOpen(false);
+              }}
+              hitSlop={8}
+              accessibilityLabel="Close"
+            >
+              <Text style={styles.resultClose}>{allocating ? 'Back' : 'Close'}</Text>
             </Pressable>
           </View>
           <ScrollView
-            style={errorMode ? styles.resultScroll : null}
+            style={errorMode || allocating ? styles.resultScroll : null}
             contentContainerStyle={styles.resultContent}
             keyboardShouldPersistTaps="handled"
           >
+            {allocating ? (
+              <>
+                <Text style={styles.resultKicker}>{po?.reference || 'PO'}</Text>
+                <Text style={styles.detailMeta}>
+                  Split each line by object weight. Totals must match before you finish.
+                </Text>
+                <TriageAllocationForm draft={allocDraft} onChange={setAllocDraft} disabled={finishing} />
+                {resultError ? <Text style={styles.error}>{resultError}</Text> : null}
+              </>
+            ) : (
+              <>
             <Text style={styles.resultKicker}>Total</Text>
             <Text style={styles.resultTotal}>{moneyLabel(po?.amount)}</Text>
             <Text style={styles.detailMeta}>
@@ -1316,9 +1447,21 @@ export default function TriagePoCapture({ session, openerRef }) {
               </View>
             ) : null}
             {resultError ? <Text style={styles.error}>{resultError}</Text> : null}
+              </>
+            )}
           </ScrollView>
           <View style={[styles.resultActions, isMobile && styles.resultActionsMobile]}>
-            {errorMode ? (
+            {allocating ? (
+              <Pressable
+                style={[styles.next, finishing && styles.lookupOff]}
+                onPress={() => void finishPo()}
+                disabled={finishing}
+                accessibilityRole="button"
+                accessibilityLabel="Finish"
+              >
+                <Text style={styles.nextText}>{finishing ? 'Saving…' : 'Finish'}</Text>
+              </Pressable>
+            ) : errorMode ? (
               <>
                 <Pressable
                   style={styles.secondary}
@@ -1333,12 +1476,12 @@ export default function TriagePoCapture({ session, openerRef }) {
                 </Pressable>
                 <Pressable
                   style={[styles.next, finishing && styles.lookupOff]}
-                  onPress={() => void finishPo(true)}
+                  onPress={() => goAllocate(true)}
                   disabled={finishing}
                   accessibilityRole="button"
-                  accessibilityLabel="Save error"
+                  accessibilityLabel="Next"
                 >
-                  <Text style={styles.nextText}>{finishing ? 'Saving…' : 'Save error'}</Text>
+                  <Text style={styles.nextText}>Next</Text>
                 </Pressable>
               </>
             ) : (
@@ -1357,12 +1500,12 @@ export default function TriagePoCapture({ session, openerRef }) {
                 </Pressable>
                 <Pressable
                   style={[styles.next, finishing && styles.lookupOff]}
-                  onPress={() => void finishPo(false)}
+                  onPress={() => goAllocate(false)}
                   disabled={finishing}
                   accessibilityRole="button"
-                  accessibilityLabel="Finish"
+                  accessibilityLabel="Next"
                 >
-                  <Text style={styles.nextText}>{finishing ? 'Saving…' : 'Finish'}</Text>
+                  <Text style={styles.nextText}>Next</Text>
                 </Pressable>
               </>
             )}

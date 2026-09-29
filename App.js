@@ -5380,7 +5380,7 @@ function HomeFilterCircle({
           ? { className: chrome ? 'cgold-mobile-tab-bar' : 'cgold-mobile-filter-blur' }
           : null)}
       >
-        {children || <HomeFilterLines color={active ? TAB_INK : TAB_ICON_COLOR} large={large} />}
+        {children || <HomeFilterLines color={active ? TAB_INK : '#3A3A3C'} large={large} />}
       </BlurView>
     </Pressable>
   );

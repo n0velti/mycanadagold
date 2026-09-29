@@ -952,17 +952,25 @@ export function ChromeHero({ value, stats, wide = false, onPress, accessibilityL
 }
 
 /** White lifted sheet that sits under the hero, matching Home / store details. */
-export function ChromeSheet({ title, meta, children, style }) {
+export function ChromeSheet({ title, meta, children, style, fill = false }) {
   const isMobile = useIsMobile();
   return (
-    <View style={[styles.chromeSheet, style]}>
+    <View style={[styles.chromeSheet, fill && styles.chromeSheetFill, style]}>
       {title ? (
         <View style={styles.chromeSheetHead}>
           <Text style={styles.chromeSheetTitle}>{title}</Text>
           {meta ? <Text style={styles.chromeSheetMeta}>{meta}</Text> : null}
         </View>
       ) : null}
-      <View style={[styles.chromeSheetBody, isMobile && styles.chromeSheetBodyMobile]}>{children}</View>
+      <View
+        style={[
+          styles.chromeSheetBody,
+          isMobile && styles.chromeSheetBodyMobile,
+          fill && styles.chromeSheetBodyFill,
+        ]}
+      >
+        {children}
+      </View>
     </View>
   );
 }
@@ -2275,6 +2283,14 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: '#C4A35A',
     letterSpacing: 0.2,
+  },
+  chromeSheetFill: {
+    flex: 1,
+    minHeight: 0,
+  },
+  chromeSheetBodyFill: {
+    flex: 1,
+    minHeight: 0,
   },
   chromeSheet: {
     flexGrow: 1,

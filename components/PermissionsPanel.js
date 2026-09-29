@@ -15,7 +15,10 @@ import {
   USER_CATEGORY_KEYS,
   accessListsEqual,
   applyFilterablePatch,
-  canSwitchPmaAndTriage,
+  TRIAGE_PAIR_ROLES,
+  allowedRolesForTriageSwitch,
+  canSwitchWithTriage,
+  triageSwitchPartner,
   clearUserAppAccess,
   defaultAccessByRole,
   getCategory,
@@ -489,8 +492,11 @@ function PersonDetail({
   const lockedPerson = hasFullAppAccess(row);
   const isSelf = row.id === actorId;
   const showAdminToggle = row.appRole === 'general_manager';
-  const showSwitchRoles = row.isActive && row.appRole !== 'system_admin';
-  const switchRolesOn = canSwitchPmaAndTriage(row);
+  const pairPartner = TRIAGE_PAIR_ROLES.includes(row.appRole) ? row.appRole : triageSwitchPartner(row);
+  const showSwitchRoles =
+    row.isActive && (TRIAGE_PAIR_ROLES.includes(row.appRole) || row.appRole === 'triage');
+  const switchRolesOn = canSwitchWithTriage(row);
+  const pairLabel = getCategory(pairPartner || 'precious_metal_analyst')?.shortLabel || 'PMA';
   const custom = Boolean(userAccessMap[row.id]);
   const title = staffTitle(row);
 
@@ -527,21 +533,47 @@ function PersonDetail({
           disabled={busy || !row.isActive}
           onChange={onRoleChange}
         />
-        {showSwitchRoles ? (
+        {showSwitchRoles && row.appRole === 'triage' ? (
+          <View style={styles.actionRow}>
+            {TRIAGE_PAIR_ROLES.map((role) => {
+              const category = getCategory(role);
+              const on = pairPartner === role && switchRolesOn;
+              return (
+                <Pressable
+                  key={role}
+                  style={[styles.flagButton, on && styles.flagButtonOn]}
+                  onPress={() => onToggleSwitchRoles(role)}
+                  disabled={busy}
+                >
+                  <Text style={[styles.flagButtonText, on && styles.flagButtonTextOn]}>
+                    {on
+                      ? `${category?.shortLabel || role} + Triage on`
+                      : `Allow ${category?.shortLabel || role} + Triage`}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        ) : showSwitchRoles ? (
           <Pressable
             style={[styles.flagButton, switchRolesOn && styles.flagButtonOn]}
-            onPress={onToggleSwitchRoles}
+            onPress={() => onToggleSwitchRoles(row.appRole)}
             disabled={busy}
           >
             <Text style={[styles.flagButtonText, switchRolesOn && styles.flagButtonTextOn]}>
-              {switchRolesOn ? 'PMA + Triage switch on' : 'Allow PMA + Triage Analyst'}
+              {switchRolesOn
+                ? `${pairLabel} + Triage switch on`
+                : `Allow ${pairLabel} + Triage Analyst`}
             </Text>
           </Pressable>
         ) : null}
-        <Text style={styles.fieldHint}>
-          When this is on, they can open their profile and work as a PMA or a Triage Analyst.
-          Only people with the Triage Analyst role see the Triage app.
-        </Text>
+        {showSwitchRoles ? (
+          <Text style={styles.fieldHint}>
+            When this is on, they can open their profile and work as{' '}
+            {getCategory(pairPartner || row.appRole)?.label || 'their role'} or a Triage Analyst.
+            Only the Triage Analyst role opens the Triage app.
+          </Text>
+        ) : null}
         <View style={styles.actionRow}>
           {showAdminToggle && row.isActive ? (
             <Pressable
@@ -913,9 +945,7 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
       isActive: nextActive,
       allowedAppRoles:
         patch.canSwitchRoles === true
-          ? ['precious_metal_analyst', 'triage', nextRole].filter(
-              (role, index, list) => list.indexOf(role) === index,
-            )
+          ? allowedRolesForTriageSwitch(nextRole, patch.switchPartner)
           : nextAllowed === undefined
             ? row.allowedAppRoles
             : nextAllowed,
@@ -1207,12 +1237,16 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
           isSystemAdmin: !selectedRow.isSystemAdmin,
         })
       }
-      onToggleSwitchRoles={() =>
+      onToggleSwitchRoles={(partner) => {
+        const currentPartner = triageSwitchPartner(selectedRow);
+        const turningOff = canSwitchWithTriage(selectedRow) && (!partner || currentPartner === partner);
         handleStaffChange(selectedRow, {
           appRole: selectedRow.appRole,
-          canSwitchRoles: !canSwitchPmaAndTriage(selectedRow),
-        })
-      }
+          canSwitchRoles: !turningOff,
+          switchPartner: partner,
+          allowedAppRoles: turningOff ? [] : allowedRolesForTriageSwitch(selectedRow.appRole, partner),
+        });
+      }}
       onToggleActive={() => handleStaffChange(selectedRow, { isActive: !selectedRow.isActive })}
       onToggleApp={togglePersonApp}
       onToggleFilter={togglePersonFilter}
