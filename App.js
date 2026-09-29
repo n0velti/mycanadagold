@@ -3875,6 +3875,7 @@ function HomeStoreDrawer({
                             session={session}
                             storeFilter={heldStore.store}
                             embedded
+                            title="Reviews"
                             onOpenEmails={() => openApp('emails')}
                           />
                         ) : (
@@ -5030,11 +5031,12 @@ function HomeStoresTable({
           reviews: reviewsForStoreName(reviewsByStore, row.store),
           transactionRows: row.transactions,
           storeName: row.store,
+          staffProfiles: staff,
         }),
       );
     }
     return next;
-  }, [reviewsByStore, rows]);
+  }, [reviewsByStore, rows, staff]);
   const peopleByStore = useMemo(
     () =>
       new Map(
