@@ -5,10 +5,10 @@ import { Ionicons } from '@expo/vector-icons';
 import TriageAccuracyPanel from './TriageAccuracyPanel';
 import TriagePoCapture from './TriagePoCapture';
 import TriageDailyReceiptsDrawer from './TriageDailyReceiptsDrawer';
+import TriageDashboardPanel from './TriageDashboardPanel';
 import TriageDeletedPanel from './TriageDeletedPanel';
-import TriageTransfersPanel from './TriageTransfersPanel';
 import { BarButton, EmptyState, FONT, IconAction, SearchField, SegmentedSlider, T, TextTabs } from './TriageKit';
-import { MobileFilterLines, MobileNavButton } from './MobileChrome';
+import { MobileCircleButton, MobileFilterLines } from './MobileChrome';
 import { ensureLinkedPosSessions } from '../lib/auth';
 import { fetchTransferStores } from '../lib/locations';
 import { CANVAS, MOBILE_FILTER_INSET, useIsMobile } from '../lib/mobileUi';
@@ -20,7 +20,6 @@ import {
 } from '../lib/triageDailyReceipts';
 import {
   collectAccuracyTriagePos,
-  isStandaloneTriage,
   syncTransferWorkflowRemote,
   triagePoNeedsCorrection,
   useTransferWorkflow,
@@ -52,8 +51,16 @@ export function clearTriageCache() {}
 const TRIAGE_TABS = [
   { key: 'transfers', label: 'Dashboard', icon: 'grid-outline' },
   { key: 'accuracy', label: 'Results', icon: 'folder-outline' },
-  { key: 'allocation', label: 'Allocation', icon: 'git-branch-outline' },
   { key: 'deleted', label: 'Deleted', icon: 'trash-outline' },
+];
+
+const FILTER_VIEWS = [
+  { key: 'transfers', label: 'Dashboard' },
+  { key: 'shipments', label: 'Transfers' },
+  { key: 'allocation', label: 'Allocation' },
+  { key: 'return', label: 'Expected Return' },
+  { key: 'accuracy', label: 'Results' },
+  { key: 'deleted', label: 'Deleted' },
 ];
 
 function ChromeStats({ items, onPress, accessibilityLabel, wide = false, actionLabel, attention = false }) {
@@ -116,16 +123,13 @@ export default function TriageScreen({
   const isMobile = useIsMobile();
   const { triage, deleted = [] } = useTransferWorkflow();
   const [activeTab, setActiveTab] = useState('transfers');
-  const [dashTab, setDashTab] = useState('poso');
+  const [dashPage, setDashPage] = useState('');
   const [accuracyTab, setAccuracyTab] = useState('correct');
   const [accuracyStats, setAccuracyStats] = useState({ correct: 0, incorrect: 0, total: 0, lots: 0, ratio: '0/0', percent: 0 });
   const [accuracyBreakdownOpen, setAccuracyBreakdownOpen] = useState(false);
   const [resultsLotId, setResultsLotId] = useState('');
   const [storeTab, setStoreTab] = useState('melt');
-  const [createTransferOpen, setCreateTransferOpen] = useState(false);
-  const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [listQuery, setListQuery] = useState('');
-  const [transferView, setTransferView] = useState('list');
   const [canLeaveStore, setCanLeaveStore] = useState(false);
   const [batchContext, setBatchContext] = useState(null);
   const [dailyOpen, setDailyOpen] = useState(false);
@@ -147,11 +151,8 @@ export default function TriageScreen({
   }, [session?.supabaseUserId, session?.token]);
 
   const dashCounts = useMemo(() => {
-    let poCount = 0;
-    for (const row of triage) {
-      if (isStandaloneTriage(row)) poCount += 1;
-    }
-    return { poCount };
+    const flagged = collectAccuracyTriagePos(triage).filter(triagePoNeedsCorrection).length;
+    return { errorCount: flagged };
   }, [triage]);
 
   const accuracyTabOptions = useMemo(
@@ -163,22 +164,16 @@ export default function TriageScreen({
   );
 
   const changeTab = useCallback((key) => {
-    leaveStoreRef.current?.();
-    setActiveTab(key);
-    setCreateTransferOpen(false);
-    setQuickAddOpen(false);
+    const dashPageKey =
+      key === 'allocation' || key === 'return' || key === 'errors' || key === 'shipments' ? key : '';
+    if (!dashPageKey) leaveStoreRef.current?.();
+    setActiveTab(dashPageKey ? 'transfers' : key);
     setListQuery('');
     setAccuracyBreakdownOpen(false);
     setDailyOpen(false);
     setFiltersOpen(false);
     setResultsLotId('');
-  }, []);
-
-  const changeDashTab = useCallback((key) => {
-    setDashTab(key);
-    setListQuery('');
-    setCreateTransferOpen(false);
-    setQuickAddOpen(false);
+    setDashPage(dashPageKey);
   }, []);
 
   const changeAccuracyTab = useCallback((key) => {
@@ -197,19 +192,16 @@ export default function TriageScreen({
     onStoreBackChangeRef.current?.(fn, context || null);
   }, []);
 
-  const inBatch = activeTab === 'transfers' && canLeaveStore && Boolean(batchContext);
-  const dashVisibleCount = inBatch
-    ? batchContext?.stats?.documents || 0
-    : dashCounts.poCount;
+  const inBatch = activeTab === 'transfers' && canLeaveStore && Boolean(batchContext?.batch);
   const tabOptions = useMemo(() => {
-    const flagged = collectAccuracyTriagePos(triage).filter(triagePoNeedsCorrection).length;
+    const flagged = dashCounts.errorCount;
     return TRIAGE_TABS.map((tab) => {
-      if (tab.key === 'transfers' && dashVisibleCount > 0) return { ...tab, count: dashVisibleCount };
+      if (tab.key === 'transfers' && flagged > 0) return { ...tab, count: flagged };
       if (tab.key === 'accuracy' && flagged > 0) return { ...tab, count: flagged };
       if (tab.key === 'deleted' && deleted.length > 0) return { ...tab, count: deleted.length };
       return tab;
     });
-  }, [dashVisibleCount, deleted.length, triage]);
+  }, [dashCounts.errorCount, deleted.length]);
   const dailyBatch = inBatch ? batchContext?.batch || null : null;
   const daily = useDailyReceipts(dailyBatch?.id, Boolean(session?.token && dailyBatch));
   const dailyGrid = useMemo(() => buildDailyReceiptGrid(dailyBatch), [dailyBatch]);
@@ -239,9 +231,11 @@ export default function TriageScreen({
           ? resultsLotId
             ? 'PO / person / store'
             : 'Lot / store'
-          : activeTab === 'deleted'
-            ? 'PO / store'
-            : 'PO / SO'
+          : dashPage === 'errors'
+            ? 'PO / person / store'
+            : activeTab === 'deleted'
+              ? 'PO / store'
+              : 'PO / SO'
       }
       size={isMobile ? 'lg' : undefined}
       style={[styles.tabSearch, isMobile && styles.tabSearchMobile]}
@@ -257,11 +251,10 @@ export default function TriageScreen({
   }, [batchContext]);
 
   const trailing =
-    session?.token && activeTab === 'transfers' && transferView === 'list' ? (
-      <>
-        {searchField}
-        {scanButton()}
-      </>
+    session?.token && activeTab === 'transfers' && !inBatch && dashPage === 'errors' ? (
+      searchField
+    ) : session?.token && activeTab === 'transfers' && !inBatch ? (
+      scanButton()
     ) : session?.token && inBatch ? (
       <>
         <ChromeStats
@@ -356,8 +349,8 @@ export default function TriageScreen({
   const portalNav = Boolean(onNavTabs) && !isMobile;
   const canAdd =
     Boolean(session?.token) &&
-    ((activeTab === 'transfers' && transferView === 'list') || (inBatch && storeTab === 'melt'));
-  const filtersActive = Boolean(listQuery.trim()) || activeTab !== 'transfers';
+    ((activeTab === 'transfers' && !dashPage) || (inBatch && storeTab === 'melt'));
+  const filtersActive = Boolean(listQuery.trim()) || (activeTab !== 'transfers' && activeTab !== 'accuracy');
   const filterShow =
     session?.token && inBatch
       ? { options: storeTabOptions, value: storeTab, onChange: changeStoreTab }
@@ -371,53 +364,11 @@ export default function TriageScreen({
     return () => onNavTabs(null);
   }, [navTabs, onNavTabs, portalNav]);
 
-  const mobileHeader = useMemo(() => {
-    if (!isMobile || !session?.token) return null;
-    return {
-      trailing: (
-        <View style={styles.headerActions}>
-          {activeTab === 'accuracy' && resultsLotId ? (
-            <SegmentedSlider
-              compact
-              options={[
-                { key: 'correct', label: 'Correct' },
-                { key: 'incorrect', label: 'Incorrect' },
-              ]}
-              value={accuracyTab}
-              onChange={changeAccuracyTab}
-              style={styles.accuracyHeaderToggle}
-            />
-          ) : canAdd ? (
-            <MobileNavButton
-              label="Add"
-              tone="green"
-              onPress={() => {
-                setFiltersOpen(false);
-                openScanRef.current();
-              }}
-              accessibilityLabel="Add a PO"
-            >
-              <Ionicons name="add" size={18} color="#fff" />
-            </MobileNavButton>
-          ) : null}
-          <MobileNavButton
-            active={filtersOpen || filtersActive}
-            onPress={() => setFiltersOpen((open) => !open)}
-            accessibilityLabel="Triage filters"
-            accessibilityState={{ expanded: filtersOpen }}
-          >
-            <MobileFilterLines color={filtersOpen || filtersActive ? T.text : T.secondary} />
-          </MobileNavButton>
-        </View>
-      ),
-    };
-  }, [accuracyTab, activeTab, canAdd, changeAccuracyTab, filtersActive, filtersOpen, isMobile, resultsLotId, session?.token]);
-
   useLayoutEffect(() => {
     if (!onMobileHeader) return undefined;
-    onMobileHeader(mobileHeader);
+    onMobileHeader(null);
     return () => onMobileHeader(null);
-  }, [mobileHeader, onMobileHeader]);
+  }, [onMobileHeader]);
 
   const mobileChrome =
     !session?.token ? null : inBatch ? (
@@ -485,10 +436,37 @@ export default function TriageScreen({
 
   return (
     <View style={[styles.body, embedded && styles.bodyEmbedded, isMobile && styles.bodyMobile]}>
+      {isMobile && session?.token ? (
+        <View pointerEvents="box-none" style={styles.mobileFabLayer}>
+          <MobileCircleButton
+            active={filtersOpen || filtersActive}
+            onPress={() => setFiltersOpen((open) => !open)}
+            accessibilityLabel="Triage filters"
+            accessibilityState={{ expanded: filtersOpen }}
+          >
+            <MobileFilterLines color={filtersOpen || filtersActive ? T.text : T.secondary} />
+          </MobileCircleButton>
+          {canAdd ? (
+            <MobileCircleButton
+              tone="green"
+              onPress={() => {
+                setFiltersOpen(false);
+                openScanRef.current();
+              }}
+              accessibilityLabel="Add a PO"
+            >
+              <Ionicons name="add" size={22} color="#fff" />
+            </MobileCircleButton>
+          ) : null}
+        </View>
+      ) : null}
       <View style={styles.pageVisible}>
       {portalNav || isMobile ? null : <View style={styles.localNavRow}>{navTabs}</View>}
       {isMobile ? (
-        mobileChrome
+        <>
+          <View style={styles.mobileFabSlot} />
+          {mobileChrome}
+        </>
       ) : leading || trailing ? (
         <View style={styles.pageChromeFloat}>
           <BlurView
@@ -506,21 +484,14 @@ export default function TriageScreen({
       ) : null}
 
       <View style={activeTab === 'transfers' ? styles.pageVisible : styles.pageHidden}>
-        <TriageTransfersPanel
+        <TriageDashboardPanel
           session={session}
           onRequireLogin={onRequireLogin}
           active={activeTab === 'transfers'}
-          createOpen={false}
-          onCreateOpenChange={setCreateTransferOpen}
-          quickAddOpen={quickAddOpen}
-          onQuickAddOpenChange={setQuickAddOpen}
-          dashTab="poso"
-          onDashTabChange={changeDashTab}
-          onViewChange={setTransferView}
-          onBackChange={handleBackChange}
           listQuery={listQuery}
-          storeTab={storeTab}
-          onStoreTabChange={changeStoreTab}
+          page={dashPage}
+          onPageChange={setDashPage}
+          onBackChange={handleBackChange}
         />
       </View>
 
@@ -572,8 +543,9 @@ export default function TriageScreen({
             <Text style={styles.filterLabel}>Search</Text>
             {searchField}
             <Text style={styles.filterLabel}>View</Text>
-            {tabOptions.map((tab) => {
-              const selected = tab.key === activeTab;
+            {FILTER_VIEWS.map((tab) => {
+              const selected = tab.key === (dashPage || activeTab);
+              const count = tabOptions.find((option) => option.key === tab.key)?.count;
               return (
                 <Pressable
                   key={tab.key}
@@ -584,7 +556,7 @@ export default function TriageScreen({
                   accessibilityLabel={tab.label}
                 >
                   <Text style={[styles.filterRowLabel, selected && styles.filterRowLabelOn]}>{tab.label}</Text>
-                  {tab.count != null ? <Text style={styles.filterRowCount}>{tab.count}</Text> : null}
+                  {count != null ? <Text style={styles.filterRowCount}>{count}</Text> : null}
                   {selected ? <Ionicons name="checkmark" size={18} color={T.text} /> : <View style={styles.filterRowCheck} />}
                 </Pressable>
               );
@@ -675,13 +647,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
   },
-  headerActions: {
+  mobileFabLayer: {
+    position: 'absolute',
+    top: 8,
+    left: MOBILE_FILTER_INSET,
+    right: MOBILE_FILTER_INSET,
+    zIndex: 24,
     flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 8,
   },
-  accuracyHeaderToggle: {
-    width: 176,
+  mobileFabSlot: {
+    height: 56,
+    flexShrink: 0,
   },
   filterLayer: {
     ...StyleSheet.absoluteFillObject,
@@ -689,8 +667,8 @@ const styles = StyleSheet.create({
   },
   filterCard: {
     position: 'absolute',
-    top: 8,
-    right: MOBILE_FILTER_INSET,
+    top: 56,
+    left: MOBILE_FILTER_INSET,
     width: 300,
     maxWidth: '92%',
     backgroundColor: '#fff',

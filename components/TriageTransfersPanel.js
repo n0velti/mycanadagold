@@ -1,7 +1,6 @@
 /**
- * Triage dashboard: the working PO / SO list. Finished POs are filed into lots
- * on the Results tab. This panel is presentational and delegates mutations to
- * lib/transferWorkflow.
+ * Triage dashboard: evaluated PO / SO only. The list grows as people finish
+ * or review tickets. Lots live on the Results tab.
  */
 import { createElement, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -46,6 +45,7 @@ import {
   addStandaloneTriagePo,
   applyTriageReviewToPo,
   batchStats,
+  collectAccuracyTriagePos,
   flattenBatchPos,
   findTriagePo,
   isStandaloneTriage,
@@ -2590,6 +2590,16 @@ function batchMatchesQuery(batch, query) {
   return hay.includes(q);
 }
 
+function evaluatedPoMatchesQuery(po, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return true;
+  const hay = [po?.reference, po?.customerName, po?.storeName, po?.dateLabel, po?.employeeName]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  return hay.includes(q);
+}
+
 function standalonePo(batch) {
   return flattenBatchPos(batch)[0] || null;
 }
@@ -2793,7 +2803,7 @@ function HoldLineSheet({ item, onClose, onEdit, onDelete }) {
   );
 }
 
-function PoSoList({ transfers, query = '', onOpenPo, onDelete }) {
+function PoSoList({ rows, query = '', onOpenPo, onDelete }) {
   const [openFilter, setOpenFilter] = useState(null);
   const [filters, setFilters] = useState(EMPTY_DASH_FILTERS);
   const [sort, setSort] = useState(null);
@@ -2803,8 +2813,8 @@ function PoSoList({ transfers, query = '', onOpenPo, onDelete }) {
   useEffect(() => {
     let cancelled = false;
     listStaffProfiles()
-      .then((rows) => {
-        if (!cancelled) setStaffProfiles(rows);
+      .then((next) => {
+        if (!cancelled) setStaffProfiles(next);
       })
       .catch(() => {
         if (!cancelled) setStaffProfiles([]);
@@ -2815,33 +2825,28 @@ function PoSoList({ transfers, query = '', onOpenPo, onDelete }) {
   }, []);
 
   const entries = useMemo(() => {
-    const statsById = new Map(transfers.map((row) => [row.id, batchStats(row)]));
-    return transfers
-      .filter((row) => batchMatchesQuery(row, query))
-      .map((batch) => {
-        const po = standalonePo(batch);
-        const stats = statsById.get(batch.id);
-        const type = dashboardType(po);
-        return {
-          id: batch.id,
-          batch,
-          po,
-          type,
-          document: po?.reference || type,
-          dateLabel: po?.dateLabel || batch.dateLabel || '',
-          dateKey: batch.dateKey || '',
-          storeNames: [po?.storeName].filter(Boolean),
-          valueNumber: rowAmountNumber(po) || 0,
-          valueLabel: rowAmountLabel(po) || '—',
-          photoUrls: po?.imageUrls,
-          editor: triageReviewEditor(po?.review),
-          status: poSoStatus(po, stats),
-          addedLabel: formatStamp(po?.addedAt || batch.addedAt),
-          openLabel: `Open ${po?.reference || type}`,
-          deleteLabel: `Remove ${po?.reference || type}`,
-        };
-      });
-  }, [query, transfers]);
+    return rows.filter((po) => evaluatedPoMatchesQuery(po, query)).map((po) => {
+      const type = dashboardType(po);
+      const flagged = Boolean(po?.incorrect) || triagePoNeedsCorrection(po);
+      return {
+        id: po.id,
+        po,
+        type,
+        document: po?.reference || type,
+        dateLabel: po?.dateLabel || '',
+        dateKey: po?.date || po?.dateLabel || '',
+        storeNames: [po?.storeName].filter(Boolean),
+        valueNumber: rowAmountNumber(po) || 0,
+        valueLabel: rowAmountLabel(po) || '—',
+        photoUrls: po?.imageUrls,
+        editor: triageReviewEditor(po?.review),
+        status: poSoStatus(po, { flagged }),
+        addedLabel: formatStamp(po?.receivedAt || po?.addedAt || po?.review?.editedAt),
+        openLabel: `Open ${po?.reference || type}`,
+        deleteLabel: `Remove ${po?.reference || type}`,
+      };
+    });
+  }, [query, rows]);
 
   const setFilter = useCallback((key, value) => {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -2896,7 +2901,7 @@ function PoSoList({ transfers, query = '', onOpenPo, onDelete }) {
         staffProfiles={staffProfiles}
         last={index === visible.length - 1}
         onOpen={() => item.po && onOpenPo(item.po)}
-        onDelete={() => onDelete(item.batch)}
+        onDelete={() => onDelete(item.po)}
       />
     ),
     [onDelete, onOpenPo, staffProfiles, visible.length],
@@ -2906,7 +2911,7 @@ function PoSoList({ transfers, query = '', onOpenPo, onDelete }) {
   const emptyCopy =
     query.trim() || filtersActive
       ? `No PO or SO matches ${query.trim() ? `“${query.trim()}”` : 'those filters'}.`
-      : 'No PO / SO yet.';
+      : 'No evaluated PO / SO yet.';
 
   if (isMobile) {
     return (
@@ -2957,9 +2962,9 @@ function PoSoList({ transfers, query = '', onOpenPo, onDelete }) {
           if (po) onOpenPo(po);
         }}
         onDelete={() => {
-          const batch = held?.batch;
+          const po = held?.po;
           setHeld(null);
-          if (batch) onDelete(batch);
+          if (po) onDelete(po);
         }}
       />
       </>
@@ -2978,7 +2983,7 @@ function PoSoList({ transfers, query = '', onOpenPo, onDelete }) {
         <TableEmpty>
           {query.trim() || filtersActive
             ? `No PO or SO matches ${query.trim() ? `“${query.trim()}”` : 'those filters'}.`
-            : 'No PO / SO yet.'}
+            : 'No evaluated PO / SO yet.'}
         </TableEmpty>
       }
       toolbar={
@@ -3333,41 +3338,36 @@ export default function TriageTransfersPanel({
     () => transfers.find((row) => row.id === selectedId && !isStandaloneTriage(row)) || null,
     [selectedId, transfers],
   );
-  const poRows = useMemo(() => transfers.filter(isStandaloneTriage), [transfers]);
+  const poRows = useMemo(() => collectAccuracyTriagePos(transfers), [transfers]);
 
   useEffect(() => {
     if (!session?.token) return undefined;
-    const need = poRows
-      .map((batch) => ({ batch, item: flattenBatchPos(batch)[0] }))
-      .filter(
-        ({ item }) =>
-          item &&
-          item.type !== 'order' &&
-          (!(item.pricedLines || []).length || !item.storeName || item.storeName === '—'),
-      );
+    const need = poRows.filter(
+      (item) =>
+        item &&
+        item.type !== 'order' &&
+        (!(item.pricedLines || []).length || !item.storeName || item.storeName === '—'),
+    );
     if (!need.length) return undefined;
     let cancelled = false;
     (async () => {
       const bySystem = new Map();
-      for (const entry of need) {
-        const key = entry.item.systemKey || 'east';
+      for (const item of need) {
+        const key = item.systemKey || 'east';
         if (!bySystem.has(key)) bySystem.set(key, []);
-        bySystem.get(key).push(entry);
+        bySystem.get(key).push(item);
       }
       await Promise.all(
         [...bySystem.entries()].map(async ([key, group]) => {
           const auth = resolvePosAuthForRow(session, { systemKey: key });
           if (!auth.token) return;
-          const enriched = await fillMissingPoDetails(
-            auth.token,
-            auth.baseUrl,
-            group.map((entry) => entry.item),
-          );
+          const enriched = await fillMissingPoDetails(auth.token, auth.baseUrl, group);
           if (cancelled) return;
           const byId = new Map(enriched.map((row) => [row.id, row]));
-          for (const entry of group) {
-            const next = byId.get(entry.item.id);
-            if (next && next !== entry.item) patchTriagePosDetails(entry.batch.id, [next]);
+          for (const item of group) {
+            const next = byId.get(item.id);
+            const found = next && next !== item ? findTriagePo(item.id) : null;
+            if (found) patchTriagePosDetails(found.batch.id, [next]);
           }
         }),
       );
@@ -3504,18 +3504,29 @@ export default function TriageTransfersPanel({
     [onCreateOpenChange, onDashTabChange, openBatch, transfers],
   );
 
+  const deleteEvaluatedPo = useCallback((po) => {
+    if (!po?.id) return;
+    const found = findTriagePo(po.id);
+    if (!found) return;
+    confirmDestructive(
+      `Remove ${po.reference || 'this PO'}?`,
+      'It moves to the Deleted tab and stays off the dashboard.',
+      () => {
+        if (openStandalone?.id === po.id) setOpenStandalone(null);
+        if (isStandaloneTriage(found.batch) && flattenBatchPos(found.batch).length <= 1) {
+          removeTriageBatch(found.batch.id, actorNameOf(session));
+        } else {
+          removeTriagePo(found.batch.id, po.id, actorNameOf(session));
+        }
+        persistTransferWorkflowNow().catch(() => {});
+      },
+    );
+  }, [openStandalone?.id, session]);
+
   const deleteBatch = useCallback((row) => {
     if (isStandaloneTriage(row)) {
       const po = standalonePo(row);
-      confirmDestructive(
-        `Remove ${po?.reference || 'this PO'}?`,
-        'It moves to the Deleted tab and stays off the dashboard.',
-        () => {
-          if (openStandalone?.id === po?.id) setOpenStandalone(null);
-          removeTriageBatch(row.id, actorNameOf(session));
-          persistTransferWorkflowNow().catch(() => {});
-        },
-      );
+      deleteEvaluatedPo(po);
       return;
     }
     const stats = batchStats(row);
@@ -3529,7 +3540,7 @@ export default function TriageTransfersPanel({
         persistTransferWorkflowNow().catch(() => {});
       },
     );
-  }, [openStandalone?.id, session]);
+  }, [deleteEvaluatedPo, openStandalone?.id, session]);
 
   if (!session?.token) {
     return (
@@ -3537,7 +3548,7 @@ export default function TriageTransfersPanel({
         <EmptyState
           icon="lock-closed-outline"
           title="Sign in to triage"
-          body="Log in to add POs and review them in Results."
+          body="Log in to evaluate POs and see them here as they are finished."
           action={<TextAction label="Go to Profile" strong onPress={onRequireLogin} />}
         />
       </View>
@@ -3571,10 +3582,10 @@ export default function TriageTransfersPanel({
           <EmptyState
             icon="document-text-outline"
             title="No PO / SO yet"
-            body="A PO you add lands here. Finish files it into a lot on Results."
+            body="Finish or review a ticket and it lands here. The list grows as triage goes through more POs."
           />
         ) : (
-          <PoSoList transfers={poRows} query={listQuery} onOpenPo={openStandalonePo} onDelete={deleteBatch} />
+          <PoSoList rows={poRows} query={listQuery} onOpenPo={openStandalonePo} onDelete={deleteEvaluatedPo} />
         )}
       </View>
 

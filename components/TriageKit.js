@@ -933,6 +933,7 @@ export function MobileListRow({
   title,
   subtitle,
   meta,
+  extra,
   leading,
   trailing,
   onPress,
@@ -977,6 +978,7 @@ export function MobileListRow({
             {meta}
           </Text>
         ) : null}
+        {extra}
       </View>
       <View style={styles.mobileListTrail}>
         {trailing}
