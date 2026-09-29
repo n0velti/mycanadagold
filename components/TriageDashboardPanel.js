@@ -24,6 +24,7 @@ import {
   formatGrams,
   isAllocationComplete,
   summarizePoAllocations,
+  TRIAGE_DESTINATIONS,
 } from '../lib/triageAllocations';
 import {
   formatFineProgress,
@@ -449,8 +450,11 @@ function AllocationPage({ rows, session }) {
   const [draft, setDraft] = useState({ lines: [] });
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
-  const melt = summary.totals.melt?.objectGrams || 0;
-  const rcm = summary.totals.rcm?.objectGrams || 0;
+  const allocatedGrams = TRIAGE_DESTINATIONS.reduce(
+    (sum, dest) => sum + (summary.totals[dest.id]?.objectGrams || 0),
+    0,
+  );
+  const destCount = TRIAGE_DESTINATIONS.filter((dest) => (summary.totals[dest.id]?.objectGrams || 0) > 0).length;
 
   const open = (po) => {
     setOpenPo(po);
@@ -486,8 +490,8 @@ function AllocationPage({ rows, session }) {
             value={String(summary.allocated)}
             stats={[
               { label: 'Ready', value: String(summary.ready) },
-              { label: 'Melt', value: `${formatGrams(melt)} g` },
-              { label: 'RCM', value: `${formatGrams(rcm)} g` },
+              { label: 'Weight', value: `${formatGrams(allocatedGrams)} g` },
+              { label: destCount === 1 ? 'Place' : 'Places', value: String(destCount) },
             ]}
           />
         }
@@ -511,7 +515,7 @@ function AllocationPage({ rows, session }) {
                 onPress={() => open(row.po)}
               />
             ))
-          : emptyCopy('Finish a PO from Add to allocate Melt and RCM here.')}
+          : emptyCopy('Finish a PO from Add to allocate 100Ways, Umicore, PMX, RCM, or Oliver here.')}
       </ChromePage>
       <TriageDrawer
         visible={Boolean(openPo)}

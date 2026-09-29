@@ -1136,6 +1136,8 @@ const styles = StyleSheet.create({
     backgroundColor: T.bg,
   },
   bodyMobile: {
+    flex: 1,
+    minHeight: 0,
     backgroundColor: T.bg,
   },
   heroPad: {
