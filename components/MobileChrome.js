@@ -6,11 +6,8 @@ import {
   attachWebTabBarScrollListeners,
   expandMobileTabBar,
   TAB_BAR_BOTTOM_GAP,
-  TAB_BAR_HEIGHT_COLLAPSED,
   TAB_BAR_HEIGHT_EXPANDED,
-  TAB_BAR_SIDE_COLLAPSED,
   TAB_BAR_SIDE_EXPANDED,
-  useMobileTabBarCollapse,
 } from '../lib/mobileTabBar';
 import { MOBILE, MOBILE_FILTER_SIZE, mobileSafeBottom, mobileSafeTop } from '../lib/mobileUi';
 
@@ -197,7 +194,6 @@ export function MobileTabBar({
   profileAvatarUrl = '',
   profileName = '',
 }) {
-  const collapse = useMobileTabBarCollapse();
   const tabLayouts = useRef({});
   const indicatorX = useRef(new Animated.Value(0)).current;
   const indicatorW = useRef(new Animated.Value(0)).current;
@@ -237,42 +233,13 @@ export function MobileTabBar({
     placeActiveIndicator(activeKey, true);
   }, [activeKey]);
 
-  const dockStyle = {
-    paddingLeft: collapse.interpolate({
-      inputRange: [0, 1],
-      outputRange: [TAB_BAR_SIDE_EXPANDED, TAB_BAR_SIDE_COLLAPSED],
-    }),
-    paddingRight: collapse.interpolate({
-      inputRange: [0, 1],
-      outputRange: [TAB_BAR_SIDE_EXPANDED, TAB_BAR_SIDE_COLLAPSED],
-    }),
-  };
-
-  const shellStyle = {
-    height: collapse.interpolate({
-      inputRange: [0, 1],
-      outputRange: [TAB_BAR_HEIGHT_EXPANDED, TAB_BAR_HEIGHT_COLLAPSED],
-    }),
-  };
-
-  const iconScale = {
-    transform: [
-      {
-        scale: collapse.interpolate({
-          inputRange: [0, 1],
-          outputRange: [1, 0.82],
-        }),
-      },
-    ],
-  };
-
   return (
-    <Animated.View
+    <View
       pointerEvents="box-none"
-      style={[styles.tabBarDock, dockStyle]}
+      style={[styles.tabBarDock, styles.tabBarDockFixed]}
       {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-bar-dock' } : null)}
     >
-      <Animated.View style={[styles.tabBarLift, shellStyle]}>
+      <View style={[styles.tabBarLift, styles.tabBarShellFixed]}>
         <View style={styles.tabBarClip}>
           <BlurView
             intensity={72}
@@ -327,7 +294,7 @@ export function MobileTabBar({
                   accessibilityState={{ selected: isActive }}
                   accessibilityLabel={badge ? `${tab.label}, ${badge} unread` : tab.label}
                 >
-                  <Animated.View style={[styles.tabIconWrap, iconScale]}>
+                  <View style={styles.tabIconWrap}>
                     {isHome ? (
                       <Image
                         source={require('../assets/small_logo.png')}
@@ -349,14 +316,14 @@ export function MobileTabBar({
                         <Text style={styles.badgeText}>{badge}</Text>
                       </View>
                     ) : null}
-                  </Animated.View>
+                  </View>
                 </Pressable>
               );
             })}
           </View>
         </View>
-      </Animated.View>
-    </Animated.View>
+      </View>
+    </View>
   );
 }
 
@@ -562,6 +529,13 @@ const styles = StyleSheet.create({
     zIndex: 40,
     paddingBottom: Platform.OS === 'web' ? TAB_BAR_BOTTOM_GAP : TAB_BAR_BOTTOM_GAP + mobileSafeBottom(),
   },
+  tabBarDockFixed: {
+    paddingLeft: TAB_BAR_SIDE_EXPANDED,
+    paddingRight: TAB_BAR_SIDE_EXPANDED,
+  },
+  tabBarShellFixed: {
+    height: TAB_BAR_HEIGHT_EXPANDED,
+  },
   tabBarLift: {
     position: 'relative',
     borderRadius: 999,
@@ -602,7 +576,7 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: TAB_BAR_HEIGHT_COLLAPSED,
+    minHeight: TAB_BAR_HEIGHT_EXPANDED,
     paddingHorizontal: 2,
     overflow: 'visible',
   },
