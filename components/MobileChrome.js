@@ -48,8 +48,8 @@ function TabProfileAvatar({ uri, name, active }) {
         ) : (
           <Ionicons
             name={active ? 'person' : 'person-outline'}
-            size={17}
-            color={active ? MOBILE.label : MOBILE.secondary}
+            size={19}
+            color={active ? MOBILE.label : '#3A3A3C'}
           />
         )}
       </View>
@@ -417,8 +417,8 @@ export function MobileTabBar({
                     ) : (
                       <Ionicons
                         name={isActive ? tab.iconActive : tab.icon}
-                        size={26}
-                        color={isActive ? '#fff' : MOBILE.secondary}
+                        size={28}
+                        color={isActive ? MOBILE.label : '#3A3A3C'}
                       />
                     )}
                     {badge ? (
@@ -703,9 +703,9 @@ const styles = StyleSheet.create({
     bottom: 5,
     zIndex: 0,
     borderRadius: 999,
-    backgroundColor: 'rgba(88,88,92,0.22)',
+    backgroundColor: 'rgba(60,60,67,0.16)',
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.16)',
+    borderColor: 'rgba(60,60,67,0.08)',
   },
   tab: {
     flex: 1,
@@ -719,18 +719,18 @@ const styles = StyleSheet.create({
     }),
   },
   tabLogo: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
   },
   tabLogoDim: {
-    opacity: 0.55,
+    opacity: 0.82,
   },
   tabIconWrap: {
     position: 'relative',
     overflow: 'visible',
-    width: 34,
-    height: 34,
+    width: 36,
+    height: 36,
     alignItems: 'center',
     justifyContent: 'center',
   },
