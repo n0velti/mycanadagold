@@ -5,7 +5,6 @@ import {
   Animated,
   Image,
   Modal,
-  PanResponder,
   Platform,
   Pressable,
   ScrollView,
@@ -36,7 +35,17 @@ import {
   parseDateParam,
 } from '../lib/transactions';
 import { useTxnCashBreakdowns } from '../lib/txnCashBreakdowns';
-import { callsForStore, fetchPhoneHistory, inboundCallRatio, mergeCallLog, peekPhoneHistory, phoneHistoryNeeded } from '../lib/phoneCalls';
+import {
+  callsForStore,
+  fetchPhoneHistory,
+  formatCallWhen,
+  formatDuration,
+  inboundCallRatio,
+  mergeCallLog,
+  peekPhoneHistory,
+  phoneHistoryNeeded,
+  resultLabel,
+} from '../lib/phoneCalls';
 import { storeKeyFromName } from '../lib/storeSettings';
 import { CANVAS, MOBILE_FILTER_INSET, MOBILE_FILTER_SIZE, useIsMobile } from '../lib/mobileUi';
 import { usePhoneCalls } from './PhoneCallProvider';
@@ -98,6 +107,7 @@ const SNAPSHOT_APPS = {
   employees: { key: 'employees', label: 'Employees', icon: 'people-outline', accent: '#1D4ED8' },
   phone: { key: 'phone', label: 'Phone', icon: 'call-outline', accent: '#15803D' },
   emails: { key: 'emails', label: 'Emails', icon: 'mail-outline', accent: '#4338CA' },
+  reviews: { key: 'reviews', label: 'Reviews', icon: 'star-outline', accent: '#A16207' },
   transactions: { key: 'transactions', label: 'Transactions', icon: 'swap-horizontal-outline', accent: '#2F6FED' },
   preorders: { key: 'preorders', label: 'Preorders', icon: 'cart-outline', accent: '#EA580C' },
   audit: { key: 'audit', label: 'Audit', icon: 'clipboard-outline', accent: '#2F8A4E' },
@@ -219,16 +229,19 @@ function AppBox({ app, meta, onOpen, children, style, bodyStyle, muted = false }
   );
 }
 
-function DashPinnedApp({ app, value, onOpen, compact = false, roomy = false }) {
+function DashPinnedApp({ app, value, onOpen, compact = false, roomy = false, selected = false }) {
   return (
     <Pressable
       onPress={() => onOpen?.(app.key)}
-      style={[
+      style={({ hovered, pressed }) => [
         styles.dashPinnedApp,
         compact && styles.dashPinnedAppCompact,
         roomy && styles.dashPinnedAppRoomy,
+        selected && styles.dashPinnedAppSelected,
+        (hovered || pressed) && styles.dashPinnedAppPressed,
       ]}
       accessibilityRole="button"
+      accessibilityState={{ selected }}
       accessibilityLabel={app.label}
     >
       <View style={styles.dashPinnedAppHead}>
@@ -305,6 +318,7 @@ function OverviewHero({
   onPress,
   focus = 'all',
   onFocus,
+  txSelected = false,
 }) {
   const total = storeAmountForFocus(store, focus);
   const txCount = Number(store?.txCount) || 0;
@@ -348,6 +362,7 @@ function OverviewHero({
             value={txCount}
             label={txCount === 1 ? 'Transaction' : 'Transactions'}
             chrome
+            selected={txSelected && focus === 'all'}
             onPress={() => selectFocus('all')}
           />
           <View style={styles.dashHeroStatDividerChrome} />
@@ -1173,6 +1188,62 @@ function callsInRange(calls, startKey, endKey) {
   });
 }
 
+function phonePartyLabel(call) {
+  const inbound = String(call?.direction || '') !== 'Outbound';
+  const name = inbound ? call?.fromName : call?.toName;
+  const number = inbound ? call?.from : call?.to;
+  return [name, number].filter(Boolean).join(' · ') || 'Unknown';
+}
+
+function PhoneSnapshotBody({ calls = [], periodLabel, ratio }) {
+  const periodText = periodLabel === 'Today' ? 'today' : 'in this period';
+  if (!calls.length) {
+    return <EmptyRow text={`No calls ${periodText}.`} />;
+  }
+  return (
+    <>
+      {ratio?.ratio && ratio.ratio !== '—' ? (
+        <Text style={styles.emailSectionLabel}>
+          Answer rate {ratio.ratio}
+          {ratio.answered != null ? ` · ${ratio.answered} answered` : ''}
+          {ratio.missed != null ? ` · ${ratio.missed} missed` : ''}
+        </Text>
+      ) : null}
+      {calls.map((call, index) => {
+        const inbound = String(call.direction || '') !== 'Outbound';
+        const missed = inbound && String(call.result || call.status || '') === 'Missed';
+        return (
+          <View
+            key={call.id || `${call.startTime}-${index}`}
+            style={[styles.row, styles.rowStatic, index === calls.length - 1 && styles.rowLast]}
+          >
+            <Ionicons
+              name={!inbound ? 'arrow-up' : missed ? 'call-outline' : 'arrow-down'}
+              size={16}
+              color={missed ? RED : GREEN}
+            />
+            <View style={styles.rowCopy}>
+              <Text style={styles.rowTitle} numberOfLines={1}>
+                {phonePartyLabel(call)}
+              </Text>
+              <Text style={styles.rowSubtitle} numberOfLines={1}>
+                {[
+                  inbound ? 'Inbound' : 'Outbound',
+                  resultLabel(call.result || call.status),
+                  formatCallWhen(call.startTime),
+                  call.duration ? formatDuration(call.duration) : '',
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </Text>
+            </View>
+          </View>
+        );
+      })}
+    </>
+  );
+}
+
 function storeEmailCapture(txRows, storeName) {
   const rows = buildEmailCaptureByStore(Array.isArray(txRows) ? txRows : []);
   if (!rows.length) return null;
@@ -1370,115 +1441,25 @@ function StoreSnapshotPanel({
   const [pinnedTopHeight, setPinnedTopHeight] = useState(220);
   const [stageHeight, setStageHeight] = useState(0);
   const [titleBarBottom, setTitleBarBottom] = useState(62);
+  const ticketId = transactionTicket?.props?.summary?.id || '';
   const ticketOpen = Boolean(transactionTicket);
   const sheetOpen = focusTab !== 'overview' || ticketOpen;
-  const sheetLift = useRef(new Animated.Value(0)).current;
-  const sheetLiftValue = useRef(0);
-  const sheetDragStart = useRef(0);
-  const sheetRangeRef = useRef(100);
-  const sheetScrollOffset = useRef(0);
-  const restTopAnim = useRef(new Animated.Value(230)).current;
-  const travelAnim = useRef(new Animated.Value(-90)).current;
-  const sheetTop = useRef(Animated.add(restTopAnim, Animated.multiply(sheetLift, travelAnim))).current;
-  const [sheetScrollEnabled, setSheetScrollEnabled] = useState(false);
+  const sheetKey = `${sheetOpen ? focusTab : 'overview'}:${ticketOpen ? ticketId || 'ticket' : ''}`;
+  const pageScrollRef = useRef(null);
+  const restGap = isMobile ? 10 : 18;
+  const raisedOffset = Math.max(0, pinnedTopHeight + restGap);
+  const raisedOffsetRef = useRef(raisedOffset);
+  raisedOffsetRef.current = raisedOffset;
 
   useEffect(() => {
-    const rest = pinnedTopHeight + 10;
-    const raised = Math.max(52, titleBarBottom + 4);
-    restTopAnim.setValue(rest);
-    travelAnim.setValue(raised - rest);
-    sheetRangeRef.current = Math.max(1, rest - raised);
-  }, [pinnedTopHeight, titleBarBottom, restTopAnim, travelAnim]);
-
-  useEffect(() => {
-    const id = sheetLift.addListener(({ value }) => {
-      sheetLiftValue.current = value;
-      if (sheetOpen) storeHeroLift.setValue(1 - value * 0.5);
-      const allowScroll = value > 0.96;
-      setSheetScrollEnabled((current) => (current === allowScroll ? current : allowScroll));
+    const node = pageScrollRef.current;
+    if (!node?.scrollTo) return;
+    const y = sheetOpen ? raisedOffsetRef.current : 0;
+    const frame = requestAnimationFrame(() => {
+      node.scrollTo({ y, animated: true });
     });
-    return () => sheetLift.removeListener(id);
-  }, [sheetLift, sheetOpen, storeHeroLift]);
-
-  useEffect(() => {
-    Animated.spring(sheetLift, {
-      toValue: sheetOpen ? 1 : 0,
-      friction: 8,
-      tension: 76,
-      useNativeDriver: false,
-    }).start();
-    if (!sheetOpen) storeHeroLift.setValue(1);
-  }, [sheetOpen, sheetLift, storeHeroLift]);
-
-  const ticketId = transactionTicket?.props?.summary?.id || '';
-  useEffect(() => {
-    sheetScrollOffset.current = 0;
-  }, [ticketOpen, ticketId]);
-
-  const snapSheet = useCallback(
-    (raised) => {
-      Animated.spring(sheetLift, {
-        toValue: raised ? 1 : 0,
-        friction: 8,
-        tension: 76,
-        useNativeDriver: false,
-      }).start();
-    },
-    [sheetLift],
-  );
-
-  const sheetPan = useRef(
-    PanResponder.create({
-      onMoveShouldSetPanResponder: (_, gesture) => {
-        if (Math.abs(gesture.dy) <= 6 || Math.abs(gesture.dy) <= Math.abs(gesture.dx)) return false;
-        const raised = sheetLiftValue.current >= 0.97;
-        const atTop = sheetScrollOffset.current <= 1;
-        if (raised && !atTop) return false;
-        if (raised && atTop && gesture.dy < 0) return false;
-        return true;
-      },
-      onMoveShouldSetPanResponderCapture: (_, gesture) => {
-        if (Math.abs(gesture.dy) <= 6 || Math.abs(gesture.dy) <= Math.abs(gesture.dx)) return false;
-        const raised = sheetLiftValue.current >= 0.97;
-        const atTop = sheetScrollOffset.current <= 1;
-        if (!raised) return true;
-        return raised && atTop && gesture.dy > 0;
-      },
-      onPanResponderGrant: () => {
-        sheetLift.stopAnimation((value) => {
-          sheetLiftValue.current = value;
-          sheetDragStart.current = value;
-        });
-      },
-      onPanResponderMove: (_, gesture) => {
-        const next = sheetDragStart.current - gesture.dy / sheetRangeRef.current;
-        sheetLift.setValue(Math.max(0, Math.min(1, next)));
-      },
-      onPanResponderRelease: (_, gesture) => {
-        const projected = sheetLiftValue.current - (gesture.vy * 36) / sheetRangeRef.current;
-        snapSheet(projected > 0.45);
-      },
-      onPanResponderTerminate: () => snapSheet(sheetLiftValue.current > 0.45),
-    }),
-  ).current;
-
-  const onSheetWheel = useCallback(
-    (event) => {
-      const dy = event?.deltaY;
-      if (!Number.isFinite(dy) || dy === 0) return;
-      const lift = sheetLiftValue.current;
-      const atTop = sheetScrollOffset.current <= 1;
-      if (dy > 0 && lift >= 0.995) return;
-      if (dy < 0 && (lift <= 0.02 || !atTop)) return;
-      event.preventDefault?.();
-      event.stopPropagation?.();
-      const next = Math.max(0, Math.min(1, lift + dy / sheetRangeRef.current));
-      sheetLift.setValue(next);
-      sheetLiftValue.current = next;
-      storeHeroLift.setValue(1 - next * 0.5);
-    },
-    [sheetLift, storeHeroLift],
-  );
+    return () => cancelAnimationFrame(frame);
+  }, [sheetKey, sheetOpen]);
 
   const emitFilterTop = useCallback(() => {
     const row = amountRowRef.current;
@@ -1981,6 +1962,14 @@ function StoreSnapshotPanel({
     },
   ];
 
+  const openSnapshot = useCallback(
+    (key) => {
+      if (!key) return;
+      onOpenApp?.(key === focusTab ? 'overview' : key);
+    },
+    [focusTab, onOpenApp],
+  );
+
   const listTab =
     embeddedApp || (focusTab && focusTab !== 'overview') ? focusTab : 'transactions';
   const listApp = SNAPSHOT_APPS[listTab] || SNAPSHOT_APPS.transactions;
@@ -1991,7 +1980,11 @@ function StoreSnapshotPanel({
         ? String(emailCapture.customerCount || 0)
         : listTab === 'employees'
           ? String(presentEmployees.length)
-          : listTab === 'transactions'
+          : listTab === 'phone'
+            ? phoneRatio.rate == null
+              ? String(phoneCalls.length)
+              : phoneRatio.ratio
+            : listTab === 'transactions'
             ? txMeta
             : '';
   const listTitle =
@@ -2021,6 +2014,8 @@ function StoreSnapshotPanel({
       ready={ready}
       full
     />
+  ) : listTab === 'phone' ? (
+    <PhoneSnapshotBody calls={phoneCalls} periodLabel={periodLabel} ratio={phoneRatio} />
   ) : listTab === 'supplies' ? (
     <EmptyRow text={`No supplies recorded for ${storeName || 'this store'}.`} />
   ) : (
@@ -2034,71 +2029,40 @@ function StoreSnapshotPanel({
     ? cloneElement(transactionTicket, { embedded: true, part: 'body' })
     : null;
 
-  const sheetScrollHandlers = {
-    scrollEnabled: sheetScrollEnabled,
-    scrollEventThrottle: 16,
-    onScroll: (event) => {
-      const y = event?.nativeEvent?.contentOffset?.y;
-      if (Number.isFinite(y)) sheetScrollOffset.current = y;
-    },
-  };
+  const sheetFillHeight =
+    stageHeight > 0
+      ? Math.max(0, stageHeight - (isMobile ? Math.max(52, titleBarBottom + 4) : 0))
+      : undefined;
 
-  const mobileLists = (
+  const sheetLists = (
     <View
-      style={[styles.dashListSheet, sheetOpen && styles.dashListSheetFill]}
-      {...(Platform.OS === 'web' && sheetOpen ? { onWheel: onSheetWheel } : null)}
+      style={[
+        styles.dashListSheet,
+        sheetFillHeight ? { minHeight: sheetFillHeight } : null,
+      ]}
     >
       {ticketOpen ? (
         <View style={styles.dashSectionFill}>
-          <View {...sheetPan.panHandlers} style={styles.dashSheetHandle}>
+          <View style={styles.dashSheetHandle}>
             <View style={styles.dashSheetGrabPill} />
             {ticketHeader}
           </View>
-          <ScrollView
-            style={styles.dashSheetScroll}
-            contentContainerStyle={[styles.dashSheetScrollContent, styles.buyTxSheetAttach]}
-            showsVerticalScrollIndicator={false}
-            keyboardShouldPersistTaps="handled"
-            keyboardDismissMode="on-drag"
-            nestedScrollEnabled
-            {...sheetScrollHandlers}
-          >
-            {ticketBody}
-            <View style={styles.dashTicketListHead}>
-              <Text style={styles.dashHeadTitleCard}>Transactions</Text>
-              {listMeta ? <Text style={styles.dashHeadMeta}>{listMeta}</Text> : null}
-            </View>
-            {transactionsBody}
-          </ScrollView>
+          {ticketBody}
+          <View style={styles.dashTicketListHead}>
+            <Text style={styles.dashHeadTitleCard}>Transactions</Text>
+            {listMeta ? <Text style={styles.dashHeadMeta}>{listMeta}</Text> : null}
+          </View>
+          {transactionsBody}
         </View>
       ) : (
-        <DashSection
-          title={listTitle}
-          app={listApp}
-          meta={listMeta}
-          fill={sheetOpen}
-          grab={sheetOpen}
-          panHandlers={sheetPan.panHandlers}
-        >
-          {sheetOpen && !embeddedApp ? (
-            <ScrollView
-              style={styles.dashSheetScroll}
-              contentContainerStyle={styles.dashSheetScrollContent}
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-              keyboardDismissMode="on-drag"
-              nestedScrollEnabled
-              {...sheetScrollHandlers}
-            >
-              {listBody}
-            </ScrollView>
-          ) : (
-            listBody
-          )}
+        <DashSection title={listTitle} app={listApp} meta={listMeta} fill>
+          {listBody}
         </DashSection>
       )}
     </View>
   );
+
+  const mobileLists = sheetLists;
 
   const mobileContent = mobileLists;
 
@@ -2109,14 +2073,16 @@ function StoreSnapshotPanel({
           <DashPinnedApp
             app={SNAPSHOT_APPS.financials}
             value={cashLoading && !cash ? '…' : cash ? formatAmount(cadAmt, 'CAD') : '—'}
-            onOpen={onOpenApp}
+            onOpen={openSnapshot}
+            selected={listTab === 'financials'}
           />
         ) : null}
         {showPhone ? (
           <DashPinnedApp
             app={SNAPSHOT_APPS.phone}
             value={phoneRatio.rate == null ? '—' : phoneRatio.ratio}
-            onOpen={onOpenApp}
+            onOpen={openSnapshot}
+            selected={listTab === 'phone'}
             compact
           />
         ) : null}
@@ -2128,12 +2094,19 @@ function StoreSnapshotPanel({
                 ? '—'
                 : `${Math.round(emailCapture.rate)}%`
             }
-            onOpen={onOpenApp}
+            onOpen={openSnapshot}
+            selected={listTab === 'emails'}
             compact
           />
         ) : null}
         {showInventory ? (
-          <DashPinnedApp app={SNAPSHOT_APPS.inventory} value="Search" onOpen={onOpenApp} compact />
+          <DashPinnedApp
+            app={SNAPSHOT_APPS.inventory}
+            value="Search"
+            onOpen={openSnapshot}
+            selected={listTab === 'inventory'}
+            compact
+          />
         ) : null}
         {!isMobile && desktopApps.length ? (
           <View style={styles.deskAppsWrap}>
@@ -2238,48 +2211,38 @@ function StoreSnapshotPanel({
                 wide
                 focus={heroFocus}
                 onFocus={setHeroFocus}
+                txSelected={listTab === 'transactions'}
                 onPress={() => onOpenApp?.('transactions')}
               />
             </View>
             {pinnedAppRow}
           </View>
           <ScrollView
+            ref={pageScrollRef}
             pointerEvents="box-none"
             style={styles.deskOverlayScroll}
             contentContainerStyle={[
               styles.deskOverlayScrollContent,
               {
                 flexGrow: 1,
-                ...(stageHeight > 0 ? { minHeight: stageHeight } : null),
+                pointerEvents: 'box-none',
+                ...(stageHeight > 0 ? { minHeight: stageHeight + (sheetOpen ? raisedOffset : 0) } : null),
               },
             ]}
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
-            bounces={false}
-            overScrollMode="never"
-            {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll' } : null)}
+            keyboardDismissMode="on-drag"
+            bounces
+            scrollEventThrottle={16}
+            {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll cgold-store-overlay-scroll' } : null)}
           >
-            <View pointerEvents="none" style={{ height: pinnedTopHeight + 18 }} />
+            <View pointerEvents="none" style={{ height: raisedOffset }} />
             <View
               pointerEvents="auto"
-              style={[
-                styles.deskSheet,
-                stageHeight > 0 ? { minHeight: Math.max(0, stageHeight - pinnedTopHeight) } : null,
-              ]}
+              style={styles.deskSheet}
+              {...(Platform.OS === 'web' ? { className: 'cgold-store-sheet' } : null)}
             >
-              <DashSection
-                title={listTitle}
-                app={listApp}
-                meta={listMeta}
-                fill
-                headStyle={styles.deskDashHead}
-              >
-                {embeddedApp ? (
-                  <View style={styles.dashSheetApp}>{listBody}</View>
-                ) : (
-                  <View style={styles.deskSheetBody}>{listBody}</View>
-                )}
-              </DashSection>
+              {sheetLists}
             </View>
           </ScrollView>
         </View>
@@ -2308,7 +2271,13 @@ function StoreSnapshotPanel({
   );
 
   return (
-    <View style={[styles.body, styles.bodyMobile]}>
+    <View
+      style={[styles.body, styles.bodyMobile]}
+      onLayout={(event) => {
+        const height = event.nativeEvent.layout.height;
+        setStageHeight((current) => (Math.abs(current - height) < 0.5 ? current : height));
+      }}
+    >
       <View
         pointerEvents="box-none"
         style={styles.dashPinnedTop}
@@ -2326,6 +2295,7 @@ function StoreSnapshotPanel({
             chrome
             focus={heroFocus}
             onFocus={setHeroFocus}
+            txSelected={listTab === 'transactions'}
             onPress={() => onOpenApp?.('transactions')}
           />
         </View>
@@ -2342,38 +2312,35 @@ function StoreSnapshotPanel({
       >
         {mobileTitle}
       </View>
-      {sheetOpen ? (
-        <Animated.View
-          style={[styles.dashSheetHost, styles.dashSheetDock, { top: sheetTop }]}
-          {...(Platform.OS === 'web' ? { onWheel: onSheetWheel } : null)}
+      <ScrollView
+        ref={pageScrollRef}
+        pointerEvents="box-none"
+        style={[styles.scroll, styles.scrollOverlay]}
+        {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll cgold-store-overlay-scroll' } : null)}
+        contentContainerStyle={[
+          styles.scrollContent,
+          styles.scrollContentMobile,
+          { paddingBottom: 104, pointerEvents: 'box-none' },
+        ]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        scrollEventThrottle={16}
+        onScroll={(event) => {
+          const y = event?.nativeEvent?.contentOffset?.y;
+          if (!Number.isFinite(y)) return;
+          const reach = Math.max(1, pinnedTopHeight - 12);
+          storeHeroLift.setValue(1 - Math.max(0, Math.min(1, y / reach)));
+        }}
+      >
+        <View pointerEvents="none" style={{ height: raisedOffset }} />
+        <View
+          pointerEvents="auto"
+          {...(Platform.OS === 'web' ? { className: 'cgold-store-sheet' } : null)}
         >
-          {mobileLists}
-        </Animated.View>
-      ) : (
-        <ScrollView
-          pointerEvents="box-none"
-          style={[styles.scroll, styles.scrollOverlay]}
-          {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll' } : null)}
-          contentContainerStyle={[
-            styles.scrollContent,
-            styles.scrollContentMobile,
-            { paddingBottom: 104 },
-          ]}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="on-drag"
-          scrollEventThrottle={16}
-          onScroll={(event) => {
-            const y = event?.nativeEvent?.contentOffset?.y;
-            if (!Number.isFinite(y)) return;
-            const reach = Math.max(1, pinnedTopHeight - 12);
-            storeHeroLift.setValue(1 - Math.max(0, Math.min(1, y / reach)));
-          }}
-        >
-          <View pointerEvents="none" style={{ height: pinnedTopHeight + 10 }} />
-          <View pointerEvents="auto">{mobileContent}</View>
-        </ScrollView>
-      )}
+          {mobileContent}
+        </View>
+      </ScrollView>
       <TxnCashBreakdownModal
         visible={Boolean(cashSlips.editorRow)}
         session={session}
@@ -2868,6 +2835,13 @@ const styles = StyleSheet.create({
       web: { cursor: 'pointer' },
       default: {},
     }),
+  },
+  dashPinnedAppSelected: {
+    backgroundColor: '#fff',
+    borderColor: 'rgba(42,38,30,0.22)',
+  },
+  dashPinnedAppPressed: {
+    backgroundColor: '#fff',
   },
   dashPinnedAppCompact: {
     flex: 0.72,

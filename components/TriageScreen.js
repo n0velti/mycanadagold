@@ -7,7 +7,7 @@ import TriageDailyReceiptsDrawer from './TriageDailyReceiptsDrawer';
 import TriageDashboardPanel from './TriageDashboardPanel';
 import TriageDeletedPanel from './TriageDeletedPanel';
 import { BarButton, EmptyState, FONT, SearchField, SegmentedSlider, T, TextTabs } from './TriageKit';
-import { MobileCircleButton, MobileFilterLines } from './MobileChrome';
+import { MobileNavButton } from './MobileChrome';
 import { ensureLinkedPosSessions } from '../lib/auth';
 import { fetchTransferStores } from '../lib/locations';
 import { CANVAS, MOBILE_FILTER_INSET, useIsMobile } from '../lib/mobileUi';
@@ -53,14 +53,16 @@ const TRIAGE_TABS = [
   { key: 'deleted', label: 'Deleted', icon: 'trash-outline' },
 ];
 
-const FILTER_VIEWS = [
-  { key: 'transfers', label: 'Dashboard' },
-  { key: 'shipments', label: 'Transfers' },
-  { key: 'allocation', label: 'Allocation' },
-  { key: 'return', label: 'Expected Return' },
-  { key: 'accuracy', label: 'Results' },
-  { key: 'deleted', label: 'Deleted' },
-];
+function triagePageTitle({ dashPage, activeTab, resultsLotId }) {
+  if (dashPage === 'errors') return 'Errors';
+  if (dashPage === 'shipments') return 'Transfers';
+  if (dashPage === 'lots') return 'Lots';
+  if (dashPage === 'allocation') return 'Allocation';
+  if (dashPage === 'return') return 'Expected Return';
+  if (activeTab === 'accuracy') return resultsLotId || 'Results';
+  if (activeTab === 'deleted') return 'Deleted';
+  return 'Triage';
+}
 
 function ChromeStats({ items, onPress, accessibilityLabel, wide = false, actionLabel, attention = false }) {
   if (!items?.length) return null;
@@ -123,7 +125,7 @@ export default function TriageScreen({
   const { triage, deleted = [] } = useTransferWorkflow();
   const [activeTab, setActiveTab] = useState('transfers');
   const [dashPage, setDashPage] = useState('');
-  const [accuracyTab, setAccuracyTab] = useState('correct');
+  const [accuracyTab, setAccuracyTab] = useState('all');
   const [accuracyStats, setAccuracyStats] = useState({ correct: 0, incorrect: 0, total: 0, lots: 0, ratio: '0/0', percent: 0 });
   const [accuracyBreakdownOpen, setAccuracyBreakdownOpen] = useState(false);
   const [resultsLotId, setResultsLotId] = useState('');
@@ -132,7 +134,6 @@ export default function TriageScreen({
   const [canLeaveStore, setCanLeaveStore] = useState(false);
   const [batchContext, setBatchContext] = useState(null);
   const [dailyOpen, setDailyOpen] = useState(false);
-  const [filtersOpen, setFiltersOpen] = useState(false);
   const leaveStoreRef = useRef(null);
   const openScanRef = useRef(() => {});
   const onStoreBackChangeRef = useRef(onStoreBackChange);
@@ -156,6 +157,7 @@ export default function TriageScreen({
 
   const accuracyTabOptions = useMemo(
     () => [
+      { key: 'all', label: 'All', ...(accuracyStats.total ? { count: accuracyStats.total } : {}) },
       { key: 'correct', label: 'Correct', ...(accuracyStats.correct ? { count: accuracyStats.correct } : {}) },
       { key: 'incorrect', label: 'Incorrect', ...(accuracyStats.incorrect ? { count: accuracyStats.incorrect } : {}) },
     ],
@@ -164,13 +166,14 @@ export default function TriageScreen({
 
   const changeTab = useCallback((key) => {
     const dashPageKey =
-      key === 'allocation' || key === 'return' || key === 'errors' || key === 'shipments' ? key : '';
+      key === 'allocation' || key === 'return' || key === 'errors' || key === 'shipments' || key === 'lots'
+        ? key
+        : '';
     if (!dashPageKey) leaveStoreRef.current?.();
     setActiveTab(dashPageKey ? 'transfers' : key);
     setListQuery('');
     setAccuracyBreakdownOpen(false);
     setDailyOpen(false);
-    setFiltersOpen(false);
     setResultsLotId('');
     setDashPage(dashPageKey);
   }, []);
@@ -188,7 +191,6 @@ export default function TriageScreen({
     leaveStoreRef.current = fn;
     setCanLeaveStore(Boolean(fn));
     setBatchContext(context || null);
-    onStoreBackChangeRef.current?.(fn, context || null);
   }, []);
 
   const inBatch = activeTab === 'transfers' && canLeaveStore && Boolean(batchContext?.batch);
@@ -215,7 +217,8 @@ export default function TriageScreen({
     <BarButton
       tone="green"
       size={size}
-      label="+ Add"
+      icon="add"
+      label="Add"
       onPress={() => openScanRef.current()}
       accessibilityLabel="Add a PO"
     />
@@ -232,6 +235,8 @@ export default function TriageScreen({
             : 'Lot / store'
           : dashPage === 'errors'
             ? 'PO / person / store'
+            : dashPage === 'lots'
+              ? 'Lot / store'
             : activeTab === 'deleted'
               ? 'PO / store'
               : 'PO / SO'
@@ -250,7 +255,7 @@ export default function TriageScreen({
   }, [batchContext]);
 
   const trailing =
-    session?.token && activeTab === 'transfers' && !inBatch && dashPage === 'errors' ? (
+    session?.token && activeTab === 'transfers' && !inBatch && (dashPage === 'errors' || dashPage === 'lots') ? (
       searchField
     ) : session?.token && activeTab === 'transfers' && !inBatch ? (
       scanButton()
@@ -289,33 +294,20 @@ export default function TriageScreen({
       </>
     ) : session?.token && activeTab === 'accuracy' ? (
       <View style={styles.deskChromeActions}>
-        {searchField}
-        <BarButton label="Details" onPress={() => setAccuracyBreakdownOpen(true)} accessibilityLabel="Open errors breakdown" />
-      </View>
-    ) : session?.token && activeTab === 'deleted' ? (
-      searchField
-    ) : null;
-
-  const leading =
-    session?.token && inBatch ? (
-      <SegmentedSlider
-        options={storeTabOptions}
-        value={storeTab}
-        onChange={changeStoreTab}
-        style={styles.tabSlider}
-      />
-    ) : session?.token && activeTab === 'accuracy' ? (
-      <View style={styles.accuracyLead}>
         {resultsLotId ? (
           <SegmentedSlider
             options={accuracyTabOptions}
             value={accuracyTab}
             onChange={changeAccuracyTab}
-            style={styles.tabSlider}
+            compact
+            style={styles.lotFilterSlider}
           />
         ) : null}
         {searchField}
+        <BarButton label="Details" onPress={() => setAccuracyBreakdownOpen(true)} accessibilityLabel="Open lot details" />
       </View>
+    ) : session?.token && activeTab === 'deleted' ? (
+      searchField
     ) : null;
 
   const navTabs = useMemo(
@@ -332,16 +324,53 @@ export default function TriageScreen({
   );
 
   const portalNav = Boolean(onNavTabs) && !isMobile;
+  const lotsListView =
+    dashPage === 'lots' || (activeTab === 'accuracy' && !resultsLotId);
   const canAdd =
     Boolean(session?.token) &&
-    ((activeTab === 'transfers' && !dashPage) || (inBatch && storeTab === 'melt'));
-  const filtersActive = Boolean(listQuery.trim()) || (activeTab !== 'transfers' && activeTab !== 'accuracy');
-  const filterShow =
-    session?.token && inBatch
-      ? { options: storeTabOptions, value: storeTab, onChange: changeStoreTab }
-      : session?.token && activeTab === 'accuracy' && resultsLotId
-        ? { options: accuracyTabOptions, value: accuracyTab, onChange: changeAccuracyTab }
-        : null;
+    ((activeTab === 'transfers' && !dashPage) ||
+      (inBatch && storeTab === 'melt') ||
+      lotsListView);
+  const canGoBack = canLeaveStore || activeTab !== 'transfers' || Boolean(dashPage);
+  const pageTitle = triagePageTitle({ dashPage, activeTab, resultsLotId });
+
+  const goBack = useCallback(() => {
+    if (leaveStoreRef.current) {
+      leaveStoreRef.current();
+      return;
+    }
+    if (activeTab !== 'transfers' || dashPage) changeTab('transfers');
+  }, [activeTab, changeTab, dashPage]);
+
+  useEffect(() => {
+    if (!canGoBack) {
+      onStoreBackChangeRef.current?.(null, null);
+      return undefined;
+    }
+    onStoreBackChangeRef.current?.(goBack, batchContext || { dateLabel: pageTitle });
+    return () => onStoreBackChangeRef.current?.(null, null);
+  }, [batchContext, canGoBack, goBack, pageTitle]);
+
+  const leadTools =
+    session?.token && inBatch ? (
+      <SegmentedSlider
+        options={storeTabOptions}
+        value={storeTab}
+        onChange={changeStoreTab}
+        style={styles.tabSlider}
+      />
+    ) : session?.token && activeTab === 'accuracy' ? (
+      <View style={styles.accuracyLead}>{searchField}</View>
+    ) : null;
+  const leading =
+    session?.token && canGoBack ? (
+      <>
+        <BarButton icon="chevron-back" label="Back" onPress={goBack} accessibilityLabel="Back" />
+        {leadTools}
+      </>
+    ) : (
+      leadTools
+    );
 
   useLayoutEffect(() => {
     if (!portalNav) return undefined;
@@ -351,48 +380,41 @@ export default function TriageScreen({
 
   useLayoutEffect(() => {
     if (!onMobileHeader) return undefined;
-    onMobileHeader(null);
+    if (!isMobile) {
+      onMobileHeader(null);
+      return () => onMobileHeader(null);
+    }
+    onMobileHeader({
+      hideAppHeader: lotsListView,
+      trailing:
+        canAdd && !lotsListView ? (
+          <MobileNavButton
+            tone="green"
+            label="Add"
+            onPress={() => openScanRef.current()}
+            accessibilityLabel="Add a PO"
+          >
+            <Ionicons name="add" size={20} color="#fff" />
+          </MobileNavButton>
+        ) : null,
+    });
     return () => onMobileHeader(null);
-  }, [onMobileHeader]);
+  }, [canAdd, isMobile, lotsListView, onMobileHeader]);
 
   return (
     <View style={[styles.body, embedded && styles.bodyEmbedded, isMobile && styles.bodyMobile]}>
-      {isMobile && session?.token ? (
+      {isMobile && lotsListView ? (
         <View pointerEvents="box-none" style={styles.mobileFabLayer}>
-          <MobileCircleButton
-            active={filtersOpen || filtersActive}
-            onPress={() => setFiltersOpen((open) => !open)}
-            accessibilityLabel="Triage filters"
-            accessibilityState={{ expanded: filtersOpen }}
-          >
-            <MobileFilterLines color={filtersOpen || filtersActive ? T.text : T.secondary} />
-          </MobileCircleButton>
-          <Text style={styles.mobileTitle} numberOfLines={1}>
-            {dashPage === 'errors'
-              ? 'Errors'
-              : dashPage === 'shipments'
-                ? 'Transfers'
-                : dashPage === 'allocation'
-                  ? 'Allocation'
-                  : dashPage === 'return'
-                    ? 'Expected Return'
-                    : activeTab === 'accuracy'
-                      ? resultsLotId || 'Results'
-                      : activeTab === 'deleted'
-                        ? 'Deleted'
-                        : 'Triage'}
-          </Text>
+          <BarButton icon="chevron-back" label="Back" onPress={goBack} accessibilityLabel="Back" />
           {canAdd ? (
-            <MobileCircleButton
+            <MobileNavButton
               tone="green"
-              onPress={() => {
-                setFiltersOpen(false);
-                openScanRef.current();
-              }}
+              label="Add"
+              onPress={() => openScanRef.current()}
               accessibilityLabel="Add a PO"
             >
-              <Ionicons name="add" size={22} color="#fff" />
-            </MobileCircleButton>
+              <Ionicons name="add" size={20} color="#fff" />
+            </MobileNavButton>
           ) : (
             <View style={styles.mobileTitleSpacer} />
           )}
@@ -400,9 +422,7 @@ export default function TriageScreen({
       ) : null}
       <View style={styles.pageVisible}>
       {portalNav || isMobile ? null : <View style={styles.localNavRow}>{navTabs}</View>}
-      {isMobile ? (
-        <View style={styles.mobileFabSlot} />
-      ) : leading || trailing ? (
+      {isMobile ? null : leading || trailing ? (
         <View style={styles.deskChrome}>
           <View style={styles.deskChromeStart}>{leading}</View>
           {trailing ? <View style={styles.deskChromeEnd}>{trailing}</View> : null}
@@ -418,6 +438,14 @@ export default function TriageScreen({
           page={dashPage}
           onPageChange={setDashPage}
           onBackChange={handleBackChange}
+          onOpenTab={changeTab}
+          onOpenLot={(lotId) => {
+            setDashPage('');
+            setActiveTab('accuracy');
+            setResultsLotId(lotId || '');
+            setListQuery('');
+            setAccuracyTab('all');
+          }}
         />
       </View>
 
@@ -426,6 +454,7 @@ export default function TriageScreen({
           session={session}
           storeFilter={storeFilter}
           accuracyTab={accuracyTab}
+          onAccuracyTabChange={setAccuracyTab}
           listQuery={listQuery}
           onStatsChange={setAccuracyStats}
           breakdownOpen={accuracyBreakdownOpen}
@@ -434,7 +463,7 @@ export default function TriageScreen({
           onOpenLotChange={(id) => {
             setResultsLotId(id || '');
             setListQuery('');
-            setAccuracyTab('correct');
+            setAccuracyTab('all');
           }}
           onBackChange={handleBackChange}
         />
@@ -456,54 +485,6 @@ export default function TriageScreen({
           session={session}
           openerRef={openScanRef}
         />
-      ) : null}
-
-      {isMobile && filtersOpen ? (
-        <View style={styles.filterLayer}>
-          <Pressable
-            style={StyleSheet.absoluteFill}
-            onPress={() => setFiltersOpen(false)}
-            accessibilityLabel="Close filters"
-          />
-          <View style={styles.filterCard}>
-            <Text style={styles.filterLabel}>Search</Text>
-            {searchField}
-            <Text style={styles.filterLabel}>View</Text>
-            {FILTER_VIEWS.map((tab) => {
-              const selected = tab.key === (dashPage || activeTab);
-              const count = tabOptions.find((option) => option.key === tab.key)?.count;
-              return (
-                <Pressable
-                  key={tab.key}
-                  style={styles.filterRow}
-                  onPress={() => changeTab(tab.key)}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected }}
-                  accessibilityLabel={tab.label}
-                >
-                  <Text style={[styles.filterRowLabel, selected && styles.filterRowLabelOn]}>{tab.label}</Text>
-                  {count != null ? <Text style={styles.filterRowCount}>{count}</Text> : null}
-                  {selected ? <Ionicons name="checkmark" size={18} color={T.text} /> : <View style={styles.filterRowCheck} />}
-                </Pressable>
-              );
-            })}
-            {filterShow ? (
-              <>
-                <View style={styles.filterDivider} />
-                <Text style={styles.filterLabel}>Show</Text>
-                <SegmentedSlider
-                  fill
-                  options={filterShow.options}
-                  value={filterShow.value}
-                  onChange={(key) => {
-                    filterShow.onChange(key);
-                    setFiltersOpen(false);
-                  }}
-                />
-              </>
-            ) : null}
-          </View>
-        </View>
       ) : null}
 
       <TriageDailyReceiptsDrawer
@@ -541,6 +522,10 @@ const styles = StyleSheet.create({
   tabSlider: {
     minWidth: 220,
     maxWidth: 320,
+  },
+  lotFilterSlider: {
+    minWidth: 260,
+    maxWidth: 360,
   },
   tabSearchMobile: {
     width: '100%',
@@ -632,80 +617,6 @@ const styles = StyleSheet.create({
   mobileTitleSpacer: {
     width: 40,
     height: 40,
-  },
-  filterLayer: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 30,
-  },
-  filterCard: {
-    position: 'absolute',
-    top: 56,
-    left: MOBILE_FILTER_INSET,
-    width: 300,
-    maxWidth: '92%',
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    padding: 12,
-    gap: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: T.hairline,
-    ...Platform.select({
-      web: { boxShadow: '0 10px 32px rgba(0,0,0,0.16)' },
-      default: {
-        shadowColor: '#000',
-        shadowOpacity: 0.16,
-        shadowRadius: 16,
-        shadowOffset: { width: 0, height: 8 },
-        elevation: 8,
-      },
-    }),
-  },
-  filterLabel: {
-    fontFamily: FONT,
-    fontSize: 12,
-    fontWeight: '600',
-    color: T.secondary,
-    letterSpacing: -0.08,
-    textTransform: 'uppercase',
-    paddingHorizontal: 4,
-  },
-  filterRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    minHeight: 40,
-    paddingHorizontal: 4,
-    borderRadius: 8,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  filterRowLabel: {
-    flex: 1,
-    fontFamily: FONT,
-    fontSize: 15,
-    fontWeight: '600',
-    color: T.text,
-    letterSpacing: -0.15,
-  },
-  filterRowLabelOn: {
-    color: T.text,
-  },
-  filterRowCount: {
-    fontFamily: FONT,
-    fontSize: 13,
-    fontWeight: '600',
-    color: T.secondary,
-    fontVariant: ['tabular-nums'],
-  },
-  filterRowCheck: {
-    width: 18,
-  },
-  filterDivider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: T.hairline,
-    marginHorizontal: 4,
   },
   mobileStatCard: {
     flexDirection: 'row',
