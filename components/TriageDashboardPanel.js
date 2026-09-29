@@ -3,8 +3,7 @@
  * Mobile matches the Home tab: hero, stat row, full-bleed list.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Platform, StyleSheet, Text, View } from 'react-native';
 import {
   applyTriageReviewToPo,
   collectAccuracyTriagePos,
@@ -21,7 +20,7 @@ import { groupPosIntoLots, lotPeriodLabel } from '../lib/triageLots';
 import { formatAmount } from '../lib/transactions';
 import { formatErrorAmount } from '../lib/triageDraft';
 import { CANVAS, useIsMobile } from '../lib/mobileUi';
-import { EmptyState, FONT, Group, ProgressBar, T, TextAction } from './TriageKit';
+import { ChromeHero, ChromeListRow, ChromePage, EmptyState, FONT, T, TextAction } from './TriageKit';
 import { PoThumb } from './TriageTable';
 import TriageReviewDrawer from './TriageReviewDrawer';
 
@@ -162,127 +161,11 @@ function matchesQuery(row, query) {
     .includes(q);
 }
 
-function HomeHero({ label, value, stats }) {
-  return (
-    <View style={styles.hero}>
-      {label ? <Text style={styles.heroLabel}>{label}</Text> : null}
-      <Text style={styles.heroAmount} numberOfLines={1} adjustsFontSizeToFit>
-        {value}
-      </Text>
-      {stats?.length ? (
-        <View style={styles.heroStats}>
-          {stats.map((stat, index) => (
-            <View key={stat.label} style={styles.heroStatWrap}>
-              {index ? <View style={styles.heroStatDivider} /> : null}
-              <View style={styles.heroStat}>
-                <Text style={styles.heroStatValue} numberOfLines={1}>
-                  {stat.value}
-                </Text>
-                <Text style={styles.heroStatLabel} numberOfLines={1}>
-                  {stat.label}
-                </Text>
-              </View>
-            </View>
-          ))}
-        </View>
-      ) : null}
-    </View>
-  );
+function emptyCopy(text) {
+  return <Text style={styles.emptyCopy}>{text}</Text>;
 }
 
-function HomeSection({ title, meta, children }) {
-  return (
-    <View style={styles.section}>
-      <View style={styles.sectionHead}>
-        <Text style={styles.sectionTitle}>{title}</Text>
-        {meta ? <Text style={styles.sectionMeta}>{meta}</Text> : null}
-      </View>
-      <View style={styles.list}>{children}</View>
-    </View>
-  );
-}
-
-function HomeRow({
-  title,
-  meta,
-  value,
-  icon,
-  iconColor = '#1a1a1a',
-  leading,
-  last,
-  onPress,
-  chevron = true,
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      disabled={!onPress}
-      style={({ pressed }) => [styles.row, pressed && onPress && styles.rowPressed]}
-      accessibilityRole={onPress ? 'button' : undefined}
-      accessibilityLabel={value ? `${title}, ${value}` : title}
-      {...(Platform.OS === 'web' && onPress ? { className: 'cgold-dash-row' } : null)}
-    >
-      {leading || (
-        <View style={[styles.rowIcon, { backgroundColor: iconColor }]}>
-          <Ionicons name={icon} size={22} color="#fff" />
-        </View>
-      )}
-      <View style={[styles.rowBody, !last && styles.rowDivider]}>
-        <View style={styles.rowCopy}>
-          <Text style={styles.rowTitle} numberOfLines={1}>
-            {title}
-          </Text>
-          {meta ? (
-            <Text style={styles.rowMeta} numberOfLines={1}>
-              {meta}
-            </Text>
-          ) : null}
-        </View>
-        {value != null && value !== '' ? (
-          <Text style={styles.rowValue} numberOfLines={1}>
-            {value}
-          </Text>
-        ) : null}
-        {onPress && chevron ? (
-          <Ionicons name="chevron-forward" size={18} color="#c7c7cc" style={styles.rowChevron} />
-        ) : (
-          <View style={styles.rowChevron} />
-        )}
-      </View>
-    </Pressable>
-  );
-}
-
-function DashCard({ title, value, meta, tone, icon, onPress, compact = false }) {
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [styles.card, compact && styles.cardCompact, pressed && styles.cardPressed]}
-      accessibilityRole="button"
-      accessibilityLabel={`${title}. ${value}. ${meta || ''}`}
-      accessibilityHint={`Opens ${title}`}
-      {...(Platform.OS === 'web' ? { className: 'cgold-dash-card' } : null)}
-    >
-      <View style={styles.cardTop}>
-        <View style={[styles.cardIcon, compact && styles.cardIconCompact]}>
-          <Ionicons name={icon} size={compact ? 18 : 20} color={T.text} />
-        </View>
-        <Ionicons name="chevron-forward" size={18} color={T.secondary} />
-      </View>
-      <Text style={styles.cardKicker}>{title}</Text>
-      <Text style={[styles.cardValue, compact && styles.cardValueCompact, tone === 'red' && styles.cardValueRed]} numberOfLines={1}>
-        {value}
-      </Text>
-      {meta ? (
-        <Text style={styles.cardMeta} numberOfLines={2}>
-          {meta}
-        </Text>
-      ) : null}
-    </Pressable>
-  );
-}
-
-function ErrorsPage({ rows, query, onOpen, isMobile }) {
+function ErrorsPage({ rows, query, onOpen }) {
   const visible = useMemo(() => rows.filter((row) => matchesQuery(row, query)), [query, rows]);
   const types = useMemo(() => rankCounts(visible, errorTypeOf), [visible]);
   const amount = useMemo(() => visible.reduce((sum, row) => sum + errorAmountOf(row), 0), [visible]);
@@ -301,31 +184,24 @@ function ErrorsPage({ rows, query, onOpen, isMobile }) {
     );
   }
 
-  const empty = query.trim() ? `No error matches “${query.trim()}”.` : 'No errors.';
-
   return (
-    <ScrollView
-      style={styles.mobileScroll}
-      contentContainerStyle={[styles.mobileScrollContent, !isMobile && styles.desktopHomeContent]}
-      keyboardShouldPersistTaps="handled"
-      showsVerticalScrollIndicator={false}
+    <ChromePage
+      hero={
+        <ChromeHero
+          value={amount ? formatAmount(amount) : String(visible.length)}
+          stats={[
+            { label: visible.length === 1 ? 'Error' : 'Errors', value: String(visible.length) },
+            { label: storeCount === 1 ? 'Store' : 'Stores', value: String(storeCount) },
+            { label: types.length === 1 ? 'Type' : 'Types', value: String(types.length) },
+          ]}
+        />
+      }
+      title="Errors"
+      meta={`${visible.length} error${visible.length === 1 ? '' : 's'}`}
     >
-      <HomeHero
-        label={isMobile ? undefined : 'Errors'}
-        value={amount ? formatAmount(amount) : String(visible.length)}
-        stats={[
-          { label: visible.length === 1 ? 'Error' : 'Errors', value: String(visible.length) },
-          { label: storeCount === 1 ? 'Store' : 'Stores', value: String(storeCount) },
-          { label: types.length === 1 ? 'Type' : 'Types', value: String(types.length) },
-        ]}
-      />
-      <HomeSection
-        title="Errors"
-        meta={`${visible.length} error${visible.length === 1 ? '' : 's'}`}
-      >
-        {visible.length ? (
-          visible.map((row, index) => (
-            <HomeRow
+      {visible.length
+        ? visible.map((row, index) => (
+            <ChromeListRow
               key={`${row.triageId}-${row.id}`}
               title={row.reference || 'Document'}
               meta={[errorTypeOf(row), row.storeName, staffName(row), row.dateLabel].filter(Boolean).join(' · ')}
@@ -335,20 +211,16 @@ function ErrorsPage({ rows, query, onOpen, isMobile }) {
               onPress={() => onOpen(row)}
             />
           ))
-        ) : (
-          <Text style={styles.emptyCopy}>{empty}</Text>
-        )}
-      </HomeSection>
-    </ScrollView>
+        : emptyCopy(query.trim() ? `No error matches “${query.trim()}”.` : 'No errors.')}
+    </ChromePage>
   );
 }
 
-function TransfersPage({ summary, isMobile }) {
-  if (isMobile) {
-    return (
-      <ScrollView style={styles.mobileScroll} contentContainerStyle={styles.mobileScrollContent}>
-        <HomeHero
-          label="Transfers"
+function TransfersPage({ summary }) {
+  return (
+    <ChromePage
+      hero={
+        <ChromeHero
           value={String(summary.count)}
           stats={[
             { label: 'Open', value: String(summary.open) },
@@ -356,66 +228,33 @@ function TransfersPage({ summary, isMobile }) {
             { label: 'Received', value: String(summary.received) },
           ]}
         />
-        <HomeSection title="Transfers" meta={String(summary.count)}>
-          {summary.rows.length ? (
-            summary.rows.map((row, index) => (
-              <HomeRow
-                key={row.id}
-                title={row.reference || `TR# ${row.number || ''}`}
-                meta={[transferPathLabel(row), row.dateLabel].filter(Boolean).join(' · ')}
-                value={transferStatusLabel(row)}
-                icon="swap-horizontal"
-                iconColor="#1F7A9A"
-                last={index === summary.rows.length - 1}
-                chevron={false}
-              />
-            ))
-          ) : (
-            <Text style={styles.emptyCopy}>Store-to-workshop transfers land here as they are created.</Text>
-          )}
-        </HomeSection>
-      </ScrollView>
-    );
-  }
-
-  return (
-    <View style={styles.page}>
-      <View style={styles.pageIntro}>
-        <Text style={styles.pageSub}>
-          {summary.count
-            ? `${summary.open} open · ${summary.partial} partial · ${summary.received} received`
-            : 'Store-to-workshop transfers land here as they are created.'}
-        </Text>
-      </View>
-      {summary.rows.length ? (
-        <Group>
-          {summary.rows.map((row, index) => (
-            <View key={row.id} style={[styles.lotRow, index === summary.rows.length - 1 && styles.lotRowLast]}>
-              <View style={styles.lotCopy}>
-                <Text style={styles.lotTitle}>{row.reference || `TR# ${row.number || ''}`}</Text>
-                <Text style={styles.lotMeta}>{[transferPathLabel(row), row.dateLabel].filter(Boolean).join(' · ')}</Text>
-              </View>
-              <Text style={styles.lotCount}>{transferStatusLabel(row)}</Text>
-            </View>
-          ))}
-        </Group>
-      ) : (
-        <EmptyState
-          icon="swap-horizontal-outline"
-          title="No transfers"
-          body="Transfers to the workshop will show up here."
-        />
-      )}
-    </View>
+      }
+      title="Transfers"
+      meta={String(summary.count)}
+    >
+      {summary.rows.length
+        ? summary.rows.map((row, index) => (
+            <ChromeListRow
+              key={row.id}
+              title={row.reference || `TR# ${row.number || ''}`}
+              meta={[transferPathLabel(row), row.dateLabel].filter(Boolean).join(' · ')}
+              value={transferStatusLabel(row)}
+              icon="swap-horizontal"
+              iconColor="#1F7A9A"
+              last={index === summary.rows.length - 1}
+              chevron={false}
+            />
+          ))
+        : emptyCopy('Store-to-workshop transfers land here as they are created.')}
+    </ChromePage>
   );
 }
 
-function AllocationPage({ lots, isMobile }) {
-  if (isMobile) {
-    return (
-      <ScrollView style={styles.mobileScroll} contentContainerStyle={styles.mobileScrollContent}>
-        <HomeHero
-          label="Allocation"
+function AllocationPage({ lots }) {
+  return (
+    <ChromePage
+      hero={
+        <ChromeHero
           value="0"
           stats={[
             { label: lots.length === 1 ? 'Lot' : 'Lots', value: String(lots.length) },
@@ -423,47 +262,29 @@ function AllocationPage({ lots, isMobile }) {
             { label: 'Ready', value: String(lots.length) },
           ]}
         />
-        <HomeSection title="Lots" meta={String(lots.length)}>
-          {lots.length ? (
-            lots.map((lot, index) => (
-              <HomeRow
-                key={lot.id}
-                title={lot.id}
-                meta={[lot.location, lotPeriodLabel(lot)].filter(Boolean).join(' · ')}
-                value="Open"
-                icon="folder"
-                iconColor="#3A3A3C"
-                last={index === lots.length - 1}
-                chevron={false}
-              />
-            ))
-          ) : (
-            <Text style={styles.emptyCopy}>Lots you finish will show up here for allocation.</Text>
-          )}
-        </HomeSection>
-      </ScrollView>
-    );
-  }
-
-  return (
-    <View style={styles.page}>
-      <View style={styles.pageIntro}>
-        <Text style={styles.pageSub}>
-          {lots.length
-            ? `${lots.length} ${lots.length === 1 ? 'lot' : 'lots'} ready to allocate once melt is split.`
-            : 'Lots you finish will show up here for allocation.'}
-        </Text>
-      </View>
-      <EmptyState
-        icon="git-branch-outline"
-        title="Nothing allocated"
-        body="When a lot is ready to split across destinations, it will be listed here."
-      />
-    </View>
+      }
+      title="Lots"
+      meta={String(lots.length)}
+    >
+      {lots.length
+        ? lots.map((lot, index) => (
+            <ChromeListRow
+              key={lot.id}
+              title={lot.id}
+              meta={[lot.location, lotPeriodLabel(lot)].filter(Boolean).join(' · ')}
+              value="Open"
+              icon="folder"
+              iconColor="#3A3A3C"
+              last={index === lots.length - 1}
+              chevron={false}
+            />
+          ))
+        : emptyCopy('Lots you finish will show up here for allocation.')}
+    </ChromePage>
   );
 }
 
-function ExpectedReturnPage({ lots, summary, isMobile }) {
+function ExpectedReturnPage({ lots, summary }) {
   if (!lots.length) {
     return (
       <EmptyState
@@ -474,11 +295,10 @@ function ExpectedReturnPage({ lots, summary, isMobile }) {
     );
   }
 
-  if (isMobile) {
-    return (
-      <ScrollView style={styles.mobileScroll} contentContainerStyle={styles.mobileScrollContent}>
-        <HomeHero
-          label="Expected Return"
+  return (
+    <ChromePage
+      hero={
+        <ChromeHero
           value={String(summary.expected)}
           stats={[
             { label: 'Evaluated', value: String(summary.evaluated) },
@@ -486,64 +306,26 @@ function ExpectedReturnPage({ lots, summary, isMobile }) {
             { label: summary.lots === 1 ? 'Lot' : 'Lots', value: String(summary.lots) },
           ]}
         />
-        <HomeSection title="Lots" meta={String(lots.length)}>
-          {lots.map((lot, index) => {
-            const progress = lotProgressOf(lot);
-            return (
-              <HomeRow
-                key={lot.id}
-                title={lot.id}
-                meta={[lot.location, lotPeriodLabel(lot)].filter(Boolean).join(' · ')}
-                value={progress.expected ? `${progress.evaluated}/${progress.expected}` : String(lot.pos.length)}
-                icon="folder"
-                iconColor="#1F8A4E"
-                last={index === lots.length - 1}
-                chevron={false}
-              />
-            );
-          })}
-        </HomeSection>
-      </ScrollView>
-    );
-  }
-
-  return (
-    <View style={styles.page}>
-      <View style={styles.pageIntro}>
-        <Text style={styles.pageSub}>
-          {summary.evaluated} of {summary.expected} expected
-          {summary.expected ? ` · ${summary.percent}% evaluated` : ''}
-          {` · ${summary.lots} ${summary.lots === 1 ? 'lot' : 'lots'}`}
-        </Text>
-      </View>
-      <Group>
-        {lots.map((lot, index) => {
-          const progress = lotProgressOf(lot);
-          return (
-            <View key={lot.id} style={[styles.lotRow, index === lots.length - 1 && styles.lotRowLast]}>
-              <View style={styles.lotCopy}>
-                <Text style={styles.lotTitle}>{lot.id}</Text>
-                <Text style={styles.lotMeta}>{[lot.location, lotPeriodLabel(lot)].filter(Boolean).join(' · ')}</Text>
-              </View>
-              <View style={styles.lotRight}>
-                <Text style={styles.lotCount}>
-                  {progress.expected ? `${progress.evaluated}/${progress.expected}` : `${lot.pos.length}`}
-                </Text>
-                {progress.expected ? (
-                  <ProgressBar
-                    value={progress.evaluated}
-                    total={progress.expected}
-                    tone={progress.done ? 'green' : 'blue'}
-                    height={4}
-                    style={styles.lotBar}
-                  />
-                ) : null}
-              </View>
-            </View>
-          );
-        })}
-      </Group>
-    </View>
+      }
+      title="Lots"
+      meta={String(lots.length)}
+    >
+      {lots.map((lot, index) => {
+        const progress = lotProgressOf(lot);
+        return (
+          <ChromeListRow
+            key={lot.id}
+            title={lot.id}
+            meta={[lot.location, lotPeriodLabel(lot)].filter(Boolean).join(' · ')}
+            value={progress.expected ? `${progress.evaluated}/${progress.expected}` : String(lot.pos.length)}
+            icon="folder"
+            iconColor="#1F8A4E"
+            last={index === lots.length - 1}
+            chevron={false}
+          />
+        );
+      })}
+    </ChromePage>
   );
 }
 
@@ -607,14 +389,23 @@ export default function TriageDashboardPanel({
     );
   }
 
-  const cards = (
-    <>
-      <DashCard
-        compact={isMobile}
+  const home = (
+    <ChromePage
+      hero={
+        <ChromeHero
+          value={errors.amount ? formatAmount(errors.amount) : String(errors.count)}
+          stats={[
+            { label: errors.count === 1 ? 'Error' : 'Errors', value: String(errors.count) },
+            { label: 'Transfers', value: String(transferSummary.count) },
+            { label: lotSummary.lots === 1 ? 'Lot' : 'Lots', value: String(lotSummary.lots) },
+          ]}
+        />
+      }
+      title="Triage"
+      meta={`${errors.count + transferSummary.count} open`}
+    >
+      <ChromeListRow
         title="Errors"
-        icon="alert-circle-outline"
-        value={errors.count ? String(errors.count) : '0'}
-        tone={errors.count ? 'red' : undefined}
         meta={
           errors.count
             ? [
@@ -626,76 +417,61 @@ export default function TriageDashboardPanel({
                 .join(' · ')
             : 'No flagged POs yet'
         }
+        value={String(errors.count)}
+        icon="alert-circle"
+        iconColor="#B91C1C"
         onPress={() => openPage('errors')}
       />
-      <DashCard
-        compact={isMobile}
+      <ChromeListRow
         title="Transfers"
-        icon="swap-horizontal-outline"
-        value={String(transferSummary.count)}
         meta={
           transferSummary.count
             ? `${transferSummary.open} open · ${transferSummary.partial} partial · ${transferSummary.received} received`
             : 'No transfers yet'
         }
+        value={String(transferSummary.count)}
+        icon="swap-horizontal"
+        iconColor="#1F7A9A"
         onPress={() => openPage('shipments')}
       />
-      <DashCard
-        compact={isMobile}
+      <ChromeListRow
         title="Allocation"
-        icon="git-branch-outline"
-        value={lots.length ? String(lots.length) : '0'}
         meta={
           lots.length
             ? `${lots.length} ${lots.length === 1 ? 'lot' : 'lots'} · none allocated`
             : 'Nothing to allocate yet'
         }
+        value={String(lots.length)}
+        icon="git-branch"
+        iconColor="#3A3A3C"
         onPress={() => openPage('allocation')}
       />
-      <DashCard
-        compact={isMobile}
+      <ChromeListRow
         title="Expected Return"
-        icon="trending-up-outline"
-        value={lotSummary.expected ? String(lotSummary.expected) : '0'}
         meta={
           lotSummary.expected
             ? `${lotSummary.evaluated} evaluated · ${lotSummary.percent}% · ${lotSummary.lots} ${lotSummary.lots === 1 ? 'lot' : 'lots'}`
             : 'No expected melt yet'
         }
+        value={lotSummary.expected ? String(lotSummary.expected) : '0'}
+        icon="trending-up"
+        iconColor="#1F8A4E"
+        last
         onPress={() => openPage('return')}
       />
-    </>
-  );
-
-  const home = isMobile ? (
-    <ScrollView
-      style={styles.mobileScroll}
-      contentContainerStyle={styles.mobileCardContent}
-      keyboardShouldPersistTaps="handled"
-      showsVerticalScrollIndicator={false}
-    >
-      <View style={styles.mobileCardGrid}>{cards}</View>
-    </ScrollView>
-  ) : (
-    <ScrollView
-      style={styles.home}
-      contentContainerStyle={styles.homeContent}
-      keyboardShouldPersistTaps="handled"
-    >
-      <View style={styles.grid}>{cards}</View>
-    </ScrollView>
+    </ChromePage>
   );
 
   return (
     <View style={[styles.body, isMobile && styles.bodyMobile]}>
       {page === 'errors' ? (
-        <ErrorsPage rows={errors.rows} query={listQuery} onOpen={setOpenRow} isMobile={isMobile} />
+        <ErrorsPage rows={errors.rows} query={listQuery} onOpen={setOpenRow} />
       ) : page === 'shipments' ? (
-        <TransfersPage summary={transferSummary} isMobile={isMobile} />
+        <TransfersPage summary={transferSummary} />
       ) : page === 'allocation' ? (
-        <AllocationPage lots={lots} isMobile={isMobile} />
+        <AllocationPage lots={lots} />
       ) : page === 'return' ? (
-        <ExpectedReturnPage lots={lots} summary={lotSummary} isMobile={isMobile} />
+        <ExpectedReturnPage lots={lots} summary={lotSummary} />
       ) : (
         home
       )}
@@ -722,281 +498,6 @@ const styles = StyleSheet.create({
   bodyMobile: {
     backgroundColor: CANVAS,
   },
-  home: {
-    flex: 1,
-    minHeight: 0,
-  },
-  homeContent: {
-    paddingHorizontal: 20,
-    paddingTop: 8,
-    paddingBottom: 40,
-  },
-  mobileCardContent: {
-    paddingHorizontal: 16,
-    paddingTop: 4,
-    paddingBottom: 104,
-    backgroundColor: CANVAS,
-  },
-  mobileCardGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-  },
-  grid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    alignItems: 'stretch',
-    gap: 12,
-  },
-  card: {
-    flexGrow: 1,
-    flexBasis: '47%',
-    minWidth: 240,
-    minHeight: 168,
-    padding: 16,
-    borderRadius: 8,
-    backgroundColor: '#fff',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: T.hairline,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  cardPressed: {
-    backgroundColor: '#f5f5f5',
-  },
-  cardCompact: {
-    flexBasis: '47%',
-    minWidth: 0,
-    minHeight: 148,
-    padding: 14,
-  },
-  cardTop: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 16,
-  },
-  cardIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#f5f5f5',
-  },
-  cardIconCompact: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-  },
-  cardValueCompact: {
-    fontSize: 26,
-    letterSpacing: -0.6,
-  },
-  cardKicker: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: T.secondary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.2,
-  },
-  cardValue: {
-    fontFamily,
-    fontSize: 32,
-    fontWeight: '600',
-    color: T.text,
-    letterSpacing: -0.8,
-    marginTop: 4,
-    fontVariant: ['tabular-nums'],
-  },
-  cardValueRed: {
-    color: T.red,
-  },
-  cardMeta: {
-    fontFamily,
-    fontSize: 13,
-    lineHeight: 18,
-    color: T.secondary,
-    marginTop: 6,
-  },
-  mobileScroll: {
-    flex: 1,
-    minHeight: 0,
-    backgroundColor: CANVAS,
-  },
-  mobileScrollContent: {
-    paddingBottom: 104,
-    backgroundColor: CANVAS,
-  },
-  desktopHomeContent: {
-    paddingTop: 8,
-    paddingBottom: 40,
-    maxWidth: 1100,
-    width: '100%',
-    alignSelf: 'center',
-  },
-  hero: {
-    alignSelf: 'stretch',
-    paddingTop: 16,
-    paddingBottom: 14,
-    paddingHorizontal: 16,
-    marginBottom: 20,
-    backgroundColor: CANVAS,
-  },
-  heroLabel: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#8e8e93',
-    letterSpacing: -0.08,
-  },
-  heroAmount: {
-    fontFamily,
-    fontSize: 40,
-    lineHeight: 46,
-    fontWeight: '400',
-    color: '#1a1a1a',
-    letterSpacing: -1.2,
-    marginTop: 2,
-    fontVariant: ['tabular-nums'],
-  },
-  heroStats: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(60,60,67,0.18)',
-  },
-  heroStatWrap: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  heroStat: {
-    flex: 1,
-    minWidth: 0,
-    gap: 1,
-  },
-  heroStatDivider: {
-    width: StyleSheet.hairlineWidth,
-    height: 28,
-    marginHorizontal: 12,
-    backgroundColor: 'rgba(60,60,67,0.18)',
-  },
-  heroStatValue: {
-    fontFamily,
-    fontSize: 17,
-    fontWeight: '600',
-    color: '#1a1a1a',
-    letterSpacing: -0.3,
-    fontVariant: ['tabular-nums'],
-  },
-  heroStatLabel: {
-    fontFamily,
-    fontSize: 12,
-    color: '#8e8e93',
-    letterSpacing: -0.05,
-  },
-  section: {
-    marginTop: 0,
-  },
-  sectionHead: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    marginBottom: 8,
-  },
-  sectionTitle: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '400',
-    color: '#8e8e93',
-    letterSpacing: -0.08,
-    textTransform: 'uppercase',
-  },
-  sectionMeta: {
-    fontFamily,
-    fontSize: 13,
-    color: '#8e8e93',
-    letterSpacing: -0.08,
-    fontVariant: ['tabular-nums'],
-  },
-  list: {
-    backgroundColor: '#fff',
-    width: '100%',
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    minHeight: 68,
-    paddingLeft: 16,
-    backgroundColor: '#fff',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  rowPressed: {
-    backgroundColor: '#f5f5f5',
-  },
-  rowIcon: {
-    width: 46,
-    height: 46,
-    borderRadius: 13,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  rowBody: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 14,
-    paddingRight: 16,
-    alignSelf: 'stretch',
-  },
-  rowDivider: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(60,60,67,0.18)',
-  },
-  rowCopy: {
-    flex: 1,
-    minWidth: 0,
-    gap: 3,
-  },
-  rowTitle: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#1a1a1a',
-  },
-  rowMeta: {
-    fontFamily,
-    fontSize: 13,
-    color: '#8e8e93',
-  },
-  rowValue: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#1a1a1a',
-    fontVariant: ['tabular-nums'],
-    flexShrink: 0,
-  },
-  rowChevron: {
-    flexShrink: 0,
-    marginLeft: -2,
-    width: 18,
-  },
   emptyCopy: {
     fontFamily,
     fontSize: 15,
@@ -1005,63 +506,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 18,
     backgroundColor: '#fff',
-  },
-  page: {
-    flex: 1,
-    minHeight: 0,
-    paddingHorizontal: 20,
-    paddingTop: 4,
-  },
-  pageIntro: {
-    gap: 2,
-    marginBottom: 16,
-  },
-  pageSub: {
-    fontFamily,
-    fontSize: 14,
-    color: T.secondary,
-  },
-  lotRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: T.hairline,
-  },
-  lotRowLast: {
-    borderBottomWidth: 0,
-  },
-  lotCopy: {
-    flex: 1,
-    minWidth: 0,
-    gap: 2,
-  },
-  lotTitle: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: T.text,
-  },
-  lotMeta: {
-    fontFamily,
-    fontSize: 13,
-    color: T.secondary,
-  },
-  lotRight: {
-    width: 88,
-    alignItems: 'flex-end',
-    gap: 6,
-  },
-  lotCount: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: T.text,
-    fontVariant: ['tabular-nums'],
-  },
-  lotBar: {
-    alignSelf: 'stretch',
   },
 });

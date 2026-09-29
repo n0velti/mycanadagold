@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { BlurView } from 'expo-blur';
 import { Ionicons } from '@expo/vector-icons';
-import { Animated, Image, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, Image, PanResponder, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import {
   attachWebTabBarScrollListeners,
   expandMobileTabBar,
@@ -197,9 +197,66 @@ export function MobileTabBar({
   const tabLayouts = useRef({});
   const indicatorX = useRef(new Animated.Value(0)).current;
   const indicatorW = useRef(new Animated.Value(0)).current;
+  const indicatorXValue = useRef(0);
+  const indicatorWValue = useRef(0);
   const indicatorPlaced = useRef(false);
+  const draggingRef = useRef(false);
+  const dragOriginCenter = useRef(0);
+  const tabsRef = useRef(tabs);
+  const onSelectRef = useRef(onSelect);
+  const [previewKey, setPreviewKey] = useState(activeKey);
+  tabsRef.current = tabs;
+  onSelectRef.current = onSelect;
 
   useEffect(() => attachWebTabBarScrollListeners(), []);
+
+  useEffect(() => {
+    const xSub = indicatorX.addListener(({ value }) => {
+      indicatorXValue.current = value;
+    });
+    const wSub = indicatorW.addListener(({ value }) => {
+      indicatorWValue.current = value;
+    });
+    return () => {
+      indicatorX.removeListener(xSub);
+      indicatorW.removeListener(wSub);
+    };
+  }, [indicatorX, indicatorW]);
+
+  const tabFrames = () =>
+    tabsRef.current
+      .map((tab) => {
+        const layout = tabLayouts.current[tab.key];
+        if (!layout) return null;
+        return {
+          key: tab.key,
+          x: layout.x + TAB_ACTIVE_INSET,
+          w: Math.max(32, layout.width - TAB_ACTIVE_INSET * 2),
+          center: layout.x + layout.width / 2,
+        };
+      })
+      .filter(Boolean);
+
+  const frameAtCenter = (centerX) => {
+    const frames = tabFrames();
+    if (!frames.length) return null;
+    if (centerX <= frames[0].center) return { x: frames[0].x, w: frames[0].w, nearest: frames[0].key };
+    const last = frames[frames.length - 1];
+    if (centerX >= last.center) return { x: last.x, w: last.w, nearest: last.key };
+    for (let i = 0; i < frames.length - 1; i += 1) {
+      const a = frames[i];
+      const b = frames[i + 1];
+      if (centerX >= a.center && centerX <= b.center) {
+        const t = (centerX - a.center) / (b.center - a.center || 1);
+        return {
+          x: a.x + (b.x - a.x) * t,
+          w: a.w + (b.w - a.w) * t,
+          nearest: t < 0.5 ? a.key : b.key,
+        };
+      }
+    }
+    return { x: frames[0].x, w: frames[0].w, nearest: frames[0].key };
+  };
 
   const placeActiveIndicator = (key, animated) => {
     const layout = tabLayouts.current[key];
@@ -229,7 +286,46 @@ export function MobileTabBar({
     ]).start();
   };
 
+  const finishDrag = (dx) => {
+    const frame = frameAtCenter(dragOriginCenter.current + dx);
+    const key = frame?.nearest;
+    draggingRef.current = false;
+    if (!key) return;
+    setPreviewKey(key);
+    expandMobileTabBar();
+    onSelectRef.current(key);
+    placeActiveIndicator(key, true);
+  };
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_, gesture) =>
+        Math.abs(gesture.dx) > 6 && Math.abs(gesture.dx) > Math.abs(gesture.dy),
+      onMoveShouldSetPanResponderCapture: (_, gesture) =>
+        Math.abs(gesture.dx) > 6 && Math.abs(gesture.dx) > Math.abs(gesture.dy),
+      onPanResponderGrant: () => {
+        indicatorX.stopAnimation();
+        indicatorW.stopAnimation();
+        draggingRef.current = true;
+        dragOriginCenter.current = indicatorXValue.current + indicatorWValue.current / 2;
+      },
+      onPanResponderMove: (_, gesture) => {
+        const frame = frameAtCenter(dragOriginCenter.current + gesture.dx);
+        if (!frame) return;
+        indicatorX.setValue(frame.x);
+        indicatorW.setValue(frame.w);
+        setPreviewKey((current) => (current === frame.nearest ? current : frame.nearest));
+      },
+      onPanResponderRelease: (_, gesture) => finishDrag(gesture.dx),
+      onPanResponderTerminate: (_, gesture) => finishDrag(gesture.dx),
+      onPanResponderTerminationRequest: () => false,
+    })
+  ).current;
+
   useEffect(() => {
+    if (draggingRef.current) return;
+    setPreviewKey(activeKey);
     placeActiveIndicator(activeKey, true);
   }, [activeKey]);
 
@@ -242,13 +338,13 @@ export function MobileTabBar({
       <View style={[styles.tabBarLift, styles.tabBarShellFixed]}>
         <View style={styles.tabBarClip}>
           <BlurView
-            intensity={72}
+            intensity={32}
             tint="light"
             pointerEvents="none"
             style={styles.tabBarBlur}
             {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-bar' } : null)}
           />
-          <View style={styles.tabBar}>
+          <View style={styles.tabBar} {...panResponder.panHandlers}>
             <Animated.View
               pointerEvents="none"
               style={[
@@ -258,16 +354,9 @@ export function MobileTabBar({
                   width: indicatorW,
                 },
               ]}
-            >
-              <BlurView
-                intensity={72}
-                tint="dark"
-                style={styles.tabActiveBlur}
-                {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-active' } : null)}
-              />
-            </Animated.View>
+            />
             {tabs.map((tab) => {
-              const isActive = activeKey === tab.key;
+              const isActive = previewKey === tab.key;
               const unread = tab.key === 'messages' ? messagesUnread : 0;
               const badge = unread > 99 ? '99+' : unread > 0 ? String(unread) : '';
               const isProfile = tab.key === 'profile';
@@ -283,7 +372,7 @@ export function MobileTabBar({
                     const { x, width } = event.nativeEvent.layout;
                     const prev = tabLayouts.current[tab.key];
                     tabLayouts.current[tab.key] = { x, width };
-                    if (tab.key !== activeKey) return;
+                    if (draggingRef.current || tab.key !== activeKey) return;
                     if (!prev || prev.x !== x || prev.width !== width) {
                       placeActiveIndicator(tab.key, indicatorPlaced.current);
                     }
@@ -565,8 +654,8 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.56)',
     ...Platform.select({
       web: {
-        backdropFilter: 'saturate(180%) blur(22px)',
-        WebkitBackdropFilter: 'saturate(180%) blur(22px)',
+        backdropFilter: 'saturate(140%) blur(10px)',
+        WebkitBackdropFilter: 'saturate(140%) blur(10px)',
       },
       default: {},
     }),
@@ -584,23 +673,11 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 5,
     bottom: 5,
+    zIndex: 0,
     borderRadius: 999,
-    overflow: 'hidden',
-  },
-  tabActiveBlur: {
-    ...StyleSheet.absoluteFillObject,
-    overflow: 'hidden',
-    backgroundColor: 'rgba(22,22,24,0.36)',
-    borderRadius: 999,
+    backgroundColor: 'rgba(88,88,92,0.22)',
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: 'rgba(255,255,255,0.16)',
-    ...Platform.select({
-      web: {
-        backdropFilter: 'saturate(180%) blur(20px)',
-        WebkitBackdropFilter: 'saturate(180%) blur(20px)',
-      },
-      default: {},
-    }),
   },
   tab: {
     flex: 1,

@@ -21,7 +21,7 @@ import {
   noteCategoryLabel,
   noteImportanceLabel,
 } from '../lib/profileNotes';
-import { MOBILE } from '../lib/mobileUi';
+import { MOBILE, useIsMobile } from '../lib/mobileUi';
 
 const fontFamily = 'Sohne';
 const GOLD = '#E8C36A';
@@ -499,6 +499,7 @@ function MobileNoteCard({ note, myId, canDelete, onDelete, deleting }) {
 }
 
 export default function ProfileNotesTable({ profileId, myId }) {
+  const isMobile = useIsMobile();
   const [notes, setNotes] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -573,6 +574,79 @@ export default function ProfileNotesTable({ profileId, myId }) {
     }
   };
 
+  const desktopTable = (
+    <View style={styles.wrap}>
+      <View style={styles.table}>
+        <View style={styles.tableHead}>
+          <Text style={styles.tableTitle}>Notes</Text>
+          <Pressable
+            onPress={startAdd}
+            disabled={!profileId || Boolean(draft)}
+            style={({ pressed }) => [
+              styles.addButton,
+              pressed && styles.addButtonPressed,
+              (!profileId || draft) && styles.addButtonDisabled,
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="Add note"
+          >
+            <Ionicons name="add" size={16} color="#111" />
+            <Text style={styles.addButtonText}>Add</Text>
+          </Pressable>
+        </View>
+        <View style={styles.headerRow}>
+          <Text style={[styles.headerCell, styles.colDate]}>Date</Text>
+          <Text style={[styles.headerCell, styles.colFrom]}>From</Text>
+          <Text style={[styles.headerCell, styles.colNote]}>Note</Text>
+          <Text style={[styles.headerCell, styles.colDue]}>Due</Text>
+          <Text style={[styles.headerCell, styles.colCategory]}>Category</Text>
+          <Text style={[styles.headerCell, styles.colImportance]}>Importance</Text>
+        </View>
+        {draft ? (
+          <ComposerRow
+            draft={draft}
+            onChange={setDraft}
+            onSave={() => void handleSave()}
+            onCancel={() => {
+              if (!saving) {
+                setDraft(null);
+                setSaveError('');
+              }
+            }}
+            saving={saving}
+            canSave={Boolean(draft.body.trim())}
+          />
+        ) : null}
+        {loading ? (
+          <View style={styles.empty}>
+            <ActivityIndicator color={GOLD} />
+          </View>
+        ) : notes.length === 0 && !draft ? (
+          <View style={styles.empty}>
+            <Text style={styles.emptyText}>
+              {error || 'No notes yet. Add one to keep a record on this profile.'}
+            </Text>
+          </View>
+        ) : (
+          notes.map((note) => (
+            <NoteRow
+              key={note.id}
+              note={note}
+              myId={myId}
+              canDelete={note.authorId === myId || note.profileId === myId}
+              deleting={deletingId === note.id}
+              onDelete={() => void handleDelete(note.id)}
+            />
+          ))
+        )}
+        {saveError ? <Text style={styles.tableError}>{saveError}</Text> : null}
+        {error && notes.length > 0 ? <Text style={styles.tableError}>{error}</Text> : null}
+      </View>
+    </View>
+  );
+
+  if (!isMobile) return desktopTable;
+
   return (
     <View style={[styles.wrap, styles.wrapMobile]}>
       <View style={styles.mobileWrap}>
@@ -639,20 +713,20 @@ export default function ProfileNotesTable({ profileId, myId }) {
 
 const styles = StyleSheet.create({
   wrap: {
-    marginTop: 28,
+    marginTop: 0,
     width: '100%',
+    minWidth: 0,
+    alignSelf: 'stretch',
   },
   wrapMobile: {
     marginTop: 0,
-  },
-  hScroll: {
-    minWidth: 780,
   },
   table: {
     backgroundColor: '#111',
     borderRadius: 14,
     overflow: 'hidden',
-    minWidth: 780,
+    width: '100%',
+    minWidth: 0,
   },
   tableHead: {
     flexDirection: 'row',
@@ -732,17 +806,18 @@ const styles = StyleSheet.create({
     color: '#f2f2f7',
     letterSpacing: -0.1,
   },
-  colDate: { width: 108, flexShrink: 0 },
-  colFrom: { width: 112, flexShrink: 0 },
-  colNote: { flex: 1, minWidth: 160 },
-  colDue: { width: 108, flexShrink: 0 },
-  colCategory: { width: 104, flexShrink: 0 },
+  colDate: { width: 76, flexShrink: 1, minWidth: 56 },
+  colFrom: { width: 72, flexShrink: 1, minWidth: 48 },
+  colNote: { flex: 1.6, minWidth: 0 },
+  colDue: { width: 72, flexShrink: 1, minWidth: 48 },
+  colCategory: { width: 84, flexShrink: 1, minWidth: 56 },
   colImportance: {
-    width: 128,
-    flexShrink: 0,
+    width: 92,
+    flexShrink: 1,
+    minWidth: 64,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 4,
   },
   importancePick: {
     flex: 1,

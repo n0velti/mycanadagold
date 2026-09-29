@@ -1859,20 +1859,31 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
 // UI: incoming dock, active call row, ringer toggle
 // ---------------------------------------------------------------------------
 
-function IncomingActions({ call, compact, busy, onAnswer, onReject }) {
+function IncomingActions({ call, compact, collapsed, busy, onAnswer, onReject }) {
+  const tight = compact || collapsed;
   return (
-    <View style={compact ? styles.actionsCompact : styles.actions}>
+    <View style={collapsed ? styles.actionsCollapsed : compact ? styles.actionsCompact : styles.actions}>
       <Pressable
-        style={[styles.action, styles.reject, compact && styles.actionCompact]}
+        style={[
+          styles.action,
+          styles.reject,
+          tight && styles.actionCompact,
+          collapsed && styles.actionCollapsed,
+        ]}
         onPress={() => onReject(call)}
         disabled={busy}
         accessibilityLabel="Reject call"
       >
-        <Ionicons name="close" size={compact ? 14 : 16} color="#fff" />
-        {compact ? null : <Text style={styles.actionText}>Reject</Text>}
+        <Ionicons name="close" size={tight ? 14 : 16} color="#fff" />
+        {tight ? null : <Text style={styles.actionText}>Reject</Text>}
       </Pressable>
       <Pressable
-        style={[styles.action, styles.answer, compact && styles.actionCompact]}
+        style={[
+          styles.action,
+          styles.answer,
+          tight && styles.actionCompact,
+          collapsed && styles.actionCollapsed,
+        ]}
         onPress={() => onAnswer(call)}
         disabled={busy}
         accessibilityLabel="Answer call"
@@ -1880,9 +1891,9 @@ function IncomingActions({ call, compact, busy, onAnswer, onReject }) {
         {busy ? (
           <ActivityIndicator size="small" color="#fff" />
         ) : (
-          <Ionicons name="call" size={compact ? 14 : 16} color="#fff" />
+          <Ionicons name="call" size={tight ? 14 : 16} color="#fff" />
         )}
-        {compact ? null : <Text style={styles.actionText}>Answer</Text>}
+        {tight ? null : <Text style={styles.actionText}>Answer</Text>}
       </Pressable>
     </View>
   );
@@ -1907,17 +1918,24 @@ export function PhoneRingerToggle({ collapsed = false }) {
   );
 }
 
-function CallClock({ since }) {
+function CallClock({ since, style }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
   return (
-    <Text style={styles.clock} numberOfLines={1}>
+    <Text style={[styles.clock, style]} numberOfLines={1}>
       {formatCallClock(now - (since || now))}
     </Text>
   );
+}
+
+function collapsedStoreMark(name) {
+  const cleaned = String(name || '')
+    .replace(/^canada\s*gold(?:\s*[-–—:])?\s*/i, '')
+    .trim();
+  return cleaned.slice(0, 4).toUpperCase() || 'IN';
 }
 
 /** "Calling…" while an outbound leg is being set up; a running clock once connected. */
@@ -1926,6 +1944,59 @@ export function activeCallKicker(call) {
   if (call.direction === 'Outbound' && (isDialingStatus(call.status) || isRingingStatus(call.status))) return 'Calling';
   if (/hold/i.test(call.status || '')) return 'On hold';
   return 'On call';
+}
+
+function ActiveCallControls({
+  call,
+  collapsed,
+  busy,
+  muted,
+  soundBlocked,
+  connected,
+  onMute,
+  onHangup,
+  onEnableSound,
+}) {
+  return (
+    <View style={collapsed ? styles.actionsCollapsed : styles.actionsCompact}>
+      {soundBlocked ? (
+        <Pressable
+          style={[styles.action, styles.actionCompact, collapsed && styles.actionCollapsed, styles.sound]}
+          onPress={onEnableSound}
+          accessibilityLabel="Enable sound for this call"
+        >
+          <Ionicons name="volume-high" size={14} color="#1a1a1a" />
+        </Pressable>
+      ) : null}
+      {call.web ? (
+        <Pressable
+          style={[
+            styles.action,
+            styles.actionCompact,
+            collapsed && styles.actionCollapsed,
+            muted ? styles.muteOn : styles.mute,
+          ]}
+          onPress={onMute}
+          disabled={busy || !connected}
+          accessibilityLabel={muted ? 'Unmute microphone' : 'Mute microphone'}
+        >
+          <Ionicons name={muted ? 'mic-off' : 'mic'} size={14} color="#fff" />
+        </Pressable>
+      ) : null}
+      <Pressable
+        style={[styles.action, styles.reject, styles.actionCompact, collapsed && styles.actionCollapsed]}
+        onPress={onHangup}
+        disabled={busy}
+        accessibilityLabel="Hang up"
+      >
+        {busy ? (
+          <ActivityIndicator size="small" color="#fff" />
+        ) : (
+          <Ionicons name="call" size={14} color="#fff" style={styles.hangupIcon} />
+        )}
+      </Pressable>
+    </View>
+  );
 }
 
 function ActiveCallRow({ call, collapsed, busy, muted, audioState, onMute, onHangup, onEnableSound }) {
@@ -1938,54 +2009,39 @@ function ActiveCallRow({ call, collapsed, busy, muted, audioState, onMute, onHan
       style={[styles.dockRow, styles.dockRowActive, collapsed && styles.dockRowCollapsed]}
       accessibilityLabel={`${kicker} ${label} at ${call.storeName || 'store'}`}
     >
-      <View style={styles.dockCopy}>
-        <Text style={styles.kicker} numberOfLines={1}>
-          {kicker} · {call.storeName || 'Store'}
-        </Text>
-        {collapsed ? (
-          connected && call.answeredAt ? <CallClock since={call.answeredAt} /> : null
-        ) : (
+      {collapsed ? (
+        <View style={styles.dockCopyCollapsed}>
+          <Ionicons name="call" size={14} color="#BBF7D0" />
+          {connected && call.answeredAt ? <CallClock since={call.answeredAt} style={styles.clockCollapsed} /> : (
+            <Text style={styles.kickerCollapsed} numberOfLines={1}>
+              {kicker}
+            </Text>
+          )}
+        </View>
+      ) : (
+        <View style={styles.dockCopy}>
+          <Text style={styles.kicker} numberOfLines={1}>
+            {kicker} · {call.storeName || 'Store'}
+          </Text>
           <View style={styles.activeLine}>
             <Text style={styles.caller} numberOfLines={1}>
               {label}
             </Text>
             {connected && call.answeredAt ? <CallClock since={call.answeredAt} /> : null}
           </View>
-        )}
-      </View>
-      <View style={styles.actionsCompact}>
-        {soundBlocked ? (
-          <Pressable
-            style={[styles.action, styles.actionCompact, styles.sound]}
-            onPress={onEnableSound}
-            accessibilityLabel="Enable sound for this call"
-          >
-            <Ionicons name="volume-high" size={14} color="#1a1a1a" />
-          </Pressable>
-        ) : null}
-        {call.web ? (
-          <Pressable
-            style={[styles.action, styles.actionCompact, muted ? styles.muteOn : styles.mute]}
-            onPress={onMute}
-            disabled={busy || !connected}
-            accessibilityLabel={muted ? 'Unmute microphone' : 'Mute microphone'}
-          >
-            <Ionicons name={muted ? 'mic-off' : 'mic'} size={14} color="#fff" />
-          </Pressable>
-        ) : null}
-        <Pressable
-          style={[styles.action, styles.reject, styles.actionCompact]}
-          onPress={onHangup}
-          disabled={busy}
-          accessibilityLabel="Hang up"
-        >
-          {busy ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <Ionicons name="call" size={14} color="#fff" style={styles.hangupIcon} />
-          )}
-        </Pressable>
-      </View>
+        </View>
+      )}
+      <ActiveCallControls
+        call={call}
+        collapsed={collapsed}
+        busy={busy}
+        muted={muted}
+        soundBlocked={soundBlocked}
+        connected={connected}
+        onMute={onMute}
+        onHangup={onHangup}
+        onEnableSound={onEnableSound}
+      />
     </View>
   );
 }
@@ -2046,7 +2102,7 @@ export function PhoneIncomingDock({ collapsed = false }) {
           onEnableSound={onEnableSound}
         />
       ) : null}
-      {activeCall && audioState === 'blocked' ? (
+      {activeCall && audioState === 'blocked' && !collapsed ? (
         <Text style={styles.error} numberOfLines={2}>
           The browser blocked the call audio. Tap the speaker button to hear the caller.
         </Text>
@@ -2061,18 +2117,32 @@ export function PhoneIncomingDock({ collapsed = false }) {
             style={[styles.dockRow, collapsed && styles.dockRowCollapsed]}
             accessibilityLabel={`Incoming call from ${label} at ${call.storeName || 'store'}`}
           >
-            <View style={styles.dockCopy}>
-              <Text style={styles.kicker} numberOfLines={1}>
-                {call.storeName || 'Incoming'}
-                {call.queueName ? ` · ${call.queueName}` : ''}
-              </Text>
-              {collapsed ? null : (
+            {collapsed ? (
+              <View style={styles.dockCopyCollapsed}>
+                <Ionicons name="call" size={14} color="#BBF7D0" />
+                <Text style={styles.kickerCollapsed} numberOfLines={1}>
+                  {collapsedStoreMark(call.storeName)}
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.dockCopy}>
+                <Text style={styles.kicker} numberOfLines={1}>
+                  {call.storeName || 'Incoming'}
+                  {call.queueName ? ` · ${call.queueName}` : ''}
+                </Text>
                 <Text style={styles.caller} numberOfLines={1}>
                   {label}
                 </Text>
-              )}
-            </View>
-            <IncomingActions call={call} compact busy={busy} onAnswer={onAnswer} onReject={onReject} />
+              </View>
+            )}
+            <IncomingActions
+              call={call}
+              compact
+              collapsed={collapsed}
+              busy={busy}
+              onAnswer={onAnswer}
+              onReject={onReject}
+            />
           </View>
         );
       })}
@@ -2080,18 +2150,20 @@ export function PhoneIncomingDock({ collapsed = false }) {
         .filter((row) => row.callId !== activeCall?.id)
         .map((row) => (
         <View key={row.id} style={[styles.dockRow, styles.dockRowAnswered, collapsed && styles.dockRowCollapsed]}>
-          <View style={styles.dockCopy}>
-            <Text style={styles.answeredKicker}>Answered</Text>
-            {collapsed ? null : (
+          {collapsed ? (
+            <Ionicons name="checkmark" size={14} color="#86EFAC" />
+          ) : (
+            <View style={styles.dockCopy}>
+              <Text style={styles.answeredKicker}>Answered</Text>
               <Text style={styles.answeredText} numberOfLines={1}>
                 {row.storeName}
                 {row.label ? ` · ${row.label}` : ''}
               </Text>
-            )}
-          </View>
+            </View>
+          )}
         </View>
       ))}
-      {error && (incoming.length || activeCall) ? (
+      {error && (incoming.length || activeCall) && !collapsed ? (
         <Text style={styles.error} numberOfLines={2}>
           {error}
         </Text>
@@ -2111,6 +2183,7 @@ const styles = StyleSheet.create({
   dockCollapsed: {
     padding: 4,
     alignItems: 'stretch',
+    minWidth: 0,
   },
   dockRow: {
     flexDirection: 'row',
@@ -2121,7 +2194,13 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   dockRowCollapsed: {
+    flexDirection: 'column',
     justifyContent: 'center',
+    alignItems: 'stretch',
+    gap: 6,
+    minHeight: 0,
+    paddingHorizontal: 0,
+    paddingVertical: 2,
   },
   dockRowAnswered: {
     minHeight: 24,
@@ -2158,6 +2237,25 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     gap: 0,
+  },
+  dockCopyCollapsed: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+    minWidth: 0,
+  },
+  kickerCollapsed: {
+    fontFamily,
+    fontSize: 8,
+    fontWeight: '700',
+    color: '#BBF7D0',
+    textTransform: 'uppercase',
+    letterSpacing: 0.2,
+    textAlign: 'center',
+  },
+  clockCollapsed: {
+    fontSize: 10,
+    textAlign: 'center',
   },
   kicker: {
     fontFamily,
@@ -2201,6 +2299,12 @@ const styles = StyleSheet.create({
     gap: 6,
     alignItems: 'center',
   },
+  actionsCollapsed: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 4,
+    width: '100%',
+  },
   action: {
     flex: 1,
     minHeight: 26,
@@ -2220,6 +2324,13 @@ const styles = StyleSheet.create({
     width: 26,
     height: 26,
     paddingHorizontal: 0,
+  },
+  actionCollapsed: {
+    flex: 0,
+    width: '100%',
+    height: 28,
+    flexGrow: 0,
+    flexShrink: 0,
   },
   reject: {
     backgroundColor: '#B91C1C',

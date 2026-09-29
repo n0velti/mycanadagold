@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { BlurView } from 'expo-blur';
 import {
   ActivityIndicator,
   Image,
@@ -26,6 +27,7 @@ import { listTeams, teamMemberName } from '../lib/teams';
 import { posEmployeeId } from '../lib/auth';
 import { fetchAureusEmployee } from '../lib/aureusEmployees';
 import { CANVAS, MOBILE, useIsMobile } from '../lib/mobileUi';
+import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
 import { IOS } from './IosSettings';
 import { formatPhoneNumber } from '../lib/ringcentral';
 import ProfilePhotoModal from './ProfilePhotoModal';
@@ -38,13 +40,14 @@ import { usePhoneCalls } from './PhoneCallProvider';
 import { AvatarRing } from '../lib/clockedIn';
 
 const fontFamily = 'Sohne';
+const titleFontFamily = 'SohneLeicht';
 const BLUE = '#007AFF';
 const GOLD = '#E8C36A';
-const PAGE = MOBILE.bg;
-const CARD = MOBILE.feed;
+const PAGE = CANVAS;
+const CARD = '#fff';
 const LABEL = MOBILE.label;
 const SECONDARY = MOBILE.secondary;
-const HAIRLINE = MOBILE.separator;
+const TAB_INK = '#1a1a1a';
 
 export { profileTargetFromPerson } from '../lib/profileTarget';
 
@@ -109,6 +112,27 @@ function ProfileAvatar({ uri, name, size = 24, style }) {
   );
 }
 
+function ChromeCircle({ onPress, accessibilityLabel, children, style }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={10}
+      style={[styles.chromeCircle, style]}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+    >
+      <BlurView
+        intensity={32}
+        tint="light"
+        style={styles.chromeCircleBlur}
+        {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-bar' } : null)}
+      >
+        {children}
+      </BlurView>
+    </Pressable>
+  );
+}
+
 function DetailRow({ label, value, last, onPress }) {
   const isMobile = useIsMobile();
   const content = (
@@ -168,34 +192,47 @@ function ActionIcon({ icon, label, onPress, disabled, busy }) {
   );
 }
 
-function ContactAction({ icon, label, onPress, disabled, busy }) {
+function ContactAction({ icon, label, onPress, disabled, busy, variant = 'sheet' }) {
   const inactive = disabled || busy;
+  const desk = variant === 'desk';
+  const iconColor = inactive ? '#c7c7cc' : desk ? '#6B5E3A' : BLUE;
   return (
     <Pressable
       onPress={onPress}
       disabled={inactive}
-      style={({ pressed }) => [
+      style={({ hovered, pressed }) => [
         styles.contactAction,
+        desk && styles.contactActionDesk,
         pressed && !inactive && styles.contactActionPressed,
+        hovered && desk && !inactive && styles.contactActionDeskHover,
         inactive && styles.contactActionDisabled,
       ]}
       accessibilityRole="button"
       accessibilityLabel={label}
       accessibilityState={{ disabled: Boolean(inactive) }}
     >
-      {busy ? (
-        <ActivityIndicator size="small" color={BLUE} />
-      ) : (
-        <Ionicons name={icon} size={22} color={inactive ? '#c7c7cc' : BLUE} />
-      )}
-      <Text style={[styles.contactActionLabel, inactive && styles.contactActionLabelDisabled]} numberOfLines={1}>
+      <View style={[styles.contactActionGlyph, desk && styles.contactActionGlyphDesk]}>
+        {busy ? (
+          <ActivityIndicator size="small" color={iconColor} />
+        ) : (
+          <Ionicons name={icon} size={desk ? 18 : 18} color={iconColor} />
+        )}
+      </View>
+      <Text
+        style={[
+          styles.contactActionLabel,
+          desk && styles.contactActionLabelDesk,
+          inactive && styles.contactActionLabelDisabled,
+        ]}
+        numberOfLines={1}
+      >
         {label}
       </Text>
     </Pressable>
   );
 }
 
-function ContactRow({ caption, value, placeholder = 'None', last, onPress, link }) {
+function ContactRow({ caption, value, placeholder = 'None', last, onPress, link, icon }) {
   const empty = !String(value || '').trim();
   const display = empty ? placeholder : value;
   const rowStyle = [styles.contactRow, last && styles.contactRowLast];
@@ -206,13 +243,16 @@ function ContactRow({ caption, value, placeholder = 'None', last, onPress, link 
   ];
   const content = (
     <>
-      <View style={styles.contactRowCopy}>
-        <Text style={styles.contactCaption}>{caption}</Text>
-        <Text style={valueStyle} numberOfLines={3}>
-          {display}
-        </Text>
-      </View>
-      {onPress ? <Ionicons name="chevron-forward" size={18} color="#c7c7cc" /> : null}
+      {icon ? (
+        <View style={styles.contactIcon}>
+          <Ionicons name={icon} size={17} color={empty ? SECONDARY : '#6B5E3A'} />
+        </View>
+      ) : null}
+      <Text style={styles.contactCaption}>{caption}</Text>
+      <Text style={valueStyle} numberOfLines={2}>
+        {display}
+      </Text>
+      {onPress ? <Ionicons name="chevron-forward" size={16} color="#c7c7cc" /> : null}
     </>
   );
 
@@ -340,6 +380,7 @@ export default function ProfileScreen({
   onSettingsClose,
 }) {
   const isMobile = useIsMobile();
+  const tabBarScroll = useMobileTabBarScrollProps();
   const phone = usePhoneCalls();
   const own = session?.profile || null;
   const myId = session?.supabaseUserId || own?.id || '';
@@ -359,6 +400,8 @@ export default function ProfileScreen({
   const [rolePickerOpen, setRolePickerOpen] = useState(false);
   const [teamPickerOpen, setTeamPickerOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [heroHeight, setHeroHeight] = useState(180);
+  const [stageHeight, setStageHeight] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -474,7 +517,7 @@ export default function ProfileScreen({
   const avatarUrl = profile?.avatarUrl || '';
   const profileId = viewingOther ? profile?.id || person?.profileId || '' : myId;
   const accessLabel = viewingOther ? categoryLabel(profile) : categoryLabel(profile);
-  const avatarSize = isMobile ? 100 : 152;
+  const avatarSize = isMobile ? 108 : 132;
   const canEdit = !viewingOther;
   const canSwitchRole = canEdit && canSwitchAppRoles(profile);
   const switchableRoles = canSwitchRole ? selectableAppRoles(profile) : [];
@@ -483,16 +526,6 @@ export default function ProfileScreen({
   const canMail = Boolean(email);
   const phoneLabel = phoneNumber ? formatPhoneNumber(phoneNumber) : '';
   const jobTitle = profile?.employeeType || profile?.role || '';
-  const teamLabel = profile?.teamName
-    ? profile.isTeamIntake
-      ? `${profile.teamName} · Intake`
-      : profile.teamName
-    : profile?.teamId
-      ? profile.isTeamIntake
-        ? 'Assigned · Intake'
-        : 'Assigned'
-      : '';
-
   const accountRows = useMemo(() => {
     if (viewingOther) return [];
 
@@ -619,59 +652,18 @@ export default function ProfileScreen({
     setActionError('Could not open Mail.');
   };
 
-  const subtitle = viewingOther
-    ? [locationName, profile?.employeeType, profile?.teamName].filter(Boolean).join(' · ')
-    : '';
+  const subtitle = [jobTitle, locationName].filter(Boolean).join(' · ');
   const linkedSystems = viewingOther ? [] : Object.values(session?.linked || {});
   const openOrgChart = () => {
     setActionError('');
     setOrgOpen(true);
   };
 
-  const mobileHero = (
-    <View style={styles.mobileHero}>
-      <View style={styles.avatarButton}>
-        <Pressable
-          onPress={handleViewAvatar}
-          disabled={avatarBusy}
-          style={styles.avatarTap}
-          accessibilityRole="button"
-          accessibilityLabel={avatarUrl ? `View ${name || 'profile'} photo` : 'View photo'}
-        >
-          <ProfileAvatar uri={avatarUrl} name={name} size={avatarSize} style={styles.avatar} />
-        </Pressable>
-        {canEdit ? (
-          <Pressable
-            onPress={handlePickAvatar}
-            disabled={avatarBusy}
-            style={styles.avatarEditMobile}
-            accessibilityRole="button"
-            accessibilityLabel={avatarUrl ? 'Edit profile photo' : 'Add a profile photo'}
-            hitSlop={4}
-          >
-            {avatarBusy ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <Ionicons name="camera" size={13} color="#fff" />
-            )}
-          </Pressable>
-        ) : null}
-      </View>
-      <Text style={styles.mobileName} numberOfLines={2}>
-        {name}
-      </Text>
-      {jobTitle ? (
-        <Text style={styles.mobileJob} numberOfLines={2}>
-          {jobTitle}
-        </Text>
-      ) : null}
-    </View>
-  );
-
-  const mobileActions = (
-    <View style={styles.contactActions}>
+  const profileActions = (variant = 'sheet') => (
+    <View style={[styles.contactActions, variant === 'desk' && styles.contactActionsDesk]}>
       {viewingOther ? (
         <ContactAction
+          variant={variant}
           icon="chatbubble"
           label="message"
           onPress={() => onMessage?.(profileId)}
@@ -679,6 +671,7 @@ export default function ProfileScreen({
         />
       ) : null}
       <ContactAction
+        variant={variant}
         icon="call"
         label="call"
         onPress={handlePhoneCall}
@@ -686,6 +679,7 @@ export default function ProfileScreen({
         busy={callBusy}
       />
       <ContactAction
+        variant={variant}
         icon="videocam"
         label="video"
         onPress={() => void handleVideoCall()}
@@ -693,14 +687,13 @@ export default function ProfileScreen({
         busy={callBusy}
       />
       <ContactAction
+        variant={variant}
         icon="mail"
         label="mail"
         onPress={() => void handleMail()}
         disabled={!canMail}
       />
-      {viewingOther ? null : (
-        <ContactAction icon="people" label="org" onPress={openOrgChart} />
-      )}
+      <ContactAction variant={variant} icon="people" label="org" onPress={openOrgChart} />
     </View>
   );
 
@@ -708,14 +701,16 @@ export default function ProfileScreen({
     <>
       <Group style={styles.mobileGroupSpaced}>
         <ContactRow
-          caption="phone"
+          caption="Phone"
+          icon="call-outline"
           value={phoneLabel}
           placeholder={canPhone ? 'No number on file' : 'Phone isn’t available'}
           onPress={canCall ? handlePhoneCall : undefined}
           link={canCall}
         />
         <ContactRow
-          caption="email"
+          caption="Email"
+          icon="mail-outline"
           value={email}
           placeholder="No email on file"
           last
@@ -728,36 +723,20 @@ export default function ProfileScreen({
         {[
           {
             key: 'location',
-            caption: 'location',
+            caption: 'Location',
+            icon: 'storefront-outline',
             value: locationName,
             placeholder: canEdit ? 'Not set in Aureus' : 'None',
             onPress: canEdit ? () => setLocationPickerOpen(true) : undefined,
           },
-          {
-            key: 'team',
-            caption: 'team',
-            value: teamLabel,
-            placeholder: 'Not on a team',
-            onPress: canEdit ? () => setTeamPickerOpen(true) : openOrgChart,
-          },
-          jobTitle ? { key: 'title', caption: 'title', value: jobTitle } : null,
-          profile?.role && profile.role !== profile.employeeType
-            ? { key: 'role', caption: 'Aureus role', value: profile.role }
-            : null,
-          accessLabel
-            ? {
-                key: 'category',
-                caption: canSwitchRole ? 'role' : 'category',
-                value: accessLabel,
-                onPress: canSwitchRole ? () => setRolePickerOpen(true) : undefined,
-              }
-            : null,
+          jobTitle ? { key: 'title', caption: 'Title', icon: 'briefcase-outline', value: jobTitle } : null,
         ]
           .filter(Boolean)
           .map((row, index, rows) => (
             <ContactRow
               key={row.key}
               caption={row.caption}
+              icon={row.icon}
               value={row.value}
               placeholder={row.placeholder}
               onPress={row.onPress}
@@ -771,46 +750,12 @@ export default function ProfileScreen({
 
   const mobileBody = (
     <>
-      {viewingOther ? (
-        <View style={styles.mobileNav}>
-          <Pressable
-            onPress={onBack}
-            hitSlop={8}
-            style={styles.mobileNavSide}
-            accessibilityRole="button"
-            accessibilityLabel="Back"
-          >
-            <Ionicons name="chevron-back" size={28} color={BLUE} />
-          </Pressable>
-          <View style={styles.mobileNavSide} />
-        </View>
-      ) : null}
-
-      {mobileHero}
-      {mobileActions}
-
       {actionError ? <Text style={styles.mobileError}>{actionError}</Text> : null}
       {avatarError ? <Text style={styles.mobileError}>{avatarError}</Text> : null}
 
       {infoCards}
 
       <ProfileNotesTable profileId={profileId} myId={myId} />
-
-      {linkedSystems.length > 0 ? (
-        <>
-          <GroupLabel title="Linked POS" />
-          <Group>
-            {linkedSystems.map((linked, index) => (
-              <ContactRow
-                key={linked.key}
-                caption={linked.label}
-                value={linked.token ? 'Connected' : linked.error || 'Not connected'}
-                last={index === linkedSystems.length - 1}
-              />
-            ))}
-          </Group>
-        </>
-      ) : null}
 
       {canEdit ? (
         <Group style={styles.logoutGroupMobile}>
@@ -875,80 +820,6 @@ export default function ProfileScreen({
     </>
   ) : (
     <>
-      <View style={styles.heroCard}>
-        <View style={styles.avatarButton}>
-          <Pressable
-            onPress={handleViewAvatar}
-            disabled={avatarBusy}
-            style={styles.avatarTap}
-            accessibilityRole="button"
-            accessibilityLabel={avatarUrl ? `View ${name || 'profile'} photo` : 'View photo'}
-          >
-            <ProfileAvatar uri={avatarUrl} name={name} size={avatarSize} style={styles.avatar} />
-          </Pressable>
-          {canEdit ? (
-            <Pressable
-              onPress={handlePickAvatar}
-              disabled={avatarBusy}
-              style={styles.avatarEdit}
-              accessibilityRole="button"
-              accessibilityLabel={avatarUrl ? 'Edit profile photo' : 'Add a profile photo'}
-              hitSlop={4}
-            >
-              {avatarBusy ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Ionicons name="pencil" size={14} color="#fff" />
-              )}
-            </Pressable>
-          ) : null}
-        </View>
-        <Text style={styles.heroCardName} numberOfLines={2}>
-          {name}
-        </Text>
-        {jobTitle ? (
-          <Text style={styles.heroCardJob} numberOfLines={2}>
-            {jobTitle}
-          </Text>
-        ) : null}
-        {subtitle ? <Text style={styles.heroCardMeta}>{subtitle}</Text> : null}
-      </View>
-
-      <View style={styles.contactActions}>
-        {viewingOther ? (
-          <ContactAction
-            icon="chatbubble"
-            label="message"
-            onPress={() => onMessage?.(profileId)}
-            disabled={!messageEnabled}
-          />
-        ) : null}
-        <ContactAction
-          icon="call"
-          label="call"
-          onPress={handlePhoneCall}
-          disabled={!canPhone}
-          busy={callBusy}
-        />
-        <ContactAction
-          icon="videocam"
-          label="video"
-          onPress={() => void handleVideoCall()}
-          disabled={!canPhone}
-          busy={callBusy}
-        />
-        <ContactAction
-          icon="mail"
-          label="mail"
-          onPress={() => void handleMail()}
-          disabled={!canMail}
-        />
-        <ContactAction icon="people" label="org" onPress={openOrgChart} />
-        {canEdit ? (
-          <ContactAction icon="settings" label="settings" onPress={() => setSettingsOpen(true)} />
-        ) : null}
-      </View>
-
       {actionError ? <Text style={styles.error}>{actionError}</Text> : null}
       {avatarError ? <Text style={styles.error}>{avatarError}</Text> : null}
       {infoCards}
@@ -961,6 +832,7 @@ export default function ProfileScreen({
               <ContactRow
                 key={linked.key}
                 caption={linked.label}
+                icon="link-outline"
                 value={linked.token ? 'Connected' : linked.error || 'Not connected'}
                 last={index === linkedSystems.length - 1}
               />
@@ -983,62 +855,322 @@ export default function ProfileScreen({
     </>
   );
 
-  return (
-    <View style={[styles.screen, isMobile && (settingsOpen ? styles.screenMobileSettings : styles.screenMobile)]}>
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={[
-          styles.scrollContent,
-          isMobile && styles.scrollContentMobile,
-          isMobile && settingsOpen && styles.scrollContentMobileSettings,
+  const goBack = () => {
+    if (settingsOpen) {
+      setSettingsOpen(false);
+      onSettingsClose?.();
+      return;
+    }
+    onBack?.();
+  };
+
+  const topLabel = settingsOpen ? 'Settings' : viewingOther ? 'Staff' : 'Profile';
+  const heroTitle = settingsOpen ? 'Settings' : name || 'Profile';
+  const showBack = viewingOther || settingsOpen;
+
+  const profileHero = (
+    <View style={styles.heroShell}>
+      <View pointerEvents="none" style={styles.heroLift} />
+      <View
+        style={[
+          styles.heroInset,
+          !isMobile && styles.heroInsetDesktop,
+          !settingsOpen && styles.heroInsetProfile,
+          !settingsOpen && !isMobile && styles.heroInsetProfileDesktop,
         ]}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
       >
-        {isMobile ? (
-          mobileBody
-        ) : (
-          <View style={styles.section}>
-            {viewingOther ? (
-              <View style={styles.topBar}>
-                <Pressable
-                  onPress={onBack}
-                  hitSlop={8}
-                  style={styles.backButton}
-                  accessibilityRole="button"
-                  accessibilityLabel="Back"
-                >
-                  <Ionicons name="chevron-back" size={26} color={BLUE} />
-                </Pressable>
-                <Text style={styles.topTitle} numberOfLines={1}>
-                  {name}
-                </Text>
-                <View style={styles.topSide} />
+        <View
+          style={[
+            styles.heroLead,
+            !isMobile && styles.heroLeadDesktop,
+            !settingsOpen && styles.heroLeadProfile,
+          ]}
+        >
+          {settingsOpen ? null : (
+            <Pressable
+              onPress={handleViewAvatar}
+              disabled={avatarBusy}
+              style={styles.heroAvatarTap}
+              accessibilityRole="button"
+              accessibilityLabel={avatarUrl ? `View ${name || 'profile'} photo` : 'View photo'}
+            >
+              <View style={styles.heroPortrait}>
+                <View pointerEvents="none" style={styles.heroPortraitGlow} />
+                <View style={styles.heroPortraitBezel}>
+                  <ProfileAvatar uri={avatarUrl} name={name} size={avatarSize} style={styles.avatar} />
+                </View>
               </View>
-            ) : settingsOpen ? (
-              <View style={styles.topBar}>
+              {canEdit ? (
                 <Pressable
-                  onPress={() => {
-                    setSettingsOpen(false);
-                    onSettingsClose?.();
-                  }}
-                  hitSlop={8}
-                  style={styles.backButton}
+                  onPress={handlePickAvatar}
+                  disabled={avatarBusy}
+                  style={[styles.heroAvatarEdit, isMobile && styles.heroAvatarEditLarge]}
                   accessibilityRole="button"
-                  accessibilityLabel="Back to profile"
+                  accessibilityLabel={avatarUrl ? 'Edit profile photo' : 'Add a profile photo'}
+                  hitSlop={4}
                 >
-                  <Ionicons name="chevron-back" size={26} color={BLUE} />
+                  {avatarBusy ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Ionicons name="pencil" size={isMobile ? 13 : 14} color="#fff" />
+                  )}
                 </Pressable>
-                <Text style={styles.topTitle} numberOfLines={1}>
-                  Settings
-                </Text>
-                <View style={styles.topSide} />
-              </View>
+              ) : null}
+            </Pressable>
+          )}
+          <View style={[styles.heroCopyBlock, !settingsOpen && isMobile && styles.heroCopyBlockCenter]}>
+            <Text
+              style={[
+                styles.heroAmount,
+                !isMobile && styles.heroAmountDesktop,
+                !settingsOpen && styles.heroAmountProfile,
+                !settingsOpen && !isMobile && styles.heroAmountProfileDesktop,
+              ]}
+              numberOfLines={2}
+            >
+              {heroTitle}
+            </Text>
+            {!settingsOpen && subtitle ? (
+              <Text style={styles.heroSubtitle} numberOfLines={2}>
+                {subtitle}
+              </Text>
             ) : null}
-            {desktopBody}
           </View>
+        </View>
+        {settingsOpen ? (
+          <View style={[styles.heroStats, !isMobile && styles.heroStatsDesktop, styles.heroStatsBare]}>
+            <View style={styles.heroStat}>
+              <Text style={styles.heroStatValue}>{accountRows.length}</Text>
+              <Text style={styles.heroStatLabel}>Account</Text>
+            </View>
+            <View style={styles.heroStatDivider} />
+            <View style={styles.heroStat}>
+              <Text style={styles.heroStatValue}>{linkedSystems.length}</Text>
+              <Text style={styles.heroStatLabel}>Linked POS</Text>
+            </View>
+          </View>
+        ) : (
+          profileActions('sheet')
         )}
-      </ScrollView>
+      </View>
+    </View>
+  );
+
+  const desktopDetails = (
+    <View style={[styles.group, styles.groupIos]}>
+      {[
+        {
+          key: 'phone',
+          label: 'Phone',
+          value: phoneLabel || (canPhone ? 'No number on file' : 'Phone isn’t available'),
+          onPress: canCall ? handlePhoneCall : undefined,
+        },
+        {
+          key: 'email',
+          label: 'Email',
+          value: email || 'No email on file',
+          onPress: canMail ? () => void handleMail() : undefined,
+        },
+        {
+          key: 'location',
+          label: 'Location',
+          value: locationName || (canEdit ? 'Not set in Aureus' : 'None'),
+          onPress: canEdit ? () => setLocationPickerOpen(true) : undefined,
+        },
+        jobTitle ? { key: 'title', label: 'Title', value: jobTitle } : null,
+      ]
+        .filter(Boolean)
+        .map((row, index, rows) => (
+          <DetailRow
+            key={row.key}
+            label={row.label}
+            value={row.value}
+            onPress={row.onPress}
+            last={index === rows.length - 1}
+          />
+        ))}
+    </View>
+  );
+
+  const desktopSheet = settingsOpen && canEdit ? (
+    desktopBody
+  ) : (
+    <>
+      {actionError ? <Text style={styles.error}>{actionError}</Text> : null}
+      {avatarError ? <Text style={styles.error}>{avatarError}</Text> : null}
+      <View style={styles.deskStack}>
+        {desktopDetails}
+        <ProfileNotesTable profileId={profileId} myId={myId} />
+        {canEdit ? (
+          <View style={[styles.group, styles.logoutGroup, styles.groupIos]}>
+            <Pressable
+              onPress={onLogout}
+              style={({ hovered, pressed }) => [
+                styles.logoutRow,
+                (hovered || pressed) && styles.rowHovered,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Log out"
+            >
+              <Text style={styles.logoutText}>Log Out</Text>
+            </Pressable>
+          </View>
+        ) : null}
+      </View>
+    </>
+  );
+
+  const mobileSettings = (
+    <>
+      {accountRows.length > 0 ? (
+        <Group>
+          {accountRows.map((row, index) => (
+            <ContactRow
+              key={row.key}
+              caption={row.label}
+              value={row.value}
+              onPress={row.onPress}
+              link={Boolean(row.onPress)}
+              last={index === accountRows.length - 1}
+            />
+          ))}
+        </Group>
+      ) : null}
+      {linkedSystems.length > 0 ? (
+        <>
+          <GroupLabel title="Linked POS" />
+          <Group>
+            {linkedSystems.map((linked, index) => (
+              <ContactRow
+                key={linked.key}
+                caption={linked.label}
+                value={linked.token ? 'Connected' : linked.error || 'Not connected'}
+                last={index === linkedSystems.length - 1}
+              />
+            ))}
+          </Group>
+        </>
+      ) : null}
+      {canEdit ? (
+        <Group style={styles.logoutGroupMobile}>
+          <Pressable
+            onPress={onLogout}
+            style={({ pressed }) => [styles.logoutRow, pressed && styles.contactRowPressed]}
+            accessibilityRole="button"
+            accessibilityLabel="Log out"
+          >
+            <Text style={styles.logoutText}>Log Out</Text>
+          </Pressable>
+        </Group>
+      ) : null}
+    </>
+  );
+
+  return (
+    <View style={[styles.screen, isMobile && styles.screenMobile]}>
+      {!isMobile ? (
+        <View pointerEvents="box-none" style={styles.chromeRow}>
+          <View style={styles.chromeLead}>
+            {showBack ? (
+              <Pressable
+                onPress={goBack}
+                hitSlop={8}
+                style={styles.chromeBack}
+                accessibilityRole="button"
+                accessibilityLabel="Back"
+              >
+                <Ionicons name="chevron-back" size={22} color="#6B5E3A" />
+              </Pressable>
+            ) : null}
+            <Text style={styles.chromeTitle} numberOfLines={1}>
+              {topLabel}
+            </Text>
+          </View>
+          {canEdit && !settingsOpen && !viewingOther ? (
+            <Pressable
+              onPress={() => setSettingsOpen(true)}
+              style={styles.chromeChip}
+              accessibilityRole="button"
+              accessibilityLabel="Settings"
+            >
+              <BlurView
+                intensity={32}
+                tint="light"
+                style={styles.chromeChipBlur}
+                {...(Platform.OS === 'web' ? { className: 'cgold-home-chip-blur' } : null)}
+              >
+                <Ionicons name="settings-outline" size={16} color={TAB_INK} />
+                <Text style={styles.chromeChipText}>Settings</Text>
+              </BlurView>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+      <View
+        style={styles.stage}
+        onLayout={(event) => {
+          const height = event.nativeEvent.layout.height;
+          setStageHeight((current) => (Math.abs(current - height) < 0.5 ? current : height));
+        }}
+      >
+        <View
+          pointerEvents="box-none"
+          style={[styles.pinnedTop, !isMobile && styles.pinnedTopDesktop]}
+          onLayout={(event) => {
+            const height = event.nativeEvent.layout.height;
+            setHeroHeight((current) => (Math.abs(current - height) < 0.5 ? current : height));
+          }}
+        >
+          {isMobile ? (
+            <Text style={styles.topDate} numberOfLines={1}>
+              {topLabel}
+            </Text>
+          ) : null}
+          {profileHero}
+        </View>
+        <ScrollView
+          pointerEvents="box-none"
+          style={styles.overlayScroll}
+          contentContainerStyle={{
+            flexGrow: 1,
+            paddingTop: 0,
+            paddingBottom: 0,
+          }}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          bounces={false}
+          overScrollMode="never"
+          {...(isMobile ? tabBarScroll : null)}
+          {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll' } : null)}
+        >
+          <View pointerEvents="none" style={{ height: heroHeight + (isMobile ? 10 : 18) }} />
+          <View
+            pointerEvents="auto"
+            style={[
+              styles.sheet,
+              !isMobile && styles.sheetDesktop,
+              {
+                paddingBottom: isMobile ? mobileTabBarReserve() + 24 : 32,
+                ...(stageHeight > 0 ? { minHeight: stageHeight } : null),
+              },
+            ]}
+          >
+            {isMobile ? (settingsOpen && canEdit ? mobileSettings : mobileBody) : desktopSheet}
+          </View>
+        </ScrollView>
+      </View>
+      {isMobile && showBack ? (
+        <ChromeCircle onPress={goBack} accessibilityLabel="Back" style={styles.backDock}>
+          <Ionicons name="chevron-back" size={22} color={TAB_INK} />
+        </ChromeCircle>
+      ) : null}
+      {isMobile && canEdit && !viewingOther && !settingsOpen ? (
+        <View pointerEvents="box-none" style={styles.filterDock}>
+          <ChromeCircle onPress={() => setSettingsOpen(true)} accessibilityLabel="Settings">
+            <Ionicons name="settings-outline" size={20} color={TAB_INK} />
+          </ChromeCircle>
+        </View>
+      ) : null}
 
       <OrgChartModal
         visible={orgOpen}
@@ -1129,18 +1261,249 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     minHeight: 0,
-    backgroundColor: PAGE,
+    backgroundColor: CANVAS,
   },
   screenMobile: {
     backgroundColor: CANVAS,
   },
-  screenMobileSettings: {
-    backgroundColor: CANVAS,
-  },
-  scroll: {
+  mobileScroll: {
     flex: 1,
     minHeight: 0,
+  },
+  mobileScrollContent: {
+    paddingTop: 56,
+    paddingHorizontal: 16,
+    paddingBottom: mobileTabBarReserve() + 28,
+  },
+  deskScroll: {
+    flex: 1,
+    minHeight: 0,
+  },
+  deskScrollContent: {
+    flexGrow: 1,
+    paddingBottom: 48,
+  },
+  deskPage: {
     width: '100%',
+    maxWidth: 1120,
+    alignSelf: 'center',
+    paddingHorizontal: 32,
+    gap: 24,
+  },
+  deskCard: {
+    backgroundColor: CARD,
+    borderRadius: 20,
+    paddingVertical: 28,
+    paddingHorizontal: 28,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(18,16,12,0.08)',
+    ...Platform.select({
+      web: {
+        boxShadow: '0 10px 28px rgba(18,16,12,0.08), 0 1px 3px rgba(18,16,12,0.06)',
+      },
+      default: {
+        shadowColor: '#12100C',
+        shadowOpacity: 0.08,
+        shadowRadius: 16,
+        shadowOffset: { width: 0, height: 8 },
+        elevation: 3,
+      },
+    }),
+  },
+  deskIdentity: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 24,
+  },
+  deskAvatarTap: {
+    position: 'relative',
+    flexShrink: 0,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  deskAvatarEdit: {
+    position: 'absolute',
+    right: 2,
+    bottom: 2,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#1d1d1f',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: CARD,
+    zIndex: 2,
+  },
+  deskCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 6,
+  },
+  deskName: {
+    fontFamily,
+    fontSize: 32,
+    fontWeight: '600',
+    color: LABEL,
+    letterSpacing: -0.6,
+  },
+  deskSubtitle: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '500',
+    color: SECONDARY,
+    letterSpacing: -0.2,
+  },
+  deskMeta: {
+    fontFamily,
+    fontSize: 14,
+    color: SECONDARY,
+    letterSpacing: -0.1,
+  },
+  deskStack: {
+    width: '100%',
+    minWidth: 0,
+    gap: 16,
+  },
+  deskColumns: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    flexWrap: 'wrap',
+    gap: 24,
+  },
+  deskCol: {
+    flexGrow: 1,
+    flexBasis: 320,
+    minWidth: 280,
+    maxWidth: 440,
+    gap: 16,
+  },
+  deskColWide: {
+    flexGrow: 2,
+    flexBasis: 420,
+    minWidth: 280,
+  },
+  deskSettings: {
+    gap: 16,
+    maxWidth: 640,
+  },
+  chromeRow: {
+    zIndex: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+    minHeight: 44,
+    gap: 12,
+    paddingHorizontal: 32,
+    paddingTop: 16,
+    paddingBottom: 12,
+    backgroundColor: 'transparent',
+  },
+  chromeLead: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  chromeBack: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: -8,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  chromeTitle: {
+    flexShrink: 1,
+    minWidth: 0,
+    fontFamily,
+    fontSize: 22,
+    fontWeight: '600',
+    color: '#6B5E3A',
+    letterSpacing: -0.3,
+  },
+  chromeChip: {
+    height: 40,
+    borderRadius: 20,
+    overflow: 'hidden',
+    ...Platform.select({
+      web: {
+        cursor: 'pointer',
+        boxShadow: '0 10px 28px rgba(0,0,0,0.14), 0 1px 3px rgba(0,0,0,0.08)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.16,
+        shadowRadius: 18,
+        elevation: 12,
+      },
+    }),
+  },
+  chromeChipBlur: {
+    height: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(0,0,0,0.08)',
+    backgroundColor: 'rgba(255,255,255,0.56)',
+  },
+  chromeChipText: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: TAB_INK,
+  },
+  stage: {
+    flex: 1,
+    minHeight: 0,
+    position: 'relative',
+  },
+  pinnedTop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 1,
+    elevation: 0,
+    paddingHorizontal: 16,
+    paddingTop: 6,
+    paddingBottom: 8,
+  },
+  pinnedTopDesktop: {
+    paddingHorizontal: 32,
+    paddingTop: 0,
+    paddingBottom: 4,
+  },
+  topDate: {
+    alignSelf: 'stretch',
+    minHeight: 44,
+    textAlign: 'center',
+    textAlignVertical: 'center',
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#6B5E3A',
+    letterSpacing: 0.2,
+    lineHeight: 44,
+    marginBottom: 10,
+  },
+  overlayScroll: {
+    zIndex: 4,
+    flex: 1,
+    minHeight: 0,
+    backgroundColor: 'transparent',
     ...Platform.select({
       web: {
         overflowY: 'auto',
@@ -1150,18 +1513,290 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  scrollContent: {
-    paddingBottom: 48,
-    paddingTop: 20,
-    paddingHorizontal: 32,
-  },
-  scrollContentMobile: {
-    paddingTop: 4,
+  sheet: {
+    zIndex: 2,
+    flexGrow: 1,
+    backgroundColor: '#F3F1EA',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    overflow: 'visible',
     paddingHorizontal: 16,
-    paddingBottom: 48,
+    paddingTop: 18,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(0,0,0,0.08)',
+    ...Platform.select({
+      web: {
+        boxShadow: '0 -8px 24px rgba(0,0,0,0.12), 0 -1px 0 rgba(255,255,255,0.9)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOpacity: 0.14,
+        shadowRadius: 16,
+        shadowOffset: { width: 0, height: -6 },
+        elevation: 8,
+      },
+    }),
   },
-  scrollContentMobileSettings: {
-    paddingTop: 4,
+  sheetDesktop: {
+    paddingHorizontal: 32,
+    paddingTop: 24,
+    width: '100%',
+    minWidth: 0,
+    alignSelf: 'stretch',
+    overflow: 'visible',
+  },
+  heroShell: {
+    alignSelf: 'stretch',
+    position: 'relative',
+  },
+  heroLift: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 20,
+    ...Platform.select({
+      web: {
+        boxShadow: '0 1px 2px rgba(18,16,12,0.06), 0 10px 28px rgba(18,16,12,0.14)',
+      },
+      default: {
+        shadowColor: '#12100C',
+        shadowOpacity: 0.16,
+        shadowRadius: 18,
+        shadowOffset: { width: 0, height: 8 },
+        elevation: 0,
+      },
+    }),
+  },
+  heroInset: {
+    alignSelf: 'stretch',
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 14,
+    borderRadius: 20,
+    backgroundColor: '#1F1E1B',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(212,175,55,0.32)',
+    ...Platform.select({
+      web: {
+        boxShadow:
+          'inset 0 1px 0 rgba(255,236,180,0.16), inset 0 -1px 0 rgba(0,0,0,0.38), 0 0 0 0.5px rgba(18,16,12,0.12)',
+      },
+      default: {},
+    }),
+  },
+  heroInsetDesktop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 36,
+    paddingHorizontal: 28,
+    paddingVertical: 24,
+  },
+  heroInsetProfile: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 18,
+    paddingTop: 22,
+    paddingBottom: 18,
+  },
+  heroInsetProfileDesktop: {
+    paddingHorizontal: 32,
+    paddingVertical: 28,
+    gap: 22,
+  },
+  heroLead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    minWidth: 0,
+  },
+  heroLeadDesktop: {
+    flex: 1.1,
+  },
+  heroLeadProfile: {
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: 14,
+  },
+  heroCopyBlock: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
+  },
+  heroCopyBlockCenter: {
+    alignItems: 'center',
+    flex: 0,
+    width: '100%',
+  },
+  heroPortrait: {
+    position: 'relative',
+    flexShrink: 0,
+  },
+  heroPortraitGlow: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 999,
+    ...Platform.select({
+      web: {
+        boxShadow:
+          '0 0 0 1px rgba(18,16,12,0.45), 0 10px 22px rgba(0,0,0,0.32), 0 0 24px rgba(232,195,106,0.16)',
+      },
+      default: {
+        shadowColor: GOLD,
+        shadowOpacity: 0.28,
+        shadowRadius: 12,
+        shadowOffset: { width: 0, height: 4 },
+      },
+    }),
+  },
+  heroPortraitBezel: {
+    borderRadius: 999,
+    padding: 3,
+    borderWidth: 2,
+    borderColor: GOLD,
+    backgroundColor: '#161513',
+    ...Platform.select({
+      web: {
+        boxShadow:
+          'inset 0 1px 0 rgba(255,236,180,0.42), inset 0 -1px 0 rgba(0,0,0,0.45), 0 0 0 1px rgba(232,195,106,0.22)',
+      },
+      default: {},
+    }),
+  },
+  heroAvatarTap: {
+    position: 'relative',
+    flexShrink: 0,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  heroAvatarEdit: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#1d1d1f',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#1F1E1B',
+    zIndex: 2,
+  },
+  heroAvatarEditLarge: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    right: 2,
+    bottom: 2,
+  },
+  heroAmount: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: titleFontFamily,
+    fontSize: 34,
+    lineHeight: 40,
+    fontWeight: '400',
+    color: '#F6F1E6',
+    letterSpacing: -1,
+  },
+  heroAmountDesktop: {
+    fontSize: 44,
+    lineHeight: 48,
+  },
+  heroAmountProfile: {
+    flex: 0,
+    textAlign: 'center',
+    fontSize: 32,
+    lineHeight: 36,
+  },
+  heroAmountProfileDesktop: {
+    fontSize: 42,
+    lineHeight: 46,
+  },
+  heroSubtitle: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#C4A35A',
+    letterSpacing: 0.1,
+    textAlign: 'center',
+  },
+  heroStats: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: 14,
+    backgroundColor: 'rgba(0,0,0,0.28)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(212,175,55,0.14)',
+  },
+  heroStatsDesktop: {
+    flex: 1,
+    marginTop: 0,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+  },
+  heroStatsBare: {
+    marginTop: 16,
+  },
+  heroStat: {
+    flex: 1,
+    minWidth: 0,
+    gap: 1,
+  },
+  heroStatDivider: {
+    width: StyleSheet.hairlineWidth,
+    height: 26,
+    marginHorizontal: 10,
+    backgroundColor: 'rgba(244,228,180,0.16)',
+  },
+  heroStatValue: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#F6F1E6',
+    letterSpacing: -0.28,
+  },
+  heroStatLabel: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#C4A35A',
+    letterSpacing: 0.2,
+  },
+  chromeCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    overflow: 'hidden',
+    zIndex: 24,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  chromeCircleBlur: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 22,
+    overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(0,0,0,0.08)',
+    backgroundColor: 'rgba(255,255,255,0.56)',
+  },
+  backDock: {
+    position: 'absolute',
+    top: 6,
+    left: 22,
+    zIndex: 24,
+  },
+  filterDock: {
+    position: 'absolute',
+    top: 6,
+    right: 22,
+    zIndex: 24,
   },
   section: {
     width: '100%',
@@ -1494,12 +2129,14 @@ const styles = StyleSheet.create({
   },
   group: {
     backgroundColor: CARD,
-    borderRadius: 12,
+    borderRadius: 16,
     overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(18,16,12,0.08)',
   },
   groupIos: {
     backgroundColor: CARD,
-    borderRadius: 10,
+    borderRadius: 16,
   },
   heroCard: {
     alignItems: 'center',
@@ -1575,12 +2212,12 @@ const styles = StyleSheet.create({
   detailRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 44,
-    paddingVertical: 11,
+    minHeight: 52,
+    paddingVertical: 13,
     paddingHorizontal: 16,
     gap: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e5e5ea',
+    borderBottomColor: 'rgba(18,16,12,0.08)',
   },
   detailRowTappable: {
     ...Platform.select({
@@ -1686,6 +2323,13 @@ const styles = StyleSheet.create({
     gap: 10,
     marginBottom: 8,
   },
+  contactActionsDesk: {
+    flexShrink: 0,
+    alignSelf: 'stretch',
+    marginTop: 22,
+    marginBottom: 0,
+    gap: 8,
+  },
   contactAction: {
     flex: 1,
     minHeight: 62,
@@ -1701,11 +2345,35 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
+  contactActionDesk: {
+    flex: 0,
+    width: 80,
+    minHeight: 72,
+    borderRadius: 14,
+    backgroundColor: '#F6F3EA',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(18,16,12,0.06)',
+  },
   contactActionPressed: {
     backgroundColor: '#e5e5ea',
   },
+  contactActionDeskHover: {
+    backgroundColor: '#EFE8D8',
+  },
   contactActionDisabled: {
     opacity: 0.45,
+  },
+  contactActionGlyph: {
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  contactActionGlyphDesk: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(232,195,106,0.16)',
   },
   contactActionLabel: {
     fontFamily,
@@ -1713,9 +2381,17 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: BLUE,
     letterSpacing: -0.1,
+    textTransform: 'capitalize',
+  },
+  contactActionLabelDesk: {
+    color: '#6B5E3A',
+    fontWeight: '600',
   },
   contactActionLabelDisabled: {
     color: SECONDARY,
+  },
+  contactActionLabelHeroDisabled: {
+    color: 'rgba(244,228,180,0.35)',
   },
   mobileError: {
     fontFamily,
@@ -1730,65 +2406,79 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
+    paddingHorizontal: 6,
     paddingTop: 22,
-    paddingBottom: 7,
+    paddingBottom: 8,
   },
   groupLabel: {
     fontFamily,
-    fontSize: 13,
-    fontWeight: '400',
-    color: SECONDARY,
-    letterSpacing: -0.08,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#8A7A52',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
   },
   mobileGroup: {
     backgroundColor: CARD,
-    borderRadius: 10,
+    borderRadius: 16,
     overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(18,16,12,0.08)',
   },
   mobileGroupSpaced: {
-    marginTop: 20,
+    marginTop: 14,
   },
   contactRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 54,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    gap: 10,
+    minHeight: 56,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    gap: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
+    borderBottomColor: 'rgba(18,16,12,0.08)',
   },
   contactRowLast: {
     borderBottomWidth: 0,
   },
   contactRowPressed: {
-    backgroundColor: '#e5e5ea',
+    backgroundColor: '#F6F3EA',
   },
-  contactRowCopy: {
-    flex: 1,
-    minWidth: 0,
-    gap: 1,
+  contactIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: '#F6F3EA',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   contactCaption: {
     fontFamily,
-    fontSize: 12,
-    color: SECONDARY,
-    letterSpacing: -0.08,
+    width: 86,
+    flexShrink: 0,
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#6B5E3A',
+    letterSpacing: -0.1,
   },
   contactValue: {
+    flex: 1,
+    minWidth: 0,
     fontFamily,
-    fontSize: 17,
+    fontSize: 16,
+    fontWeight: '500',
     color: LABEL,
-    letterSpacing: -0.3,
+    letterSpacing: -0.25,
+    textAlign: 'right',
   },
   contactValueEmpty: {
     color: SECONDARY,
+    fontWeight: '400',
   },
   contactValueLink: {
     color: BLUE,
   },
   logoutGroupMobile: {
-    marginTop: 28,
+    marginTop: 18,
   },
 });

@@ -873,6 +873,156 @@ export function GroupRow({ label, value, valueTone, last, onPress, children }) {
   );
 }
 
+/** Dark gold hero used on Home and store details. */
+export function ChromeHero({ value, stats, wide = false, onPress, accessibilityLabel }) {
+  const isMobile = useIsMobile();
+  const body = (
+    <>
+      <Text
+        style={[styles.chromeHeroAmount, (wide || !isMobile) && styles.chromeHeroAmountWide]}
+        numberOfLines={1}
+        adjustsFontSizeToFit
+      >
+        {value}
+      </Text>
+      {stats?.length ? (
+        <View style={[styles.chromeHeroStats, (wide || !isMobile) && styles.chromeHeroStatsWide]}>
+          {stats.map((stat, index) => (
+            <View key={stat.label} style={styles.chromeHeroStatWrap}>
+              {index ? <View style={styles.chromeHeroStatDivider} /> : null}
+              <View style={styles.chromeHeroStat}>
+                <Text style={styles.chromeHeroStatValue} numberOfLines={1}>
+                  {stat.value}
+                </Text>
+                <Text style={styles.chromeHeroStatLabel} numberOfLines={1}>
+                  {stat.label}
+                </Text>
+              </View>
+            </View>
+          ))}
+        </View>
+      ) : null}
+    </>
+  );
+  const cardStyle = [styles.chromeHeroCard, (wide || !isMobile) && styles.chromeHeroCardWide];
+  return (
+    <View style={styles.chromeHeroShell}>
+      <View pointerEvents="none" style={styles.chromeHeroLift} />
+      {onPress ? (
+        <Pressable
+          style={cardStyle}
+          onPress={onPress}
+          accessibilityRole="button"
+          accessibilityLabel={accessibilityLabel}
+        >
+          {body}
+        </Pressable>
+      ) : (
+        <View style={cardStyle} accessibilityLabel={accessibilityLabel}>
+          {body}
+        </View>
+      )}
+    </View>
+  );
+}
+
+/** White lifted sheet that sits under the hero, matching Home / store details. */
+export function ChromeSheet({ title, meta, children, style }) {
+  return (
+    <View style={[styles.chromeSheet, style]}>
+      {title ? (
+        <View style={styles.chromeSheetHead}>
+          <Text style={styles.chromeSheetTitle}>{title}</Text>
+          {meta ? <Text style={styles.chromeSheetMeta}>{meta}</Text> : null}
+        </View>
+      ) : null}
+      <View style={styles.chromeSheetBody}>{children}</View>
+    </View>
+  );
+}
+
+/** Store-row used on Home: icon tile, title, meta, value, chevron. */
+export function ChromeListRow({
+  title,
+  meta,
+  value,
+  icon,
+  iconColor = '#1a1a1a',
+  leading,
+  last,
+  onPress,
+  chevron = true,
+  trailing,
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={!onPress}
+      style={({ hovered, pressed }) => [
+        styles.chromeRow,
+        (hovered || pressed) && onPress && styles.chromeRowHover,
+      ]}
+      accessibilityRole={onPress ? 'button' : undefined}
+      accessibilityLabel={value ? `${title}, ${value}` : title}
+      {...(Platform.OS === 'web' && onPress ? { className: 'cgold-triage-btn' } : null)}
+    >
+      {leading || (
+        <View style={[styles.chromeRowIcon, { backgroundColor: iconColor }]}>
+          <Ionicons name={icon} size={22} color="#fff" />
+        </View>
+      )}
+      <View style={[styles.chromeRowBody, !last && styles.chromeRowDivider]}>
+        <View style={styles.chromeRowCopy}>
+          <Text style={styles.chromeRowTitle} numberOfLines={1}>
+            {title}
+          </Text>
+          {meta ? (
+            <Text style={styles.chromeRowMeta} numberOfLines={1}>
+              {meta}
+            </Text>
+          ) : null}
+        </View>
+        {value != null && value !== '' ? (
+          <Text style={styles.chromeRowValue} numberOfLines={1}>
+            {value}
+          </Text>
+        ) : null}
+        {trailing}
+        {onPress && chevron ? (
+          <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+        ) : (
+          <View style={styles.chromeRowChevron} />
+        )}
+      </View>
+    </Pressable>
+  );
+}
+
+/** Hero + sheet page used by every triage surface. */
+export function ChromePage({ hero, title, meta, children, empty, footer }) {
+  const isMobile = useIsMobile();
+  return (
+    <View style={[styles.chromePage, isMobile && styles.chromePageMobile]}>
+      <ScrollView
+        style={styles.chromePageScroll}
+        contentContainerStyle={[styles.chromePageContent, isMobile && styles.chromePageContentMobile]}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        bounces={false}
+        overScrollMode="never"
+      >
+        {hero ? <View style={[styles.chromeHeroPad, !isMobile && styles.chromeHeroPadDesktop]}>{hero}</View> : null}
+        {empty || (
+          <ChromeSheet title={title} meta={meta} style={styles.chromeSheetGrow}>
+            {children}
+          </ChromeSheet>
+        )}
+        {footer}
+      </ScrollView>
+    </View>
+  );
+}
+
 export function SearchField({ value, onChangeText, placeholder = 'Search', style, autoFocus, size }) {
   const large = size === 'lg';
   return (
@@ -1624,10 +1774,7 @@ const styles = StyleSheet.create({
   },
   group: {
     backgroundColor: T.card,
-    borderRadius: 8,
     overflow: 'hidden',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: T.hairline,
   },
   groupRow: {
     flexDirection: 'row',
@@ -1723,20 +1870,18 @@ const styles = StyleSheet.create({
   mobileList: {
     backgroundColor: '#fff',
     overflow: 'hidden',
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: T.hairline,
   },
   mobileListRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
     minHeight: 68,
-    paddingHorizontal: 12,
+    paddingLeft: 16,
+    paddingRight: 16,
     paddingVertical: 14,
     backgroundColor: '#fff',
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: T.hairline,
+    borderBottomColor: 'rgba(60,60,67,0.18)',
     ...webCursor,
   },
   mobileListRowSelected: {
@@ -1895,5 +2040,258 @@ const styles = StyleSheet.create({
   },
   segmentedCountActive: {
     color: 'rgba(255,255,255,0.78)',
+  },
+  chromePage: {
+    flex: 1,
+    minHeight: 0,
+    backgroundColor: CANVAS,
+  },
+  chromePageMobile: {
+    backgroundColor: CANVAS,
+  },
+  chromePageScroll: {
+    flex: 1,
+    minHeight: 0,
+    backgroundColor: 'transparent',
+  },
+  chromePageContent: {
+    flexGrow: 1,
+    paddingBottom: 24,
+  },
+  chromePageContentMobile: {
+    paddingBottom: 104,
+  },
+  chromeHeroPad: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 10,
+  },
+  chromeHeroPadDesktop: {
+    paddingHorizontal: 32,
+    paddingTop: 4,
+    paddingBottom: 18,
+  },
+  chromeHeroShell: {
+    alignSelf: 'stretch',
+    position: 'relative',
+  },
+  chromeHeroLift: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 20,
+    ...Platform.select({
+      web: {
+        boxShadow: '0 1px 2px rgba(18,16,12,0.06), 0 10px 28px rgba(18,16,12,0.14)',
+      },
+      default: {
+        shadowColor: '#12100C',
+        shadowOpacity: 0.16,
+        shadowRadius: 18,
+        shadowOffset: { width: 0, height: 8 },
+        elevation: 5,
+      },
+    }),
+  },
+  chromeHeroCard: {
+    alignSelf: 'stretch',
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 14,
+    borderRadius: 20,
+    backgroundColor: '#1F1E1B',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(212,175,55,0.32)',
+    ...Platform.select({
+      web: {
+        boxShadow:
+          'inset 0 1px 0 rgba(255,236,180,0.16), inset 0 -1px 0 rgba(0,0,0,0.38), 0 0 0 0.5px rgba(18,16,12,0.12)',
+        cursor: 'default',
+      },
+      default: {},
+    }),
+  },
+  chromeHeroCardWide: {
+    paddingHorizontal: 28,
+    paddingVertical: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 36,
+  },
+  chromeHeroAmount: {
+    fontFamily: 'SohneLeicht',
+    fontSize: 38,
+    lineHeight: 44,
+    fontWeight: '400',
+    color: '#F6F1E6',
+    letterSpacing: -1.1,
+    fontVariant: ['tabular-nums'],
+  },
+  chromeHeroAmountWide: {
+    flex: 1.1,
+    fontSize: 52,
+    lineHeight: 56,
+  },
+  chromeHeroStats: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: 14,
+    backgroundColor: 'rgba(0,0,0,0.28)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(212,175,55,0.14)',
+  },
+  chromeHeroStatsWide: {
+    flex: 1,
+    marginTop: 0,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+  },
+  chromeHeroStatWrap: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  chromeHeroStat: {
+    flex: 1,
+    minWidth: 0,
+    gap: 1,
+  },
+  chromeHeroStatDivider: {
+    width: StyleSheet.hairlineWidth,
+    height: 26,
+    marginHorizontal: 10,
+    backgroundColor: 'rgba(244,228,180,0.16)',
+  },
+  chromeHeroStatValue: {
+    fontFamily: FONT,
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#F6F1E6',
+    letterSpacing: -0.28,
+    fontVariant: ['tabular-nums'],
+  },
+  chromeHeroStatLabel: {
+    fontFamily: FONT,
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#C4A35A',
+    letterSpacing: 0.2,
+  },
+  chromeSheet: {
+    flexGrow: 1,
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    overflow: 'hidden',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(0,0,0,0.08)',
+    ...Platform.select({
+      web: {
+        boxShadow: '0 -8px 24px rgba(0,0,0,0.12), 0 -1px 0 rgba(255,255,255,0.9)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOpacity: 0.14,
+        shadowRadius: 16,
+        shadowOffset: { width: 0, height: -6 },
+        elevation: 8,
+      },
+    }),
+  },
+  chromeSheetGrow: {
+    minHeight: 320,
+  },
+  chromeSheetHead: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 8,
+  },
+  chromeSheetTitle: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '400',
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+    textTransform: 'uppercase',
+  },
+  chromeSheetMeta: {
+    fontFamily: FONT,
+    fontSize: 13,
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+    fontVariant: ['tabular-nums'],
+  },
+  chromeSheetBody: {
+    backgroundColor: '#fff',
+  },
+  chromeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    minHeight: 68,
+    paddingLeft: 16,
+    backgroundColor: '#fff',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  chromeRowHover: {
+    backgroundColor: '#f5f5f5',
+  },
+  chromeRowIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  chromeRowBody: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 14,
+    paddingRight: 16,
+    alignSelf: 'stretch',
+  },
+  chromeRowDivider: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(60,60,67,0.18)',
+  },
+  chromeRowCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  chromeRowTitle: {
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1a1a1a',
+  },
+  chromeRowMeta: {
+    fontFamily: FONT,
+    fontSize: 13,
+    color: '#8e8e93',
+  },
+  chromeRowValue: {
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    fontVariant: ['tabular-nums'],
+    flexShrink: 0,
+  },
+  chromeRowChevron: {
+    width: 18,
+    flexShrink: 0,
   },
 });

@@ -30,6 +30,8 @@ import {
 } from './TriageTable';
 import TriageReviewDrawer from './TriageReviewDrawer';
 import {
+  ChromeHero,
+  ChromeSheet,
   EmptyState,
   FONT,
   MobileCameraButton,
@@ -571,15 +573,118 @@ export default function TriageAccuracyPanel({
     [openLotFolder, visibleLots.length],
   );
 
+  const resultsHero = (
+    <View style={[styles.heroPad, !isMobile && styles.heroPadDesktop]}>
+      <ChromeHero
+        value={stats.total ? `${stats.percent}%` : '0%'}
+        stats={[
+          ...(openLot || !stats.lots ? [] : [{ label: stats.lots === 1 ? 'Lot' : 'Lots', value: String(stats.lots) }]),
+          { label: 'Correct', value: String(stats.correct) },
+          { label: 'Incorrect', value: String(stats.incorrect) },
+        ]}
+        onPress={() => onBreakdownOpenChange?.(true)}
+        accessibilityLabel="Open errors breakdown"
+      />
+    </View>
+  );
+
+  const wrapResults = (list, title, meta) => (
+    <View style={[styles.body, isMobile && styles.bodyMobile]}>
+      {resultsHero}
+      <ChromeSheet title={title} meta={meta} style={styles.sheetFill}>
+        {list}
+      </ChromeSheet>
+    </View>
+  );
+
+  const breakdownDrawer = (
+      <TriageDrawer
+        visible={breakdownOpen}
+        onClose={() => onBreakdownOpenChange?.(false)}
+        title="Errors"
+        subtitle={
+          stats.total
+            ? `${stats.ratio} correct · ${stats.incorrect} ${stats.incorrect === 1 ? 'error' : 'errors'}`
+            : 'No purchases in this filter'
+        }
+        leftLabel="Done"
+        onLeft={() => onBreakdownOpenChange?.(false)}
+        widthRatio={0.38}
+        minWidth={360}
+      >
+        <ScrollView
+          style={styles.breakBody}
+          contentContainerStyle={styles.breakContent}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.breakHero}>
+            <Text style={styles.breakHeroLabel}>Results</Text>
+            <Text style={styles.breakHeroValue}>{stats.total ? `${stats.percent}%` : '—'}</Text>
+            <Text style={styles.breakHeroMeta}>
+              {stats.ratio} correct
+              {filtersActive || listQuery.trim() ? ' in this filter' : ''}
+            </Text>
+            <ProgressBar value={stats.correct} total={stats.total} tone="green" height={6} style={styles.breakHeroBar} />
+          </View>
+
+          <Pressable
+            style={styles.breakLead}
+            disabled={!topCategory}
+            accessibilityRole="text"
+            accessibilityLabel={
+              topCategory
+                ? `${topCategory.label} has the most errors, ${topCategory.count}`
+                : 'No errors in this filter'
+            }
+          >
+            <Text style={styles.breakLeadKicker}>Most errors</Text>
+            <Text style={styles.breakLeadTitle} numberOfLines={2}>
+              {topCategory ? topCategory.label : 'No errors in this filter'}
+            </Text>
+            {topCategory ? (
+              <Text style={styles.breakLeadMeta}>
+                {topCategory.count} of {errorRows.length}{' '}
+                {errorRows.length === 1 ? 'error' : 'errors'}
+              </Text>
+            ) : null}
+          </Pressable>
+
+          <BreakdownList
+            title="Category"
+            rows={categories}
+            total={errorRows.length}
+            empty="No error categories in this filter."
+          />
+          <BreakdownList
+            title="Employee"
+            rows={employees}
+            total={errorRows.length}
+            empty="No employees with errors in this filter."
+          />
+          <BreakdownList
+            title="Store"
+            rows={stores}
+            total={errorRows.length}
+            empty="No stores with errors in this filter."
+          />
+        </ScrollView>
+      </TriageDrawer>
+  );
+
   if (accuracyRows.length === 0) {
     return (
-      <View style={[styles.body, isMobile && styles.bodyMobile]}>
-        <EmptyState
-          icon="folder-outline"
-          title="Results"
-          body="Finish a PO to create its lot. Lots group every PO / SO from the same store and month."
-        />
-      </View>
+      <>
+        {wrapResults(
+          <EmptyState
+            icon="folder-outline"
+            title="Results"
+            body="Finish a PO to create its lot. Lots group every PO / SO from the same store and month."
+          />,
+          'Results',
+          '0 lots',
+        )}
+        {breakdownDrawer}
+      </>
     );
   }
 
@@ -596,8 +701,9 @@ export default function TriageAccuracyPanel({
       />
     );
     return (
-      <View style={[styles.body, isMobile && styles.bodyMobile]}>
-        {isMobile ? (
+      <>
+        {wrapResults(
+      isMobile ? (
           <FlatList
             style={styles.mobileList}
             contentContainerStyle={styles.mobileListContent}
@@ -665,8 +771,12 @@ export default function TriageAccuracyPanel({
               </>
             }
           />
+        ),
+      'Lots',
+      `${visibleLots.length} ${visibleLots.length === 1 ? 'lot' : 'lots'}`,
         )}
-      </View>
+        {breakdownDrawer}
+      </>
     );
   }
 
@@ -690,9 +800,8 @@ export default function TriageAccuracyPanel({
     />
   );
 
-  return (
-    <View style={[styles.body, isMobile && styles.bodyMobile]}>
-      {isMobile ? (
+  const lotDetail = wrapResults(
+    isMobile ? (
         <FlatList
           style={styles.mobileList}
           contentContainerStyle={styles.mobileListContent}
@@ -870,8 +979,14 @@ export default function TriageAccuracyPanel({
           </>
         }
       />
-      )}
+      ),
+    openLot?.id || 'Lot',
+    `${visible.length} ${visible.length === 1 ? 'PO' : 'POs'}`,
+  );
 
+  return (
+    <>
+      {lotDetail}
       <TriageReviewDrawer
         visible={Boolean(openRow)}
         session={session}
@@ -881,79 +996,8 @@ export default function TriageAccuracyPanel({
         onClose={() => setOpenRow(null)}
         onSave={saveReview}
       />
-
-      <TriageDrawer
-        visible={breakdownOpen}
-        onClose={() => onBreakdownOpenChange?.(false)}
-        title="Errors"
-        subtitle={
-          stats.total
-            ? `${stats.ratio} correct · ${stats.incorrect} ${stats.incorrect === 1 ? 'error' : 'errors'}`
-            : 'No purchases in this filter'
-        }
-        leftLabel="Done"
-        onLeft={() => onBreakdownOpenChange?.(false)}
-        widthRatio={0.38}
-        minWidth={360}
-      >
-        <ScrollView
-          style={styles.breakBody}
-          contentContainerStyle={styles.breakContent}
-          showsVerticalScrollIndicator={false}
-        >
-          <View style={styles.breakHero}>
-            <Text style={styles.breakHeroLabel}>Results</Text>
-            <Text style={styles.breakHeroValue}>{stats.total ? `${stats.percent}%` : '—'}</Text>
-            <Text style={styles.breakHeroMeta}>
-              {stats.ratio} correct
-              {filtersActive || listQuery.trim() ? ' in this filter' : ''}
-            </Text>
-            <ProgressBar value={stats.correct} total={stats.total} tone="green" height={6} style={styles.breakHeroBar} />
-          </View>
-
-          <Pressable
-            style={styles.breakLead}
-            disabled={!topCategory}
-            accessibilityRole="text"
-            accessibilityLabel={
-              topCategory
-                ? `${topCategory.label} has the most errors, ${topCategory.count}`
-                : 'No errors in this filter'
-            }
-          >
-            <Text style={styles.breakLeadKicker}>Most errors</Text>
-            <Text style={styles.breakLeadTitle} numberOfLines={2}>
-              {topCategory ? topCategory.label : 'No errors in this filter'}
-            </Text>
-            {topCategory ? (
-              <Text style={styles.breakLeadMeta}>
-                {topCategory.count} of {errorRows.length}{' '}
-                {errorRows.length === 1 ? 'error' : 'errors'}
-              </Text>
-            ) : null}
-          </Pressable>
-
-          <BreakdownList
-            title="Category"
-            rows={categories}
-            total={errorRows.length}
-            empty="No error categories in this filter."
-          />
-          <BreakdownList
-            title="Employee"
-            rows={employees}
-            total={errorRows.length}
-            empty="No employees with errors in this filter."
-          />
-          <BreakdownList
-            title="Store"
-            rows={stores}
-            total={errorRows.length}
-            empty="No stores with errors in this filter."
-          />
-        </ScrollView>
-      </TriageDrawer>
-    </View>
+      {breakdownDrawer}
+    </>
   );
 }
 
@@ -966,6 +1010,20 @@ const styles = StyleSheet.create({
   bodyMobile: {
     backgroundColor: T.bg,
   },
+  heroPad: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 10,
+  },
+  heroPadDesktop: {
+    paddingHorizontal: 32,
+    paddingTop: 4,
+    paddingBottom: 18,
+  },
+  sheetFill: {
+    flex: 1,
+    minHeight: 0,
+  },
   mobileList: {
     flex: 1,
     minHeight: 0,
@@ -974,8 +1032,8 @@ const styles = StyleSheet.create({
     paddingTop: 0,
     paddingBottom: 40,
     flexGrow: 1,
-    backgroundColor: T.bg,
-    paddingHorizontal: 16,
+    backgroundColor: '#fff',
+    paddingHorizontal: 0,
   },
   mobileHint: {
     fontFamily,
