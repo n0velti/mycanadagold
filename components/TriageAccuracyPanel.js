@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
-import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
   applyTriageReviewToPo,
@@ -1167,6 +1167,10 @@ const styles = StyleSheet.create({
   mobileList: {
     flex: 1,
     minHeight: 0,
+    ...Platform.select({
+      web: { overflowY: 'auto', touchAction: 'pan-y', WebkitOverflowScrolling: 'touch' },
+      default: {},
+    }),
   },
   mobileListContent: {
     paddingTop: 0,
