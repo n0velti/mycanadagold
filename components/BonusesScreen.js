@@ -691,7 +691,13 @@ function EmployeeBonusDrawer({ visible, employee, store, onClose }) {
   );
 }
 
-export default function BonusesScreen({ session, onRequireLogin, onOpenEmails, storeFilter }) {
+export default function BonusesScreen({
+  session,
+  onRequireLogin,
+  onOpenEmails,
+  storeFilter,
+  embedded = false,
+}) {
   const isMobile = useIsMobile();
   const { canFilter } = useAppAccess();
   const allowFilters = canFilter('bonuses');
@@ -972,7 +978,7 @@ export default function BonusesScreen({ session, onRequireLogin, onOpenEmails, s
   );
 
   const storeHero = activeStore ? (
-    <View style={styles.hero}>
+    <View style={[styles.hero, embedded && styles.heroEmbedded]}>
       {isMobile && !storeFilter ? (
         <Pressable onPress={closeStore} style={styles.backRow} hitSlop={8}>
           <Ionicons name="chevron-back" size={18} color="#1a1a1a" />
@@ -1085,9 +1091,12 @@ export default function BonusesScreen({ session, onRequireLogin, onOpenEmails, s
     </View>
   ) : null;
 
+  const showStoreGrid = visibleStores.length && !embedded && (!isMobile || !showMobileDetail);
+  const showDetail = embedded || !isMobile || showMobileDetail;
+
   return (
-    <View style={styles.screen}>
-      {!isMobile ? (
+    <View style={[styles.screen, embedded && styles.screenEmbedded]}>
+      {!isMobile && !embedded ? (
         <View style={styles.pageHeader}>
           <View style={styles.pageTitleWrap}>
             <View style={styles.pageTitleSpacer} />
@@ -1106,7 +1115,11 @@ export default function BonusesScreen({ session, onRequireLogin, onOpenEmails, s
 
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={[styles.scrollContent, isMobile && styles.scrollContentMobile]}
+        contentContainerStyle={[
+          styles.scrollContent,
+          isMobile && !embedded && styles.scrollContentMobile,
+          embedded && styles.scrollContentEmbedded,
+        ]}
         showsVerticalScrollIndicator={false}
         refreshControl={
           isMobile ? (
@@ -1114,9 +1127,18 @@ export default function BonusesScreen({ session, onRequireLogin, onOpenEmails, s
           ) : undefined
         }
       >
-        {isMobile ? (showMobileDetail ? storeHero : hero) : periodBar}
+        {embedded ? (
+          <>
+            {periodBar}
+            {storeHero}
+          </>
+        ) : isMobile ? (
+          showMobileDetail ? storeHero : hero
+        ) : (
+          periodBar
+        )}
 
-        {isMobile && !showMobileDetail ? periodBar : null}
+        {!embedded && isMobile && !showMobileDetail ? periodBar : null}
 
         {loading && !visibleStores.length ? (
           <View style={styles.loadingBlock}>
@@ -1125,7 +1147,7 @@ export default function BonusesScreen({ session, onRequireLogin, onOpenEmails, s
           </View>
         ) : null}
 
-        {visibleStores.length && (!isMobile || !showMobileDetail) ? (
+        {showStoreGrid ? (
           <StoreCardGrid
             stores={visibleStores}
             selectedStore={activeStore?.storeName}
@@ -1135,7 +1157,7 @@ export default function BonusesScreen({ session, onRequireLogin, onOpenEmails, s
           />
         ) : null}
 
-        {!isMobile || showMobileDetail ? detail : null}
+        {showDetail ? detail : null}
       </ScrollView>
       <EmployeeBonusDrawer
         visible={Boolean(selectedEmployeeName)}
@@ -1152,6 +1174,15 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
     backgroundColor: CANVAS,
+  },
+  screenEmbedded: {
+    backgroundColor: 'transparent',
+  },
+  scrollContentEmbedded: {
+    paddingBottom: 24,
+  },
+  heroEmbedded: {
+    paddingTop: 8,
   },
   loginWrap: {
     flex: 1,

@@ -154,18 +154,30 @@ export function MobileCircleButton({ children, active = false, tone, onPress, ac
   );
 }
 
-export function MobileNavHeader({ title, subtitle, onBack, trailing, titleAction, grouped = false }) {
+export function MobileNavHeader({
+  title,
+  subtitle,
+  onBack,
+  trailing,
+  titleAction,
+  grouped = false,
+  backSide = 'left',
+}) {
   const start = Boolean(titleAction);
+  const backRight = backSide === 'right';
+  const back = (
+    <Pressable
+      onPress={onBack}
+      style={styles.navSide}
+      hitSlop={8}
+      accessibilityLabel="Back"
+    >
+      <Ionicons name="chevron-back" size={28} color={MOBILE.blue} />
+    </Pressable>
+  );
   return (
     <View style={[styles.navHeader, grouped && styles.navHeaderGrouped]}>
-      <Pressable
-        onPress={onBack}
-        style={styles.navSide}
-        hitSlop={8}
-        accessibilityLabel="Back"
-      >
-        <Ionicons name="chevron-back" size={28} color={MOBILE.blue} />
-      </Pressable>
+      {backRight ? <View style={styles.navSide} /> : back}
       <View style={[styles.navTitleBlock, start && styles.navTitleBlockStart]}>
         <View style={styles.navTitleRow}>
           <Text style={[styles.navTitle, start && styles.navTitleStart]} numberOfLines={1}>
@@ -179,7 +191,16 @@ export function MobileNavHeader({ title, subtitle, onBack, trailing, titleAction
           </Text>
         ) : null}
       </View>
-      <View style={[styles.navSide, (trailing || titleAction) && styles.navTrailing]}>{trailing}</View>
+      <View
+        style={[
+          styles.navSide,
+          (trailing || titleAction || backRight) && styles.navTrailing,
+          backRight && styles.navTrailingCluster,
+        ]}
+      >
+        {trailing}
+        {backRight ? back : null}
+      </View>
     </View>
   );
 }
@@ -439,6 +460,13 @@ const styles = StyleSheet.create({
     width: 'auto',
     minWidth: 44,
     paddingRight: 8,
+  },
+  navTrailingCluster: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 4,
+    minWidth: 44,
   },
   navSide: {
     width: 44,

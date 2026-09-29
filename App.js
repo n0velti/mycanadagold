@@ -151,6 +151,7 @@ import {
   reviewStatsFromReviews,
   reviewsForStoreName,
 } from './lib/googleReviews';
+import { attributedReviewEmployeeNames, employeeNameMatchesAny } from './lib/bonuses';
 import { captureTokenFromLocation } from './lib/qrCode';
 import { fetchAureusEmployee } from './lib/aureusEmployees';
 import { useDirectMessages } from './lib/messages';
@@ -417,6 +418,8 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-home-top-blur{background:transparent!important;-webkit-backdrop-filter:saturate(140%) blur(18px);backdrop-filter:saturate(140%) blur(18px);-webkit-mask-image:linear-gradient(to bottom,#000 0%,rgba(0,0,0,0.5) 38%,transparent 100%);mask-image:linear-gradient(to bottom,#000 0%,rgba(0,0,0,0.5) 38%,transparent 100%);}',
     '.cgold-home-overlay-scroll{position:relative;z-index:4;}',
     '.cgold-home-overlay-scroll,.cgold-home-overlay-scroll>div{background:transparent!important;overscroll-behavior:none;}',
+    '.cgold-store-overlay-scroll,.cgold-store-overlay-scroll *{pointer-events:none!important;}',
+    '.cgold-store-sheet,.cgold-store-sheet *{pointer-events:auto!important;}',
     '.cgold-home-chip-blur{-webkit-backdrop-filter:saturate(140%) blur(10px);backdrop-filter:saturate(140%) blur(10px);background-color:rgba(255,255,255,0.56)!important;border-radius:999px;}',
     '.cgold-apps-view-blur{-webkit-backdrop-filter:saturate(140%) blur(10px);backdrop-filter:saturate(140%) blur(10px);background-color:rgba(255,255,255,0.56)!important;border-radius:20px;}',
     '.cgold-store-header-blur{-webkit-backdrop-filter:saturate(160%) blur(12px);backdrop-filter:saturate(160%) blur(12px);background-color:rgba(255,255,255,0.72)!important;transform:translateZ(0);}',
@@ -857,6 +860,7 @@ const STORE_DRAWER_TAB_KEYS = [
   'employees',
   'phone',
   'emails',
+  'reviews',
   'audit',
   'supplies',
   'settings',
@@ -868,6 +872,7 @@ const STORE_SNAPSHOT_TABS = new Set([
   'inventory',
   'financials',
   'employees',
+  'phone',
   'emails',
   'supplies',
 ]);
@@ -3548,7 +3553,11 @@ function HomeStoreDrawer({
   const { width: windowWidth } = useWindowDimensions();
   const isMobile = windowWidth < MOBILE_BREAKPOINT;
   const { hasApp } = useAppAccess();
-  const drawerTabs = STORE_DRAWER_TABS.filter((tab) => tab.key === 'settings' || hasApp(tab.key));
+  const drawerTabs = STORE_DRAWER_TABS.filter((tab) => {
+    if (tab.key === 'settings') return true;
+    if (tab.key === 'reviews') return hasApp('reviews') || hasApp('bonuses');
+    return hasApp(tab.key);
+  });
   const storeName = store?.store || '';
   const overviewTab = {
     key: 'overview',
@@ -3605,7 +3614,12 @@ function HomeStoreDrawer({
   const lastStoreNameRef = useRef(store?.store);
   const incomingTxKey = (store?.transactions || []).map((row) => row.id).join('\n');
   const openApp = useCallback((key) => {
-    if (key === 'overview' || key === 'settings' || hasApp(key)) {
+    if (
+      key === 'overview' ||
+      key === 'settings' ||
+      hasApp(key) ||
+      (key === 'reviews' && hasApp('bonuses'))
+    ) {
       setActiveTab(key);
     }
   }, [hasApp]);
@@ -3854,6 +3868,14 @@ function HomeStoreDrawer({
                             storeFilter={heldStore.store}
                             initialDate={date}
                             embedded
+                          />
+                        ) : activeTab === 'reviews' ? (
+                          <BonusesScreen
+                            key={heldStore.store}
+                            session={session}
+                            storeFilter={heldStore.store}
+                            embedded
+                            onOpenEmails={() => openApp('emails')}
                           />
                         ) : (
                           <StoreSettingsPanel
@@ -4614,6 +4636,28 @@ function HomeReviewRate({ stats, compact = false }) {
   );
 }
 
+function HomeReviewStar({ size }) {
+  const badge = Math.max(12, Math.round(size * 0.42));
+  const icon = Math.max(7, Math.round(badge * 0.62));
+  return (
+    <View
+      pointerEvents="none"
+      style={[
+        styles.homeReviewStar,
+        {
+          width: badge,
+          height: badge,
+          borderRadius: badge / 2,
+          top: -2,
+          right: -3,
+        },
+      ]}
+    >
+      <Ionicons name="star" size={icon} color="#F5D76A" />
+    </View>
+  );
+}
+
 function HomePersonFace({
   person,
   index,
@@ -4626,23 +4670,35 @@ function HomePersonFace({
   interactive = true,
 }) {
   const clockedIn = useIsClockedIn(person.name);
+  const reviewStar = Boolean(person.reviewStar);
   const faceStyle = [
     styles.homePeopleAvatarWrap,
     {
       width: size,
       height: size,
       marginLeft: index === 0 ? 0 : -overlap,
-      zIndex: clockedIn || raised ? 30 + index : index + 1,
+      zIndex: clockedIn || reviewStar || raised ? 30 + index : index + 1,
     },
   ];
+  const hoverLabel = reviewStar ? `${person.name}\nGoogle review` : person.name;
+  const accessLabel = [
+    person.name,
+    clockedIn ? 'clocked in' : '',
+    reviewStar ? 'Google review' : '',
+  ]
+    .filter(Boolean)
+    .join(', ');
   const avatar = (
-    <ProfileAvatar
-      uri={person.photoUrl}
-      name={person.name}
-      size={size}
-      style={styles.homePeopleAvatarRing}
-      clockMark="badge"
-    />
+    <View style={{ width: size, height: size }}>
+      <ProfileAvatar
+        uri={person.photoUrl}
+        name={person.name}
+        size={size}
+        style={styles.homePeopleAvatarRing}
+        clockMark="badge"
+      />
+      {reviewStar ? <HomeReviewStar size={size} /> : null}
+    </View>
   );
 
   if (!interactive) {
@@ -4664,8 +4720,8 @@ function HomePersonFace({
       onPointerDown={(event) => event?.stopPropagation?.()}
       style={faceStyle}
       accessibilityRole="button"
-      accessibilityLabel={clockedIn ? `${person.name}, clocked in` : `${person.name} profile`}
-      {...(clockedIn ? null : hoverHandlers(person.name))}
+      accessibilityLabel={accessLabel}
+      {...(clockedIn && !reviewStar ? null : hoverHandlers(hoverLabel))}
     >
       {avatar}
     </Pressable>
@@ -4965,11 +5021,43 @@ function HomeStoresTable({
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [callHistoryByStore, setCallHistoryByStore] = useState({});
   const [reviewsByStore, setReviewsByStore] = useState(() => new Map());
+  const reviewEmployeesByStore = useMemo(() => {
+    const next = new Map();
+    for (const row of rows) {
+      next.set(
+        row.store,
+        attributedReviewEmployeeNames({
+          reviews: reviewsForStoreName(reviewsByStore, row.store),
+          transactionRows: row.transactions,
+          storeName: row.store,
+        }),
+      );
+    }
+    return next;
+  }, [reviewsByStore, rows]);
   const peopleByStore = useMemo(
-    () => new Map(rows.map((row) => [row.store, peopleInStore(row.store, row.transactions, staff)])),
-    [rows, staff],
+    () =>
+      new Map(
+        rows.map((row) => {
+          const attributed = reviewEmployeesByStore.get(row.store) || [];
+          const people = peopleInStore(row.store, row.transactions, staff).map((person) => ({
+            ...person,
+            reviewStar: employeeNameMatchesAny(person.name, attributed),
+          }));
+          return [row.store, people];
+        }),
+      ),
+    [reviewEmployeesByStore, rows, staff],
   );
-  const totalPeople = useMemo(() => uniqueStorePeople(rows, staff), [rows, staff]);
+  const totalPeople = useMemo(() => {
+    const people = uniqueStorePeople(rows, staff);
+    return people.map((person) => ({
+      ...person,
+      reviewStar: rows.some((row) =>
+        employeeNameMatchesAny(person.name, reviewEmployeesByStore.get(row.store) || []),
+      ),
+    }));
+  }, [reviewEmployeesByStore, rows, staff]);
   const storeNamesKey = useMemo(() => rows.map((row) => row.store).filter(Boolean).join('\n'), [rows]);
   const phoneByStore = useMemo(() => {
     const next = new Map();
@@ -8890,7 +8978,13 @@ export default function App() {
     !isMobile && activeTab === 'tools' && activeTool?.key === 'employees' && styles.contentAppsLibrary,
     (groupedMobileTab || showingSettings) && styles.contentMobileGrouped,
     canvasMobileTab && styles.canvasFill,
-    isMobile && activeTab !== 'home' && activeTab !== 'search' && !isAppsLibrary && !showingMessages && styles.contentMobileTabInset,
+    isMobile &&
+      activeTab !== 'home' &&
+      activeTab !== 'search' &&
+      !isAppsLibrary &&
+      !showingMessages &&
+      !(activeTab === 'tools' && activeTool?.key === 'triage') &&
+      styles.contentMobileTabInset,
     isMobile &&
       !isFullBleedTool &&
       !showingMessages &&
@@ -8956,7 +9050,7 @@ export default function App() {
               onBack={() => selectTab('home')}
             />
           ) : null}
-          {activeTab === 'tools' && activeTool && activeTool.key !== 'triage' ? (
+          {activeTab === 'tools' && activeTool && !triageMobileHeader?.hideAppHeader ? (
             <MobileNavHeader
               title={
                 activeTool.key === 'triage' && triageBatch?.dateLabel
@@ -8974,6 +9068,7 @@ export default function App() {
                 activeTool.key === 'triage' ? triageMobileHeader?.titleAction : null
               }
               trailing={activeTool.key === 'triage' ? triageMobileHeader?.trailing : null}
+              backSide="left"
               onBack={() => {
                 if (activeTool.key === 'settings' && settingsPanel) {
                   setSettingsPanel(null);
@@ -10355,8 +10450,22 @@ const styles = StyleSheet.create({
   homePeopleAvatarWrap: {
     position: 'relative',
     borderRadius: HOME_PEOPLE_SIZE / 2,
+    overflow: 'visible',
     ...Platform.select({
       web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  homeReviewStar: {
+    position: 'absolute',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#7A5410',
+    borderWidth: 1.5,
+    borderColor: '#fff',
+    zIndex: 4,
+    ...Platform.select({
+      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.18)' },
       default: {},
     }),
   },
@@ -14602,6 +14711,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     flexShrink: 0,
     gap: 2,
+    overflow: 'visible',
   },
   igStorePeopleSlot: {
     height: 32,

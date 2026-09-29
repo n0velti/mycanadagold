@@ -23,6 +23,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { CANVAS, mobileSafeBottom, mobileSafeTop, useIsMobile } from '../lib/mobileUi';
+import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
 import { ClockedInMark, useIsClockedIn } from '../lib/clockedIn';
 
 export const FONT = Platform.select({
@@ -703,15 +704,34 @@ export function StatusPill({ label, tone = 'neutral', compact }) {
   );
 }
 
-export function ProgressBar({ value = 0, total = 0, tone = 'green', height = 4, style }) {
+export function ProgressBar({
+  value = 0,
+  total = 0,
+  tone = 'green',
+  height = 4,
+  style,
+  trackColor,
+  fillColor,
+}) {
   const pct = total > 0 ? Math.max(0, Math.min(1, value / total)) : 0;
   const colors = TONES[tone] || TONES.green;
   return (
-    <View style={[styles.progressTrack, { height, borderRadius: height / 2 }, style]}>
+    <View
+      style={[
+        styles.progressTrack,
+        { height, borderRadius: height / 2 },
+        trackColor ? { backgroundColor: trackColor } : null,
+        style,
+      ]}
+    >
       <View
         style={[
           styles.progressFill,
-          { width: `${Math.round(pct * 100)}%`, backgroundColor: colors.fg, borderRadius: height / 2 },
+          {
+            width: `${Math.round(pct * 100)}%`,
+            backgroundColor: fillColor || colors.fg,
+            borderRadius: height / 2,
+          },
         ]}
       />
     </View>
@@ -874,7 +894,7 @@ export function GroupRow({ label, value, valueTone, last, onPress, children }) {
 }
 
 /** Dark gold hero used on Home and store details. */
-export function ChromeHero({ value, stats, wide = false, onPress, accessibilityLabel }) {
+export function ChromeHero({ value, stats, wide = false, onPress, accessibilityLabel, footer }) {
   const isMobile = useIsMobile();
   const body = (
     <>
@@ -885,21 +905,26 @@ export function ChromeHero({ value, stats, wide = false, onPress, accessibilityL
       >
         {value}
       </Text>
-      {stats?.length ? (
-        <View style={[styles.chromeHeroStats, (wide || !isMobile) && styles.chromeHeroStatsWide]}>
-          {stats.map((stat, index) => (
-            <View key={stat.label} style={styles.chromeHeroStatWrap}>
-              {index ? <View style={styles.chromeHeroStatDivider} /> : null}
-              <View style={styles.chromeHeroStat}>
-                <Text style={styles.chromeHeroStatValue} numberOfLines={1}>
-                  {stat.value}
-                </Text>
-                <Text style={styles.chromeHeroStatLabel} numberOfLines={1}>
-                  {stat.label}
-                </Text>
-              </View>
+      {stats?.length || footer ? (
+        <View style={[(wide || !isMobile) && styles.chromeHeroSide, footer && styles.chromeHeroSideStack]}>
+          {stats?.length ? (
+            <View style={[styles.chromeHeroStats, (wide || !isMobile) && styles.chromeHeroStatsWide]}>
+              {stats.map((stat, index) => (
+                <View key={stat.label} style={styles.chromeHeroStatWrap}>
+                  {index ? <View style={styles.chromeHeroStatDivider} /> : null}
+                  <View style={styles.chromeHeroStat}>
+                    <Text style={styles.chromeHeroStatValue} numberOfLines={1}>
+                      {stat.value}
+                    </Text>
+                    <Text style={styles.chromeHeroStatLabel} numberOfLines={1}>
+                      {stat.label}
+                    </Text>
+                  </View>
+                </View>
+              ))}
             </View>
-          ))}
+          ) : null}
+          {footer}
         </View>
       ) : null}
     </>
@@ -928,6 +953,7 @@ export function ChromeHero({ value, stats, wide = false, onPress, accessibilityL
 
 /** White lifted sheet that sits under the hero, matching Home / store details. */
 export function ChromeSheet({ title, meta, children, style }) {
+  const isMobile = useIsMobile();
   return (
     <View style={[styles.chromeSheet, style]}>
       {title ? (
@@ -936,7 +962,7 @@ export function ChromeSheet({ title, meta, children, style }) {
           {meta ? <Text style={styles.chromeSheetMeta}>{meta}</Text> : null}
         </View>
       ) : null}
-      <View style={styles.chromeSheetBody}>{children}</View>
+      <View style={[styles.chromeSheetBody, isMobile && styles.chromeSheetBodyMobile]}>{children}</View>
     </View>
   );
 }
@@ -953,6 +979,7 @@ export function ChromeListRow({
   onPress,
   chevron = true,
   trailing,
+  extra,
 }) {
   return (
     <Pressable
@@ -981,6 +1008,7 @@ export function ChromeListRow({
               {meta}
             </Text>
           ) : null}
+          {extra}
         </View>
         {value != null && value !== '' ? (
           <Text style={styles.chromeRowValue} numberOfLines={1}>
@@ -1001,21 +1029,59 @@ export function ChromeListRow({
 /** Hero + sheet page used by every triage surface. */
 export function ChromePage({ hero, title, meta, children, empty, footer }) {
   const isMobile = useIsMobile();
+  const tabBarScroll = useMobileTabBarScrollProps();
+  const heroLift = useRef(new Animated.Value(1)).current;
+  const [heroHeight, setHeroHeight] = useState(isMobile ? 220 : 200);
+  const restGap = isMobile ? 10 : 18;
+  const raisedOffset = hero ? Math.max(0, heroHeight + restGap) : 0;
+
   return (
     <View style={[styles.chromePage, isMobile && styles.chromePageMobile]}>
+      {hero ? (
+        <View
+          pointerEvents="box-none"
+          style={styles.chromePinnedHero}
+          onLayout={(event) => {
+            const height = event.nativeEvent.layout.height;
+            setHeroHeight((current) => (Math.abs(current - height) < 0.5 ? current : height));
+          }}
+        >
+          <Animated.View pointerEvents="none" style={[styles.chromePinnedLift, { opacity: heroLift }]} />
+          <View style={[styles.chromeHeroPad, !isMobile && styles.chromeHeroPadDesktop]}>{hero}</View>
+        </View>
+      ) : null}
       <ScrollView
-        style={styles.chromePageScroll}
-        contentContainerStyle={[styles.chromePageContent, isMobile && styles.chromePageContentMobile]}
+        pointerEvents="box-none"
+        style={styles.chromeOverlayScroll}
+        contentContainerStyle={[
+          styles.chromePageContent,
+          isMobile && styles.chromePageContentMobile,
+          { flexGrow: 1 },
+        ]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
-        bounces={false}
-        overScrollMode="never"
+        scrollEventThrottle={16}
+        {...tabBarScroll}
+        onScroll={(event) => {
+          tabBarScroll.onScroll?.(event);
+          const y = event?.nativeEvent?.contentOffset?.y;
+          if (!Number.isFinite(y) || !hero) return;
+          const reach = Math.max(1, heroHeight - 12);
+          heroLift.setValue(1 - Math.max(0, Math.min(1, y / reach)));
+        }}
+        {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll cgold-store-overlay-scroll' } : null)}
       >
-        {hero ? <View style={[styles.chromeHeroPad, !isMobile && styles.chromeHeroPadDesktop]}>{hero}</View> : null}
+        {hero ? <View pointerEvents="none" style={{ height: raisedOffset }} /> : null}
         {empty || (
-          <ChromeSheet title={title} meta={meta} style={styles.chromeSheetGrow}>
-            {children}
-          </ChromeSheet>
+          <View
+            pointerEvents="auto"
+            style={styles.chromeOverlaySheet}
+            {...(Platform.OS === 'web' ? { className: 'cgold-store-sheet' } : null)}
+          >
+            <ChromeSheet title={title} meta={meta} style={styles.chromeSheetGrow}>
+              {children}
+            </ChromeSheet>
+          </View>
         )}
         {footer}
       </ScrollView>
@@ -2054,12 +2120,34 @@ const styles = StyleSheet.create({
     minHeight: 0,
     backgroundColor: 'transparent',
   },
+  chromePinnedHero: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 8,
+    elevation: 8,
+  },
+  chromePinnedLift: {
+    ...StyleSheet.absoluteFillObject,
+    pointerEvents: 'none',
+  },
+  chromeOverlayScroll: {
+    flex: 1,
+    minHeight: 0,
+    zIndex: 4,
+    backgroundColor: 'transparent',
+  },
+  chromeOverlaySheet: {
+    flexGrow: 1,
+  },
   chromePageContent: {
     flexGrow: 1,
     paddingBottom: 24,
   },
   chromePageContentMobile: {
-    paddingBottom: 104,
+    flexGrow: 1,
+    paddingBottom: 0,
   },
   chromeHeroPad: {
     paddingHorizontal: 16,
@@ -2147,6 +2235,13 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     paddingHorizontal: 12,
   },
+  chromeHeroSide: {
+    flex: 1,
+    minWidth: 0,
+  },
+  chromeHeroSideStack: {
+    gap: 12,
+  },
   chromeHeroStatWrap: {
     flex: 1,
     minWidth: 0,
@@ -2201,6 +2296,7 @@ const styles = StyleSheet.create({
     }),
   },
   chromeSheetGrow: {
+    flexGrow: 1,
     minHeight: 320,
   },
   chromeSheetHead: {
@@ -2228,6 +2324,9 @@ const styles = StyleSheet.create({
   },
   chromeSheetBody: {
     backgroundColor: '#fff',
+  },
+  chromeSheetBodyMobile: {
+    paddingBottom: mobileTabBarReserve() + 24,
   },
   chromeRow: {
     flexDirection: 'row',

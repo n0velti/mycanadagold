@@ -9,7 +9,15 @@ import {
   triagePoNeedsCorrection,
   useTransferWorkflow,
 } from '../lib/transferWorkflow';
-import { groupPosIntoLots, lotMatchesQuery, lotPeriodLabel } from '../lib/triageLots';
+import {
+  formatFineProgress,
+  groupPosIntoLots,
+  LOT_FINE_METALS,
+  lotMatchesQuery,
+  lotPeriodLabel,
+  summarizeLotFineMetals,
+  summarizeLotsFineMetals,
+} from '../lib/triageLots';
 import { MAX_REVIEW_IMAGES, normalizeReviewImages } from '../lib/triageDraft';
 import { captureTriagePhoto } from './TriageCorrectionImages';
 import {
@@ -38,6 +46,7 @@ import {
   MobileListRow,
   ProgressBar,
   SectionLabel,
+  SegmentedSlider,
   StatusPill,
   T,
   TextAction,
@@ -241,7 +250,7 @@ function LotProgress({ lot, compact = false }) {
         value={evaluated}
         total={expected}
         tone={done ? 'green' : 'blue'}
-        height={compact ? 4 : 5}
+        height={compact ? 6 : 8}
         style={styles.lotProgressBar}
       />
     </View>
@@ -285,10 +294,11 @@ const LotTableRow = memo(function LotTableRow({ lot, last, onOpen }) {
   );
 });
 
-const AccuracyTableRow = memo(function AccuracyTableRow({ row, last, showError, onOpen }) {
+const AccuracyTableRow = memo(function AccuracyTableRow({ row, last, showError, showAll, onOpen }) {
   const detail = errorDetailParts(row.review);
-  const summary = showError ? errorDetailSummary(row.review) : '';
-  const referenceCol = showError ? { flex: 1.8, minWidth: 220 } : COL.reference;
+  const flagged = triagePoNeedsCorrection(row);
+  const summary = showError || (showAll && flagged) ? errorDetailSummary(row.review) : '';
+  const referenceCol = showError || showAll ? { flex: 1.8, minWidth: 220 } : COL.reference;
   return (
     <TableRow last={last}>
       <TablePhotoCell>
@@ -308,13 +318,13 @@ const AccuracyTableRow = memo(function AccuracyTableRow({ row, last, showError, 
         <TableCell flex={COL.store.flex} minWidth={COL.store.minWidth}>
           {row.storeName || '—'}
         </TableCell>
-        {showError ? (
+        {showError || showAll ? (
           <>
             <TableCell flex={COL.error.flex} minWidth={COL.error.minWidth}>
-              {errorPlace(row)}
+              {flagged ? errorPlace(row) : 'Correct'}
             </TableCell>
             <TableCell flex={COL.amount.flex} minWidth={COL.amount.minWidth} align="right" last>
-              {detail.amount || '—'}
+              {flagged ? detail.amount || '—' : row.triageDateLabel || row.amountLabel || '—'}
             </TableCell>
           </>
         ) : (
@@ -329,13 +339,14 @@ const AccuracyTableRow = memo(function AccuracyTableRow({ row, last, showError, 
 
 export default function TriageAccuracyPanel({
   session,
-  accuracyTab = 'correct',
+  accuracyTab = 'all',
   listQuery = '',
   onStatsChange,
   breakdownOpen = false,
   onBreakdownOpenChange,
   openLotId = '',
   onOpenLotChange,
+  onAccuracyTabChange,
   onBackChange,
 }) {
   const { triage } = useTransferWorkflow();
@@ -347,6 +358,7 @@ export default function TriageAccuracyPanel({
   const [photoBusyId, setPhotoBusyId] = useState('');
   const [photoError, setPhotoError] = useState('');
   const showError = accuracyTab === 'incorrect';
+  const showAll = accuracyTab === 'all' || !accuracyTab;
 
   const allRows = useMemo(() => collectAllTriagePos(triage), [triage]);
   const accuracyRows = useMemo(
@@ -363,6 +375,25 @@ export default function TriageAccuracyPanel({
     [lots, openLotId],
   );
   const lotRows = useMemo(() => (openLot ? openLot.pos : accuracyRows), [accuracyRows, openLot]);
+  const lotProgress = useMemo(() => {
+    if (openLot) return lotProgressOf(openLot);
+    let expected = 0;
+    let evaluated = 0;
+    for (const lot of lots) {
+      expected += Number(lot.expected) || 0;
+      evaluated += Number(lot.evaluated) || 0;
+    }
+    return {
+      expected,
+      evaluated,
+      percent: expected ? Math.round((evaluated / expected) * 100) : 0,
+      done: expected > 0 && evaluated >= expected,
+    };
+  }, [lots, openLot]);
+  const lotMetals = useMemo(
+    () => (openLot ? summarizeLotFineMetals(openLot, allRows) : summarizeLotsFineMetals(lots, allRows)),
+    [allRows, lots, openLot],
+  );
 
   const closeLot = useCallback(() => {
     onOpenLotChange?.(null);
@@ -448,24 +479,30 @@ export default function TriageAccuracyPanel({
 
   const source = useMemo(
     () =>
-      scoped.filter((row) =>
-        showError
-          ? triagePoNeedsCorrection(row) && matchesSelectedLabel(errorPlace(row), filters.error)
-          : Boolean(row.received) &&
-            !triagePoNeedsCorrection(row) &&
-            matchesSelectedLabel(row.triageDateLabel || row.amountLabel, filters.received),
-      ),
-    [filters.error, filters.received, scoped, showError],
+      scoped.filter((row) => {
+        if (showAll) return true;
+        if (showError) {
+          return triagePoNeedsCorrection(row) && matchesSelectedLabel(errorPlace(row), filters.error);
+        }
+        return (
+          Boolean(row.received) &&
+          !triagePoNeedsCorrection(row) &&
+          matchesSelectedLabel(row.triageDateLabel || row.amountLabel, filters.received)
+        );
+      }),
+    [filters.error, filters.received, scoped, showAll, showError],
   );
 
   const optionsPool = useMemo(
     () =>
-      lotRows.filter(
-        (row) =>
-          (!openLot || rowMatchesQuery(row, listQuery)) &&
-          (showError ? triagePoNeedsCorrection(row) : Boolean(row.received) && !triagePoNeedsCorrection(row)),
-      ),
-    [listQuery, lotRows, openLot, showError],
+      lotRows.filter((row) => {
+        if (openLot && !rowMatchesQuery(row, listQuery)) return false;
+        if (showAll) return true;
+        return showError
+          ? triagePoNeedsCorrection(row)
+          : Boolean(row.received) && !triagePoNeedsCorrection(row);
+      }),
+    [listQuery, lotRows, openLot, showAll, showError],
   );
 
   const rowMatchesOptions = useCallback(
@@ -550,10 +587,11 @@ export default function TriageAccuracyPanel({
         row={item}
         last={index === visible.length - 1}
         showError={showError}
+        showAll={showAll}
         onOpen={openFromTable}
       />
     ),
-    [openFromTable, showError, visible.length],
+    [openFromTable, showAll, showError, visible.length],
   );
 
   const openLotFolder = useCallback(
@@ -573,17 +611,49 @@ export default function TriageAccuracyPanel({
     [openLotFolder, visibleLots.length],
   );
 
+  const lotFilterOptions = [
+    { key: 'all', label: 'All', ...(stats.total ? { count: stats.total } : {}) },
+    { key: 'correct', label: 'Correct', ...(stats.correct ? { count: stats.correct } : {}) },
+    { key: 'incorrect', label: 'Incorrect', ...(stats.incorrect ? { count: stats.incorrect } : {}) },
+  ];
+
   const resultsHero = (
     <View style={[styles.heroPad, !isMobile && styles.heroPadDesktop]}>
+      {isMobile && openLot ? (
+        <SegmentedSlider
+          options={lotFilterOptions}
+          value={accuracyTab}
+          onChange={(key) => onAccuracyTabChange?.(key)}
+          fill
+          compact
+          style={styles.lotFilterSlider}
+        />
+      ) : null}
       <ChromeHero
-        value={stats.total ? `${stats.percent}%` : '0%'}
+        value={lotProgress?.expected ? `${lotProgress.percent}%` : stats.total ? `${stats.percent}%` : '0%'}
         stats={[
-          ...(openLot || !stats.lots ? [] : [{ label: stats.lots === 1 ? 'Lot' : 'Lots', value: String(stats.lots) }]),
-          { label: 'Correct', value: String(stats.correct) },
+          ...(openLot ? [] : [{ label: stats.lots === 1 ? 'Lot' : 'Lots', value: String(stats.lots) }]),
+          {
+            label: 'Progress',
+            value: lotProgress?.expected ? `${lotProgress.evaluated}/${lotProgress.expected}` : '—',
+          },
           { label: 'Incorrect', value: String(stats.incorrect) },
         ]}
+        footer={
+          lotProgress?.expected ? (
+            <View style={styles.heroProgress}>
+              <ProgressBar
+                value={lotProgress.evaluated}
+                total={lotProgress.expected}
+                height={7}
+                trackColor="rgba(255,255,255,0.14)"
+                fillColor={lotProgress.done ? '#34C759' : '#E8C36A'}
+              />
+            </View>
+          ) : null
+        }
         onPress={() => onBreakdownOpenChange?.(true)}
-        accessibilityLabel="Open errors breakdown"
+        accessibilityLabel="Open lot progress and metal weights"
       />
     </View>
   );
@@ -601,11 +671,15 @@ export default function TriageAccuracyPanel({
       <TriageDrawer
         visible={breakdownOpen}
         onClose={() => onBreakdownOpenChange?.(false)}
-        title="Errors"
+        title={openLot ? openLot.id : 'Lots'}
         subtitle={
-          stats.total
-            ? `${stats.ratio} correct · ${stats.incorrect} ${stats.incorrect === 1 ? 'error' : 'errors'}`
-            : 'No purchases in this filter'
+          lotProgress?.expected
+            ? `${lotProgress.evaluated} of ${lotProgress.expected} melt POs · ${stats.incorrect} ${
+                stats.incorrect === 1 ? 'error' : 'errors'
+              }`
+            : stats.total
+              ? `${stats.ratio} correct · ${stats.incorrect} ${stats.incorrect === 1 ? 'error' : 'errors'}`
+              : 'No purchases in this filter'
         }
         leftLabel="Done"
         onLeft={() => onBreakdownOpenChange?.(false)}
@@ -618,14 +692,54 @@ export default function TriageAccuracyPanel({
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.breakHero}>
-            <Text style={styles.breakHeroLabel}>Results</Text>
-            <Text style={styles.breakHeroValue}>{stats.total ? `${stats.percent}%` : '—'}</Text>
-            <Text style={styles.breakHeroMeta}>
-              {stats.ratio} correct
-              {filtersActive || listQuery.trim() ? ' in this filter' : ''}
+            <Text style={styles.breakHeroLabel}>Progress</Text>
+            <Text style={styles.breakHeroValue}>
+              {lotProgress?.expected ? `${lotProgress.percent}%` : stats.total ? `${stats.percent}%` : '—'}
             </Text>
-            <ProgressBar value={stats.correct} total={stats.total} tone="green" height={6} style={styles.breakHeroBar} />
+            <Text style={styles.breakHeroMeta}>
+              {lotProgress?.expected
+                ? `${lotProgress.evaluated} of ${lotProgress.expected} melt POs · bullion-only excluded`
+                : `${stats.ratio} correct${filtersActive || listQuery.trim() ? ' in this filter' : ''}`}
+            </Text>
+            <ProgressBar
+              value={lotProgress?.expected ? lotProgress.evaluated : stats.correct}
+              total={lotProgress?.expected ? lotProgress.expected : stats.total}
+              tone={lotProgress?.done ? 'green' : 'blue'}
+              height={6}
+              style={styles.breakHeroBar}
+            />
           </View>
+
+          {lotMetals ? (
+            <View style={styles.breakBlock}>
+              <SectionLabel>Fine metal</SectionLabel>
+              {LOT_FINE_METALS.map((metal, index) => {
+                const expected = lotMetals.expected[metal.key] || 0;
+                const completed = lotMetals.completed[metal.key] || 0;
+                return (
+                  <View
+                    key={metal.key}
+                    style={[styles.breakRow, index === LOT_FINE_METALS.length - 1 && styles.breakRowLast]}
+                  >
+                    <View style={styles.breakCopy}>
+                      <Text style={styles.breakLabel} numberOfLines={1}>
+                        {metal.label}
+                      </Text>
+                      <Text style={styles.breakCount}>{formatFineProgress(completed, expected)}</Text>
+                    </View>
+                    <Text style={styles.breakMetalName}>{metal.name}</Text>
+                    <ProgressBar
+                      value={completed}
+                      total={expected || completed || 1}
+                      tone={expected > 0 && completed >= expected ? 'green' : 'blue'}
+                      height={4}
+                      style={styles.breakBar}
+                    />
+                  </View>
+                );
+              })}
+            </View>
+          ) : null}
 
           <Pressable
             style={styles.breakLead}
@@ -782,20 +896,24 @@ export default function TriageAccuracyPanel({
 
   const mobileEmpty = (
     <EmptyState
-      icon={showError ? 'alert-circle-outline' : 'checkmark-done-outline'}
+      icon={showError ? 'alert-circle-outline' : showAll ? 'folder-outline' : 'checkmark-done-outline'}
       title={
         listQuery.trim() || filtersActive
           ? 'No matches'
-            : showError
+          : showError
             ? 'No incorrect purchases in this lot'
-            : 'No correct purchases in this lot'
+            : showAll
+              ? 'No purchases in this lot'
+              : 'No correct purchases in this lot'
       }
       body={
         listQuery.trim() || filtersActive
           ? `Nothing matches ${listQuery.trim() ? `“${listQuery.trim()}”` : 'those filters'}.`
           : showError
             ? 'POs with a correction, note, or error type land here.'
-            : 'Received POs with no corrections land here.'
+            : showAll
+              ? 'Evaluated POs in this lot land here.'
+              : 'Received POs with no corrections land here.'
       }
     />
   );
@@ -807,7 +925,7 @@ export default function TriageAccuracyPanel({
           contentContainerStyle={styles.mobileListContent}
           data={visible}
           keyExtractor={accuracyKey}
-          extraData={`${showError}-${photoBusyId}-${visible.length}`}
+          extraData={`${accuracyTab}-${photoBusyId}-${visible.length}`}
           keyboardShouldPersistTaps="handled"
           ListHeaderComponent={
             photoError ? (
@@ -820,22 +938,23 @@ export default function TriageAccuracyPanel({
           renderItem={({ item, index }) => {
             const photos = normalizeReviewImages(item.review?.images);
             const atMax = photos.length >= MAX_REVIEW_IMAGES;
+            const flagged = triagePoNeedsCorrection(item);
             return (
               <View style={[index === 0 && styles.mobileGroupStart, index === visible.length - 1 && styles.mobileGroupEnd]}>
                 <MobileListRow
                   title={item.reference || 'Document'}
                   subtitle={[staffName(item) || null, item.storeName, item.dateLabel].filter(Boolean).join(' · ')}
                   meta={
-                    showError
+                    showError || (showAll && flagged)
                       ? [errorPlace(item), item.review?.errorAmount].filter(Boolean).join(' · ')
                       : item.triageDateLabel || item.amountLabel || ''
                   }
-                  last={index === visible.length - 1 && !showError}
+                  last={index === visible.length - 1 && !showError && !(showAll && flagged)}
                   onPress={() => openFromTable(item)}
                   accessibilityLabel={`Open ${item.reference || 'document'}`}
                   leading={<PoThumb urls={item.imageUrls} label={item.reference} size={52} />}
                   trailing={
-                    showError ? (
+                    showError || (showAll && flagged) ? (
                       <MobileCameraButton
                         count={photos.length}
                         busy={photoBusyId === item.id}
@@ -852,7 +971,7 @@ export default function TriageAccuracyPanel({
                     )
                   }
                 />
-                {showError ? (
+                {showError || (showAll && flagged) ? (
                   <Pressable
                     onPress={() => openFromTable(item)}
                     style={[styles.mobileDetail, index === visible.length - 1 && styles.mobileDetailLast]}
@@ -868,7 +987,7 @@ export default function TriageAccuracyPanel({
         />
       ) : (
       <TableFrame
-        minWidth={showError ? 920 : 780}
+        minWidth={showError || showAll ? 920 : 780}
         data={visible}
         renderItem={renderRow}
         keyExtractor={accuracyKey}
@@ -887,7 +1006,9 @@ export default function TriageAccuracyPanel({
               ? `Nothing matches ${listQuery.trim() ? `“${listQuery.trim()}”` : 'those filters'}.`
               : showError
                 ? 'No incorrect purchases in this set.'
-                : 'No correct purchases in this set.'}
+                : showAll
+                  ? 'No purchases in this set.'
+                  : 'No correct purchases in this set.'}
           </TableEmpty>
         }
         header={
@@ -901,7 +1022,7 @@ export default function TriageAccuracyPanel({
               options={referenceOptions}
               openKey={openFilter}
               onOpenKey={setOpenFilter}
-              style={showError ? { flex: 1.8, minWidth: 220 } : COL.reference}
+              style={showError || showAll ? { flex: 1.8, minWidth: 220 } : COL.reference}
               {...sortProps('reference')}
             />
             <ColumnFilter
@@ -937,7 +1058,7 @@ export default function TriageAccuracyPanel({
               style={COL.store}
               {...sortProps('store')}
             />
-            {showError ? (
+            {showError || showAll ? (
               <>
                 <ColumnFilter
                   columnKey="error"
@@ -1019,6 +1140,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 32,
     paddingTop: 4,
     paddingBottom: 18,
+  },
+  lotFilterSlider: {
+    marginBottom: 10,
+  },
+  heroProgress: {
+    paddingHorizontal: 4,
+  },
+  breakMetalName: {
+    fontFamily,
+    fontSize: 12,
+    color: T.secondary,
+    marginTop: -2,
   },
   sheetFill: {
     flex: 1,
