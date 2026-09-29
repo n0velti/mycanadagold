@@ -2147,6 +2147,10 @@ const styles = StyleSheet.create({
     minHeight: 0,
     zIndex: 4,
     backgroundColor: 'transparent',
+    ...Platform.select({
+      web: { overflowY: 'auto', touchAction: 'pan-y', WebkitOverflowScrolling: 'touch' },
+      default: {},
+    }),
   },
   chromeOverlaySheet: {
     flexGrow: 1,

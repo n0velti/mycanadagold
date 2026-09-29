@@ -7,10 +7,10 @@ import TriageDailyReceiptsDrawer from './TriageDailyReceiptsDrawer';
 import TriageDashboardPanel from './TriageDashboardPanel';
 import TriageDeletedPanel from './TriageDeletedPanel';
 import { BarButton, EmptyState, FONT, SearchField, SegmentedSlider, T, TextTabs } from './TriageKit';
-import { MobileNavButton } from './MobileChrome';
+import { MobileNavButton, MobileNavHeader } from './MobileChrome';
 import { ensureLinkedPosSessions } from '../lib/auth';
 import { fetchTransferStores } from '../lib/locations';
-import { CANVAS, MOBILE_FILTER_INSET, useIsMobile } from '../lib/mobileUi';
+import { CANVAS, useIsMobile } from '../lib/mobileUi';
 import {
   buildDailyReceiptGrid,
   dailyReceiptStatus,
@@ -404,21 +404,22 @@ export default function TriageScreen({
   return (
     <View style={[styles.body, embedded && styles.bodyEmbedded, isMobile && styles.bodyMobile]}>
       {isMobile && lotsListView ? (
-        <View pointerEvents="box-none" style={styles.mobileFabLayer}>
-          <BarButton icon="chevron-back" label="Back" onPress={goBack} accessibilityLabel="Back" />
-          {canAdd ? (
-            <MobileNavButton
-              tone="green"
-              label="Add"
-              onPress={() => openScanRef.current()}
-              accessibilityLabel="Add a PO"
-            >
-              <Ionicons name="add" size={20} color="#fff" />
-            </MobileNavButton>
-          ) : (
-            <View style={styles.mobileTitleSpacer} />
-          )}
-        </View>
+        <MobileNavHeader
+          title={pageTitle}
+          onBack={goBack}
+          trailing={
+            canAdd ? (
+              <MobileNavButton
+                tone="green"
+                label="Add"
+                onPress={() => openScanRef.current()}
+                accessibilityLabel="Add a PO"
+              >
+                <Ionicons name="add" size={20} color="#fff" />
+              </MobileNavButton>
+            ) : null
+          }
+        />
       ) : null}
       <View style={styles.pageVisible}>
       {portalNav || isMobile ? null : <View style={styles.localNavRow}>{navTabs}</View>}
@@ -559,17 +560,6 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   mobileFabLayer: {
-    position: 'absolute',
-    top: 8,
-    left: MOBILE_FILTER_INSET,
-    right: MOBILE_FILTER_INSET,
-    zIndex: 24,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  mobileFabSlot: {
-    height: 56,
     flexShrink: 0,
   },
   mobileTitle: {

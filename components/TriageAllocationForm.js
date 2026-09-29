@@ -5,6 +5,7 @@ import {
   allocatedObjectGrams,
   destinationLabel,
   destinationTotals,
+  nextUnusedDestination,
   formatGrams,
   formatObjectWeight,
   formatPureWeight,
@@ -41,10 +42,13 @@ export default function TriageAllocationForm({ draft, onChange, disabled }) {
       <View style={styles.totals}>
         {TRIAGE_DESTINATIONS.map((dest) => {
           const row = totals[dest.id];
+          const grams = row?.objectGrams || 0;
           return (
-            <View key={dest.id} style={styles.totalCard}>
-              <Text style={styles.totalLabel}>{dest.label}</Text>
-              <Text style={styles.totalValue}>{formatGrams(row?.objectGrams || 0)} g</Text>
+            <View key={dest.id} style={[styles.totalCard, grams > 0 && styles.totalCardOn]}>
+              <Text style={styles.totalLabel} numberOfLines={2}>
+                {dest.label}
+              </Text>
+              <Text style={styles.totalValue}>{formatGrams(grams)} g</Text>
               {row?.fineGrams > 0 ? (
                 <Text style={styles.totalFine}>{formatGrams(row.fineGrams)} g pure</Text>
               ) : null}
@@ -76,23 +80,35 @@ export default function TriageAllocationForm({ draft, onChange, disabled }) {
 
               {(line.splits || []).map((split) => (
                 <View key={split.id} style={styles.split}>
-                  <TextInput
-                    style={styles.weightInput}
-                    value={split.objectGrams ? String(split.objectGrams) : ''}
-                    onChangeText={(value) =>
-                      update(
-                        setLineSplit(draft, line.lineIndex, split.id, {
-                          objectGrams: value.replace(/[^0-9.]/g, ''),
-                        }),
-                      )
-                    }
-                    keyboardType="decimal-pad"
-                    placeholder="0"
-                    placeholderTextColor={T.secondary}
-                    editable={!disabled}
-                    accessibilityLabel={`${line.name} allocated weight`}
-                  />
-                  <Text style={styles.unit}>g</Text>
+                  <View style={styles.splitHead}>
+                    <TextInput
+                      style={styles.weightInput}
+                      value={split.objectGrams ? String(split.objectGrams) : ''}
+                      onChangeText={(value) =>
+                        update(
+                          setLineSplit(draft, line.lineIndex, split.id, {
+                            objectGrams: value.replace(/[^0-9.]/g, ''),
+                          }),
+                        )
+                      }
+                      keyboardType="decimal-pad"
+                      placeholder="0"
+                      placeholderTextColor={T.secondary}
+                      editable={!disabled}
+                      accessibilityLabel={`${line.name} allocated weight`}
+                    />
+                    <Text style={styles.unit}>g</Text>
+                    {(line.splits || []).length > 1 ? (
+                      <Pressable
+                        onPress={() => update(removeLineSplit(draft, line.lineIndex, split.id))}
+                        disabled={disabled}
+                        hitSlop={8}
+                        accessibilityLabel="Remove split"
+                      >
+                        <Ionicons name="close" size={18} color={T.secondary} />
+                      </Pressable>
+                    ) : null}
+                  </View>
                   <View style={styles.chips}>
                     {TRIAGE_DESTINATIONS.map((dest) => (
                       <DestChip
@@ -106,30 +122,22 @@ export default function TriageAllocationForm({ draft, onChange, disabled }) {
                       />
                     ))}
                   </View>
-                  {(line.splits || []).length > 1 ? (
-                    <Pressable
-                      onPress={() => update(removeLineSplit(draft, line.lineIndex, split.id))}
-                      disabled={disabled}
-                      hitSlop={8}
-                      accessibilityLabel="Remove split"
-                    >
-                      <Ionicons name="close" size={18} color={T.secondary} />
-                    </Pressable>
-                  ) : null}
                 </View>
               ))}
 
               {line.objectGrams > 0 ? (
                 <Pressable
                   style={styles.addSplit}
-                  onPress={() => update(addLineSplit(draft, line.lineIndex, remaining > 0.001 ? 'rcm' : 'melt'))}
+                  onPress={() =>
+                    update(addLineSplit(draft, line.lineIndex, nextUnusedDestination(line)))
+                  }
                   disabled={disabled}
                   accessibilityRole="button"
                   accessibilityLabel={`Split ${line.name}`}
                 >
                   <Ionicons name="add" size={16} color={T.text} />
                   <Text style={styles.addSplitText}>
-                    Split remaining to {destinationLabel(remaining > 0.001 ? 'rcm' : 'melt')}
+                    Split remaining to {destinationLabel(nextUnusedDestination(line))}
                   </Text>
                 </Pressable>
               ) : null}
@@ -146,15 +154,20 @@ export default function TriageAllocationForm({ draft, onChange, disabled }) {
 const styles = StyleSheet.create({
   totals: {
     flexDirection: 'row',
-    gap: 10,
+    flexWrap: 'wrap',
+    gap: 8,
     marginBottom: 16,
   },
   totalCard: {
-    flex: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
+    width: '48%',
+    flexGrow: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
     borderRadius: 12,
     backgroundColor: T.fillSoft,
+  },
+  totalCardOn: {
+    backgroundColor: 'rgba(0,0,0,0.06)',
   },
   totalLabel: {
     fontFamily: FONT,
@@ -206,10 +219,13 @@ const styles = StyleSheet.create({
     color: T.orange,
   },
   split: {
+    gap: 8,
+    marginBottom: 12,
+  },
+  splitHead: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginBottom: 8,
   },
   weightInput: {
     width: 84,
