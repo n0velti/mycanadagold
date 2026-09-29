@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
-import { FlatList, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
   applyTriageReviewToPo,
@@ -661,7 +661,7 @@ export default function TriageAccuracyPanel({
   const wrapResults = (list, title, meta) => (
     <View style={[styles.body, isMobile && styles.bodyMobile]}>
       {resultsHero}
-      <ChromeSheet title={title} meta={meta} style={styles.sheetFill}>
+      <ChromeSheet title={title} meta={meta} fill={isMobile} style={styles.sheetFill}>
         {list}
       </ChromeSheet>
     </View>
@@ -818,40 +818,46 @@ export default function TriageAccuracyPanel({
       <>
         {wrapResults(
       isMobile ? (
-          <FlatList
-            style={styles.mobileList}
-            contentContainerStyle={styles.mobileListContent}
-            data={visibleLots}
-            keyExtractor={(lot) => lot.id}
-            keyboardShouldPersistTaps="handled"
-            ListEmptyComponent={lotEmpty}
-            extraData={visibleLots.map((lot) => `${lot.id}:${lot.evaluated}/${lot.expected}`).join('|')}
-            renderItem={({ item, index }) => {
-              const progress = lotProgressOf(item);
-              return (
-                <View style={[index === 0 && styles.mobileGroupStart, index === visibleLots.length - 1 && styles.mobileGroupEnd]}>
-                  <MobileListRow
-                    title={item.id}
-                    subtitle={[item.location, lotPeriodLabel(item)].filter(Boolean).join(' · ')}
-                    meta={`${item.pos.length} ${item.pos.length === 1 ? 'PO' : 'POs'}`}
-                    last={index === visibleLots.length - 1}
-                    onPress={() => openLotFolder(item)}
-                    accessibilityLabel={
-                      progress.expected
-                        ? `Open ${item.id}, ${progress.evaluated} of ${progress.expected} evaluated`
-                        : `Open ${item.id}`
-                    }
-                    leading={
-                      <View style={styles.lotIconMobile}>
-                        <Ionicons name="folder-outline" size={22} color={T.text} />
-                      </View>
-                    }
-                    extra={progress.expected ? <LotProgress lot={item} compact /> : null}
-                  />
-                </View>
-              );
-            }}
-          />
+          visibleLots.length ? (
+            <ScrollView
+              style={styles.mobileList}
+              contentContainerStyle={styles.mobileListContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+              nestedScrollEnabled
+            >
+              {visibleLots.map((item, index) => {
+                const progress = lotProgressOf(item);
+                return (
+                  <View
+                    key={item.id}
+                    style={[index === 0 && styles.mobileGroupStart, index === visibleLots.length - 1 && styles.mobileGroupEnd]}
+                  >
+                    <MobileListRow
+                      title={item.id}
+                      subtitle={[item.location, lotPeriodLabel(item)].filter(Boolean).join(' · ')}
+                      meta={`${item.pos.length} ${item.pos.length === 1 ? 'PO' : 'POs'}`}
+                      last={index === visibleLots.length - 1}
+                      onPress={() => openLotFolder(item)}
+                      accessibilityLabel={
+                        progress.expected
+                          ? `Open ${item.id}, ${progress.evaluated} of ${progress.expected} evaluated`
+                          : `Open ${item.id}`
+                      }
+                      leading={
+                        <View style={styles.lotIconMobile}>
+                          <Ionicons name="folder-outline" size={22} color={T.text} />
+                        </View>
+                      }
+                      extra={progress.expected ? <LotProgress lot={item} compact /> : null}
+                    />
+                  </View>
+                );
+              })}
+            </ScrollView>
+          ) : (
+            lotEmpty
+          )
         ) : (
           <TableFrame
             minWidth={780}
@@ -920,71 +926,72 @@ export default function TriageAccuracyPanel({
 
   const lotDetail = wrapResults(
     isMobile ? (
-        <FlatList
-          style={styles.mobileList}
-          contentContainerStyle={styles.mobileListContent}
-          data={visible}
-          keyExtractor={accuracyKey}
-          extraData={`${accuracyTab}-${photoBusyId}-${visible.length}`}
-          keyboardShouldPersistTaps="handled"
-          ListHeaderComponent={
-            photoError ? (
-              <Text style={styles.mobilePhotoError}>{photoError}</Text>
-            ) : showError && visible.length ? (
-              <Text style={styles.mobileHint}>Tap a purchase to edit its error.</Text>
-            ) : null
-          }
-          ListEmptyComponent={mobileEmpty}
-          renderItem={({ item, index }) => {
-            const photos = normalizeReviewImages(item.review?.images);
-            const atMax = photos.length >= MAX_REVIEW_IMAGES;
-            const flagged = triagePoNeedsCorrection(item);
-            return (
-              <View style={[index === 0 && styles.mobileGroupStart, index === visible.length - 1 && styles.mobileGroupEnd]}>
-                <MobileListRow
-                  title={item.reference || 'Document'}
-                  subtitle={[staffName(item) || null, item.storeName, item.dateLabel].filter(Boolean).join(' · ')}
-                  meta={
-                    showError || (showAll && flagged)
-                      ? [errorPlace(item), item.review?.errorAmount].filter(Boolean).join(' · ')
-                      : item.triageDateLabel || item.amountLabel || ''
-                  }
-                  last={index === visible.length - 1 && !showError && !(showAll && flagged)}
-                  onPress={() => openFromTable(item)}
-                  accessibilityLabel={`Open ${item.reference || 'document'}`}
-                  leading={<PoThumb urls={item.imageUrls} label={item.reference} size={52} />}
-                  trailing={
-                    showError || (showAll && flagged) ? (
-                      <MobileCameraButton
-                        count={photos.length}
-                        busy={photoBusyId === item.id}
-                        disabled={atMax && photoBusyId !== item.id}
-                        onPress={() => addPhotoToRow(item)}
-                        accessibilityLabel={
-                          atMax
-                            ? `View photos for ${item.reference}`
-                            : `Take a photo of ${item.reference}`
-                        }
-                      />
-                    ) : (
-                      <StatusPill label="Correct" tone="green" compact />
-                    )
-                  }
-                />
-                {showError || (showAll && flagged) ? (
-                  <Pressable
+        visible.length ? (
+          <ScrollView
+            style={styles.mobileList}
+            contentContainerStyle={styles.mobileListContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            nestedScrollEnabled
+          >
+            {photoError ? <Text style={styles.mobilePhotoError}>{photoError}</Text> : null}
+            {showError ? <Text style={styles.mobileHint}>Tap a purchase to edit its error.</Text> : null}
+            {visible.map((item, index) => {
+              const photos = normalizeReviewImages(item.review?.images);
+              const atMax = photos.length >= MAX_REVIEW_IMAGES;
+              const flagged = triagePoNeedsCorrection(item);
+              return (
+                <View
+                  key={accuracyKey(item)}
+                  style={[index === 0 && styles.mobileGroupStart, index === visible.length - 1 && styles.mobileGroupEnd]}
+                >
+                  <MobileListRow
+                    title={item.reference || 'Document'}
+                    subtitle={[staffName(item) || null, item.storeName, item.dateLabel].filter(Boolean).join(' · ')}
+                    meta={
+                      showError || (showAll && flagged)
+                        ? [errorPlace(item), item.review?.errorAmount].filter(Boolean).join(' · ')
+                        : item.triageDateLabel || item.amountLabel || ''
+                    }
+                    last={index === visible.length - 1 && !showError && !(showAll && flagged)}
                     onPress={() => openFromTable(item)}
-                    style={[styles.mobileDetail, index === visible.length - 1 && styles.mobileDetailLast]}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Edit error for ${item.reference || 'document'}`}
-                  >
-                    <ErrorDetailBlock review={item.review} />
-                  </Pressable>
-                ) : null}
-              </View>
-            );
-          }}
-        />
+                    accessibilityLabel={`Open ${item.reference || 'document'}`}
+                    leading={<PoThumb urls={item.imageUrls} label={item.reference} size={52} />}
+                    trailing={
+                      showError || (showAll && flagged) ? (
+                        <MobileCameraButton
+                          count={photos.length}
+                          busy={photoBusyId === item.id}
+                          disabled={atMax && photoBusyId !== item.id}
+                          onPress={() => addPhotoToRow(item)}
+                          accessibilityLabel={
+                            atMax
+                              ? `View photos for ${item.reference}`
+                              : `Take a photo of ${item.reference}`
+                          }
+                        />
+                      ) : (
+                        <StatusPill label="Correct" tone="green" compact />
+                      )
+                    }
+                  />
+                  {showError || (showAll && flagged) ? (
+                    <Pressable
+                      onPress={() => openFromTable(item)}
+                      style={[styles.mobileDetail, index === visible.length - 1 && styles.mobileDetailLast]}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Edit error for ${item.reference || 'document'}`}
+                    >
+                      <ErrorDetailBlock review={item.review} />
+                    </Pressable>
+                  ) : null}
+                </View>
+              );
+            })}
+          </ScrollView>
+        ) : (
+          mobileEmpty
+        )
       ) : (
       <TableFrame
         minWidth={showError || showAll ? 920 : 780}

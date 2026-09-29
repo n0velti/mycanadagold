@@ -1116,14 +1116,26 @@ function ItemsReviewCard({
                   <Text style={[styles.typeBadge, styles.typeBadgeCompact, typeBadgeStyle(itemType)]} numberOfLines={1}>
                     {itemType}
                   </Text>
-                  <HoverInput
-                    cellStyle={[styles.itemCell, styles.compactNameCell]}
-                    style={styles.itemName}
-                    value={String(item.name?.value ?? '')}
-                    onChangeText={(value) => onUpdateName?.(item.id, value)}
-                    placeholder="Item"
-                    placeholderTextColor="#c7c7cc"
-                  />
+                  <View style={styles.compactNameCell}>
+                    <HoverInput
+                      cellStyle={styles.itemCell}
+                      style={styles.itemName}
+                      value={String(item.name?.value ?? '')}
+                      onChangeText={(value) => onUpdateName?.(item.id, value)}
+                      placeholder="Item"
+                      placeholderTextColor="#c7c7cc"
+                    />
+                    {item.objectLabel || item.pureLabel ? (
+                      <Text style={styles.itemWeightMeta} numberOfLines={1}>
+                        {[
+                          item.objectLabel ? `${item.objectLabel} object` : null,
+                          item.pureLabel ? `${item.pureLabel} pure` : null,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </Text>
+                    ) : null}
+                  </View>
                   <View style={styles.colPhoto}>
                     <LineThumb urls={item.imageUrls} label={itemLabel} onPress={() => onViewPhoto?.(item)} />
                   </View>
@@ -1200,6 +1212,16 @@ function ItemsReviewCard({
                     placeholder="Item"
                     placeholderTextColor="#c7c7cc"
                   />
+                  {item.objectLabel || item.pureLabel ? (
+                    <Text style={styles.itemWeightMeta} numberOfLines={1}>
+                      {[
+                        item.objectLabel ? `${item.objectLabel} object` : null,
+                        item.pureLabel ? `${item.pureLabel} pure` : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </Text>
+                  ) : null}
                 </View>
                 <View style={[styles.colQty, styles.colRight]}>
                   <QtyField
@@ -2369,6 +2391,13 @@ const styles = StyleSheet.create({
       web: { outlineStyle: 'none' },
       default: {},
     }),
+  },
+  itemWeightMeta: {
+    marginTop: 2,
+    fontFamily,
+    fontSize: 12,
+    color: '#8e8e93',
+    fontVariant: ['tabular-nums'],
   },
   itemUnit: {
     fontFamily,

@@ -48,7 +48,7 @@ function TabProfileAvatar({ uri, name, active }) {
         ) : (
           <Ionicons
             name={active ? 'person' : 'person-outline'}
-            size={19}
+            size={24}
             color={active ? MOBILE.label : '#3A3A3C'}
           />
         )}
@@ -77,7 +77,7 @@ export function MobileFilterLines({ color }) {
 }
 
 export function MobileFilterChip({ label, active = false, onPress, accessibilityLabel, accessibilityState, style }) {
-  const color = active ? MOBILE.label : MOBILE.secondary;
+  const color = active ? MOBILE.label : '#3A3A3C';
   return (
     <Pressable
       hitSlop={6}
@@ -417,7 +417,7 @@ export function MobileTabBar({
                     ) : (
                       <Ionicons
                         name={isActive ? tab.iconActive : tab.icon}
-                        size={28}
+                        size={34}
                         color={isActive ? MOBILE.label : '#3A3A3C'}
                       />
                     )}
@@ -699,8 +699,8 @@ const styles = StyleSheet.create({
   },
   tabActive: {
     position: 'absolute',
-    top: 5,
-    bottom: 5,
+    top: 6,
+    bottom: 6,
     zIndex: 0,
     borderRadius: 999,
     backgroundColor: 'rgba(60,60,67,0.16)',
@@ -711,7 +711,7 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: 36,
+    minHeight: 44,
     overflow: 'visible',
     ...Platform.select({
       web: { cursor: 'pointer' },
@@ -719,9 +719,9 @@ const styles = StyleSheet.create({
     }),
   },
   tabLogo: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
   },
   tabLogoDim: {
     opacity: 0.82,
@@ -729,15 +729,15 @@ const styles = StyleSheet.create({
   tabIconWrap: {
     position: 'relative',
     overflow: 'visible',
-    width: 36,
-    height: 36,
+    width: 42,
+    height: 42,
     alignItems: 'center',
     justifyContent: 'center',
   },
   tabAvatarRing: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     borderWidth: 1.5,
     borderColor: 'transparent',
     alignItems: 'center',
@@ -747,21 +747,21 @@ const styles = StyleSheet.create({
     borderColor: '#fff',
   },
   tabAvatar: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#E5E5EA',
   },
   tabAvatarImage: {
-    width: 30,
-    height: 30,
+    width: 36,
+    height: 36,
   },
   tabAvatarInitials: {
     fontFamily,
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '700',
     color: MOBILE.label,
     letterSpacing: -0.2,
