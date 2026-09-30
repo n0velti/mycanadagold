@@ -9,7 +9,8 @@
  *        Aureus identity (`aureus_user_id`) that RLS and the proxy check.
  *     4. Upserts the staff profile with the service role.
  *     5. Refuses deactivated staff.
- *     6. Mints a Supabase session via a one-time token hash (never emailed).
+ *     6. Mints a Supabase session with a server-held password (no magic-link
+ *        email, so Auth email quota cannot block sign-in).
  *     7. Signs in to the other POS systems with server-held shared credentials
  *        so every staff session can load every store.
  *
@@ -303,24 +304,19 @@ async function upsertProfile(
   return { profile: fallback.data as ProfileRow, firstLogin };
 }
 
-async function mintSession(admin: SupabaseClient, email: string) {
-  const { data: link, error: linkError } = await admin.auth.admin.generateLink({
-    type: 'magiclink',
-    email,
-  });
-  if (linkError || !link?.properties?.hashed_token) {
-    throw linkError || new Error('Could not start a session.');
-  }
+/** Stable per-user password so sign-in never calls generateLink (email quota). */
+async function staffAuthPassword(userId: string): Promise<string> {
+  const digest = await sha256Hex(`staff-pass:${SERVICE_ROLE_KEY}:${userId}`);
+  return `Cg1!${digest}`;
+}
 
-  const { data, error: verifyError } = await anonClient().auth.verifyOtp({
-    token_hash: link.properties.hashed_token,
-    type: 'magiclink',
-  });
-  if (verifyError || !data?.session) {
-    throw verifyError || new Error('Could not start a session.');
-  }
-
-  const session = data.session;
+function sessionPayload(session: {
+  access_token: string;
+  refresh_token: string;
+  expires_in?: number;
+  expires_at?: number;
+  token_type?: string;
+}) {
   return {
     access_token: session.access_token,
     refresh_token: session.refresh_token,
@@ -328,6 +324,27 @@ async function mintSession(admin: SupabaseClient, email: string) {
     expires_at: session.expires_at,
     token_type: session.token_type,
   };
+}
+
+async function mintSession(admin: SupabaseClient, userId: string, email: string) {
+  const password = await staffAuthPassword(userId);
+  const anon = anonClient();
+
+  let signed = await anon.auth.signInWithPassword({ email, password });
+  if (signed.error || !signed.data?.session) {
+    const update = await admin.auth.admin.updateUserById(userId, {
+      password,
+      email_confirm: true,
+    });
+    if (update.error) throw update.error;
+    signed = await anon.auth.signInWithPassword({ email, password });
+  }
+
+  if (signed.error || !signed.data?.session) {
+    throw signed.error || new Error('Could not start a session.');
+  }
+
+  return sessionPayload(signed.data.session);
 }
 
 async function withTeamName(admin: SupabaseClient, row: ProfileRow): Promise<ProfileRow> {
@@ -543,7 +560,7 @@ async function handleLogin(req: Request, body: LoginBody): Promise<Response> {
 
   let supabaseSession;
   try {
-    supabaseSession = await mintSession(admin, email);
+    supabaseSession = await mintSession(admin, userId, email);
   } catch (err) {
     console.error('session mint failed', err instanceof Error ? err.message : err);
     return error(req, 500, 'Could not start your session. Try again.', 'session_failed');

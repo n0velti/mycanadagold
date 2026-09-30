@@ -23,6 +23,7 @@ import {
 } from '../lib/googleReviews';
 import { formatDateParam, parseDateParam } from '../lib/transactions';
 import HomeDatePicker from './HomeDatePicker';
+import ReviewAuthorLink from './ReviewAuthorLink';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -171,7 +172,7 @@ function ChipRow({ mobile, children }) {
   );
 }
 
-function ReviewCard({ review, storeName, showStore, compact }) {
+function ReviewCard({ review, storeName, showStore, compact, session, onOpenCustomer }) {
   return (
     <View
       style={[
@@ -183,9 +184,12 @@ function ReviewCard({ review, storeName, showStore, compact }) {
       <View style={[styles.reviewTop, compact && styles.reviewTopCompact]}>
         <Avatar uri={review.avatarUrl} name={review.author} />
         <View style={styles.reviewIdentity}>
-          <Text style={styles.reviewAuthor} numberOfLines={1}>
-            {review.author || 'Anonymous'}
-          </Text>
+          <ReviewAuthorLink
+            session={session}
+            review={review}
+            onOpenCustomer={onOpenCustomer}
+            style={styles.reviewAuthor}
+          />
           <Text style={styles.reviewStars}>{starsLabel(review.rating)}</Text>
         </View>
         <Text style={[styles.reviewWhen, compact && styles.reviewWhenCompact]} numberOfLines={2}>
@@ -220,7 +224,7 @@ function ReviewCard({ review, storeName, showStore, compact }) {
   );
 }
 
-export default function ReviewsScreen({ session, onRequireLogin, storeFilter }) {
+export default function ReviewsScreen({ session, onRequireLogin, storeFilter, onOpenCustomer }) {
   const isMobile = useIsMobile();
   const { canFilter } = useAppAccess();
   const allowFilters = canFilter('reviews');
@@ -650,6 +654,8 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter }) 
                 storeName={storeName}
                 compact={isMobile}
                 showStore={!selectedStore && results.length > 1}
+                session={session}
+                onOpenCustomer={onOpenCustomer}
               />
             ))}
           </View>

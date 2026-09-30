@@ -32,6 +32,7 @@ import { reviewMonthRange, reviewPeriodLabel } from '../lib/googleReviews';
 import { formatDateParam, fetchTransactionsAcrossPos, parseDateParam } from '../lib/transactions';
 import { FONT, FONT_LIGHT } from '../lib/typography';
 import HomeDatePicker from './HomeDatePicker';
+import ReviewAuthorLink from './ReviewAuthorLink';
 
 const ACCENT = '#A16207';
 const ACCENT_SOFT = '#FEF9C3';
@@ -463,7 +464,7 @@ function shareLabel(share) {
   return `Split ${Math.round(value * 100)}%`;
 }
 
-function ReviewCard({ review, showCount = false }) {
+function ReviewCard({ review, showCount = false, session, onOpenCustomer }) {
   const counted = showCount && review.eligible;
   const split = shareLabel(review.share);
   return (
@@ -478,9 +479,12 @@ function ReviewCard({ review, showCount = false }) {
       <View style={styles.reviewTop}>
         <Avatar uri={review.avatarUrl} name={review.author} />
         <View style={styles.reviewIdentity}>
-          <Text style={styles.reviewAuthor} numberOfLines={1}>
-            {review.author || 'Anonymous'}
-          </Text>
+          <ReviewAuthorLink
+            session={session}
+            review={review}
+            onOpenCustomer={onOpenCustomer}
+            style={styles.reviewAuthor}
+          />
           <Text style={styles.reviewStars}>{starsLabel(review.rating)}</Text>
         </View>
         <Text style={styles.reviewWhen}>{formatWhen(review)}</Text>
@@ -560,7 +564,7 @@ function reviewsNamedForEmployee(reviews, employeeName) {
   });
 }
 
-function EmployeeBonusDrawer({ visible, employee, store, onClose }) {
+function EmployeeBonusDrawer({ visible, employee, store, onClose, session, onOpenCustomer }) {
   const { width: windowWidth } = useWindowDimensions();
   const isMobile = windowWidth < MOBILE_BREAKPOINT;
   const panelWidth = isMobile
@@ -660,7 +664,13 @@ function EmployeeBonusDrawer({ visible, employee, store, onClose }) {
             {counted.length ? (
               <View style={styles.reviewList}>
                 {counted.map((review) => (
-                  <ReviewCard key={review.id} review={review} showCount />
+                  <ReviewCard
+                    key={review.id}
+                    review={review}
+                    showCount
+                    session={session}
+                    onOpenCustomer={onOpenCustomer}
+                  />
                 ))}
               </View>
             ) : (
@@ -679,7 +689,13 @@ function EmployeeBonusDrawer({ visible, employee, store, onClose }) {
                 </Text>
                 <View style={styles.reviewList}>
                   {notCounted.map((review) => (
-                    <ReviewCard key={review.id} review={review} showCount />
+                    <ReviewCard
+                      key={review.id}
+                      review={review}
+                      showCount
+                      session={session}
+                      onOpenCustomer={onOpenCustomer}
+                    />
                   ))}
                 </View>
               </>
@@ -695,6 +711,7 @@ export default function BonusesScreen({
   session,
   onRequireLogin,
   onOpenEmails,
+  onOpenCustomer,
   storeFilter,
   embedded = false,
   title = 'Bonuses',
@@ -1077,7 +1094,12 @@ export default function BonusesScreen({
       ) : null}
       <View style={styles.reviewList}>
         {activeStore.reviews.map((review) => (
-          <ReviewCard key={review.id} review={review} />
+          <ReviewCard
+            key={review.id}
+            review={review}
+            session={session}
+            onOpenCustomer={onOpenCustomer}
+          />
         ))}
       </View>
       {!activeStore.reviews.length && !activeStore.reviewsLoading ? (
@@ -1165,6 +1187,8 @@ export default function BonusesScreen({
         employee={selectedPerson?.employee}
         store={selectedPerson?.store}
         onClose={() => setSelectedEmployeeName(null)}
+        session={session}
+        onOpenCustomer={onOpenCustomer}
       />
     </View>
   );
