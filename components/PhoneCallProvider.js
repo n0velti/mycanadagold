@@ -93,6 +93,24 @@ function isMicrophoneError(err) {
   return isMicrophoneFailure(err);
 }
 
+/** Same call-log / voicemail entries in the same order (plain JSON data). */
+function sameInboxList(a, b) {
+  const left = Array.isArray(a) ? a : [];
+  const right = Array.isArray(b) ? b : [];
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1) {
+    if (left[i] === right[i]) continue;
+    if (left[i]?.id !== right[i]?.id) return false;
+    try {
+      if (JSON.stringify(left[i]) !== JSON.stringify(right[i])) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
 /** How long Call Control may take to land the replacement INVITE in this tab. */
 const ANSWER_SETTLE_MS = 20_000;
 /** How long Call/Answer wait for a softphone that is still registering before giving up on it. */
@@ -300,6 +318,14 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
   const inboxCursor = useRef(0);
   const inboxByStoreRef = useRef(inboxByStore);
   inboxByStoreRef.current = inboxByStore;
+  // When a fetch brings back an unchanged inbox the state entry is kept as-is;
+  // this records that it was refreshed so the freshness checks still hold.
+  const inboxFreshAt = useRef(new Map());
+  const inboxAgeMs = useCallback((key) => {
+    const cached = inboxByStoreRef.current[key];
+    const at = Math.max(cached?.at || 0, inboxFreshAt.current.get(key) || 0);
+    return Date.now() - at;
+  }, []);
   const [posPhones, setPosPhones] = useState({});
   const posPhonesRef = useRef(posPhones);
   posPhonesRef.current = posPhones;
@@ -600,7 +626,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
     }
     if (!force) {
       const cached = inboxByStoreRef.current[key];
-      if (cached && Date.now() - (cached.at || 0) < PHONE_INBOX_MS) return cached;
+      if (cached && inboxAgeMs(key) < PHONE_INBOX_MS) return cached;
     }
     if (inboxInFlight.current.has(key)) return inboxByStoreRef.current[key] || null;
     inboxInFlight.current.add(key);
@@ -615,16 +641,30 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
         const existing = inboxByStoreRef.current[key];
         if (existing || !(payload.calls || []).length) return existing || null;
       }
-      setInboxByStore((current) => ({
-        ...current,
-        [key]: {
+      setInboxByStore((current) => {
+        const existing = current[key];
+        const next = {
           calls: payload.calls || [],
           voicemails: payload.voicemails || [],
           callLogError: payload.callLogError || '',
           voicemailError: payload.voicemailError || '',
           at: Date.now(),
-        },
-      }));
+        };
+        // Most rounds bring back the same list. Keep the old entry (and so the
+        // context value) untouched so Home and the store drawer don't re-render.
+        if (
+          existing &&
+          existing.callLogError === next.callLogError &&
+          existing.voicemailError === next.voicemailError &&
+          sameInboxList(existing.calls, next.calls) &&
+          sameInboxList(existing.voicemails, next.voicemails)
+        ) {
+          inboxFreshAt.current.set(key, next.at);
+          return current;
+        }
+        inboxFreshAt.current.set(key, next.at);
+        return { ...current, [key]: next };
+      });
       setLiveLogByStore((current) => {
         const live = current[key] || [];
         if (!live.length) return current;
@@ -699,7 +739,7 @@ export function PhoneCallProvider({ session, storeFilter, enabled = true, childr
             const key = keys[next];
             next += 1;
             const cached = inboxByStoreRef.current[key];
-            if (cached && Date.now() - (cached.at || 0) < 60_000) continue;
+            if (cached && inboxAgeMs(key) < 60_000) continue;
             try {
               await refreshInbox(key, { silent: true });
             } catch {

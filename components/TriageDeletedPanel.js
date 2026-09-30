@@ -127,7 +127,6 @@ function deletedRowProps(entry) {
 
 export default function TriageDeletedPanel({ session, query = '' }) {
   const { deleted = [] } = useTransferWorkflow();
-  const isMobile = useIsMobile();
   const rows = useMemo(
     () =>
       deleted
@@ -224,21 +223,6 @@ const styles = StyleSheet.create({
   body: {
     flex: 1,
     minHeight: 0,
-    backgroundColor: T.bg,
-  },
-  bodyMobile: {
-    backgroundColor: T.bg,
-  },
-  content: {
-    paddingHorizontal: 0,
-    paddingTop: 8,
-    paddingBottom: 24,
-    flexGrow: 1,
-    backgroundColor: T.bg,
-  },
-  contentMobile: {
-    paddingHorizontal: 16,
-    paddingBottom: 40,
     backgroundColor: T.bg,
   },
   row: {

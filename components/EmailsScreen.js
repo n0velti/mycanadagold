@@ -221,7 +221,6 @@ export default function EmailsScreen({
   const [bodyDraft, setBodyDraft] = useState('');
   const [loadingList, setLoadingList] = useState(true);
   const [loadingMail, setLoadingMail] = useState(false);
-  const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
   const [photoPerson, setPhotoPerson] = useState(null);
   const [gmailSession, setGmailSession] = useState(null);
@@ -433,16 +432,6 @@ export default function EmailsScreen({
     setError('');
   };
 
-  const startCompose = (people = [], { subject = '', body = '' } = {}) => {
-    setComposeOpen(true);
-    setActiveId(null);
-    setActiveMail(null);
-    setSelectedIds(people.map((person) => person.id).filter(Boolean));
-    setSubjectDraft(subject);
-    setBodyDraft(body);
-    setQuery('');
-  };
-
   const toggleSelected = (personId) => {
     setSelectedIds((current) =>
       current.includes(personId)
@@ -451,6 +440,8 @@ export default function EmailsScreen({
     );
   };
 
+  // Mail is read-only for now; the compose button only explains that.
+  const sending = false;
   const handleSend = async () => {
     setError('This inbox is read-only. Reply from Gmail for now.');
   };
@@ -1084,36 +1075,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#fff',
   },
-  composeFab: {
-    marginTop: 'auto',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: ACCENT,
-    borderRadius: 12,
-    paddingVertical: 10,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  composeFabMobile: {
-    marginTop: 0,
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    paddingVertical: 0,
-  },
-  composeFabHover: {
-    backgroundColor: '#3730A3',
-  },
-  composeFabText: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#fff',
-  },
   inbox: {
     width: LIST_WIDTH,
     borderRightWidth: StyleSheet.hairlineWidth,
@@ -1294,16 +1255,6 @@ const styles = StyleSheet.create({
     height: 36,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  headerAction: {
-    width: 36,
-    height: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
   },
   threadList: {
     flex: 1,

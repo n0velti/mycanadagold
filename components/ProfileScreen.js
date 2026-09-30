@@ -43,7 +43,6 @@ const fontFamily = 'Sohne';
 const titleFontFamily = 'SohneLeicht';
 const BLUE = '#007AFF';
 const GOLD = '#E8C36A';
-const PAGE = CANVAS;
 const CARD = '#fff';
 const LABEL = MOBILE.label;
 const SECONDARY = MOBILE.secondary;
@@ -163,33 +162,6 @@ function DetailRow({ label, value, last, onPress }) {
   }
 
   return <View style={rowStyle}>{content}</View>;
-}
-
-function ActionIcon({ icon, label, onPress, disabled, busy }) {
-  return (
-    <Pressable
-      onPress={onPress}
-      disabled={disabled || busy}
-      style={({ hovered, pressed }) => [
-        styles.actionItem,
-        (disabled || busy) && styles.actionItemDisabled,
-        (hovered || pressed) && !disabled && !busy && styles.actionItemPressed,
-      ]}
-      accessibilityRole="button"
-      accessibilityLabel={label}
-    >
-      <View style={styles.actionIcon}>
-        {busy ? (
-          <ActivityIndicator size="small" color={BLUE} />
-        ) : (
-          <Ionicons name={icon} size={20} color={disabled ? '#c7c7cc' : BLUE} />
-        )}
-      </View>
-      <Text style={[styles.actionLabel, disabled && styles.actionLabelDisabled]} numberOfLines={2}>
-        {label}
-      </Text>
-    </Pressable>
-  );
 }
 
 function ContactAction({ icon, label, onPress, disabled, busy, variant = 'sheet' }) {
@@ -487,24 +459,28 @@ export default function ProfileScreen({
     };
   }, [session?.token, session?.baseUrl, employeeId]);
 
-  const profile = viewingOther
-    ? {
-        id: staff?.id || person.profileId || '',
-        fullName: staff?.fullName || person.name || '',
-        firstName: staff?.firstName || '',
-        lastName: staff?.lastName || '',
-        email: staff?.email || person.email || '',
-        avatarUrl: staff?.avatarUrl || person.avatarUrl || '',
-        locationName: staff?.locationName || person.locationName || '',
-        employeeType: staff?.employeeType || person.employeeType || '',
-        role: staff?.posRole || staff?.role || person.role || '',
-        teamId: staff?.teamId || person.teamId || '',
-        teamName,
-        appRole: staff?.appRole || '',
-        isSystemAdmin: Boolean(staff?.isSystemAdmin),
-        isTeamIntake: Boolean(staff?.isTeamIntake),
-      }
-    : own;
+  const profile = useMemo(
+    () =>
+      viewingOther
+        ? {
+            id: staff?.id || person.profileId || '',
+            fullName: staff?.fullName || person.name || '',
+            firstName: staff?.firstName || '',
+            lastName: staff?.lastName || '',
+            email: staff?.email || person.email || '',
+            avatarUrl: staff?.avatarUrl || person.avatarUrl || '',
+            locationName: staff?.locationName || person.locationName || '',
+            employeeType: staff?.employeeType || person.employeeType || '',
+            role: staff?.posRole || staff?.role || person.role || '',
+            teamId: staff?.teamId || person.teamId || '',
+            teamName,
+            appRole: staff?.appRole || '',
+            isSystemAdmin: Boolean(staff?.isSystemAdmin),
+            isTeamIntake: Boolean(staff?.isTeamIntake),
+          }
+        : own,
+    [own, person, staff, teamName, viewingOther],
+  );
 
   const name = viewingOther
     ? profile?.fullName || person?.name || 'Profile'
@@ -1266,128 +1242,10 @@ const styles = StyleSheet.create({
   screenMobile: {
     backgroundColor: CANVAS,
   },
-  mobileScroll: {
-    flex: 1,
-    minHeight: 0,
-  },
-  mobileScrollContent: {
-    paddingTop: 56,
-    paddingHorizontal: 16,
-    paddingBottom: mobileTabBarReserve() + 28,
-  },
-  deskScroll: {
-    flex: 1,
-    minHeight: 0,
-  },
-  deskScrollContent: {
-    flexGrow: 1,
-    paddingBottom: 48,
-  },
-  deskPage: {
-    width: '100%',
-    maxWidth: 1120,
-    alignSelf: 'center',
-    paddingHorizontal: 32,
-    gap: 24,
-  },
-  deskCard: {
-    backgroundColor: CARD,
-    borderRadius: 20,
-    paddingVertical: 28,
-    paddingHorizontal: 28,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(18,16,12,0.08)',
-    ...Platform.select({
-      web: {
-        boxShadow: '0 10px 28px rgba(18,16,12,0.08), 0 1px 3px rgba(18,16,12,0.06)',
-      },
-      default: {
-        shadowColor: '#12100C',
-        shadowOpacity: 0.08,
-        shadowRadius: 16,
-        shadowOffset: { width: 0, height: 8 },
-        elevation: 3,
-      },
-    }),
-  },
-  deskIdentity: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 24,
-  },
-  deskAvatarTap: {
-    position: 'relative',
-    flexShrink: 0,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  deskAvatarEdit: {
-    position: 'absolute',
-    right: 2,
-    bottom: 2,
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: '#1d1d1f',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: CARD,
-    zIndex: 2,
-  },
-  deskCopy: {
-    flex: 1,
-    minWidth: 0,
-    gap: 6,
-  },
-  deskName: {
-    fontFamily,
-    fontSize: 32,
-    fontWeight: '600',
-    color: LABEL,
-    letterSpacing: -0.6,
-  },
-  deskSubtitle: {
-    fontFamily,
-    fontSize: 16,
-    fontWeight: '500',
-    color: SECONDARY,
-    letterSpacing: -0.2,
-  },
-  deskMeta: {
-    fontFamily,
-    fontSize: 14,
-    color: SECONDARY,
-    letterSpacing: -0.1,
-  },
   deskStack: {
     width: '100%',
     minWidth: 0,
     gap: 16,
-  },
-  deskColumns: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    flexWrap: 'wrap',
-    gap: 24,
-  },
-  deskCol: {
-    flexGrow: 1,
-    flexBasis: 320,
-    minWidth: 280,
-    maxWidth: 440,
-    gap: 16,
-  },
-  deskColWide: {
-    flexGrow: 2,
-    flexBasis: 420,
-    minWidth: 280,
-  },
-  deskSettings: {
-    gap: 16,
-    maxWidth: 640,
   },
   chromeRow: {
     zIndex: 24,
@@ -1798,153 +1656,10 @@ const styles = StyleSheet.create({
     right: 22,
     zIndex: 24,
   },
-  section: {
-    width: '100%',
-    maxWidth: 560,
-    alignSelf: 'center',
-  },
-  sectionWide: {
-    maxWidth: 960,
-  },
-  sectionMobile: {
-    maxWidth: '100%',
-  },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-    minHeight: 36,
-  },
-  backButton: {
-    width: 36,
-    height: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginLeft: -8,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  topTitle: {
-    flex: 1,
-    fontFamily,
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1d1d1f',
-    textAlign: 'center',
-    letterSpacing: -0.2,
-  },
-  topSide: {
-    width: 36,
-  },
-  hero: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 28,
-    paddingTop: 8,
-    paddingBottom: 12,
-  },
-  heroWrap: {
-    width: '100%',
-    maxWidth: 560,
-  },
-  heroWrapMobile: {
-    maxWidth: '100%',
-    alignItems: 'center',
-  },
-  heroMobile: {
-    flexDirection: 'column',
-    alignItems: 'center',
-    gap: 16,
-    paddingTop: 12,
-    paddingBottom: 8,
-  },
-  avatarButton: {
-    position: 'relative',
-    overflow: 'visible',
-    flexShrink: 0,
-  },
-  avatarTap: {
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  avatarRing: {
-    padding: 4,
-    borderWidth: 2,
-    borderColor: GOLD,
-  },
   avatar: {
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#e8e8ed',
-  },
-  avatarEdit: {
-    position: 'absolute',
-    right: 4,
-    bottom: 4,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#1d1d1f',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: '#fff',
-    zIndex: 2,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  heroCopy: {
-    flex: 1,
-    minWidth: 0,
-    alignItems: 'flex-start',
-    gap: 6,
-  },
-  heroCopyMobile: {
-    alignItems: 'center',
-    width: '100%',
-  },
-  name: {
-    fontFamily,
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#1d1d1f',
-    letterSpacing: -0.6,
-  },
-  nameMobile: {
-    fontSize: 24,
-    letterSpacing: -0.4,
-    textAlign: 'center',
-  },
-  meta: {
-    fontFamily,
-    fontSize: 15,
-    color: '#8e8e93',
-    letterSpacing: -0.2,
-  },
-  email: {
-    fontFamily,
-    fontSize: 14,
-    color: '#8e8e93',
-    letterSpacing: -0.2,
-  },
-  actions: {
-    flexDirection: 'row',
-    flexWrap: 'nowrap',
-    alignItems: 'flex-start',
-    gap: 4,
-    marginTop: 8,
-    marginBottom: 20,
-  },
-  actionsMobile: {
-    justifyContent: 'center',
-    width: '100%',
-    marginTop: 4,
   },
   actionItem: {
     flexGrow: 1,
@@ -2138,38 +1853,6 @@ const styles = StyleSheet.create({
     backgroundColor: CARD,
     borderRadius: 16,
   },
-  heroCard: {
-    alignItems: 'center',
-    paddingVertical: 28,
-    paddingHorizontal: 20,
-    borderRadius: 12,
-    backgroundColor: CARD,
-    gap: 6,
-    marginBottom: 12,
-  },
-  heroCardName: {
-    fontFamily,
-    fontSize: 28,
-    fontWeight: '700',
-    color: LABEL,
-    letterSpacing: -0.5,
-    textAlign: 'center',
-    marginTop: 10,
-  },
-  heroCardJob: {
-    fontFamily,
-    fontSize: 17,
-    color: SECONDARY,
-    letterSpacing: -0.2,
-    textAlign: 'center',
-  },
-  heroCardMeta: {
-    fontFamily,
-    fontSize: 14,
-    color: SECONDARY,
-    letterSpacing: -0.2,
-    textAlign: 'center',
-  },
   detailLabel: {
     fontFamily,
     width: 108,
@@ -2258,66 +1941,6 @@ const styles = StyleSheet.create({
     color: '#ff3b30',
     letterSpacing: -0.2,
   },
-  mobileNav: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    minHeight: 44,
-    marginHorizontal: -6,
-    marginBottom: 4,
-  },
-  mobileNavSide: {
-    width: 44,
-    height: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  mobileHero: {
-    alignItems: 'center',
-    paddingTop: 8,
-    paddingBottom: 18,
-    gap: 6,
-  },
-  mobileName: {
-    fontFamily,
-    fontSize: 28,
-    fontWeight: '700',
-    color: LABEL,
-    letterSpacing: -0.5,
-    textAlign: 'center',
-    marginTop: 10,
-    paddingHorizontal: 8,
-  },
-  mobileJob: {
-    fontFamily,
-    fontSize: 17,
-    color: SECONDARY,
-    letterSpacing: -0.2,
-    textAlign: 'center',
-    paddingHorizontal: 12,
-  },
-  avatarEditMobile: {
-    position: 'absolute',
-    right: 0,
-    bottom: 0,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: BLUE,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: PAGE,
-    zIndex: 2,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
   contactActions: {
     flexDirection: 'row',
     gap: 10,
@@ -2389,9 +2012,6 @@ const styles = StyleSheet.create({
   },
   contactActionLabelDisabled: {
     color: SECONDARY,
-  },
-  contactActionLabelHeroDisabled: {
-    color: 'rgba(244,228,180,0.35)',
   },
   mobileError: {
     fontFamily,

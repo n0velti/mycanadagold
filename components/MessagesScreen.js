@@ -40,7 +40,6 @@ import {
   listDmMessages,
   markDmRead,
   renameDmGroup,
-  saveAiDmChat,
   sendDmMessage,
   shouldShowStamp,
   subscribeDmRealtime,
@@ -63,7 +62,6 @@ const fontFamily = Platform.select({
   default: 'Sohne',
 });
 
-const titleFontFamily = 'SohneLeicht';
 
 const BLUE = '#0A84FF';
 const AI_PURPLE = '#6B4DE6';
@@ -657,201 +655,6 @@ function EmojiPicker({ visible, onPick }) {
           ))}
         </View>
       </ScrollView>
-    </View>
-  );
-}
-
-function AiDmPanel({ session, onClose, onSaved, dismissRef }) {
-  const [status, setStatus] = useState('ready');
-  const [progress, setProgress] = useState('');
-  const [seedMessages, setSeedMessages] = useState([]);
-  const [chatContext, setChatContext] = useState(null);
-  const [turns, setTurns] = useState([]);
-  const [draft, setDraft] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const [saving, setSaving] = useState(false);
-  const listRef = useRef(null);
-
-  useEffect(() => {
-    if (!session?.token) {
-      setStatus('idle');
-      setSeedMessages([]);
-      setChatContext(null);
-      return;
-    }
-    const end = new Date();
-    const start = new Date();
-    start.setDate(end.getDate() - 6);
-    const prepared = prepareAiChatSession({ startDate: start, endDate: end });
-    setSeedMessages(prepared.seedMessages);
-    setChatContext(prepared.context);
-    setStatus('ready');
-    setProgress('');
-    setError('');
-  }, [session]);
-
-  const send = async () => {
-    const text = draft.trim();
-    if (!text || busy || status !== 'ready') return;
-    setDraft('');
-    setBusy(true);
-    setError('');
-    setProgress('Choosing data…');
-    const nextTurns = [...turns, { role: 'user', content: text }];
-    setTurns(nextTurns);
-    try {
-      const result = await sendAiChatMessage({
-        seedMessages,
-        turns,
-        userMessage: text,
-        model: AI_MODEL,
-        session,
-        context: chatContext,
-        startDate: chatContext?.selection?.startDate,
-        endDate: chatContext?.selection?.endDate,
-        onLookup: (label) => setProgress(label || ''),
-      });
-      if (result.sources?.length || result.scope) {
-        setChatContext((current) =>
-          current
-            ? {
-                ...current,
-                lastSources: result.sources?.length ? result.sources : current.lastSources,
-                lastScope: result.scope || current.lastScope,
-              }
-            : current,
-        );
-      }
-      setTurns(result.turns || [...nextTurns, { role: 'assistant', content: result.text || '' }]);
-    } catch (err) {
-      setError(err.message || 'Could not get an answer.');
-    } finally {
-      setBusy(false);
-      setProgress('');
-      requestAnimationFrame(() => listRef.current?.scrollToEnd?.({ animated: true }));
-    }
-  };
-
-  const exit = async () => {
-    if (saving) return;
-    const snapshot = turns.filter(
-      (turn) => (turn.role === 'user' || turn.role === 'assistant') && String(turn.content || '').trim(),
-    );
-    if (!snapshot.some((turn) => turn.role === 'user')) {
-      onClose();
-      return;
-    }
-    setSaving(true);
-    setError('');
-    try {
-      const title = await titleAiChat(snapshot, AI_MODEL);
-      await saveAiDmChat(title, snapshot);
-      if (onSaved) await onSaved();
-      onClose();
-    } catch (err) {
-      setSaving(false);
-      setError(err.message || 'Could not save this chat.');
-    }
-  };
-
-  const exitRef = useRef(exit);
-  exitRef.current = exit;
-
-  useEffect(() => {
-    if (!dismissRef) return undefined;
-    const dismiss = () => exitRef.current?.();
-    dismissRef.current = dismiss;
-    return () => {
-      if (dismissRef.current === dismiss) dismissRef.current = null;
-    };
-  }, [dismissRef]);
-
-  return (
-    <View style={styles.aiPanel}>
-      <View style={styles.aiHeader}>
-        <Pressable
-          onPress={() => void exit()}
-          hitSlop={8}
-          style={styles.aiBack}
-          accessibilityLabel="Back to messages"
-        >
-          <Ionicons name="chevron-back" size={22} color={BLUE} />
-        </Pressable>
-        <View style={styles.aiHeaderCopy}>
-          <Text style={styles.aiTitle}>{saving ? 'Saving chat…' : 'MyCanadaGold AI'}</Text>
-        </View>
-      </View>
-      <ScrollView
-        ref={listRef}
-        style={styles.aiList}
-        contentContainerStyle={styles.aiListContent}
-        keyboardShouldPersistTaps="handled"
-        onContentSizeChange={() => listRef.current?.scrollToEnd?.({ animated: false })}
-      >
-        {status === 'loading' ? (
-          <View style={styles.aiEmpty}>
-            <ActivityIndicator color="#1d1d1f" />
-            <Text style={styles.emptyHint}>{progress}</Text>
-          </View>
-        ) : turns.length === 0 ? (
-          <View style={styles.aiEmpty}>
-            <Ionicons name="sparkles" size={28} color={BLUE} />
-            <Text style={styles.aiEmptyTitle}>Ask about the company</Text>
-            <Text style={styles.emptyHint}>
-              Ask about tills, sales, stock, or staff. Only that data is loaded.
-            </Text>
-          </View>
-        ) : (
-          turns.map((turn, index) => (
-            <View
-              key={`${turn.role}-${index}`}
-              style={[styles.aiBubble, turn.role === 'user' ? styles.aiBubbleMine : styles.aiBubbleThem]}
-            >
-              <Text style={[styles.aiBubbleText, turn.role === 'user' && styles.aiBubbleTextMine]}>
-                {turn.content}
-              </Text>
-            </View>
-          ))
-        )}
-        {busy ? <ActivityIndicator color="#8e8e93" style={styles.aiBusy} /> : null}
-      </ScrollView>
-      {error ? <Text style={styles.errorText}>{error}</Text> : null}
-      <View style={[styles.composer, styles.composerMobile]}>
-        <View style={[styles.composerField, styles.aiComposerField]}>
-          <TextInput
-            style={[styles.composerInput, styles.aiComposerInput]}
-            value={draft}
-            onChangeText={setDraft}
-            placeholder={status === 'ready' ? 'Message MyCanadaGold AI' : 'Loading…'}
-            placeholderTextColor="#8e8e93"
-            editable={status === 'ready' && !busy}
-            multiline={false}
-            numberOfLines={1}
-            returnKeyType="send"
-            maxLength={4000}
-            blurOnSubmit
-            onSubmitEditing={send}
-            onKeyPress={(event) => {
-              const key = event?.nativeEvent?.key || event?.key;
-              if (key !== 'Enter') return;
-              event.preventDefault?.();
-              if (draft.trim() && status === 'ready' && !busy) send();
-            }}
-          />
-        </View>
-        <Pressable
-          onPress={send}
-          disabled={!draft.trim() || busy || status !== 'ready'}
-          style={[
-            styles.sendButton,
-            draft.trim() && status === 'ready' && !busy ? styles.sendButtonOn : styles.sendButtonOff,
-          ]}
-          accessibilityLabel="Send"
-        >
-          <Ionicons name="arrow-up" size={18} color="#fff" />
-        </Pressable>
-      </View>
     </View>
   );
 }
@@ -2549,23 +2352,6 @@ const styles = StyleSheet.create({
     right: 22,
     zIndex: 24,
   },
-  inboxHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingTop: 18,
-    paddingBottom: 16,
-  },
-  inboxTitle: {
-    flex: 1,
-    minWidth: 0,
-    fontFamily: titleFontFamily,
-    fontSize: 34,
-    fontWeight: '400',
-    color: '#1d1d1f',
-    letterSpacing: -0.8,
-  },
   recipientBar: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -2667,30 +2453,6 @@ const styles = StyleSheet.create({
     padding: 0,
     outlineStyle: 'none',
   },
-  composeButton: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-    width: 36,
-    height: 36,
-    marginRight: -6,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  composeButtonMobile: {
-    marginRight: -4,
-  },
-  composeButtonPressed: {
-    opacity: 0.55,
-  },
-  searchToolbar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    marginBottom: 8,
-  },
   searchToolbarMobile: {
     paddingTop: 4,
     marginBottom: 4,
@@ -2726,21 +2488,8 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
   },
-  inboxListMobile: {
-    flex: 1,
-    height: '100%',
-  },
   inboxListContent: {
     paddingBottom: 24,
-  },
-  inboxListContentMobile: {
-    flexGrow: 1,
-    minHeight: '100%',
-    paddingBottom: mobileTabBarReserve() + 24,
-  },
-  inboxListFill: {
-    flexGrow: 1,
-    minHeight: '100%',
   },
   composeSection: {
     fontFamily,
@@ -2925,12 +2674,6 @@ const styles = StyleSheet.create({
   infoButton: {
     width: 32,
     height: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  backButton: {
-    width: 28,
-    height: 36,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -3421,60 +3164,6 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     paddingVertical: 0,
   },
-  startConvoButton: {
-    height: 36,
-    paddingHorizontal: 14,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: BLUE,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  startConvoButtonOff: {
-    opacity: 0.4,
-  },
-  startConvoButtonPressed: {
-    opacity: 0.8,
-  },
-  startConvoButtonText: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#fff',
-    letterSpacing: -0.2,
-  },
-  aiLaunch: {
-    height: 36,
-    paddingHorizontal: 12,
-    borderRadius: 18,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#f2f2f7',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  aiLaunchPressed: {
-    backgroundColor: '#e5e5ea',
-  },
-  aiLaunchActive: {
-    backgroundColor: '#e8f1ff',
-  },
-  aiLaunchText: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#1d1d1f',
-    letterSpacing: -0.2,
-  },
-  aiLaunchTextActive: {
-    color: BLUE,
-  },
   aiPanel: {
     flex: 1,
     minHeight: 0,
@@ -3504,11 +3193,6 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '600',
     color: '#1d1d1f',
-  },
-  aiSubtitle: {
-    fontFamily,
-    fontSize: 12,
-    color: '#8e8e93',
   },
   aiList: {
     flex: 1,

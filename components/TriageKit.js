@@ -2125,11 +2125,6 @@ const styles = StyleSheet.create({
   chromePageMobile: {
     backgroundColor: CANVAS,
   },
-  chromePageScroll: {
-    flex: 1,
-    minHeight: 0,
-    backgroundColor: 'transparent',
-  },
   chromePinnedHero: {
     position: 'absolute',
     top: 0,

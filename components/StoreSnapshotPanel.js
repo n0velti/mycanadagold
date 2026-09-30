@@ -2,7 +2,6 @@ import { cloneElement, createElement, isValidElement, memo, useCallback, useEffe
 import { createPortal } from 'react-dom';
 import {
   ActivityIndicator,
-  Animated,
   Image,
   Modal,
   Platform,
@@ -22,7 +21,7 @@ import {
   peekPriceCatalogSnapshot,
   usePriceCheckTolerance,
 } from '../lib/priceCheckSettings';
-import { AUREUS_CASH_LIVE_MS, useLiveRefresh } from '../lib/liveRefresh';
+import { AUREUS_CASH_LIVE_MS, INVENTORY_LIVE_MS, useLiveRefresh } from '../lib/liveRefresh';
 import { fetchInventoryMatrix, formatQty, peekInventoryMatrix } from '../lib/inventory';
 import { textMatchesQuery } from '../lib/itemSearch';
 import { findStaffByEmployeeName, listStaffProfiles, useAppAccess } from '../lib/permissions';
@@ -48,7 +47,8 @@ import {
 } from '../lib/phoneCalls';
 import { storeKeyFromName } from '../lib/storeSettings';
 import { CANVAS, MOBILE_FILTER_INSET, MOBILE_FILTER_SIZE, useIsMobile } from '../lib/mobileUi';
-import { useMobileTabBarScrollProps } from '../lib/mobileTabBar';
+import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
+import { FONT_LIGHT } from '../lib/typography';
 import { usePhoneCalls } from './PhoneCallProvider';
 import TxnCashBreakdownModal, { TxnCashIcon } from './TxnCashBreakdownModal';
 
@@ -77,6 +77,38 @@ const PRIORITY_COLORS = {
 // Stores can carry hundreds of stocked SKUs; render a page at a time so the
 // drawer opens quickly and scrolls smoothly.
 const INVENTORY_PAGE = 12;
+const HOME_STORE_ROW_PAD = 8;
+const HOME_STORE_ICON_COL_WIDTH = 56;
+const HOME_STORE_BODY_LEADING = 12;
+const titleFontFamily = FONT_LIGHT;
+
+const STORE_ACCENTS = {
+  Hamilton: '#2F6FED',
+  Mississauga: '#C47A12',
+  Toronto: '#2F8A4E',
+  'Richmond Hill': '#6B4DE6',
+};
+
+const STORE_ACCENT_FALLBACKS = [
+  '#1D4ED8',
+  '#0F766E',
+  '#B91C1C',
+  '#B45309',
+  '#6D28D9',
+  '#047857',
+  '#4338CA',
+  '#BE185D',
+];
+
+function storeAccent(name) {
+  if (STORE_ACCENTS[name]) return STORE_ACCENTS[name];
+  const value = String(name || '');
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+  }
+  return STORE_ACCENT_FALLBACKS[hash % STORE_ACCENT_FALLBACKS.length];
+}
 
 function sameJson(a, b) {
   if (a === b) return true;
@@ -204,36 +236,10 @@ function InventorySearch({ value, onChangeText }) {
   );
 }
 
-function AppBox({ app, meta, onOpen, children, style, bodyStyle, muted = false }) {
-  return (
-    <View style={[styles.appBox, style]}>
-      <Pressable
-        onPress={() => onOpen?.(app.key)}
-        style={({ hovered, pressed }) => [
-          styles.appBoxHead,
-          (hovered || pressed) && styles.appBoxHeadHovered,
-        ]}
-        accessibilityRole="button"
-        accessibilityLabel={`Open ${app.label}`}
-      >
-        <View style={[styles.appBoxIcon, { backgroundColor: app.accent }, muted && styles.appIconMuted]}>
-          <Ionicons name={filledIonicon(app.icon)} size={14} color="#fff" />
-        </View>
-        <View style={styles.appBoxHeadCopy}>
-          <Text style={styles.appBoxTitle}>{app.label}</Text>
-          {meta ? <Text style={styles.appBoxMeta}>{meta}</Text> : null}
-        </View>
-        <Ionicons name="chevron-forward" size={14} color={SECONDARY} />
-      </Pressable>
-      <View style={[styles.appBoxBody, bodyStyle]}>{children}</View>
-    </View>
-  );
-}
-
-function DashPinnedApp({ app, value, onOpen, compact = false, roomy = false, selected = false }) {
+function DashPinnedApp({ app, value, onOpen, onPress, compact = false, roomy = false, selected = false }) {
   return (
     <Pressable
-      onPress={() => onOpen?.(app.key)}
+      onPress={() => (onPress ? onPress() : onOpen?.(app.key))}
       style={({ hovered, pressed }) => [
         styles.dashPinnedApp,
         compact && styles.dashPinnedAppCompact,
@@ -306,6 +312,146 @@ function storeAmountForFocus(store, focus) {
   if (focus === 'sales') return Number(store?.soAmount) || 0;
   if (focus === 'purchases') return Number(store?.poAmount) || 0;
   return Number(store?.totalAmount) || 0;
+}
+
+function StoreHomeHeroStat({ value, label, selected = false, onPress, compact = false }) {
+  const valueStyle = [
+    compact ? styles.storeHomeHeroStatValueCompact : styles.storeHomeHeroStatValue,
+    selected &&
+      (compact ? styles.storeHomeHeroStatValueCompactSelected : styles.storeHomeHeroStatValueSelected),
+  ];
+  const labelStyle = [
+    compact ? styles.storeHomeHeroStatLabelCompact : styles.storeHomeHeroStatLabel,
+    selected &&
+      (compact ? styles.storeHomeHeroStatLabelCompactSelected : styles.storeHomeHeroStatLabelSelected),
+  ];
+  const body = compact ? (
+    <>
+      <Text style={labelStyle} numberOfLines={1}>
+        {label}
+      </Text>
+      <Text style={valueStyle}>{value}</Text>
+    </>
+  ) : (
+    <>
+      <Text style={labelStyle}>{label}</Text>
+      <Text style={valueStyle}>{value}</Text>
+    </>
+  );
+  const style = compact
+    ? [styles.storeHomeHeroStatCompact, selected && styles.storeHomeHeroStatCompactSelected]
+    : [styles.storeHomeHeroStat, selected && styles.storeHomeHeroStatSelected];
+  if (!onPress) {
+    return <View style={style}>{body}</View>;
+  }
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [...style, pressed && styles.storeHomeHeroStatPressed]}
+      accessibilityRole="button"
+      accessibilityState={{ selected }}
+      accessibilityLabel={label}
+    >
+      {body}
+    </Pressable>
+  );
+}
+
+function StoreHomeHero({
+  store,
+  focus = 'all',
+  onFocus,
+  onPress,
+  txSelected = false,
+  isMobile = false,
+  accent,
+}) {
+  const total = storeAmountForFocus(store, focus);
+  const txCount = Number(store?.txCount) || 0;
+  const saleCount = Number(store?.saleCount) || 0;
+  const purchaseCount = Number(store?.purchaseCount) || 0;
+  const empty =
+    !total &&
+    !(focus === 'sales' ? saleCount : focus === 'purchases' ? purchaseCount : txCount);
+  const selectFocus = (next) => {
+    const resolved = next === 'all' ? 'all' : focus === next ? 'all' : next;
+    onFocus?.(resolved);
+    onPress?.();
+  };
+
+  const heroInset = (
+    <View style={[styles.storeHomeHeroInset, !isMobile && styles.storeHomeHeroInsetDesktop]}>
+      <View style={styles.storeHomeHeroPrimary}>
+        <View
+          style={[
+            styles.storeHomeHeroMetricBlock,
+            !isMobile && styles.storeHomeHeroMetricBlockDesktop,
+          ]}
+        >
+          <View style={styles.storeHomeHeroMetricMain}>
+            <View style={styles.storeHomeHeroAmountRow}>
+              <Text
+                style={[
+                  styles.storeHomeHeroAmount,
+                  !isMobile && styles.storeHomeHeroAmountDesktop,
+                  empty && styles.storeHomeHeroAmountEmpty,
+                ]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.55}
+              >
+                {empty ? '—' : formatAmount(total)}
+              </Text>
+            </View>
+          </View>
+          <View
+            style={[
+              styles.storeHomeHeroStats,
+              styles.storeHomeHeroStatsSide,
+              !isMobile && styles.storeHomeHeroStatsSideDesktop,
+            ]}
+          >
+            <StoreHomeHeroStat
+              compact
+              value={txCount}
+              label="Tx"
+              selected={txSelected && focus === 'all'}
+              onPress={() => selectFocus('all')}
+            />
+            <StoreHomeHeroStat
+              compact
+              value={saleCount}
+              label="Sales"
+              selected={focus === 'sales'}
+              onPress={() => selectFocus('sales')}
+            />
+            <StoreHomeHeroStat
+              compact
+              value={purchaseCount}
+              label="Purchases"
+              selected={focus === 'purchases'}
+              onPress={() => selectFocus('purchases')}
+            />
+          </View>
+        </View>
+      </View>
+    </View>
+  );
+
+  return (
+    <View style={styles.storeHomeHeroShell}>
+      <View style={[styles.storeHomeHeroWithIconCol, isMobile && styles.storeHomeHeroWithIconColMobile]}>
+        <View style={[styles.storeHomeHeroIconCol, isMobile && styles.storeHomeHeroIconColMobile]}>
+          <View style={styles.storeHomeHeroIconWrap}>
+            <View style={[styles.storeHomeHeroIcon, { backgroundColor: accent }]}>
+              <Ionicons name="storefront" size={21} color="#fff" />
+            </View>
+          </View>
+        </View>
+        <View style={styles.storeHomeHeroContentCol}>{heroInset}</View>
+      </View>
+    </View>
+  );
 }
 
 function OverviewHero({
@@ -486,70 +632,6 @@ function DashSection({ title, meta, onPress, children, style, headStyle, app, fi
   );
 }
 
-function DashLink({ app, value, meta, tone, onOpen, last, accessory, loading, muted = false }) {
-  const valueColor =
-    tone === 'low' ? styles.phoneRateLow : tone === 'high' ? styles.phoneRateHigh : null;
-
-  return (
-    <Pressable
-      onPress={() => onOpen?.(app.key)}
-      style={({ hovered, pressed }) => [
-        styles.dashRow,
-        (hovered || pressed) && styles.dashRowPressed,
-      ]}
-      accessibilityRole="button"
-      accessibilityLabel={`${app.label}${value ? `, ${value}` : ''}${meta ? `, ${meta}` : ''}`}
-    >
-      <View style={[styles.dashIcon, { backgroundColor: app.accent }, muted && styles.appIconMuted]}>
-        <Ionicons name={filledIonicon(app.icon)} size={14} color="#fff" />
-      </View>
-      <View style={[styles.dashRowBody, !last && styles.dashRowDivider]}>
-        <View style={styles.dashCopy}>
-          <Text style={styles.dashTitle} numberOfLines={1}>
-            {app.label}
-          </Text>
-          {meta ? (
-            <Text style={styles.dashMeta} numberOfLines={2}>
-              {meta}
-            </Text>
-          ) : null}
-          {accessory}
-        </View>
-        {loading ? (
-          <ActivityIndicator size="small" color={BLUE} />
-        ) : (
-          <Text style={[styles.dashValue, valueColor]} numberOfLines={1}>
-            {value || '—'}
-          </Text>
-        )}
-        <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
-      </View>
-    </Pressable>
-  );
-}
-
-function PeopleStack({ people = [], size = 28 }) {
-  const visible = people.slice(0, 4);
-  const extra = people.length - visible.length;
-  if (!visible.length) return null;
-  return (
-    <View style={styles.peopleStack}>
-      {visible.map((person, index) => (
-        <View
-          key={`${person.name}-${index}`}
-          style={[
-            styles.peopleStackItem,
-            { marginLeft: index === 0 ? 0 : -10, zIndex: visible.length - index },
-          ]}
-        >
-          <EmployeeAvatar person={person} size={size} ring />
-        </View>
-      ))}
-      {extra > 0 ? <Text style={styles.peopleExtra}>+{extra}</Text> : null}
-    </View>
-  );
-}
-
 function EmployeeAvatar({ person, size = 32, ring = false }) {
   const [failed, setFailed] = useState(false);
   const photoUrl = person?.photoUrl || '';
@@ -619,16 +701,6 @@ function ExpectedCash({ cad, usd }) {
   );
 }
 
-function itemSnapshotLabel(row) {
-  const names = (row?.itemNames || [])
-    .map((name) => String(name || '').replace(/\s+/g, ' ').trim())
-    .filter(Boolean);
-  if (!names.length) return '';
-  const shown = names.slice(0, 2);
-  const extra = names.length - shown.length;
-  return extra > 0 ? `${shown.join(' · ')} +${extra}` : shown.join(' · ');
-}
-
 function firstItemLineLabel(row) {
   const lines = Array.isArray(row?.pricedLines) ? row.pricedLines : [];
   const names = (row?.itemNames || [])
@@ -640,54 +712,6 @@ function firstItemLineLabel(row) {
   const lead = Number.isFinite(qty) && qty > 0 ? `${formatQty(qty)} ${name}` : name;
   const more = Math.max(lines.length, names.length) > 1;
   return more ? `${lead}…` : lead;
-}
-
-function priceBadgeMeta(check) {
-  if (!check || check.status === 'loading') {
-    return { label: 'Checking prices', icon: 'time-outline', tone: 'muted' };
-  }
-  if (check.status === 'off') {
-    return { label: "Something's off", icon: 'warning-outline', tone: 'off' };
-  }
-  if (check.status === 'ok') {
-    return { label: 'Makes sense', icon: 'checkmark-circle-outline', tone: 'ok' };
-  }
-  return { label: "Can't check", icon: 'help-circle-outline', tone: 'muted' };
-}
-
-function PriceCheckBadge({ check, onPress }) {
-  const meta = priceBadgeMeta(check);
-  const canOpen = check && check.status !== 'loading';
-  return (
-    <Pressable
-      onPress={canOpen ? onPress : undefined}
-      hitSlop={6}
-      style={[
-        styles.priceBadge,
-        meta.tone === 'off' && styles.priceBadgeOff,
-        meta.tone === 'ok' && styles.priceBadgeOk,
-        meta.tone === 'muted' && styles.priceBadgeMuted,
-      ]}
-      accessibilityRole="button"
-      accessibilityLabel={meta.label}
-    >
-      <Ionicons
-        name={meta.icon}
-        size={12}
-        color={meta.tone === 'off' ? '#9A3412' : meta.tone === 'ok' ? '#166534' : '#6b6b6b'}
-      />
-      <Text
-        style={[
-          styles.priceBadgeText,
-          meta.tone === 'off' && styles.priceBadgeTextOff,
-          meta.tone === 'ok' && styles.priceBadgeTextOk,
-          meta.tone === 'muted' && styles.priceBadgeTextMuted,
-        ]}
-      >
-        {meta.label}
-      </Text>
-    </Pressable>
-  );
 }
 
 function priceCheckIntro(check) {
@@ -924,34 +948,6 @@ function FloatingTooltip({ visible, text, anchorEl, align = 'start' }) {
   );
 }
 
-function TxTableHeader() {
-  return (
-    <View style={styles.txTableHeader}>
-      <View style={styles.colPhoto} />
-      <View style={[styles.txTableRowBody, styles.homeTxHeaderRule]}>
-        <Text style={[styles.homeTxHeaderLabel, styles.colDate]} numberOfLines={1}>
-          Date
-        </Text>
-        <Text style={[styles.homeTxHeaderLabel, styles.colRef]} numberOfLines={1}>
-          PO# / SO#
-        </Text>
-        <Text style={[styles.homeTxHeaderLabel, styles.colCustomer]} numberOfLines={1}>
-          Customer
-        </Text>
-        <Text style={[styles.homeTxHeaderLabel, styles.colPayment]} numberOfLines={1}>
-          Payment
-        </Text>
-        <Text style={[styles.homeTxHeaderLabel, styles.colAmount]} numberOfLines={1}>
-          Amount
-        </Text>
-        <Text style={[styles.homeTxHeaderLabel, styles.colEmployee]} numberOfLines={1}>
-          Employee
-        </Text>
-      </View>
-    </View>
-  );
-}
-
 const TransactionRow = memo(function TransactionRow({
   item,
   last,
@@ -967,20 +963,15 @@ const TransactionRow = memo(function TransactionRow({
   const [splitTip, setSplitTip] = useState('');
   const [splitAnchor, setSplitAnchor] = useState(null);
   const isBuy = item.type === 'purchase';
-  const items = itemSnapshotLabel(item);
   const itemLine = firstItemLineLabel(item);
   const employee = String(item.employeeName || employeePerson?.name || '').trim();
   const showCash = typeof onCashPress === 'function' && isCashTransaction(item);
   const hoverPerson = employeePerson || { name: employee || '—', photoUrl: '' };
   const photos = Array.isArray(item.imageUrls) ? item.imageUrls.filter(Boolean) : [];
-  const when = [item.dateLabel, item.timeLabel].filter(Boolean).join(' · ');
   const reference = String(item.reference || '').trim();
   const refLabel = /\b(SO|PO)\b/i.test(reference)
     ? reference
     : `${isBuy ? 'PO' : 'SO'}${reference ? ` ${reference}` : ''}`;
-  const meta = [refLabel, when, item.paymentMethodLabel]
-    .filter((part) => part && part !== '—')
-    .join(' · ');
 
   const handleSplitEnter = async (event) => {
     setSplitAnchor(event?.currentTarget || null);
@@ -1253,7 +1244,7 @@ function storeEmailCapture(txRows, storeName) {
 
 function EmailsSnapshotBody({ storeName, txRows, periodLabel, ready, full = false }) {
   const capture = useMemo(() => storeEmailCapture(txRows, storeName), [storeName, txRows]);
-  const people = capture?.people || [];
+  const people = useMemo(() => capture?.people || [], [capture]);
   const missing = useMemo(
     () => people.filter((person) => !person.hasEmail),
     [people],
@@ -1398,7 +1389,6 @@ function StoreSnapshotPanel({
   filterSlotWidth = 0,
   topInset = 0,
   ready = true,
-  onHeaderStats,
   desktopHeader = null,
   heroFocus: heroFocusProp = 'all',
   focusTab = 'overview',
@@ -1435,39 +1425,11 @@ function StoreSnapshotPanel({
     setHeroFocus(heroFocusProp || 'all');
   }, [heroFocusProp, storeName]);
   const tolerance = usePriceCheckTolerance();
-  const onFilterTopRef = useRef(onFilterTop);
-  onFilterTopRef.current = onFilterTop;
-  const heroYRef = useRef(0);
-  const amountRowRef = useRef(null);
-  const storeHeroLift = useRef(new Animated.Value(1)).current;
-  const [pinnedTopHeight, setPinnedTopHeight] = useState(220);
   const [stageHeight, setStageHeight] = useState(0);
   const [titleBarBottom, setTitleBarBottom] = useState(62);
-  const ticketId = transactionTicket?.props?.summary?.id || '';
   const ticketOpen = Boolean(transactionTicket);
-  const sheetOpen = focusTab !== 'overview' || ticketOpen;
-  const sheetKey = `${sheetOpen ? focusTab : 'overview'}:${ticketOpen ? ticketId || 'ticket' : ''}`;
   const pageScrollRef = useRef(null);
-  const restGap = isMobile ? 10 : 18;
-  const raisedOffset = Math.max(0, pinnedTopHeight + restGap);
-  const raisedOffsetRef = useRef(raisedOffset);
-  raisedOffsetRef.current = raisedOffset;
-
-  useEffect(() => {
-    const node = pageScrollRef.current;
-    if (!node?.scrollTo) return;
-    const y = sheetOpen ? raisedOffsetRef.current : 0;
-    const frame = requestAnimationFrame(() => {
-      node.scrollTo({ y, animated: true });
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [sheetKey, sheetOpen]);
-
-  const emitFilterTop = useCallback(() => {
-    const row = amountRowRef.current;
-    if (!row || !onFilterTopRef.current) return;
-    onFilterTopRef.current(heroYRef.current + row.y + (row.height - MOBILE_FILTER_SIZE) / 2);
-  }, []);
+  const storeColor = storeAccent(storeName);
   const cashRequestId = useRef(0);
   const inventoryRequestId = useRef(0);
   const hasInventoryRef = useRef(false);
@@ -1582,7 +1544,7 @@ function StoreSnapshotPanel({
   useLiveRefresh(loadCash, AUREUS_CASH_LIVE_MS, Boolean(session?.token && storeName));
   useLiveRefresh(
     (opts) => loadInventory({ ...opts, force: true }),
-    20_000,
+    INVENTORY_LIVE_MS,
     Boolean(session?.token && storeName),
   );
 
@@ -1764,10 +1726,6 @@ function StoreSnapshotPanel({
     return map;
   }, [presentEmployees]);
 
-  const employeeMeta = presentEmployees.length
-    ? `${presentEmployees.length} here`
-    : 'Now';
-
   const storeKey = storeKeyFromName(storeName);
   const [historyCalls, setHistoryCalls] = useState([]);
   useEffect(() => {
@@ -1809,69 +1767,7 @@ function StoreSnapshotPanel({
     [storeName, txRows],
   );
 
-  useEffect(() => {
-    if (!onHeaderStats) return;
-    const emailEmpty = !emailCapture || emailCapture.customerCount === 0;
-    onHeaderStats({
-      email: showEmails
-        ? {
-            ratio: emailEmpty ? '—' : `${Math.round(emailCapture.rate)}%`,
-            tone: emailEmpty ? null : emailCapture.rate < 80 ? 'low' : 'high',
-          }
-        : null,
-      phone: showPhone
-        ? {
-            ratio: phoneRatio.rate == null ? '—' : phoneRatio.ratio,
-            tone: phoneRatio.rate == null ? null : phoneRatio.rate < 80 ? 'low' : 'high',
-          }
-        : null,
-      people: presentEmployees,
-      till: showFinancials
-        ? {
-            amount:
-              cashLoading && !cash
-                ? '…'
-                : cash
-                  ? formatAmount(cash.cad?.aureusOnHand ?? cash.cad?.expectedOnHand ?? 0, 'CAD')
-                  : cashError || '—',
-          }
-        : null,
-    });
-  }, [
-    cash,
-    cashError,
-    cashLoading,
-    emailCapture,
-    onHeaderStats,
-    phoneRatio,
-    presentEmployees,
-    showEmails,
-    showFinancials,
-    showPhone,
-  ]);
-
-  const missingEmails = useMemo(
-    () => (emailCapture?.people || []).filter((person) => !person.hasEmail),
-    [emailCapture],
-  );
   const cadAmt = cash?.cad?.aureusOnHand ?? cash?.cad?.expectedOnHand ?? 0;
-  const usdAmt = cash?.usd?.aureusOnHand ?? cash?.usd?.expectedOnHand ?? 0;
-  const showUsd = Math.abs(usdAmt) >= 0.005 || hasDrawerActivity(cash?.usd);
-  const cadMoved = Math.abs(cash?.cad?.movementNet || 0) >= 0.005;
-  const cashMeta = cash
-    ? [
-        showUsd ? `USD ${formatAmount(usdAmt, 'USD')}` : 'CAD till',
-        `Open ${formatAmount(cash.cad?.openingBalance, 'CAD')}`,
-        cadMoved ? `Today ${formatAmount(cash.cad.movementNet, 'CAD')}` : '',
-      ]
-        .filter(Boolean)
-        .join(' · ')
-    : cashError || 'Till';
-  const emailMeta = !emailCapture || emailCapture.customerCount === 0
-    ? `${emailCapture?.walkInCount || 0} walk-in`
-    : `${emailCapture.withEmail} of ${emailCapture.customerCount} named`;
-  const visibleMissing = missingEmails.slice(0, 4);
-  const hiddenMissing = missingEmails.length - visibleMissing.length;
 
   const inventoryBody = inventoryError && !hasInventoryRef.current ? (
     <Pressable onPress={loadInventory}>
@@ -1955,15 +1851,6 @@ function StoreSnapshotPanel({
 
   const transactionsBody = mappedTxRows;
 
-  const metricRows = [
-    {
-      app: SNAPSHOT_APPS.financials,
-      value: cash ? formatAmount(cadAmt, 'CAD') : '—',
-      meta: cashMeta,
-      loading: cashLoading && !cash,
-    },
-  ];
-
   const openSnapshot = useCallback(
     (key) => {
       if (!key) return;
@@ -2039,7 +1926,8 @@ function StoreSnapshotPanel({
   const sheetLists = (
     <View
       style={[
-        styles.dashListSheet,
+        styles.storeHomeSheet,
+        !isMobile && styles.storeHomeSheetDesktop,
         sheetFillHeight ? { minHeight: sheetFillHeight } : null,
       ]}
     >
@@ -2068,7 +1956,18 @@ function StoreSnapshotPanel({
 
   const mobileContent = mobileLists;
 
-  const showPinnedApps = showFinancials || showPhone || showEmails || showInventory || (!isMobile && desktopApps.length > 0);
+  const showPinnedApps =
+    showFinancials ||
+    showPhone ||
+    showEmails ||
+    showInventory ||
+    desktopApps.length > 0;
+  const allAppsApp = {
+    key: 'apps',
+    label: 'All apps',
+    icon: 'apps-outline',
+    accent: '#52525B',
+  };
   const pinnedAppRow = showPinnedApps ? (
       <View style={[styles.dashPinnedApps, !isMobile && styles.deskPinnedApps]}>
         {showFinancials ? (
@@ -2107,6 +2006,14 @@ function StoreSnapshotPanel({
             value="Search"
             onOpen={openSnapshot}
             selected={listTab === 'inventory'}
+            compact
+          />
+        ) : null}
+        {isMobile && desktopApps.length ? (
+          <DashPinnedApp
+            app={allAppsApp}
+            onPress={() => onAppsOpenChange?.(!appsOpen)}
+            selected={appsOpen}
             compact
           />
         ) : null}
@@ -2190,62 +2097,43 @@ function StoreSnapshotPanel({
           </View>
         )}
         <View
-          style={styles.deskStage}
+          style={styles.storeHomeStage}
           onLayout={(event) => {
             const height = event.nativeEvent.layout.height;
             setStageHeight((current) => (Math.abs(current - height) < 0.5 ? current : height));
           }}
         >
-          <View
-            pointerEvents="box-none"
-            style={[styles.deskPinnedHero, appsOpen && styles.deskPinnedHeroRaised]}
-            onLayout={(event) => {
-              const height = event.nativeEvent.layout.height;
-              setPinnedTopHeight((current) => (Math.abs(current - height) < 0.5 ? current : height));
-            }}
-          >
-            <View style={styles.dashHeroShell}>
-              <View pointerEvents="none" style={styles.dashHeroLift} />
-              <OverviewHero
-                store={store}
-                periodLabel={periodLabel}
-                chrome
-                wide
-                focus={heroFocus}
-                onFocus={setHeroFocus}
-                txSelected={listTab === 'transactions'}
-                onPress={() => onOpenApp?.('transactions')}
-              />
-            </View>
-            {pinnedAppRow}
-          </View>
           <ScrollView
             ref={pageScrollRef}
-            pointerEvents="box-none"
-            style={styles.deskOverlayScroll}
+            style={styles.scroll}
             contentContainerStyle={[
-              styles.deskOverlayScrollContent,
-              {
-                flexGrow: 1,
-                pointerEvents: 'box-none',
-                ...(stageHeight > 0 ? { minHeight: stageHeight + (sheetOpen ? raisedOffset : 0) } : null),
-              },
+              styles.storeHomeScrollContent,
+              stageHeight > 0 ? { minHeight: stageHeight } : null,
             ]}
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="on-drag"
-            bounces
+            bounces={false}
+            overScrollMode="never"
             scrollEventThrottle={16}
-            {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll cgold-store-overlay-scroll' } : null)}
+            {...tabBarScroll}
+            {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll' } : null)}
           >
-            <View pointerEvents="none" style={{ height: raisedOffset }} />
-            <View
-              pointerEvents="auto"
-              style={styles.deskSheet}
-              {...(Platform.OS === 'web' ? { className: 'cgold-store-sheet' } : null)}
-            >
-              {sheetLists}
+            <View style={styles.storeHomeHeroPadDesktop}>
+              <View style={styles.storeHomePinnedTopDesktop}>
+                <StoreHomeHero
+                  store={store}
+                  focus={heroFocus}
+                  onFocus={setHeroFocus}
+                  txSelected={listTab === 'transactions'}
+                  onPress={() => onOpenApp?.('transactions')}
+                  isMobile={false}
+                  accent={storeColor}
+                />
+                {pinnedAppRow}
+              </View>
             </View>
+            <View style={styles.storeHomeSheetPadDesktop}>{sheetLists}</View>
           </ScrollView>
         </View>
         <TxnCashBreakdownModal
@@ -2282,29 +2170,6 @@ function StoreSnapshotPanel({
     >
       <View
         pointerEvents="box-none"
-        style={styles.dashPinnedTop}
-        onLayout={(event) => {
-          const height = event.nativeEvent.layout.height;
-          setPinnedTopHeight((current) => (Math.abs(current - height) < 0.5 ? current : height));
-        }}
-      >
-        <View pointerEvents="none" style={styles.dashPinnedTitleBlock} />
-        <View style={styles.dashHeroShell}>
-          <Animated.View pointerEvents="none" style={[styles.dashHeroLift, { opacity: storeHeroLift }]} />
-          <OverviewHero
-            store={store}
-            periodLabel={periodLabel}
-            chrome
-            focus={heroFocus}
-            onFocus={setHeroFocus}
-            txSelected={listTab === 'transactions'}
-            onPress={() => onOpenApp?.('transactions')}
-          />
-        </View>
-        {pinnedAppRow}
-      </View>
-      <View
-        pointerEvents="box-none"
         style={styles.dashPinnedTitleLayer}
         onLayout={(event) => {
           const { y, height } = event.nativeEvent.layout;
@@ -2316,34 +2181,39 @@ function StoreSnapshotPanel({
       </View>
       <ScrollView
         ref={pageScrollRef}
-        pointerEvents="auto"
-        style={[styles.scroll, styles.scrollOverlay]}
+        style={styles.scroll}
         {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll' } : null)}
         contentContainerStyle={[
-          styles.scrollContent,
-          styles.scrollContentMobile,
-          { paddingBottom: 104 },
+          styles.storeHomeScrollContent,
+          {
+            paddingTop: Math.max(52, titleBarBottom + 4),
+            paddingBottom: mobileTabBarReserve() + 16,
+          },
+          stageHeight > 0 ? { minHeight: stageHeight } : null,
         ]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
+        bounces={false}
+        overScrollMode="never"
         scrollEventThrottle={16}
         {...tabBarScroll}
-        onScroll={(event) => {
-          tabBarScroll.onScroll?.(event);
-          const y = event?.nativeEvent?.contentOffset?.y;
-          if (!Number.isFinite(y)) return;
-          const reach = Math.max(1, pinnedTopHeight - 12);
-          storeHeroLift.setValue(1 - Math.max(0, Math.min(1, y / reach)));
-        }}
       >
-        <View pointerEvents="none" style={{ height: raisedOffset }} />
-        <View
-          pointerEvents="auto"
-          {...(Platform.OS === 'web' ? { className: 'cgold-store-sheet' } : null)}
-        >
-          {mobileContent}
+        <View style={styles.storeHomeHeroPadMobile}>
+          <View style={styles.storeHomePinnedTop}>
+            <StoreHomeHero
+              store={store}
+              focus={heroFocus}
+              onFocus={setHeroFocus}
+              txSelected={listTab === 'transactions'}
+              onPress={() => onOpenApp?.('transactions')}
+              isMobile
+              accent={storeColor}
+            />
+            {pinnedAppRow}
+          </View>
         </View>
+        {mobileContent}
       </ScrollView>
       <TxnCashBreakdownModal
         visible={Boolean(cashSlips.editorRow)}
@@ -2384,7 +2254,6 @@ export default memo(
     prev.filterSlotWidth === next.filterSlotWidth &&
     prev.topInset === next.topInset &&
     prev.ready === next.ready &&
-    prev.onHeaderStats === next.onHeaderStats &&
     prev.desktopHeader === next.desktopHeader &&
     prev.heroFocus === next.heroFocus &&
     prev.focusTab === next.focusTab &&
@@ -2413,6 +2282,244 @@ const styles = StyleSheet.create({
     paddingTop: 0,
     paddingBottom: 0,
     backgroundColor: CANVAS,
+  },
+  storeHomeStage: {
+    flex: 1,
+    minHeight: 0,
+    position: 'relative',
+  },
+  storeHomeScrollContent: {
+    flexGrow: 1,
+    backgroundColor: 'transparent',
+  },
+  storeHomeHeroPadMobile: {
+    paddingHorizontal: 16,
+  },
+  storeHomeHeroPadDesktop: {
+    paddingHorizontal: 48,
+  },
+  storeHomeSheetPadDesktop: {
+    paddingHorizontal: 48,
+    paddingBottom: 24,
+  },
+  storeHomePinnedTop: {
+    paddingTop: 4,
+    paddingBottom: 20,
+    backgroundColor: 'transparent',
+  },
+  storeHomePinnedTopDesktop: {
+    paddingTop: 0,
+    paddingBottom: 24,
+  },
+  storeHomeHeroShell: {
+    alignSelf: 'stretch',
+  },
+  storeHomeHeroWithIconCol: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    alignSelf: 'stretch',
+  },
+  storeHomeHeroWithIconColMobile: {
+    gap: 10,
+  },
+  storeHomeHeroIconCol: {
+    marginLeft: HOME_STORE_ROW_PAD,
+    width: HOME_STORE_ICON_COL_WIDTH,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    flexShrink: 0,
+    paddingTop: 1,
+  },
+  storeHomeHeroIconColMobile: {
+    width: 48,
+    paddingTop: 2,
+  },
+  storeHomeHeroIconWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  storeHomeHeroIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  storeHomeHeroContentCol: {
+    flex: 1,
+    minWidth: 0,
+    marginLeft: HOME_STORE_BODY_LEADING,
+  },
+  storeHomeHeroInset: {
+    alignSelf: 'stretch',
+    gap: 12,
+    paddingHorizontal: 0,
+    paddingTop: 0,
+    paddingBottom: 4,
+    backgroundColor: 'transparent',
+  },
+  storeHomeHeroInsetDesktop: {
+    gap: 10,
+    paddingBottom: 0,
+  },
+  storeHomeHeroPrimary: {
+    alignSelf: 'stretch',
+  },
+  storeHomeHeroMetricBlock: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    alignSelf: 'flex-start',
+    gap: 14,
+    overflow: 'visible',
+  },
+  storeHomeHeroMetricBlockDesktop: {
+    gap: 18,
+  },
+  storeHomeHeroMetricMain: {
+    flexShrink: 0,
+    alignSelf: 'flex-start',
+  },
+  storeHomeHeroAmountRow: {
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    flexWrap: 'nowrap',
+    gap: 10,
+    overflow: 'visible',
+  },
+  storeHomeHeroAmount: {
+    flexShrink: 0,
+    fontFamily: titleFontFamily,
+    fontSize: 34,
+    lineHeight: 40,
+    fontWeight: '400',
+    color: '#1d1d1f',
+    letterSpacing: -0.8,
+    fontVariant: ['tabular-nums'],
+  },
+  storeHomeHeroAmountDesktop: {
+    alignSelf: 'flex-start',
+    fontSize: 44,
+    lineHeight: 48,
+  },
+  storeHomeHeroAmountEmpty: {
+    color: '#aeaeb2',
+  },
+  storeHomeHeroStats: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    alignSelf: 'stretch',
+    gap: 20,
+    backgroundColor: 'transparent',
+  },
+  storeHomeHeroStatsSide: {
+    flexDirection: 'column',
+    flexGrow: 0,
+    flexShrink: 0,
+    alignSelf: 'stretch',
+    justifyContent: 'flex-start',
+    gap: 1,
+    minWidth: 108,
+    maxWidth: 132,
+    paddingTop: 6,
+    paddingLeft: 14,
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderLeftColor: 'rgba(60, 60, 67, 0.12)',
+  },
+  storeHomeHeroStatsSideDesktop: {
+    minWidth: 116,
+    maxWidth: 140,
+    paddingTop: 10,
+    paddingLeft: 18,
+  },
+  storeHomeHeroStat: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  storeHomeHeroStatSelected: {},
+  storeHomeHeroStatPressed: {
+    opacity: 0.72,
+  },
+  storeHomeHeroStatValue: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '500',
+    color: '#aeaeb2',
+    letterSpacing: -0.35,
+    fontVariant: ['tabular-nums'],
+  },
+  storeHomeHeroStatValueSelected: {
+    color: '#1d1d1f',
+    fontWeight: '600',
+  },
+  storeHomeHeroStatLabel: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#aeaeb2',
+    letterSpacing: 0.02,
+  },
+  storeHomeHeroStatLabelSelected: {
+    color: '#1d1d1f',
+    fontWeight: '600',
+  },
+  storeHomeHeroStatCompact: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  storeHomeHeroStatCompactSelected: {},
+  storeHomeHeroStatLabelCompact: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily,
+    fontSize: 10,
+    fontWeight: '500',
+    color: '#aeaeb2',
+    letterSpacing: 0.02,
+  },
+  storeHomeHeroStatLabelCompactSelected: {
+    color: '#1d1d1f',
+    fontWeight: '600',
+  },
+  storeHomeHeroStatValueCompact: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#aeaeb2',
+    letterSpacing: -0.2,
+    fontVariant: ['tabular-nums'],
+    textAlign: 'right',
+    flexShrink: 0,
+  },
+  storeHomeHeroStatValueCompactSelected: {
+    color: '#1d1d1f',
+    fontWeight: '600',
+  },
+  storeHomeSheet: {
+    backgroundColor: '#fff',
+    borderRadius: 0,
+    overflow: 'hidden',
+    marginTop: 12,
+    width: '100%',
+    alignSelf: 'stretch',
+  },
+  storeHomeSheetDesktop: {
+    marginTop: 0,
+    borderRadius: 24,
+    paddingBottom: 24,
   },
   deskChromeRow: {
     zIndex: 24,
@@ -2444,52 +2551,6 @@ const styles = StyleSheet.create({
     color: '#6B5E3A',
     letterSpacing: 0.2,
     opacity: 0.78,
-  },
-  deskStage: {
-    flex: 1,
-    minHeight: 0,
-    position: 'relative',
-  },
-  deskPinnedHero: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 1,
-    elevation: 0,
-    paddingHorizontal: 48,
-    paddingTop: 0,
-    paddingBottom: 4,
-    backgroundColor: 'transparent',
-  },
-  deskPinnedHeroRaised: {
-    zIndex: 16,
-  },
-  deskOverlayScroll: {
-    zIndex: 4,
-    backgroundColor: 'transparent',
-  },
-  deskOverlayScrollContent: {
-    paddingBottom: 0,
-    paddingHorizontal: 48,
-    backgroundColor: 'transparent',
-  },
-  deskSheet: {
-    width: '100%',
-    alignSelf: 'stretch',
-    backgroundColor: '#fff',
-    borderRadius: 24,
-    paddingBottom: 24,
-    overflow: 'hidden',
-  },
-  deskSheetBody: {
-    flex: 1,
-    minHeight: 0,
-  },
-  deskDashHead: {
-    paddingHorizontal: 24,
-    marginTop: 12,
-    marginBottom: 8,
   },
   dashHeroCardWide: {
     flexDirection: 'row',
@@ -2593,18 +2654,6 @@ const styles = StyleSheet.create({
     letterSpacing: -0.06,
     textAlign: 'right',
   },
-  dashPinnedTop: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 1,
-    elevation: 0,
-    paddingHorizontal: 16,
-    paddingTop: 6,
-    paddingBottom: 8,
-    backgroundColor: 'transparent',
-  },
   dashPinnedTitleLayer: {
     position: 'absolute',
     top: 0,
@@ -2640,26 +2689,6 @@ const styles = StyleSheet.create({
     color: '#6B5E3A',
     letterSpacing: 0.2,
     opacity: 0.72,
-  },
-  dashHeroShell: {
-    alignSelf: 'stretch',
-    position: 'relative',
-  },
-  dashHeroLift: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: 20,
-    ...Platform.select({
-      web: {
-        boxShadow: '0 2px 6px rgba(18,16,12,0.08), 0 14px 32px rgba(18,16,12,0.18)',
-      },
-      default: {
-        shadowColor: '#12100C',
-        shadowOpacity: 0.22,
-        shadowRadius: 20,
-        shadowOffset: { width: 0, height: 10 },
-        elevation: 0,
-      },
-    }),
   },
   dashHeroCard: {
     alignSelf: 'stretch',
@@ -2980,18 +3009,6 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
   },
-  dashSheetHost: {
-    flex: 1,
-    minHeight: 0,
-    zIndex: 2,
-  },
-  dashSheetDock: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    zIndex: 4,
-  },
   dashSheetHandle: {
     paddingTop: 8,
   },
@@ -3002,31 +3019,6 @@ const styles = StyleSheet.create({
     borderRadius: 3,
     backgroundColor: 'rgba(60,60,67,0.22)',
     marginBottom: 2,
-  },
-  dashListSheet: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    overflow: 'hidden',
-    paddingTop: 6,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(0,0,0,0.08)',
-    ...Platform.select({
-      web: {
-        boxShadow: '0 -8px 24px rgba(0,0,0,0.12), 0 -1px 0 rgba(255,255,255,0.9)',
-      },
-      default: {
-        shadowColor: '#000',
-        shadowOpacity: 0.14,
-        shadowRadius: 16,
-        shadowOffset: { width: 0, height: -6 },
-        elevation: 8,
-      },
-    }),
-  },
-  dashListSheetFill: {
-    flex: 1,
-    minHeight: 0,
   },
   dashListFill: {
     flex: 1,
@@ -3043,20 +3035,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingTop: 10,
     paddingBottom: 8,
-  },
-  buyTxSheetAttach: {
-    paddingHorizontal: 16,
-    paddingTop: 4,
-    paddingBottom: 40,
-    gap: 14,
-  },
-  dashSheetScroll: {
-    flex: 1,
-    minHeight: 0,
-  },
-  dashSheetScrollContent: {
-    paddingBottom: 104,
-    flexGrow: 1,
   },
   dashHead: {
     flexDirection: 'row',
@@ -3115,55 +3093,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: 'rgba(60,60,67,0.18)',
-  },
-  dashListLead: {
-    marginTop: 0,
-    borderTopWidth: 0,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    overflow: 'hidden',
-  },
-  dashRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    minHeight: 72,
-    backgroundColor: '#fff',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  dashRowPressed: {
-    backgroundColor: 'rgba(60,60,67,0.08)',
-  },
-  dashIcon: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
-    marginLeft: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  dashRowBody: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    alignSelf: 'stretch',
-    paddingVertical: 14,
-    paddingRight: 16,
-  },
-  dashRowDivider: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(60,60,67,0.24)',
-  },
-  dashCopy: {
-    flex: 1,
-    minWidth: 0,
-    gap: 2,
   },
   dashTitle: {
     fontFamily,
@@ -3274,85 +3203,6 @@ const styles = StyleSheet.create({
     letterSpacing: -0.08,
     fontVariant: ['tabular-nums'],
   },
-  metricGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  metricTile: {
-    flexGrow: 1,
-    flexBasis: '47%',
-    minWidth: 148,
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    overflow: 'hidden',
-    paddingHorizontal: 14,
-    paddingTop: 12,
-    paddingBottom: 14,
-    gap: 6,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  metricTilePressed: {
-    backgroundColor: '#f7f7f8',
-  },
-  metricHead: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-  },
-  metricIcon: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  metricTitle: {
-    fontFamily,
-    flex: 1,
-    minWidth: 0,
-    fontSize: 13,
-    fontWeight: '600',
-    color: LABEL,
-    letterSpacing: -0.08,
-  },
-  metricValue: {
-    fontFamily,
-    fontSize: 26,
-    fontWeight: '700',
-    color: LABEL,
-    letterSpacing: -0.6,
-    fontVariant: ['tabular-nums'],
-  },
-  metricMeta: {
-    fontFamily,
-    fontSize: 12,
-    lineHeight: 16,
-    color: SECONDARY,
-    letterSpacing: -0.04,
-  },
-  metricSpinner: {
-    alignSelf: 'flex-start',
-    marginVertical: 8,
-  },
-  peopleStack: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 2,
-  },
-  peopleStackItem: {
-    borderRadius: 16,
-  },
-  peopleExtra: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: SECONDARY,
-    marginLeft: 6,
-  },
   employeeAvatarRing: {
     borderWidth: 2,
     borderColor: '#fff',
@@ -3415,11 +3265,6 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
     gap: 2,
   },
-  mobileTxTop: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-  },
   mobileTxCustomer: {
     fontFamily,
     minWidth: 0,
@@ -3459,171 +3304,6 @@ const styles = StyleSheet.create({
     letterSpacing: -0.08,
     textAlign: 'right',
   },
-  mobileTxFooter: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-    marginTop: 4,
-  },
-  mobileTxEmployee: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    flexShrink: 1,
-    minWidth: 0,
-  },
-  mobileTxEmployeeName: {
-    fontFamily,
-    fontSize: 12,
-    color: SECONDARY,
-    letterSpacing: -0.04,
-    flexShrink: 1,
-  },
-  appRow: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
-    flexWrap: 'wrap',
-    gap: 12,
-  },
-  appRowMobile: {
-    flexDirection: 'column',
-  },
-  appRowBox: {
-    flex: 1,
-    minWidth: 220,
-    minHeight: 200,
-  },
-  appRowBoxDesktop: {
-    height: 280,
-    maxHeight: 280,
-    minHeight: 280,
-  },
-  appBox: {
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    overflow: 'hidden',
-    flexDirection: 'column',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: SEPARATOR,
-  },
-  appBoxHead: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: SEPARATOR,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  appBoxHeadHovered: {
-    backgroundColor: '#f7f7f8',
-  },
-  appBoxIcon: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  appIconMuted: {
-    opacity: 0.38,
-  },
-  appBoxHeadCopy: {
-    flex: 1,
-    minWidth: 0,
-  },
-  appBoxTitle: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: LABEL,
-    letterSpacing: 0,
-  },
-  appBoxMeta: {
-    fontFamily,
-    fontSize: 12,
-    color: SECONDARY,
-    letterSpacing: -0.04,
-    marginTop: 1,
-  },
-  appBoxBody: {
-    minHeight: 0,
-  },
-  appBoxBodyFill: {
-    flex: 1,
-    minHeight: 0,
-  },
-  inventoryBoxBody: {
-    flex: 1,
-    minHeight: 0,
-  },
-  inventoryList: {
-    flex: 1,
-    minHeight: 0,
-  },
-  employeeList: {
-    flex: 1,
-    minHeight: 0,
-  },
-  boxListContent: {
-    flexGrow: 1,
-  },
-  txAppBox: {
-    marginTop: 0,
-  },
-  txTableScroll: {
-    flexGrow: 0,
-  },
-  txTableScrollContent: {
-    flexGrow: 1,
-    minWidth: '100%',
-  },
-  txTable: {
-    width: '100%',
-  },
-  tillRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    marginBottom: 8,
-    alignSelf: 'flex-start',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  tillRowHovered: {
-    opacity: 0.72,
-  },
-  tillAmount: {
-    fontFamily,
-    fontSize: 22,
-    fontWeight: '600',
-    color: LABEL,
-    letterSpacing: -0.4,
-    fontVariant: ['tabular-nums'],
-  },
-  tillLabel: {
-    fontFamily,
-    fontSize: 13,
-    color: SECONDARY,
-  },
-  homeTxTable: {
-    alignSelf: 'stretch',
-    width: '100%',
-  },
-  homeTxHeader: {
-    backgroundColor: 'transparent',
-    minHeight: 36,
-    paddingLeft: 8,
-  },
   homeTxHeaderLabel: {
     fontFamily,
     fontSize: 13,
@@ -3633,10 +3313,6 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     flexShrink: 1,
     minWidth: 0,
-  },
-  homeTxHeaderRule: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: SEPARATOR,
   },
   homeTxEmpty: {
     fontFamily,
@@ -3672,51 +3348,12 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
-  homeTxRowHovered: {
-    backgroundColor: '#f5f5f5',
-  },
   txTableHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     minHeight: 36,
     paddingLeft: 8,
     backgroundColor: 'transparent',
-  },
-  txTableHeaderLabel: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '400',
-    color: SECONDARY,
-    letterSpacing: -0.08,
-    flexShrink: 1,
-  },
-  txTableRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 64,
-    paddingLeft: 8,
-    ...Platform.select({
-      web: {
-        cursor: 'pointer',
-        transitionProperty: 'background-color',
-        transitionDuration: '120ms',
-      },
-      default: {},
-    }),
-  },
-  txTableRowBody: {
-    flex: 1,
-    minWidth: 0,
-    alignSelf: 'stretch',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
-    marginLeft: 12,
-    paddingRight: 16,
-  },
-  txTableRowDivider: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: SEPARATOR,
   },
   txCell: {
     fontFamily,
@@ -3730,76 +3367,6 @@ const styles = StyleSheet.create({
   },
   txCellSecondary: {
     color: SECONDARY,
-  },
-  txTimeUnder: {
-    fontSize: 12,
-    marginTop: 1,
-  },
-  txRef: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    minWidth: 0,
-  },
-  txAmount: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    gap: 6,
-    minWidth: 0,
-  },
-  colPhoto: {
-    width: 36,
-    flexShrink: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  colDate: {
-    flex: 1.1,
-    minWidth: 0,
-    justifyContent: 'center',
-  },
-  colTime: {
-    flex: 0.75,
-    minWidth: 0,
-  },
-  colRef: {
-    flex: 1.2,
-    minWidth: 0,
-  },
-  colCustomer: {
-    flex: 1.8,
-    minWidth: 0,
-  },
-  colItems: {
-    flex: 2.2,
-    minWidth: 0,
-  },
-  colPayment: {
-    flex: 1.2,
-    minWidth: 0,
-  },
-  colAmount: {
-    flex: 1.15,
-    minWidth: 0,
-    justifyContent: 'flex-end',
-    textAlign: 'right',
-  },
-  colEmployee: {
-    flex: 1.6,
-    minWidth: 0,
-  },
-  txEmployee: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    minWidth: 0,
-  },
-  colCheck: {
-    flex: 1.1,
-    minWidth: 0,
-    alignItems: 'flex-end',
-    textAlign: 'right',
   },
   cashHeroStack: {
     paddingHorizontal: 14,
@@ -3841,12 +3408,6 @@ const styles = StyleSheet.create({
     color: SECONDARY,
     letterSpacing: -0.08,
     fontVariant: ['tabular-nums'],
-  },
-  employeeCardWrap: {
-    alignSelf: 'stretch',
-    width: '100%',
-    paddingHorizontal: 8,
-    paddingTop: 8,
   },
   employeeCardGrid: {
     flexDirection: 'row',
@@ -3943,18 +3504,6 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
   },
-  scrollOverlay: {
-    zIndex: 4,
-    backgroundColor: 'transparent',
-  },
-  scrollContent: {
-    paddingBottom: 32,
-    gap: 12,
-  },
-  scrollContentMobile: {
-    gap: 0,
-    backgroundColor: 'transparent',
-  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3992,27 +3541,12 @@ const styles = StyleSheet.create({
     color: LABEL,
     letterSpacing: -0.2,
   },
-  rowTitleStrong: {
-    fontWeight: '600',
-  },
   rowSubtitle: {
     fontFamily,
     fontSize: 12,
     color: SECONDARY,
     letterSpacing: -0.04,
     marginTop: 1,
-  },
-  priceBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-    borderRadius: 7,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
   },
   priceBadgeOk: {
     backgroundColor: '#DCFCE7',
@@ -4022,21 +3556,6 @@ const styles = StyleSheet.create({
   },
   priceBadgeMuted: {
     backgroundColor: FILL,
-  },
-  priceBadgeText: {
-    fontFamily,
-    fontSize: 11,
-    fontWeight: '600',
-    letterSpacing: -0.04,
-  },
-  priceBadgeTextOk: {
-    color: '#166534',
-  },
-  priceBadgeTextOff: {
-    color: '#9A3412',
-  },
-  priceBadgeTextMuted: {
-    color: '#6b6b6b',
   },
   priceModalRoot: {
     flex: 1,
@@ -4217,18 +3736,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  kind: {
-    fontFamily,
-    width: 20,
-    flexShrink: 0,
-    fontSize: 11,
-    fontWeight: '600',
-    color: SO_BLUE,
-    letterSpacing: -0.04,
-  },
-  kindBuy: {
-    color: PO_AMBER,
-  },
   priorityDot: {
     width: 7,
     height: 7,
@@ -4261,115 +3768,6 @@ const styles = StyleSheet.create({
   loadingRow: {
     justifyContent: 'center',
     minHeight: 52,
-  },
-  phoneLiveRow: {
-    flexDirection: 'column',
-    alignItems: 'stretch',
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: '#ECFDF5',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#BBF7D0',
-  },
-  phoneLiveKicker: {
-    fontFamily,
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#15803D',
-    letterSpacing: 0.2,
-    textTransform: 'uppercase',
-  },
-  phoneLiveActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    flexShrink: 0,
-  },
-  phoneLiveBtn: {
-    flex: 1,
-    minHeight: 32,
-    borderRadius: 7,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 10,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  phoneRejectBtn: {
-    backgroundColor: '#B91C1C',
-  },
-  phoneAnswerBtn: {
-    backgroundColor: '#15803D',
-  },
-  phoneActiveRow: {
-    backgroundColor: '#F0FDF4',
-  },
-  phoneMuteBtn: {
-    backgroundColor: '#E5E7EB',
-  },
-  phoneMuteBtnOn: {
-    backgroundColor: '#FDE68A',
-  },
-  phoneMuteBtnText: {
-    color: '#1a1a1a',
-  },
-  phoneSoundBtn: {
-    backgroundColor: '#FCD34D',
-  },
-  phoneSoundBtnText: {
-    color: '#1a1a1a',
-  },
-  phoneLiveBtnText: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#fff',
-  },
-  phoneIdle: {
-    paddingHorizontal: 14,
-    paddingVertical: 16,
-    gap: 4,
-  },
-  phoneRateValue: {
-    fontFamily,
-    fontSize: 28,
-    fontWeight: '700',
-    color: LABEL,
-    letterSpacing: -0.6,
-    fontVariant: ['tabular-nums'],
-  },
-  phoneRateLow: {
-    color: '#B91C1C',
-  },
-  phoneRateHigh: {
-    color: '#15803D',
-  },
-  phoneRateMeta: {
-    fontFamily,
-    fontSize: 12,
-    color: SECONDARY,
-    letterSpacing: -0.04,
-  },
-  phoneAnswered: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#15803D',
-  },
-  phoneError: {
-    fontFamily,
-    fontSize: 12,
-    color: RED,
-    paddingHorizontal: 14,
-    paddingBottom: 10,
-  },
-  phoneRateMetaPad: {
-    paddingHorizontal: 14,
-    paddingTop: 8,
-    paddingBottom: 12,
   },
   emailHero: {
     paddingHorizontal: 14,

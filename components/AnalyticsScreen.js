@@ -1566,11 +1566,6 @@ export default function AnalyticsScreen({ session, storeFilter }) {
 }
 
 const styles = StyleSheet.create({
-  scroll: {
-    flex: 1,
-    minHeight: 0,
-    backgroundColor: '#fff',
-  },
   screen: {
     flex: 1,
     minHeight: 0,
@@ -2189,15 +2184,6 @@ const styles = StyleSheet.create({
     borderBottomWidth: 0,
     backgroundColor: TINT,
   },
-  itemsFootPlain: {
-    borderBottomWidth: 0,
-  },
-  colStore: {
-    width: 44,
-    paddingHorizontal: 6,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   storeMark: {
     width: 28,
     height: 28,
@@ -2265,11 +2251,6 @@ const styles = StyleSheet.create({
   },
   chartBarMine: {
     backgroundColor: ACCENT,
-  },
-  chartLabelFlex: {
-    width: 'auto',
-    flex: 0.9,
-    minWidth: 90,
   },
   drawerScroll: {
     flex: 1,
@@ -2572,16 +2553,6 @@ const styles = StyleSheet.create({
   rankChipValueOn: {
     color: '#1d1d1f',
   },
-  rankChipOf: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#8e8e93',
-  },
-  rankChipSub: {
-    fontFamily: FONT,
-    fontSize: 12,
-    color: '#6e6e73',
-  },
   insightCard: {
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: '#e5e5ea',
@@ -2589,15 +2560,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     paddingHorizontal: 14,
     paddingVertical: 12,
-    gap: 8,
-  },
-  insightCallout: {
-    fontFamily: FONT,
-    fontSize: 13,
-    fontWeight: '600',
-    color: ACCENT,
-  },
-  insightBlock: {
     gap: 8,
   },
   itemsCell: {
@@ -2640,16 +2602,6 @@ const styles = StyleSheet.create({
     marginTop: 2,
     fontVariant: ['tabular-nums'],
   },
-  colLabel: {
-    flex: 1,
-    minWidth: 0,
-  },
-  colRole: {
-    width: 140,
-  },
-  roleCell: {
-    color: '#6e6e73',
-  },
   colRank: {
     width: 44,
     minWidth: 44,
@@ -2677,27 +2629,12 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  colNum: {
-    minWidth: 72,
-    flexShrink: 0,
-    textAlign: 'right',
-    fontVariant: ['tabular-nums'],
-  },
   colTotal: {
     minWidth: 148,
     flexGrow: 0,
     flexShrink: 0,
     textAlign: 'right',
     fontVariant: ['tabular-nums'],
-  },
-  colTotalCompact: {
-    minWidth: 0,
-    paddingHorizontal: 4,
-    fontSize: 13,
-    ...Platform.select({
-      web: { whiteSpace: 'nowrap' },
-      default: {},
-    }),
   },
   colHi: {
     color: ACCENT,

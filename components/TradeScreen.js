@@ -2132,17 +2132,6 @@ const styles = StyleSheet.create({
   stepHidden: {
     display: 'none',
   },
-  ticketWrap: {
-    width: 320,
-    maxWidth: '100%',
-    flexShrink: 0,
-    alignSelf: 'flex-start',
-    zIndex: 12,
-  },
-  ticketWrapCompact: {
-    width: '100%',
-    alignSelf: 'stretch',
-  },
   ticketBar: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -2338,29 +2327,10 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  itemsExpandHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 10,
-    backgroundColor: '#fff',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e6e6e6',
-  },
   itemsExpandBody: {
     flex: 1,
     minHeight: 0,
     padding: 16,
-  },
-  itemsExpandHeaderTools: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    flexShrink: 1,
-    minWidth: 0,
   },
   itemsHead: {
     flexDirection: 'row',
@@ -2499,12 +2469,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '500',
     color: '#1d1d1f',
-  },
-  itemGroup: {
-    fontFamily,
-    fontSize: 12,
-    color: '#8e8e93',
-    marginTop: 1,
   },
   itemUnit: {
     fontFamily,
@@ -2748,18 +2712,6 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  customerSheetHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 12,
-    backgroundColor: '#fff',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e6e6e6',
-  },
   customerSheetBody: {
     padding: 16,
     gap: 12,
@@ -2774,31 +2726,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'flex-end',
     gap: 16,
-  },
-  customerSheetCancel: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '500',
-    color: '#6e6e73',
-  },
-  customerSheetSave: {
-    minHeight: 40,
-    minWidth: 72,
-    paddingHorizontal: 16,
-    borderRadius: 10,
-    backgroundColor: '#1F8A4E',
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  customerSheetSaveText: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#fff',
   },
   paymentSheet: {
     width: '100%',
@@ -3042,14 +2969,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#1F8A4E',
   },
-  menuWide: {
-    left: 0,
-    width: 'auto',
-    minWidth: 240,
-  },
-  menuList: {
-    maxHeight: 220,
-  },
   menuEmpty: {
     fontFamily,
     fontSize: 13,
@@ -3191,19 +3110,6 @@ const styles = StyleSheet.create({
   catalogHeaderCopy: {
     flex: 1,
     minWidth: 0,
-  },
-  catalogTitle: {
-    fontFamily,
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#1d1d1f',
-    letterSpacing: -0.3,
-  },
-  catalogMeta: {
-    fontFamily,
-    fontSize: 12,
-    color: '#8e8e93',
-    marginTop: 2,
   },
   catalogSearch: {
     flexDirection: 'row',
