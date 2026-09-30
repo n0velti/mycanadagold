@@ -168,6 +168,7 @@ const SCREEN_LOADERS = {
   audit: () => import('./components/AuditScreen'),
   bonuses: () => import('./components/BonusesScreen'),
   calendar: () => import('./components/CalendarScreen'),
+  customers: () => import('./components/CustomersScreen'),
   debit: () => import('./components/DebitScreen'),
   emails: () => import('./components/EmailsScreen'),
   employees: () => import('./components/EmployeesScreen'),
@@ -200,6 +201,7 @@ const AnalyticsScreen = lazy(SCREEN_LOADERS.analytics);
 const AuditScreen = lazy(SCREEN_LOADERS.audit);
 const BonusesScreen = lazy(SCREEN_LOADERS.bonuses);
 const CalendarScreen = lazy(SCREEN_LOADERS.calendar);
+const CustomersScreen = lazy(SCREEN_LOADERS.customers);
 const DebitScreen = lazy(SCREEN_LOADERS.debit);
 const EmailsScreen = lazy(SCREEN_LOADERS.emails);
 const EmployeesScreen = lazy(SCREEN_LOADERS.employees);
@@ -3549,6 +3551,7 @@ function HomeStoreDrawer({
   mobileChromeWidth = HOME_FILTER_SIZE,
   desktopHeader = null,
   txFocus = 'all',
+  onOpenCustomer,
 }) {
   const { width: windowWidth } = useWindowDimensions();
   const isMobile = windowWidth < MOBILE_BREAKPOINT;
@@ -3877,6 +3880,7 @@ function HomeStoreDrawer({
                             embedded
                             title="Reviews"
                             onOpenEmails={() => openApp('emails')}
+                            onOpenCustomer={onOpenCustomer}
                           />
                         ) : (
                           <StoreSettingsPanel
@@ -5413,6 +5417,7 @@ function HomeScreen({
   session,
   onRequireLogin,
   onOpenPerson,
+  onOpenCustomer,
   onBuy,
   onSell,
   homeRootTick = 0,
@@ -6105,6 +6110,7 @@ function HomeScreen({
         visible={Boolean(selectedStore)}
         store={selectedStore}
         session={session}
+        onOpenCustomer={onOpenCustomer}
         periodLabel={periodLabel}
         date={startDate}
         startKey={startKey}
@@ -7817,6 +7823,7 @@ export default function App() {
   const [pinnedKeys, setPinnedKeys] = useState([]);
   const [appsView, setAppsView] = useState(DEFAULT_APPS_VIEW);
   const [searchDoc, setSearchDoc] = useState(null);
+  const [customerFocus, setCustomerFocus] = useState(null);
   const [searchDocDetail, setSearchDocDetail] = useState(null);
   const [searchDocLoading, setSearchDocLoading] = useState(false);
   const [searchDocError, setSearchDocError] = useState('');
@@ -8337,6 +8344,19 @@ export default function App() {
     setSearchDocLoading(false);
   }, []);
 
+  const openCustomerProfile = useCallback(
+    (row) => {
+      if (!row || !hasApp('customers')) return;
+      const customersTool = TOOL_CARDS.find((tool) => tool.key === 'customers');
+      setCustomerFocus(row);
+      setActiveTab('tools');
+      setActiveTool(customersTool || { key: 'customers', label: 'Customers' });
+      setSettingsPanel(null);
+      setToolsQuery('');
+    },
+    [hasApp],
+  );
+
   const openSearchDocument = useCallback(
     async (row) => {
       if (!row) return;
@@ -8511,7 +8531,7 @@ export default function App() {
     if (isMobile) {
       return null;
     }
-    if (activeTool.key === 'employees') {
+    if (activeTool.key === 'employees' || activeTool.key === 'customers') {
       return null;
     }
 
@@ -8754,12 +8774,14 @@ export default function App() {
                 session={session}
                 onRequireLogin={() => selectTab('profile')}
                 onOpenEmails={openEmailsFromBonuses}
+                onOpenCustomer={openCustomerProfile}
                 storeFilter={scopedStore || undefined}
               />
             ) : activeTool.key === 'reviews' ? (
               <ReviewsScreen
                 session={session}
                 onRequireLogin={() => selectTab('profile')}
+                onOpenCustomer={openCustomerProfile}
                 storeFilter={scopedStore || undefined}
               />
             ) : activeTool.key === 'calendar' ? (
@@ -8776,6 +8798,13 @@ export default function App() {
                   setTriageStoreBack(() => fn || null);
                   setTriageBatch(context || null);
                 }}
+              />
+            ) : activeTool.key === 'customers' ? (
+              <CustomersScreen
+                session={session}
+                focusCustomer={customerFocus}
+                onFocusConsumed={() => setCustomerFocus(null)}
+                onOpenDocument={openSearchDocument}
               />
             ) : activeTool.key === 'employees' ? (
               <EmployeesScreen
@@ -8867,6 +8896,7 @@ export default function App() {
             session={session}
             onOpenPerson={openPersonProfile}
             onOpenDocument={openSearchDocument}
+            onOpenCustomer={openCustomerProfile}
             onMessage={messagePerson}
           />
         </ScreenGate>
@@ -8912,6 +8942,7 @@ export default function App() {
           homeRootTick={homeRootTick}
           onRequireLogin={() => selectTab('profile')}
           onOpenPerson={openPersonProfile}
+          onOpenCustomer={openCustomerProfile}
           onBuy={() => selectTab('buy')}
           onSell={() => selectTab('sell')}
           onStoreDetailsChange={handleStoreDetailsChange}
@@ -8942,6 +8973,7 @@ export default function App() {
       activeTool?.key === 'reviews' ||
       activeTool?.key === 'calendar' ||
       activeTool?.key === 'employees' ||
+      activeTool?.key === 'customers' ||
       activeTool?.key === 'analytics' ||
       activeTool?.key === 'triage'));
 
@@ -8977,7 +9009,10 @@ export default function App() {
     styles.contentScrollFix,
     isAppsLibrary && styles.contentAppsLibrary,
     !isMobile && (activeTab === 'home' || activeTab === 'search' || activeTab === 'profile' || activeTab === 'messages') && styles.contentAppsLibrary,
-    !isMobile && activeTab === 'tools' && activeTool?.key === 'employees' && styles.contentAppsLibrary,
+    !isMobile &&
+      activeTab === 'tools' &&
+      (activeTool?.key === 'employees' || activeTool?.key === 'customers') &&
+      styles.contentAppsLibrary,
     (groupedMobileTab || showingSettings) && styles.contentMobileGrouped,
     canvasMobileTab && styles.canvasFill,
     isMobile &&

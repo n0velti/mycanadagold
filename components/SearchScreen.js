@@ -273,7 +273,7 @@ async function staffPhoneNumber(session, person) {
   return number;
 }
 
-export default function SearchScreen({ session, onOpenPerson, onOpenDocument, onMessage }) {
+export default function SearchScreen({ session, onOpenPerson, onOpenDocument, onOpenCustomer, onMessage }) {
   const isMobile = useIsMobile();
   const tabBarScroll = useMobileTabBarScrollProps();
   const { hasApp } = useAppAccess();
@@ -572,6 +572,7 @@ export default function SearchScreen({ session, onOpenPerson, onOpenDocument, on
                 icon="person-circle-outline"
                 title={row.label}
                 lines={customerLines(row)}
+                onPress={() => onOpenCustomer?.(row)}
               />
             ))}
             {customerBusy ? (
