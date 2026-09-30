@@ -9,6 +9,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -16,16 +17,25 @@ import { ensureLinkedPosSessions, posEmployeeId } from '../lib/auth';
 import { fetchAureusEmployee } from '../lib/aureusEmployees';
 import { documentQueryCandidates, lookupDocuments } from '../lib/docSearch';
 import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
-import { CANVAS, useIsMobile } from '../lib/mobileUi';
+import { CANVAS, MOBILE_BREAKPOINT, useIsMobile } from '../lib/mobileUi';
 import { listStaffProfiles, staffDisplayName, useAppAccess } from '../lib/permissions';
 import {
   formatTransactionDate,
   formatTransactionTime,
   posSourcesFromSession,
 } from '../lib/transactions';
+import { prepareAiChatSession, sendAiChatMessage } from '../lib/aiChat';
 import { enrichClientActivity, searchClients } from '../lib/triageLookups';
+import { OPENROUTER_MODELS } from '../lib/openrouter';
 import { FONT } from '../lib/typography';
 import { usePhoneCalls } from './PhoneCallProvider';
+
+const AI_PURPLE = '#6B4DE6';
+const AI_BLUE = '#0A84FF';
+const AI_MODEL =
+  OPENROUTER_MODELS.find((model) => model.key === 'anthropic/claude-sonnet-5')?.key ||
+  OPENROUTER_MODELS[0]?.key ||
+  '';
 
 function initialsFromName(name) {
   const parts = String(name || '')
@@ -125,6 +135,51 @@ function customerLines(row) {
       ? ''
       : 'Looking up visits…';
   return [store, lastLine, txLine].filter(Boolean);
+}
+
+function useSearchPageLayout() {
+  const { width } = useWindowDimensions();
+  const isMobile = width < MOBILE_BREAKPOINT;
+  if (isMobile) {
+    return { contentMaxWidth: undefined, searchMaxWidth: undefined };
+  }
+  const contentMaxWidth = width < 1240 ? 740 : 880;
+  const searchMaxWidth = Math.min(540, Math.max(340, Math.round(contentMaxWidth * 0.62)));
+  return { contentMaxWidth, searchMaxWidth };
+}
+
+function ResultGridCard({ icon, title, subtitle, lines, meta, onPress }) {
+  const extras = (lines || []).filter(Boolean);
+  if (!extras.length && subtitle) extras.push(subtitle);
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={!onPress}
+      style={({ pressed, hovered }) => [
+        styles.gridCard,
+        (pressed || hovered) && styles.gridCardHover,
+        !onPress && styles.rowStatic,
+      ]}
+      accessibilityRole={onPress ? 'button' : 'text'}
+    >
+      <View style={styles.gridCardIcon}>
+        <Ionicons name={icon} size={22} color="#1d1d1f" />
+      </View>
+      <Text style={styles.gridCardTitle} numberOfLines={2}>
+        {title}
+      </Text>
+      {extras.map((line) => (
+        <Text key={line} style={styles.gridCardSub} numberOfLines={2}>
+          {line}
+        </Text>
+      ))}
+      {meta ? (
+        <Text style={styles.gridCardMeta} numberOfLines={1}>
+          {meta}
+        </Text>
+      ) : null}
+    </Pressable>
+  );
 }
 
 function ResultRow({ icon, leading, title, subtitle, lines, meta, onPress }) {
@@ -275,10 +330,12 @@ async function staffPhoneNumber(session, person) {
 
 export default function SearchScreen({ session, onOpenPerson, onOpenDocument, onOpenCustomer, onMessage }) {
   const isMobile = useIsMobile();
+  const { contentMaxWidth, searchMaxWidth } = useSearchPageLayout();
   const tabBarScroll = useMobileTabBarScrollProps();
   const { hasApp } = useAppAccess();
   const phone = usePhoneCalls();
   const inputRef = useRef(null);
+  const aiScrollRef = useRef(null);
   const searchGen = useRef(0);
   const myId = session?.supabaseUserId || session?.profile?.id || '';
   const canPhone = hasApp('phone');
@@ -295,6 +352,28 @@ export default function SearchScreen({ session, onOpenPerson, onOpenDocument, on
   const [callingId, setCallingId] = useState('');
   const [callingKind, setCallingKind] = useState('');
   const [actionError, setActionError] = useState('');
+  const [aiMode, setAiMode] = useState(false);
+  const [aiTurns, setAiTurns] = useState([]);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiError, setAiError] = useState('');
+  const [aiProgress, setAiProgress] = useState('');
+  const [seedMessages, setSeedMessages] = useState([]);
+  const [chatContext, setChatContext] = useState(null);
+
+  useEffect(() => {
+    if (!session?.token) {
+      setSeedMessages([]);
+      setChatContext(null);
+      return undefined;
+    }
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - 6);
+    const prepared = prepareAiChatSession({ startDate: start, endDate: end });
+    setSeedMessages(prepared.seedMessages);
+    setChatContext(prepared.context);
+    return undefined;
+  }, [session]);
 
   useEffect(() => {
     if (Platform.OS === 'web') {
@@ -318,12 +397,21 @@ export default function SearchScreen({ session, onOpenPerson, onOpenDocument, on
     };
   }, []);
 
-  const people = useMemo(() => filterStaff(staff, query).slice(0, 25), [staff, query]);
+  const people = useMemo(
+    () => (aiMode ? [] : filterStaff(staff, query).slice(0, 25)),
+    [aiMode, staff, query],
+  );
   const trimmed = query.trim();
   const canLookupTickets = documentQueryCandidates(trimmed).length > 0;
   const canLookupCustomers = trimmed.length >= 2 && !documentQueryCandidates(trimmed).length;
 
   useEffect(() => {
+    if (aiMode) {
+      setTickets([]);
+      setTicketError('');
+      setTicketBusy(false);
+      return undefined;
+    }
     if (!canLookupTickets) {
       setTickets([]);
       setTicketError('');
@@ -359,9 +447,15 @@ export default function SearchScreen({ session, onOpenPerson, onOpenDocument, on
       clearTimeout(timer);
       searchGen.current += 1;
     };
-  }, [canLookupTickets, session, trimmed]);
+  }, [aiMode, canLookupTickets, session, trimmed]);
 
   useEffect(() => {
+    if (aiMode) {
+      setCustomers([]);
+      setCustomerError('');
+      setCustomerBusy(false);
+      return undefined;
+    }
     if (!canLookupCustomers) {
       setCustomers([]);
       setCustomerError('');
@@ -419,10 +513,10 @@ export default function SearchScreen({ session, onOpenPerson, onOpenDocument, on
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [canLookupCustomers, session, trimmed]);
+  }, [aiMode, canLookupCustomers, session, trimmed]);
 
-  const showEmptyHint = !trimmed;
   const showNoMatches =
+    !aiMode &&
     trimmed &&
     !ticketBusy &&
     !customerBusy &&
@@ -436,6 +530,76 @@ export default function SearchScreen({ session, onOpenPerson, onOpenDocument, on
   const onChangeQuery = useCallback((next) => {
     setQuery(next);
     setActionError('');
+    setAiError('');
+  }, []);
+
+  const scrollAiToEnd = useCallback(() => {
+    requestAnimationFrame(() => aiScrollRef.current?.scrollToEnd?.({ animated: true }));
+  }, []);
+
+  const sendAiQuestion = useCallback(async () => {
+    const text = query.trim();
+    if (!text || aiBusy || !aiMode) return;
+    if (!session?.token) {
+      setAiError('Sign in again to use AI search.');
+      return;
+    }
+    if (!seedMessages.length) {
+      setAiError('AI is still loading. Try again in a moment.');
+      return;
+    }
+    setQuery('');
+    setAiError('');
+    setAiBusy(true);
+    setAiProgress('Choosing data…');
+    const history = aiTurns.filter(
+      (turn) => (turn.role === 'user' || turn.role === 'assistant') && String(turn.content || '').trim(),
+    );
+    const nextTurns = [...history, { role: 'user', content: text }];
+    setAiTurns(nextTurns);
+    scrollAiToEnd();
+    try {
+      const result = await sendAiChatMessage({
+        seedMessages,
+        turns: history,
+        userMessage: text,
+        model: AI_MODEL,
+        session,
+        context: chatContext,
+        startDate: chatContext?.selection?.startDate,
+        endDate: chatContext?.selection?.endDate,
+        onLookup: (label) => setAiProgress(label || ''),
+        extraContext:
+          'The staff member is using global Search with AI enabled. Answer using company-wide data and relationships when relevant.',
+      });
+      if (result.sources?.length || result.scope) {
+        setChatContext((current) =>
+          current
+            ? {
+                ...current,
+                lastSources: result.sources?.length ? result.sources : current.lastSources,
+                lastScope: result.scope || current.lastScope,
+              }
+            : current,
+        );
+      }
+      setAiTurns(
+        result.turns || [...nextTurns, { role: 'assistant', content: result.text || '' }],
+      );
+    } catch (err) {
+      setAiTurns(history);
+      setQuery(text);
+      setAiError(err?.message || 'Could not get an AI answer.');
+    } finally {
+      setAiBusy(false);
+      setAiProgress('');
+      scrollAiToEnd();
+    }
+  }, [aiBusy, aiMode, aiTurns, chatContext, query, scrollAiToEnd, seedMessages, session]);
+
+  const toggleAiMode = useCallback(() => {
+    setAiMode((on) => !on);
+    setAiError('');
   }, []);
 
   const callStaff = useCallback(
@@ -472,76 +636,151 @@ export default function SearchScreen({ session, onOpenPerson, onOpenDocument, on
     [canPhone, phone, session],
   );
 
+  const columnStyle = !isMobile && contentMaxWidth ? { maxWidth: contentMaxWidth, width: '100%' } : null;
+  const searchStyle =
+    !isMobile && searchMaxWidth ? { maxWidth: searchMaxWidth, width: '100%' } : null;
+
   return (
     <View style={styles.root}>
-      <View style={[styles.chrome, isMobile && styles.chromeMobile]}>
-        <View style={[styles.searchField, isMobile && styles.searchFieldMobile]}>
-          <Ionicons name="search" size={16} color="#8e8e93" />
-          <TextInput
-            ref={inputRef}
-            style={styles.searchInput}
-            value={query}
-            onChangeText={onChangeQuery}
-            placeholder="Search PO, SO, or people"
-            placeholderTextColor="#8e8e93"
-            autoCapitalize="none"
-            autoCorrect={false}
-            autoFocus={!isMobile}
-            clearButtonMode="while-editing"
-            returnKeyType="search"
-          />
-          {query ? (
-            <Pressable onPress={() => setQuery('')} hitSlop={8} accessibilityLabel="Clear search">
-              <Ionicons name="close-circle" size={18} color="#c7c7cc" />
-            </Pressable>
-          ) : null}
+      <View style={[styles.chrome, isMobile && styles.chromeMobile, !isMobile && styles.chromeDesktop]}>
+        <View style={[styles.searchChromeRow, searchStyle]}>
+          <View
+            style={[
+              styles.searchField,
+              isMobile && styles.searchFieldMobile,
+              !isMobile && styles.searchFieldDesktop,
+            ]}
+          >
+            <Ionicons name="search" size={16} color="#8e8e93" />
+            <TextInput
+              ref={inputRef}
+              style={styles.searchInput}
+              value={query}
+              onChangeText={onChangeQuery}
+              placeholder="Search"
+              placeholderTextColor="#8e8e93"
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoFocus={!isMobile}
+              clearButtonMode="while-editing"
+              returnKeyType={aiMode ? 'send' : 'search'}
+              editable={!aiBusy}
+              onSubmitEditing={() => {
+                if (aiMode) void sendAiQuestion();
+              }}
+              onKeyPress={(event) => {
+                if (!aiMode) return;
+                const key = event?.nativeEvent?.key || event?.key;
+                if (key !== 'Enter') return;
+                event.preventDefault?.();
+                if (query.trim() && !aiBusy) void sendAiQuestion();
+              }}
+            />
+            {query ? (
+              <Pressable onPress={() => setQuery('')} hitSlop={8} accessibilityLabel="Clear search">
+                <Ionicons name="close-circle" size={18} color="#c7c7cc" />
+              </Pressable>
+            ) : null}
+          </View>
+          <Pressable
+            onPress={toggleAiMode}
+            disabled={aiBusy}
+            style={({ pressed, hovered }) => [
+              styles.aiToggle,
+              aiMode && styles.aiToggleOn,
+              (pressed || hovered) && !aiBusy && styles.aiToggleHover,
+              aiBusy && styles.aiToggleDisabled,
+            ]}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: aiMode, disabled: aiBusy }}
+            accessibilityLabel="AI search"
+          >
+            <Ionicons name="sparkles" size={14} color={aiMode ? '#fff' : AI_PURPLE} />
+            <Text style={[styles.aiToggleLabel, aiMode && styles.aiToggleLabelOn]}>AI</Text>
+          </Pressable>
         </View>
       </View>
 
       <ScrollView
+        ref={aiScrollRef}
         style={styles.scroll}
         contentContainerStyle={[
           styles.scrollContent,
           isMobile && styles.scrollContentMobile,
+          !isMobile && styles.scrollContentDesktop,
           isMobile && { paddingBottom: mobileTabBarReserve() + 24 },
         ]}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
+        onContentSizeChange={() => {
+          if (aiMode && aiTurns.length) scrollAiToEnd();
+        }}
         {...(isMobile ? tabBarScroll : null)}
       >
-        {showEmptyHint ? (
-          <View style={styles.empty}>
-            <Ionicons name="search-outline" size={36} color="#c7c7cc" />
-            <Text style={styles.emptyTitle}>Search tickets and people</Text>
-            <Text style={styles.emptyHint}>
-              Type a PO or SO number, or a name, email, or store.
-            </Text>
+        <View style={[styles.scrollColumn, columnStyle]}>
+        {aiMode && aiTurns.length ? (
+          <View style={styles.aiThread}>
+            {aiTurns.map((turn, index) => (
+              <View
+                key={`${turn.role}-${index}`}
+                style={[styles.aiBubble, turn.role === 'user' ? styles.aiBubbleMine : styles.aiBubbleThem]}
+              >
+                <Text style={[styles.aiBubbleText, turn.role === 'user' && styles.aiBubbleTextMine]}>
+                  {turn.content}
+                </Text>
+              </View>
+            ))}
+            {aiBusy ? (
+              <View style={styles.aiBusyRow}>
+                <ActivityIndicator size="small" color="#8e8e93" />
+                {aiProgress ? <Text style={styles.inlineStatusText}>{aiProgress}</Text> : null}
+              </View>
+            ) : null}
           </View>
         ) : null}
 
-        {ticketBusy || tickets.length || ticketError ? (
-          <Section title="PO / SO">
-            {tickets.map((row) => (
-              <ResultRow
-                key={row.id}
-                icon={row.type === 'purchase' ? 'arrow-down-circle-outline' : 'arrow-up-circle-outline'}
-                title={row.reference || `${ticketKind(row)}# ${row.sourceId}`}
-                subtitle={[row.customerName, row.storeName, row.employeeName].filter(Boolean).join(' · ')}
-                meta={row.amountLabel || ''}
-                onPress={() => onOpenDocument?.(row)}
-              />
-            ))}
+        {aiError ? <Text style={styles.aiErrorText}>{aiError}</Text> : null}
+
+        {!aiMode && (ticketBusy || tickets.length || ticketError) ? (
+          <Section title="PO / SO" plain={!isMobile}>
+            {isMobile ? (
+              tickets.map((row) => (
+                <ResultRow
+                  key={row.id}
+                  icon={row.type === 'purchase' ? 'arrow-down-circle-outline' : 'arrow-up-circle-outline'}
+                  title={row.reference || `${ticketKind(row)}# ${row.sourceId}`}
+                  subtitle={[row.customerName, row.storeName, row.employeeName].filter(Boolean).join(' · ')}
+                  meta={row.amountLabel || ''}
+                  onPress={() => onOpenDocument?.(row)}
+                />
+              ))
+            ) : (
+              <View style={styles.resultsGrid}>
+                {tickets.map((row) => (
+                  <ResultGridCard
+                    key={row.id}
+                    icon={row.type === 'purchase' ? 'arrow-down-circle-outline' : 'arrow-up-circle-outline'}
+                    title={row.reference || `${ticketKind(row)}# ${row.sourceId}`}
+                    subtitle={[row.customerName, row.storeName, row.employeeName].filter(Boolean).join(' · ')}
+                    meta={row.amountLabel || ''}
+                    onPress={() => onOpenDocument?.(row)}
+                  />
+                ))}
+              </View>
+            )}
             {ticketBusy ? (
-              <View style={styles.inlineStatus}>
+              <View style={[styles.inlineStatus, !isMobile && styles.inlineStatusGrid]}>
                 <ActivityIndicator size="small" color="#8e8e93" />
                 <Text style={styles.inlineStatusText}>Looking up tickets…</Text>
               </View>
             ) : null}
-            {ticketError && !tickets.length ? <Text style={styles.errorText}>{ticketError}</Text> : null}
+            {ticketError && !tickets.length ? (
+              <Text style={[styles.errorText, !isMobile && styles.errorTextGrid]}>{ticketError}</Text>
+            ) : null}
           </Section>
         ) : null}
 
-        {people.length || staffError ? (
+        {!aiMode && (people.length || staffError) ? (
           <Section title="Employees" plain>
             <View style={styles.employeeGrid}>
               {people.map((person) => (
@@ -564,24 +803,40 @@ export default function SearchScreen({ session, onOpenPerson, onOpenDocument, on
           </Section>
         ) : null}
 
-        {customerBusy || customers.length || customerError ? (
-          <Section title="Customers">
-            {customers.map((row) => (
-              <ResultRow
-                key={`${row.systemKey || ''}:${row.id}`}
-                icon="person-circle-outline"
-                title={row.label}
-                lines={customerLines(row)}
-                onPress={() => onOpenCustomer?.(row)}
-              />
-            ))}
+        {!aiMode && (customerBusy || customers.length || customerError) ? (
+          <Section title="Customers" plain={!isMobile}>
+            {isMobile ? (
+              customers.map((row) => (
+                <ResultRow
+                  key={`${row.systemKey || ''}:${row.id}`}
+                  icon="person-circle-outline"
+                  title={row.label}
+                  lines={customerLines(row)}
+                  onPress={() => onOpenCustomer?.(row)}
+                />
+              ))
+            ) : (
+              <View style={styles.resultsGrid}>
+                {customers.map((row) => (
+                  <ResultGridCard
+                    key={`${row.systemKey || ''}:${row.id}`}
+                    icon="person-circle-outline"
+                    title={row.label}
+                    lines={customerLines(row)}
+                    onPress={() => onOpenCustomer?.(row)}
+                  />
+                ))}
+              </View>
+            )}
             {customerBusy ? (
-              <View style={styles.inlineStatus}>
+              <View style={[styles.inlineStatus, !isMobile && styles.inlineStatusGrid]}>
                 <ActivityIndicator size="small" color="#8e8e93" />
                 <Text style={styles.inlineStatusText}>Searching customers…</Text>
               </View>
             ) : null}
-            {customerError && !customers.length ? <Text style={styles.errorText}>{customerError}</Text> : null}
+            {customerError && !customers.length ? (
+              <Text style={[styles.errorText, !isMobile && styles.errorTextGrid]}>{customerError}</Text>
+            ) : null}
           </Section>
         ) : null}
 
@@ -591,6 +846,7 @@ export default function SearchScreen({ session, onOpenPerson, onOpenDocument, on
             <Text style={styles.emptyHint}>{`Nothing found for “${trimmed}”.`}</Text>
           </View>
         ) : null}
+        </View>
       </ScrollView>
     </View>
   );
@@ -607,11 +863,18 @@ const styles = StyleSheet.create({
     paddingTop: 20,
     paddingBottom: 12,
   },
+  chromeDesktop: {
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    paddingTop: 24,
+  },
   chromeMobile: {
     paddingHorizontal: 16,
     paddingTop: 8,
   },
   searchField: {
+    flex: 1,
+    minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
@@ -625,6 +888,94 @@ const styles = StyleSheet.create({
   searchFieldMobile: {
     minHeight: 40,
     borderRadius: 10,
+  },
+  searchFieldDesktop: {
+    borderRadius: 6,
+    minHeight: 40,
+  },
+  searchChromeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    width: '100%',
+    alignSelf: 'center',
+  },
+  aiToggle: {
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(60, 60, 67, 0.18)',
+    minHeight: 40,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  aiToggleOn: {
+    backgroundColor: AI_PURPLE,
+    borderColor: AI_PURPLE,
+  },
+  aiToggleHover: {
+    opacity: 0.92,
+  },
+  aiToggleDisabled: {
+    opacity: 0.45,
+  },
+  aiToggleLabel: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1d1d1f',
+    letterSpacing: 0.2,
+  },
+  aiToggleLabelOn: {
+    color: '#fff',
+  },
+  aiThread: {
+    gap: 10,
+    paddingTop: 8,
+    paddingBottom: 8,
+  },
+  aiBubble: {
+    maxWidth: '92%',
+    borderRadius: 18,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  aiBubbleMine: {
+    alignSelf: 'flex-end',
+    backgroundColor: AI_BLUE,
+  },
+  aiBubbleThem: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(60, 60, 67, 0.12)',
+  },
+  aiBubbleText: {
+    fontFamily: FONT,
+    fontSize: 16,
+    lineHeight: 21,
+    color: '#1d1d1f',
+  },
+  aiBubbleTextMine: {
+    color: '#fff',
+  },
+  aiBusyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    alignSelf: 'flex-start',
+    paddingVertical: 4,
+  },
+  aiErrorText: {
+    fontFamily: FONT,
+    fontSize: 13,
+    color: '#b91c1c',
+    marginTop: 8,
   },
   searchInput: {
     flex: 1,
@@ -641,11 +992,17 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 32,
     paddingBottom: 32,
-    maxWidth: 980,
+    flexGrow: 1,
+  },
+  scrollContentDesktop: {
+    alignItems: 'center',
+    paddingHorizontal: 24,
   },
   scrollContentMobile: {
     paddingHorizontal: 16,
-    maxWidth: '100%',
+  },
+  scrollColumn: {
+    width: '100%',
   },
   empty: {
     alignItems: 'center',
@@ -700,7 +1057,7 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
   },
   rowHover: {
-    backgroundColor: 'rgba(0,0,0,0.04)',
+    backgroundColor: '#f5f5f5',
   },
   rowStatic: {
     ...Platform.select({ web: { cursor: 'default' }, default: {} }),
@@ -755,6 +1112,75 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
   },
+  resultsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    ...Platform.select({
+      web: {
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+      },
+    }),
+  },
+  gridCard: {
+    alignItems: 'flex-start',
+    paddingVertical: 16,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(60, 60, 67, 0.12)',
+    gap: 4,
+    minWidth: 180,
+    flexGrow: 1,
+    flexBasis: 200,
+    ...Platform.select({
+      web: {
+        minWidth: 0,
+        flexGrow: 0,
+        flexBasis: 'auto',
+        cursor: 'pointer',
+      },
+    }),
+  },
+  gridCardHover: {
+    backgroundColor: '#f5f5f5',
+  },
+  gridCardIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#f2f2f7',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  gridCardTitle: {
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1d1d1f',
+  },
+  gridCardSub: {
+    fontFamily: FONT,
+    fontSize: 12,
+    color: '#8e8e93',
+    lineHeight: 16,
+  },
+  gridCardMeta: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    marginTop: 4,
+  },
+  inlineStatusGrid: {
+    paddingHorizontal: 0,
+  },
+  errorTextGrid: {
+    paddingHorizontal: 0,
+  },
   employeeGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -788,7 +1214,7 @@ const styles = StyleSheet.create({
     }),
   },
   employeeCardHover: {
-    backgroundColor: '#f7f7f8',
+    backgroundColor: '#f5f5f5',
   },
   employeeName: {
     fontFamily: FONT,

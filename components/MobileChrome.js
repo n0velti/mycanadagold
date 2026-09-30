@@ -9,7 +9,17 @@ import {
   TAB_BAR_HEIGHT_EXPANDED,
   TAB_BAR_SIDE_EXPANDED,
 } from '../lib/mobileTabBar';
-import { MOBILE, MOBILE_FILTER_SIZE, mobileSafeBottom, mobileSafeTop } from '../lib/mobileUi';
+import {
+  CANVAS,
+  MOBILE,
+  MOBILE_FILTER_SIZE,
+  NAV_ICON_ACTIVE,
+  NAV_ICON_INACTIVE,
+  NAV_TAB_ACTIVE_BG,
+  NAV_TAB_ACTIVE_RADIUS,
+  mobileSafeBottom,
+  mobileSafeTop,
+} from '../lib/mobileUi';
 
 const fontFamily = 'Sohne';
 
@@ -49,7 +59,7 @@ function TabProfileAvatar({ uri, name, active }) {
           <Ionicons
             name={active ? 'person' : 'person-outline'}
             size={24}
-            color={active ? MOBILE.label : '#3A3A3C'}
+            color={active ? NAV_ICON_ACTIVE : NAV_ICON_INACTIVE}
           />
         )}
       </View>
@@ -77,7 +87,7 @@ export function MobileFilterLines({ color }) {
 }
 
 export function MobileFilterChip({ label, active = false, onPress, accessibilityLabel, accessibilityState, style }) {
-  const color = active ? MOBILE.label : '#3A3A3C';
+  const color = active ? NAV_ICON_ACTIVE : NAV_ICON_INACTIVE;
   return (
     <Pressable
       hitSlop={6}
@@ -375,6 +385,7 @@ export function MobileTabBar({
                   width: indicatorW,
                 },
               ]}
+              {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-active' } : null)}
             />
             {tabs.map((tab) => {
               const isActive = previewKey === tab.key;
@@ -418,7 +429,7 @@ export function MobileTabBar({
                       <Ionicons
                         name={isActive ? tab.iconActive : tab.icon}
                         size={34}
-                        color={isActive ? MOBILE.label : '#3A3A3C'}
+                        color={isActive ? NAV_ICON_ACTIVE : NAV_ICON_INACTIVE}
                       />
                     )}
                     {badge ? (
@@ -448,9 +459,9 @@ const styles = StyleSheet.create({
     minHeight: 44,
     paddingHorizontal: 4,
     paddingBottom: 6,
-    backgroundColor: MOBILE.feed,
+    backgroundColor: CANVAS,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: MOBILE.separator,
+    borderBottomColor: 'rgba(42,38,30,0.08)',
   },
   navHeaderGrouped: {
     backgroundColor: MOBILE.bg,
@@ -679,11 +690,11 @@ const styles = StyleSheet.create({
   tabBarBlur: {
     ...StyleSheet.absoluteFillObject,
     overflow: 'hidden',
-    backgroundColor: 'rgba(255,255,255,0.56)',
+    backgroundColor: 'rgba(252,252,251,0.92)',
     ...Platform.select({
       web: {
-        backdropFilter: 'saturate(140%) blur(10px)',
-        WebkitBackdropFilter: 'saturate(140%) blur(10px)',
+        backdropFilter: 'saturate(120%) blur(12px)',
+        WebkitBackdropFilter: 'saturate(120%) blur(12px)',
       },
       default: {},
     }),
@@ -702,10 +713,8 @@ const styles = StyleSheet.create({
     top: 6,
     bottom: 6,
     zIndex: 0,
-    borderRadius: 999,
-    backgroundColor: 'rgba(60,60,67,0.16)',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(60,60,67,0.08)',
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    backgroundColor: NAV_TAB_ACTIVE_BG,
   },
   tab: {
     flex: 1,

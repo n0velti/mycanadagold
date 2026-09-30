@@ -10,6 +10,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { MOBILE_BREAKPOINT } from '../lib/mobileUi';
 import { formatDateParam, formatPickerDate, parseDateParam } from '../lib/transactions';
 import { FONT } from '../lib/typography';
 
@@ -83,9 +84,11 @@ export default function HomeDatePicker({
   disabled = false,
   blur = false,
   dark = false,
+  searchChrome = false,
 }) {
   const fieldRef = useRef(null);
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const isMobileLayout = windowWidth < MOBILE_BREAKPOINT;
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState(null);
   const [rangePicking, setRangePicking] = useState(dateMode === 'range');
@@ -98,8 +101,9 @@ export default function HomeDatePicker({
   const minDate = minimumDate ? parseDateParam(minimumDate) : null;
   const maxDate = maximumDate ? parseDateParam(maximumDate) : today;
   const label = formatHomeDateLabel(startDate, endDate, dateMode);
-  const iconSize = compact ? 13 : 16;
-  const valueSize = compact ? 13 : 14;
+  const iconSize = compact && !searchChrome ? 13 : 16;
+  const valueSize = searchChrome ? 16 : compact ? 13 : 14;
+  const useBlurChrome = blur && !searchChrome;
 
   useEffect(() => {
     if (!open) return;
@@ -215,7 +219,10 @@ export default function HomeDatePicker({
         styles.field,
         compact && styles.fieldCompact,
         fill && styles.fieldFill,
-        blur && styles.fieldBlur,
+        useBlurChrome && styles.fieldBlur,
+        searchChrome && styles.fieldSearchChrome,
+        searchChrome &&
+          (isMobileLayout ? styles.fieldSearchChromeMobile : styles.fieldSearchChromeDesktop),
         disabled && styles.fieldDisabled,
       ]}
       accessibilityRole="button"
@@ -224,7 +231,12 @@ export default function HomeDatePicker({
     >
       <Ionicons name="calendar-outline" size={iconSize} color={dark ? '#E8D5A3' : '#8e8e93'} />
       <Text
-        style={[styles.fieldValue, { fontSize: valueSize }, dark && styles.fieldValueDark]}
+        style={[
+          styles.fieldValue,
+          { fontSize: valueSize },
+          searchChrome && styles.fieldValueSearchChrome,
+          dark && styles.fieldValueDark,
+        ]}
         numberOfLines={1}
       >
         {label}
@@ -234,7 +246,7 @@ export default function HomeDatePicker({
 
   return (
     <>
-      {blur ? (
+      {useBlurChrome ? (
         <View style={styles.blurLift}>
           <BlurView
             intensity={32}
@@ -410,6 +422,17 @@ const styles = StyleSheet.create({
     height: 40,
     minHeight: 40,
   },
+  fieldSearchChrome: {
+    borderColor: 'rgba(60, 60, 67, 0.18)',
+  },
+  fieldSearchChromeDesktop: {
+    borderRadius: 6,
+    minHeight: 40,
+  },
+  fieldSearchChromeMobile: {
+    borderRadius: 10,
+    minHeight: 40,
+  },
   fieldBlur: {
     backgroundColor: 'transparent',
     borderWidth: 0,
@@ -457,6 +480,9 @@ const styles = StyleSheet.create({
     fontFamily: FONT,
     color: '#1a1a1a',
     letterSpacing: 0,
+  },
+  fieldValueSearchChrome: {
+    color: '#1d1d1f',
   },
   fieldValueDark: {
     color: '#F6F1E6',
