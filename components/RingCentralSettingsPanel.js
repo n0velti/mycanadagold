@@ -105,7 +105,7 @@ function IncomingWatchList({ stores }) {
     <View style={styles.watchBlock}>
       <Text style={styles.sectionLabel}>Incoming on this screen</Text>
       <Text style={styles.introTight}>
-        Calls ring for the store you're set in. Turn on more lines to hear those too.
+        Calls ring for the store you’re set in. Turn on more lines to hear those too.
       </Text>
       <View style={styles.menuList}>
         {connected.map((row) => {

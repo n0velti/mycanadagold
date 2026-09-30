@@ -2211,30 +2211,11 @@ const styles = StyleSheet.create({
   iconBtnActive: {
     backgroundColor: '#FEE2E2',
   },
-  storesLink: {
-    paddingHorizontal: 6,
-    paddingVertical: 6,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  sectionTitle: {
-    fontFamily,
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1a1a1a',
-  },
   sectionMeta: {
     fontFamily,
     fontSize: 12,
     color: '#8a8a8a',
     lineHeight: 17,
-  },
-  silentHint: {
-    fontFamily,
-    fontSize: 12,
-    color: '#8a8a8a',
   },
   storeChips: {
     gap: 8,
@@ -2544,12 +2525,6 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  refresh: {
-    width: 28,
-    height: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   errorBanner: {
     marginBottom: 2,
   },
@@ -2595,11 +2570,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#1a1a1a',
   },
-  rowStatus: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-  },
   storeRate: {
     fontFamily,
     fontSize: 16,
@@ -2617,13 +2587,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#8a8a8a',
     marginTop: 2,
-  },
-  cellError: {
-    fontFamily,
-    fontSize: 12,
-    color: '#991B1B',
-    marginTop: 8,
-    lineHeight: 17,
   },
   statusConnected: {
     color: '#15803D',
@@ -2654,55 +2617,6 @@ const styles = StyleSheet.create({
     color: '#8a8a8a',
     paddingTop: 16,
     paddingBottom: 8,
-  },
-  backRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
-    marginBottom: 4,
-    alignSelf: 'flex-start',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  backText: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#1a1a1a',
-  },
-  statusCard: {
-    marginTop: 4,
-    marginBottom: 4,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e5e5e5',
-    borderRadius: 8,
-    padding: 10,
-    backgroundColor: '#fafafa',
-    gap: 6,
-  },
-  statusValue: {
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#1a1a1a',
-  },
-  detailRow: {
-    gap: 2,
-  },
-  detailLabel: {
-    fontFamily,
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#8a8a8a',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
-  detailValue: {
-    fontFamily,
-    fontSize: 14,
-    color: '#1a1a1a',
   },
   blockTitle: {
     fontFamily,
@@ -3011,31 +2925,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#8a8a8a',
     marginTop: 2,
-  },
-  extBadge: {
-    minWidth: 40,
-    height: 24,
-    paddingHorizontal: 8,
-    borderRadius: 6,
-    backgroundColor: '#ECFDF5',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 1,
-  },
-  extBadgeText: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '700',
-    color: ACCENT,
-    fontVariant: ['tabular-nums'],
-  },
-  refreshLink: {
-    marginTop: 16,
-    alignSelf: 'flex-start',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
   },
   liveCard: {
     flexDirection: 'row',

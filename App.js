@@ -229,6 +229,50 @@ const TradeScreen = lazy(SCREEN_LOADERS.trade);
 const TransferScreen = lazy(SCREEN_LOADERS.transfer);
 const TriageScreen = lazy(SCREEN_LOADERS.triage);
 
+/**
+ * Runs a background warm-up (inventory matrix, till positions, triage cache)
+ * once the browser has had a moment to paint what the person is actually
+ * looking at. Browsers only allow a handful of connections per POS host, so
+ * firing these the instant a session lands puts them in the same queue as the
+ * Home summary and makes the first screen wait. Returns a cancel function.
+ */
+function scheduleWarmup(run, delayMs = 3500) {
+  let cancelled = false;
+  let idleHandle = null;
+  const timer = setTimeout(() => {
+    if (cancelled) return;
+    if (typeof requestIdleCallback === 'function') {
+      idleHandle = requestIdleCallback(
+        () => {
+          if (!cancelled) run();
+        },
+        { timeout: 2000 },
+      );
+    } else {
+      run();
+    }
+  }, delayMs);
+  return () => {
+    cancelled = true;
+    clearTimeout(timer);
+    if (idleHandle != null && typeof cancelIdleCallback === 'function') cancelIdleCallback(idleHandle);
+  };
+}
+
+/** Inventory + till + triage caches, after the first screen is on-screen. */
+function warmSessionCaches(session) {
+  if (!session?.token) return () => {};
+  return scheduleWarmup(() => {
+    prefetchInventoryMatrix(session);
+    prefetchStoreCashPositions(session);
+    if (shouldPrefetchTriage(session.profile)) {
+      import('./lib/transferWorkflow')
+        .then((mod) => mod.warmTriageWorkflow())
+        .catch(() => {});
+    }
+  });
+}
+
 const warmedScreens = new Set();
 /** Start downloading a screen's chunk before it is opened. Safe to call often. */
 function warmScreen(key) {
@@ -448,6 +492,9 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
 }
 
 const TX_ROW_HEIGHT = 44;
+
+/** `/c/<token>` opens the standalone photo-capture page. The path never changes after load. */
+const CAPTURE_TOKEN = captureTokenFromLocation();
 
 const fontFamily = FONT;
 const titleFontFamily = FONT_LIGHT;
@@ -788,7 +835,6 @@ function filledIonicon(name) {
 
 const TAB_ICON_COLOR = '#8e8e93';
 const TAB_INK = '#1a1a1a';
-const TAB_ICON_ACTIVE_COLOR = '#1a1a1a';
 const TAB_BORDER = '#d0d0d0';
 const TAB_ICON_SIZE = 16;
 const SIDEBAR_EXPANDED_WIDTH = 252;
@@ -805,8 +851,6 @@ const SIDEBAR_TAB_DIVIDER_INSET =
   SIDEBAR_TAB_GUTTER + SIDEBAR_TAB_INNER_PAD + SIDEBAR_TAB_ICON_SLOT;
 const SIDEBAR_ANIM_MS = 280;
 const SIDEBAR_COMPACT_DELAY_MS = 170;
-const SIDEBAR_BRAND_SIZE = 24;
-const SIDEBAR_RAIL_SIZE = 36;
 const SIDEBAR_EASE = Easing.bezier(0.32, 0.72, 0, 1);
 
 function prefersReducedMotion() {
@@ -3571,6 +3615,60 @@ function sameJson(a, b) {
   }
 }
 
+/**
+ * Structural equality for the plain data the POS returns (objects, arrays,
+ * primitives). Exits on the first difference and allocates nothing, so it is
+ * cheap enough to run against every store on every live poll.
+ */
+function samePlainData(a, b) {
+  if (a === b) return true;
+  if (a == null || b == null || typeof a !== 'object' || typeof b !== 'object') {
+    return a !== a && b !== b; // NaN
+  }
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) {
+      if (!samePlainData(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  if (Array.isArray(b)) return false;
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (let i = 0; i < keysA.length; i += 1) {
+    const key = keysA[i];
+    if (!Object.prototype.hasOwnProperty.call(b, key)) return false;
+    if (!samePlainData(a[key], b[key])) return false;
+  }
+  return true;
+}
+
+/**
+ * Home polls the POS every few seconds. Most passes return the same numbers,
+ * so keep the previous row objects (and the previous array) whenever a store
+ * has not changed. Every memo and row below then bails out instead of
+ * re-rendering the whole screen on each tick.
+ */
+function reconcileHomeRows(current, incoming) {
+  const next = Array.isArray(incoming) ? incoming : [];
+  const prev = Array.isArray(current) ? current : [];
+  if (prev === next) return prev;
+  if (!prev.length) return next;
+  const prevByStore = new Map(prev.map((row) => [row.store, row]));
+  let reused = prev.length === next.length;
+  const result = next.map((row, index) => {
+    const before = prevByStore.get(row.store);
+    if (before && samePlainData(before, row)) {
+      if (prev[index] !== before) reused = false;
+      return before;
+    }
+    reused = false;
+    return row;
+  });
+  return reused ? prev : result;
+}
+
 function mergeLiveTxRows(current, incoming) {
   const next = incoming || [];
   if (!next.length) return next;
@@ -3589,108 +3687,6 @@ function mergeLiveTxRows(current, incoming) {
       paymentBreakdownLabel: prev.paymentBreakdownLabel || row.paymentBreakdownLabel,
     };
   });
-}
-
-function StoreHeaderAppStat({ app, value, tone, onPress }) {
-  if (!app) return null;
-  return (
-    <Pressable
-      onPress={onPress}
-      style={styles.storeHeaderStat}
-      accessibilityRole="button"
-      accessibilityLabel={`${app.label} ${value}`}
-    >
-      <View style={[styles.pinnedAppIcon, { backgroundColor: app.accent }]}>
-        <Ionicons name={filledIonicon(app.icon)} size={14} color="#fff" />
-      </View>
-      <Text
-        style={[
-          styles.storeHeaderStatValue,
-          tone === 'low' && styles.homeStorePhoneLow,
-          tone === 'high' && styles.homeStorePhoneHigh,
-        ]}
-      >
-        {value}
-      </Text>
-    </Pressable>
-  );
-}
-
-function StoreHeaderFace({ person, index, size, overlap }) {
-  const clockedIn = useIsClockedIn(person.name);
-  return (
-    <View
-      style={{
-        width: size,
-        height: size,
-        marginLeft: index === 0 ? 0 : -overlap,
-        zIndex: clockedIn ? 30 + index : index + 1,
-        overflow: 'visible',
-      }}
-      accessibilityLabel={clockedIn ? `${person.name}, clocked in` : person.name}
-    >
-      <ProfileAvatar
-        uri={person.photoUrl}
-        name={person.name}
-        size={size}
-        style={styles.storeHeaderAvatar}
-        clockMark="badge"
-      />
-    </View>
-  );
-}
-
-function StoreHeaderPeople({ people = [] }) {
-  const visible = people.slice(0, 6);
-  const extra = people.length - visible.length;
-  if (!visible.length) return null;
-  const size = 28;
-  const overlap = 8;
-  return (
-    <View style={styles.storeHeaderPeople} accessibilityLabel={people.map((p) => p.name).join(', ')}>
-      {visible.map((person, index) => (
-        <StoreHeaderFace key={`${person.name}-${index}`} person={person} index={index} size={size} overlap={overlap} />
-      ))}
-      {extra > 0 ? (
-        <View
-          style={[
-            styles.storeHeaderPeopleMore,
-            { width: size, height: size, borderRadius: size / 2, marginLeft: -overlap },
-          ]}
-        >
-          <Text style={styles.storeHeaderPeopleMoreText}>+{extra}</Text>
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
-function StoreDrawerNavItem({ tool, selected, onPress, last }) {
-  return (
-    <>
-      <Pressable
-        onPress={onPress}
-        style={({ hovered, pressed }) => [
-          styles.storeDrawerNavItem,
-          (hovered || pressed) && styles.tabHover,
-        ]}
-        accessibilityRole="button"
-        accessibilityState={{ selected }}
-        accessibilityLabel={tool.label}
-      >
-        <View style={[styles.pinnedAppIcon, { backgroundColor: tool.accent || '#1a1a1a' }]}>
-          <Ionicons name={filledIonicon(tool.icon)} size={14} color="#fff" />
-        </View>
-        <Text
-          style={[styles.storeDrawerNavLabel, selected && styles.storeDrawerNavLabelActive]}
-          numberOfLines={1}
-        >
-          {tool.label}
-        </Text>
-      </Pressable>
-      {last ? null : <View style={styles.storeDrawerNavDivider} />}
-    </>
-  );
 }
 
 function HomeStoreDrawer({
@@ -3728,26 +3724,6 @@ function HomeStoreDrawer({
     solid: true,
   };
   const tabStrip = [overviewTab, ...drawerTabs];
-  const [filterTop, setFilterTop] = useState(36);
-  const [headerStats, setHeaderStats] = useState({
-    email: null,
-    phone: null,
-    people: [],
-    till: null,
-  });
-  const onHeaderStats = useCallback((next) => {
-    setHeaderStats((current) => {
-      if (
-        current.email === next.email &&
-        current.phone === next.phone &&
-        current.people === next.people &&
-        current.till?.amount === next.till?.amount
-      ) {
-        return current;
-      }
-      return next;
-    });
-  }, []);
   const topInset = 0;
   const onMobileFilterTopRef = useRef(onMobileFilterTop);
   const onAppsOpenChangeRef = useRef(onAppsOpenChange);
@@ -3755,7 +3731,6 @@ function HomeStoreDrawer({
   onAppsOpenChangeRef.current = onAppsOpenChange;
   const alignFilter = useCallback((top) => {
     if (!Number.isFinite(top)) return;
-    setFilterTop((current) => (Math.abs(current - top) < 0.5 ? current : top));
     onMobileFilterTopRef.current?.(top);
   }, []);
   const panelWidth = windowWidth;
@@ -4001,7 +3976,6 @@ function HomeStoreDrawer({
                   filterSlotWidth={mobileChromeWidth}
                   topInset={topInset}
                   ready={settled}
-                  onHeaderStats={onHeaderStats}
                   desktopHeader={desktopHeader}
                   heroFocus={txFocus}
                   focusTab={activeTab}
@@ -4444,7 +4418,7 @@ function HomeStoreMetric({ icon, stats, label }) {
   );
 }
 
-function HomeStoreCard({
+const HomeStoreCard = memo(function HomeStoreCard({
   row,
   people,
   emailStats,
@@ -4656,11 +4630,7 @@ function HomeStoreCard({
       </View>
     </Pressable>
   );
-}
-
-function homeStoreMeta(row) {
-  return `${row.txCount} tx · ${row.saleCount} SO · ${row.purchaseCount} PO`;
-}
+});
 
 function callsInHomeRange(calls, startKey, endKey) {
   if (!startKey || !endKey) return Array.isArray(calls) ? calls : [];
@@ -5060,7 +5030,7 @@ function HomeStoreAmount({ amount, count, strong = false, breakdown = null, comp
   );
 }
 
-function HomeStoreTableRow({
+const HomeStoreTableRow = memo(function HomeStoreTableRow({
   row,
   people,
   emailStats,
@@ -5207,7 +5177,7 @@ function HomeStoreTableRow({
       {rowBody}
     </Pressable>
   );
-}
+});
 
 const HOME_PHONE_STORES = [...HOME_STORES, 'Montreal', 'Quebec', 'Laval'];
 const HOME_EMAIL_REFRESH_MS = 15_000;
@@ -5483,6 +5453,34 @@ function HomeStoresTable({
     return next;
   }, [hoursByKey, nowTick, rows]);
 
+  if (compact) {
+    return (
+      <View style={styles.homeStoreTableWrap}>
+        <View style={styles.igStoreList}>
+          {rows.map((row, index) => (
+            <HomeStoreCard
+              key={row.store}
+              row={row}
+              people={peopleByStore.get(row.store) || []}
+              emailStats={emailByStore.get(row.store)}
+              phoneStats={phoneByStore.get(row.store)}
+              reviewStats={reviewByStore.get(row.store)}
+              selected={selectedStore?.store === row.store}
+              last={index === rows.length - 1}
+              onOpenStore={onOpenStore}
+              onOpenPerson={onOpenPerson}
+              open={openByStore.get(row.store) === true}
+              showAmounts={showAmounts}
+              canOpen={canOpenStore ? canOpenStore(row) : true}
+              peopleInteractive={peopleInteractive}
+              amountFocus={amountFocus}
+            />
+          ))}
+        </View>
+      </View>
+    );
+  }
+
   const tableMinStyle = [styles.homeStoreTable, !showAmounts && styles.homeStoreTableNoAmounts];
   const tableContent = (
     <>
@@ -5559,18 +5557,7 @@ function HomeStoresTable({
 
   return (
     <View style={styles.homeStoreTableWrap}>
-      {compact ? (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={Platform.OS === 'web'}
-          style={styles.homeStoreTableScroll}
-          contentContainerStyle={styles.homeStoreTableScrollContent}
-        >
-          <View style={[styles.homeStoreTableCard, ...tableMinStyle]}>{tableContent}</View>
-        </ScrollView>
-      ) : (
-        <View style={[styles.homeStoreTableCard, ...tableMinStyle]}>{tableContent}</View>
-      )}
+      <View style={[styles.homeStoreTableCard, ...tableMinStyle]}>{tableContent}</View>
     </View>
   );
 }
@@ -5747,9 +5734,23 @@ function HomeScreen({
         : formatPickerDate(startDate)
       : `${formatPickerDate(startDate)} – ${formatPickerDate(endDate)}`;
 
+  // Only the POS credentials matter for loading; profile edits (location,
+  // role, avatar) must not restart the fetch loop.
+  const posToken = session?.token || '';
+  const posBaseUrl = session?.baseUrl || '';
+  const posSystemKey = session?.systemKey || '';
+  const posLinked = session?.linked || null;
+  const posSession = useMemo(
+    () =>
+      posToken
+        ? { token: posToken, baseUrl: posBaseUrl, systemKey: posSystemKey, linked: posLinked }
+        : null,
+    [posToken, posBaseUrl, posSystemKey, posLinked],
+  );
+
   const load = useCallback(
     async ({ silent = false } = {}) => {
-      if (!session?.token) {
+      if (!posSession) {
         setStoreRows([]);
         setSelectedStore(null);
         setError('');
@@ -5765,13 +5766,13 @@ function HomeScreen({
       try {
         const needEmail = !silent || Date.now() - emailFetchedAt.current > HOME_EMAIL_REFRESH_MS;
         const emailPromise = needEmail
-          ? fetchHomeStoreSummaries(session, {
+          ? fetchHomeStoreSummaries(posSession, {
               startDate: startKey,
               endDate: endKey,
               extras: HOME_SUMMARY_EXTRAS,
             })
           : null;
-        const fast = await fetchHomeStoreSummaries(session, {
+        const fast = await fetchHomeStoreSummaries(posSession, {
           startDate: startKey,
           endDate: endKey,
           extras: HOME_FAST_EXTRAS,
@@ -5779,11 +5780,7 @@ function HomeScreen({
         if (id !== requestId.current) return;
         setStoreRows((current) => {
           const seeded = current.length ? current : peekHomeEmailRows(startKey, endKey) || [];
-          return mergeHomeSummaryEmails(fast.rows, seeded);
-        });
-        setSelectedStore((current) => {
-          if (!current) return null;
-          return fast.rows.find((row) => row.store === current.store) || current;
+          return reconcileHomeRows(current, mergeHomeSummaryEmails(fast.rows, seeded));
         });
         setError(fast.warning || '');
         if (!silent) setLoading(false);
@@ -5794,11 +5791,7 @@ function HomeScreen({
           if (id !== requestId.current) return;
           emailFetchedAt.current = Date.now();
           rememberHomeEmailRows(startKey, endKey, rich.rows);
-          setStoreRows(rich.rows);
-          setSelectedStore((current) => {
-            if (!current) return null;
-            return rich.rows.find((row) => row.store === current.store) || current;
-          });
+          setStoreRows((current) => reconcileHomeRows(current, rich.rows));
           setError(rich.warning || '');
         } catch {
           // Totals already painted; email rates retry on the next pass.
@@ -5814,8 +5807,17 @@ function HomeScreen({
         if (id === requestId.current && !silent) setLoading(false);
       }
     },
-    [session, startKey, endKey],
+    [posSession, startKey, endKey],
   );
+
+  // The open store follows its row: same object while nothing changed, the
+  // fresh row when the poll brought new numbers.
+  useEffect(() => {
+    setSelectedStore((current) => {
+      if (!current) return null;
+      return storeRows.find((row) => row.store === current.store) || current;
+    });
+  }, [storeRows]);
 
   useEffect(() => {
     if (!dateRestricted) return;
@@ -5841,16 +5843,19 @@ function HomeScreen({
     prefetchHomePhoneInboxes(phone.refreshInbox, HOME_PHONE_STORES);
   }, [phone.refreshInbox]);
 
+  const homeStoreNamesKey = useMemo(
+    () => storeRows.map((row) => row.store).filter(Boolean).join('\n'),
+    [storeRows],
+  );
   useEffect(() => {
-    if (!session?.token) return;
-    prefetchStoreCashPositions(session);
-  }, [session]);
-
-  const homeStoreNamesKey = storeRows.map((row) => row.store).filter(Boolean).join('\n');
-  useEffect(() => {
-    if (!session?.token || !homeStoreNamesKey) return;
-    prefetchStoreCashPositions(session, homeStoreNamesKey.split('\n'));
-  }, [homeStoreNamesKey, session]);
+    if (!posSession || !homeStoreNamesKey) return undefined;
+    // Warm the till positions the store drawers will show, once the table and
+    // its email / phone / review rates have had the network to themselves.
+    return scheduleWarmup(
+      () => prefetchStoreCashPositions(posSession, homeStoreNamesKey.split('\n')),
+      2500,
+    );
+  }, [homeStoreNamesKey, posSession]);
 
   useEffect(() => {
     if (!homeStoreNamesKey) return;
@@ -8206,7 +8211,6 @@ export default function App() {
   const [triageNav, setTriageNav] = useState(null);
   const [triageMobileHeader, setTriageMobileHeader] = useState(null);
   const [settingsPanel, setSettingsPanel] = useState(null);
-  const [analyticsMini, setAnalyticsMini] = useState(null);
   const [toolsQuery, setToolsQuery] = useState('');
   const [pinnedKeys, setPinnedKeys] = useState([]);
   const [appsView, setAppsView] = useState(DEFAULT_APPS_VIEW);
@@ -8332,7 +8336,10 @@ export default function App() {
 
   const isLoggedIn = Boolean(session?.token && session?.supabaseUserId);
   const scopedStore = scopedStoreName(session?.profile);
-  if (Platform.OS === 'web' && activeTool?.key) rememberOpenTool(activeTool.key);
+  const activeToolKey = activeTool?.key || '';
+  useEffect(() => {
+    if (Platform.OS === 'web' && activeToolKey) rememberOpenTool(activeToolKey);
+  }, [activeToolKey]);
   const userLabel = displayName(session) || PROFILE_TAB.label;
   const activeLabel =
     activeTab === 'profile'
@@ -8415,7 +8422,6 @@ export default function App() {
     setActiveTab('home');
     setActiveTool(null);
     setSettingsPanel(null);
-    setAnalyticsMini(null);
     setViewedProfile(null);
     setDmFocusUserId('');
     setDmConversationOpen(false);
@@ -8426,6 +8432,7 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
+    let cancelWarmup = () => {};
 
     (async () => {
       // The permission tables do not depend on anything restoreSession works
@@ -8480,13 +8487,7 @@ export default function App() {
         setAppsView(view);
         setAccessByRole(access.byRole);
         setOwnUserAccess(userAccess);
-        prefetchInventoryMatrix(restored);
-        prefetchStoreCashPositions(restored);
-        if (shouldPrefetchTriage(restored.profile)) {
-          import('./lib/transferWorkflow')
-            .then((mod) => mod.warmTriageWorkflow())
-            .catch(() => {});
-        }
+        cancelWarmup = warmSessionCaches(restored);
         const reopenKey = storedOpenTool();
         const reopen = TOOL_CARDS.find((tool) => tool.key === reopenKey);
         if (reopen) {
@@ -8506,6 +8507,7 @@ export default function App() {
 
     return () => {
       cancelled = true;
+      cancelWarmup();
     };
   }, []);
 
@@ -8636,7 +8638,6 @@ export default function App() {
     }
     setActiveTab(tabKey);
     setSettingsPanel(null);
-    setAnalyticsMini(null);
     rememberOpenTool('');
     if (tabKey !== 'search') {
       setSearchDoc(null);
@@ -8788,7 +8789,6 @@ export default function App() {
     if (!hasApp(tool?.key)) return;
     setActiveTool(tool);
     setSettingsPanel(null);
-    setAnalyticsMini(null);
   };
 
   const openPinnedTool = (tool) => {
@@ -8854,7 +8854,6 @@ export default function App() {
     if (activeTool && !hasApp(activeTool.key)) {
       setActiveTool(null);
       setSettingsPanel(null);
-      setAnalyticsMini(null);
       rememberOpenTool('');
     }
   }, [activeTool, hasApp]);
@@ -8878,18 +8877,11 @@ export default function App() {
       setAppsView(view);
       setAccessByRole(access.byRole);
       setOwnUserAccess(userAccess);
-      prefetchInventoryMatrix(next);
-      prefetchStoreCashPositions(next);
-      if (shouldPrefetchTriage(next.profile)) {
-        import('./lib/transferWorkflow')
-          .then((mod) => mod.warmTriageWorkflow())
-          .catch(() => {});
-      }
+      warmSessionCaches(next);
       setPassword('');
       setActiveTab('home');
       setActiveTool(null);
       setSettingsPanel(null);
-      setAnalyticsMini(null);
     } catch (error) {
       setLoginError(error?.message || 'Login failed.');
     } finally {
@@ -8940,7 +8932,6 @@ export default function App() {
             onPress={() => {
               setActiveTool(null);
               setSettingsPanel(null);
-              setAnalyticsMini(null);
             }}
             style={styles.breadcrumbLink}
           >
@@ -8952,7 +8943,6 @@ export default function App() {
               <Pressable
                 onPress={() => {
                   setSettingsPanel(null);
-                  setAnalyticsMini(null);
                 }}
                 style={styles.breadcrumbLink}
               >
@@ -9443,9 +9433,8 @@ export default function App() {
     );
   }
 
-  const captureToken = captureTokenFromLocation();
-  if (captureToken) {
-    return <LinePhotoCapturePage token={captureToken} />;
+  if (CAPTURE_TOKEN) {
+    return <LinePhotoCapturePage token={CAPTURE_TOKEN} />;
   }
 
   if (!isLoggedIn) {
@@ -9516,7 +9505,6 @@ export default function App() {
                 }
                 setActiveTool(null);
                 setSettingsPanel(null);
-                setAnalyticsMini(null);
                 rememberOpenTool('');
               }}
             />
@@ -9700,102 +9688,6 @@ const styles = StyleSheet.create({
   containerMobileGrouped: {
     backgroundColor: '#f2f2f7',
   },
-  mobileTopBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingTop: Platform.OS === 'ios' ? 54 : 14,
-    paddingBottom: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e5e5e5',
-    backgroundColor: '#fafafa',
-    gap: 10,
-  },
-  mobileTopTitle: {
-    fontFamily: titleFontFamily,
-    flex: 1,
-    fontSize: 16,
-    fontWeight: '400',
-    color: '#1a1a1a',
-  },
-  mobileProfileButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#f0f0f0',
-  },
-  mobileProfileButtonActive: {
-    backgroundColor: '#e4e4e4',
-  },
-  bottomTabBar: {
-    flexDirection: 'row',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#e5e5e5',
-    backgroundColor: '#fafafa',
-    paddingBottom: Platform.OS === 'ios' ? 20 : 8,
-    paddingTop: 8,
-    overflow: 'visible',
-  },
-  bottomTab: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 2,
-    minHeight: 44,
-    overflow: 'visible',
-    ...Platform.select({
-      web: {
-        cursor: 'pointer',
-      },
-      default: {},
-    }),
-  },
-  bottomTabLabel: {
-    fontFamily,
-    fontSize: 11,
-    fontWeight: '500',
-    color: '#8a8a8a',
-  },
-  bottomTabLabelActive: {
-    color: '#1a1a1a',
-    fontWeight: '600',
-  },
-  bottomTabIconWrap: {
-    position: 'relative',
-    overflow: 'visible',
-  },
-  mobileAppHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 8,
-    minHeight: 36,
-  },
-  mobileBackButton: {
-    width: 36,
-    height: 36,
-    marginLeft: -8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: {
-        cursor: 'pointer',
-      },
-      default: {},
-    }),
-  },
-  mobileBackButtonSpacer: {
-    width: 36,
-  },
-  mobileAppTitle: {
-    fontFamily,
-    flex: 1,
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#1a1a1a',
-    textAlign: 'center',
-  },
   sidebar: {
     width: SIDEBAR_EXPANDED_WIDTH,
     paddingTop: 20,
@@ -9918,34 +9810,6 @@ const styles = StyleSheet.create({
     flexDirection: 'column',
     alignItems: 'stretch',
   },
-  sidebarBrandIcon: {
-    width: SIDEBAR_BRAND_SIZE,
-    height: SIDEBAR_BRAND_SIZE,
-    borderRadius: SIDEBAR_BRAND_SIZE / 2,
-    overflow: 'hidden',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(212,175,55,0.35)',
-  },
-  sidebarBrandLogo: {
-    width: SIDEBAR_BRAND_SIZE,
-    height: SIDEBAR_BRAND_SIZE,
-  },
-  brandIcon: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#FFF8E8',
-    ...Platform.select({
-      web: {
-        cursor: 'pointer',
-      },
-      default: {},
-    }),
-  },
   tabList: {
     flex: 1,
     gap: 0,
@@ -9960,15 +9824,6 @@ const styles = StyleSheet.create({
   },
   tradeSegment: {
     zIndex: 1,
-  },
-  tradeButtonActive: {
-    backgroundColor: 'rgba(88,88,92,0.22)',
-    borderRadius: 999,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.16)',
-  },
-  tradeButtonActiveHover: {
-    backgroundColor: '#2c2c2c',
   },
   tradeButtonLabelActive: {
     color: MOBILE.label,
@@ -10094,9 +9949,6 @@ const styles = StyleSheet.create({
   tabActive: {
     backgroundColor: '#f5f5f5',
     borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
-  },
-  tabIcon: {
-    marginRight: 8,
   },
   tabWithSubtitle: {
     minHeight: 52,
@@ -10353,61 +10205,6 @@ const styles = StyleSheet.create({
     width: '100%',
     alignSelf: 'center',
   },
-  homePageHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    flexWrap: 'wrap',
-    gap: 12,
-    paddingLeft: 8,
-    paddingRight: 32,
-    paddingTop: 24,
-    paddingBottom: 16,
-    flexShrink: 0,
-  },
-  homePageTitleWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexShrink: 0,
-  },
-  homePageTitle: {
-    fontFamily: titleFontFamily,
-    fontSize: 28,
-    fontWeight: '400',
-    color: '#1a1a1a',
-    letterSpacing: -0.5,
-    flexShrink: 0,
-    marginLeft: 12,
-  },
-  homePageControls: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    flexShrink: 1,
-    marginLeft: 'auto',
-  },
-  homePageSearch: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    width: 240,
-    flexShrink: 0,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#d0d0d0',
-    backgroundColor: '#fff',
-    paddingLeft: 12,
-    paddingRight: 8,
-    minHeight: 40,
-    overflow: 'hidden',
-  },
-  homePageSearchInput: {
-    fontFamily,
-    fontSize: 13,
-    color: '#1a1a1a',
-    paddingRight: 8,
-    paddingVertical: 12,
-    outlineStyle: 'none',
-  },
   homeSearch: {
     flex: 1,
     flexDirection: 'row',
@@ -10422,29 +10219,6 @@ const styles = StyleSheet.create({
   },
   homeSearchIcon: {
     marginRight: 8,
-  },
-  homeScrollContent: {
-    paddingHorizontal: 0,
-    paddingTop: 0,
-    paddingBottom: 32,
-  },
-  homeTableSection: {
-    marginTop: 0,
-    width: '100%',
-    alignSelf: 'stretch',
-  },
-  homeSegmentCompact: {
-    borderRadius: 8,
-    padding: 0,
-  },
-  homeSegmentButtonCompact: {
-    paddingHorizontal: 12,
-    height: 38,
-    borderRadius: 0,
-  },
-  homeSegmentTextCompact: {
-    fontSize: 13,
-    letterSpacing: 0,
   },
   homeDateFieldCompact: {
     flexDirection: 'row',
@@ -10465,9 +10239,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#1a1a1a',
     letterSpacing: 0,
-  },
-  homeDateSepCompact: {
-    fontSize: 13,
   },
   homeControls: {
     flexDirection: 'row',
@@ -10544,34 +10315,10 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#c7c7cc',
   },
-  homeListMeta: {
-    fontFamily,
-    fontSize: 15,
-    color: '#8e8e93',
-    fontVariant: ['tabular-nums'],
-    marginRight: 10,
-    flexShrink: 0,
-  },
-  homeListAmount: {
-    fontFamily,
-    fontSize: 17,
-    fontWeight: '400',
-    color: '#1d1d1f',
-    letterSpacing: -0.2,
-    fontVariant: ['tabular-nums'],
-    marginRight: 4,
-    flexShrink: 0,
-  },
   homeStoreTableCard: {
     backgroundColor: 'transparent',
     width: '100%',
     overflow: 'hidden',
-  },
-  homeStoreTableScroll: {
-    width: '100%',
-  },
-  homeStoreTableScrollContent: {
-    flexGrow: 1,
   },
   homeStoreTable: {
     flexGrow: 1,
@@ -11046,12 +10793,6 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  homeTableRowHover: {
-    backgroundColor: '#f7f7f7',
-  },
-  homeTableRowSelected: {
-    backgroundColor: '#f0f0f0',
-  },
   homeTableEmpty: {
     paddingVertical: 36,
     alignItems: 'center',
@@ -11062,42 +10803,6 @@ const styles = StyleSheet.create({
     minWidth: 0,
     paddingRight: 12,
   },
-  homeColNum: {
-    width: 48,
-    flexShrink: 0,
-    textAlign: 'right',
-    paddingRight: 8,
-  },
-  homeColMoney: {
-    width: 92,
-    flexShrink: 0,
-    textAlign: 'right',
-    paddingRight: 8,
-  },
-  homeColTx: {
-    flex: 1.35,
-    minWidth: 200,
-    paddingRight: 20,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  homeColAmount: {
-    flex: 1.7,
-    minWidth: 260,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  homeCellStore: {
-    flex: 1,
-    minWidth: 0,
-    fontFamily,
-    fontSize: 13,
-    lineHeight: 16,
-    fontWeight: '600',
-    color: '#1a1a1a',
-  },
   homeCellEmailStore: {
     fontFamily,
     fontSize: 13,
@@ -11107,25 +10812,6 @@ const styles = StyleSheet.create({
     flex: 1.05,
     minWidth: 110,
     paddingRight: 20,
-  },
-  homeCellCount: {
-    fontFamily,
-    fontSize: 13,
-    lineHeight: 16,
-    fontWeight: '500',
-    color: '#1a1a1a',
-    width: 28,
-    fontVariant: ['tabular-nums'],
-  },
-  homeCellAmount: {
-    fontFamily,
-    fontSize: 13,
-    lineHeight: 16,
-    fontWeight: '500',
-    color: '#1a1a1a',
-    width: 108,
-    textAlign: 'right',
-    fontVariant: ['tabular-nums'],
   },
   homeCellPrimary: {
     fontFamily,
@@ -11232,15 +10918,6 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
-  homeCellInlineMeta: {
-    fontFamily,
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: '400',
-    color: '#8a8a8a',
-    fontVariant: ['tabular-nums'],
-    flexShrink: 1,
-  },
   homeStoreTableWrap: {
     alignSelf: 'stretch',
   },
@@ -11300,45 +10977,6 @@ const styles = StyleSheet.create({
   storeAppsScroll: {
     maxHeight: 420,
   },
-  homeChromeButton: {
-    zIndex: 24,
-  },
-  storeNameButton: {
-    position: 'absolute',
-    right: HOME_FILTER_RIGHT,
-    zIndex: 22,
-    maxWidth: '78%',
-    height: HOME_FILTER_SIZE,
-    borderRadius: 8,
-    ...Platform.select({
-      web: {
-        cursor: 'pointer',
-      },
-      default: {},
-    }),
-  },
-  storeNameBlur: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-    height: HOME_FILTER_SIZE,
-    maxWidth: '100%',
-    paddingLeft: 11,
-    paddingRight: 12,
-    borderRadius: 8,
-    overflow: 'hidden',
-    backgroundColor: '#fff',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: TAB_BORDER,
-  },
-  storeNameLabel: {
-    flexShrink: 1,
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#1a1a1a',
-    letterSpacing: 0,
-  },
   storeAppsRowSelected: {
     backgroundColor: 'rgba(0,122,255,0.08)',
   },
@@ -11356,71 +10994,6 @@ const styles = StyleSheet.create({
     flexDirection: 'column',
     backgroundColor: CANVAS,
   },
-  storeDrawerPanelDesktop: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
-  },
-  storeDrawerNav: {
-    width: 220,
-    flexShrink: 0,
-    paddingTop: 24,
-    paddingBottom: 16,
-    paddingHorizontal: 16,
-    borderRightWidth: StyleSheet.hairlineWidth,
-    borderRightColor: TAB_BORDER,
-    backgroundColor: CANVAS,
-  },
-  storeDrawerNavStore: {
-    paddingHorizontal: 4,
-    paddingBottom: 16,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  storeDrawerNavStoreName: {
-    fontFamily: titleFontFamily,
-    fontSize: 20,
-    fontWeight: '400',
-    color: '#1a1a1a',
-    letterSpacing: -0.35,
-  },
-  storeDrawerPageHeaderInScroll: {
-    paddingLeft: 8,
-    paddingRight: 8,
-    paddingTop: 16,
-    paddingBottom: 12,
-  },
-  storeDrawerNavItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    minHeight: 40,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    backgroundColor: 'transparent',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  storeDrawerNavLabel: {
-    fontFamily,
-    flex: 1,
-    fontSize: 13,
-    fontWeight: '400',
-    color: '#8e8e93',
-    letterSpacing: 0,
-  },
-  storeDrawerNavLabelActive: {
-    color: '#1a1a1a',
-    fontWeight: '600',
-  },
-  storeDrawerNavDivider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: TAB_BORDER,
-    marginLeft: 44,
-  },
   storeDrawerMain: {
     flex: 1,
     minWidth: 0,
@@ -11428,202 +11001,9 @@ const styles = StyleSheet.create({
     flexDirection: 'column',
     backgroundColor: CANVAS,
   },
-  storeDrawerPageHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    paddingLeft: 32,
-    paddingRight: 24,
-    paddingTop: 24,
-    paddingBottom: 16,
-    flexShrink: 0,
-  },
-  storeDrawerPageTitle: {
-    fontFamily: titleFontFamily,
-    fontSize: 28,
-    fontWeight: '400',
-    color: '#1a1a1a',
-    letterSpacing: -0.5,
-    flexShrink: 1,
-    minWidth: 0,
-  },
-  storeDrawerTitleBlock: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
-    flexWrap: 'wrap',
-  },
-  storeHeaderStats: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-    flexShrink: 1,
-  },
-  storeHeaderStat: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  storeHeaderStatValue: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#1a1a1a',
-    fontVariant: ['tabular-nums'],
-  },
-  storeHeaderPeople: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingLeft: 4,
-    overflow: 'visible',
-  },
-  storeHeaderAvatar: {
-    borderWidth: 2,
-    borderColor: '#fff',
-    backgroundColor: '#e8e8ed',
-  },
-  storeHeaderPeopleMore: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#e8e8ed',
-  },
-  storeHeaderPeopleMoreText: {
-    fontFamily,
-    fontSize: 10,
-    fontWeight: '600',
-    color: '#1a1a1a',
-  },
-  storeDrawerPageControls: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    flexShrink: 0,
-  },
-  storeDrawerPagePeriod: {
-    fontFamily,
-    fontSize: 13,
-    color: '#8e8e93',
-  },
-  storeDrawerClose: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
   storeDrawerPanelMobile: {
     backgroundColor: CANVAS,
     flex: 1,
-  },
-  storeDrawerHeader: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 3,
-    overflow: 'hidden',
-    backgroundColor: CANVAS,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: TAB_BORDER,
-  },
-  storeDrawerHeaderSolid: {
-    backgroundColor: CANVAS,
-  },
-  storeDrawerTitleRow: {
-    paddingBottom: 2,
-  },
-  storeDrawerTitleHit: {
-    flex: 1,
-    minWidth: 0,
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  storeDrawerTabsScroll: {
-    flexGrow: 0,
-    flexShrink: 0,
-  },
-  storeDrawerAppsRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    paddingHorizontal: 14,
-    paddingTop: 6,
-    paddingBottom: 12,
-  },
-  storeDrawerAppsRowMobile: {
-    paddingHorizontal: 8,
-    paddingTop: 4,
-    paddingBottom: 10,
-  },
-  storeDrawerTopBarMobile: {
-    paddingHorizontal: 12,
-    paddingTop: 8,
-    paddingBottom: 4,
-  },
-  storeDrawerFeedMobile: {
-    paddingHorizontal: 0,
-    paddingBottom: 104,
-    backgroundColor: '#fff',
-  },
-  storeDrawerAppMobile: {
-    paddingHorizontal: 0,
-    paddingBottom: 72,
-    backgroundColor: '#fff',
-  },
-  storeDrawerNavSide: {
-    width: 44,
-    height: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  storeDrawerTitleMobile: {
-    textAlign: 'center',
-  },
-  storeDrawerPeriod: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '400',
-    color: '#8e8e93',
-    textAlign: 'center',
-    letterSpacing: -0.08,
-    marginTop: 1,
-  },
-  storeDrawerAppsSection: {
-    marginTop: 28,
-  },
-  storeDrawerGroupedList: {
-    backgroundColor: '#fff',
-  },
-  storeDrawerAppRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 56,
-    paddingLeft: 12,
-    paddingRight: 14,
-    gap: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e5e5ea',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
   },
   storeDrawerAppsRail: {
     width: STORE_DRAWER_RAIL_WIDTH,
@@ -11636,12 +11016,6 @@ const styles = StyleSheet.create({
     gap: 4,
     backgroundColor: 'transparent',
     overflow: 'visible',
-  },
-  storeDrawerRailSep: {
-    width: 22,
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: '#d1d1d6',
-    marginVertical: 4,
   },
   storeDrawerTabWrap: {
     width: 48,
@@ -11707,15 +11081,6 @@ const styles = StyleSheet.create({
       },
     }),
   },
-  storeDrawerTabIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'transparent',
-  },
   storeDrawerPlaceholder: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -11745,54 +11110,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     letterSpacing: -0.2,
   },
-  storeTxMobileList: {
-    backgroundColor: '#fff',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(60,60,67,0.18)',
-    marginTop: 8,
-  },
-  storeTxMobileEmpty: {
-    paddingHorizontal: 16,
-    paddingVertical: 18,
-  },
-  storeOverviewHero: {
-    alignItems: 'center',
-    paddingTop: 8,
-    paddingBottom: 28,
-    gap: 6,
-  },
-  storeOverviewHeroMobile: {
-    paddingTop: 4,
-    paddingBottom: 20,
-  },
-  storeOverviewName: {
-    fontFamily,
-    fontSize: 22,
-    fontWeight: '600',
-    color: '#1d1d1f',
-    letterSpacing: -0.4,
-    marginTop: 8,
-  },
-  storeOverviewPeriod: {
-    fontFamily,
-    fontSize: 15,
-    color: '#8e8e93',
-    letterSpacing: -0.2,
-  },
-  storeOverviewStatRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 52,
-    paddingLeft: 16,
-    paddingRight: 14,
-    gap: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e5e5ea',
-  },
-  storeOverviewStatPrimary: {
-    fontWeight: '600',
-    color: '#1d1d1f',
-  },
   appleSheetTitle: {
     fontFamily,
     flex: 1,
@@ -11812,32 +11129,6 @@ const styles = StyleSheet.create({
       web: { cursor: 'pointer' },
       default: {},
     }),
-  },
-  appleSheetHero: {
-    paddingBottom: 24,
-  },
-  appleSheetCustomer: {
-    fontFamily,
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#1d1d1f',
-    letterSpacing: -0.6,
-  },
-  appleSheetMeta: {
-    fontFamily,
-    fontSize: 15,
-    color: '#8e8e93',
-    letterSpacing: -0.2,
-    marginTop: 4,
-  },
-  appleSheetAmount: {
-    fontFamily,
-    fontSize: 34,
-    fontWeight: '700',
-    color: '#1d1d1f',
-    letterSpacing: -0.8,
-    fontVariant: ['tabular-nums'],
-    marginTop: 8,
   },
   buyTxSheet: {
     flex: 1,
@@ -12117,111 +11408,6 @@ const styles = StyleSheet.create({
     letterSpacing: -0.08,
     textAlign: 'right',
     marginTop: 2,
-  },
-  appleSheetSection: {
-    marginTop: 24,
-  },
-  appleSheetSectionLabel: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#8e8e93',
-    letterSpacing: -0.08,
-    marginBottom: 8,
-    paddingHorizontal: 4,
-  },
-  appleTableHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 36,
-    paddingHorizontal: 16,
-    backgroundColor: '#fff',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e5e5ea',
-  },
-  appleTableHeaderText: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#8e8e93',
-    letterSpacing: -0.08,
-    textTransform: 'none',
-  },
-  appleTableRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    minHeight: 44,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e5e5ea',
-    backgroundColor: '#fff',
-  },
-  appleTableItemName: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '400',
-    color: '#1d1d1f',
-    letterSpacing: -0.2,
-    lineHeight: 20,
-  },
-  appleTableItemMeta: {
-    fontFamily,
-    fontSize: 13,
-    color: '#8e8e93',
-    letterSpacing: -0.08,
-    marginTop: 2,
-  },
-  appleTableCell: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '400',
-    color: '#1d1d1f',
-    letterSpacing: -0.2,
-    fontVariant: ['tabular-nums'],
-  },
-  appleTableMuted: {
-    fontFamily,
-    flex: 1,
-    fontSize: 15,
-    color: '#8e8e93',
-    letterSpacing: -0.2,
-    fontVariant: ['tabular-nums'],
-  },
-  appleTableTotalLabel: {
-    fontFamily,
-    flex: 1,
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#1d1d1f',
-    letterSpacing: -0.2,
-  },
-  appleTableTotalValue: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#1d1d1f',
-    letterSpacing: -0.2,
-    fontVariant: ['tabular-nums'],
-  },
-  applePaymentRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 52,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e5e5ea',
-    backgroundColor: '#fff',
-  },
-  appleNotes: {
-    fontFamily,
-    fontSize: 15,
-    lineHeight: 22,
-    color: '#1d1d1f',
-    letterSpacing: -0.2,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
   },
   txSheetTopBar: {
     paddingTop: 10,
@@ -12614,35 +11800,6 @@ const styles = StyleSheet.create({
     color: '#8e8e93',
     marginTop: -1,
   },
-  breadcrumbBack: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginLeft: 8,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  breadcrumbBackText: {
-    fontFamily,
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#C2410C',
-  },
-  mobileTitleBack: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  mobileTitleBackText: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#C2410C',
-  },
   toolsScreen: {
     flex: 1,
     minHeight: 0,
@@ -12653,47 +11810,9 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  toolsToolbar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginTop: 4,
-    marginBottom: 8,
-    width: '100%',
-    maxWidth: APP_GRID_MAX_WIDTH,
-    alignSelf: 'center',
-  },
-  toolsToolbarOverlay: {
-    marginTop: 0,
-    marginBottom: 0,
-  },
-  toolsToolbarBlur: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 3,
-    overflow: 'hidden',
-    paddingTop: 20,
-    paddingHorizontal: 32,
-    paddingBottom: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(0,0,0,0.06)',
-  },
-  toolsToolbarBlurMobile: {
-    paddingTop: 16,
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-  },
   toolsToolbarMobile: {
     maxWidth: '100%',
     marginTop: 0,
-  },
-  appsLibraryScrollContent: {
-    paddingHorizontal: 32,
-  },
-  appsLibraryScrollContentMobile: {
-    paddingHorizontal: 16,
   },
   toolsSearch: {
     flex: 1,
@@ -12704,9 +11823,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     backgroundColor: '#e8e8ed',
     minHeight: 42,
-  },
-  toolsSearchMobile: {
-    minHeight: 40,
   },
   appsViewToggle: {
     flexDirection: 'row',
@@ -12757,18 +11873,6 @@ const styles = StyleSheet.create({
       },
     }),
   },
-  appsToolbarCompact: {
-    gap: 8,
-  },
-  appsViewToggleCompact: {
-    borderRadius: 8,
-    padding: 1,
-  },
-  appsViewToggleButtonCompact: {
-    width: 28,
-    height: 28,
-    borderRadius: 6,
-  },
   toolsScroll: {
     flex: 1,
     minHeight: 0,
@@ -12781,10 +11885,6 @@ const styles = StyleSheet.create({
       },
       default: {},
     }),
-  },
-  toolsScrollContent: {
-    paddingBottom: 40,
-    paddingTop: 16,
   },
   toolsSectionMobile: {
     maxWidth: '100%',
@@ -12799,6 +11899,13 @@ const styles = StyleSheet.create({
     color: '#1d1d1f',
     paddingVertical: 10,
     outlineStyle: 'none',
+  },
+  homeTxEmpty: {
+    fontFamily,
+    fontSize: 13,
+    color: '#8e8e93',
+    paddingHorizontal: 8,
+    paddingVertical: 28,
   },
   toolsEmpty: {
     fontFamily,
@@ -12953,76 +12060,11 @@ const styles = StyleSheet.create({
     borderColor: '#c7c7cc',
     opacity: 1,
   },
-  toolsList: {
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
-    overflow: 'hidden',
-    ...Platform.select({
-      web: {
-        boxShadow: '0 1px 2px rgba(0,0,0,0.04), 0 6px 16px rgba(0,0,0,0.04)',
-      },
-      ios: {
-        shadowColor: '#000',
-        shadowOpacity: 0.04,
-        shadowRadius: 8,
-        shadowOffset: { width: 0, height: 1 },
-      },
-      default: {},
-    }),
-  },
-  toolListRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 56,
-    paddingLeft: 14,
-    backgroundColor: '#ffffff',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
   toolListRowHovered: {
     backgroundColor: '#f2f2f7',
   },
-  toolListRowPressed: {
-    backgroundColor: '#e5e5ea',
-  },
   toolListRowLast: {
     borderBottomWidth: 0,
-  },
-  toolListBody: {
-    flex: 1,
-    minWidth: 0,
-    minHeight: 56,
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginLeft: 14,
-    paddingVertical: 12,
-    paddingRight: 14,
-    gap: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(60, 60, 67, 0.29)',
-  },
-  toolListBodyLast: {
-    borderBottomWidth: 0,
-  },
-  toolListIcon: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: {
-        boxShadow: '0 1px 1px rgba(0,0,0,0.06), 0 4px 10px rgba(0,0,0,0.10)',
-      },
-      default: {},
-    }),
-  },
-  toolListLabel: {
-    fontFamily,
-    flex: 1,
-    fontSize: 17,
-    fontWeight: '400',
-    color: '#000000',
-    letterSpacing: -0.4,
   },
   toolListPin: {
     width: 32,
@@ -13073,11 +12115,6 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     marginTop: 8,
     position: 'relative',
-  },
-  txDrawerTable: {
-    flex: 0,
-    minHeight: undefined,
-    marginTop: 0,
   },
   txListContent: {
     paddingBottom: 24,
@@ -13182,100 +12219,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
     marginBottom: 10,
-  },
-  transactionsToolbarMobile: {
-    flexDirection: 'column',
-    alignItems: 'stretch',
-    gap: 10,
-  },
-  txSearch: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexGrow: 1,
-    flexShrink: 1,
-    flexBasis: 240,
-    minWidth: 200,
-    maxWidth: 420,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e0e0e0',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    backgroundColor: '#f7f7f7',
-    minHeight: 40,
-  },
-  txSearchMobile: {
-    maxWidth: '100%',
-    minWidth: 0,
-    flexBasis: 'auto',
-    width: '100%',
-  },
-  dateFiltersMobile: {
-    width: '100%',
-  },
-  mobileTxCard: {
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#ececec',
-    backgroundColor: '#fff',
-  },
-  mobileTxCardSelected: {
-    backgroundColor: '#f0f0f0',
-  },
-  mobileTxCardPressed: {
-    backgroundColor: '#f5f5f5',
-  },
-  mobileTxCardTop: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 12,
-    marginBottom: 4,
-  },
-  mobileTxCustomer: {
-    fontFamily,
-    flex: 1,
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1a1a1a',
-  },
-  mobileTxAmountWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-  },
-  mobileTxAmount: {
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1a1a1a',
-    fontVariant: ['tabular-nums'],
-  },
-  mobileTxMeta: {
-    fontFamily,
-    fontSize: 12,
-    color: '#6b6b6b',
-    marginTop: 2,
-  },
-  mobileTxEmployee: {
-    fontFamily,
-    fontSize: 12,
-    color: '#8a8a8a',
-    marginTop: 4,
-  },
-  tableListContentMobile: {
-    paddingBottom: 24,
-  },
-  txSearchIcon: {
-    marginRight: 8,
-  },
-  txSearchInput: {
-    flex: 1,
-    fontFamily,
-    fontSize: 13,
-    color: '#1a1a1a',
-    paddingVertical: 10,
-    outlineStyle: 'none',
   },
   dateFilters: {
     flexDirection: 'row',
@@ -13410,35 +12353,9 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#8a8a8a',
   },
-  tableWrap: {
-    flex: 1,
-    minHeight: 0,
-    backgroundColor: '#fff',
-    position: 'relative',
-    overflow: 'visible',
-  },
   tableList: {
     flex: 1,
     overflow: 'hidden',
-  },
-  tableListContent: {
-    paddingBottom: 16,
-  },
-  tableRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    height: TX_ROW_HEIGHT,
-    paddingHorizontal: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#f2f2f2',
-    backgroundColor: '#fff',
-    ...Platform.select({
-      web: {
-        cursor: 'pointer',
-        transitionProperty: 'none',
-      },
-      default: {},
-    }),
   },
   tableRowHover: {
     backgroundColor: '#ececec',
@@ -13485,19 +12402,9 @@ const styles = StyleSheet.create({
     paddingTop: Platform.OS === 'ios' ? 54 : 18,
     paddingBottom: 10,
   },
-  invoiceHeaderRowMobile: {
-    flexDirection: 'column',
-    gap: 12,
-  },
-  invoiceInfoGridMobile: {
-    flexDirection: 'column',
-  },
   drawerBodyContentMobile: {
     paddingHorizontal: 16,
     paddingBottom: 48,
-  },
-  drawerBodyContentInventoryMobile: {
-    paddingHorizontal: 12,
   },
   invoiceDocLabel: {
     fontFamily,
@@ -13521,14 +12428,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 8,
     paddingBottom: 48,
-  },
-  drawerBodyContentInventory: {
-    flex: 1,
-    minHeight: 0,
-    width: '100%',
-    maxWidth: '100%',
-    paddingHorizontal: 20,
-    paddingBottom: 24,
   },
   drawerLoading: {
     paddingVertical: 36,
@@ -13614,206 +12513,16 @@ const styles = StyleSheet.create({
     marginTop: 4,
     lineHeight: 18,
   },
-  invoiceDetailList: {
-    gap: 12,
-  },
-  invoiceDetailRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-  },
-  invoiceDetailKey: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#8a8a8a',
-    width: 72,
-    paddingTop: 1,
-  },
-  invoiceDetailValWrap: {
-    flex: 1,
-    minWidth: 0,
-  },
-  invoiceDetailVal: {
-    fontFamily,
-    fontSize: 13,
-    color: '#1a1a1a',
-    flex: 1,
-    lineHeight: 18,
-  },
-  invoiceDetailSub: {
-    fontFamily,
-    fontSize: 12,
-    color: '#6b6b6b',
-    marginTop: 3,
-    lineHeight: 16,
-  },
-  invoiceStatusRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 12,
-  },
-  invoiceStatusChip: {
-    backgroundColor: '#e8e8ed',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  invoiceStatusText: {
-    fontFamily,
-    fontSize: 13,
-    color: '#1d1d1f',
-    fontWeight: '500',
-    letterSpacing: -0.08,
-  },
-  invoiceTableHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingBottom: 10,
-    marginBottom: 2,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#1a1a1a',
-  },
-  invoiceTableHeaderText: {
-    fontFamily,
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#8a8a8a',
-    textTransform: 'uppercase',
-    letterSpacing: 0.3,
-  },
-  invoiceTableRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    paddingVertical: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#eeeeee',
-  },
   invoiceColItem: {
     flex: 1,
     minWidth: 0,
     paddingRight: 16,
-  },
-  invoiceColQty: {
-    width: 64,
-    fontFamily,
-    fontSize: 13,
-    color: '#1a1a1a',
-    textAlign: 'right',
-    fontVariant: ['tabular-nums'],
-    paddingTop: 1,
-  },
-  invoiceColAmount: {
-    width: 120,
-    fontFamily,
-    fontSize: 13,
-    color: '#1a1a1a',
-    textAlign: 'right',
-    fontWeight: '500',
-    fontVariant: ['tabular-nums'],
-    paddingTop: 1,
-  },
-  invoiceItemName: {
-    fontFamily,
-    fontSize: 13,
-    color: '#1a1a1a',
-    fontWeight: '500',
-    lineHeight: 18,
-  },
-  invoiceItemSku: {
-    fontFamily,
-    fontSize: 12,
-    color: '#8a8a8a',
-    marginTop: 4,
-    lineHeight: 16,
   },
   invoiceEmptyLine: {
     fontFamily,
     fontSize: 13,
     color: '#8a8a8a',
     paddingVertical: 20,
-  },
-  invoiceTotals: {
-    marginTop: 16,
-    paddingTop: 16,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#1a1a1a',
-    gap: 8,
-  },
-  invoiceTotalRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  invoiceTotalLabel: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#1a1a1a',
-  },
-  invoiceTotalValue: {
-    fontFamily,
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1a1a1a',
-    fontVariant: ['tabular-nums'],
-  },
-  invoiceTotalMuted: {
-    fontFamily,
-    fontSize: 12,
-    color: '#6b6b6b',
-  },
-  invoicePaymentRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#eeeeee',
-  },
-  invoiceNotesSection: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#e5e5e5',
-    paddingTop: 24,
-  },
-  invoiceNotes: {
-    fontFamily,
-    fontSize: 13,
-    color: '#1a1a1a',
-    lineHeight: 20,
-  },
-  tableHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    height: TX_ROW_HEIGHT,
-    paddingHorizontal: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e8e8e8',
-    zIndex: 2,
-  },
-  headerCell: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    height: '100%',
-    gap: 4,
-    ...Platform.select({
-      web: {
-        cursor: 'pointer',
-      },
-      default: {},
-    }),
-  },
-  headerFilterIcon: {
-    marginTop: 1,
-    flexShrink: 0,
-  },
-  tableHeaderCell: {
-    fontFamily,
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#9a9a9a',
-    letterSpacing: 0.2,
-    flexShrink: 1,
   },
   clearFiltersText: {
     fontFamily,
@@ -13968,88 +12677,6 @@ const styles = StyleSheet.create({
     color: '#fff',
     letterSpacing: -0.2,
   },
-  tableCell: {
-    fontFamily,
-    fontSize: 13,
-    color: '#1a1a1a',
-    lineHeight: 16,
-  },
-  cellStore: {
-    fontFamily,
-    fontSize: 13,
-    lineHeight: 16,
-    color: '#1a1a1a',
-    flex: 1.1,
-    minWidth: 72,
-    paddingRight: 12,
-  },
-  cellDate: {
-    fontFamily,
-    fontSize: 13,
-    lineHeight: 16,
-    color: '#5a5a5a',
-    flex: 1.2,
-    minWidth: 96,
-    paddingRight: 12,
-  },
-  cellTime: {
-    fontFamily,
-    fontSize: 13,
-    lineHeight: 16,
-    color: '#5a5a5a',
-    flex: 0.75,
-    minWidth: 64,
-    paddingRight: 12,
-  },
-  cellRef: {
-    fontFamily,
-    fontSize: 13,
-    lineHeight: 16,
-    color: '#4a4a4a',
-    flex: 1.05,
-    minWidth: 84,
-    paddingRight: 12,
-    fontVariant: ['tabular-nums'],
-  },
-  cellCustomer: {
-    fontFamily,
-    fontSize: 13,
-    lineHeight: 16,
-    color: '#1a1a1a',
-    flex: 2.4,
-    minWidth: 120,
-    paddingRight: 12,
-  },
-  cellPayment: {
-    fontFamily,
-    fontSize: 13,
-    lineHeight: 16,
-    color: '#4a4a4a',
-    flex: 1.4,
-    minWidth: 110,
-    paddingRight: 12,
-  },
-  cellAmount: {
-    flex: 1.2,
-    minWidth: 96,
-    paddingRight: 12,
-    justifyContent: 'center',
-  },
-  amountCellInner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    minWidth: 0,
-  },
-  amountCellText: {
-    fontFamily,
-    fontSize: 13,
-    lineHeight: 16,
-    color: '#1a1a1a',
-    fontWeight: '500',
-    fontVariant: ['tabular-nums'],
-    flexShrink: 1,
-  },
   amountCellFintrac: {
     color: '#8a1c1c',
     fontWeight: '600',
@@ -14060,17 +12687,6 @@ const styles = StyleSheet.create({
     borderRadius: 3,
     backgroundColor: '#b42318',
     flexShrink: 0,
-  },
-  cellEmployee: {
-    flex: 1.5,
-    minWidth: 100,
-    justifyContent: 'center',
-  },
-  employeeCellText: {
-    fontFamily,
-    fontSize: 13,
-    lineHeight: 16,
-    color: '#1a1a1a',
   },
   filterPreset: {
     flexDirection: 'row',
@@ -14164,54 +12780,10 @@ const styles = StyleSheet.create({
     gap: 8,
     minWidth: 0,
   },
-  tableEmpty: {
-    paddingVertical: 48,
-    alignItems: 'center',
-  },
   tableEmptyText: {
     fontFamily,
     fontSize: 13,
     color: '#8a8a8a',
-  },
-  loginForm: {
-    flex: 1,
-    width: '100%',
-    maxWidth: 360,
-    alignSelf: 'center',
-    justifyContent: 'center',
-  },
-  loginSubtitle: {
-    fontFamily,
-    fontSize: 13,
-    color: '#6b6b6b',
-    marginTop: 6,
-    marginBottom: 24,
-  },
-  field: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#d0d0d0',
-    borderRadius: 6,
-    paddingHorizontal: 12,
-    marginBottom: 14,
-    backgroundColor: '#fff',
-  },
-  fieldLabel: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#1a1a1a',
-    width: 80,
-  },
-  input: {
-    flex: 1,
-    fontFamily,
-    fontSize: 13,
-    color: '#1a1a1a',
-    paddingVertical: 10,
-    paddingHorizontal: 0,
-    outlineStyle: 'none',
   },
   errorText: {
     fontFamily,
@@ -14228,27 +12800,11 @@ const styles = StyleSheet.create({
     minHeight: 40,
     justifyContent: 'center',
   },
-  loginButtonDisabled: {
-    opacity: 0.7,
-  },
   loginButtonText: {
     fontFamily,
     fontSize: 13,
     fontWeight: '600',
     color: '#fff',
-  },
-  igGroupedScreen: {
-    backgroundColor: CANVAS,
-  },
-  igLargeTitle: {
-    fontFamily: titleFontFamily,
-    fontSize: 34,
-    fontWeight: '400',
-    color: '#1d1d1f',
-    letterSpacing: -0.8,
-    paddingHorizontal: 16,
-    paddingTop: 4,
-    paddingBottom: 16,
   },
   igSearchField: {
     minHeight: 40,
@@ -14262,50 +12818,6 @@ const styles = StyleSheet.create({
     maxWidth: '100%',
     paddingHorizontal: 16,
     alignSelf: 'stretch',
-  },
-  igHomeToolbar: {
-    maxWidth: '100%',
-    paddingHorizontal: 16,
-    paddingTop: 2,
-    paddingBottom: 10,
-    gap: 8,
-  },
-  igHomeToolbarBlur: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 4,
-    overflow: 'hidden',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(60,60,67,0.18)',
-  },
-  igHomeToolbarRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    width: '100%',
-  },
-  igHomeFilterButton: {
-    position: 'absolute',
-    right: HOME_FILTER_RIGHT,
-    zIndex: 12,
-    width: HOME_FILTER_SIZE,
-    height: HOME_FILTER_SIZE,
-    borderRadius: HOME_FILTER_SIZE / 2,
-    ...Platform.select({
-      web: {
-        cursor: 'pointer',
-        boxShadow: '0 1px 6px rgba(0,0,0,0.1)',
-      },
-      default: {
-        shadowColor: '#000',
-        shadowOpacity: 0.1,
-        shadowRadius: 6,
-        shadowOffset: { width: 0, height: 1 },
-        elevation: 3,
-      },
-    }),
   },
   igHomeFilterCircleChrome: {
     borderWidth: StyleSheet.hairlineWidth,
@@ -14329,17 +12841,6 @@ const styles = StyleSheet.create({
         elevation: 3,
       },
     }),
-  },
-  igHomeFilterFloat: {
-    position: 'absolute',
-    right: HOME_FILTER_RIGHT,
-    zIndex: 24,
-  },
-  igHomeFilterSticky: {
-    position: 'absolute',
-    top: 16,
-    right: HOME_FILTER_RIGHT,
-    zIndex: 24,
   },
   igHomeFilterBlur: {
     ...StyleSheet.absoluteFillObject,
@@ -14436,9 +12937,6 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     width: '100%',
   },
-  igAppsFilterSegment: {
-    alignSelf: 'stretch',
-  },
   igFilterLabel: {
     fontFamily,
     fontSize: 12,
@@ -14453,27 +12951,6 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     color: '#1a1a1a',
   },
-  igSegment: {
-    borderRadius: 8,
-    padding: 0,
-    backgroundColor: '#fff',
-  },
-  igSegmentFill: {
-    flex: 1,
-  },
-  igSegmentButton: {
-    height: 38,
-    paddingHorizontal: 14,
-    borderRadius: 0,
-  },
-  igSegmentButtonFill: {
-    flex: 1,
-  },
-  igSegmentText: {
-    fontSize: 14,
-    fontWeight: '600',
-    letterSpacing: -0.15,
-  },
   homeDateFieldFill: {
     flex: 1,
     minWidth: 0,
@@ -14482,12 +12959,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: TAB_BORDER,
-  },
-  igHomeControls: {
-    maxWidth: '100%',
-    marginTop: 4,
-    marginBottom: 8,
-    paddingHorizontal: 16,
   },
   igHomeDesktopHost: {
     alignItems: 'stretch',
@@ -14510,26 +12981,6 @@ const styles = StyleSheet.create({
   },
   igHomeScrollContent: {
     alignItems: 'center',
-  },
-  igHomeDesktopScroll: {
-    paddingBottom: 0,
-  },
-  igHomeDesktopIntro: {
-    alignSelf: 'stretch',
-    gap: 14,
-    marginBottom: 4,
-  },
-  igHomeDesktopDate: {
-    fontFamily,
-    fontSize: 22,
-    fontWeight: '600',
-    color: '#6B5E3A',
-    letterSpacing: -0.3,
-    textAlign: 'left',
-    textAlignVertical: 'center',
-    minHeight: 44,
-    lineHeight: 44,
-    marginBottom: 12,
   },
   igHomeStage: {
     flex: 1,
@@ -14656,13 +13107,6 @@ const styles = StyleSheet.create({
     paddingTop: 16,
     paddingBottom: 12,
     backgroundColor: 'transparent',
-  },
-  igStoreDeskLead: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
   },
   igStoreDeskName: {
     flexShrink: 1,
@@ -14803,12 +13247,6 @@ const styles = StyleSheet.create({
     width: '100%',
     gap: 12,
   },
-  igHomeDesktopSection: {
-    backgroundColor: 'transparent',
-    paddingHorizontal: 0,
-    paddingBottom: 0,
-    marginTop: 18,
-  },
   igHomeHeroInsetDesktop: {
     gap: 10,
     paddingHorizontal: 0,
@@ -14845,13 +13283,6 @@ const styles = StyleSheet.create({
     flexShrink: 0,
     alignSelf: 'flex-start',
   },
-  igStoreGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 14,
-    width: '100%',
-    alignSelf: 'stretch',
-  },
   igStoreTile: {
     flexGrow: 1,
     flexBasis: 340,
@@ -14874,19 +13305,11 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  igStoreTileSpan: {
-    flexBasis: '100%',
-  },
   igStoreTileTop: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
     width: '100%',
-  },
-  igStoreTileChevron: {
-    position: 'absolute',
-    top: 16,
-    right: 14,
   },
   igHomeScreen: {
     backgroundColor: CANVAS,
@@ -14921,20 +13344,6 @@ const styles = StyleSheet.create({
     top: 8,
     left: 16,
     zIndex: 24,
-  },
-  igHomeHero: {
-    alignSelf: 'stretch',
-    width: '100%',
-    marginBottom: 20,
-    paddingTop: 16,
-    paddingBottom: 14,
-    paddingHorizontal: 16,
-    backgroundColor: CANVAS,
-  },
-  igHomeHeroParallax: {
-    marginBottom: 8,
-    paddingTop: 4,
-    paddingBottom: 28,
   },
   igHomeHeroShell: {
     alignSelf: 'stretch',
@@ -14981,13 +13390,6 @@ const styles = StyleSheet.create({
     paddingBottom: 4,
     backgroundColor: 'transparent',
   },
-  igHomeHeroLabel: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#8e8e93',
-    letterSpacing: -0.08,
-  },
   igHomeHeroAmountRow: {
     flexShrink: 0,
     flexDirection: 'row',
@@ -15011,15 +13413,6 @@ const styles = StyleSheet.create({
     left: 0,
     top: 0,
     maxWidth: undefined,
-  },
-  igHomeHeroAmountSpacer: {
-    flex: 1,
-  },
-  igHomeFilterSlot: {
-    width: HOME_FILTER_SIZE + (HOME_FILTER_RIGHT - 16),
-    height: HOME_FILTER_SIZE,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   igHomeHeroAmount: {
     flexShrink: 0,
@@ -15146,73 +13539,6 @@ const styles = StyleSheet.create({
     color: '#1d1d1f',
     fontWeight: '600',
   },
-  igHomeHeroMeta: {
-    fontFamily,
-    fontSize: 13,
-    color: '#8e8e93',
-    marginTop: 4,
-    letterSpacing: -0.08,
-  },
-  igHomeHeroMetaInline: {
-    fontFamily,
-    fontSize: 13,
-    color: '#8e8e93',
-    letterSpacing: -0.08,
-    flexShrink: 0,
-  },
-  igHomeHeroBenchRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    alignItems: 'flex-start',
-    gap: 16,
-    rowGap: 6,
-    marginTop: 6,
-  },
-  igHomeHeroBench: {
-    minWidth: 0,
-    gap: 1,
-  },
-  igHomeHeroBenchLabel: {
-    fontFamily,
-    fontSize: 10,
-    fontWeight: '500',
-    color: '#8e8e93',
-    letterSpacing: 0.02,
-  },
-  igHomeHeroBenchValue: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#1d1d1f',
-    letterSpacing: -0.12,
-    fontVariant: ['tabular-nums'],
-  },
-  igHomeHeroBenchMuted: {
-    color: '#aeaeb2',
-    fontWeight: '500',
-  },
-  igSectionHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    marginBottom: 8,
-  },
-  igSectionHeader: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '400',
-    color: '#8e8e93',
-    letterSpacing: -0.08,
-    textTransform: 'uppercase',
-  },
-  igSectionHeaderMeta: {
-    fontFamily,
-    fontSize: 13,
-    color: '#8e8e93',
-    letterSpacing: -0.08,
-    fontVariant: ['tabular-nums'],
-  },
   igHomeSection: {
     marginTop: 16,
     paddingHorizontal: 0,
@@ -15252,13 +13578,6 @@ const styles = StyleSheet.create({
       web: { cursor: 'default' },
       default: {},
     }),
-  },
-  igStoreCardForeground: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    zIndex: 1,
   },
   igStoreBody: {
     flex: 1,
@@ -15312,12 +13631,6 @@ const styles = StyleSheet.create({
       web: { width: '100%' },
       default: {},
     }),
-  },
-  igStoreMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    minWidth: 0,
   },
   igStoreMetrics: {
     flexDirection: 'row',
@@ -15391,40 +13704,6 @@ const styles = StyleSheet.create({
     color: '#1a1a1a',
     letterSpacing: 0,
     fontVariant: ['tabular-nums'],
-  },
-  igStoreTotalCard: {
-    backgroundColor: '#f5f5f5',
-    ...Platform.select({
-      web: { cursor: 'default' },
-      default: {},
-    }),
-  },
-  igStoreTotalLabel: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#1a1a1a',
-  },
-  igStoreTotalAmount: {
-    fontFamily,
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1d1d1f',
-    fontVariant: ['tabular-nums'],
-  },
-  igAppsScroll: {
-    paddingBottom: 40,
-    paddingTop: 4,
-  },
-  igAppsToolbar: {
-    maxWidth: '100%',
-    marginTop: 0,
-    marginBottom: 12,
-    paddingHorizontal: 16,
-  },
-  igAppsSection: {
-    marginTop: 12,
-    paddingHorizontal: MOBILE_APP_SECTION_PAD,
   },
   igToolPad: {
     paddingHorizontal: 16,

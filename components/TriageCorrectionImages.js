@@ -1,4 +1,4 @@
-import { createElement, forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { createElement, forwardRef, useEffect, useImperativeHandle, useState } from 'react';
 import * as ImagePicker from 'expo-image-picker';
 import {
   Image,

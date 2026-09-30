@@ -44,7 +44,6 @@ import {
   EmptyState,
   FONT,
   ProgressBar,
-  SectionLabel,
   T,
   TextAction,
   TriageDrawer,

@@ -1271,7 +1271,6 @@ function DashboardPanel({ session, stores, onRequireLogin, onLocationChanged }) 
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [total, setTotal] = useState(null);
   const [pendingCount, setPendingCount] = useState(0);
   const [receivedCount, setReceivedCount] = useState(0);
   const [warning, setWarning] = useState('');
@@ -1294,7 +1293,6 @@ function DashboardPanel({ session, stores, onRequireLogin, onLocationChanged }) 
     if (!session?.token) {
       setRows([]);
       setError('');
-      setTotal(null);
       setPendingCount(0);
       setReceivedCount(0);
       setWarning('');
@@ -1317,7 +1315,6 @@ function DashboardPanel({ session, stores, onRequireLogin, onLocationChanged }) 
       });
       if (id !== requestId.current) return;
       setRows(result.transfers);
-      setTotal(result.total);
       setPendingCount(result.pendingCount);
       setReceivedCount(result.receivedCount);
       setWarning(result.warning || '');
@@ -1325,7 +1322,6 @@ function DashboardPanel({ session, stores, onRequireLogin, onLocationChanged }) 
     } catch (err) {
       if (id !== requestId.current) return;
       setRows([]);
-      setTotal(null);
       setPendingCount(0);
       setReceivedCount(0);
       setWarning('');
@@ -1812,7 +1808,6 @@ function DashboardPanel({ session, stores, onRequireLogin, onLocationChanged }) 
               const counts = recountDashboard(rowsNext);
               setPendingCount(counts.pendingCount);
               setReceivedCount(counts.receivedCount);
-              setTotal((value) => (value != null ? Math.max(0, value - 1) : value));
               return rowsNext;
             });
             closeDetail();
@@ -3486,21 +3481,6 @@ const styles = StyleSheet.create({
   toolbarMobile: {
     paddingHorizontal: 16,
   },
-  dashboardToolbar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    minHeight: 28,
-    marginBottom: 8,
-  },
-  dashboardMeta: {
-    fontFamily,
-    fontSize: 12,
-    color: '#8a8a8a',
-    flex: 1,
-    minWidth: 0,
-  },
   dashboardToolbarRight: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3909,26 +3889,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 32,
   },
-  drawerHero: {
-    marginBottom: 20,
-    gap: 6,
-  },
-  drawerHeroRoute: {
-    fontFamily,
-    fontSize: 22,
-    fontWeight: '700',
-    color: '#1a1a1a',
-    letterSpacing: -0.4,
-  },
-  drawerHeroMeta: {
-    fontFamily,
-    fontSize: 14,
-    color: '#6b6b6b',
-  },
-  drawerStatus: {
-    alignSelf: 'flex-start',
-    marginTop: 4,
-  },
   drawerSectionLabel: {
     fontFamily,
     fontSize: 13,
@@ -4062,13 +4022,6 @@ const styles = StyleSheet.create({
   itemTotalQty: {
     fontWeight: '700',
   },
-  listTd: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '500',
-    color: LABEL,
-    letterSpacing: -0.2,
-  },
   listRef: {
     fontFamily,
     fontSize: 17,
@@ -4083,10 +4036,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: LABEL,
     letterSpacing: -0.3,
-    textAlign: 'right',
-    fontVariant: ['tabular-nums'],
-  },
-  listItems: {
     textAlign: 'right',
     fontVariant: ['tabular-nums'],
   },
@@ -4116,20 +4065,6 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: LABEL,
     letterSpacing: -0.2,
-  },
-  colId: {
-    width: 78,
-    paddingRight: 8,
-  },
-  colFrom: {
-    flex: 1.15,
-    minWidth: 0,
-    paddingRight: 8,
-  },
-  colTo: {
-    flex: 1.05,
-    minWidth: 0,
-    paddingRight: 8,
   },
   colItems: {
     width: 72,
@@ -4171,31 +4106,12 @@ const styles = StyleSheet.create({
     paddingBottom: 48,
     width: '100%',
   },
-  title: {
-    fontFamily,
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#1a1a1a',
-    marginBottom: 6,
-  },
-  subtitle: {
-    fontFamily,
-    fontSize: 14,
-    lineHeight: 20,
-    color: '#6b6b6b',
-    marginBottom: 20,
-  },
   loadingRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
     marginBottom: 16,
     paddingHorizontal: 32,
-  },
-  loadingText: {
-    fontFamily,
-    fontSize: 13,
-    color: '#8a8a8a',
   },
   errorText: {
     fontFamily,
@@ -4208,12 +4124,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#C93400',
     marginBottom: 12,
-  },
-  coverageText: {
-    fontFamily,
-    fontSize: 12,
-    color: '#8a8a8a',
-    marginBottom: 14,
   },
   groupHeader: {
     fontFamily,
@@ -4287,11 +4197,6 @@ const styles = StyleSheet.create({
     color: '#c7c7cc',
     fontWeight: '400',
   },
-  dropdownMeta: {
-    fontFamily,
-    fontSize: 11,
-    color: '#8a8a8a',
-  },
   nameWithStar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -4363,11 +4268,6 @@ const styles = StyleSheet.create({
   removeHop: {
     padding: 4,
   },
-  arrowBetween: {
-    height: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   addHopButton: {
     alignSelf: 'flex-start',
     flexDirection: 'row',
@@ -4421,12 +4321,6 @@ const styles = StyleSheet.create({
     color: LABEL,
     letterSpacing: -0.2,
   },
-  pathPreview: {
-    fontFamily,
-    fontSize: 13,
-    color: '#6b6b6b',
-    marginBottom: 14,
-  },
   actionsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -4454,45 +4348,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#fff',
   },
-  pdfButton: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    minHeight: 44,
-    backgroundColor: 'rgba(118,118,128,0.12)',
-  },
-  pdfButtonText: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '700',
-    color: ACCENT,
-  },
-  finishButton: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: '#34C759',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    minHeight: 44,
-  },
-  finishButtonBlock: {
-    alignSelf: 'stretch',
-    justifyContent: 'center',
-    marginTop: 8,
-  },
-  finishButtonText: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#fff',
-  },
   statusText: {
     fontFamily,
     fontSize: 14,
@@ -4505,22 +4360,6 @@ const styles = StyleSheet.create({
     marginTop: 16,
     marginHorizontal: 32,
     gap: 12,
-  },
-  modeBanner: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 14,
-  },
-  modeBannerText: {
-    flex: 1,
-    fontFamily,
-    fontSize: 14,
-    lineHeight: 20,
-    color: LABEL,
-    letterSpacing: -0.08,
   },
   sectionTitle: {
     fontFamily,
@@ -5081,27 +4920,6 @@ const styles = StyleSheet.create({
     marginTop: 8,
     marginBottom: 6,
   },
-  receiveAllButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: GREEN,
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-  },
-  receiveAllButtonDone: {
-    backgroundColor: 'rgba(52,199,89,0.16)',
-  },
-  receiveAllButtonText: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#fff',
-  },
-  receiveAllButtonTextDone: {
-    color: GREEN,
-  },
   plannedItem: {
     paddingHorizontal: 16,
     paddingVertical: 10,
@@ -5148,55 +4966,9 @@ const styles = StyleSheet.create({
     alignItems: 'stretch',
     gap: 8,
   },
-  itemReceivedButton: {
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    backgroundColor: ACCENT,
-  },
-  itemReceivedButtonDone: {
-    backgroundColor: 'rgba(52,199,89,0.16)',
-  },
-  itemReceivedButtonText: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#fff',
-  },
-  itemReceivedButtonTextDone: {
-    color: GREEN,
-  },
-  activeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 4,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#f0f0f0',
-    minHeight: 56,
-  },
   activeRowMain: {
     flex: 1,
     minWidth: 0,
     gap: 2,
-  },
-  activeDate: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#1a1a1a',
-  },
-  activeRef: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: ACCENT,
-  },
-  activePath: {
-    fontFamily,
-    fontSize: 12,
-    color: '#8a8a8a',
   },
 });

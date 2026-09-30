@@ -59,7 +59,7 @@ export default function LinePhotoCapturePage({ token }) {
   const [error, setError] = useState('');
   const [done, setDone] = useState(false);
   const cameraOn = webcamSupported();
-  const { videoRef, cameraState, startCamera, stopStream, setVideoNode } = useWebcam({
+  const { videoRef, cameraState, stopStream, setVideoNode } = useWebcam({
     active: cameraOn && !done,
     autoStart: true,
     constraints: CAMERA_CONSTRAINTS,

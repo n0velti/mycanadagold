@@ -3,7 +3,6 @@ import {
   ActivityIndicator,
   Image,
   KeyboardAvoidingView,
-  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -16,7 +15,6 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import {
   fetchTransactionDetail,
-  formatAmount,
   formatPickerDate,
   resolvePosAuthForRow,
   withLineItems,
@@ -49,7 +47,6 @@ import {
   fetchLookupUsers,
   mergeEmployeeOptions,
   searchClients,
-  searchProducts,
 } from '../lib/triageLookups';
 import { catalogProductOptions, fetchWebsitePrices } from '../lib/websitePrices';
 import { findStaffByEmployeeName, listStaffProfiles } from '../lib/permissions';
@@ -104,16 +101,6 @@ function toBuyPayments(payments) {
       notes: notes && till && notes !== till ? `${notes} · ${till}` : notes || till,
     };
   });
-}
-
-function paymentTypeLabel(payment) {
-  const method = String(payment?.method?.value || 'Payment').trim() || 'Payment';
-  const till = String(payment?.till?.value || '').trim();
-  const currency = String(payment?.currency?.value || '').trim().toUpperCase();
-  const parts = [method];
-  if (till) parts.push(till);
-  if (currency && currency !== 'CAD') parts.push(currency);
-  return parts.join(' · ');
 }
 
 function OptionRow({ label, count, selected, last, onPress }) {
@@ -477,376 +464,6 @@ function ReadValue({ field, suffix }) {
       <Text style={styles.readValueChanged} numberOfLines={2}>
         {valueText}
       </Text>
-    </View>
-  );
-}
-
-function ReverseButton({ onPress }) {
-  return (
-    <Pressable
-      onPress={onPress}
-      hitSlop={8}
-      style={styles.reverseButton}
-      accessibilityRole="button"
-      accessibilityLabel="Revert change"
-    >
-      <Text style={styles.reverseButtonText}>Revert</Text>
-    </Pressable>
-  );
-}
-
-function ChangedOriginal({ field, onReverse, compact }) {
-  if (!fieldChanged(field)) return null;
-  return (
-    <View style={[styles.changedRow, compact && styles.changedRowCompact]}>
-      <Text
-        style={[styles.struckText, compact ? styles.changedOriginalCompact : styles.changedOriginal]}
-        numberOfLines={1}
-      >
-        {field.original || '—'}
-      </Text>
-      <ReverseButton onPress={onReverse} />
-    </View>
-  );
-}
-
-function CorrectableField({ label, field, onChange, keyboardType, last, suffix, compact, bare, skin, boxed, right }) {
-  const ticket = skin === 'ticket';
-  const stacked = useIsMobile() && !compact && !ticket;
-  const changed = fieldChanged(field);
-  const reverse = () => onChange(field.original ?? '');
-  const input = (
-    <>
-      <ChangedOriginal field={field} onReverse={reverse} compact={compact || ticket} />
-      <View
-        style={[
-          boxed ? styles.qtyBox : styles.valueRow,
-          compact && styles.valueRowCompact,
-          ticket && !boxed && styles.ticketValueRow,
-        ]}
-      >
-        <TextInput
-          style={[
-            styles.iosRowInput,
-            stacked && styles.iosRowInputStacked,
-            compact && styles.compactInput,
-            compact && right && styles.compactInputRight,
-            ticket && styles.ticketInput,
-            boxed && styles.qtyBoxInput,
-            changed && styles.iosRowInputChanged,
-          ]}
-          value={String(field?.value ?? '')}
-          onChangeText={onChange}
-          placeholder="Edit"
-          placeholderTextColor="#c7c7cc"
-          autoCapitalize="none"
-          autoCorrect={false}
-          keyboardType={keyboardType || 'default'}
-        />
-        {suffix ? <Text style={[styles.unitLock, boxed && styles.qtyBoxSuffix]}>{suffix}</Text> : null}
-      </View>
-    </>
-  );
-  if (ticket) {
-    return (
-      <View style={[styles.ticketRow, last && styles.ticketRowLast]}>
-        {label ? <Text style={styles.ticketLabel}>{label}</Text> : null}
-        <View style={styles.ticketControl}>{input}</View>
-      </View>
-    );
-  }
-  return (
-    <View
-      style={[
-        compact ? styles.cellWrap : styles.iosRowWrap,
-        last && styles.iosRowLast,
-        compact && !bare && !last && styles.compactDivider,
-      ]}
-    >
-      <View style={[compact ? styles.cellRow : styles.iosRow, stacked && styles.iosRowStacked]}>
-        {label ? (
-          <Text style={[compact ? styles.compactLabel : styles.iosRowLabel, stacked && styles.iosRowLabelStacked]}>
-            {label}
-          </Text>
-        ) : null}
-        <View style={compact ? styles.cellControl : styles.iosRowControl}>{input}</View>
-      </View>
-    </View>
-  );
-}
-
-function LookupField({
-  label,
-  field,
-  onChange,
-  options,
-  filterOptions,
-  onSearch,
-  allowCustom = false,
-  pickOnly = false,
-  placeholder,
-  rightAction,
-  trailing,
-  last,
-  compact,
-  bare,
-  skin,
-  wideMenu,
-}) {
-  const ticket = skin === 'ticket';
-  const stacked = useIsMobile() && !compact && !ticket;
-  const changed = fieldChanged(field);
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState(String(field?.value || ''));
-  const [remote, setRemote] = useState([]);
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    setQuery(String(field?.value || ''));
-  }, [field?.value]);
-
-  const localResults = useMemo(() => {
-    const list = options || [];
-    if (filterOptions) return filterOptions(list, query);
-    const q = query.trim().toLowerCase();
-    if (!q) return list.slice(0, 40);
-    return list
-      .filter(
-        (option) =>
-          String(option.label || '').toLowerCase().includes(q) ||
-          String(option.sub || '').toLowerCase().includes(q),
-      )
-      .slice(0, 40);
-  }, [filterOptions, options, query]);
-
-  useEffect(() => {
-    if (!onSearch || !open) return;
-    const q = query.trim();
-    if (q.length < 2) {
-      setRemote([]);
-      setBusy(false);
-      return;
-    }
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      setBusy(true);
-      try {
-        const next = await onSearch(q);
-        if (!cancelled) setRemote(next);
-      } catch {
-        if (!cancelled) setRemote([]);
-      } finally {
-        if (!cancelled) setBusy(false);
-      }
-    }, 200);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [onSearch, query, open]);
-
-  const results = useMemo(() => {
-    const seen = new Set();
-    const merged = [];
-    for (const option of [...localResults, ...(onSearch ? remote : [])]) {
-      const key = String(option?.label || '')
-        .trim()
-        .toLowerCase();
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      merged.push(option);
-    }
-    return merged.slice(0, 40);
-  }, [localResults, onSearch, remote]);
-  const showCustom =
-    allowCustom &&
-    query.trim() &&
-    !results.some((option) => String(option.label || '').toLowerCase() === query.trim().toLowerCase());
-
-  const picking = useRef(false);
-
-  const select = (option) => {
-    const label = String(option?.label || '').trim();
-    if (!label) return;
-    picking.current = true;
-    onChange(label, option);
-    setQuery(label);
-    setOpen(false);
-    setTimeout(() => {
-      picking.current = false;
-    }, 400);
-  };
-
-  const commitTyped = () => {
-    if (picking.current) return;
-    const q = query.trim();
-    const pool = [...(results || []), ...(options || [])];
-    const exact = pool.find(
-      (option) => String(option.label || '').toLowerCase() === q.toLowerCase(),
-    );
-    if (pickOnly) {
-      if (exact) {
-        select(exact);
-        return;
-      }
-      if (q && results.length === 1) {
-        select(results[0]);
-        return;
-      }
-      setQuery(field.value || '');
-      return;
-    }
-    if (exact) {
-      select(exact);
-      return;
-    }
-    if (q && (allowCustom || onSearch)) {
-      onChange(q, { id: 'custom', label: q, custom: true });
-    }
-  };
-
-  const reverse = () => {
-    const original = field.original ?? '';
-    onChange(original);
-    setQuery(original);
-    setOpen(false);
-  };
-
-  const control = (
-    <>
-      <ChangedOriginal field={field} onReverse={reverse} compact={compact || ticket} />
-      <View style={[styles.lookupRow, ticket && styles.ticketValueRow]}>
-        <View style={styles.lookupInputWrap}>
-          <TextInput
-            style={[
-              styles.iosRowInput,
-              stacked && styles.iosRowInputStacked,
-              compact && styles.compactInput,
-              ticket && styles.ticketInput,
-              changed && styles.iosRowInputChanged,
-            ]}
-            value={query}
-            onChangeText={(value) => {
-              setQuery(value);
-              setOpen(true);
-              if (!pickOnly && !onSearch) onChange(value);
-            }}
-            onFocus={() => setOpen(true)}
-            onBlur={() => {
-              setTimeout(() => {
-                commitTyped();
-                if (!picking.current) setOpen(false);
-              }, 180);
-            }}
-            placeholder={placeholder || 'Edit'}
-            placeholderTextColor="#c7c7cc"
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-          {busy ? <ActivityIndicator size="small" color={SECONDARY} style={styles.lookupSpinner} /> : null}
-        </View>
-        {trailing}
-        {compact || ticket ? null : <Ionicons name="chevron-forward" size={16} color="#c7c7cc" />}
-        {rightAction}
-      </View>
-    </>
-  );
-  const menu = open ? (
-    <ScrollView
-      style={[styles.lookupMenu, (ticket || compact) && styles.ticketMenu, wideMenu && styles.ticketMenuWide]}
-      keyboardShouldPersistTaps="handled"
-      nestedScrollEnabled
-    >
-      {showCustom ? (
-        <Pressable
-          style={styles.lookupOption}
-          onPress={() => select({ id: 'custom', label: query.trim(), custom: true })}
-          onPressIn={() => select({ id: 'custom', label: query.trim(), custom: true })}
-          {...(Platform.OS === 'web'
-            ? {
-                onMouseDown: (event) => {
-                  event?.preventDefault?.();
-                },
-              }
-            : null)}
-        >
-          <Text style={styles.lookupOptionLabel}>Use “{query.trim()}”</Text>
-          <Text style={styles.lookupOptionSub}>Custom product</Text>
-        </Pressable>
-      ) : null}
-      {results.length === 0 && !busy ? (
-        <Text style={styles.lookupEmpty}>
-          {onSearch && query.trim().length < 2 && localResults.length === 0
-            ? 'Type at least 2 characters'
-            : pickOnly
-              ? 'No matching value'
-              : 'No matches'}
-        </Text>
-      ) : (
-        results.map((option) => (
-          <Pressable
-            key={`${option.id}-${option.label}`}
-            style={[styles.lookupOption, option.avatarUrl != null && styles.lookupOptionPerson]}
-            onPress={() => select(option)}
-            onPressIn={() => select(option)}
-            {...(Platform.OS === 'web'
-              ? {
-                  onMouseDown: (event) => {
-                    event?.preventDefault?.();
-                  },
-                }
-              : null)}
-          >
-            {option.avatarUrl != null || option.person ? (
-              <StaffAvatar uri={option.avatarUrl || ''} name={option.label} size={22} />
-            ) : null}
-            <View style={styles.lookupOptionCopy}>
-              <Text style={styles.lookupOptionLabel} numberOfLines={1}>
-                {option.label}
-              </Text>
-              {option.sub ? (
-                <Text style={styles.lookupOptionSub} numberOfLines={1}>
-                  {option.sub}
-                </Text>
-              ) : null}
-            </View>
-          </Pressable>
-        ))
-      )}
-    </ScrollView>
-  ) : null;
-
-  if (ticket) {
-    return (
-      <View style={[styles.ticketRow, last && styles.ticketRowLast, open && styles.ticketRowRaised, styles.lookupBlock]}>
-        {label ? <Text style={styles.ticketLabel}>{label}</Text> : null}
-        <View style={styles.ticketControl}>
-          {control}
-          {menu}
-        </View>
-      </View>
-    );
-  }
-
-  return (
-    <View
-      style={[
-        compact ? styles.cellWrap : styles.iosRowWrap,
-        last && styles.iosRowLast,
-        compact && !bare && !last && styles.compactDivider,
-        styles.lookupBlock,
-        compact && open && styles.ticketRowRaised,
-      ]}
-    >
-      <View style={[compact ? styles.cellRow : styles.iosRow, stacked && styles.iosRowStacked]}>
-        {label ? (
-          <Text style={[compact ? styles.compactLabel : styles.iosRowLabel, stacked && styles.iosRowLabelStacked]}>
-            {label}
-          </Text>
-        ) : null}
-        <View style={compact ? styles.cellControl : styles.iosRowControl}>{control}</View>
-      </View>
-      {menu}
     </View>
   );
 }
@@ -1277,15 +894,6 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
     };
   }, [openKey, draft, searchCustomerOptions]);
 
-  const searchProductOptions = useCallback(
-    async (query) => {
-      if (!session || !activeRow) return [];
-      const auth = resolvePosAuthForRow(session, activeRow);
-      return searchProducts(auth.token, query, auth.baseUrl);
-    },
-    [activeRow, session],
-  );
-
   const headerField = (key) => (draft?.header || []).find((field) => field.key === key);
   const corrections = useMemo(() => collectCorrections(draft), [draft]);
   const typeOptions = useMemo(
@@ -1308,8 +916,6 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
     }
     return top;
   }, [errorType, typeOptions, typeQuery]);
-  const auth = activeRow ? resolvePosAuthForRow(session, activeRow) : {};
-
   const updateHeader = (key, value) => {
     setDraft((current) => {
       if (!current?.header) return current;
@@ -1322,24 +928,6 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
 
   const updateItem = (id, part, value) => {
     setDraft((current) => withItemPartUpdated(current, id, part, value));
-  };
-
-  const updatePayment = (id, part, value) => {
-    setDraft((current) => {
-      if (!current?.payments) return current;
-      const next = {
-        ...current,
-        payments: current.payments.map((payment) =>
-          payment.id === id
-            ? {
-                ...payment,
-                [part]: { original: payment[part]?.original ?? '', value },
-              }
-            : payment,
-        ),
-      };
-      return part === 'amount' || part === 'currency' ? withSyncedHeaderTotal(next) : next;
-    });
   };
 
   const applyBuyPayments = (updater) => {
@@ -1446,7 +1034,6 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
   const customerField = headerField('customer');
   const storeField = headerField('store');
   const employeeField = headerField('employee');
-  const dateField = headerField('date');
   const totalField = headerField('total');
   const employeePerson = findStaffByEmployeeName(staffProfiles, employeeField?.value);
   const employeeOptions = (employees || []).map((option) => {
@@ -2123,10 +1710,6 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  addImageBtnMobile: {
-    minHeight: 44,
-    width: '100%',
-  },
   addImageBtnDisabled: {
     opacity: 0.35,
   },
@@ -2141,13 +1724,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: BUY_ACCENT,
-  },
-  editContent: {
-    paddingHorizontal: 0,
-    paddingTop: 24,
-    paddingBottom: 40,
-    backgroundColor: '#fff',
-    flexGrow: 1,
   },
   editPane: {
     flex: 1,
@@ -2168,94 +1744,6 @@ const styles = StyleSheet.create({
     maxWidth: 980,
     alignSelf: 'center',
     marginTop: 16,
-  },
-  ticketBar: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 16,
-    marginBottom: 22,
-    zIndex: 14,
-  },
-  ticketBarStack: {
-    flexDirection: 'column',
-    alignItems: 'stretch',
-  },
-  ticketCard: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e5e5ea',
-    borderRadius: 12,
-    backgroundColor: '#fff',
-    overflow: 'visible',
-    ...Platform.select({
-      web: { boxShadow: '0 8px 24px rgba(0,0,0,0.04)' },
-      default: {},
-    }),
-  },
-  ticketCardFlush: {
-    width: '100%',
-    maxWidth: '100%',
-    alignSelf: 'stretch',
-  },
-  totalsCard: {
-    width: 220,
-    maxWidth: '100%',
-    flexShrink: 0,
-    overflow: 'hidden',
-  },
-  customerCard: {
-    flex: 1,
-    minWidth: 220,
-    zIndex: 16,
-  },
-  metaCard: {
-    flex: 1,
-    minWidth: 220,
-    zIndex: 15,
-  },
-  totalsRow: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    justifyContent: 'space-between',
-    gap: 16,
-    minHeight: 44,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  totalsRowGrand: {
-    alignItems: 'center',
-    minHeight: 58,
-    paddingVertical: 14,
-    backgroundColor: '#EAF6EE',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#d7eadc',
-  },
-  totalsLabel: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '500',
-    color: '#6e6e73',
-  },
-  totalsAmount: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: TEXT,
-    fontVariant: ['tabular-nums'],
-  },
-  totalsGrandLabel: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: TEXT,
-  },
-  totalsGrandAmount: {
-    fontFamily,
-    fontSize: 22,
-    fontWeight: '700',
-    color: TEXT,
-    letterSpacing: -0.4,
-    fontVariant: ['tabular-nums'],
   },
   ticketRow: {
     flexDirection: 'row',
@@ -2355,9 +1843,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
     textTransform: 'uppercase',
   },
-  colRight: {
-    textAlign: 'right',
-  },
   iosRowStacked: {
     flexDirection: 'column',
     alignItems: 'stretch',
@@ -2396,26 +1881,6 @@ const styles = StyleSheet.create({
     color: SECONDARY,
     marginTop: -4,
     marginBottom: 8,
-  },
-  noteSplit: {
-    flex: 1,
-    minHeight: 0,
-    flexDirection: 'row',
-  },
-  notePane: {
-    flex: 1,
-    minWidth: 0,
-    minHeight: 0,
-  },
-  notePaneContent: {
-    paddingHorizontal: 22,
-    paddingTop: 16,
-    paddingBottom: 40,
-  },
-  noteSplitRule: {
-    width: StyleSheet.hairlineWidth,
-    backgroundColor: HAIRLINE,
-    alignSelf: 'stretch',
   },
   detailsCard: {
     alignSelf: 'flex-start',
@@ -2574,17 +2039,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
-  editBtn: {
-    width: 32,
-    height: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
   cellWrap: {
     minWidth: 0,
     overflow: 'visible',
@@ -2633,30 +2087,12 @@ const styles = StyleSheet.create({
     minWidth: 0,
     textAlign: 'left',
   },
-  tableHScroll: {
-    flexGrow: 0,
-  },
-  tableHContent: {
-    flexGrow: 1,
-    minWidth: '100%',
-  },
   dataTable: {
     backgroundColor: '#fff',
     borderRadius: 12,
     overflow: 'visible',
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: HAIRLINE,
-  },
-  itemsTable: {
-    alignSelf: 'center',
-    width: '100%',
-    maxWidth: '100%',
-  },
-  paymentsTable: {
-    alignSelf: 'flex-start',
-    width: '100%',
-    maxWidth: '100%',
-    minWidth: 520,
   },
   dataTableHead: {
     flexDirection: 'row',
@@ -2712,11 +2148,6 @@ const styles = StyleSheet.create({
     minWidth: 0,
     justifyContent: 'center',
   },
-  colDelivered: {
-    flex: 0.95,
-    minWidth: 0,
-    justifyContent: 'center',
-  },
   colUnit: {
     flex: 1.05,
     minWidth: 0,
@@ -2725,13 +2156,6 @@ const styles = StyleSheet.create({
   colAmount: {
     flex: 1,
     minWidth: 0,
-    justifyContent: 'center',
-  },
-  colEdit: {
-    width: 40,
-    flexGrow: 0,
-    flexShrink: 0,
-    alignItems: 'center',
     justifyContent: 'center',
   },
   colMethod: {
@@ -2766,13 +2190,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderRadius: 10,
     overflow: 'visible',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: HAIRLINE,
-  },
-  groupPadded: {
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    padding: 16,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: HAIRLINE,
   },
@@ -2948,16 +2365,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 14,
   },
-  addIconButton: {
-    width: 32,
-    height: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
   newCustomerCard: {
     gap: 0,
   },
@@ -2972,174 +2379,5 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: STRUCK,
     textDecorationLine: 'line-through',
-  },
-  correctedText: {
-    fontFamily,
-    fontSize: 17,
-    fontWeight: '600',
-    color: TEXT,
-  },
-  correctionPair: {
-    flex: 1,
-    minWidth: 0,
-    alignItems: 'flex-end',
-    gap: 2,
-  },
-  correctionItem: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
-    gap: 6,
-  },
-  noteInput: {
-    fontFamily,
-    fontSize: 17,
-    color: TEXT,
-    minHeight: 120,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    outlineStyle: 'none',
-  },
-  typeChips: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    paddingHorizontal: 4,
-    paddingTop: 10,
-  },
-  typeChip: {
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    minHeight: 34,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: HAIRLINE,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  typeChipActive: {
-    backgroundColor: TEXT,
-    borderColor: TEXT,
-  },
-  typeChipText: {
-    fontFamily,
-    fontSize: 14,
-    color: TEXT,
-  },
-  typeChipTextActive: {
-    color: '#fff',
-    fontWeight: '600',
-  },
-  editModalRoot: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.32)',
-    padding: 24,
-  },
-  editModalSheet: {
-    width: '100%',
-    maxWidth: 520,
-    maxHeight: '86%',
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    overflow: 'hidden',
-    zIndex: 2,
-    ...Platform.select({
-      web: { boxShadow: '0 16px 40px rgba(0,0,0,0.18)' },
-      default: { elevation: 8 },
-    }),
-  },
-  editModalSheetMobile: {
-    maxWidth: '100%',
-    maxHeight: '92%',
-  },
-  editModalBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 48,
-    paddingHorizontal: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
-    backgroundColor: '#FFF1E4',
-  },
-  editModalBarSide: {
-    width: 72,
-    justifyContent: 'center',
-  },
-  editModalBarSideRight: {
-    alignItems: 'flex-end',
-  },
-  editModalCancel: {
-    fontFamily,
-    fontSize: 16,
-    color: '#C2410C',
-  },
-  editModalDone: {
-    fontFamily,
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1a1a1a',
-  },
-  editModalTitle: {
-    flex: 1,
-    fontFamily,
-    fontSize: 16,
-    fontWeight: '600',
-    color: TEXT,
-    textAlign: 'center',
-  },
-  columnChips: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
-  },
-  columnChip: {
-    minHeight: 30,
-    paddingHorizontal: 12,
-    borderRadius: 16,
-    backgroundColor: '#f5f5f5',
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  columnChipOn: {
-    backgroundColor: '#1a1a1a',
-  },
-  columnChipText: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '500',
-    color: TEXT,
-  },
-  columnChipTextOn: {
-    color: '#fff',
-  },
-  editModalBody: {
-    maxHeight: 420,
-  },
-  editModalBodyContent: {
-    paddingVertical: 8,
-    paddingBottom: 20,
-  },
-  totalPreviewValue: {
-    fontFamily,
-    flex: 1,
-    minWidth: 0,
-    fontSize: 17,
-    fontWeight: '600',
-    color: TEXT,
-    textAlign: 'right',
   },
 });

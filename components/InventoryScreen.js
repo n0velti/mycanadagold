@@ -13,7 +13,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { FlashList } from '@shopify/flash-list';
 import { fetchInventoryMatrix, formatQty, peekInventoryMatrix } from '../lib/inventory';
-import { useLiveRefresh } from '../lib/liveRefresh';
+import { INVENTORY_LIVE_MS, useLiveRefresh } from '../lib/liveRefresh';
 import { textMatchesQuery } from '../lib/itemSearch';
 import { useAppAccess } from '../lib/permissions';
 
@@ -231,7 +231,7 @@ export default function InventoryScreen({
 
   useLiveRefresh(
     (opts) => load({ ...opts, force: true }),
-    20_000,
+    INVENTORY_LIVE_MS,
     Boolean(session?.token),
   );
 

@@ -160,7 +160,7 @@ function StoreChips({ stores, value, onChange }) {
       horizontal
       nestedScrollEnabled
       showsHorizontalScrollIndicator={false}
-      contentContainerStyle={styles.chipRow}
+      contentContainerStyle={styles.chipScrollRow}
     >
       <Chip label="All stores" selected={!value} onPress={() => onChange('')} />
       {stores.map((name) => (
@@ -797,7 +797,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 8,
   },
-  chipRow: {
+  chipScrollRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,

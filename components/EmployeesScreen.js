@@ -182,7 +182,8 @@ function HoursSection({ hours, status }) {
   const [history, setHistory] = useState(null);
   const [showAll, setShowAll] = useState(false);
   const employeeId = hours?.id || '';
-  const clockedIn = Boolean(hours?.clockedIn) || useIsClockedIn(hours?.name);
+  const liveClockedIn = useIsClockedIn(hours?.name);
+  const clockedIn = Boolean(hours?.clockedIn) || liveClockedIn;
 
   useEffect(() => {
     let cancelled = false;
@@ -817,7 +818,8 @@ function StaffEmployeeCard({ person, selected, onPress, hours, shifts }) {
   const inactive = person.isActive === false || person.profileActive === false;
   const weekHours = hours?.weekMinutes ? `${formatMinutes(hours.weekMinutes)} this week` : '';
   const todayShift = todayShiftLabel(shifts);
-  const clockedIn = Boolean(hours?.clockedIn) || useIsClockedIn(name);
+  const liveClockedIn = useIsClockedIn(name);
+  const clockedIn = Boolean(hours?.clockedIn) || liveClockedIn;
 
   return (
     <Pressable
@@ -869,7 +871,8 @@ function StaffEmployeeCard({ person, selected, onPress, hours, shifts }) {
 
 function StaffEmployeeDetail({ person, onClose, compact, onOpenPhoto, hours, hoursStatus, shifts }) {
   const name = staffDisplayName(person) || 'Employee';
-  const clockedIn = Boolean(hours?.clockedIn) || useIsClockedIn(name);
+  const liveClockedIn = useIsClockedIn(name);
+  const clockedIn = Boolean(hours?.clockedIn) || liveClockedIn;
   if (!person) {
     return (
       <EmptyState icon="people-outline" title="Employee" body="Select someone to see their profile." />
@@ -1371,7 +1374,8 @@ function ConnectModal({ visible, onClose, onSaved, canManage }) {
 }
 
 function EmployeeDetail({ employee, onClose, compact, hours, hoursStatus, shifts, flow }) {
-  const clockedIn = Boolean(hours?.clockedIn) || useIsClockedIn(employee?.name);
+  const liveClockedIn = useIsClockedIn(employee?.name);
+  const clockedIn = Boolean(hours?.clockedIn) || liveClockedIn;
   if (!employee) {
     return (
       <EmptyState
@@ -1445,7 +1449,8 @@ function EmployeeDetail({ employee, onClose, compact, hours, hoursStatus, shifts
 
 function EmployeeRow({ employee, selected, onPress, last, hours }) {
   const subtitle = [employee.title, employee.department, employee.location].filter(Boolean).join(' · ');
-  const clockedIn = Boolean(hours?.clockedIn) || useIsClockedIn(employee.name);
+  const liveClockedIn = useIsClockedIn(employee.name);
+  const clockedIn = Boolean(hours?.clockedIn) || liveClockedIn;
   return (
     <MobileListRow
       title={employee.name}
@@ -2344,13 +2349,6 @@ const styles = StyleSheet.create({
   filterOptionTextOn: {
     fontWeight: '600',
   },
-  body: {
-    flex: 1,
-    gap: 12,
-    minHeight: 0,
-    paddingHorizontal: 16,
-    paddingTop: 12,
-  },
   bodyScroll: {
     flex: 1,
     minHeight: 0,
@@ -2363,9 +2361,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 12,
     paddingBottom: 48,
-  },
-  rowInactive: {
-    opacity: 0.55,
   },
   dropCard: {
     gap: 8,
@@ -2519,22 +2514,11 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 6,
   },
-  split: {
-    flex: 1,
-    minHeight: 0,
-    flexDirection: 'row',
-    gap: 16,
-  },
   splitFlow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 16,
     width: '100%',
-  },
-  listPane: {
-    flex: 1.35,
-    minWidth: 0,
-    minHeight: 0,
   },
   listPaneFlow: {
     flex: 1.35,
@@ -2550,10 +2534,6 @@ const styles = StyleSheet.create({
   listContent: {
     paddingBottom: 32,
     gap: 4,
-  },
-  gridContent: {
-    paddingBottom: 40,
-    gap: 16,
   },
   homeGridContent: {
     paddingHorizontal: 16,
@@ -2664,12 +2644,6 @@ const styles = StyleSheet.create({
   },
   listGroup: {
     marginBottom: 8,
-  },
-  detailPane: {
-    flex: 1,
-    minWidth: 280,
-    maxWidth: 400,
-    minHeight: 0,
   },
   detailPaneFlow: {
     flex: 1,
@@ -2925,18 +2899,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     color: '#fff',
-  },
-  secondaryButton: {
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: T.fillSoft,
-  },
-  secondaryButtonText: {
-    fontFamily: FONT,
-    fontSize: 15,
-    fontWeight: '500',
-    color: T.secondary,
   },
   modalBackdrop: {
     flex: 1,

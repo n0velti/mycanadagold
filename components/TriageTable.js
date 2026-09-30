@@ -824,9 +824,6 @@ const styles = StyleSheet.create({
   tableRowHover: {
     backgroundColor: '#f5f5f5',
   },
-  tableRowMainHover: {
-    backgroundColor: '#f5f5f5',
-  },
   tableRowLast: {
     borderBottomWidth: 0,
   },

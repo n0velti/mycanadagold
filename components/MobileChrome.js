@@ -524,11 +524,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: -1,
   },
-  navTrailingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
   circleButton: {
     width: 40,
     height: 40,
@@ -593,20 +588,6 @@ const styles = StyleSheet.create({
   },
   navButtonLabelGreen: {
     color: '#fff',
-  },
-  navTitleAction: {
-    flexShrink: 0,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  navTitleActionText: {
-    fontFamily,
-    fontSize: 17,
-    fontWeight: '600',
-    color: MOBILE.blue,
-    letterSpacing: -0.3,
   },
   filterChip: {
     maxWidth: 168,
