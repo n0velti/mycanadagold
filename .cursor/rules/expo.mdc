@@ -1,0 +1,16 @@
+---
+description: Expo SDK 54 — read current docs before changing Expo code
+alwaysApply: true
+---
+
+# Expo SDK 54
+
+Expo has changed. Before writing Expo-related code, read https://docs.expo.dev/versions/v54.0.0/ (append `.md` to doc URLs). Do not follow SDK 52/53 examples.
+
+This app is Expo 54 + React Native 0.81 + React 19.1 + Metro (`app.json` `web.bundler: "metro"`, `web.output: "single"`). Web is the primary target (`npm run web` / `npm run build:web`).
+
+- Add or bump Expo modules with `npx expo install <pkg>`, not a raw `npm install` of an Expo package.
+- Only `EXPO_PUBLIC_*` values may appear in app JS. Metro inlines `process.env.EXPO_PUBLIC_FOO` (dot access only). `.env.production` is committed and public.
+- Session and FINTRAC tokens use `lib/secureAuthStorage.js` (`expo-secure-store` on native, `localStorage` on web). Do not switch to plain AsyncStorage for those.
+- `metro.config.js` remaps app-source `react-native` Text / TextInput / Pressable / Animated. Leave it unless the resolver is the bug.
+- After `expo export`, `scripts/fix-web-export.js` rewrites `assets/node_modules` → `assets/vendor` (Vercel strips the former) and removes CSP `'unsafe-eval'`. Keep that step in `build:web`.
