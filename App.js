@@ -3063,7 +3063,15 @@ function TransactionTicketBody({
   );
 }
 
-function TransactionDetailDrawer({ visible, summary, detail, loading, error, onClose }) {
+function TransactionDetailDrawer({
+  visible,
+  summary,
+  detail,
+  loading,
+  error,
+  onClose,
+  fromRight = false,
+}) {
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
   const isMobile = windowWidth < MOBILE_BREAKPOINT;
   const [activeApp, setActiveApp] = useState(null);
@@ -3077,11 +3085,12 @@ function TransactionDetailDrawer({ visible, summary, detail, loading, error, onC
         Math.max(Math.round(windowWidth * 0.82), 640),
         Math.round(windowWidth - 56),
       );
-  const slideDistance = panelWidth + railWidth;
-  const sideAnim = useRightDrawerAnimation(!isMobile && visible, slideDistance);
-  const upAnim = useUpSheetAnimation(isMobile && visible, windowHeight);
-  const mounted = isMobile ? upAnim.mounted : sideAnim.mounted;
-  const slide = isMobile ? upAnim.slide : sideAnim.slide;
+  const pushRight = isMobile && fromRight;
+  const slideDistance = pushRight ? windowWidth : panelWidth + railWidth;
+  const sideAnim = useRightDrawerAnimation((!isMobile || pushRight) && visible, slideDistance);
+  const upAnim = useUpSheetAnimation(isMobile && !pushRight && visible, windowHeight);
+  const mounted = isMobile && !pushRight ? upAnim.mounted : sideAnim.mounted;
+  const slide = isMobile && !pushRight ? upAnim.slide : sideAnim.slide;
   const backdrop = sideAnim.backdrop;
   const heldSummary = useHeldValue(summary);
   const heldDetail = useHeldValue(detail);
@@ -3114,17 +3123,18 @@ function TransactionDetailDrawer({ visible, summary, detail, loading, error, onC
   const delivery = heldDetail ? documentDeliveryState(heldDetail, items) : null;
   const paymentStatus = String(heldDetail?.payment_status || '').trim();
   const activeTool = visibleTabs.find((tab) => tab.key === activeApp);
-  const occurred = [heldSummary.dateLabel, heldSummary.timeLabel].filter(Boolean).join(' · ');
-  const paymentLabel =
-    heldSummary.paymentBreakdownLabel ||
-    heldSummary.paymentMethodLabel ||
-    paymentStatus ||
-    '—';
 
   if (isMobile) {
     return (
       <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose}>
-        <Animated.View style={[styles.buyTxSheet, { transform: [{ translateY: slide }] }]}>
+        <Animated.View
+          style={[
+            styles.buyTxSheet,
+            {
+              transform: pushRight ? [{ translateX: slide }] : [{ translateY: slide }],
+            },
+          ]}
+        >
           <MobileSafeTop />
           <MobileNavHeader
             title={heldSummary.reference || docKind}
@@ -3137,116 +3147,13 @@ function TransactionDetailDrawer({ visible, summary, detail, loading, error, onC
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
           >
-            <View style={styles.buyTxCard}>
-              <View style={styles.buyTxTotalsRow}>
-                <Text style={styles.buyTxTotalsLabel}>{docKind}</Text>
-                <Text style={styles.buyTxTotalsAmount}>{heldSummary.reference || '—'}</Text>
-              </View>
-              <View style={[styles.buyTxTotalsRow, styles.buyTxTotalsGrand]}>
-                <Text style={styles.buyTxTotalsGrandLabel}>Total</Text>
-                <Text style={styles.buyTxTotalsGrandAmount}>{formatAmount(totalAmount)}</Text>
-              </View>
-            </View>
-
-            <View style={styles.buyTxCard}>
-              <BuyTicketRow label="Customer" value={clientName} sub={client?.email || client?.phone} />
-              <BuyTicketRow label="Type" value={docLabel} />
-              <BuyTicketRow
-                label="Status"
-                value={
-                  [allocation?.label, delivery?.label, paymentStatus].filter(Boolean).join(' · ') || 'On file'
-                }
-              />
-              <BuyTicketRow label="Store" value={locationName} sub={locationLine} />
-              <BuyTicketRow label="Employee" value={heldSummary.employeeName} />
-              <BuyTicketRow label="Payment" value={paymentLabel} />
-              <BuyTicketRow label="Date" value={occurred || '—'} last />
-            </View>
-
-            <Text style={styles.buyTxSection}>Items</Text>
-            <View style={styles.buyTxCard}>
-              {loading ? (
-                <View style={styles.buyTxLoading}>
-                  <ActivityIndicator color="#1F8A4E" />
-                </View>
-              ) : error ? (
-                <Text style={styles.buyTxEmpty}>{error}</Text>
-              ) : items.length === 0 ? (
-                <Text style={styles.buyTxEmpty}>No line items</Text>
-              ) : (
-                items.map((item, index) => {
-                  const name = lineItemName(item);
-                  const meta = lineItemMeta(item);
-                  const images = lineItemImages(item);
-                  const money = lineItemMoney(item);
-                  const unitType = item?.unit_type || (money.grossQuantity ? 'g' : '');
-                  return (
-                    <View
-                      key={item.id || `${name}-${index}`}
-                      style={[styles.buyTxItemRow, index === items.length - 1 && !heldDetail?.total_charges && styles.buyTxItemRowLast]}
-                    >
-                      <LineItemThumb urls={images} name={name} />
-                      <View style={styles.buyTxItemCopy}>
-                        <Text style={styles.buyTxItemName} numberOfLines={2}>
-                          {name}
-                        </Text>
-                        {meta ? (
-                          <Text style={styles.buyTxItemMeta} numberOfLines={1}>
-                            {meta}
-                          </Text>
-                        ) : null}
-                        <Text style={styles.buyTxItemAmount}>{formatAmount(money.lineTotal)}</Text>
-                      </View>
-                      <View style={styles.buyTxItemQty}>
-                        <Text style={styles.buyTxItemQtyValue}>{formatLineQty(lineDeliveryState(item).ordered)}</Text>
-                        <Text style={styles.buyTxItemQtyUnit}>
-                          {formatUnitCost(money.displayUnitPrice, unitType)}
-                        </Text>
-                      </View>
-                    </View>
-                  );
-                })
-              )}
-              {heldDetail?.total_charges ? (
-                <View style={styles.buyTxItemRow}>
-                  <Text style={styles.buyTxItemMeta}>Charges</Text>
-                  <Text style={styles.buyTxItemAmount}>{formatAmount(heldDetail.total_charges)}</Text>
-                </View>
-              ) : null}
-            </View>
-
-            {!loading && payments.length > 0 ? (
-              <>
-                <Text style={styles.buyTxSection}>Payments</Text>
-                <View style={styles.buyTxCard}>
-                  {payments.map((entry, index) => {
-                    const payment = entry.payment || entry;
-                    const method =
-                      payment.payment_type?.name ||
-                      entry.payment?.payment_type?.name ||
-                      'Payment';
-                    return (
-                      <BuyTicketRow
-                        key={entry.id || payment.id || `${method}-${index}`}
-                        label={method}
-                        value={formatAmount(entry.amount ?? payment.amount)}
-                        sub={[payment.status, payment.date].filter(Boolean).join(' · ')}
-                        last={index === payments.length - 1}
-                      />
-                    );
-                  })}
-                </View>
-              </>
-            ) : null}
-
-            {heldDetail?.comments ? (
-              <>
-                <Text style={styles.buyTxSection}>Notes</Text>
-                <View style={styles.buyTxCard}>
-                  <Text style={styles.buyTxNotes}>{heldDetail.comments}</Text>
-                </View>
-              </>
-            ) : null}
+            <TransactionTicketBody
+              summary={heldSummary}
+              detail={heldDetail}
+              loading={loading}
+              error={error}
+              part="body"
+            />
           </ScrollView>
         </Animated.View>
       </Modal>
@@ -3870,18 +3777,6 @@ function HomeStoreDrawer({
     setDetailLoading(false);
   }, []);
 
-  const transactionTicket =
-    isMobile && selectedRow ? (
-      <TransactionTicketBody
-        summary={selectedRow}
-        detail={detail}
-        loading={detailLoading}
-        error={detailError}
-        onClose={closeDetail}
-        embedded
-      />
-    ) : null;
-
   const ensurePaymentBreakdown = useCallback(
     async (row) => {
       if (!session?.token || !row) return row?.paymentBreakdownLabel || '';
@@ -3983,7 +3878,6 @@ function HomeStoreDrawer({
                   desktopApps={tabStrip}
                   appsOpen={appsOpen}
                   onAppsOpenChange={onAppsOpenChange}
-                  transactionTicket={transactionTicket}
                   embeddedApp={
                     STORE_SNAPSHOT_TABS.has(activeTab) ? null : (
                       <ScreenGate resetKey={activeTab}>
@@ -4089,16 +3983,15 @@ function HomeStoreDrawer({
     <>
       {drawerTree}
 
-      {isMobile ? null : (
-        <TransactionDetailDrawer
-          visible={Boolean(selectedRow)}
-          summary={selectedRow}
-          detail={detail}
-          loading={detailLoading}
-          error={detailError}
-          onClose={closeDetail}
-        />
-      )}
+      <TransactionDetailDrawer
+        visible={Boolean(selectedRow)}
+        summary={selectedRow}
+        detail={detail}
+        loading={detailLoading}
+        error={detailError}
+        onClose={closeDetail}
+        fromRight={isMobile}
+      />
     </>
   );
 }

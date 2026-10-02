@@ -26,8 +26,9 @@ import {
 import { listTeams, teamMemberName } from '../lib/teams';
 import { posEmployeeId } from '../lib/auth';
 import { fetchAureusEmployee } from '../lib/aureusEmployees';
-import { CANVAS, MOBILE, useIsMobile } from '../lib/mobileUi';
+import { CANVAS, MOBILE, MOBILE_FILTER_INSET, useIsMobile } from '../lib/mobileUi';
 import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
+import { FONT_LIGHT } from '../lib/typography';
 import { IOS } from './IosSettings';
 import { formatPhoneNumber } from '../lib/ringcentral';
 import ProfilePhotoModal from './ProfilePhotoModal';
@@ -40,13 +41,16 @@ import { usePhoneCalls } from './PhoneCallProvider';
 import { AvatarRing } from '../lib/clockedIn';
 
 const fontFamily = 'Sohne';
-const titleFontFamily = 'SohneLeicht';
+const titleFontFamily = FONT_LIGHT;
 const BLUE = '#007AFF';
 const GOLD = '#E8C36A';
 const CARD = '#fff';
 const LABEL = MOBILE.label;
 const SECONDARY = MOBILE.secondary;
 const TAB_INK = '#1a1a1a';
+const PROFILE_TOP_FILTER_SIZE = 44;
+const PROFILE_ICON_COL = 56;
+const PROFILE_BODY_LEADING = 12;
 
 export { profileTargetFromPerson } from '../lib/profileTarget';
 
@@ -132,6 +136,20 @@ function ChromeCircle({ onPress, accessibilityLabel, children, style }) {
   );
 }
 
+function ProfileHeroStat({ label, value }) {
+  if (!value) return null;
+  return (
+    <View style={styles.homeHeroStat}>
+      <Text style={styles.homeHeroStatLabel} numberOfLines={1}>
+        {label}
+      </Text>
+      <Text style={styles.homeHeroStatValue} numberOfLines={1}>
+        {value}
+      </Text>
+    </View>
+  );
+}
+
 function DetailRow({ label, value, last, onPress }) {
   const isMobile = useIsMobile();
   const content = (
@@ -167,7 +185,8 @@ function DetailRow({ label, value, last, onPress }) {
 function ContactAction({ icon, label, onPress, disabled, busy, variant = 'sheet' }) {
   const inactive = disabled || busy;
   const desk = variant === 'desk';
-  const iconColor = inactive ? '#c7c7cc' : desk ? '#6B5E3A' : BLUE;
+  const pill = variant === 'pill';
+  const iconColor = inactive ? '#c7c7cc' : desk ? '#6B5E3A' : pill ? TAB_INK : BLUE;
   return (
     <Pressable
       onPress={onPress}
@@ -175,7 +194,8 @@ function ContactAction({ icon, label, onPress, disabled, busy, variant = 'sheet'
       style={({ hovered, pressed }) => [
         styles.contactAction,
         desk && styles.contactActionDesk,
-        pressed && !inactive && styles.contactActionPressed,
+        pill && styles.contactActionPill,
+        pressed && !inactive && (pill ? styles.contactActionPillPressed : styles.contactActionPressed),
         hovered && desk && !inactive && styles.contactActionDeskHover,
         inactive && styles.contactActionDisabled,
       ]}
@@ -183,17 +203,18 @@ function ContactAction({ icon, label, onPress, disabled, busy, variant = 'sheet'
       accessibilityLabel={label}
       accessibilityState={{ disabled: Boolean(inactive) }}
     >
-      <View style={[styles.contactActionGlyph, desk && styles.contactActionGlyphDesk]}>
+      <View style={[styles.contactActionGlyph, desk && styles.contactActionGlyphDesk, pill && styles.contactActionGlyphPill]}>
         {busy ? (
           <ActivityIndicator size="small" color={iconColor} />
         ) : (
-          <Ionicons name={icon} size={desk ? 18 : 18} color={iconColor} />
+          <Ionicons name={icon} size={pill ? 16 : 18} color={iconColor} />
         )}
       </View>
       <Text
         style={[
           styles.contactActionLabel,
           desk && styles.contactActionLabelDesk,
+          pill && styles.contactActionLabelPill,
           inactive && styles.contactActionLabelDisabled,
         ]}
         numberOfLines={1}
@@ -216,15 +237,23 @@ function ContactRow({ caption, value, placeholder = 'None', last, onPress, link,
   const content = (
     <>
       {icon ? (
-        <View style={styles.contactIcon}>
-          <Ionicons name={icon} size={17} color={empty ? SECONDARY : '#6B5E3A'} />
+        <View style={styles.contactIconCol}>
+          <View style={styles.contactIcon}>
+            <Ionicons name={icon} size={17} color={empty ? SECONDARY : TAB_INK} />
+          </View>
         </View>
       ) : null}
-      <Text style={styles.contactCaption}>{caption}</Text>
+      <View style={styles.contactCopy}>
+        <Text style={styles.contactCaption}>{caption}</Text>
+      </View>
       <Text style={valueStyle} numberOfLines={2}>
         {display}
       </Text>
-      {onPress ? <Ionicons name="chevron-forward" size={16} color="#c7c7cc" /> : null}
+      {onPress ? (
+        <View style={styles.contactChevron}>
+          <Ionicons name="chevron-forward" size={16} color="#c7c7cc" />
+        </View>
+      ) : null}
     </>
   );
 
@@ -493,7 +522,7 @@ export default function ProfileScreen({
   const avatarUrl = profile?.avatarUrl || '';
   const profileId = viewingOther ? profile?.id || person?.profileId || '' : myId;
   const accessLabel = viewingOther ? categoryLabel(profile) : categoryLabel(profile);
-  const avatarSize = isMobile ? 108 : 132;
+  const avatarSize = isMobile ? 48 : 132;
   const canEdit = !viewingOther;
   const canSwitchRole = canEdit && canSwitchAppRoles(profile);
   const switchableRoles = canSwitchRole ? selectableAppRoles(profile) : [];
@@ -636,7 +665,13 @@ export default function ProfileScreen({
   };
 
   const profileActions = (variant = 'sheet') => (
-    <View style={[styles.contactActions, variant === 'desk' && styles.contactActionsDesk]}>
+    <View
+      style={[
+        styles.contactActions,
+        variant === 'desk' && styles.contactActionsDesk,
+        variant === 'pill' && styles.contactActionsPills,
+      ]}
+    >
       {viewingOther ? (
         <ContactAction
           variant={variant}
@@ -1042,112 +1077,56 @@ export default function ProfileScreen({
     </>
   );
 
-  return (
-    <View style={[styles.screen, isMobile && styles.screenMobile]}>
-      {!isMobile ? (
-        <View pointerEvents="box-none" style={styles.chromeRow}>
-          <View style={styles.chromeLead}>
-            {showBack ? (
-              <Pressable
-                onPress={goBack}
-                hitSlop={8}
-                style={styles.chromeBack}
-                accessibilityRole="button"
-                accessibilityLabel="Back"
-              >
-                <Ionicons name="chevron-back" size={22} color="#6B5E3A" />
-              </Pressable>
-            ) : null}
-            <Text style={styles.chromeTitle} numberOfLines={1}>
-              {topLabel}
-            </Text>
-          </View>
-          {canEdit && !settingsOpen && !viewingOther ? (
+  const mobileHero = (
+    <View style={styles.homeHero}>
+      <View style={[styles.homeHeroRow, settingsOpen && styles.homeHeroRowBare]}>
+        {settingsOpen ? null : (
+          <View style={styles.homeHeroIconCol}>
             <Pressable
-              onPress={() => setSettingsOpen(true)}
-              style={styles.chromeChip}
+              onPress={handleViewAvatar}
+              disabled={avatarBusy}
+              style={styles.homeHeroAvatarTap}
               accessibilityRole="button"
-              accessibilityLabel="Settings"
+              accessibilityLabel={avatarUrl ? `View ${name || 'profile'} photo` : 'View photo'}
             >
-              <BlurView
-                intensity={32}
-                tint="light"
-                style={styles.chromeChipBlur}
-                {...(Platform.OS === 'web' ? { className: 'cgold-home-chip-blur' } : null)}
-              >
-                <Ionicons name="settings-outline" size={16} color={TAB_INK} />
-                <Text style={styles.chromeChipText}>Settings</Text>
-              </BlurView>
+              <ProfileAvatar uri={avatarUrl} name={name} size={48} style={styles.avatar} />
+              {canEdit ? (
+                <Pressable
+                  onPress={handlePickAvatar}
+                  disabled={avatarBusy}
+                  style={styles.homeHeroAvatarEdit}
+                  accessibilityRole="button"
+                  accessibilityLabel={avatarUrl ? 'Edit profile photo' : 'Add a profile photo'}
+                  hitSlop={4}
+                >
+                  {avatarBusy ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Ionicons name="pencil" size={11} color="#fff" />
+                  )}
+                </Pressable>
+              ) : null}
             </Pressable>
-          ) : null}
-        </View>
-      ) : null}
-      <View
-        style={styles.stage}
-        onLayout={(event) => {
-          const height = event.nativeEvent.layout.height;
-          setStageHeight((current) => (Math.abs(current - height) < 0.5 ? current : height));
-        }}
-      >
-        <View
-          pointerEvents="box-none"
-          style={[styles.pinnedTop, !isMobile && styles.pinnedTopDesktop]}
-          onLayout={(event) => {
-            const height = event.nativeEvent.layout.height;
-            setHeroHeight((current) => (Math.abs(current - height) < 0.5 ? current : height));
-          }}
-        >
-          {isMobile ? (
-            <Text style={styles.topDate} numberOfLines={1}>
-              {topLabel}
-            </Text>
-          ) : null}
-          {profileHero}
-        </View>
-        <ScrollView
-          pointerEvents={isMobile ? 'auto' : 'box-none'}
-          style={styles.overlayScroll}
-          contentContainerStyle={{
-            flexGrow: 1,
-            paddingTop: 0,
-            paddingBottom: 0,
-          }}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-          bounces={false}
-          overScrollMode="never"
-          {...(isMobile ? tabBarScroll : null)}
-          {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll' } : null)}
-        >
-          <View pointerEvents="none" style={{ height: heroHeight + (isMobile ? 10 : 18) }} />
-          <View
-            pointerEvents="auto"
-            style={[
-              styles.sheet,
-              !isMobile && styles.sheetDesktop,
-              {
-                paddingBottom: isMobile ? mobileTabBarReserve() + 24 : 32,
-                ...(stageHeight > 0 ? { minHeight: stageHeight } : null),
-              },
-            ]}
-          >
-            {isMobile ? (settingsOpen && canEdit ? mobileSettings : mobileBody) : desktopSheet}
           </View>
-        </ScrollView>
-      </View>
-      {isMobile && showBack ? (
-        <ChromeCircle onPress={goBack} accessibilityLabel="Back" style={styles.backDock}>
-          <Ionicons name="chevron-back" size={22} color={TAB_INK} />
-        </ChromeCircle>
-      ) : null}
-      {isMobile && canEdit && !viewingOther && !settingsOpen ? (
-        <View pointerEvents="box-none" style={styles.filterDock}>
-          <ChromeCircle onPress={() => setSettingsOpen(true)} accessibilityLabel="Settings">
-            <Ionicons name="settings-outline" size={20} color={TAB_INK} />
-          </ChromeCircle>
+        )}
+        <View style={[styles.homeHeroCopy, settingsOpen && styles.homeHeroCopyBare]}>
+          <Text style={styles.homeHeroName} numberOfLines={2}>
+            {heroTitle}
+          </Text>
         </View>
-      ) : null}
+        {settingsOpen || !(jobTitle || locationName || accessLabel) ? null : (
+          <View style={styles.homeHeroStats}>
+            <ProfileHeroStat label="Title" value={jobTitle} />
+            <ProfileHeroStat label="Store" value={locationName} />
+            <ProfileHeroStat label="Role" value={accessLabel} />
+          </View>
+        )}
+      </View>
+    </View>
+  );
 
+  const profileModals = (
+    <>
       <OrgChartModal
         visible={orgOpen}
         onClose={() => setOrgOpen(false)}
@@ -1229,6 +1208,137 @@ export default function ProfileScreen({
           />
         </>
       ) : null}
+    </>
+  );
+
+  if (isMobile) {
+    return (
+      <View style={[styles.screen, styles.screenMobile]}>
+        {showBack ? (
+          <ChromeCircle onPress={goBack} accessibilityLabel="Back" style={styles.backDock}>
+            <Ionicons name="chevron-back" size={22} color={TAB_INK} />
+          </ChromeCircle>
+        ) : null}
+        {canEdit && !viewingOther && !settingsOpen ? (
+          <View pointerEvents="box-none" style={styles.filterDock}>
+            <ChromeCircle onPress={() => setSettingsOpen(true)} accessibilityLabel="Settings">
+              <Ionicons name="settings-outline" size={20} color={TAB_INK} />
+            </ChromeCircle>
+          </View>
+        ) : null}
+        <ScrollView
+          style={styles.homeScroll}
+          contentContainerStyle={{
+            flexGrow: 1,
+            paddingTop: PROFILE_TOP_FILTER_SIZE + MOBILE_FILTER_INSET,
+            paddingBottom: mobileTabBarReserve() + 16,
+          }}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          bounces={false}
+          overScrollMode="never"
+          {...tabBarScroll}
+          {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll' } : null)}
+        >
+          <View style={styles.homeHeroPad}>{mobileHero}</View>
+          {settingsOpen && canEdit ? null : (
+            <View style={styles.homeActionPad}>{profileActions('pill')}</View>
+          )}
+          <View style={styles.homeSheet}>
+            {settingsOpen && canEdit ? mobileSettings : mobileBody}
+          </View>
+        </ScrollView>
+        {profileModals}
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.screen}>
+      <View pointerEvents="box-none" style={styles.chromeRow}>
+        <View style={styles.chromeLead}>
+          {showBack ? (
+            <Pressable
+              onPress={goBack}
+              hitSlop={8}
+              style={styles.chromeBack}
+              accessibilityRole="button"
+              accessibilityLabel="Back"
+            >
+              <Ionicons name="chevron-back" size={22} color="#6B5E3A" />
+            </Pressable>
+          ) : null}
+          <Text style={styles.chromeTitle} numberOfLines={1}>
+            {topLabel}
+          </Text>
+        </View>
+        {canEdit && !settingsOpen && !viewingOther ? (
+          <Pressable
+            onPress={() => setSettingsOpen(true)}
+            style={styles.chromeChip}
+            accessibilityRole="button"
+            accessibilityLabel="Settings"
+          >
+            <BlurView
+              intensity={32}
+              tint="light"
+              style={styles.chromeChipBlur}
+              {...(Platform.OS === 'web' ? { className: 'cgold-home-chip-blur' } : null)}
+            >
+              <Ionicons name="settings-outline" size={16} color={TAB_INK} />
+              <Text style={styles.chromeChipText}>Settings</Text>
+            </BlurView>
+          </Pressable>
+        ) : null}
+      </View>
+      <View
+        style={styles.stage}
+        onLayout={(event) => {
+          const height = event.nativeEvent.layout.height;
+          setStageHeight((current) => (Math.abs(current - height) < 0.5 ? current : height));
+        }}
+      >
+        <View
+          pointerEvents="box-none"
+          style={[styles.pinnedTop, styles.pinnedTopDesktop]}
+          onLayout={(event) => {
+            const height = event.nativeEvent.layout.height;
+            setHeroHeight((current) => (Math.abs(current - height) < 0.5 ? current : height));
+          }}
+        >
+          {profileHero}
+        </View>
+        <ScrollView
+          pointerEvents="box-none"
+          style={styles.overlayScroll}
+          contentContainerStyle={{
+            flexGrow: 1,
+            paddingTop: 0,
+            paddingBottom: 0,
+          }}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          bounces={false}
+          overScrollMode="never"
+          {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll' } : null)}
+        >
+          <View pointerEvents="none" style={{ height: heroHeight + 18 }} />
+          <View
+            pointerEvents="auto"
+            style={[
+              styles.sheet,
+              styles.sheetDesktop,
+              {
+                paddingBottom: 32,
+                ...(stageHeight > 0 ? { minHeight: stageHeight } : null),
+              },
+            ]}
+          >
+            {desktopSheet}
+          </View>
+        </ScrollView>
+      </View>
+      {profileModals}
     </View>
   );
 }
@@ -1624,36 +1734,52 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
   chromeCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: PROFILE_TOP_FILTER_SIZE,
+    height: PROFILE_TOP_FILTER_SIZE,
+    borderRadius: PROFILE_TOP_FILTER_SIZE / 2,
     overflow: 'hidden',
     zIndex: 24,
     ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
+      web: {
+        cursor: 'pointer',
+        boxShadow: '0 1px 6px rgba(0,0,0,0.1)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOpacity: 0.1,
+        shadowRadius: 6,
+        shadowOffset: { width: 0, height: 1 },
+        elevation: 3,
+      },
     }),
   },
   chromeCircleBlur: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 22,
+    borderRadius: PROFILE_TOP_FILTER_SIZE / 2,
     overflow: 'hidden',
+    backgroundColor: 'rgba(252,252,251,0.92)',
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: 'rgba(0,0,0,0.08)',
-    backgroundColor: 'rgba(255,255,255,0.56)',
+    ...Platform.select({
+      web: {
+        backdropFilter: 'saturate(120%) blur(12px)',
+        WebkitBackdropFilter: 'saturate(120%) blur(12px)',
+      },
+      default: {},
+    }),
   },
   backDock: {
     position: 'absolute',
-    top: 6,
-    left: 22,
+    top: 8,
+    left: MOBILE_FILTER_INSET,
     zIndex: 24,
   },
   filterDock: {
     position: 'absolute',
-    top: 6,
-    right: 22,
+    top: 8,
+    right: MOBILE_FILTER_INSET,
     zIndex: 24,
   },
   avatar: {
@@ -2026,69 +2152,76 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 6,
-    paddingTop: 22,
-    paddingBottom: 8,
+    paddingHorizontal: MOBILE_FILTER_INSET,
+    paddingTop: 16,
+    paddingBottom: 6,
   },
   groupLabel: {
     fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#8A7A52',
-    letterSpacing: 0.4,
-    textTransform: 'uppercase',
+    fontSize: 13,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.08,
   },
   mobileGroup: {
     backgroundColor: CARD,
-    borderRadius: 16,
+    borderRadius: 0,
     overflow: 'hidden',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(18,16,12,0.08)',
   },
   mobileGroupSpaced: {
-    marginTop: 14,
+    marginTop: 8,
   },
   contactRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 56,
+    minHeight: 72,
     paddingVertical: 12,
-    paddingHorizontal: 14,
-    gap: 12,
+    paddingLeft: MOBILE_FILTER_INSET,
+    paddingRight: MOBILE_FILTER_INSET,
+    gap: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(18,16,12,0.08)',
+    borderBottomColor: 'rgba(60, 60, 67, 0.18)',
   },
   contactRowLast: {
     borderBottomWidth: 0,
   },
   contactRowPressed: {
-    backgroundColor: '#F6F3EA',
+    backgroundColor: '#f2f2f7',
+  },
+  contactIconCol: {
+    width: PROFILE_ICON_COL,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
   },
   contactIcon: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
-    backgroundColor: '#F6F3EA',
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: '#f2f2f7',
     alignItems: 'center',
     justifyContent: 'center',
   },
+  contactCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
   contactCaption: {
     fontFamily,
-    width: 86,
-    flexShrink: 0,
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#6B5E3A',
-    letterSpacing: -0.1,
+    fontSize: 16,
+    fontWeight: '600',
+    color: LABEL,
+    letterSpacing: -0.2,
   },
   contactValue: {
-    flex: 1,
+    maxWidth: '46%',
+    flexShrink: 0,
     minWidth: 0,
     fontFamily,
     fontSize: 16,
-    fontWeight: '500',
+    fontWeight: '600',
     color: LABEL,
-    letterSpacing: -0.25,
+    letterSpacing: -0.2,
     textAlign: 'right',
   },
   contactValueEmpty: {
@@ -2096,9 +2229,172 @@ const styles = StyleSheet.create({
     fontWeight: '400',
   },
   contactValueLink: {
-    color: BLUE,
+    color: LABEL,
+  },
+  contactChevron: {
+    width: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
   },
   logoutGroupMobile: {
-    marginTop: 18,
+    marginTop: 16,
+  },
+  homeScroll: {
+    flex: 1,
+    minHeight: 0,
+    backgroundColor: 'transparent',
+    ...Platform.select({
+      web: {
+        overflowY: 'auto',
+        overflowX: 'hidden',
+        height: 0,
+      },
+      default: {},
+    }),
+  },
+  homeHeroPad: {
+    paddingHorizontal: MOBILE_FILTER_INSET,
+  },
+  homeHero: {
+    alignSelf: 'stretch',
+    paddingTop: 4,
+    paddingBottom: 12,
+  },
+  homeHeroRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    alignSelf: 'stretch',
+  },
+  homeHeroRowBare: {
+    alignItems: 'center',
+  },
+  homeHeroIconCol: {
+    width: PROFILE_ICON_COL,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    flexShrink: 0,
+  },
+  homeHeroAvatarTap: {
+    position: 'relative',
+    width: 48,
+    height: 48,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  homeHeroAvatarEdit: {
+    position: 'absolute',
+    right: -4,
+    bottom: -4,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: TAB_INK,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: CANVAS,
+    zIndex: 2,
+  },
+  homeHeroCopy: {
+    flex: 1,
+    minWidth: 0,
+    marginLeft: PROFILE_BODY_LEADING,
+    justifyContent: 'center',
+    minHeight: 48,
+  },
+  homeHeroCopyBare: {
+    marginLeft: 0,
+    minHeight: 40,
+  },
+  homeHeroName: {
+    fontFamily: titleFontFamily,
+    fontSize: 34,
+    lineHeight: 40,
+    fontWeight: '400',
+    color: LABEL,
+    letterSpacing: -0.8,
+  },
+  homeHeroStats: {
+    flexDirection: 'column',
+    flexGrow: 0,
+    flexShrink: 0,
+    alignSelf: 'stretch',
+    justifyContent: 'flex-start',
+    gap: 1,
+    minWidth: 108,
+    maxWidth: 132,
+    paddingTop: 6,
+    paddingLeft: 14,
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderLeftColor: 'rgba(60, 60, 67, 0.12)',
+  },
+  homeHeroStat: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: 8,
+    paddingVertical: 2,
+  },
+  homeHeroStatLabel: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily,
+    fontSize: 10,
+    fontWeight: '500',
+    color: '#aeaeb2',
+    letterSpacing: 0.02,
+  },
+  homeHeroStatValue: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#1d1d1f',
+    letterSpacing: -0.2,
+    textAlign: 'right',
+    flexShrink: 1,
+    maxWidth: '62%',
+  },
+  homeActionPad: {
+    paddingHorizontal: MOBILE_FILTER_INSET,
+    paddingTop: 4,
+    paddingBottom: 8,
+  },
+  homeSheet: {
+    backgroundColor: '#fff',
+    marginTop: 8,
+    width: '100%',
+    alignSelf: 'stretch',
+    flexGrow: 1,
+  },
+  contactActionsPills: {
+    marginBottom: 0,
+    gap: 8,
+  },
+  contactActionPill: {
+    flex: 1,
+    minHeight: 34,
+    borderRadius: 8,
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(60, 60, 67, 0.18)',
+    paddingVertical: 8,
+    gap: 4,
+  },
+  contactActionPillPressed: {
+    backgroundColor: '#f2f2f7',
+  },
+  contactActionGlyphPill: {
+    width: 20,
+    height: 20,
+  },
+  contactActionLabelPill: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: LABEL,
+    letterSpacing: 0,
+    textTransform: 'capitalize',
   },
 });
