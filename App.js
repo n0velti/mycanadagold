@@ -108,6 +108,7 @@ import { readHoursOAuthCallback } from './lib/ripplingTime';
 import { readGmailOAuthCallback } from './lib/gmail';
 import { clearClockedIn, ClockedInMark, startClockedInSync, useIsClockedIn } from './lib/clockedIn';
 import StoreSnapshotPanel from './components/StoreSnapshotPanel';
+import TriageInsightsPanel from './components/TriageInsightsPanel';
 import TxnCashBreakdownModal, { TxnCashIcon } from './components/TxnCashBreakdownModal';
 import { AUREUS_TX_LIVE_MS, useLiveRefresh } from './lib/liveRefresh';
 import { capturePurchasePriceCatalog } from './lib/priceCheckSettings';
@@ -5770,6 +5771,7 @@ function HomeScreen({
   const [heroFocus, setHeroFocus] = useState('all');
   const [storeRows, setStoreRows] = useState([]);
   const [selectedStore, setSelectedStore] = useState(null);
+  const [insightsStore, setInsightsStore] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [staff, setStaff] = useState([]);
@@ -5995,6 +5997,7 @@ function HomeScreen({
       if (!allowHomeFilters && !rowMatchesAllocatedStore(row, assignedStore)) return;
       setStoreAppsOpen(false);
       setFiltersOpen(false);
+      setInsightsStore('');
       setSelectedStore(row);
       if (Platform.OS === 'web' && typeof window !== 'undefined' && window.history) {
         const state = { cgoldHomeStore: row.store };
@@ -6020,8 +6023,13 @@ function HomeScreen({
     setSelectedStore(null);
   }, [selectedStore, canOpenHomeStore]);
 
+  const closeInsights = useCallback(() => {
+    setInsightsStore('');
+  }, []);
+
   const closeStore = useCallback(() => {
     setStoreAppsOpen(false);
+    setInsightsStore('');
     setSelectedStore(null);
     if (
       Platform.OS === 'web' &&
@@ -6057,8 +6065,8 @@ function HomeScreen({
   }, []);
 
   useEffect(() => {
-    onStoreDetailsChange?.(Boolean(selectedStore));
-  }, [onStoreDetailsChange, selectedStore]);
+    onStoreDetailsChange?.(Boolean(selectedStore || insightsStore));
+  }, [insightsStore, onStoreDetailsChange, selectedStore]);
 
   useEffect(() => () => onStoreDetailsChange?.(false), [onStoreDetailsChange]);
   const homeRootTickRef = useRef(homeRootTick);
@@ -6330,7 +6338,7 @@ function HomeScreen({
         ref={homeRootRef}
         style={[styles.toolsScreen, styles.canvasFill, styles.igHomeScreen, !isMobile && styles.igHomeDesktopFeed]}
       >
-      {!selectedStore && !isMobile ? (
+      {!selectedStore && !insightsStore && !isMobile ? (
         <View pointerEvents="box-none" style={[homeContentInset, styles.igHomeChromeShell]}>
           <View style={[styles.igHomeChromeRow, styles.igHomeChromeRowDesktop]}>
             <View style={[styles.igHomeChromeControls, styles.igHomeChromeControlsFull]}>
@@ -6340,7 +6348,7 @@ function HomeScreen({
           </View>
         </View>
       ) : null}
-      {isMobile && !selectedStore ? (
+      {isMobile && !selectedStore && !insightsStore ? (
         <View pointerEvents="box-none" style={styles.igHomeFilterDock}>
           <HomeFilterCircle
             buttonRef={filterButtonRef}
@@ -6383,7 +6391,7 @@ function HomeScreen({
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor="#8e8e93" />}
       >
         <View style={homeContentInset}>
-          {!selectedStore && (isMobile || showHomeHero) ? (
+          {!selectedStore && !insightsStore && (isMobile || showHomeHero) ? (
             <View
               style={[
                 styles.igHomePinnedTop,
@@ -6396,7 +6404,7 @@ function HomeScreen({
           ) : null}
           {error ? <Text style={[styles.errorText, styles.homeError]}>{error}</Text> : null}
 
-          {loading && storeRows.length === 0 ? (
+          {insightsStore ? null : loading && storeRows.length === 0 ? (
             <View pointerEvents="auto" style={[styles.homeTableEmpty, styles.igHomeScrollEnd]}>
               <ActivityIndicator color="#1d1d1f" />
             </View>
@@ -6408,7 +6416,7 @@ function HomeScreen({
             </Text>
           ) : null}
         </View>
-        {visibleRows.length > 0 ? (
+        {visibleRows.length > 0 || !selectedStore ? (
           <View style={homeTableInset}>
             <View
               pointerEvents="auto"
@@ -6419,55 +6427,64 @@ function HomeScreen({
                 styles.igHomeTableSection,
                 isMobile && styles.igHomeTableSectionMobile,
                 !isMobile && styles.igHomeDesktopSheet,
-                {
-                  ...(stageHeight > 0 ? { minHeight: stageHeight } : null),
-                },
+                stageHeight > 0 ? { minHeight: stageHeight } : null,
               ]}
             >
-              <HomeStoresTable
-                rows={listedRows}
-                selectedStore={selectedStore}
-                totals={null}
-                staff={staff}
-                startKey={startKey}
-                endKey={endKey}
-                onOpenStore={openStore}
-                onOpenPerson={onOpenPerson}
-                compact={isMobile}
-                showAmounts={!hideHomeAmounts}
-                canOpenStore={canOpenHomeStore}
-                amountFocus={heroFocus}
-              />
+              {visibleRows.length > 0 && !insightsStore ? (
+                <HomeStoresTable
+                  rows={listedRows}
+                  selectedStore={selectedStore}
+                  totals={null}
+                  staff={staff}
+                  startKey={startKey}
+                  endKey={endKey}
+                  onOpenStore={openStore}
+                  onOpenPerson={onOpenPerson}
+                  compact={isMobile}
+                  showAmounts={!hideHomeAmounts}
+                  canOpenStore={canOpenHomeStore}
+                  amountFocus={heroFocus}
+                />
+              ) : null}
+              {!selectedStore ? (
+                <TriageInsightsPanel
+                  selectedStore={insightsStore}
+                  onSelectStore={setInsightsStore}
+                  assignedStore={assignedStore}
+                  allowAllStores={allowHomeFilters}
+                  compact={isMobile}
+                />
+              ) : null}
             </View>
           </View>
         ) : null}
       </ScrollView>
       </View>
 
+      {isMobile && (selectedStore || insightsStore) ? (
+        <HomeFilterCircle
+          large
+          chrome
+          size={HOME_TOP_FILTER_SIZE}
+          onPress={selectedStore ? closeStore : closeInsights}
+          style={styles.igHomeBackDock}
+          accessibilityLabel="Back to Home"
+        >
+          <Ionicons name="chevron-back" size={22} color={TAB_INK} />
+        </HomeFilterCircle>
+      ) : null}
       {isMobile && selectedStore ? (
-        <>
+        <View pointerEvents="box-none" style={styles.igHomeFilterDock}>
           <HomeFilterCircle
             large
             chrome
             size={HOME_TOP_FILTER_SIZE}
-            onPress={closeStore}
-            style={styles.igHomeBackDock}
-            accessibilityLabel="Back to Home"
-          >
-            <Ionicons name="chevron-back" size={22} color={TAB_INK} />
-          </HomeFilterCircle>
-          <View pointerEvents="box-none" style={styles.igHomeFilterDock}>
-            <HomeFilterCircle
-              large
-              chrome
-              size={HOME_TOP_FILTER_SIZE}
-              active={storeAppsOpen}
-              onPress={() => setStoreAppsOpen((open) => !open)}
-              accessibilityLabel={`${selectedStore.store} apps`}
-              accessibilityState={{ expanded: storeAppsOpen }}
-            />
-          </View>
-        </>
+            active={storeAppsOpen}
+            onPress={() => setStoreAppsOpen((open) => !open)}
+            accessibilityLabel={`${selectedStore.store} apps`}
+            accessibilityState={{ expanded: storeAppsOpen }}
+          />
+        </View>
       ) : null}
 
       {isMobile && !selectedStore && filtersOpen ? (
