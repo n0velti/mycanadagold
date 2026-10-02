@@ -47,6 +47,16 @@ import {
   toggleDmLike,
   unhideDmConversation,
 } from '../lib/messages';
+import {
+  AGENT_CONVERSATION_TITLE,
+  agentReceivedCopy,
+  createAgentRequest,
+  emptyAgentThread,
+  forwardAgentRequest,
+  groupAgentConversations,
+  listAgentRequests,
+  newAgentConversationId,
+} from '../lib/agentRequests';
 import { fetchAureusEmployee } from '../lib/aureusEmployees';
 import { prepareAiChatSession, sendAiChatMessage, titleAiChat } from '../lib/aiChat';
 import { OPENROUTER_MODELS } from '../lib/openrouter';
@@ -65,6 +75,7 @@ const fontFamily = Platform.select({
 
 const BLUE = '#0A84FF';
 const AI_PURPLE = '#6B4DE6';
+const AGENT_TEAL = '#0F766E';
 const INBOX_WIDTH = 340;
 const MOBILE_BREAKPOINT = 768;
 const AI_MODEL =
@@ -259,6 +270,23 @@ function ComposeIcon({ size = 24, color = '#1d1d1f' }) {
 }
 
 function ConversationAvatar({ conversation, size = 52 }) {
+  if (conversation?.isAgent) {
+    return (
+      <View
+        style={[
+          styles.avatar,
+          {
+            width: size,
+            height: size,
+            borderRadius: size / 2,
+            backgroundColor: AGENT_TEAL,
+          },
+        ]}
+      >
+        <Ionicons name="construct" size={Math.max(16, Math.round(size * 0.42))} color="#fff" />
+      </View>
+    );
+  }
   if (conversation?.isAi) {
     return (
       <View
@@ -454,6 +482,13 @@ function AppleSend({ active, onSettled, children }) {
   );
 }
 
+function deliveryLabel(state) {
+  if (state === 'sending') return 'Sending';
+  if (state === 'sent') return 'Sent';
+  if (state === 'received') return 'Received';
+  return '';
+}
+
 function MessageBubble({
   message,
   mine,
@@ -466,6 +501,7 @@ function MessageBubble({
   onToggleLike,
   onDeleteForMe,
   onSendSettled,
+  actionsDisabled = false,
 }) {
   const lastTap = useRef(0);
   const [burst, setBurst] = useState(0);
@@ -477,9 +513,11 @@ function MessageBubble({
     borderTopRightRadius: mine && groupedWithPrev ? 6 : radius,
     borderBottomRightRadius: mine && groupedWithNext ? 6 : radius,
   };
-  const showMore = Platform.OS === 'web' && (hovered || menuOpen);
+  const showMore = !actionsDisabled && Platform.OS === 'web' && (hovered || menuOpen);
+  const status = mine && !groupedWithNext ? deliveryLabel(message.deliveryState) : '';
 
   const handlePress = () => {
+    if (actionsDisabled) return;
     if (menuOpen) {
       onCloseMenu();
       return;
@@ -495,6 +533,7 @@ function MessageBubble({
   };
 
   const openMenu = (event) => {
+    if (actionsDisabled) return;
     event?.preventDefault?.();
     event?.stopPropagation?.();
     onOpenMenu(message);
@@ -588,6 +627,7 @@ function MessageBubble({
           </Text>
         </View>
       ) : null}
+      {status ? <Text style={styles.deliveryState}>{status}</Text> : null}
     </View>
     </AppleSend>
   );
@@ -678,6 +718,8 @@ export default function MessagesScreen({
     [session?.profile?.firstName, session?.profile?.lastName].filter(Boolean).join(' ') ||
     'You';
   const [inbox, setInbox] = useState([]);
+  const [agentInbox, setAgentInbox] = useState([]);
+  const [agentMessages, setAgentMessages] = useState({});
   const [contacts, setContacts] = useState([]);
   const [query, setQuery] = useState('');
   const [composeOpen, setComposeOpen] = useState(false);
@@ -708,7 +750,11 @@ export default function MessagesScreen({
   const activeIdRef = useRef(null);
   const titledAiRef = useRef(new Set());
   const inboxRef = useRef(inbox);
+  const agentInboxRef = useRef(agentInbox);
+  const agentMessagesRef = useRef(agentMessages);
   inboxRef.current = inbox;
+  agentInboxRef.current = agentInbox;
+  agentMessagesRef.current = agentMessages;
   activeIdRef.current = activeId;
   draftRef.current = draft;
   const onUnreadChangeRef = useRef(onUnreadChange);
@@ -725,7 +771,28 @@ export default function MessagesScreen({
     return () => onConversationOpenChangeRef.current?.(false);
   }, []);
 
-  const activeThread = inbox.find((row) => row.conversationId === activeId) || null;
+  const mergedInbox = useMemo(() => {
+    const seen = new Set();
+    const rows = [];
+    agentInbox.forEach((row) => {
+      if (!row?.conversationId || seen.has(row.conversationId)) return;
+      seen.add(row.conversationId);
+      rows.push(row);
+    });
+    inbox.forEach((row) => {
+      if (!row?.conversationId || seen.has(row.conversationId) || row.isAgent) return;
+      seen.add(row.conversationId);
+      rows.push(row);
+    });
+    rows.sort((left, right) => {
+      const a = left.lastMessageAt ? new Date(left.lastMessageAt).getTime() : left.isAgent ? Date.now() : 0;
+      const b = right.lastMessageAt ? new Date(right.lastMessageAt).getTime() : right.isAgent ? Date.now() : 0;
+      return b - a;
+    });
+    return rows;
+  }, [agentInbox, inbox]);
+
+  const activeThread = mergedInbox.find((row) => row.conversationId === activeId) || null;
 
   const refreshInbox = useCallback(async () => {
     try {
@@ -761,6 +828,12 @@ export default function MessagesScreen({
       setMenuMessageId(null);
       setQuery('');
       setTitleDraft('');
+      const agentThread = agentInboxRef.current.find((row) => row.conversationId === conversationId);
+      if (agentThread) {
+        setMessages(agentMessagesRef.current[conversationId] || []);
+        setLoadingThread(false);
+        return;
+      }
       if (!skipLoad) setLoadingThread(true);
       try {
         if (!inboxRef.current.some((row) => row.conversationId === conversationId)) {
@@ -827,7 +900,7 @@ export default function MessagesScreen({
   };
 
   const handleCallThread = async () => {
-    if (activeThread?.isAi || activeThread?.isGroup) {
+    if (activeThread?.isAi || activeThread?.isAgent || activeThread?.isGroup) {
       setError('Call a person from their profile.');
       return;
     }
@@ -1021,12 +1094,12 @@ export default function MessagesScreen({
 
   const filteredInbox = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q || composeOpen) return inbox;
-    return inbox.filter((row) => {
+    if (!q || composeOpen) return mergedInbox;
+    return mergedInbox.filter((row) => {
       const hay = `${conversationTitle(row)} ${(row.members || []).map(contactName).join(' ')} ${row.lastMessagePreview}`.toLowerCase();
       return hay.includes(q);
     });
-  }, [composeOpen, inbox, query]);
+  }, [composeOpen, mergedInbox, query]);
 
   const filteredPeople = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -1094,6 +1167,15 @@ export default function MessagesScreen({
       setActiveId(null);
       setMessages([]);
     }
+    if (thread?.isAgent) {
+      setAgentInbox((current) => current.filter((row) => row.conversationId !== conversationId));
+      setAgentMessages((current) => {
+        const next = { ...current };
+        delete next[conversationId];
+        return next;
+      });
+      return;
+    }
     setInbox((current) => current.filter((row) => row.conversationId !== conversationId));
     try {
       await hideDmConversation(conversationId);
@@ -1128,6 +1210,102 @@ export default function MessagesScreen({
       tension: 180,
       useNativeDriver: true,
     }).start();
+    if (activeThread?.isAgent) {
+      const conversationId = activeId;
+      setDraft('');
+      setEmojiOpen(false);
+      setSending(true);
+      setMessages((current) => [
+        ...current,
+        {
+          id: tempId,
+          localKey,
+          justSent: true,
+          conversationId,
+          senderId: myId,
+          body: text,
+          createdAt: new Date().toISOString(),
+          likedByMe: false,
+          likeCount: 0,
+          isAssistant: false,
+          deliveryState: 'sending',
+          pending: true,
+        },
+      ]);
+      try {
+        const saved = await createAgentRequest({
+          conversationId,
+          body: text,
+          senderId: myId,
+        });
+        const sentAt = saved.createdAt || new Date().toISOString();
+        const sentMessage = {
+          id: saved.id,
+          localKey,
+          justSent: true,
+          conversationId,
+          senderId: saved.senderId || myId,
+          body: saved.body || text,
+          createdAt: sentAt,
+          likedByMe: false,
+          likeCount: 0,
+          isAssistant: false,
+          deliveryState: 'sent',
+          requestStatus: saved.status,
+        };
+        setMessages((current) => mergeSentMessage(current, localKey, tempId, sentMessage));
+        await forwardAgentRequest(saved);
+        const receivedMessage = { ...sentMessage, deliveryState: 'received' };
+        const ack = {
+          id: `${saved.id}-ack`,
+          conversationId,
+          senderId: null,
+          body: agentReceivedCopy(saved.status),
+          createdAt: saved.updatedAt || sentAt,
+          likedByMe: false,
+          likeCount: 0,
+          isAssistant: true,
+          isAgentAck: true,
+          deliveryState: 'received',
+          requestStatus: saved.status,
+        };
+        setMessages((current) => {
+          const next = mergeSentMessage(current, localKey, tempId, receivedMessage);
+          if (next.some((item) => item.id === ack.id)) return next;
+          return [...next, ack];
+        });
+        setAgentMessages((current) => {
+          const existing = (current[conversationId] || []).filter(
+            (item) => item.id !== tempId && item.localKey !== localKey && item.id !== saved.id && item.id !== ack.id,
+          );
+          return {
+            ...current,
+            [conversationId]: [...existing, receivedMessage, ack],
+          };
+        });
+        setAgentInbox((current) =>
+          current.map((row) =>
+            row.conversationId === conversationId
+              ? {
+                  ...row,
+                  title: row.title || AGENT_CONVERSATION_TITLE,
+                  lastMessagePreview: saved.body || text,
+                  lastMessageAt: sentAt,
+                  lastMessageSenderId: saved.senderId || myId,
+                }
+              : row,
+          ),
+        );
+      } catch (err) {
+        setMessages((current) => current.filter((item) => item.id !== tempId));
+        setDraft(text);
+        setError(err.message || 'Could not send that request.');
+      } finally {
+        sendingRef.current = false;
+        setSending(false);
+      }
+      return;
+    }
     if (activeThread?.isAi) {
       const conversationId = activeId;
       const threadTitle = activeThread.title;
@@ -1341,6 +1519,48 @@ export default function MessagesScreen({
     }
   }, [openConversation, refreshInbox]);
 
+  const openAgentConversation = useCallback(() => {
+    const conversationId = newAgentConversationId();
+    const thread = emptyAgentThread(conversationId);
+    setAgentInbox((current) => [thread, ...current.filter((row) => row.conversationId !== conversationId)]);
+    setAgentMessages((current) => ({ ...current, [conversationId]: [] }));
+    setComposeOpen(false);
+    setSelectedIds([]);
+    setGroupName('');
+    setQuery('');
+    setError('');
+    setMessages([]);
+    setActiveId(conversationId);
+    setEmojiOpen(false);
+    setDetailsOpen(false);
+    setAddingMembers(false);
+    setTypingByUser({});
+    setMenuMessageId(null);
+    setLoadingThread(false);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await listAgentRequests();
+        if (cancelled) return;
+        const grouped = groupAgentConversations(rows, myId);
+        setAgentInbox((current) => {
+          const persisted = new Set(grouped.inbox.map((row) => row.conversationId));
+          const locals = current.filter((row) => row.isAgent && !persisted.has(row.conversationId));
+          return [...grouped.inbox, ...locals];
+        });
+        setAgentMessages((current) => ({ ...grouped.messages, ...current }));
+      } catch {
+        // Table is not on the live project until this migration is applied.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [myId]);
+
   const threadLive = Boolean(activeId && activeThread);
   const memberIds = new Set((activeThread?.members || []).map((person) => person.id));
   const addablePeople = peopleIndex.filter((person) => !memberIds.has(person.id));
@@ -1438,7 +1658,7 @@ export default function MessagesScreen({
       );
     }
 
-    if (loadingInbox && inbox.length === 0) {
+    if (loadingInbox && mergedInbox.length === 0) {
       return (
         <View style={[styles.inboxCentered, isMobile && styles.inboxCenteredMobile]}>
           <ActivityIndicator color="#1d1d1f" />
@@ -1468,7 +1688,9 @@ export default function MessagesScreen({
         ? row.isGroup || row.lastMessageSenderId === myId
           ? `${senderName}: ${row.lastMessagePreview}`
           : row.lastMessagePreview
-        : row.isAi
+        : row.isAgent
+          ? 'New conversation'
+          : row.isAi
           ? 'New AI chat'
           : row.isTeam
           ? 'New team chat'
@@ -1672,6 +1894,20 @@ export default function MessagesScreen({
               </View>
               {searchField}
               <Pressable
+                onPress={openAgentConversation}
+                style={styles.chromeCompose}
+                accessibilityLabel="Message the agent"
+              >
+                <BlurView
+                  intensity={32}
+                  tint="light"
+                  style={styles.chromeComposeBlur}
+                  {...(Platform.OS === 'web' ? { className: 'cgold-home-chip-blur' } : null)}
+                >
+                  <Ionicons name="construct-outline" size={18} color="#1d1d1f" />
+                </BlurView>
+              </Pressable>
+              <Pressable
                 onPress={() => {
                   setComposeOpen((current) => !current);
                   setSelectedIds([]);
@@ -1701,6 +1937,20 @@ export default function MessagesScreen({
           </View>
           {isMobile ? (
             <View pointerEvents="box-none" style={styles.filterDock}>
+              <Pressable
+                onPress={openAgentConversation}
+                style={styles.chromeCircle}
+                accessibilityLabel="Message the agent"
+              >
+                <BlurView
+                  intensity={32}
+                  tint="light"
+                  style={styles.chromeCircleBlur}
+                  {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-bar' } : null)}
+                >
+                  <Ionicons name="construct-outline" size={22} color="#1d1d1f" />
+                </BlurView>
+              </Pressable>
               <Pressable
                 onPress={() => {
                   setComposeOpen((current) => !current);
@@ -1760,7 +2010,7 @@ export default function MessagesScreen({
                 <View style={styles.threadHeaderMain}>
                   <Pressable
                     onPress={() => {
-                      if (activeThread.isGroup || activeThread.isAi) {
+                      if (activeThread.isGroup || activeThread.isAi || activeThread.isAgent) {
                         setTitleDraft(activeThread.title || '');
                         setDetailsOpen(true);
                         setAddingMembers(false);
@@ -1769,7 +2019,9 @@ export default function MessagesScreen({
                       if (activeThread.other) handleOpenProfile(activeThread.other);
                     }}
                     accessibilityLabel={
-                      activeThread.isGroup
+                      activeThread.isAgent
+                        ? 'Agent conversation'
+                        : activeThread.isGroup
                         ? 'Group details'
                         : `View ${conversationTitle(activeThread)}'s profile`
                     }
@@ -1799,6 +2051,7 @@ export default function MessagesScreen({
                     </Text>
                   </Pressable>
                 </View>
+                {activeThread.isAgent ? null : (
                 <Pressable
                   onPress={() => void handleCallThread()}
                   style={styles.infoButton}
@@ -1806,6 +2059,7 @@ export default function MessagesScreen({
                 >
                   <Ionicons name="call-outline" size={20} color={BLUE} />
                 </Pressable>
+                )}
                 <Pressable
                   onPress={() => {
                     setDetailsOpen((current) => {
@@ -1834,7 +2088,7 @@ export default function MessagesScreen({
                   ]}
                   keyboardShouldPersistTaps="handled"
                 >
-                  {activeThread.isAi ? (
+                  {activeThread.isAi || activeThread.isAgent ? (
                     <>
                       <Text style={styles.detailsLabel}>Chat</Text>
                       <Text style={styles.detailsTeamName}>{conversationTitle(activeThread)}</Text>
@@ -1879,7 +2133,7 @@ export default function MessagesScreen({
                       <Text style={styles.detailsTeamName}>{conversationTitle(activeThread)}</Text>
                     </>
                   )}
-                  {!activeThread.isAi ? (
+                  {!activeThread.isAi && !activeThread.isAgent ? (
                     <Text style={styles.detailsLabel}>
                       {activeThread.members.length + 1} people
                     </Text>
@@ -1946,7 +2200,7 @@ export default function MessagesScreen({
                     style={styles.leaveButton}
                   >
                     <Text style={styles.leaveButtonText}>
-                      {activeThread.isAi ? 'Delete chat' : 'Delete for you'}
+                      {activeThread.isAi || activeThread.isAgent ? 'Delete chat' : 'Delete for you'}
                     </Text>
                   </Pressable>
                   {activeThread.isGroup && !activeThread.isAi ? (
@@ -1995,7 +2249,9 @@ export default function MessagesScreen({
                         </Pressable>
                         <Text style={styles.threadEmptyName}>{conversationTitle(activeThread)}</Text>
                         <Text style={styles.emptyHint}>
-                          {conversationSubtitle(activeThread)}
+                          {activeThread.isAgent
+                            ? 'Write what you want changed or built. Send it like a message.'
+                            : conversationSubtitle(activeThread)}
                         </Text>
                       </View>
                     ) : (
@@ -2021,11 +2277,14 @@ export default function MessagesScreen({
                               groupedWithNext={groupedWithNext}
                               senderLabel={
                                 message.isAssistant
-                                  ? 'MyCanadaGold AI'
+                                  ? activeThread.isAgent || message.isAgentAck
+                                    ? AGENT_CONVERSATION_TITLE
+                                    : 'MyCanadaGold AI'
                                   : activeThread.isGroup && !mine
                                     ? firstNameOf(sender)
                                     : null
                               }
+                              actionsDisabled={activeThread.isAgent}
                               menuOpen={menuMessageId === message.id}
                               onOpenMenu={(item) => setMenuMessageId(item.id)}
                               onCloseMenu={() => setMenuMessageId(null)}
@@ -2091,7 +2350,13 @@ export default function MessagesScreen({
                         style={[styles.composerInput, isMobile && styles.composerInputMobile]}
                         value={draft}
                         onChangeText={onChangeDraft}
-                        placeholder={activeThread?.isAi ? 'Message MyCanadaGold AI' : 'Message'}
+                        placeholder={
+                          activeThread?.isAgent
+                            ? 'What do you want changed?'
+                            : activeThread?.isAi
+                              ? 'Message MyCanadaGold AI'
+                              : 'Message'
+                        }
                         placeholderTextColor="#8e8e93"
                         multiline={false}
                         numberOfLines={1}
@@ -2149,7 +2414,7 @@ export default function MessagesScreen({
               {menuConversation ? conversationTitle(menuConversation) : ''}
             </Text>
             <Text style={styles.actionSheetBody}>
-              {menuConversation?.isAi
+              {menuConversation?.isAi || menuConversation?.isAgent
                 ? 'This chat will be removed from your messages.'
                 : menuConversation?.isGroup
                   ? 'This chat will be removed from your messages. Everyone else will still have it.'
@@ -2351,6 +2616,17 @@ const styles = StyleSheet.create({
     top: 6,
     right: 22,
     zIndex: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  deliveryState: {
+    fontFamily,
+    fontSize: 11,
+    color: '#8e8e93',
+    marginTop: 4,
+    marginRight: 4,
+    alignSelf: 'flex-end',
   },
   recipientBar: {
     flexDirection: 'row',
