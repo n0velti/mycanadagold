@@ -795,6 +795,10 @@ export default function MessagesScreen({
   const activeThread = mergedInbox.find((row) => row.conversationId === activeId) || null;
 
   const refreshInbox = useCallback(async () => {
+    if (!session?.token) {
+      setLoadingInbox(false);
+      return [];
+    }
     try {
       const [rows, people] = await Promise.all([
         listDmInbox(),
@@ -811,7 +815,7 @@ export default function MessagesScreen({
     } finally {
       setLoadingInbox(false);
     }
-  }, []);
+  }, [session?.token]);
   refreshInboxRef.current = refreshInbox;
 
   const openConversation = useCallback(
@@ -943,8 +947,12 @@ export default function MessagesScreen({
   }, [openUserId, openDirect, onOpenedUser]);
 
   useEffect(() => {
+    if (!myId || !session?.token) {
+      setLoadingInbox(false);
+      return;
+    }
     refreshInbox();
-  }, [refreshInbox]);
+  }, [myId, refreshInbox, session?.token]);
 
   useEffect(() => {
     const unsubscribe = subscribeDmRealtime({
@@ -1541,6 +1549,7 @@ export default function MessagesScreen({
 
   useEffect(() => {
     let cancelled = false;
+    if (!myId || !session?.token) return undefined;
     (async () => {
       try {
         const rows = await listAgentRequests();
@@ -1559,7 +1568,7 @@ export default function MessagesScreen({
     return () => {
       cancelled = true;
     };
-  }, [myId]);
+  }, [myId, session?.token]);
 
   const threadLive = Boolean(activeId && activeThread);
   const memberIds = new Set((activeThread?.members || []).map((person) => person.id));
