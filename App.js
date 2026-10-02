@@ -482,7 +482,7 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-mobile-inset-top{height:max(12px,env(safe-area-inset-top,0px))!important;}',
     '.cgold-mobile-tab-bar-dock{padding-bottom:max(14px,calc(env(safe-area-inset-bottom,0px) + 10px))!important;}',
     '.cgold-mobile-tab-bar{-webkit-backdrop-filter:saturate(120%) blur(12px);backdrop-filter:saturate(120%) blur(12px);background-color:rgba(252,252,251,0.92)!important;border-radius:999px;}',
-    '.cgold-mobile-tab-active{background-color:#f5f5f5!important;border-radius:6px;-webkit-backdrop-filter:none;backdrop-filter:none;}',
+    '.cgold-mobile-tab-active{background-color:#f5f5f5!important;border-radius:999px;-webkit-backdrop-filter:none;backdrop-filter:none;}',
     '.cgold-mobile-filter-blur{background-color:#fff!important;}',
     '.cgold-mobile-chrome-blur{-webkit-backdrop-filter:saturate(180%) blur(22px);backdrop-filter:saturate(180%) blur(22px);background-color:rgba(242,242,247,0.72)!important;}',
     '.cgold-mobile-sheet-top{padding-top:max(18px,env(safe-area-inset-top,0px))!important;}',
@@ -782,8 +782,8 @@ function useHomePageLayout() {
       contentMaxWidth: undefined,
       tableMaxWidth: undefined,
       homeSearchMaxWidth: undefined,
-      pagePad: 16,
-      tablePagePad: 16,
+      pagePad: MOBILE_FILTER_INSET,
+      tablePagePad: MOBILE_FILTER_INSET,
     };
   }
   const pagePad = width >= 1600 ? 24 : width >= 1200 ? 20 : 16;
@@ -3064,7 +3064,15 @@ function TransactionTicketBody({
   );
 }
 
-function TransactionDetailDrawer({ visible, summary, detail, loading, error, onClose }) {
+function TransactionDetailDrawer({
+  visible,
+  summary,
+  detail,
+  loading,
+  error,
+  onClose,
+  fromRight = false,
+}) {
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
   const isMobile = windowWidth < MOBILE_BREAKPOINT;
   const [activeApp, setActiveApp] = useState(null);
@@ -3078,11 +3086,12 @@ function TransactionDetailDrawer({ visible, summary, detail, loading, error, onC
         Math.max(Math.round(windowWidth * 0.82), 640),
         Math.round(windowWidth - 56),
       );
-  const slideDistance = panelWidth + railWidth;
-  const sideAnim = useRightDrawerAnimation(!isMobile && visible, slideDistance);
-  const upAnim = useUpSheetAnimation(isMobile && visible, windowHeight);
-  const mounted = isMobile ? upAnim.mounted : sideAnim.mounted;
-  const slide = isMobile ? upAnim.slide : sideAnim.slide;
+  const pushRight = isMobile && fromRight;
+  const slideDistance = pushRight ? windowWidth : panelWidth + railWidth;
+  const sideAnim = useRightDrawerAnimation((!isMobile || pushRight) && visible, slideDistance);
+  const upAnim = useUpSheetAnimation(isMobile && !pushRight && visible, windowHeight);
+  const mounted = isMobile && !pushRight ? upAnim.mounted : sideAnim.mounted;
+  const slide = isMobile && !pushRight ? upAnim.slide : sideAnim.slide;
   const backdrop = sideAnim.backdrop;
   const heldSummary = useHeldValue(summary);
   const heldDetail = useHeldValue(detail);
@@ -3115,17 +3124,18 @@ function TransactionDetailDrawer({ visible, summary, detail, loading, error, onC
   const delivery = heldDetail ? documentDeliveryState(heldDetail, items) : null;
   const paymentStatus = String(heldDetail?.payment_status || '').trim();
   const activeTool = visibleTabs.find((tab) => tab.key === activeApp);
-  const occurred = [heldSummary.dateLabel, heldSummary.timeLabel].filter(Boolean).join(' · ');
-  const paymentLabel =
-    heldSummary.paymentBreakdownLabel ||
-    heldSummary.paymentMethodLabel ||
-    paymentStatus ||
-    '—';
 
   if (isMobile) {
     return (
       <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose}>
-        <Animated.View style={[styles.buyTxSheet, { transform: [{ translateY: slide }] }]}>
+        <Animated.View
+          style={[
+            styles.buyTxSheet,
+            {
+              transform: pushRight ? [{ translateX: slide }] : [{ translateY: slide }],
+            },
+          ]}
+        >
           <MobileSafeTop />
           <MobileNavHeader
             title={heldSummary.reference || docKind}
@@ -3138,116 +3148,13 @@ function TransactionDetailDrawer({ visible, summary, detail, loading, error, onC
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
           >
-            <View style={styles.buyTxCard}>
-              <View style={styles.buyTxTotalsRow}>
-                <Text style={styles.buyTxTotalsLabel}>{docKind}</Text>
-                <Text style={styles.buyTxTotalsAmount}>{heldSummary.reference || '—'}</Text>
-              </View>
-              <View style={[styles.buyTxTotalsRow, styles.buyTxTotalsGrand]}>
-                <Text style={styles.buyTxTotalsGrandLabel}>Total</Text>
-                <Text style={styles.buyTxTotalsGrandAmount}>{formatAmount(totalAmount)}</Text>
-              </View>
-            </View>
-
-            <View style={styles.buyTxCard}>
-              <BuyTicketRow label="Customer" value={clientName} sub={client?.email || client?.phone} />
-              <BuyTicketRow label="Type" value={docLabel} />
-              <BuyTicketRow
-                label="Status"
-                value={
-                  [allocation?.label, delivery?.label, paymentStatus].filter(Boolean).join(' · ') || 'On file'
-                }
-              />
-              <BuyTicketRow label="Store" value={locationName} sub={locationLine} />
-              <BuyTicketRow label="Employee" value={heldSummary.employeeName} />
-              <BuyTicketRow label="Payment" value={paymentLabel} />
-              <BuyTicketRow label="Date" value={occurred || '—'} last />
-            </View>
-
-            <Text style={styles.buyTxSection}>Items</Text>
-            <View style={styles.buyTxCard}>
-              {loading ? (
-                <View style={styles.buyTxLoading}>
-                  <ActivityIndicator color="#1F8A4E" />
-                </View>
-              ) : error ? (
-                <Text style={styles.buyTxEmpty}>{error}</Text>
-              ) : items.length === 0 ? (
-                <Text style={styles.buyTxEmpty}>No line items</Text>
-              ) : (
-                items.map((item, index) => {
-                  const name = lineItemName(item);
-                  const meta = lineItemMeta(item);
-                  const images = lineItemImages(item);
-                  const money = lineItemMoney(item);
-                  const unitType = item?.unit_type || (money.grossQuantity ? 'g' : '');
-                  return (
-                    <View
-                      key={item.id || `${name}-${index}`}
-                      style={[styles.buyTxItemRow, index === items.length - 1 && !heldDetail?.total_charges && styles.buyTxItemRowLast]}
-                    >
-                      <LineItemThumb urls={images} name={name} />
-                      <View style={styles.buyTxItemCopy}>
-                        <Text style={styles.buyTxItemName} numberOfLines={2}>
-                          {name}
-                        </Text>
-                        {meta ? (
-                          <Text style={styles.buyTxItemMeta} numberOfLines={1}>
-                            {meta}
-                          </Text>
-                        ) : null}
-                        <Text style={styles.buyTxItemAmount}>{formatAmount(money.lineTotal)}</Text>
-                      </View>
-                      <View style={styles.buyTxItemQty}>
-                        <Text style={styles.buyTxItemQtyValue}>{formatLineQty(lineDeliveryState(item).ordered)}</Text>
-                        <Text style={styles.buyTxItemQtyUnit}>
-                          {formatUnitCost(money.displayUnitPrice, unitType)}
-                        </Text>
-                      </View>
-                    </View>
-                  );
-                })
-              )}
-              {heldDetail?.total_charges ? (
-                <View style={styles.buyTxItemRow}>
-                  <Text style={styles.buyTxItemMeta}>Charges</Text>
-                  <Text style={styles.buyTxItemAmount}>{formatAmount(heldDetail.total_charges)}</Text>
-                </View>
-              ) : null}
-            </View>
-
-            {!loading && payments.length > 0 ? (
-              <>
-                <Text style={styles.buyTxSection}>Payments</Text>
-                <View style={styles.buyTxCard}>
-                  {payments.map((entry, index) => {
-                    const payment = entry.payment || entry;
-                    const method =
-                      payment.payment_type?.name ||
-                      entry.payment?.payment_type?.name ||
-                      'Payment';
-                    return (
-                      <BuyTicketRow
-                        key={entry.id || payment.id || `${method}-${index}`}
-                        label={method}
-                        value={formatAmount(entry.amount ?? payment.amount)}
-                        sub={[payment.status, payment.date].filter(Boolean).join(' · ')}
-                        last={index === payments.length - 1}
-                      />
-                    );
-                  })}
-                </View>
-              </>
-            ) : null}
-
-            {heldDetail?.comments ? (
-              <>
-                <Text style={styles.buyTxSection}>Notes</Text>
-                <View style={styles.buyTxCard}>
-                  <Text style={styles.buyTxNotes}>{heldDetail.comments}</Text>
-                </View>
-              </>
-            ) : null}
+            <TransactionTicketBody
+              summary={heldSummary}
+              detail={heldDetail}
+              loading={loading}
+              error={error}
+              part="body"
+            />
           </ScrollView>
         </Animated.View>
       </Modal>
@@ -3873,18 +3780,6 @@ function HomeStoreDrawer({
     setDetailLoading(false);
   }, []);
 
-  const transactionTicket =
-    isMobile && selectedRow ? (
-      <TransactionTicketBody
-        summary={selectedRow}
-        detail={detail}
-        loading={detailLoading}
-        error={detailError}
-        onClose={closeDetail}
-        embedded
-      />
-    ) : null;
-
   const ensurePaymentBreakdown = useCallback(
     async (row) => {
       if (!session?.token || !row) return row?.paymentBreakdownLabel || '';
@@ -3986,7 +3881,6 @@ function HomeStoreDrawer({
                   desktopApps={tabStrip}
                   appsOpen={appsOpen}
                   onAppsOpenChange={onAppsOpenChange}
-                  transactionTicket={transactionTicket}
                   embeddedApp={
                     STORE_SNAPSHOT_TABS.has(activeTab) ? null : (
                       <ScreenGate resetKey={activeTab}>
@@ -4046,6 +3940,7 @@ function HomeStoreDrawer({
                     accessibilityLabel="Close apps"
                   />
                   <View style={[styles.storeAppsCard, styles.storeAppsCardDocked]}>
+                    <Text style={styles.igFilterLabel}>Apps</Text>
                     <ScrollView
                       style={styles.storeAppsScroll}
                       keyboardShouldPersistTaps="handled"
@@ -4073,7 +3968,11 @@ function HomeStoreDrawer({
                               <Ionicons name={filledIonicon(tool.icon)} size={16} color="#fff" />
                             </View>
                             <Text
-                              style={[styles.igFilterActionLabel, selected && styles.storeAppsLabelSelected]}
+                              style={[
+                                styles.igFilterActionLabel,
+                                styles.storeAppsLabel,
+                                selected && styles.storeAppsLabelSelected,
+                              ]}
                               numberOfLines={1}
                             >
                               {tool.label}
@@ -4095,16 +3994,15 @@ function HomeStoreDrawer({
     <>
       {drawerTree}
 
-      {isMobile ? null : (
-        <TransactionDetailDrawer
-          visible={Boolean(selectedRow)}
-          summary={selectedRow}
-          detail={detail}
-          loading={detailLoading}
-          error={detailError}
-          onClose={closeDetail}
-        />
-      )}
+      <TransactionDetailDrawer
+        visible={Boolean(selectedRow)}
+        summary={selectedRow}
+        detail={detail}
+        loading={detailLoading}
+        error={detailError}
+        onClose={closeDetail}
+        fromRight={isMobile}
+      />
     </>
   );
 }
@@ -4402,24 +4300,28 @@ function homeMetricFormat(stats) {
   return stats?.format === 'count' ? formatHomeCountTick : formatHomePercentTick;
 }
 
-function HomeStoreMetric({ icon, stats, label }) {
+function HomeStoreMetric({ icon, stats, label, stretch = false }) {
   const empty = stats?.rate == null;
   const low = !empty && stats.rate < 80;
   const detail =
     !empty && Number(stats.average) > 0 ? `${Number(stats.average).toFixed(1)} average` : '';
   return (
     <View
-      style={styles.igStoreMetric}
+      style={[styles.igStoreMetric, stretch && styles.igHomeStoreMetric]}
       accessibilityLabel={
         empty ? `${label}, no activity` : `${label} ${stats.ratio}${detail ? `, ${detail}` : ''}`
       }
     >
       <Ionicons name={icon} size={14} color={homeRateIconColor(stats)} />
       {empty ? (
-        <View style={styles.igStoreMetricText} />
+        <View style={[styles.igStoreMetricText, stretch && styles.igHomeStoreMetricText]} />
       ) : (
         <HomeLiveValue
-          style={[styles.igStoreMetricText, low ? styles.homeStorePhoneLow : styles.homeStorePhoneHigh]}
+          style={[
+            styles.igStoreMetricText,
+            stretch && styles.igHomeStoreMetricText,
+            low ? styles.homeStorePhoneLow : styles.homeStorePhoneHigh,
+          ]}
           numeric={stats.numeric ?? stats.rate}
           format={homeMetricFormat(stats)}
         >
@@ -4454,6 +4356,7 @@ const HomeStoreCard = memo(function HomeStoreCard({
   const closed = open === false;
   const cardStyle = [
     styles.igStoreCard,
+    !wide && !tile && styles.igHomeStoreCard,
     wide && styles.igStoreCardWide,
     tile && styles.igStoreTile,
     selected && styles.igStoreCardSelected,
@@ -4505,6 +4408,66 @@ const HomeStoreCard = memo(function HomeStoreCard({
         />
       ) : (
         <View style={styles.igStorePeopleSlot} />
+      )}
+    </View>
+  );
+  const stackedBody = (
+    <View style={[styles.igStoreBody, styles.igHomeStoreBody, !last && styles.igStoreBodyDivider]}>
+      <View style={styles.igHomeStoreMain}>
+        <View style={styles.igHomeStoreCopy}>
+          <Text style={styles.igHomeStoreName} numberOfLines={1}>
+            {row.store}
+          </Text>
+          {closed ? null : (
+            <HomeLiveValue style={styles.igHomeStoreMeta} numeric={focused.count} numberOfLines={1}>
+              {hasActivity
+                ? homeCountLabel(focused.count, amountFocus)
+                : amountFocus === 'sales'
+                  ? 'No sales'
+                  : amountFocus === 'purchases'
+                    ? 'No purchases'
+                    : 'No transactions'}
+            </HomeLiveValue>
+          )}
+        </View>
+        <View style={styles.igHomeStoreTrailing}>
+          {closed ? (
+            <Text style={styles.igHomeStoreClosed} numberOfLines={1}>
+              Closed
+            </Text>
+          ) : canOpen && showAmounts ? (
+            <HomeStoreAmount
+              amount={focused.amount}
+              count={focused.count}
+              breakdown={amountFocus === 'all' ? row : null}
+              compact
+            />
+          ) : null}
+          {!closed && people.length > 0 ? (
+            <HomePeopleStack
+              people={people}
+              compact
+              interactive={peopleInteractive}
+              onOpenPerson={onOpenPerson}
+            />
+          ) : null}
+        </View>
+        <View style={styles.igHomeStoreChevron}>
+          {canOpen ? <Ionicons name="chevron-forward" size={18} color="#c7c7cc" /> : null}
+        </View>
+      </View>
+      {closed ? null : (
+        <View
+          style={styles.igHomeStoreMetrics}
+          pointerEvents="none"
+          accessibilityElementsHidden={false}
+        >
+          <HomeStoreMetric icon="mail" stats={emailStats} label="Email capture" stretch />
+          <View style={styles.igHomeStoreMetricRule} />
+          <HomeStoreMetric icon="call" stats={phoneStats} label="Phone answer rate" stretch />
+          <View style={styles.igHomeStoreMetricRule} />
+          <HomeStoreMetric icon="star" stats={reviewStats} label="Reviews" stretch />
+        </View>
       )}
     </View>
   );
@@ -4568,31 +4531,22 @@ const HomeStoreCard = memo(function HomeStoreCard({
     return (
       <View style={[cardStyle, styles.igStoreCardStatic]} accessibilityLabel={`${row.store}, ${open ? 'open' : 'closed'}`}>
         <HomeStoreStatusIcon accent={accent} open={open} compact />
-        <View
-          style={[
-            styles.igStoreBody,
-            wide ? styles.igStoreBodyWide : styles.igStoreBodyStack,
-            !last && styles.igStoreBodyDivider,
-          ]}
-        >
-          {wide ? (
-            <>
-              {nameBlock}
-              {rateMetrics}
-              {trailingBlock}
-              <View style={styles.igStoreChevron} />
-            </>
-          ) : (
-            <>
-              <View style={styles.igStoreBodyMain}>
-                {nameBlock}
-                {trailingBlock}
-                <View style={styles.igStoreChevron} />
-              </View>
-              {rateMetrics}
-            </>
-          )}
-        </View>
+        {wide ? (
+          <View
+            style={[
+              styles.igStoreBody,
+              styles.igStoreBodyWide,
+              !last && styles.igStoreBodyDivider,
+            ]}
+          >
+            {nameBlock}
+            {rateMetrics}
+            {trailingBlock}
+            <View style={styles.igStoreChevron} />
+          </View>
+        ) : (
+          stackedBody
+        )}
       </View>
     );
   }
@@ -4615,31 +4569,22 @@ const HomeStoreCard = memo(function HomeStoreCard({
         compact
         onPress={() => onOpenStore(row)}
       />
-      <View
-        style={[
-          styles.igStoreBody,
-          wide ? styles.igStoreBodyWide : styles.igStoreBodyStack,
-          !last && styles.igStoreBodyDivider,
-        ]}
-      >
-        {wide ? (
-          <>
-            {nameBlock}
-            {rateMetrics}
-            {trailingBlock}
-            <Ionicons name="chevron-forward" size={18} color="#c7c7cc" style={styles.igStoreChevron} />
-          </>
-        ) : (
-          <>
-            <View style={styles.igStoreBodyMain}>
-              {nameBlock}
-              {trailingBlock}
-              <Ionicons name="chevron-forward" size={18} color="#c7c7cc" style={styles.igStoreChevron} />
-            </View>
-            {rateMetrics}
-          </>
-        )}
-      </View>
+      {wide ? (
+        <View
+          style={[
+            styles.igStoreBody,
+            styles.igStoreBodyWide,
+            !last && styles.igStoreBodyDivider,
+          ]}
+        >
+          {nameBlock}
+          {rateMetrics}
+          {trailingBlock}
+          <Ionicons name="chevron-forward" size={18} color="#c7c7cc" style={styles.igStoreChevron} />
+        </View>
+      ) : (
+        stackedBody
+      )}
     </Pressable>
   );
 });
@@ -5698,14 +5643,14 @@ function HomeScreen({
       styles.igHomeContentInset,
       styles.igHomeTableInset,
       isMobile
-        ? { paddingHorizontal: pagePad }
+        ? { paddingHorizontal: 0 }
         : {
             ...homeDesktopPad,
             width: '100%',
             ...(tableMaxWidth ? { maxWidth: tableMaxWidth } : null),
           },
     ],
-    [homeDesktopPad, isMobile, pagePad, tableMaxWidth],
+    [homeDesktopPad, isMobile, tableMaxWidth],
   );
   const tabBarScroll = useMobileTabBarScrollProps();
   const { canFilter, hasApp } = useAppAccess();
@@ -5716,7 +5661,10 @@ function HomeScreen({
   const [stageHeight, setStageHeight] = useState(0);
   const [storeAppsOpen, setStoreAppsOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [filterAnchor, setFilterAnchor] = useState({ top: 90, right: 16 });
+  const [filterAnchor, setFilterAnchor] = useState({
+    top: HOME_TOP_FILTER_SIZE + MOBILE_FILTER_INSET,
+    right: MOBILE_FILTER_INSET,
+  });
   const allowHomeFilters = canFilter('home');
   const dateRestricted = isRestrictedHomeEmployee(session?.profile);
   const assignedStore = allocatedStoreName(session?.profile);
@@ -6169,12 +6117,13 @@ function HomeScreen({
             </View>
           ) : (
             <View style={styles.igHomeHeroPrimary}>
-              <View
-                style={[
-                  styles.igHomeHeroMetricBlock,
-                  !isMobile && styles.igHomeHeroMetricBlockDesktop,
-                ]}
-              >
+                <View
+                  style={[
+                    styles.igHomeHeroMetricBlock,
+                    isMobile && styles.igHomeHeroMetricBlockMobile,
+                    !isMobile && styles.igHomeHeroMetricBlockDesktop,
+                  ]}
+                >
                 <View style={styles.igHomeHeroMetricMain}>
                   <View style={styles.igHomeHeroAmountRow}>
                     <View style={styles.igHomeHeroAmountSlot}>
@@ -6269,7 +6218,9 @@ function HomeScreen({
                 />
               </View>
             </View>
-            <View style={styles.igHomeHeroContentCol}>{heroInset}</View>
+            <View style={[styles.igHomeHeroContentCol, isMobile && styles.igHomeHeroContentColMobile]}>
+              {heroInset}
+            </View>
           </View>
         ) : (
           heroInset
@@ -6284,41 +6235,29 @@ function HomeScreen({
         ref={homeRootRef}
         style={[styles.toolsScreen, styles.canvasFill, styles.igHomeScreen, !isMobile && styles.igHomeDesktopFeed]}
       >
-      {!selectedStore ? (
-        <View
-          pointerEvents="box-none"
-          style={[homeContentInset, styles.igHomeChromeShell, isMobile && styles.igHomeChromeShellMobile]}
-        >
-          <View
-            style={[
-              styles.igHomeChromeRow,
-              isMobile ? styles.igHomeChromeRowMobile : styles.igHomeChromeRowDesktop,
-            ]}
-          >
-            <View
-              style={[
-                styles.igHomeChromeControls,
-                styles.igHomeChromeControlsFull,
-                isMobile && styles.igHomeChromeControlsMobile,
-              ]}
-            >
+      {!selectedStore && !isMobile ? (
+        <View pointerEvents="box-none" style={[homeContentInset, styles.igHomeChromeShell]}>
+          <View style={[styles.igHomeChromeRow, styles.igHomeChromeRowDesktop]}>
+            <View style={[styles.igHomeChromeControls, styles.igHomeChromeControlsFull]}>
               {searchField}
               {datePicker}
             </View>
-            {isMobile ? (
-              <HomeFilterCircle
-                buttonRef={filterButtonRef}
-                large
-                chrome
-                size={HOME_TOP_FILTER_SIZE}
-                active={filtersOpen || filtersActive}
-                onLayout={placeFilterMenu}
-                onPress={pressHomeFilter}
-                accessibilityLabel="Quick actions"
-                accessibilityState={{ expanded: filtersOpen }}
-              />
-            ) : null}
           </View>
+        </View>
+      ) : null}
+      {isMobile && !selectedStore ? (
+        <View pointerEvents="box-none" style={styles.igHomeFilterDock}>
+          <HomeFilterCircle
+            buttonRef={filterButtonRef}
+            large
+            chrome
+            size={HOME_TOP_FILTER_SIZE}
+            active={filtersOpen || filtersActive}
+            onLayout={placeFilterMenu}
+            onPress={pressHomeFilter}
+            accessibilityLabel="Home filters"
+            accessibilityState={{ expanded: filtersOpen }}
+          />
         </View>
       ) : null}
       <View
@@ -6335,7 +6274,7 @@ function HomeScreen({
           styles.igHomeScrollContent,
           {
             flexGrow: 1,
-            paddingTop: isMobile ? 8 : 4,
+            paddingTop: isMobile ? HOME_TOP_FILTER_SIZE + MOBILE_FILTER_INSET : 4,
             paddingBottom: isMobile ? mobileTabBarReserve() + 8 : 24,
           },
         ]}
@@ -6353,6 +6292,7 @@ function HomeScreen({
             <View
               style={[
                 styles.igHomePinnedTop,
+                isMobile && styles.igHomePinnedTopMobile,
                 !isMobile && styles.igHomePinnedTopDesktop,
               ]}
             >
@@ -6382,26 +6322,27 @@ function HomeScreen({
                 styles.toolsSectionMobile,
                 styles.igHomeSection,
                 styles.igHomeTableSection,
+                isMobile && styles.igHomeTableSectionMobile,
                 !isMobile && styles.igHomeDesktopSheet,
-                {
-                  ...(stageHeight > 0 ? { minHeight: stageHeight } : null),
-                },
+                stageHeight > 0 ? { minHeight: stageHeight } : null,
               ]}
             >
-              <HomeStoresTable
-                rows={listedRows}
-                selectedStore={selectedStore}
-                totals={null}
-                staff={staff}
-                startKey={startKey}
-                endKey={endKey}
-                onOpenStore={openStore}
-                onOpenPerson={onOpenPerson}
-                compact={isMobile}
-                showAmounts={!hideHomeAmounts}
-                canOpenStore={canOpenHomeStore}
-                amountFocus={heroFocus}
-              />
+              {visibleRows.length > 0 ? (
+                <HomeStoresTable
+                  rows={listedRows}
+                  selectedStore={selectedStore}
+                  totals={null}
+                  staff={staff}
+                  startKey={startKey}
+                  endKey={endKey}
+                  onOpenStore={openStore}
+                  onOpenPerson={onOpenPerson}
+                  compact={isMobile}
+                  showAmounts={!hideHomeAmounts}
+                  canOpenStore={canOpenHomeStore}
+                  amountFocus={heroFocus}
+                />
+              ) : null}
             </View>
           </View>
         ) : null}
@@ -6409,29 +6350,29 @@ function HomeScreen({
       </View>
 
       {isMobile && selectedStore ? (
-        <>
+        <HomeFilterCircle
+          large
+          chrome
+          size={HOME_TOP_FILTER_SIZE}
+          onPress={closeStore}
+          style={styles.igHomeBackDock}
+          accessibilityLabel="Back to Home"
+        >
+          <Ionicons name="chevron-back" size={22} color={TAB_INK} />
+        </HomeFilterCircle>
+      ) : null}
+      {isMobile && selectedStore ? (
+        <View pointerEvents="box-none" style={styles.igHomeFilterDock}>
           <HomeFilterCircle
             large
             chrome
             size={HOME_TOP_FILTER_SIZE}
-            onPress={closeStore}
-            style={styles.igHomeBackDock}
-            accessibilityLabel="Back to Home"
-          >
-            <Ionicons name="chevron-back" size={22} color={TAB_INK} />
-          </HomeFilterCircle>
-          <View pointerEvents="box-none" style={styles.igHomeFilterDock}>
-            <HomeFilterCircle
-              large
-              chrome
-              size={HOME_TOP_FILTER_SIZE}
-              active={storeAppsOpen}
-              onPress={() => setStoreAppsOpen((open) => !open)}
-              accessibilityLabel={`${selectedStore.store} apps`}
-              accessibilityState={{ expanded: storeAppsOpen }}
-            />
-          </View>
-        </>
+            active={storeAppsOpen}
+            onPress={() => setStoreAppsOpen((open) => !open)}
+            accessibilityLabel={`${selectedStore.store} apps`}
+            accessibilityState={{ expanded: storeAppsOpen }}
+          />
+        </View>
       ) : null}
 
       {isMobile && !selectedStore && filtersOpen ? (
@@ -6440,9 +6381,15 @@ function HomeScreen({
           <View
             style={[
               styles.igHomeFilterCard,
+              styles.igHomeFiltersCard,
               { top: filterAnchor.top, right: filterAnchor.right },
             ]}
           >
+            <Text style={styles.igFilterLabel}>Search</Text>
+            {searchField}
+            <Text style={styles.igFilterLabel}>Date</Text>
+            {datePicker}
+            <View style={styles.igFilterDivider} />
             <Pressable
               onPress={() => {
                 closeFilters();
@@ -6471,15 +6418,6 @@ function HomeScreen({
               </View>
               <Text style={styles.igFilterActionLabel}>Sell</Text>
             </Pressable>
-            {!isMobile ? (
-              <>
-                <View style={styles.igFilterDivider} />
-                <Text style={styles.igFilterLabel}>Search</Text>
-                {searchField}
-                <Text style={styles.igFilterLabel}>Filter</Text>
-                {datePicker}
-              </>
-            ) : null}
           </View>
         </View>
       ) : null}
@@ -10961,20 +10899,20 @@ const styles = StyleSheet.create({
     zIndex: 18,
   },
   storeAppsCardDocked: {
-    top: 6 + HOME_TOP_FILTER_SIZE + 8,
-    right: 22,
+    top: 8 + HOME_TOP_FILTER_SIZE + 8,
+    right: MOBILE_FILTER_INSET,
   },
   storeAppsCard: {
     position: 'absolute',
     right: HOME_FILTER_RIGHT,
-    width: 260,
-    maxWidth: '78%',
+    width: 308,
+    maxWidth: '92%',
     backgroundColor: '#fff',
-    borderRadius: 14,
-    paddingVertical: 6,
-    paddingHorizontal: 8,
+    borderRadius: 12,
+    padding: 12,
+    gap: 10,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(60,60,67,0.16)',
+    borderColor: TAB_BORDER,
     ...Platform.select({
       web: { boxShadow: '0 10px 32px rgba(0,0,0,0.16)' },
       default: {
@@ -10994,6 +10932,10 @@ const styles = StyleSheet.create({
   },
   storeAppsRowPressed: {
     backgroundColor: 'rgba(60,60,67,0.08)',
+  },
+  storeAppsLabel: {
+    flex: 1,
+    minWidth: 0,
   },
   storeAppsLabelSelected: {
     color: '#1a1a1a',
@@ -12907,6 +12849,10 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: TAB_BORDER,
   },
+  igHomeFiltersCard: {
+    width: 308,
+    borderRadius: 12,
+  },
   igFilterAction: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -13291,6 +13237,11 @@ const styles = StyleSheet.create({
   igHomeHeroMetricBlockDesktop: {
     gap: 18,
   },
+  igHomeHeroMetricBlockMobile: {
+    alignSelf: 'stretch',
+    width: '100%',
+    justifyContent: 'space-between',
+  },
   igHomeHeroMetricMain: {
     flexShrink: 0,
     alignSelf: 'flex-start',
@@ -13345,16 +13296,20 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
     marginBottom: 0,
   },
+  igHomePinnedTopMobile: {
+    paddingTop: 4,
+    paddingBottom: 12,
+  },
   igHomeFilterDock: {
     position: 'absolute',
     top: 8,
-    right: 16,
+    right: MOBILE_FILTER_INSET,
     zIndex: 24,
   },
   igHomeBackDock: {
     position: 'absolute',
     top: 8,
-    left: 16,
+    left: MOBILE_FILTER_INSET,
     zIndex: 24,
   },
   igHomeHeroShell: {
@@ -13380,16 +13335,22 @@ const styles = StyleSheet.create({
   },
   igHomeHeroAnalyticsLinkMobile: {
     alignSelf: 'stretch',
-    paddingVertical: 4,
+    width: '100%',
+    paddingVertical: 2,
     paddingHorizontal: 0,
     marginHorizontal: 0,
   },
   igHomeHeroWithIconColMobile: {
-    gap: 10,
+    gap: 0,
+    alignItems: 'flex-start',
   },
   igHomeHeroIconColMobile: {
-    width: 48,
-    paddingTop: 2,
+    marginLeft: 0,
+    width: HOME_STORE_ICON_COL_WIDTH,
+    paddingTop: 0,
+  },
+  igHomeHeroContentColMobile: {
+    marginLeft: HOME_STORE_BODY_LEADING,
   },
   igHomeHeroAnalyticsLinkActive: {
     backgroundColor: '#f2f2f7',
@@ -13565,12 +13526,106 @@ const styles = StyleSheet.create({
     paddingHorizontal: 0,
     marginTop: 12,
   },
+  igHomeTableSectionMobile: {
+    marginTop: 8,
+  },
   igStoreList: {
     backgroundColor: '#fff',
     borderRadius: 0,
     overflow: 'hidden',
     width: '100%',
     alignSelf: 'stretch',
+  },
+  igHomeStoreCard: {
+    alignItems: 'flex-start',
+    gap: HOME_STORE_BODY_LEADING,
+    minHeight: 72,
+    paddingLeft: MOBILE_FILTER_INSET,
+    paddingTop: 12,
+    paddingBottom: 12,
+  },
+  igHomeStoreBody: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 12,
+    paddingVertical: 0,
+    paddingRight: MOBILE_FILTER_INSET,
+  },
+  igHomeStoreMain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minWidth: 0,
+    width: '100%',
+  },
+  igHomeStoreCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  igHomeStoreName: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '600',
+    color: MOBILE.label,
+    letterSpacing: -0.2,
+  },
+  igHomeStoreMeta: {
+    fontFamily,
+    fontSize: 13,
+    color: MOBILE.secondary,
+    letterSpacing: 0,
+  },
+  igHomeStoreTrailing: {
+    width: 108,
+    maxWidth: '46%',
+    flexShrink: 0,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  igHomeStoreClosed: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: MOBILE.secondary,
+    letterSpacing: -0.1,
+  },
+  igHomeStoreChevron: {
+    width: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  igHomeStoreMetrics: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 0,
+    paddingVertical: 3,
+    paddingHorizontal: 2,
+    borderRadius: 999,
+    backgroundColor: MOBILE.bg,
+    overflow: 'hidden',
+  },
+  igHomeStoreMetric: {
+    flexGrow: 0,
+    flexShrink: 0,
+    width: 'auto',
+    minWidth: 0,
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  igHomeStoreMetricRule: {
+    width: StyleSheet.hairlineWidth,
+    height: 12,
+    backgroundColor: MOBILE.separator,
+  },
+  igHomeStoreMetricText: {
+    width: undefined,
+    flexShrink: 1,
+    minWidth: 0,
   },
   igStoreCard: {
     position: 'relative',

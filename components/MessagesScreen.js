@@ -47,10 +47,23 @@ import {
   toggleDmLike,
   unhideDmConversation,
 } from '../lib/messages';
+import {
+  AGENT_CONVERSATION_TITLE,
+  agentReceivedCopy,
+  createAgentRequest,
+  emptyAgentThread,
+  forwardAgentRequest,
+  groupAgentConversations,
+  listAgentRequests,
+  newAgentConversationId,
+  requestStatusLine,
+  subscribeAgentRequests,
+} from '../lib/agentRequests';
 import { fetchAureusEmployee } from '../lib/aureusEmployees';
 import { prepareAiChatSession, sendAiChatMessage, titleAiChat } from '../lib/aiChat';
 import { OPENROUTER_MODELS } from '../lib/openrouter';
 import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
+import { useLiveRefresh } from '../lib/liveRefresh';
 import { CANVAS, mobileSafeBottom } from '../lib/mobileUi';
 import { listStaffProfiles, useAppAccess } from '../lib/permissions';
 import ProfilePhotoModal from './ProfilePhotoModal';
@@ -65,6 +78,7 @@ const fontFamily = Platform.select({
 
 const BLUE = '#0A84FF';
 const AI_PURPLE = '#6B4DE6';
+const AGENT_TEAL = '#0F766E';
 const INBOX_WIDTH = 340;
 const MOBILE_BREAKPOINT = 768;
 const AI_MODEL =
@@ -259,6 +273,23 @@ function ComposeIcon({ size = 24, color = '#1d1d1f' }) {
 }
 
 function ConversationAvatar({ conversation, size = 52 }) {
+  if (conversation?.isAgent) {
+    return (
+      <View
+        style={[
+          styles.avatar,
+          {
+            width: size,
+            height: size,
+            borderRadius: size / 2,
+            backgroundColor: AGENT_TEAL,
+          },
+        ]}
+      >
+        <Ionicons name="construct" size={Math.max(16, Math.round(size * 0.42))} color="#fff" />
+      </View>
+    );
+  }
   if (conversation?.isAi) {
     return (
       <View
@@ -454,6 +485,13 @@ function AppleSend({ active, onSettled, children }) {
   );
 }
 
+function deliveryLabel(state) {
+  if (state === 'sending') return 'Sending';
+  if (state === 'sent') return 'Sent';
+  if (state === 'received') return 'Received';
+  return '';
+}
+
 function MessageBubble({
   message,
   mine,
@@ -466,6 +504,7 @@ function MessageBubble({
   onToggleLike,
   onDeleteForMe,
   onSendSettled,
+  actionsDisabled = false,
 }) {
   const lastTap = useRef(0);
   const [burst, setBurst] = useState(0);
@@ -477,9 +516,11 @@ function MessageBubble({
     borderTopRightRadius: mine && groupedWithPrev ? 6 : radius,
     borderBottomRightRadius: mine && groupedWithNext ? 6 : radius,
   };
-  const showMore = Platform.OS === 'web' && (hovered || menuOpen);
+  const showMore = !actionsDisabled && Platform.OS === 'web' && (hovered || menuOpen);
+  const status = mine && !groupedWithNext ? deliveryLabel(message.deliveryState) : '';
 
   const handlePress = () => {
+    if (actionsDisabled) return;
     if (menuOpen) {
       onCloseMenu();
       return;
@@ -495,6 +536,7 @@ function MessageBubble({
   };
 
   const openMenu = (event) => {
+    if (actionsDisabled) return;
     event?.preventDefault?.();
     event?.stopPropagation?.();
     onOpenMenu(message);
@@ -565,6 +607,11 @@ function MessageBubble({
             ]}
           >
             <MessageBody body={message.body} mine={mine} />
+            {mine && message.requestStatusLine ? (
+              <Text style={[styles.requestStatusInBubble, mine && styles.requestStatusInBubbleMine]}>
+                {message.requestStatusLine}
+              </Text>
+            ) : null}
             <HeartBurst trigger={burst} />
           </Pressable>
           {showMore ? (
@@ -588,6 +635,7 @@ function MessageBubble({
           </Text>
         </View>
       ) : null}
+      {status ? <Text style={styles.deliveryState}>{status}</Text> : null}
     </View>
     </AppleSend>
   );
@@ -678,6 +726,8 @@ export default function MessagesScreen({
     [session?.profile?.firstName, session?.profile?.lastName].filter(Boolean).join(' ') ||
     'You';
   const [inbox, setInbox] = useState([]);
+  const [agentInbox, setAgentInbox] = useState([]);
+  const [agentMessages, setAgentMessages] = useState({});
   const [contacts, setContacts] = useState([]);
   const [query, setQuery] = useState('');
   const [composeOpen, setComposeOpen] = useState(false);
@@ -708,7 +758,11 @@ export default function MessagesScreen({
   const activeIdRef = useRef(null);
   const titledAiRef = useRef(new Set());
   const inboxRef = useRef(inbox);
+  const agentInboxRef = useRef(agentInbox);
+  const agentMessagesRef = useRef(agentMessages);
   inboxRef.current = inbox;
+  agentInboxRef.current = agentInbox;
+  agentMessagesRef.current = agentMessages;
   activeIdRef.current = activeId;
   draftRef.current = draft;
   const onUnreadChangeRef = useRef(onUnreadChange);
@@ -716,6 +770,7 @@ export default function MessagesScreen({
   const onConversationOpenChangeRef = useRef(onConversationOpenChange);
   onConversationOpenChangeRef.current = onConversationOpenChange;
   const refreshInboxRef = useRef(async () => []);
+  const refreshAgentRequestsRef = useRef(async () => {});
 
   useEffect(() => {
     onConversationOpenChangeRef.current?.(Boolean(isMobile && activeId));
@@ -725,7 +780,28 @@ export default function MessagesScreen({
     return () => onConversationOpenChangeRef.current?.(false);
   }, []);
 
-  const activeThread = inbox.find((row) => row.conversationId === activeId) || null;
+  const mergedInbox = useMemo(() => {
+    const seen = new Set();
+    const rows = [];
+    agentInbox.forEach((row) => {
+      if (!row?.conversationId || seen.has(row.conversationId)) return;
+      seen.add(row.conversationId);
+      rows.push(row);
+    });
+    inbox.forEach((row) => {
+      if (!row?.conversationId || seen.has(row.conversationId) || row.isAgent) return;
+      seen.add(row.conversationId);
+      rows.push(row);
+    });
+    rows.sort((left, right) => {
+      const a = left.lastMessageAt ? new Date(left.lastMessageAt).getTime() : left.isAgent ? Date.now() : 0;
+      const b = right.lastMessageAt ? new Date(right.lastMessageAt).getTime() : right.isAgent ? Date.now() : 0;
+      return b - a;
+    });
+    return rows;
+  }, [agentInbox, inbox]);
+
+  const activeThread = mergedInbox.find((row) => row.conversationId === activeId) || null;
 
   const refreshInbox = useCallback(async () => {
     try {
@@ -761,6 +837,13 @@ export default function MessagesScreen({
       setMenuMessageId(null);
       setQuery('');
       setTitleDraft('');
+      const agentThread = agentInboxRef.current.find((row) => row.conversationId === conversationId);
+      if (agentThread) {
+        setMessages(agentMessagesRef.current[conversationId] || []);
+        setLoadingThread(false);
+        void refreshAgentRequestsRef.current();
+        return;
+      }
       if (!skipLoad) setLoadingThread(true);
       try {
         if (!inboxRef.current.some((row) => row.conversationId === conversationId)) {
@@ -827,7 +910,7 @@ export default function MessagesScreen({
   };
 
   const handleCallThread = async () => {
-    if (activeThread?.isAi || activeThread?.isGroup) {
+    if (activeThread?.isAi || activeThread?.isAgent || activeThread?.isGroup) {
       setError('Call a person from their profile.');
       return;
     }
@@ -1021,12 +1104,12 @@ export default function MessagesScreen({
 
   const filteredInbox = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q || composeOpen) return inbox;
-    return inbox.filter((row) => {
+    if (!q || composeOpen) return mergedInbox;
+    return mergedInbox.filter((row) => {
       const hay = `${conversationTitle(row)} ${(row.members || []).map(contactName).join(' ')} ${row.lastMessagePreview}`.toLowerCase();
       return hay.includes(q);
     });
-  }, [composeOpen, inbox, query]);
+  }, [composeOpen, mergedInbox, query]);
 
   const filteredPeople = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -1094,6 +1177,15 @@ export default function MessagesScreen({
       setActiveId(null);
       setMessages([]);
     }
+    if (thread?.isAgent) {
+      setAgentInbox((current) => current.filter((row) => row.conversationId !== conversationId));
+      setAgentMessages((current) => {
+        const next = { ...current };
+        delete next[conversationId];
+        return next;
+      });
+      return;
+    }
     setInbox((current) => current.filter((row) => row.conversationId !== conversationId));
     try {
       await hideDmConversation(conversationId);
@@ -1128,6 +1220,106 @@ export default function MessagesScreen({
       tension: 180,
       useNativeDriver: true,
     }).start();
+    if (activeThread?.isAgent) {
+      const conversationId = activeId;
+      setDraft('');
+      setEmojiOpen(false);
+      setSending(true);
+      setMessages((current) => [
+        ...current,
+        {
+          id: tempId,
+          localKey,
+          justSent: true,
+          conversationId,
+          senderId: myId,
+          body: text,
+          createdAt: new Date().toISOString(),
+          likedByMe: false,
+          likeCount: 0,
+          isAssistant: false,
+          deliveryState: 'sending',
+          pending: true,
+        },
+      ]);
+      try {
+        const saved = await createAgentRequest({
+          conversationId,
+          body: text,
+          senderId: myId,
+        });
+        const sentAt = saved.createdAt || new Date().toISOString();
+        const sentMessage = {
+          id: saved.id,
+          localKey,
+          justSent: true,
+          conversationId,
+          senderId: saved.senderId || myId,
+          body: saved.body || text,
+          createdAt: sentAt,
+          likedByMe: false,
+          likeCount: 0,
+          isAssistant: false,
+          deliveryState: 'sent',
+          requestStatus: saved.status,
+          approvalState: saved.approvalState,
+          approvalReason: saved.approvalReason,
+          requestStatusLine: requestStatusLine(saved),
+        };
+        setMessages((current) => mergeSentMessage(current, localKey, tempId, sentMessage));
+        await forwardAgentRequest(saved);
+        const receivedMessage = { ...sentMessage, deliveryState: 'received' };
+        const ack = {
+          id: `${saved.id}-ack`,
+          conversationId,
+          senderId: null,
+          body: agentReceivedCopy(saved),
+          createdAt: sentAt,
+          likedByMe: false,
+          likeCount: 0,
+          isAssistant: true,
+          isAgentAck: true,
+          deliveryState: 'received',
+          requestStatus: saved.status,
+          approvalState: saved.approvalState,
+        };
+        setMessages((current) => {
+          const next = mergeSentMessage(current, localKey, tempId, receivedMessage);
+          if (next.some((item) => item.id === ack.id)) return next;
+          return [...next, ack];
+        });
+        setAgentMessages((current) => {
+          const existing = (current[conversationId] || []).filter(
+            (item) => item.id !== tempId && item.localKey !== localKey && item.id !== saved.id && item.id !== ack.id,
+          );
+          return {
+            ...current,
+            [conversationId]: [...existing, receivedMessage, ack],
+          };
+        });
+        setAgentInbox((current) =>
+          current.map((row) =>
+            row.conversationId === conversationId
+              ? {
+                  ...row,
+                  title: row.title || AGENT_CONVERSATION_TITLE,
+                  lastMessagePreview: saved.body || text,
+                  lastMessageAt: sentAt,
+                  lastMessageSenderId: saved.senderId || myId,
+                }
+              : row,
+          ),
+        );
+      } catch (err) {
+        setMessages((current) => current.filter((item) => item.id !== tempId));
+        setDraft(text);
+        setError(err.message || 'Could not send that request.');
+      } finally {
+        sendingRef.current = false;
+        setSending(false);
+      }
+      return;
+    }
     if (activeThread?.isAi) {
       const conversationId = activeId;
       const threadTitle = activeThread.title;
@@ -1341,6 +1533,81 @@ export default function MessagesScreen({
     }
   }, [openConversation, refreshInbox]);
 
+  const openAgentConversation = useCallback(() => {
+    const conversationId = newAgentConversationId();
+    const thread = emptyAgentThread(conversationId);
+    setAgentInbox((current) => [thread, ...current.filter((row) => row.conversationId !== conversationId)]);
+    setAgentMessages((current) => ({ ...current, [conversationId]: [] }));
+    setComposeOpen(false);
+    setSelectedIds([]);
+    setGroupName('');
+    setQuery('');
+    setError('');
+    setMessages([]);
+    setActiveId(conversationId);
+    setEmojiOpen(false);
+    setDetailsOpen(false);
+    setAddingMembers(false);
+    setTypingByUser({});
+    setMenuMessageId(null);
+    setLoadingThread(false);
+  }, []);
+
+  const applyAgentSnapshot = useCallback((grouped) => {
+    setAgentInbox((current) => {
+      const persisted = new Set(grouped.inbox.map((row) => row.conversationId));
+      const locals = current.filter((row) => row.isAgent && !persisted.has(row.conversationId));
+      return [...grouped.inbox, ...locals];
+    });
+    setAgentMessages((current) => {
+      const next = { ...grouped.messages };
+      Object.keys(current).forEach((id) => {
+        const local = current[id] || [];
+        const server = next[id];
+        if (!server) {
+          next[id] = local;
+          return;
+        }
+        const seen = new Set(server.map((item) => item.id));
+        const extras = local.filter((item) => !seen.has(item.id));
+        next[id] = extras.length ? [...server, ...extras] : server;
+      });
+      return next;
+    });
+    const openId = activeIdRef.current;
+    if (openId && grouped.messages[openId]) {
+      setMessages((current) => {
+        const seen = new Set(grouped.messages[openId].map((item) => item.id));
+        const extras = current.filter((item) => !seen.has(item.id));
+        return extras.length ? [...grouped.messages[openId], ...extras] : grouped.messages[openId];
+      });
+    }
+  }, []);
+
+  const refreshAgentRequests = useCallback(async () => {
+    try {
+      const rows = await listAgentRequests();
+      applyAgentSnapshot(groupAgentConversations(rows, myId));
+    } catch {
+      // Table is not on the live project until this migration is applied.
+    }
+  }, [applyAgentSnapshot, myId]);
+
+  useEffect(() => {
+    void refreshAgentRequests();
+  }, [refreshAgentRequests]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeAgentRequests(() => {
+      void refreshAgentRequests();
+    });
+    return unsubscribe;
+  }, [refreshAgentRequests]);
+
+  refreshAgentRequestsRef.current = refreshAgentRequests;
+
+  useLiveRefresh(refreshAgentRequests, 20_000, Boolean(myId));
+
   const threadLive = Boolean(activeId && activeThread);
   const memberIds = new Set((activeThread?.members || []).map((person) => person.id));
   const addablePeople = peopleIndex.filter((person) => !memberIds.has(person.id));
@@ -1438,7 +1705,7 @@ export default function MessagesScreen({
       );
     }
 
-    if (loadingInbox && inbox.length === 0) {
+    if (loadingInbox && mergedInbox.length === 0) {
       return (
         <View style={[styles.inboxCentered, isMobile && styles.inboxCenteredMobile]}>
           <ActivityIndicator color="#1d1d1f" />
@@ -1460,7 +1727,9 @@ export default function MessagesScreen({
       const selected = row.conversationId === activeId;
       const unread = row.unreadCount > 0;
       const senderName = row.lastMessageIsAssistant
-        ? 'MyCanadaGold AI'
+        ? row.isAgent
+          ? AGENT_CONVERSATION_TITLE
+          : 'MyCanadaGold AI'
         : row.lastMessageSenderId === myId
           ? 'You'
           : firstNameOf((row.members || []).find((person) => person.id === row.lastMessageSenderId));
@@ -1468,7 +1737,9 @@ export default function MessagesScreen({
         ? row.isGroup || row.lastMessageSenderId === myId
           ? `${senderName}: ${row.lastMessagePreview}`
           : row.lastMessagePreview
-        : row.isAi
+        : row.isAgent
+          ? 'New conversation'
+          : row.isAi
           ? 'New AI chat'
           : row.isTeam
           ? 'New team chat'
@@ -1534,7 +1805,7 @@ export default function MessagesScreen({
     <View style={isMobile ? styles.searchWrap : styles.chromeSearchChip}>
       {isMobile ? (
         <>
-          <Ionicons name="search" size={15} color="#8e8e93" />
+          <Ionicons name="search" size={16} color="#8e8e93" />
           <TextInput
             style={styles.searchInput}
             value={query}
@@ -1543,10 +1814,12 @@ export default function MessagesScreen({
             placeholderTextColor="#8e8e93"
             autoCapitalize="none"
             autoCorrect={false}
+            clearButtonMode="while-editing"
+            returnKeyType="search"
           />
           {query ? (
-            <Pressable onPress={() => setQuery('')} hitSlop={8}>
-              <Ionicons name="close-circle" size={16} color="#c7c7cc" />
+            <Pressable onPress={() => setQuery('')} hitSlop={8} accessibilityLabel="Clear search">
+              <Ionicons name="close-circle" size={18} color="#c7c7cc" />
             </Pressable>
           ) : null}
         </>
@@ -1630,9 +1903,6 @@ export default function MessagesScreen({
           />
         </View>
       ) : null}
-      {isMobile ? (
-        <View style={styles.searchToolbarMobile}>{searchField}</View>
-      ) : null}
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
     </>
   );
@@ -1644,12 +1914,13 @@ export default function MessagesScreen({
         styles.inboxListContent,
         isMobile && {
           flexGrow: 1,
-          paddingTop: 56,
+          paddingTop: 8,
           paddingBottom: mobileTabBarReserve() + 16,
         },
         !isMobile && { flexGrow: 1, paddingTop: 8 },
       ]}
       keyboardShouldPersistTaps="handled"
+      keyboardDismissMode={isMobile ? 'on-drag' : undefined}
       showsVerticalScrollIndicator={false}
       {...(isMobile ? tabBarScroll : null)}
     >
@@ -1665,42 +1936,23 @@ export default function MessagesScreen({
     >
       {showInbox ? (
         <View style={[styles.inbox, isMobile && styles.inboxMobile, !isMobile && styles.inboxDesktop]}>
-          {!isMobile ? (
-            <View pointerEvents="box-none" style={styles.chromeRow}>
-              <View style={styles.chromeTitle} accessibilityRole="image" accessibilityLabel="Direct Messages">
-                <Ionicons name="chatbubbles" size={22} color="#6B5E3A" />
-              </View>
+          {isMobile ? (
+            <View pointerEvents="box-none" style={styles.chromeRowMobile}>
               {searchField}
               <Pressable
-                onPress={() => {
-                  setComposeOpen((current) => !current);
-                  setSelectedIds([]);
-                  setGroupName('');
-                  setQuery('');
-                }}
-                style={styles.chromeCompose}
-                accessibilityLabel={composeOpen ? 'Close compose' : 'Start a conversation'}
+                onPress={openAgentConversation}
+                style={styles.chromeCircle}
+                accessibilityLabel="Message the agent"
               >
                 <BlurView
                   intensity={32}
                   tint="light"
-                  style={styles.chromeComposeBlur}
-                  {...(Platform.OS === 'web' ? { className: 'cgold-home-chip-blur' } : null)}
+                  style={styles.chromeCircleBlur}
+                  {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-bar' } : null)}
                 >
-                  {composeOpen ? (
-                    <Ionicons name="close" size={18} color="#1d1d1f" />
-                  ) : (
-                    <ComposeIcon size={18} color="#1d1d1f" />
-                  )}
+                  <Ionicons name="construct-outline" size={22} color="#1d1d1f" />
                 </BlurView>
               </Pressable>
-            </View>
-          ) : null}
-          <View style={styles.stage}>
-            {inboxList}
-          </View>
-          {isMobile ? (
-            <View pointerEvents="box-none" style={styles.filterDock}>
               <Pressable
                 onPress={() => {
                   setComposeOpen((current) => !current);
@@ -1726,7 +1978,54 @@ export default function MessagesScreen({
                 </BlurView>
               </Pressable>
             </View>
-          ) : null}
+          ) : (
+            <View pointerEvents="box-none" style={styles.chromeRow}>
+              <View style={styles.chromeTitle} accessibilityRole="image" accessibilityLabel="Direct Messages">
+                <Ionicons name="chatbubbles" size={22} color="#6B5E3A" />
+              </View>
+              {searchField}
+              <Pressable
+                onPress={openAgentConversation}
+                style={styles.chromeCompose}
+                accessibilityLabel="Message the agent"
+              >
+                <BlurView
+                  intensity={32}
+                  tint="light"
+                  style={styles.chromeComposeBlur}
+                  {...(Platform.OS === 'web' ? { className: 'cgold-home-chip-blur' } : null)}
+                >
+                  <Ionicons name="construct-outline" size={18} color="#1d1d1f" />
+                </BlurView>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  setComposeOpen((current) => !current);
+                  setSelectedIds([]);
+                  setGroupName('');
+                  setQuery('');
+                }}
+                style={styles.chromeCompose}
+                accessibilityLabel={composeOpen ? 'Close compose' : 'Start a conversation'}
+              >
+                <BlurView
+                  intensity={32}
+                  tint="light"
+                  style={styles.chromeComposeBlur}
+                  {...(Platform.OS === 'web' ? { className: 'cgold-home-chip-blur' } : null)}
+                >
+                  {composeOpen ? (
+                    <Ionicons name="close" size={18} color="#1d1d1f" />
+                  ) : (
+                    <ComposeIcon size={18} color="#1d1d1f" />
+                  )}
+                </BlurView>
+              </Pressable>
+            </View>
+          )}
+          <View style={styles.stage}>
+            {inboxList}
+          </View>
         </View>
       ) : null}
 
@@ -1760,7 +2059,7 @@ export default function MessagesScreen({
                 <View style={styles.threadHeaderMain}>
                   <Pressable
                     onPress={() => {
-                      if (activeThread.isGroup || activeThread.isAi) {
+                      if (activeThread.isGroup || activeThread.isAi || activeThread.isAgent) {
                         setTitleDraft(activeThread.title || '');
                         setDetailsOpen(true);
                         setAddingMembers(false);
@@ -1769,7 +2068,9 @@ export default function MessagesScreen({
                       if (activeThread.other) handleOpenProfile(activeThread.other);
                     }}
                     accessibilityLabel={
-                      activeThread.isGroup
+                      activeThread.isAgent
+                        ? 'Agent conversation'
+                        : activeThread.isGroup
                         ? 'Group details'
                         : `View ${conversationTitle(activeThread)}'s profile`
                     }
@@ -1799,6 +2100,7 @@ export default function MessagesScreen({
                     </Text>
                   </Pressable>
                 </View>
+                {activeThread.isAgent ? null : (
                 <Pressable
                   onPress={() => void handleCallThread()}
                   style={styles.infoButton}
@@ -1806,6 +2108,7 @@ export default function MessagesScreen({
                 >
                   <Ionicons name="call-outline" size={20} color={BLUE} />
                 </Pressable>
+                )}
                 <Pressable
                   onPress={() => {
                     setDetailsOpen((current) => {
@@ -1834,7 +2137,7 @@ export default function MessagesScreen({
                   ]}
                   keyboardShouldPersistTaps="handled"
                 >
-                  {activeThread.isAi ? (
+                  {activeThread.isAi || activeThread.isAgent ? (
                     <>
                       <Text style={styles.detailsLabel}>Chat</Text>
                       <Text style={styles.detailsTeamName}>{conversationTitle(activeThread)}</Text>
@@ -1879,7 +2182,7 @@ export default function MessagesScreen({
                       <Text style={styles.detailsTeamName}>{conversationTitle(activeThread)}</Text>
                     </>
                   )}
-                  {!activeThread.isAi ? (
+                  {!activeThread.isAi && !activeThread.isAgent ? (
                     <Text style={styles.detailsLabel}>
                       {activeThread.members.length + 1} people
                     </Text>
@@ -1946,7 +2249,7 @@ export default function MessagesScreen({
                     style={styles.leaveButton}
                   >
                     <Text style={styles.leaveButtonText}>
-                      {activeThread.isAi ? 'Delete chat' : 'Delete for you'}
+                      {activeThread.isAi || activeThread.isAgent ? 'Delete chat' : 'Delete for you'}
                     </Text>
                   </Pressable>
                   {activeThread.isGroup && !activeThread.isAi ? (
@@ -1995,7 +2298,9 @@ export default function MessagesScreen({
                         </Pressable>
                         <Text style={styles.threadEmptyName}>{conversationTitle(activeThread)}</Text>
                         <Text style={styles.emptyHint}>
-                          {conversationSubtitle(activeThread)}
+                          {activeThread.isAgent
+                            ? 'Write what you want changed or built. Send it like a message.'
+                            : conversationSubtitle(activeThread)}
                         </Text>
                       </View>
                     ) : (
@@ -2021,11 +2326,14 @@ export default function MessagesScreen({
                               groupedWithNext={groupedWithNext}
                               senderLabel={
                                 message.isAssistant
-                                  ? 'MyCanadaGold AI'
+                                  ? activeThread.isAgent || message.isAgentAck
+                                    ? AGENT_CONVERSATION_TITLE
+                                    : 'MyCanadaGold AI'
                                   : activeThread.isGroup && !mine
                                     ? firstNameOf(sender)
                                     : null
                               }
+                              actionsDisabled={activeThread.isAgent}
                               menuOpen={menuMessageId === message.id}
                               onOpenMenu={(item) => setMenuMessageId(item.id)}
                               onCloseMenu={() => setMenuMessageId(null)}
@@ -2091,7 +2399,13 @@ export default function MessagesScreen({
                         style={[styles.composerInput, isMobile && styles.composerInputMobile]}
                         value={draft}
                         onChangeText={onChangeDraft}
-                        placeholder={activeThread?.isAi ? 'Message MyCanadaGold AI' : 'Message'}
+                        placeholder={
+                          activeThread?.isAgent
+                            ? 'What do you want changed?'
+                            : activeThread?.isAi
+                              ? 'Message MyCanadaGold AI'
+                              : 'Message'
+                        }
                         placeholderTextColor="#8e8e93"
                         multiline={false}
                         numberOfLines={1}
@@ -2149,7 +2463,7 @@ export default function MessagesScreen({
               {menuConversation ? conversationTitle(menuConversation) : ''}
             </Text>
             <Text style={styles.actionSheetBody}>
-              {menuConversation?.isAi
+              {menuConversation?.isAi || menuConversation?.isAgent
                 ? 'This chat will be removed from your messages.'
                 : menuConversation?.isGroup
                   ? 'This chat will be removed from your messages. Everyone else will still have it.'
@@ -2242,6 +2556,16 @@ const styles = StyleSheet.create({
     paddingTop: 16,
     paddingBottom: 12,
   },
+  chromeRowMobile: {
+    zIndex: 24,
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 8,
+  },
   chromeTitle: {
     flex: 1,
     minWidth: 0,
@@ -2320,6 +2644,7 @@ const styles = StyleSheet.create({
     height: 44,
     borderRadius: 22,
     overflow: 'hidden',
+    flexShrink: 0,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -2346,11 +2671,13 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  filterDock: {
-    position: 'absolute',
-    top: 6,
-    right: 22,
-    zIndex: 24,
+  deliveryState: {
+    fontFamily,
+    fontSize: 11,
+    color: '#8e8e93',
+    marginTop: 4,
+    marginRight: 4,
+    alignSelf: 'flex-end',
   },
   recipientBar: {
     flexDirection: 'row',
@@ -2453,26 +2780,25 @@ const styles = StyleSheet.create({
     padding: 0,
     outlineStyle: 'none',
   },
-  searchToolbarMobile: {
-    paddingTop: 4,
-    marginBottom: 4,
-    gap: 8,
-  },
   searchWrap: {
     flex: 1,
     minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingHorizontal: 10,
-    height: 36,
+    paddingHorizontal: 12,
+    height: 40,
+    minHeight: 40,
     borderRadius: 10,
-    backgroundColor: '#f2f2f7',
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(60, 60, 67, 0.18)',
   },
   searchInput: {
     flex: 1,
+    minWidth: 0,
     fontFamily,
-    fontSize: 15,
+    fontSize: 16,
     color: '#1d1d1f',
     paddingVertical: 0,
     outlineStyle: 'none',
@@ -2966,6 +3292,16 @@ const styles = StyleSheet.create({
   },
   bubbleTextMine: {
     color: '#fff',
+  },
+  requestStatusInBubble: {
+    fontFamily,
+    fontSize: 12,
+    lineHeight: 16,
+    color: '#636366',
+    marginTop: 6,
+  },
+  requestStatusInBubbleMine: {
+    color: 'rgba(255,255,255,0.78)',
   },
   aiMention: {
     color: AI_PURPLE,

@@ -39,6 +39,7 @@ import {
 import TriageReviewDrawer from './TriageReviewDrawer';
 import {
   ChromeHero,
+  ChromePage,
   ChromeSheet,
   EmptyState,
   FONT,
@@ -46,7 +47,6 @@ import {
   MobileListRow,
   ProgressBar,
   SectionLabel,
-  SegmentedSlider,
   StatusPill,
   T,
   TextAction,
@@ -346,7 +346,7 @@ export default function TriageAccuracyPanel({
   onBreakdownOpenChange,
   openLotId = '',
   onOpenLotChange,
-  onAccuracyTabChange,
+  onAccuracyTabChange: _onAccuracyTabChange,
   onBackChange,
 }) {
   const { triage } = useTransferWorkflow();
@@ -611,61 +611,53 @@ export default function TriageAccuracyPanel({
     [openLotFolder, visibleLots.length],
   );
 
-  const lotFilterOptions = [
-    { key: 'all', label: 'All', ...(stats.total ? { count: stats.total } : {}) },
-    { key: 'correct', label: 'Correct', ...(stats.correct ? { count: stats.correct } : {}) },
-    { key: 'incorrect', label: 'Incorrect', ...(stats.incorrect ? { count: stats.incorrect } : {}) },
-  ];
-
-  const resultsHero = (
-    <View style={[styles.heroPad, !isMobile && styles.heroPadDesktop]}>
-      {isMobile && openLot ? (
-        <SegmentedSlider
-          options={lotFilterOptions}
-          value={accuracyTab}
-          onChange={(key) => onAccuracyTabChange?.(key)}
-          fill
-          compact
-          style={styles.lotFilterSlider}
-        />
-      ) : null}
-      <ChromeHero
-        value={lotProgress?.expected ? `${lotProgress.percent}%` : stats.total ? `${stats.percent}%` : '0%'}
-        stats={[
-          ...(openLot ? [] : [{ label: stats.lots === 1 ? 'Lot' : 'Lots', value: String(stats.lots) }]),
-          {
-            label: 'Progress',
-            value: lotProgress?.expected ? `${lotProgress.evaluated}/${lotProgress.expected}` : '—',
-          },
-          { label: 'Incorrect', value: String(stats.incorrect) },
-        ]}
-        footer={
-          lotProgress?.expected ? (
-            <View style={styles.heroProgress}>
-              <ProgressBar
-                value={lotProgress.evaluated}
-                total={lotProgress.expected}
-                height={7}
-                trackColor="rgba(255,255,255,0.14)"
-                fillColor={lotProgress.done ? '#34C759' : '#E8C36A'}
-              />
-            </View>
-          ) : null
-        }
-        onPress={() => onBreakdownOpenChange?.(true)}
-        accessibilityLabel="Open lot progress and metal weights"
-      />
-    </View>
+  const heroCard = (
+    <ChromeHero
+      icon="folder"
+      iconColor="#8A6D1F"
+      value={lotProgress?.expected ? `${lotProgress.percent}%` : stats.total ? `${stats.percent}%` : '0%'}
+      stats={[
+        ...(openLot ? [] : [{ label: stats.lots === 1 ? 'Lot' : 'Lots', value: String(stats.lots) }]),
+        {
+          label: 'Progress',
+          value: lotProgress?.expected ? `${lotProgress.evaluated}/${lotProgress.expected}` : '—',
+        },
+        { label: 'Incorrect', value: String(stats.incorrect) },
+      ]}
+      footer={
+        lotProgress?.expected ? (
+          <View style={styles.heroProgress}>
+            <ProgressBar
+              value={lotProgress.evaluated}
+              total={lotProgress.expected}
+              height={7}
+              tone={lotProgress.done ? 'green' : 'blue'}
+            />
+          </View>
+        ) : null
+      }
+      onPress={() => onBreakdownOpenChange?.(true)}
+      accessibilityLabel="Open lot progress and metal weights"
+    />
   );
 
-  const wrapResults = (list, title, meta) => (
-    <View style={[styles.body, isMobile && styles.bodyMobile]}>
-      {resultsHero}
-      <ChromeSheet title={title} meta={meta} fill={isMobile} style={styles.sheetFill}>
-        {list}
-      </ChromeSheet>
-    </View>
-  );
+  const wrapResults = (list, title, meta) => {
+    if (isMobile) {
+      return (
+        <ChromePage hero={heroCard} title={title} meta={meta}>
+          {list}
+        </ChromePage>
+      );
+    }
+    return (
+      <View style={styles.body}>
+        <View style={[styles.heroPad, styles.heroPadDesktop]}>{heroCard}</View>
+        <ChromeSheet title={title} meta={meta} fill={false} style={styles.sheetFill}>
+          {list}
+        </ChromeSheet>
+      </View>
+    );
+  };
 
   const breakdownDrawer = (
       <TriageDrawer
@@ -819,42 +811,30 @@ export default function TriageAccuracyPanel({
         {wrapResults(
       isMobile ? (
           visibleLots.length ? (
-            <ScrollView
-              style={styles.mobileList}
-              contentContainerStyle={styles.mobileListContent}
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-              nestedScrollEnabled
-            >
-              {visibleLots.map((item, index) => {
+            visibleLots.map((item, index) => {
                 const progress = lotProgressOf(item);
                 return (
-                  <View
+                  <MobileListRow
                     key={item.id}
-                    style={[index === 0 && styles.mobileGroupStart, index === visibleLots.length - 1 && styles.mobileGroupEnd]}
-                  >
-                    <MobileListRow
-                      title={item.id}
-                      subtitle={[item.location, lotPeriodLabel(item)].filter(Boolean).join(' · ')}
-                      meta={`${item.pos.length} ${item.pos.length === 1 ? 'PO' : 'POs'}`}
-                      last={index === visibleLots.length - 1}
-                      onPress={() => openLotFolder(item)}
-                      accessibilityLabel={
-                        progress.expected
-                          ? `Open ${item.id}, ${progress.evaluated} of ${progress.expected} evaluated`
-                          : `Open ${item.id}`
-                      }
-                      leading={
-                        <View style={styles.lotIconMobile}>
-                          <Ionicons name="folder-outline" size={22} color={T.text} />
-                        </View>
-                      }
-                      extra={progress.expected ? <LotProgress lot={item} compact /> : null}
-                    />
-                  </View>
+                    title={item.id}
+                    subtitle={[item.location, lotPeriodLabel(item)].filter(Boolean).join(' · ')}
+                    meta={`${item.pos.length} ${item.pos.length === 1 ? 'PO' : 'POs'}`}
+                    last={index === visibleLots.length - 1}
+                    onPress={() => openLotFolder(item)}
+                    accessibilityLabel={
+                      progress.expected
+                        ? `Open ${item.id}, ${progress.evaluated} of ${progress.expected} evaluated`
+                        : `Open ${item.id}`
+                    }
+                    leading={
+                      <View style={styles.lotIconMobile}>
+                        <Ionicons name="folder-outline" size={21} color="#fff" />
+                      </View>
+                    }
+                    extra={progress.expected ? <LotProgress lot={item} compact /> : null}
+                  />
                 );
-              })}
-            </ScrollView>
+              })
           ) : (
             lotEmpty
           )
@@ -927,13 +907,7 @@ export default function TriageAccuracyPanel({
   const lotDetail = wrapResults(
     isMobile ? (
         visible.length ? (
-          <ScrollView
-            style={styles.mobileList}
-            contentContainerStyle={styles.mobileListContent}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-            nestedScrollEnabled
-          >
+          <>
             {photoError ? <Text style={styles.mobilePhotoError}>{photoError}</Text> : null}
             {showError ? <Text style={styles.mobileHint}>Tap a purchase to edit its error.</Text> : null}
             {visible.map((item, index) => {
@@ -941,10 +915,7 @@ export default function TriageAccuracyPanel({
               const atMax = photos.length >= MAX_REVIEW_IMAGES;
               const flagged = triagePoNeedsCorrection(item);
               return (
-                <View
-                  key={accuracyKey(item)}
-                  style={[index === 0 && styles.mobileGroupStart, index === visible.length - 1 && styles.mobileGroupEnd]}
-                >
+                <View key={accuracyKey(item)}>
                   <MobileListRow
                     title={item.reference || 'Document'}
                     subtitle={[staffName(item) || null, item.storeName, item.dateLabel].filter(Boolean).join(' · ')}
@@ -956,7 +927,7 @@ export default function TriageAccuracyPanel({
                     last={index === visible.length - 1 && !showError && !(showAll && flagged)}
                     onPress={() => openFromTable(item)}
                     accessibilityLabel={`Open ${item.reference || 'document'}`}
-                    leading={<PoThumb urls={item.imageUrls} label={item.reference} size={52} />}
+                    leading={<PoThumb urls={item.imageUrls} label={item.reference} size={46} />}
                     trailing={
                       showError || (showAll && flagged) ? (
                         <MobileCameraButton
@@ -974,21 +945,16 @@ export default function TriageAccuracyPanel({
                         <StatusPill label="Correct" tone="green" compact />
                       )
                     }
+                    extra={
+                      showError || (showAll && flagged) ? (
+                        <ErrorDetailBlock review={item.review} />
+                      ) : null
+                    }
                   />
-                  {showError || (showAll && flagged) ? (
-                    <Pressable
-                      onPress={() => openFromTable(item)}
-                      style={[styles.mobileDetail, index === visible.length - 1 && styles.mobileDetailLast]}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Edit error for ${item.reference || 'document'}`}
-                    >
-                      <ErrorDetailBlock review={item.review} />
-                    </Pressable>
-                  ) : null}
                 </View>
               );
             })}
-          </ScrollView>
+          </>
         ) : (
           mobileEmpty
         )
@@ -1249,12 +1215,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#f5f5f5',
   },
   lotIconMobile: {
-    width: 52,
-    height: 52,
-    borderRadius: 8,
+    width: 46,
+    height: 46,
+    borderRadius: 13,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#8A6D1F',
   },
   lotHead: {
     justifyContent: 'center',

@@ -9,10 +9,19 @@ import TriageDeletedPanel from './TriageDeletedPanel';
 import TriageInsightsPanel from './TriageInsightsPanel';
 import { canViewTriageInsights } from '../lib/permissions';
 import { BarButton, EmptyState, FONT, SearchField, SegmentedSlider, T, TextTabs } from './TriageKit';
-import { MobileNavButton, MobileNavHeader } from './MobileChrome';
+import {
+  MobileChromeCircle,
+  MobileFilterDock,
+  MobileFilterSheet,
+  MobileFilterSheetAction,
+  MobileFilterSheetDivider,
+  MobileFilterSheetLabel,
+  MobileNavHeader,
+} from './MobileChrome';
 import { ensureLinkedPosSessions } from '../lib/auth';
 import { fetchTransferStores } from '../lib/locations';
-import { CANVAS, useIsMobile } from '../lib/mobileUi';
+import { expandMobileTabBar } from '../lib/mobileTabBar';
+import { CANVAS, MOBILE_FILTER_INSET, MOBILE_TOP_FILTER_SIZE, useIsMobile } from '../lib/mobileUi';
 import {
   buildDailyReceiptGrid,
   dailyReceiptStatus,
@@ -137,7 +146,14 @@ export default function TriageScreen({
   const [canLeaveStore, setCanLeaveStore] = useState(false);
   const [batchContext, setBatchContext] = useState(null);
   const [dailyOpen, setDailyOpen] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [filterAnchor, setFilterAnchor] = useState({
+    top: MOBILE_TOP_FILTER_SIZE + MOBILE_FILTER_INSET,
+    right: MOBILE_FILTER_INSET,
+  });
   const leaveStoreRef = useRef(null);
+  const filterButtonRef = useRef(null);
+  const screenRootRef = useRef(null);
   const openScanRef = useRef(() => {});
   const onStoreBackChangeRef = useRef(onStoreBackChange);
   onStoreBackChangeRef.current = onStoreBackChange;
@@ -187,6 +203,7 @@ export default function TriageScreen({
     setDailyOpen(false);
     setResultsLotId('');
     setDashPage(dashPageKey);
+    setFiltersOpen(false);
   }, []);
 
   const changeAccuracyTab = useCallback((key) => {
@@ -346,12 +363,38 @@ export default function TriageScreen({
   const pageTitle = triagePageTitle({ dashPage, activeTab, resultsLotId });
 
   const goBack = useCallback(() => {
+    setFiltersOpen(false);
     if (leaveStoreRef.current) {
       leaveStoreRef.current();
       return;
     }
     if (activeTab !== 'transfers' || dashPage) changeTab('transfers');
   }, [activeTab, changeTab, dashPage]);
+
+  const closeFilters = useCallback(() => setFiltersOpen(false), []);
+
+  const placeFilterMenu = useCallback(() => {
+    const button = filterButtonRef.current;
+    const root = screenRootRef.current;
+    if (!button || !root || typeof button.measureInWindow !== 'function') return;
+    button.measureInWindow((x, y, width, height) => {
+      root.measureInWindow((rootX, rootY, rootWidth) => {
+        setFilterAnchor({
+          top: y - rootY + height + 8,
+          right: Math.max(8, rootWidth - (x - rootX + width)),
+        });
+      });
+    });
+  }, []);
+
+  const pressFilter = useCallback(() => {
+    expandMobileTabBar();
+    placeFilterMenu();
+    setFiltersOpen((open) => !open);
+  }, [placeFilterMenu]);
+
+  const showMobileFilter = isMobile && Boolean(session?.token);
+  const filtersActive = Boolean(listQuery.trim()) || Boolean(resultsLotId && accuracyTab !== 'all');
 
   useEffect(() => {
     if (!canGoBack) {
@@ -397,20 +440,10 @@ export default function TriageScreen({
     }
     onMobileHeader({
       hideAppHeader: lotsListView,
-      trailing:
-        canAdd && !lotsListView ? (
-          <MobileNavButton
-            tone="green"
-            label="Add"
-            onPress={() => openScanRef.current()}
-            accessibilityLabel="Add a PO"
-          >
-            <Ionicons name="add" size={20} color="#fff" />
-          </MobileNavButton>
-        ) : null,
+      trailing: null,
     });
     return () => onMobileHeader(null);
-  }, [canAdd, isMobile, lotsListView, onMobileHeader]);
+  }, [isMobile, lotsListView, onMobileHeader]);
 
   if (showStoreInsights) {
     return (
@@ -421,24 +454,24 @@ export default function TriageScreen({
   }
 
   return (
-    <View style={[styles.body, embedded && styles.bodyEmbedded, isMobile && styles.bodyMobile]}>
+    <View
+      ref={screenRootRef}
+      style={[styles.body, embedded && styles.bodyEmbedded, isMobile && styles.bodyMobile]}
+    >
       {isMobile && lotsListView ? (
-        <MobileNavHeader
-          title={pageTitle}
-          onBack={goBack}
-          trailing={
-            canAdd ? (
-              <MobileNavButton
-                tone="green"
-                label="Add"
-                onPress={() => openScanRef.current()}
-                accessibilityLabel="Add a PO"
-              >
-                <Ionicons name="add" size={20} color="#fff" />
-              </MobileNavButton>
-            ) : null
-          }
-        />
+        <MobileNavHeader title={pageTitle} onBack={goBack} />
+      ) : null}
+      {showMobileFilter ? (
+        <MobileFilterDock>
+          <MobileChromeCircle
+            buttonRef={filterButtonRef}
+            active={filtersOpen || filtersActive}
+            onLayout={placeFilterMenu}
+            onPress={pressFilter}
+            accessibilityLabel="Triage filters"
+            accessibilityState={{ expanded: filtersOpen }}
+          />
+        </MobileFilterDock>
       ) : null}
       <View style={styles.pageVisible}>
       {portalNav || isMobile ? null : <View style={styles.localNavRow}>{navTabs}</View>}
@@ -517,6 +550,73 @@ export default function TriageScreen({
         loadError={daily.error}
         onSaved={daily.reload}
       />
+
+      {showMobileFilter && filtersOpen ? (
+        <MobileFilterSheet
+          visible
+          top={filterAnchor.top}
+          right={filterAnchor.right}
+          onClose={closeFilters}
+        >
+          {searchField ? (
+            <>
+              <MobileFilterSheetLabel>Search</MobileFilterSheetLabel>
+              {searchField}
+            </>
+          ) : null}
+          {resultsLotId ? (
+            <>
+              <MobileFilterSheetLabel>Results</MobileFilterSheetLabel>
+              <SegmentedSlider
+                options={accuracyTabOptions}
+                value={accuracyTab}
+                onChange={changeAccuracyTab}
+                fill
+                compact
+                style={styles.sheetSlider}
+              />
+            </>
+          ) : null}
+          {inBatch ? (
+            <>
+              <MobileFilterSheetLabel>Store</MobileFilterSheetLabel>
+              <SegmentedSlider
+                options={storeTabOptions}
+                value={storeTab}
+                onChange={changeStoreTab}
+                fill
+                compact
+                style={styles.sheetSlider}
+              />
+            </>
+          ) : null}
+          {canAdd || (session?.token && activeTab === 'accuracy') ? <MobileFilterSheetDivider /> : null}
+          {canAdd ? (
+            <MobileFilterSheetAction
+              icon="add"
+              iconBg="#1F8A4E"
+              label="Add"
+              onPress={() => {
+                closeFilters();
+                openScanRef.current();
+              }}
+              accessibilityLabel="Add a PO"
+            />
+          ) : null}
+          {session?.token && activeTab === 'accuracy' ? (
+            <MobileFilterSheetAction
+              icon="list-outline"
+              iconBg="#3A3A3C"
+              label="Details"
+              onPress={() => {
+                closeFilters();
+                setAccuracyBreakdownOpen(true);
+              }}
+              accessibilityLabel="Open lot details"
+            />
+          ) : null}
+        </MobileFilterSheet>
+      ) : null}
     </View>
   );
 }
@@ -596,6 +696,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
     flexShrink: 1,
+    minWidth: 0,
+  },
+  sheetSlider: {
+    alignSelf: 'stretch',
+    width: '100%',
     minWidth: 0,
   },
   chromeStats: {

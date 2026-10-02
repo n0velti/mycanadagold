@@ -216,6 +216,8 @@ function ErrorsPage({ rows, query, onOpen }) {
     <ChromePage
       hero={
         <ChromeHero
+          icon="alert-circle"
+          iconColor="#B91C1C"
           value={amount ? formatAmount(amount) : String(visible.length)}
           stats={[
             { label: visible.length === 1 ? 'Error' : 'Errors', value: String(visible.length) },
@@ -226,19 +228,21 @@ function ErrorsPage({ rows, query, onOpen }) {
       }
       title="Errors"
       meta={`${visible.length} error${visible.length === 1 ? '' : 's'}`}
+      data={visible}
+      keyExtractor={(row) => `${row.triageId}-${row.id}`}
+      renderItem={({ item: row, index }) => (
+        <ChromeListRow
+          title={row.reference || 'Document'}
+          meta={[errorTypeOf(row), row.storeName, staffName(row), row.dateLabel].filter(Boolean).join(' · ')}
+          value={formatErrorAmount(row?.review?.errorAmount || '') || ''}
+          leading={<PoThumb urls={row.imageUrls} label={row.reference} size={46} />}
+          last={index === visible.length - 1}
+          onPress={() => onOpen(row)}
+        />
+      )}
     >
       {visible.length
-        ? visible.map((row, index) => (
-            <ChromeListRow
-              key={`${row.triageId}-${row.id}`}
-              title={row.reference || 'Document'}
-              meta={[errorTypeOf(row), row.storeName, staffName(row), row.dateLabel].filter(Boolean).join(' · ')}
-              value={formatErrorAmount(row?.review?.errorAmount || '') || ''}
-              leading={<PoThumb urls={row.imageUrls} label={row.reference} size={46} />}
-              last={index === visible.length - 1}
-              onPress={() => onOpen(row)}
-            />
-          ))
+        ? null
         : emptyCopy(query.trim() ? `No error matches “${query.trim()}”.` : 'No errors.')}
     </ChromePage>
   );
@@ -249,6 +253,8 @@ function TransfersPage({ summary }) {
     <ChromePage
       hero={
         <ChromeHero
+          icon="swap-horizontal"
+          iconColor="#1F7A9A"
           value={String(summary.count)}
           stats={[
             { label: 'Open', value: String(summary.open) },
@@ -259,20 +265,22 @@ function TransfersPage({ summary }) {
       }
       title="Transfers"
       meta={String(summary.count)}
+      data={summary.rows}
+      keyExtractor={(row) => String(row.id)}
+      renderItem={({ item: row, index }) => (
+        <ChromeListRow
+          title={row.reference || `TR# ${row.number || ''}`}
+          meta={[transferPathLabel(row), row.dateLabel].filter(Boolean).join(' · ')}
+          value={transferStatusLabel(row)}
+          icon="swap-horizontal"
+          iconColor="#1F7A9A"
+          last={index === summary.rows.length - 1}
+          chevron={false}
+        />
+      )}
     >
       {summary.rows.length
-        ? summary.rows.map((row, index) => (
-            <ChromeListRow
-              key={row.id}
-              title={row.reference || `TR# ${row.number || ''}`}
-              meta={[transferPathLabel(row), row.dateLabel].filter(Boolean).join(' · ')}
-              value={transferStatusLabel(row)}
-              icon="swap-horizontal"
-              iconColor="#1F7A9A"
-              last={index === summary.rows.length - 1}
-              chevron={false}
-            />
-          ))
+        ? null
         : emptyCopy('Store-to-workshop transfers land here as they are created.')}
     </ChromePage>
   );
@@ -313,6 +321,8 @@ function LotsPage({ lots, allRows, errors, query, onOpen }) {
     <ChromePage
       hero={
         <ChromeHero
+          icon="folder"
+          iconColor="#8A6D1F"
           value={totals.expected ? `${totals.percent}%` : String(visible.length)}
           stats={[
             { label: visible.length === 1 ? 'Lot' : 'Lots', value: String(visible.length) },
@@ -328,8 +338,7 @@ function LotsPage({ lots, allRows, errors, query, onOpen }) {
                 value={totals.evaluated}
                 total={totals.expected}
                 height={7}
-                trackColor="rgba(255,255,255,0.14)"
-                fillColor={totals.done ? '#34C759' : '#E8C36A'}
+                tone={totals.done ? 'green' : 'blue'}
               />
             ) : null
           }
@@ -339,37 +348,39 @@ function LotsPage({ lots, allRows, errors, query, onOpen }) {
       }
       title="Lots"
       meta={`${visible.length} ${visible.length === 1 ? 'lot' : 'lots'}`}
+      data={visible}
+      keyExtractor={(lot) => lot.id}
+      renderItem={({ item: lot, index }) => {
+        const progress = lotProgressOf(lot);
+        return (
+          <ChromeListRow
+            title={lot.id}
+            meta={[lot.location, lotPeriodLabel(lot), `${lot.pos.length} ${lot.pos.length === 1 ? 'PO' : 'POs'}`]
+              .filter(Boolean)
+              .join(' · ')}
+            value={progress.expected ? `${progress.evaluated}/${progress.expected}` : String(lot.pos.length)}
+            icon="folder"
+            iconColor="#8A6D1F"
+            last={index === visible.length - 1}
+            onPress={onOpen ? () => onOpen(lot) : undefined}
+            chevron={Boolean(onOpen)}
+            extra={
+              progress.expected ? (
+                <ProgressBar
+                  value={progress.evaluated}
+                  total={progress.expected}
+                  tone={progress.done ? 'green' : 'blue'}
+                  height={6}
+                  style={styles.lotRowBar}
+                />
+              ) : null
+            }
+          />
+        );
+      }}
     >
       {visible.length
-        ? visible.map((lot, index) => {
-            const progress = lotProgressOf(lot);
-            return (
-              <ChromeListRow
-                key={lot.id}
-                title={lot.id}
-                meta={[lot.location, lotPeriodLabel(lot), `${lot.pos.length} ${lot.pos.length === 1 ? 'PO' : 'POs'}`]
-                  .filter(Boolean)
-                  .join(' · ')}
-                value={progress.expected ? `${progress.evaluated}/${progress.expected}` : String(lot.pos.length)}
-                icon="folder"
-                iconColor="#8A6D1F"
-                last={index === visible.length - 1}
-                onPress={onOpen ? () => onOpen(lot) : undefined}
-                chevron={Boolean(onOpen)}
-                extra={
-                  progress.expected ? (
-                    <ProgressBar
-                      value={progress.evaluated}
-                      total={progress.expected}
-                      tone={progress.done ? 'green' : 'blue'}
-                      height={6}
-                      style={styles.lotRowBar}
-                    />
-                  ) : null
-                }
-              />
-            );
-          })
+        ? null
         : emptyCopy(query.trim() ? `No lot matches “${query.trim()}”.` : 'No lots.')}
     </ChromePage>
     <TriageDrawer
@@ -486,6 +497,8 @@ function AllocationPage({ rows, session }) {
       <ChromePage
         hero={
           <ChromeHero
+            icon="git-branch"
+            iconColor="#3A3A3C"
             value={String(summary.allocated)}
             stats={[
               { label: 'Ready', value: String(summary.ready) },
@@ -496,24 +509,26 @@ function AllocationPage({ rows, session }) {
         }
         title="Purchase orders"
         meta={`${summary.allocated} allocated`}
+        data={listed}
+        keyExtractor={(row) => row.po.id}
+        renderItem={({ item: row, index }) => (
+          <ChromeListRow
+            title={row.po.reference || row.po.id}
+            meta={
+              row.complete
+                ? [allocationSummaryLabel(row.allocation), row.po.storeName].filter(Boolean).join(' · ')
+                : [row.po.storeName, row.po.dateLabel, 'Needs allocation'].filter(Boolean).join(' · ')
+            }
+            value={row.complete ? 'Allocated' : 'Open'}
+            icon={row.complete ? 'git-branch' : 'ellipse-outline'}
+            iconColor={row.complete ? '#3A3A3C' : '#C2410C'}
+            last={index === listed.length - 1}
+            onPress={() => open(row.po)}
+          />
+        )}
       >
         {listed.length
-          ? listed.map((row, index) => (
-              <ChromeListRow
-                key={row.po.id}
-                title={row.po.reference || row.po.id}
-                meta={
-                  row.complete
-                    ? [allocationSummaryLabel(row.allocation), row.po.storeName].filter(Boolean).join(' · ')
-                    : [row.po.storeName, row.po.dateLabel, 'Needs allocation'].filter(Boolean).join(' · ')
-                }
-                value={row.complete ? 'Allocated' : 'Open'}
-                icon={row.complete ? 'git-branch' : 'ellipse-outline'}
-                iconColor={row.complete ? '#3A3A3C' : '#C2410C'}
-                last={index === listed.length - 1}
-                onPress={() => open(row.po)}
-              />
-            ))
+          ? null
           : emptyCopy('Finish a PO from Add to allocate 100Ways, Umicore, PMX, RCM, or Oliver here.')}
       </ChromePage>
       <TriageDrawer
@@ -552,6 +567,8 @@ function ExpectedReturnPage({ lots, summary }) {
     <ChromePage
       hero={
         <ChromeHero
+          icon="trending-up"
+          iconColor="#1F8A4E"
           value={String(summary.expected)}
           stats={[
             { label: 'Evaluated', value: String(summary.evaluated) },
@@ -562,12 +579,12 @@ function ExpectedReturnPage({ lots, summary }) {
       }
       title="Lots"
       meta={String(lots.length)}
-    >
-      {lots.map((lot, index) => {
+      data={lots}
+      keyExtractor={(lot) => lot.id}
+      renderItem={({ item: lot, index }) => {
         const progress = lotProgressOf(lot);
         return (
           <ChromeListRow
-            key={lot.id}
             title={lot.id}
             meta={[lot.location, lotPeriodLabel(lot)].filter(Boolean).join(' · ')}
             value={progress.expected ? `${progress.evaluated}/${progress.expected}` : String(lot.pos.length)}
@@ -577,7 +594,8 @@ function ExpectedReturnPage({ lots, summary }) {
             chevron={false}
           />
         );
-      })}
+      }}
+    >
     </ChromePage>
   );
 }
@@ -597,13 +615,13 @@ export default function TriageDashboardPanel({
   const isMobile = useIsMobile();
   const [openRow, setOpenRow] = useState(null);
 
-  const evaluated = useMemo(() => collectAccuracyTriagePos(triage), [triage]);
-  const allRows = useMemo(() => collectAllTriagePos(triage), [triage]);
-  const lots = useMemo(() => groupPosIntoLots(evaluated, allRows), [allRows, evaluated]);
-  const errors = useMemo(() => summarizeErrors(evaluated), [evaluated]);
+  const evaluated = useMemo(() => (active ? collectAccuracyTriagePos(triage) : []), [active, triage]);
+  const allRows = useMemo(() => (active ? collectAllTriagePos(triage) : []), [active, triage]);
+  const lots = useMemo(() => (active ? groupPosIntoLots(evaluated, allRows) : []), [active, allRows, evaluated]);
+  const errors = useMemo(() => (active ? summarizeErrors(evaluated) : { rows: [], count: 0, amount: 0, stores: 0, topType: null, types: [] }), [active, evaluated]);
   const lotSummary = useMemo(() => summarizeLots(lots), [lots]);
-  const allocationSummary = useMemo(() => summarizePoAllocations(allRows), [allRows]);
-  const transferSummary = useMemo(() => summarizeTransfers(planned), [planned]);
+  const allocationSummary = useMemo(() => (active ? summarizePoAllocations(allRows) : { rows: [], total: 0, allocated: 0, ready: 0, totals: {} }), [active, allRows]);
+  const transferSummary = useMemo(() => (active ? summarizeTransfers(planned) : { rows: [], count: 0, open: 0, partial: 0, received: 0, workshop: 0 }), [active, planned]);
 
   const openPage = useCallback((key) => onPageChange?.(key || ''), [onPageChange]);
   const closePage = useCallback(() => onPageChange?.(''), [onPageChange]);
@@ -650,6 +668,8 @@ export default function TriageDashboardPanel({
     <ChromePage
       hero={
         <ChromeHero
+          icon="medkit"
+          iconColor="#C2410C"
           value={errors.amount ? formatAmount(errors.amount) : String(errors.count)}
           stats={[
             { label: errors.count === 1 ? 'Error' : 'Errors', value: String(errors.count) },
