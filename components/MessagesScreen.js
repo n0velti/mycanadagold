@@ -56,11 +56,14 @@ import {
   groupAgentConversations,
   listAgentRequests,
   newAgentConversationId,
+  requestStatusLine,
+  subscribeAgentRequests,
 } from '../lib/agentRequests';
 import { fetchAureusEmployee } from '../lib/aureusEmployees';
 import { prepareAiChatSession, sendAiChatMessage, titleAiChat } from '../lib/aiChat';
 import { OPENROUTER_MODELS } from '../lib/openrouter';
 import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
+import { useLiveRefresh } from '../lib/liveRefresh';
 import { CANVAS, mobileSafeBottom } from '../lib/mobileUi';
 import { listStaffProfiles, useAppAccess } from '../lib/permissions';
 import ProfilePhotoModal from './ProfilePhotoModal';
@@ -604,6 +607,11 @@ function MessageBubble({
             ]}
           >
             <MessageBody body={message.body} mine={mine} />
+            {mine && message.requestStatusLine ? (
+              <Text style={[styles.requestStatusInBubble, mine && styles.requestStatusInBubbleMine]}>
+                {message.requestStatusLine}
+              </Text>
+            ) : null}
             <HeartBurst trigger={burst} />
           </Pressable>
           {showMore ? (
@@ -762,6 +770,7 @@ export default function MessagesScreen({
   const onConversationOpenChangeRef = useRef(onConversationOpenChange);
   onConversationOpenChangeRef.current = onConversationOpenChange;
   const refreshInboxRef = useRef(async () => []);
+  const refreshAgentRequestsRef = useRef(async () => {});
 
   useEffect(() => {
     onConversationOpenChangeRef.current?.(Boolean(isMobile && activeId));
@@ -832,6 +841,7 @@ export default function MessagesScreen({
       if (agentThread) {
         setMessages(agentMessagesRef.current[conversationId] || []);
         setLoadingThread(false);
+        void refreshAgentRequestsRef.current();
         return;
       }
       if (!skipLoad) setLoadingThread(true);
@@ -1252,6 +1262,9 @@ export default function MessagesScreen({
           isAssistant: false,
           deliveryState: 'sent',
           requestStatus: saved.status,
+          approvalState: saved.approvalState,
+          approvalReason: saved.approvalReason,
+          requestStatusLine: requestStatusLine(saved),
         };
         setMessages((current) => mergeSentMessage(current, localKey, tempId, sentMessage));
         await forwardAgentRequest(saved);
@@ -1260,14 +1273,15 @@ export default function MessagesScreen({
           id: `${saved.id}-ack`,
           conversationId,
           senderId: null,
-          body: agentReceivedCopy(saved.status),
-          createdAt: saved.updatedAt || sentAt,
+          body: agentReceivedCopy(saved),
+          createdAt: sentAt,
           likedByMe: false,
           likeCount: 0,
           isAssistant: true,
           isAgentAck: true,
           deliveryState: 'received',
           requestStatus: saved.status,
+          approvalState: saved.approvalState,
         };
         setMessages((current) => {
           const next = mergeSentMessage(current, localKey, tempId, receivedMessage);
@@ -1539,27 +1553,60 @@ export default function MessagesScreen({
     setLoadingThread(false);
   }, []);
 
+  const applyAgentSnapshot = useCallback((grouped) => {
+    setAgentInbox((current) => {
+      const persisted = new Set(grouped.inbox.map((row) => row.conversationId));
+      const locals = current.filter((row) => row.isAgent && !persisted.has(row.conversationId));
+      return [...grouped.inbox, ...locals];
+    });
+    setAgentMessages((current) => {
+      const next = { ...grouped.messages };
+      Object.keys(current).forEach((id) => {
+        const local = current[id] || [];
+        const server = next[id];
+        if (!server) {
+          next[id] = local;
+          return;
+        }
+        const seen = new Set(server.map((item) => item.id));
+        const extras = local.filter((item) => !seen.has(item.id));
+        next[id] = extras.length ? [...server, ...extras] : server;
+      });
+      return next;
+    });
+    const openId = activeIdRef.current;
+    if (openId && grouped.messages[openId]) {
+      setMessages((current) => {
+        const seen = new Set(grouped.messages[openId].map((item) => item.id));
+        const extras = current.filter((item) => !seen.has(item.id));
+        return extras.length ? [...grouped.messages[openId], ...extras] : grouped.messages[openId];
+      });
+    }
+  }, []);
+
+  const refreshAgentRequests = useCallback(async () => {
+    try {
+      const rows = await listAgentRequests();
+      applyAgentSnapshot(groupAgentConversations(rows, myId));
+    } catch {
+      // Table is not on the live project until this migration is applied.
+    }
+  }, [applyAgentSnapshot, myId]);
+
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const rows = await listAgentRequests();
-        if (cancelled) return;
-        const grouped = groupAgentConversations(rows, myId);
-        setAgentInbox((current) => {
-          const persisted = new Set(grouped.inbox.map((row) => row.conversationId));
-          const locals = current.filter((row) => row.isAgent && !persisted.has(row.conversationId));
-          return [...grouped.inbox, ...locals];
-        });
-        setAgentMessages((current) => ({ ...grouped.messages, ...current }));
-      } catch {
-        // Table is not on the live project until this migration is applied.
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [myId]);
+    void refreshAgentRequests();
+  }, [refreshAgentRequests]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeAgentRequests(() => {
+      void refreshAgentRequests();
+    });
+    return unsubscribe;
+  }, [refreshAgentRequests]);
+
+  refreshAgentRequestsRef.current = refreshAgentRequests;
+
+  useLiveRefresh(refreshAgentRequests, 20_000, Boolean(myId));
 
   const threadLive = Boolean(activeId && activeThread);
   const memberIds = new Set((activeThread?.members || []).map((person) => person.id));
@@ -1680,7 +1727,9 @@ export default function MessagesScreen({
       const selected = row.conversationId === activeId;
       const unread = row.unreadCount > 0;
       const senderName = row.lastMessageIsAssistant
-        ? 'MyCanadaGold AI'
+        ? row.isAgent
+          ? AGENT_CONVERSATION_TITLE
+          : 'MyCanadaGold AI'
         : row.lastMessageSenderId === myId
           ? 'You'
           : firstNameOf((row.members || []).find((person) => person.id === row.lastMessageSenderId));
@@ -1756,7 +1805,7 @@ export default function MessagesScreen({
     <View style={isMobile ? styles.searchWrap : styles.chromeSearchChip}>
       {isMobile ? (
         <>
-          <Ionicons name="search" size={15} color="#8e8e93" />
+          <Ionicons name="search" size={16} color="#8e8e93" />
           <TextInput
             style={styles.searchInput}
             value={query}
@@ -1765,10 +1814,12 @@ export default function MessagesScreen({
             placeholderTextColor="#8e8e93"
             autoCapitalize="none"
             autoCorrect={false}
+            clearButtonMode="while-editing"
+            returnKeyType="search"
           />
           {query ? (
-            <Pressable onPress={() => setQuery('')} hitSlop={8}>
-              <Ionicons name="close-circle" size={16} color="#c7c7cc" />
+            <Pressable onPress={() => setQuery('')} hitSlop={8} accessibilityLabel="Clear search">
+              <Ionicons name="close-circle" size={18} color="#c7c7cc" />
             </Pressable>
           ) : null}
         </>
@@ -1852,9 +1903,6 @@ export default function MessagesScreen({
           />
         </View>
       ) : null}
-      {isMobile ? (
-        <View style={styles.searchToolbarMobile}>{searchField}</View>
-      ) : null}
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
     </>
   );
@@ -1866,12 +1914,13 @@ export default function MessagesScreen({
         styles.inboxListContent,
         isMobile && {
           flexGrow: 1,
-          paddingTop: 56,
+          paddingTop: 8,
           paddingBottom: mobileTabBarReserve() + 16,
         },
         !isMobile && { flexGrow: 1, paddingTop: 8 },
       ]}
       keyboardShouldPersistTaps="handled"
+      keyboardDismissMode={isMobile ? 'on-drag' : undefined}
       showsVerticalScrollIndicator={false}
       {...(isMobile ? tabBarScroll : null)}
     >
@@ -1887,7 +1936,49 @@ export default function MessagesScreen({
     >
       {showInbox ? (
         <View style={[styles.inbox, isMobile && styles.inboxMobile, !isMobile && styles.inboxDesktop]}>
-          {!isMobile ? (
+          {isMobile ? (
+            <View pointerEvents="box-none" style={styles.chromeRowMobile}>
+              {searchField}
+              <Pressable
+                onPress={openAgentConversation}
+                style={styles.chromeCircle}
+                accessibilityLabel="Message the agent"
+              >
+                <BlurView
+                  intensity={32}
+                  tint="light"
+                  style={styles.chromeCircleBlur}
+                  {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-bar' } : null)}
+                >
+                  <Ionicons name="construct-outline" size={22} color="#1d1d1f" />
+                </BlurView>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  setComposeOpen((current) => !current);
+                  setSelectedIds([]);
+                  setGroupName('');
+                  setQuery('');
+                  if (!composeOpen) setActiveId(null);
+                }}
+                style={styles.chromeCircle}
+                accessibilityLabel={composeOpen ? 'Close compose' : 'Start a conversation'}
+              >
+                <BlurView
+                  intensity={32}
+                  tint="light"
+                  style={styles.chromeCircleBlur}
+                  {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-bar' } : null)}
+                >
+                  {composeOpen ? (
+                    <Ionicons name="close" size={22} color="#1d1d1f" />
+                  ) : (
+                    <ComposeIcon size={22} color="#1d1d1f" />
+                  )}
+                </BlurView>
+              </Pressable>
+            </View>
+          ) : (
             <View pointerEvents="box-none" style={styles.chromeRow}>
               <View style={styles.chromeTitle} accessibilityRole="image" accessibilityLabel="Direct Messages">
                 <Ionicons name="chatbubbles" size={22} color="#6B5E3A" />
@@ -1931,52 +2022,10 @@ export default function MessagesScreen({
                 </BlurView>
               </Pressable>
             </View>
-          ) : null}
+          )}
           <View style={styles.stage}>
             {inboxList}
           </View>
-          {isMobile ? (
-            <View pointerEvents="box-none" style={styles.filterDock}>
-              <Pressable
-                onPress={openAgentConversation}
-                style={styles.chromeCircle}
-                accessibilityLabel="Message the agent"
-              >
-                <BlurView
-                  intensity={32}
-                  tint="light"
-                  style={styles.chromeCircleBlur}
-                  {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-bar' } : null)}
-                >
-                  <Ionicons name="construct-outline" size={22} color="#1d1d1f" />
-                </BlurView>
-              </Pressable>
-              <Pressable
-                onPress={() => {
-                  setComposeOpen((current) => !current);
-                  setSelectedIds([]);
-                  setGroupName('');
-                  setQuery('');
-                  if (!composeOpen) setActiveId(null);
-                }}
-                style={styles.chromeCircle}
-                accessibilityLabel={composeOpen ? 'Close compose' : 'Start a conversation'}
-              >
-                <BlurView
-                  intensity={32}
-                  tint="light"
-                  style={styles.chromeCircleBlur}
-                  {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-bar' } : null)}
-                >
-                  {composeOpen ? (
-                    <Ionicons name="close" size={22} color="#1d1d1f" />
-                  ) : (
-                    <ComposeIcon size={22} color="#1d1d1f" />
-                  )}
-                </BlurView>
-              </Pressable>
-            </View>
-          ) : null}
         </View>
       ) : null}
 
@@ -2507,6 +2556,16 @@ const styles = StyleSheet.create({
     paddingTop: 16,
     paddingBottom: 12,
   },
+  chromeRowMobile: {
+    zIndex: 24,
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 8,
+  },
   chromeTitle: {
     flex: 1,
     minWidth: 0,
@@ -2585,6 +2644,7 @@ const styles = StyleSheet.create({
     height: 44,
     borderRadius: 22,
     overflow: 'hidden',
+    flexShrink: 0,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -2610,15 +2670,6 @@ const styles = StyleSheet.create({
       web: { cursor: 'pointer' },
       default: {},
     }),
-  },
-  filterDock: {
-    position: 'absolute',
-    top: 6,
-    right: 22,
-    zIndex: 24,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
   },
   deliveryState: {
     fontFamily,
@@ -2729,26 +2780,25 @@ const styles = StyleSheet.create({
     padding: 0,
     outlineStyle: 'none',
   },
-  searchToolbarMobile: {
-    paddingTop: 4,
-    marginBottom: 4,
-    gap: 8,
-  },
   searchWrap: {
     flex: 1,
     minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingHorizontal: 10,
-    height: 36,
+    paddingHorizontal: 12,
+    height: 40,
+    minHeight: 40,
     borderRadius: 10,
-    backgroundColor: '#f2f2f7',
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(60, 60, 67, 0.18)',
   },
   searchInput: {
     flex: 1,
+    minWidth: 0,
     fontFamily,
-    fontSize: 15,
+    fontSize: 16,
     color: '#1d1d1f',
     paddingVertical: 0,
     outlineStyle: 'none',
@@ -3242,6 +3292,16 @@ const styles = StyleSheet.create({
   },
   bubbleTextMine: {
     color: '#fff',
+  },
+  requestStatusInBubble: {
+    fontFamily,
+    fontSize: 12,
+    lineHeight: 16,
+    color: '#636366',
+    marginTop: 6,
+  },
+  requestStatusInBubbleMine: {
+    color: 'rgba(255,255,255,0.78)',
   },
   aiMention: {
     color: AI_PURPLE,
