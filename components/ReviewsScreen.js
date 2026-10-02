@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useIsMobile } from '../lib/mobileUi';
+import { BONUS_ACCESS_DENIED, canViewBonusReviewData } from '../lib/auth';
 import { useAppAccess } from '../lib/permissions';
 import {
   GOOGLE_STORE_PLACES,
@@ -269,6 +270,12 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter, on
         setError('');
         return;
       }
+      if (canViewBonusReviewData(session) === false) {
+        setResults([]);
+        setError(BONUS_ACCESS_DENIED);
+        setLoading(false);
+        return;
+      }
 
       const id = ++requestId.current;
       const places = storeFilter
@@ -304,6 +311,7 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter, on
           endDate: allTime ? undefined : endDate,
           allTime,
           refresh: refresh === true,
+          purpose: canViewBonusReviewData(session) === true ? 'bonus' : 'home',
           onPage: ({ storeName, reviews, done }) => {
             if (id !== requestId.current) return;
             setResults((current) =>
@@ -323,7 +331,7 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter, on
         if (id === requestId.current) setLoading(false);
       }
     },
-    [session?.token, storeFilter, startDate, endDate, allTime],
+    [session, storeFilter, startDate, endDate, allTime],
   );
 
   useEffect(() => {

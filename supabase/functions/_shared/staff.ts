@@ -18,6 +18,7 @@ export interface StaffContext {
   appRole: string;
   posRole: string;
   employeeType: string;
+  canViewBonusData: boolean;
 }
 
 export class StaffAuthError extends Error {
@@ -55,11 +56,16 @@ async function loadProfile(userId: string, aureusUserId: string): Promise<StaffC
   const cached = profileCache.get(userId);
   if (cached && cached.expiresAt > Date.now()) return cached.context;
 
-  const { data, error } = await adminClient()
-    .from('profiles')
-    .select('id, aureus_user_id, email, is_active, aureus_verified_at, app_role, is_system_admin, role, employee_type')
-    .eq('id', userId)
-    .maybeSingle();
+  const fullColumns =
+    'id, aureus_user_id, email, is_active, aureus_verified_at, app_role, is_system_admin, role, employee_type, can_view_bonus_data';
+  const legacyColumns =
+    'id, aureus_user_id, email, is_active, aureus_verified_at, app_role, is_system_admin, role, employee_type';
+  let { data, error } = await adminClient().from('profiles').select(fullColumns).eq('id', userId).maybeSingle();
+  if (error && /can_view_bonus_data/i.test(error.message || '')) {
+    const fallback = await adminClient().from('profiles').select(legacyColumns).eq('id', userId).maybeSingle();
+    data = fallback.data;
+    error = fallback.error;
+  }
 
   let context: StaffContext | null = null;
   if (!error && data && data.is_active && data.aureus_verified_at && data.aureus_user_id === aureusUserId) {
@@ -71,6 +77,7 @@ async function loadProfile(userId: string, aureusUserId: string): Promise<StaffC
       appRole: String(data.app_role || ''),
       posRole: String(data.role || ''),
       employeeType: String(data.employee_type || ''),
+      canViewBonusData: Boolean((data as { can_view_bonus_data?: boolean }).can_view_bonus_data),
     };
   }
 
