@@ -42,6 +42,7 @@
  *   /proxy/ringcentral/voicemail-content   GET   → voicemail audio for one message
  *   /proxy/ringcentral/recording-content   GET   → call recording audio (media host)
  *   /proxy/ringcentral/ai-webhook          POST  → RingCentral AI job results (signed per job, no staff session)
+ *   /proxy/agent/change-request            POST  → isolated hand-off for staff change requests (TODO: no external URL yet)
  *
  * AI providers use the company key saved in Settings (System Admin / GM) or,
  * if none is saved, the Edge Function secret. Clients never send vendor keys.
@@ -7708,6 +7709,43 @@ async function handleRingCentralVoicemailContent(req: Request, query: URLSearchP
 }
 
 // ---------------------------------------------------------------------------
+// Agent change requests (Direct Messages → the agent)
+// ---------------------------------------------------------------------------
+
+/**
+ * Isolated hand-off for staff change requests from Direct Messages.
+ *
+ * TODO: Forward `payload` to the coding-agent destination (webhook / Cursor Cloud).
+ * Do not call any external URL until that destination is configured.
+ * Keep secrets in function env; never accept them from the client.
+ */
+function forwardAgentChangeRequest(
+  _staff: StaffContext,
+  payload: Record<string, unknown>,
+): { forwarded: false; requestId: string | null } {
+  void _staff;
+  const requestId = typeof payload.id === 'string' ? payload.id : null;
+  return { forwarded: false, requestId };
+}
+
+async function handleAgentChangeRequest(
+  req: Request,
+  staff: StaffContext,
+  body: ArrayBuffer | null,
+): Promise<Response> {
+  let payload: Record<string, unknown> = {};
+  if (body && body.byteLength) {
+    try {
+      payload = JSON.parse(new TextDecoder().decode(body)) as Record<string, unknown>;
+    } catch {
+      return error(req, 400, 'Invalid JSON.', 'bad_request');
+    }
+  }
+  const result = forwardAgentChangeRequest(staff, payload);
+  return json(req, 200, { ok: true, ...result });
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -7873,6 +7911,9 @@ Deno.serve(async (req) => {
     }
     if (path === '/ringcentral/recording-content' && req.method === 'GET') {
       return await handleRingCentralRecordingContent(req, query);
+    }
+    if (path === '/agent/change-request' && req.method === 'POST') {
+      return await handleAgentChangeRequest(req, staff, await readBody(req));
     }
     return error(req, 404, 'Unknown proxy route.', 'not_found');
   } catch (err) {
