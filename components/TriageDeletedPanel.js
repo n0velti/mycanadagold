@@ -193,6 +193,17 @@ export default function TriageDeletedPanel({ session, query = '' }) {
       }
       title="Deleted"
       meta={`${visible.length} ${visible.length === 1 ? 'item' : 'items'}`}
+      data={visible}
+      keyExtractor={(entry) => String(entry.id)}
+      renderItem={({ item: entry, index }) => (
+        <DeletedRow
+          last={index === visible.length - 1}
+          {...deletedRowProps(entry)}
+          meta={[`Deleted ${formatDeletedAt(entry.deletedAt)}`, entry.deletedBy].filter(Boolean).join(' · ')}
+          onRestore={() => restore(entry)}
+          onPurge={() => purge(entry)}
+        />
+      )}
       empty={
         visible.length === 0 ? (
           <EmptyState
@@ -206,18 +217,7 @@ export default function TriageDeletedPanel({ session, query = '' }) {
           />
         ) : null
       }
-    >
-      {visible.map((entry, index) => (
-        <DeletedRow
-          key={entry.id}
-          last={index === visible.length - 1}
-          {...deletedRowProps(entry)}
-          meta={[`Deleted ${formatDeletedAt(entry.deletedAt)}`, entry.deletedBy].filter(Boolean).join(' · ')}
-          onRestore={() => restore(entry)}
-          onPurge={() => purge(entry)}
-        />
-      ))}
-    </ChromePage>
+    />
   );
 }
 

@@ -21,6 +21,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
+import { FlashList } from '@shopify/flash-list';
 import { Ionicons } from '@expo/vector-icons';
 import {
   CANVAS,
@@ -1153,7 +1154,19 @@ export const ChromeListRow = memo(function ChromeListRow({
 });
 
 /** Hero + sheet page used by every triage surface. */
-export function ChromePage({ hero, title, meta, children, empty, footer, filterPad = true }) {
+export function ChromePage({
+  hero,
+  title,
+  meta,
+  children,
+  empty,
+  footer,
+  filterPad = true,
+  data,
+  renderItem,
+  keyExtractor,
+  extraData,
+}) {
   const isMobile = useIsMobile();
   const tabBarScroll = useMobileTabBarScrollProps();
   const heroLift = useRef(new Animated.Value(1)).current;
@@ -1161,8 +1174,46 @@ export function ChromePage({ hero, title, meta, children, empty, footer, filterP
   const restGap = 18;
   const raisedOffset = hero ? Math.max(0, heroHeight + restGap) : 0;
   const topPad = filterPad ? MOBILE_TOP_FILTER_SIZE + MOBILE_FILTER_INSET : 8;
+  const useVirtualList = isMobile && Array.isArray(data) && typeof renderItem === 'function';
 
   if (isMobile) {
+    const listHeader = (
+      <>
+        {hero ? <View style={styles.chromeHeroPadMobile}>{hero}</View> : null}
+        {empty || !title ? null : (
+          <View style={styles.chromeListMobile}>
+            <View style={[styles.chromeSheetHead, styles.chromeSheetHeadMobile]}>
+              <Text style={styles.chromeSheetTitle}>{title}</Text>
+              {meta ? <Text style={styles.chromeSheetMeta}>{meta}</Text> : null}
+            </View>
+          </View>
+        )}
+      </>
+    );
+    if (useVirtualList) {
+      return (
+        <View style={[styles.chromePage, styles.chromePageMobile]}>
+          <FlashList
+            data={data}
+            renderItem={renderItem}
+            keyExtractor={keyExtractor}
+            extraData={extraData}
+            ListHeaderComponent={listHeader}
+            ListEmptyComponent={empty || (typeof children === 'string' || !children ? null : children)}
+            ListFooterComponent={footer}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{
+              paddingTop: topPad,
+              paddingBottom: mobileTabBarReserve() + 8,
+            }}
+            {...tabBarScroll}
+            onScroll={tabBarScroll.onScroll}
+            {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll' } : null)}
+          />
+        </View>
+      );
+    }
     return (
       <View style={[styles.chromePage, styles.chromePageMobile]}>
         <ScrollView
@@ -1236,7 +1287,15 @@ export function ChromePage({ hero, title, meta, children, empty, footer, filterP
             {...(Platform.OS === 'web' ? { className: 'cgold-store-sheet' } : null)}
           >
             <ChromeSheet title={title} meta={meta} style={styles.chromeSheetGrow}>
-              {children}
+              {Array.isArray(data) && renderItem
+                ? data.length
+                  ? data.map((item, index) => (
+                      <View key={keyExtractor ? keyExtractor(item, index) : String(index)}>
+                        {renderItem({ item, index })}
+                      </View>
+                    ))
+                  : children
+                : children}
             </ChromeSheet>
           </View>
         )}
