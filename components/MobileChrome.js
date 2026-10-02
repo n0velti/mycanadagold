@@ -5,6 +5,7 @@ import { Animated, Image, PanResponder, Platform, Pressable, StyleSheet, Text, V
 import {
   attachWebTabBarScrollListeners,
   expandMobileTabBar,
+  TAB_BAR_ACTIVE_RADIUS,
   TAB_BAR_BOTTOM_GAP,
   TAB_BAR_HEIGHT_EXPANDED,
   TAB_BAR_SIDE_EXPANDED,
@@ -16,7 +17,6 @@ import {
   NAV_ICON_ACTIVE,
   NAV_ICON_INACTIVE,
   NAV_TAB_ACTIVE_BG,
-  NAV_TAB_ACTIVE_RADIUS,
   mobileSafeBottom,
   mobileSafeTop,
 } from '../lib/mobileUi';
@@ -58,7 +58,7 @@ function TabProfileAvatar({ uri, name, active }) {
         ) : (
           <Ionicons
             name={active ? 'person' : 'person-outline'}
-            size={24}
+            size={20}
             color={active ? NAV_ICON_ACTIVE : NAV_ICON_INACTIVE}
           />
         )}
@@ -428,7 +428,7 @@ export function MobileTabBar({
                     ) : (
                       <Ionicons
                         name={isActive ? tab.iconActive : tab.icon}
-                        size={34}
+                        size={28}
                         color={isActive ? NAV_ICON_ACTIVE : NAV_ICON_INACTIVE}
                       />
                     )}
@@ -691,10 +691,10 @@ const styles = StyleSheet.create({
   },
   tabActive: {
     position: 'absolute',
-    top: 6,
-    bottom: 6,
+    top: 5,
+    bottom: 5,
     zIndex: 0,
-    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderRadius: TAB_BAR_ACTIVE_RADIUS,
     backgroundColor: NAV_TAB_ACTIVE_BG,
   },
   tab: {
@@ -709,9 +709,9 @@ const styles = StyleSheet.create({
     }),
   },
   tabLogo: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
   },
   tabLogoDim: {
     opacity: 0.82,
@@ -719,15 +719,15 @@ const styles = StyleSheet.create({
   tabIconWrap: {
     position: 'relative',
     overflow: 'visible',
-    width: 42,
-    height: 42,
+    width: 34,
+    height: 34,
     alignItems: 'center',
     justifyContent: 'center',
   },
   tabAvatarRing: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     borderWidth: 1.5,
     borderColor: 'transparent',
     alignItems: 'center',
@@ -737,21 +737,21 @@ const styles = StyleSheet.create({
     borderColor: '#fff',
   },
   tabAvatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#E5E5EA',
   },
   tabAvatarImage: {
-    width: 36,
-    height: 36,
+    width: 28,
+    height: 28,
   },
   tabAvatarInitials: {
     fontFamily,
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: '700',
     color: MOBILE.label,
     letterSpacing: -0.2,
