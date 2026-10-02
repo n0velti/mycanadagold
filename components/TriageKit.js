@@ -5,7 +5,7 @@
  * pulls its tokens and primitives from here so the app reads as one product:
  * one type ramp, one set of status colours, one drawer, one empty state.
  */
-import { Component, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Component, memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Alert,
   Animated,
@@ -21,8 +21,19 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
+import { FlashList } from '@shopify/flash-list';
 import { Ionicons } from '@expo/vector-icons';
-import { CANVAS, mobileSafeBottom, mobileSafeTop, useIsMobile } from '../lib/mobileUi';
+import {
+  CANVAS,
+  MOBILE,
+  MOBILE_FILTER_INSET,
+  MOBILE_ICON_COL_WIDTH,
+  MOBILE_ROW_BODY_LEADING,
+  MOBILE_TOP_FILTER_SIZE,
+  mobileSafeBottom,
+  mobileSafeTop,
+  useIsMobile,
+} from '../lib/mobileUi';
 import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
 import { ClockedInMark, useIsClockedIn } from '../lib/clockedIn';
 
@@ -893,9 +904,71 @@ export function GroupRow({ label, value, valueTone, last, onPress, children }) {
   );
 }
 
-/** Dark gold hero used on Home and store details. */
-export function ChromeHero({ value, stats, wide = false, onPress, accessibilityLabel, footer }) {
+/** Dark gold hero on desktop; Home-matching amount + compact stats on mobile. */
+export function ChromeHero({
+  value,
+  stats,
+  wide = false,
+  onPress,
+  accessibilityLabel,
+  footer,
+  icon = 'medkit',
+  iconColor = '#C2410C',
+}) {
   const isMobile = useIsMobile();
+  if (isMobile) {
+    const body = (
+      <View style={styles.chromeHeroMobileRow}>
+        <View style={styles.chromeHeroIconCol}>
+          <View style={[styles.chromeHeroIcon, { backgroundColor: iconColor }]}>
+            <Ionicons name={icon} size={21} color="#fff" />
+          </View>
+        </View>
+        <View style={styles.chromeHeroMobileContent}>
+          <View style={styles.chromeHeroMobilePrimary}>
+            <View style={styles.chromeHeroMobileAmountBlock}>
+              <Text style={styles.chromeHeroAmountMobile} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.55}>
+                {value}
+              </Text>
+            </View>
+            {stats?.length ? (
+              <View style={styles.chromeHeroStatsMobile}>
+                {stats.map((stat) => (
+                  <View key={stat.label} style={styles.chromeHeroStatMobile}>
+                    <Text style={styles.chromeHeroStatMobileLabel} numberOfLines={1}>
+                      {stat.label}
+                    </Text>
+                    <Text style={styles.chromeHeroStatMobileValue} numberOfLines={1}>
+                      {stat.value}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+          </View>
+          {footer}
+        </View>
+      </View>
+    );
+    if (onPress) {
+      return (
+        <Pressable
+          style={styles.chromeHeroMobileHit}
+          onPress={onPress}
+          accessibilityRole="button"
+          accessibilityLabel={accessibilityLabel}
+        >
+          {body}
+        </Pressable>
+      );
+    }
+    return (
+      <View style={styles.chromeHeroMobileHit} accessibilityLabel={accessibilityLabel}>
+        {body}
+      </View>
+    );
+  }
+
   const body = (
     <>
       <Text
@@ -951,13 +1024,20 @@ export function ChromeHero({ value, stats, wide = false, onPress, accessibilityL
   );
 }
 
-/** White lifted sheet that sits under the hero, matching Home / store details. */
+/** White lifted sheet on desktop; flat Home list sheet on mobile. */
 export function ChromeSheet({ title, meta, children, style, fill = false }) {
   const isMobile = useIsMobile();
   return (
-    <View style={[styles.chromeSheet, fill && styles.chromeSheetFill, style]}>
+    <View
+      style={[
+        styles.chromeSheet,
+        isMobile && styles.chromeSheetMobile,
+        fill && styles.chromeSheetFill,
+        style,
+      ]}
+    >
       {title ? (
-        <View style={styles.chromeSheetHead}>
+        <View style={[styles.chromeSheetHead, isMobile && styles.chromeSheetHeadMobile]}>
           <Text style={styles.chromeSheetTitle}>{title}</Text>
           {meta ? <Text style={styles.chromeSheetMeta}>{meta}</Text> : null}
         </View>
@@ -975,8 +1055,8 @@ export function ChromeSheet({ title, meta, children, style, fill = false }) {
   );
 }
 
-/** Store-row used on Home: icon tile, title, meta, value, chevron. */
-export function ChromeListRow({
+/** Store-row used on Home: icon column, title + value + chevron, meta under. */
+export const ChromeListRow = memo(function ChromeListRow({
   title,
   meta,
   value,
@@ -989,62 +1069,186 @@ export function ChromeListRow({
   trailing,
   extra,
 }) {
+  const isMobile = useIsMobile();
+  const iconNode = leading || (
+    <View style={[styles.chromeRowIcon, { backgroundColor: iconColor }]}>
+      <Ionicons name={icon} size={isMobile ? 21 : 22} color="#fff" />
+    </View>
+  );
+  const chevronNode =
+    onPress && chevron ? (
+      <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+    ) : (
+      <View style={styles.chromeRowChevron} />
+    );
+
   return (
     <Pressable
       onPress={onPress}
       disabled={!onPress}
       style={({ hovered, pressed }) => [
         styles.chromeRow,
+        isMobile && styles.chromeRowMobile,
         (hovered || pressed) && onPress && styles.chromeRowHover,
       ]}
       accessibilityRole={onPress ? 'button' : undefined}
       accessibilityLabel={value ? `${title}, ${value}` : title}
       {...(Platform.OS === 'web' && onPress ? { className: 'cgold-triage-btn' } : null)}
     >
-      {leading || (
-        <View style={[styles.chromeRowIcon, { backgroundColor: iconColor }]}>
-          <Ionicons name={icon} size={22} color="#fff" />
-        </View>
-      )}
-      <View style={[styles.chromeRowBody, !last && styles.chromeRowDivider]}>
-        <View style={styles.chromeRowCopy}>
-          <Text style={styles.chromeRowTitle} numberOfLines={1}>
-            {title}
-          </Text>
-          {meta ? (
-            <Text style={styles.chromeRowMeta} numberOfLines={1}>
-              {meta}
-            </Text>
-          ) : null}
-          {extra}
-        </View>
-        {value != null && value !== '' ? (
-          <Text style={styles.chromeRowValue} numberOfLines={1}>
-            {value}
-          </Text>
-        ) : null}
-        {trailing}
-        {onPress && chevron ? (
-          <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+      <View style={isMobile ? styles.chromeRowIconCol : null}>{iconNode}</View>
+      <View
+        style={[
+          styles.chromeRowBody,
+          isMobile && styles.chromeRowBodyMobile,
+          !last && styles.chromeRowDivider,
+        ]}
+      >
+        {isMobile ? (
+          <>
+            <View style={styles.chromeRowMain}>
+              <View style={styles.chromeRowCopy}>
+                <Text style={styles.chromeRowTitleMobile} numberOfLines={1}>
+                  {title}
+                </Text>
+                {meta ? (
+                  <Text style={styles.chromeRowMeta} numberOfLines={1}>
+                    {meta}
+                  </Text>
+                ) : null}
+              </View>
+              {value != null && value !== '' ? (
+                <Text style={styles.chromeRowValueMobile} numberOfLines={1}>
+                  {value}
+                </Text>
+              ) : null}
+              {trailing}
+              {chevronNode}
+            </View>
+            {extra ? <View style={styles.chromeRowExtra}>{extra}</View> : null}
+          </>
         ) : (
-          <View style={styles.chromeRowChevron} />
+          <>
+            <View style={styles.chromeRowCopy}>
+              <Text style={styles.chromeRowTitle} numberOfLines={1}>
+                {title}
+              </Text>
+              {meta ? (
+                <Text style={styles.chromeRowMeta} numberOfLines={1}>
+                  {meta}
+                </Text>
+              ) : null}
+              {extra}
+            </View>
+            {value != null && value !== '' ? (
+              <Text style={styles.chromeRowValue} numberOfLines={1}>
+                {value}
+              </Text>
+            ) : null}
+            {trailing}
+            {chevronNode}
+          </>
         )}
       </View>
     </Pressable>
   );
-}
+});
 
 /** Hero + sheet page used by every triage surface. */
-export function ChromePage({ hero, title, meta, children, empty, footer }) {
+export function ChromePage({
+  hero,
+  title,
+  meta,
+  children,
+  empty,
+  footer,
+  filterPad = true,
+  data,
+  renderItem,
+  keyExtractor,
+  extraData,
+}) {
   const isMobile = useIsMobile();
   const tabBarScroll = useMobileTabBarScrollProps();
   const heroLift = useRef(new Animated.Value(1)).current;
-  const [heroHeight, setHeroHeight] = useState(isMobile ? 220 : 200);
-  const restGap = isMobile ? 10 : 18;
+  const [heroHeight, setHeroHeight] = useState(isMobile ? 120 : 200);
+  const restGap = 18;
   const raisedOffset = hero ? Math.max(0, heroHeight + restGap) : 0;
+  const topPad = filterPad ? MOBILE_TOP_FILTER_SIZE + MOBILE_FILTER_INSET : 8;
+  const useVirtualList = isMobile && Array.isArray(data) && typeof renderItem === 'function';
+
+  if (isMobile) {
+    const listHeader = (
+      <>
+        {hero ? <View style={styles.chromeHeroPadMobile}>{hero}</View> : null}
+        {empty || !title ? null : (
+          <View style={styles.chromeListMobile}>
+            <View style={[styles.chromeSheetHead, styles.chromeSheetHeadMobile]}>
+              <Text style={styles.chromeSheetTitle}>{title}</Text>
+              {meta ? <Text style={styles.chromeSheetMeta}>{meta}</Text> : null}
+            </View>
+          </View>
+        )}
+      </>
+    );
+    if (useVirtualList) {
+      return (
+        <View style={[styles.chromePage, styles.chromePageMobile]}>
+          <FlashList
+            data={data}
+            renderItem={renderItem}
+            keyExtractor={keyExtractor}
+            extraData={extraData}
+            ListHeaderComponent={listHeader}
+            ListEmptyComponent={empty || (typeof children === 'string' || !children ? null : children)}
+            ListFooterComponent={footer}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{
+              paddingTop: topPad,
+              paddingBottom: mobileTabBarReserve() + 8,
+            }}
+            {...tabBarScroll}
+            onScroll={tabBarScroll.onScroll}
+            {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll' } : null)}
+          />
+        </View>
+      );
+    }
+    return (
+      <View style={[styles.chromePage, styles.chromePageMobile]}>
+        <ScrollView
+          style={styles.chromeOverlayScroll}
+          contentContainerStyle={[
+            styles.chromePageContentMobile,
+            {
+              flexGrow: 1,
+              paddingTop: topPad,
+              paddingBottom: mobileTabBarReserve() + 8,
+            },
+          ]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+          scrollEventThrottle={16}
+          {...tabBarScroll}
+          onScroll={tabBarScroll.onScroll}
+          {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll' } : null)}
+        >
+          {hero ? <View style={styles.chromeHeroPadMobile}>{hero}</View> : null}
+          {empty || (
+            <View pointerEvents="auto" style={styles.chromeListMobile}>
+              <ChromeSheet title={title} meta={meta}>
+                {children}
+              </ChromeSheet>
+            </View>
+          )}
+          {footer}
+        </ScrollView>
+      </View>
+    );
+  }
 
   return (
-    <View style={[styles.chromePage, isMobile && styles.chromePageMobile]}>
+    <View style={styles.chromePage}>
       {hero ? (
         <View
           pointerEvents="box-none"
@@ -1055,17 +1259,13 @@ export function ChromePage({ hero, title, meta, children, empty, footer }) {
           }}
         >
           <Animated.View pointerEvents="none" style={[styles.chromePinnedLift, { opacity: heroLift }]} />
-          <View style={[styles.chromeHeroPad, !isMobile && styles.chromeHeroPadDesktop]}>{hero}</View>
+          <View style={[styles.chromeHeroPad, styles.chromeHeroPadDesktop]}>{hero}</View>
         </View>
       ) : null}
       <ScrollView
-        pointerEvents={isMobile ? 'auto' : 'box-none'}
+        pointerEvents="box-none"
         style={styles.chromeOverlayScroll}
-        contentContainerStyle={[
-          styles.chromePageContent,
-          isMobile && styles.chromePageContentMobile,
-          { flexGrow: 1 },
-        ]}
+        contentContainerStyle={[styles.chromePageContent, { flexGrow: 1 }]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
         scrollEventThrottle={16}
@@ -1077,9 +1277,7 @@ export function ChromePage({ hero, title, meta, children, empty, footer }) {
           const reach = Math.max(1, heroHeight - 12);
           heroLift.setValue(1 - Math.max(0, Math.min(1, y / reach)));
         }}
-        {...(Platform.OS === 'web'
-          ? { className: isMobile ? 'cgold-home-overlay-scroll' : 'cgold-home-overlay-scroll cgold-store-overlay-scroll' }
-          : null)}
+        {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll cgold-store-overlay-scroll' } : null)}
       >
         {hero ? <View pointerEvents="none" style={{ height: raisedOffset }} /> : null}
         {empty || (
@@ -1089,7 +1287,15 @@ export function ChromePage({ hero, title, meta, children, empty, footer }) {
             {...(Platform.OS === 'web' ? { className: 'cgold-store-sheet' } : null)}
           >
             <ChromeSheet title={title} meta={meta} style={styles.chromeSheetGrow}>
-              {children}
+              {Array.isArray(data) && renderItem
+                ? data.length
+                  ? data.map((item, index) => (
+                      <View key={keyExtractor ? keyExtractor(item, index) : String(index)}>
+                        {renderItem({ item, index })}
+                      </View>
+                    ))
+                  : children
+                : children}
             </ChromeSheet>
           </View>
         )}
@@ -1190,25 +1396,29 @@ export function MobileListRow({
   const body = (
     <>
       {leading ? <View style={styles.mobileListLead}>{leading}</View> : null}
-      <View style={styles.mobileListCopy}>
-        <Text style={styles.mobileListTitle} numberOfLines={1}>
-          {title}
-        </Text>
-        {subtitle ? (
-          <Text style={styles.mobileListSub} numberOfLines={2}>
-            {subtitle}
-          </Text>
-        ) : null}
+      <View style={[styles.mobileListBody, !last && styles.mobileListBodyDivider]}>
+        <View style={styles.mobileListMain}>
+          <View style={styles.mobileListCopy}>
+            <Text style={styles.mobileListTitle} numberOfLines={1}>
+              {title}
+            </Text>
+            {subtitle ? (
+              <Text style={styles.mobileListSub} numberOfLines={1}>
+                {subtitle}
+              </Text>
+            ) : null}
+          </View>
+          <View style={styles.mobileListTrail}>
+            {trailing}
+            {onPress && chevron ? <Ionicons name="chevron-forward" size={18} color={T.tertiary} /> : null}
+          </View>
+        </View>
         {meta ? (
           <Text style={styles.mobileListMeta} numberOfLines={1}>
             {meta}
           </Text>
         ) : null}
         {extra}
-      </View>
-      <View style={styles.mobileListTrail}>
-        {trailing}
-        {onPress && chevron ? <Ionicons name="chevron-forward" size={18} color={T.tertiary} /> : null}
       </View>
     </>
   );
@@ -1949,15 +2159,13 @@ const styles = StyleSheet.create({
   },
   mobileListRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    minHeight: 68,
-    paddingLeft: 16,
-    paddingRight: 16,
-    paddingVertical: 14,
+    alignItems: 'flex-start',
+    gap: MOBILE_ROW_BODY_LEADING,
+    minHeight: 72,
+    paddingLeft: MOBILE_FILTER_INSET,
+    paddingTop: 12,
+    paddingBottom: 12,
     backgroundColor: '#fff',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(60,60,67,0.18)',
     ...webCursor,
   },
   mobileListRowSelected: {
@@ -1967,31 +2175,52 @@ const styles = StyleSheet.create({
     borderBottomWidth: 0,
   },
   mobileListLead: {
+    width: MOBILE_ICON_COL_WIDTH,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
     flexShrink: 0,
+  },
+  mobileListBody: {
+    flex: 1,
+    minWidth: 0,
+    gap: 8,
+    paddingRight: MOBILE_FILTER_INSET,
+  },
+  mobileListBodyDivider: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(60,60,67,0.18)',
+  },
+  mobileListMain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minWidth: 0,
+    width: '100%',
   },
   mobileListCopy: {
     flex: 1,
     minWidth: 0,
-    gap: 3,
+    gap: 2,
   },
   mobileListTitle: {
     fontFamily: FONT,
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '600',
-    color: T.text,
-    letterSpacing: 0,
+    color: MOBILE.label,
+    letterSpacing: -0.2,
   },
   mobileListSub: {
     fontFamily: FONT,
     fontSize: 13,
     lineHeight: 17,
-    color: T.secondary,
+    color: MOBILE.secondary,
   },
   mobileListMeta: {
     fontFamily: FONT,
     fontSize: 13,
-    color: T.secondary,
+    color: MOBILE.secondary,
     fontVariant: ['tabular-nums'],
+    alignSelf: 'flex-start',
   },
   mobileListTrail: {
     flexDirection: 'row',
@@ -2163,10 +2392,175 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 10,
   },
+  chromeHeroPadMobile: {
+    paddingHorizontal: MOBILE_FILTER_INSET,
+    paddingTop: 4,
+    paddingBottom: 12,
+  },
   chromeHeroPadDesktop: {
     paddingHorizontal: 32,
     paddingTop: 4,
     paddingBottom: 18,
+  },
+  chromeHeroMobileHit: {
+    alignSelf: 'stretch',
+    width: '100%',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  chromeHeroMobileRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    alignSelf: 'stretch',
+  },
+  chromeHeroIconCol: {
+    width: MOBILE_ICON_COL_WIDTH,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    flexShrink: 0,
+  },
+  chromeHeroIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chromeHeroMobileContent: {
+    flex: 1,
+    minWidth: 0,
+    marginLeft: MOBILE_ROW_BODY_LEADING,
+    gap: 10,
+  },
+  chromeHeroMobilePrimary: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    alignSelf: 'stretch',
+    justifyContent: 'space-between',
+    gap: 14,
+  },
+  chromeHeroMobileAmountBlock: {
+    flexShrink: 1,
+    minWidth: 0,
+    alignSelf: 'flex-start',
+  },
+  chromeHeroAmountMobile: {
+    fontFamily: 'SohneLeicht',
+    fontSize: 34,
+    lineHeight: 40,
+    fontWeight: '400',
+    color: '#1d1d1f',
+    letterSpacing: -0.8,
+    fontVariant: ['tabular-nums'],
+  },
+  chromeHeroStatsMobile: {
+    flexDirection: 'column',
+    flexShrink: 0,
+    alignSelf: 'stretch',
+    justifyContent: 'flex-start',
+    gap: 1,
+    minWidth: 108,
+    maxWidth: 132,
+    paddingTop: 6,
+    paddingLeft: 14,
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderLeftColor: 'rgba(60, 60, 67, 0.12)',
+  },
+  chromeHeroStatMobile: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: 8,
+    paddingVertical: 2,
+  },
+  chromeHeroStatMobileLabel: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: FONT,
+    fontSize: 10,
+    fontWeight: '500',
+    color: '#aeaeb2',
+    letterSpacing: 0.02,
+  },
+  chromeHeroStatMobileValue: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#1d1d1f',
+    letterSpacing: -0.2,
+    fontVariant: ['tabular-nums'],
+    textAlign: 'right',
+    flexShrink: 0,
+  },
+  chromeListMobile: {
+    flexGrow: 1,
+    backgroundColor: '#fff',
+    marginTop: 8,
+  },
+  chromeSheetMobile: {
+    borderTopLeftRadius: 0,
+    borderTopRightRadius: 0,
+    borderTopWidth: 0,
+    shadowOpacity: 0,
+    elevation: 0,
+    ...Platform.select({
+      web: { boxShadow: 'none' },
+      default: {},
+    }),
+  },
+  chromeSheetHeadMobile: {
+    paddingTop: 12,
+  },
+  chromeRowMobile: {
+    alignItems: 'flex-start',
+    gap: MOBILE_ROW_BODY_LEADING,
+    minHeight: 72,
+    paddingLeft: MOBILE_FILTER_INSET,
+    paddingTop: 12,
+    paddingBottom: 12,
+  },
+  chromeRowIconCol: {
+    width: MOBILE_ICON_COL_WIDTH,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    flexShrink: 0,
+  },
+  chromeRowBodyMobile: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 8,
+    paddingVertical: 0,
+    paddingRight: MOBILE_FILTER_INSET,
+  },
+  chromeRowMain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minWidth: 0,
+    width: '100%',
+  },
+  chromeRowTitleMobile: {
+    fontFamily: FONT,
+    fontSize: 16,
+    fontWeight: '600',
+    color: MOBILE.label,
+    letterSpacing: -0.2,
+  },
+  chromeRowValueMobile: {
+    fontFamily: FONT,
+    fontSize: 16,
+    fontWeight: '600',
+    color: MOBILE.label,
+    fontVariant: ['tabular-nums'],
+    flexShrink: 1,
+    maxWidth: '46%',
+    textAlign: 'right',
+  },
+  chromeRowExtra: {
+    alignSelf: 'flex-start',
+    maxWidth: 220,
   },
   chromeHeroShell: {
     alignSelf: 'stretch',

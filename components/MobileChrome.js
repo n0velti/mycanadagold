@@ -13,7 +13,9 @@ import {
 import {
   CANVAS,
   MOBILE,
+  MOBILE_FILTER_INSET,
   MOBILE_FILTER_SIZE,
+  MOBILE_TOP_FILTER_SIZE,
   NAV_ICON_ACTIVE,
   NAV_ICON_INACTIVE,
   NAV_TAB_ACTIVE_BG,
@@ -76,13 +78,96 @@ export function MobileSafeTop() {
   );
 }
 
-export function MobileFilterLines({ color }) {
+export function MobileFilterLines({ color, large = false }) {
   return (
-    <View style={styles.filterLines}>
-      <View style={[styles.filterLine, { width: 15, backgroundColor: color }]} />
-      <View style={[styles.filterLine, { width: 11, backgroundColor: color }]} />
-      <View style={[styles.filterLine, { width: 7, backgroundColor: color }]} />
+    <View style={[styles.filterLines, large && styles.filterLinesLarge]}>
+      <View style={[styles.filterLine, large && styles.filterLineLarge, { width: large ? 20 : 15, backgroundColor: color }]} />
+      <View style={[styles.filterLine, large && styles.filterLineLarge, { width: large ? 14 : 11, backgroundColor: color }]} />
+      <View style={[styles.filterLine, large && styles.filterLineLarge, { width: large ? 9 : 7, backgroundColor: color }]} />
     </View>
+  );
+}
+
+/** 44pt chrome circle used on Home and Triage — filter / back / apps. */
+export function MobileChromeCircle({
+  buttonRef,
+  active = false,
+  onPress,
+  onLayout,
+  accessibilityLabel,
+  accessibilityState,
+  style,
+  children,
+}) {
+  return (
+    <Pressable
+      ref={buttonRef}
+      hitSlop={10}
+      onLayout={onLayout}
+      onPress={onPress}
+      style={[styles.chromeCircle, style]}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityState={accessibilityState}
+    >
+      <BlurView
+        intensity={32}
+        tint="light"
+        style={styles.chromeCircleBlur}
+        {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-bar' } : null)}
+      >
+        {children || <MobileFilterLines color={active ? NAV_ICON_ACTIVE : '#3A3A3C'} large />}
+      </BlurView>
+    </Pressable>
+  );
+}
+
+export function MobileFilterDock({ children, side = 'right', style }) {
+  return (
+    <View
+      pointerEvents="box-none"
+      style={[
+        styles.filterDock,
+        side === 'left' ? styles.filterDockLeft : styles.filterDockRight,
+        style,
+      ]}
+    >
+      {children}
+    </View>
+  );
+}
+
+export function MobileFilterSheet({ visible, top, right, onClose, children }) {
+  if (!visible) return null;
+  return (
+    <View style={styles.filterLayer}>
+      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close filters" />
+      <View style={[styles.filterCard, { top, right }]}>{children}</View>
+    </View>
+  );
+}
+
+export function MobileFilterSheetLabel({ children }) {
+  return <Text style={styles.filterSheetLabel}>{children}</Text>;
+}
+
+export function MobileFilterSheetDivider() {
+  return <View style={styles.filterSheetDivider} />;
+}
+
+export function MobileFilterSheetAction({ icon, iconColor = '#fff', iconBg, label, onPress, accessibilityLabel }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={styles.filterSheetAction}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel || label}
+    >
+      <View style={[styles.filterSheetActionIcon, iconBg ? { backgroundColor: iconBg } : null]}>
+        <Ionicons name={icon} size={16} color={iconColor} />
+      </View>
+      <Text style={styles.filterSheetActionLabel}>{label}</Text>
+    </Pressable>
   );
 }
 
@@ -626,9 +711,119 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
+  filterLinesLarge: {
+    width: 20,
+    height: 15,
+  },
   filterLine: {
     height: 1.5,
     borderRadius: 1,
+  },
+  filterLineLarge: {
+    height: 2,
+  },
+  chromeCircle: {
+    width: MOBILE_TOP_FILTER_SIZE,
+    height: MOBILE_TOP_FILTER_SIZE,
+    borderRadius: MOBILE_TOP_FILTER_SIZE / 2,
+    overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(0,0,0,0.08)',
+    ...Platform.select({
+      web: {
+        cursor: 'pointer',
+        boxShadow: '0 1px 6px rgba(0,0,0,0.1)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOpacity: 0.1,
+        shadowRadius: 6,
+        shadowOffset: { width: 0, height: 1 },
+        elevation: 3,
+      },
+    }),
+  },
+  chromeCircleBlur: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: MOBILE_TOP_FILTER_SIZE / 2,
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(252,252,251,0.92)',
+    ...Platform.select({
+      web: {
+        backdropFilter: 'saturate(120%) blur(12px)',
+        WebkitBackdropFilter: 'saturate(120%) blur(12px)',
+      },
+      default: {},
+    }),
+  },
+  filterDock: {
+    position: 'absolute',
+    top: 8,
+    zIndex: 24,
+  },
+  filterDockRight: {
+    right: MOBILE_FILTER_INSET,
+  },
+  filterDockLeft: {
+    left: MOBILE_FILTER_INSET,
+  },
+  filterLayer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 20,
+  },
+  filterCard: {
+    position: 'absolute',
+    width: 308,
+    maxWidth: '92%',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 12,
+    gap: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(60, 60, 67, 0.18)',
+  },
+  filterSheetLabel: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+    textTransform: 'uppercase',
+    paddingHorizontal: 4,
+  },
+  filterSheetDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(60, 60, 67, 0.18)',
+    marginHorizontal: 4,
+  },
+  filterSheetAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minHeight: 40,
+    paddingHorizontal: 4,
+    borderRadius: 10,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  filterSheetActionIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1F8A4E',
+  },
+  filterSheetActionLabel: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    letterSpacing: 0,
   },
   tabBarDock: {
     position: 'absolute',
