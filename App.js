@@ -4558,7 +4558,9 @@ const HomeStoreCard = memo(function HomeStoreCard({
           accessibilityElementsHidden={false}
         >
           <HomeStoreMetric icon="mail" stats={emailStats} label="Email capture" stretch />
+          <View style={styles.igHomeStoreMetricRule} />
           <HomeStoreMetric icon="call" stats={phoneStats} label="Phone answer rate" stretch />
+          <View style={styles.igHomeStoreMetricRule} />
           <HomeStoreMetric icon="star" stats={reviewStats} label="Reviews" stretch />
         </View>
       )}
@@ -13694,7 +13696,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     alignSelf: 'flex-start',
-    gap: 8,
+    gap: 0,
+    paddingVertical: 3,
+    paddingHorizontal: 2,
+    borderRadius: 999,
+    backgroundColor: MOBILE.bg,
+    overflow: 'hidden',
   },
   igHomeStoreMetric: {
     flexGrow: 0,
@@ -13702,6 +13709,13 @@ const styles = StyleSheet.create({
     width: 'auto',
     minWidth: 0,
     gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  igHomeStoreMetricRule: {
+    width: StyleSheet.hairlineWidth,
+    height: 12,
+    backgroundColor: MOBILE.separator,
   },
   igHomeStoreMetricText: {
     width: undefined,
