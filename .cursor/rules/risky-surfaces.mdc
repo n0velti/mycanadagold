@@ -1,0 +1,33 @@
+---
+description: Auth, payments, FINTRAC, secrets, and RLS — do not weaken
+globs:
+  - lib/auth.js
+  - lib/supabase.js
+  - lib/proxy.js
+  - lib/secureAuthStorage*.js
+  - lib/payments.js
+  - lib/moneris.js
+  - lib/fintrac*.js
+  - lib/cash*.js
+  - lib/permissions.js
+  - components/LoginScreen.js
+  - components/DebitScreen.js
+  - components/FintracScreen.js
+  - components/PermissionsPanel.js
+  - supabase/**/*
+  - scripts/check-bundle-secrets.js
+  - vercel.json
+  - public/index.html
+  - .env*
+---
+
+# Risky surfaces
+
+Read `AGENTS.md` and the `README.md` access model before editing these files.
+
+- **Auth** is Aureus → `aureus-login` → Supabase JWT. No self-signup. RLS uses `is_active_staff()` + `app_metadata.aureus_user_id` (not `provider`).
+- **Third-party HTTP** goes through `lib/proxy.js` / the `proxy` function. Vendor keys stay in function secrets (`supabase/.env.local`), never in `EXPO_PUBLIC_*` or `lib/`.
+- **Payments / cash / FINTRAC** move real money and customer PII. No extra logging of tokens, LCTR drafts, card data, or till counts.
+- **`aureus-login` and `trade-capture` have `verify_jwt` off** because the caller is anonymous or token-gated. Do not enable it without another credential story.
+- New SQL: RLS forced, grants explicit, `(select is_active_staff())` / `(select auth.uid())` for InitPlan.
+- Keep `npm run check:secrets` in the Vercel build. Do not add an `api/` directory (Vercel would compile it as serverless). Do not change Vercel project settings from here.
