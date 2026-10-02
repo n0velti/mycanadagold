@@ -56,11 +56,14 @@ import {
   groupAgentConversations,
   listAgentRequests,
   newAgentConversationId,
+  requestStatusLine,
+  subscribeAgentRequests,
 } from '../lib/agentRequests';
 import { fetchAureusEmployee } from '../lib/aureusEmployees';
 import { prepareAiChatSession, sendAiChatMessage, titleAiChat } from '../lib/aiChat';
 import { OPENROUTER_MODELS } from '../lib/openrouter';
 import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
+import { useLiveRefresh } from '../lib/liveRefresh';
 import { CANVAS, mobileSafeBottom } from '../lib/mobileUi';
 import { listStaffProfiles, useAppAccess } from '../lib/permissions';
 import ProfilePhotoModal from './ProfilePhotoModal';
@@ -604,6 +607,11 @@ function MessageBubble({
             ]}
           >
             <MessageBody body={message.body} mine={mine} />
+            {mine && message.requestStatusLine ? (
+              <Text style={[styles.requestStatusInBubble, mine && styles.requestStatusInBubbleMine]}>
+                {message.requestStatusLine}
+              </Text>
+            ) : null}
             <HeartBurst trigger={burst} />
           </Pressable>
           {showMore ? (
@@ -762,6 +770,7 @@ export default function MessagesScreen({
   const onConversationOpenChangeRef = useRef(onConversationOpenChange);
   onConversationOpenChangeRef.current = onConversationOpenChange;
   const refreshInboxRef = useRef(async () => []);
+  const refreshAgentRequestsRef = useRef(async () => {});
 
   useEffect(() => {
     onConversationOpenChangeRef.current?.(Boolean(isMobile && activeId));
@@ -832,6 +841,7 @@ export default function MessagesScreen({
       if (agentThread) {
         setMessages(agentMessagesRef.current[conversationId] || []);
         setLoadingThread(false);
+        void refreshAgentRequestsRef.current();
         return;
       }
       if (!skipLoad) setLoadingThread(true);
@@ -1252,6 +1262,9 @@ export default function MessagesScreen({
           isAssistant: false,
           deliveryState: 'sent',
           requestStatus: saved.status,
+          approvalState: saved.approvalState,
+          approvalReason: saved.approvalReason,
+          requestStatusLine: requestStatusLine(saved),
         };
         setMessages((current) => mergeSentMessage(current, localKey, tempId, sentMessage));
         await forwardAgentRequest(saved);
@@ -1260,14 +1273,15 @@ export default function MessagesScreen({
           id: `${saved.id}-ack`,
           conversationId,
           senderId: null,
-          body: agentReceivedCopy(saved.status),
-          createdAt: saved.updatedAt || sentAt,
+          body: agentReceivedCopy(saved),
+          createdAt: sentAt,
           likedByMe: false,
           likeCount: 0,
           isAssistant: true,
           isAgentAck: true,
           deliveryState: 'received',
           requestStatus: saved.status,
+          approvalState: saved.approvalState,
         };
         setMessages((current) => {
           const next = mergeSentMessage(current, localKey, tempId, receivedMessage);
@@ -1539,27 +1553,60 @@ export default function MessagesScreen({
     setLoadingThread(false);
   }, []);
 
+  const applyAgentSnapshot = useCallback((grouped) => {
+    setAgentInbox((current) => {
+      const persisted = new Set(grouped.inbox.map((row) => row.conversationId));
+      const locals = current.filter((row) => row.isAgent && !persisted.has(row.conversationId));
+      return [...grouped.inbox, ...locals];
+    });
+    setAgentMessages((current) => {
+      const next = { ...grouped.messages };
+      Object.keys(current).forEach((id) => {
+        const local = current[id] || [];
+        const server = next[id];
+        if (!server) {
+          next[id] = local;
+          return;
+        }
+        const seen = new Set(server.map((item) => item.id));
+        const extras = local.filter((item) => !seen.has(item.id));
+        next[id] = extras.length ? [...server, ...extras] : server;
+      });
+      return next;
+    });
+    const openId = activeIdRef.current;
+    if (openId && grouped.messages[openId]) {
+      setMessages((current) => {
+        const seen = new Set(grouped.messages[openId].map((item) => item.id));
+        const extras = current.filter((item) => !seen.has(item.id));
+        return extras.length ? [...grouped.messages[openId], ...extras] : grouped.messages[openId];
+      });
+    }
+  }, []);
+
+  const refreshAgentRequests = useCallback(async () => {
+    try {
+      const rows = await listAgentRequests();
+      applyAgentSnapshot(groupAgentConversations(rows, myId));
+    } catch {
+      // Table is not on the live project until this migration is applied.
+    }
+  }, [applyAgentSnapshot, myId]);
+
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const rows = await listAgentRequests();
-        if (cancelled) return;
-        const grouped = groupAgentConversations(rows, myId);
-        setAgentInbox((current) => {
-          const persisted = new Set(grouped.inbox.map((row) => row.conversationId));
-          const locals = current.filter((row) => row.isAgent && !persisted.has(row.conversationId));
-          return [...grouped.inbox, ...locals];
-        });
-        setAgentMessages((current) => ({ ...grouped.messages, ...current }));
-      } catch {
-        // Table is not on the live project until this migration is applied.
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [myId]);
+    void refreshAgentRequests();
+  }, [refreshAgentRequests]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeAgentRequests(() => {
+      void refreshAgentRequests();
+    });
+    return unsubscribe;
+  }, [refreshAgentRequests]);
+
+  refreshAgentRequestsRef.current = refreshAgentRequests;
+
+  useLiveRefresh(refreshAgentRequests, 20_000, Boolean(myId));
 
   const threadLive = Boolean(activeId && activeThread);
   const memberIds = new Set((activeThread?.members || []).map((person) => person.id));
@@ -1680,7 +1727,9 @@ export default function MessagesScreen({
       const selected = row.conversationId === activeId;
       const unread = row.unreadCount > 0;
       const senderName = row.lastMessageIsAssistant
-        ? 'MyCanadaGold AI'
+        ? row.isAgent
+          ? AGENT_CONVERSATION_TITLE
+          : 'MyCanadaGold AI'
         : row.lastMessageSenderId === myId
           ? 'You'
           : firstNameOf((row.members || []).find((person) => person.id === row.lastMessageSenderId));
@@ -3242,6 +3291,16 @@ const styles = StyleSheet.create({
   },
   bubbleTextMine: {
     color: '#fff',
+  },
+  requestStatusInBubble: {
+    fontFamily,
+    fontSize: 12,
+    lineHeight: 16,
+    color: '#636366',
+    marginTop: 6,
+  },
+  requestStatusInBubbleMine: {
+    color: 'rgba(255,255,255,0.78)',
   },
   aiMention: {
     color: AI_PURPLE,
