@@ -8412,7 +8412,15 @@ export default function App() {
                   employeeType: profile.employeeType,
                   locationId: profile.locationId,
                   locationName: profile.locationName,
+                  canViewBonusData:
+                    profile.canViewBonusData == null
+                      ? current.profile.canViewBonusData
+                      : profile.canViewBonusData,
+                  bonusEmployeeVisibility:
+                    profile.bonusEmployeeVisibility || current.profile.bonusEmployeeVisibility,
                 },
+                bonusAccess: profile.bonusAccess || current.bonusAccess,
+                bonusAuth: profile.bonusAuth || current.bonusAuth,
               };
             });
           },

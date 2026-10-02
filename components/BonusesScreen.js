@@ -17,6 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAppAccess } from '../lib/permissions';
 import { CANVAS, MOBILE_BREAKPOINT, mobileSafeBottom, useIsMobile } from '../lib/mobileUi';
 import { useHeldValue, useRightDrawerAnimation } from './TriageKit';
+import { BONUS_ACCESS_DENIED, canViewBonusReviewData } from '../lib/auth';
 import {
   buildBonusBoard,
   canViewAllBonusCounts,
@@ -765,6 +766,13 @@ export default function BonusesScreen({
       if (!session?.token) {
         setBoard(null);
         setError('');
+        return;
+      }
+      if (canViewBonusReviewData(session) === false) {
+        setBoard(null);
+        setError(BONUS_ACCESS_DENIED);
+        setLoading(false);
+        setRefreshing(false);
         return;
       }
 

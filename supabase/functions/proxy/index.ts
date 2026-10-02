@@ -29,6 +29,8 @@
  *   /proxy/gmail/mailbox                   POST  → Gmail inbox / sent list
  *   /proxy/gmail/message                   GET   → one Gmail message body
  *   /proxy/google/local-boq                GET   → Google local reviews (GetLocalBoqProxy)
+ *   /proxy/bonus/google-reviews            GET   → same Google feed, bonuses-only grant
+ *   /proxy/bonus/roster                    POST  → POS /employees with the caller's own tokens
  *   /proxy/canadagold/page                 GET   → canadagold.ca buy/sell price pages
  *   /proxy/moneris/cloud                   POST  → Moneris Cloud (Move 5000 / Go)
  *   /proxy/moneris/poll                    POST  → poll a Moneris receipt URL
@@ -56,6 +58,7 @@
  */
 import { corsHeaders, error, json, preflight, readJson, securityHeaders, sha256Hex } from '../_shared/http.ts';
 import { adminClient, requireActiveStaff, StaffAuthError, type StaffContext } from '../_shared/staff.ts';
+import { fetchEmployeeDirectory, posSystemFromBaseUrl, POS_SYSTEMS } from '../_shared/aureus.ts';
 import {
   handleDevTicketDecide,
   handleDevTicketLaunch,
@@ -3690,6 +3693,82 @@ async function fetchGoogleBoqPayload(search: string, cookie: string): Promise<un
     if ((first as Error)?.message === 'html') throw first;
     return parseGoogleRpcJson(new TextDecoder('latin1').decode(bytes));
   }
+}
+
+const BONUS_ACCESS_DENIED =
+  'This Aureus account cannot see employees and their names, so bonus and review data stay hidden.';
+
+function requireBonusDataAccess(req: Request, staff: StaffContext): Response | null {
+  if (staff.canViewBonusData) return null;
+  return error(req, 403, BONUS_ACCESS_DENIED, 'forbidden');
+}
+
+async function handleBonusGoogleReviews(
+  req: Request,
+  staff: StaffContext,
+  query: URLSearchParams,
+): Promise<Response> {
+  const denied = requireBonusDataAccess(req, staff);
+  if (denied) return denied;
+  return handleGoogleBoq(req, query);
+}
+
+async function handleBonusRoster(req: Request, staff: StaffContext): Promise<Response> {
+  if (req.method !== 'POST') return error(req, 405, 'Use POST.', 'method_not_allowed');
+  const denied = requireBonusDataAccess(req, staff);
+  if (denied) return denied;
+
+  let body: { systems?: Array<{ key?: string; token?: string; baseUrl?: string }> };
+  try {
+    body = await readJson(req);
+  } catch (err) {
+    return error(req, 400, err instanceof Error ? err.message : 'Invalid request.', 'bad_request');
+  }
+
+  const requested = Array.isArray(body?.systems) ? body.systems : [];
+  const systems = POS_SYSTEMS.map((system) => {
+    const match = requested.find((row) => String(row?.key || '').trim() === system.key);
+    const token = String(match?.token || '').trim();
+    const baseUrl = posSystemFromBaseUrl(String(match?.baseUrl || system.baseUrl))?.baseUrl || system.baseUrl;
+    return { ...system, token, baseUrl };
+  });
+
+  const batches = await Promise.all(
+    systems.map(async (system) => {
+      if (!system.token) {
+        return {
+          key: system.key,
+          label: system.label,
+          baseUrl: system.baseUrl,
+          ok: false,
+          rows: [] as unknown[],
+          error: `No ${system.label} token for the bonuses path.`,
+        };
+      }
+      try {
+        const rows = await fetchEmployeeDirectory(system.baseUrl, system.token);
+        return {
+          key: system.key,
+          label: system.label,
+          baseUrl: system.baseUrl,
+          ok: true,
+          rows,
+          error: '',
+        };
+      } catch (err) {
+        return {
+          key: system.key,
+          label: system.label,
+          baseUrl: system.baseUrl,
+          ok: false,
+          rows: [] as unknown[],
+          error: err instanceof Error ? err.message : `Failed to load employees (${system.label}).`,
+        };
+      }
+    }),
+  );
+
+  return json(req, 200, { systems: batches });
 }
 
 async function handleGoogleBoq(req: Request, query: URLSearchParams): Promise<Response> {
@@ -8122,6 +8201,12 @@ Deno.serve(async (req) => {
     }
     if (path === '/google/local-boq') {
       return await handleGoogleBoq(req, query);
+    }
+    if (path === '/bonus/google-reviews') {
+      return await handleBonusGoogleReviews(req, staff, query);
+    }
+    if (path === '/bonus/roster') {
+      return await handleBonusRoster(req, staff);
     }
     if (path === '/canadagold/page' && req.method === 'GET') {
       return await handleCanadaGoldPage(req, query);
