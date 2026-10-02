@@ -108,6 +108,7 @@ import { readHoursOAuthCallback } from './lib/ripplingTime';
 import { readGmailOAuthCallback } from './lib/gmail';
 import { clearClockedIn, ClockedInMark, startClockedInSync, useIsClockedIn } from './lib/clockedIn';
 import StoreSnapshotPanel from './components/StoreSnapshotPanel';
+import TriageInsightsPanel from './components/TriageInsightsPanel';
 import TxnCashBreakdownModal, { TxnCashIcon } from './components/TxnCashBreakdownModal';
 import { AUREUS_TX_LIVE_MS, useLiveRefresh } from './lib/liveRefresh';
 import { capturePurchasePriceCatalog } from './lib/priceCheckSettings';
@@ -3062,7 +3063,15 @@ function TransactionTicketBody({
   );
 }
 
-function TransactionDetailDrawer({ visible, summary, detail, loading, error, onClose }) {
+function TransactionDetailDrawer({
+  visible,
+  summary,
+  detail,
+  loading,
+  error,
+  onClose,
+  fromRight = false,
+}) {
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
   const isMobile = windowWidth < MOBILE_BREAKPOINT;
   const [activeApp, setActiveApp] = useState(null);
@@ -3076,11 +3085,12 @@ function TransactionDetailDrawer({ visible, summary, detail, loading, error, onC
         Math.max(Math.round(windowWidth * 0.82), 640),
         Math.round(windowWidth - 56),
       );
-  const slideDistance = panelWidth + railWidth;
-  const sideAnim = useRightDrawerAnimation(!isMobile && visible, slideDistance);
-  const upAnim = useUpSheetAnimation(isMobile && visible, windowHeight);
-  const mounted = isMobile ? upAnim.mounted : sideAnim.mounted;
-  const slide = isMobile ? upAnim.slide : sideAnim.slide;
+  const pushRight = isMobile && fromRight;
+  const slideDistance = pushRight ? windowWidth : panelWidth + railWidth;
+  const sideAnim = useRightDrawerAnimation((!isMobile || pushRight) && visible, slideDistance);
+  const upAnim = useUpSheetAnimation(isMobile && !pushRight && visible, windowHeight);
+  const mounted = isMobile && !pushRight ? upAnim.mounted : sideAnim.mounted;
+  const slide = isMobile && !pushRight ? upAnim.slide : sideAnim.slide;
   const backdrop = sideAnim.backdrop;
   const heldSummary = useHeldValue(summary);
   const heldDetail = useHeldValue(detail);
@@ -3113,17 +3123,18 @@ function TransactionDetailDrawer({ visible, summary, detail, loading, error, onC
   const delivery = heldDetail ? documentDeliveryState(heldDetail, items) : null;
   const paymentStatus = String(heldDetail?.payment_status || '').trim();
   const activeTool = visibleTabs.find((tab) => tab.key === activeApp);
-  const occurred = [heldSummary.dateLabel, heldSummary.timeLabel].filter(Boolean).join(' · ');
-  const paymentLabel =
-    heldSummary.paymentBreakdownLabel ||
-    heldSummary.paymentMethodLabel ||
-    paymentStatus ||
-    '—';
 
   if (isMobile) {
     return (
       <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose}>
-        <Animated.View style={[styles.buyTxSheet, { transform: [{ translateY: slide }] }]}>
+        <Animated.View
+          style={[
+            styles.buyTxSheet,
+            {
+              transform: pushRight ? [{ translateX: slide }] : [{ translateY: slide }],
+            },
+          ]}
+        >
           <MobileSafeTop />
           <MobileNavHeader
             title={heldSummary.reference || docKind}
@@ -3136,116 +3147,13 @@ function TransactionDetailDrawer({ visible, summary, detail, loading, error, onC
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
           >
-            <View style={styles.buyTxCard}>
-              <View style={styles.buyTxTotalsRow}>
-                <Text style={styles.buyTxTotalsLabel}>{docKind}</Text>
-                <Text style={styles.buyTxTotalsAmount}>{heldSummary.reference || '—'}</Text>
-              </View>
-              <View style={[styles.buyTxTotalsRow, styles.buyTxTotalsGrand]}>
-                <Text style={styles.buyTxTotalsGrandLabel}>Total</Text>
-                <Text style={styles.buyTxTotalsGrandAmount}>{formatAmount(totalAmount)}</Text>
-              </View>
-            </View>
-
-            <View style={styles.buyTxCard}>
-              <BuyTicketRow label="Customer" value={clientName} sub={client?.email || client?.phone} />
-              <BuyTicketRow label="Type" value={docLabel} />
-              <BuyTicketRow
-                label="Status"
-                value={
-                  [allocation?.label, delivery?.label, paymentStatus].filter(Boolean).join(' · ') || 'On file'
-                }
-              />
-              <BuyTicketRow label="Store" value={locationName} sub={locationLine} />
-              <BuyTicketRow label="Employee" value={heldSummary.employeeName} />
-              <BuyTicketRow label="Payment" value={paymentLabel} />
-              <BuyTicketRow label="Date" value={occurred || '—'} last />
-            </View>
-
-            <Text style={styles.buyTxSection}>Items</Text>
-            <View style={styles.buyTxCard}>
-              {loading ? (
-                <View style={styles.buyTxLoading}>
-                  <ActivityIndicator color="#1F8A4E" />
-                </View>
-              ) : error ? (
-                <Text style={styles.buyTxEmpty}>{error}</Text>
-              ) : items.length === 0 ? (
-                <Text style={styles.buyTxEmpty}>No line items</Text>
-              ) : (
-                items.map((item, index) => {
-                  const name = lineItemName(item);
-                  const meta = lineItemMeta(item);
-                  const images = lineItemImages(item);
-                  const money = lineItemMoney(item);
-                  const unitType = item?.unit_type || (money.grossQuantity ? 'g' : '');
-                  return (
-                    <View
-                      key={item.id || `${name}-${index}`}
-                      style={[styles.buyTxItemRow, index === items.length - 1 && !heldDetail?.total_charges && styles.buyTxItemRowLast]}
-                    >
-                      <LineItemThumb urls={images} name={name} />
-                      <View style={styles.buyTxItemCopy}>
-                        <Text style={styles.buyTxItemName} numberOfLines={2}>
-                          {name}
-                        </Text>
-                        {meta ? (
-                          <Text style={styles.buyTxItemMeta} numberOfLines={1}>
-                            {meta}
-                          </Text>
-                        ) : null}
-                        <Text style={styles.buyTxItemAmount}>{formatAmount(money.lineTotal)}</Text>
-                      </View>
-                      <View style={styles.buyTxItemQty}>
-                        <Text style={styles.buyTxItemQtyValue}>{formatLineQty(lineDeliveryState(item).ordered)}</Text>
-                        <Text style={styles.buyTxItemQtyUnit}>
-                          {formatUnitCost(money.displayUnitPrice, unitType)}
-                        </Text>
-                      </View>
-                    </View>
-                  );
-                })
-              )}
-              {heldDetail?.total_charges ? (
-                <View style={styles.buyTxItemRow}>
-                  <Text style={styles.buyTxItemMeta}>Charges</Text>
-                  <Text style={styles.buyTxItemAmount}>{formatAmount(heldDetail.total_charges)}</Text>
-                </View>
-              ) : null}
-            </View>
-
-            {!loading && payments.length > 0 ? (
-              <>
-                <Text style={styles.buyTxSection}>Payments</Text>
-                <View style={styles.buyTxCard}>
-                  {payments.map((entry, index) => {
-                    const payment = entry.payment || entry;
-                    const method =
-                      payment.payment_type?.name ||
-                      entry.payment?.payment_type?.name ||
-                      'Payment';
-                    return (
-                      <BuyTicketRow
-                        key={entry.id || payment.id || `${method}-${index}`}
-                        label={method}
-                        value={formatAmount(entry.amount ?? payment.amount)}
-                        sub={[payment.status, payment.date].filter(Boolean).join(' · ')}
-                        last={index === payments.length - 1}
-                      />
-                    );
-                  })}
-                </View>
-              </>
-            ) : null}
-
-            {heldDetail?.comments ? (
-              <>
-                <Text style={styles.buyTxSection}>Notes</Text>
-                <View style={styles.buyTxCard}>
-                  <Text style={styles.buyTxNotes}>{heldDetail.comments}</Text>
-                </View>
-              </>
-            ) : null}
+            <TransactionTicketBody
+              summary={heldSummary}
+              detail={heldDetail}
+              loading={loading}
+              error={error}
+              part="body"
+            />
           </ScrollView>
         </Animated.View>
       </Modal>
@@ -3869,18 +3777,6 @@ function HomeStoreDrawer({
     setDetailLoading(false);
   }, []);
 
-  const transactionTicket =
-    isMobile && selectedRow ? (
-      <TransactionTicketBody
-        summary={selectedRow}
-        detail={detail}
-        loading={detailLoading}
-        error={detailError}
-        onClose={closeDetail}
-        embedded
-      />
-    ) : null;
-
   const ensurePaymentBreakdown = useCallback(
     async (row) => {
       if (!session?.token || !row) return row?.paymentBreakdownLabel || '';
@@ -3982,7 +3878,6 @@ function HomeStoreDrawer({
                   desktopApps={tabStrip}
                   appsOpen={appsOpen}
                   onAppsOpenChange={onAppsOpenChange}
-                  transactionTicket={transactionTicket}
                   embeddedApp={
                     STORE_SNAPSHOT_TABS.has(activeTab) ? null : (
                       <ScreenGate resetKey={activeTab}>
@@ -4088,16 +3983,15 @@ function HomeStoreDrawer({
     <>
       {drawerTree}
 
-      {isMobile ? null : (
-        <TransactionDetailDrawer
-          visible={Boolean(selectedRow)}
-          summary={selectedRow}
-          detail={detail}
-          loading={detailLoading}
-          error={detailError}
-          onClose={closeDetail}
-        />
-      )}
+      <TransactionDetailDrawer
+        visible={Boolean(selectedRow)}
+        summary={selectedRow}
+        detail={detail}
+        loading={detailLoading}
+        error={detailError}
+        onClose={closeDetail}
+        fromRight={isMobile}
+      />
     </>
   );
 }
@@ -4558,7 +4452,9 @@ const HomeStoreCard = memo(function HomeStoreCard({
           accessibilityElementsHidden={false}
         >
           <HomeStoreMetric icon="mail" stats={emailStats} label="Email capture" stretch />
+          <View style={styles.igHomeStoreMetricRule} />
           <HomeStoreMetric icon="call" stats={phoneStats} label="Phone answer rate" stretch />
+          <View style={styles.igHomeStoreMetricRule} />
           <HomeStoreMetric icon="star" stats={reviewStats} label="Reviews" stretch />
         </View>
       )}
@@ -5768,6 +5664,7 @@ function HomeScreen({
   const [heroFocus, setHeroFocus] = useState('all');
   const [storeRows, setStoreRows] = useState([]);
   const [selectedStore, setSelectedStore] = useState(null);
+  const [insightsStore, setInsightsStore] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [staff, setStaff] = useState([]);
@@ -5993,6 +5890,7 @@ function HomeScreen({
       if (!allowHomeFilters && !rowMatchesAllocatedStore(row, assignedStore)) return;
       setStoreAppsOpen(false);
       setFiltersOpen(false);
+      setInsightsStore('');
       setSelectedStore(row);
       if (Platform.OS === 'web' && typeof window !== 'undefined' && window.history) {
         const state = { cgoldHomeStore: row.store };
@@ -6018,8 +5916,13 @@ function HomeScreen({
     setSelectedStore(null);
   }, [selectedStore, canOpenHomeStore]);
 
+  const closeInsights = useCallback(() => {
+    setInsightsStore('');
+  }, []);
+
   const closeStore = useCallback(() => {
     setStoreAppsOpen(false);
+    setInsightsStore('');
     setSelectedStore(null);
     if (
       Platform.OS === 'web' &&
@@ -6055,8 +5958,8 @@ function HomeScreen({
   }, []);
 
   useEffect(() => {
-    onStoreDetailsChange?.(Boolean(selectedStore));
-  }, [onStoreDetailsChange, selectedStore]);
+    onStoreDetailsChange?.(Boolean(selectedStore || insightsStore));
+  }, [insightsStore, onStoreDetailsChange, selectedStore]);
 
   useEffect(() => () => onStoreDetailsChange?.(false), [onStoreDetailsChange]);
   const homeRootTickRef = useRef(homeRootTick);
@@ -6328,7 +6231,7 @@ function HomeScreen({
         ref={homeRootRef}
         style={[styles.toolsScreen, styles.canvasFill, styles.igHomeScreen, !isMobile && styles.igHomeDesktopFeed]}
       >
-      {!selectedStore && !isMobile ? (
+      {!selectedStore && !insightsStore && !isMobile ? (
         <View pointerEvents="box-none" style={[homeContentInset, styles.igHomeChromeShell]}>
           <View style={[styles.igHomeChromeRow, styles.igHomeChromeRowDesktop]}>
             <View style={[styles.igHomeChromeControls, styles.igHomeChromeControlsFull]}>
@@ -6338,7 +6241,7 @@ function HomeScreen({
           </View>
         </View>
       ) : null}
-      {isMobile && !selectedStore ? (
+      {isMobile && !selectedStore && !insightsStore ? (
         <View pointerEvents="box-none" style={styles.igHomeFilterDock}>
           <HomeFilterCircle
             buttonRef={filterButtonRef}
@@ -6381,7 +6284,7 @@ function HomeScreen({
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor="#8e8e93" />}
       >
         <View style={homeContentInset}>
-          {!selectedStore && (isMobile || showHomeHero) ? (
+          {!selectedStore && !insightsStore && (isMobile || showHomeHero) ? (
             <View
               style={[
                 styles.igHomePinnedTop,
@@ -6394,7 +6297,7 @@ function HomeScreen({
           ) : null}
           {error ? <Text style={[styles.errorText, styles.homeError]}>{error}</Text> : null}
 
-          {loading && storeRows.length === 0 ? (
+          {insightsStore ? null : loading && storeRows.length === 0 ? (
             <View pointerEvents="auto" style={[styles.homeTableEmpty, styles.igHomeScrollEnd]}>
               <ActivityIndicator color="#1d1d1f" />
             </View>
@@ -6406,7 +6309,7 @@ function HomeScreen({
             </Text>
           ) : null}
         </View>
-        {visibleRows.length > 0 ? (
+        {visibleRows.length > 0 || !selectedStore ? (
           <View style={homeTableInset}>
             <View
               pointerEvents="auto"
@@ -6417,55 +6320,64 @@ function HomeScreen({
                 styles.igHomeTableSection,
                 isMobile && styles.igHomeTableSectionMobile,
                 !isMobile && styles.igHomeDesktopSheet,
-                {
-                  ...(stageHeight > 0 ? { minHeight: stageHeight } : null),
-                },
+                stageHeight > 0 ? { minHeight: stageHeight } : null,
               ]}
             >
-              <HomeStoresTable
-                rows={listedRows}
-                selectedStore={selectedStore}
-                totals={null}
-                staff={staff}
-                startKey={startKey}
-                endKey={endKey}
-                onOpenStore={openStore}
-                onOpenPerson={onOpenPerson}
-                compact={isMobile}
-                showAmounts={!hideHomeAmounts}
-                canOpenStore={canOpenHomeStore}
-                amountFocus={heroFocus}
-              />
+              {visibleRows.length > 0 && !insightsStore ? (
+                <HomeStoresTable
+                  rows={listedRows}
+                  selectedStore={selectedStore}
+                  totals={null}
+                  staff={staff}
+                  startKey={startKey}
+                  endKey={endKey}
+                  onOpenStore={openStore}
+                  onOpenPerson={onOpenPerson}
+                  compact={isMobile}
+                  showAmounts={!hideHomeAmounts}
+                  canOpenStore={canOpenHomeStore}
+                  amountFocus={heroFocus}
+                />
+              ) : null}
+              {!selectedStore ? (
+                <TriageInsightsPanel
+                  selectedStore={insightsStore}
+                  onSelectStore={setInsightsStore}
+                  assignedStore={assignedStore}
+                  allowAllStores={allowHomeFilters}
+                  compact={isMobile}
+                />
+              ) : null}
             </View>
           </View>
         ) : null}
       </ScrollView>
       </View>
 
+      {isMobile && (selectedStore || insightsStore) ? (
+        <HomeFilterCircle
+          large
+          chrome
+          size={HOME_TOP_FILTER_SIZE}
+          onPress={selectedStore ? closeStore : closeInsights}
+          style={styles.igHomeBackDock}
+          accessibilityLabel="Back to Home"
+        >
+          <Ionicons name="chevron-back" size={22} color={TAB_INK} />
+        </HomeFilterCircle>
+      ) : null}
       {isMobile && selectedStore ? (
-        <>
+        <View pointerEvents="box-none" style={styles.igHomeFilterDock}>
           <HomeFilterCircle
             large
             chrome
             size={HOME_TOP_FILTER_SIZE}
-            onPress={closeStore}
-            style={styles.igHomeBackDock}
-            accessibilityLabel="Back to Home"
-          >
-            <Ionicons name="chevron-back" size={22} color={TAB_INK} />
-          </HomeFilterCircle>
-          <View pointerEvents="box-none" style={styles.igHomeFilterDock}>
-            <HomeFilterCircle
-              large
-              chrome
-              size={HOME_TOP_FILTER_SIZE}
-              active={storeAppsOpen}
-              onPress={() => setStoreAppsOpen((open) => !open)}
-              accessibilityLabel={`${selectedStore.store} apps`}
-              accessibilityState={{ expanded: storeAppsOpen }}
-            />
-          </View>
-        </>
+            active={storeAppsOpen}
+            onPress={() => setStoreAppsOpen((open) => !open)}
+            accessibilityLabel={`${selectedStore.store} apps`}
+            accessibilityState={{ expanded: storeAppsOpen }}
+          />
+        </View>
       ) : null}
 
       {isMobile && !selectedStore && filtersOpen ? (
@@ -13694,7 +13606,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     alignSelf: 'flex-start',
-    gap: 8,
+    gap: 0,
+    paddingVertical: 3,
+    paddingHorizontal: 2,
+    borderRadius: 999,
+    backgroundColor: MOBILE.bg,
+    overflow: 'hidden',
   },
   igHomeStoreMetric: {
     flexGrow: 0,
@@ -13702,6 +13619,13 @@ const styles = StyleSheet.create({
     width: 'auto',
     minWidth: 0,
     gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  igHomeStoreMetricRule: {
+    width: StyleSheet.hairlineWidth,
+    height: 12,
+    backgroundColor: MOBILE.separator,
   },
   igHomeStoreMetricText: {
     width: undefined,
