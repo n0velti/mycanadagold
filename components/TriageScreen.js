@@ -17,6 +17,9 @@ import {
   summarizeDailyReceipts,
   useDailyReceipts,
 } from '../lib/triageDailyReceipts';
+import { isStoreScopedTriage } from '../lib/permissions';
+import { allocatedStoreName } from '../lib/profiles';
+import StoreTriagePanel from './StoreTriagePanel';
 import {
   collectAccuracyTriagePos,
   syncTransferWorkflowRemote,
@@ -112,7 +115,24 @@ function ChromeStats({ items, onPress, accessibilityLabel, wide = false, actionL
   );
 }
 
-export default function TriageScreen({
+function StoreScopedTriageScreen({ session, storeFilter, embedded = false }) {
+  const isMobile = useIsMobile();
+  const storeName = storeFilter || allocatedStoreName(session?.profile);
+  return (
+    <View style={[styles.body, embedded && styles.bodyEmbedded, isMobile && styles.bodyMobile]}>
+      <StoreTriagePanel storeName={storeName} variant="app" />
+    </View>
+  );
+}
+
+export default function TriageScreen(props) {
+  if (isStoreScopedTriage(props.session?.profile)) {
+    return <StoreScopedTriageScreen {...props} />;
+  }
+  return <WorkshopTriageScreen {...props} />;
+}
+
+function WorkshopTriageScreen({
   session,
   onRequireLogin,
   storeFilter,
