@@ -67,6 +67,7 @@ import {
   loadRoleAppAccess,
   loadUserAppAccessMap,
   canUseWorkshopLocation,
+  canViewTriageInsights,
   shouldPrefetchTriage,
   useAppAccess,
   visibleAppKeysForProfile,
@@ -974,6 +975,7 @@ const STORE_DRAWER_TAB_KEYS = [
   'emails',
   'reviews',
   'audit',
+  'triage',
   'supplies',
   'settings',
 ];
@@ -3712,6 +3714,7 @@ function HomeStoreDrawer({
   const drawerTabs = STORE_DRAWER_TABS.filter((tab) => {
     if (tab.key === 'settings') return true;
     if (tab.key === 'reviews') return hasApp('reviews') || hasApp('bonuses');
+    if (tab.key === 'triage') return canViewTriageInsights(session?.profile);
     return hasApp(tab.key);
   });
   const storeName = store?.store || '';
@@ -3753,11 +3756,12 @@ function HomeStoreDrawer({
       key === 'overview' ||
       key === 'settings' ||
       hasApp(key) ||
-      (key === 'reviews' && hasApp('bonuses'))
+      (key === 'reviews' && hasApp('bonuses')) ||
+      (key === 'triage' && canViewTriageInsights(session?.profile))
     ) {
       setActiveTab(key);
     }
-  }, [hasApp]);
+  }, [hasApp, session?.profile]);
 
   useEffect(() => {
     const storeChanged = lastStoreNameRef.current !== store?.store;
@@ -4012,6 +4016,14 @@ function HomeStoreDrawer({
                             title="Reviews"
                             onOpenEmails={() => openApp('emails')}
                             onOpenCustomer={onOpenCustomer}
+                          />
+                        ) : activeTab === 'triage' ? (
+                          <TriageScreen
+                            key={heldStore.store}
+                            session={session}
+                            storeFilter={heldStore.store}
+                            embedded
+                            onRequireLogin={() => {}}
                           />
                         ) : (
                           <StoreSettingsPanel
