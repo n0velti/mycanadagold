@@ -13685,7 +13685,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     alignSelf: 'flex-start',
-    gap: 4,
+    gap: 8,
   },
   igHomeStoreMetric: {
     flexGrow: 0,
