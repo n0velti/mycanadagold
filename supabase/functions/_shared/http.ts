@@ -33,6 +33,9 @@ function originAllowed(origin: string, list: string[]): boolean {
   if (list.includes(origin)) return true;
   try {
     const url = new URL(origin);
+    if (url.hostname.endsWith('.vercel.app') && list.some((item) => item.includes('*.vercel.app'))) {
+      return true;
+    }
     if (!isLocalHost(url.hostname)) return false;
     return list.some((item) => {
       try {
