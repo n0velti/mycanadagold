@@ -43,6 +43,7 @@
  *   /proxy/ringcentral/recording-content   GET   → call recording audio (media host)
  *   /proxy/ringcentral/ai-webhook          POST  → RingCentral AI job results (signed per job, no staff session)
  *   /proxy/agent/change-request            POST  → isolated hand-off for staff change requests (TODO: no external URL yet)
+ *   /proxy/agent/request-status            POST  → trusted status update (System Admin JWT or AGENT_STATUS_SECRET)
  *
  * AI providers use the company key saved in Settings (System Admin / GM) or,
  * if none is saved, the Edge Function secret. Clients never send vendor keys.
@@ -7745,6 +7746,129 @@ async function handleAgentChangeRequest(
   return json(req, 200, { ok: true, ...result });
 }
 
+const AGENT_STATUSES = new Set(['new', 'in_progress', 'done']);
+const AGENT_APPROVALS = new Set(['pending_review', 'approved', 'not_approved']);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function agentStatusSecret(): string {
+  return String(Deno.env.get('AGENT_STATUS_SECRET') || '').trim();
+}
+
+function hasAgentStatusSecret(req: Request): boolean {
+  return Boolean(String(req.headers.get('x-agent-status-secret') || '').trim());
+}
+
+function agentStatusSecretOk(req: Request): boolean {
+  const expected = agentStatusSecret();
+  const given = String(req.headers.get('x-agent-status-secret') || '').trim();
+  return Boolean(expected) && secretsMatch(expected, given);
+}
+
+function readAgentStatusPayload(body: ArrayBuffer | null): Record<string, unknown> | null {
+  if (!body || !body.byteLength) return {};
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(body)) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Trusted write for approval / progress. The requesting staff member never
+ * reaches this: either a System Admin JWT or AGENT_STATUS_SECRET (the path
+ * the coding agent will use later). Writes the row; a trigger posts the
+ * conversation update. No outbound HTTP.
+ */
+async function handleAgentRequestStatus(
+  req: Request,
+  body: ArrayBuffer | null,
+  source: { via: 'secret' } | { via: 'admin'; staff: StaffContext },
+): Promise<Response> {
+  const payload = readAgentStatusPayload(body);
+  if (!payload) return error(req, 400, 'Invalid JSON.', 'bad_request');
+
+  const requestId = typeof payload.id === 'string' ? payload.id.trim() : '';
+  if (!requestId || !UUID_RE.test(requestId)) {
+    return error(req, 400, 'A request id is required.', 'bad_request');
+  }
+
+  const nextStatus = typeof payload.status === 'string' ? payload.status.trim().toLowerCase() : '';
+  const nextApproval =
+    typeof payload.approvalState === 'string'
+      ? payload.approvalState.trim().toLowerCase()
+      : typeof payload.approval_state === 'string'
+        ? payload.approval_state.trim().toLowerCase()
+        : '';
+  const reasonGiven = Object.prototype.hasOwnProperty.call(payload, 'reason')
+    || Object.prototype.hasOwnProperty.call(payload, 'approvalReason')
+    || Object.prototype.hasOwnProperty.call(payload, 'approval_reason');
+  const reasonRaw = payload.reason ?? payload.approvalReason ?? payload.approval_reason;
+  const reason = typeof reasonRaw === 'string' ? reasonRaw.trim().slice(0, 500) : '';
+
+  if (nextStatus && !AGENT_STATUSES.has(nextStatus)) {
+    return error(req, 400, 'Unknown request status.', 'bad_request');
+  }
+  if (nextApproval && !AGENT_APPROVALS.has(nextApproval)) {
+    return error(req, 400, 'Unknown approval state.', 'bad_request');
+  }
+  if (!nextStatus && !nextApproval && !reasonGiven) {
+    return error(req, 400, 'Nothing to update.', 'bad_request');
+  }
+
+  const admin = adminClient();
+  const existing = await admin
+    .from('agent_requests')
+    .select('id, conversation_id, sender_id, body, status, approval_state, approval_reason, created_at, updated_at')
+    .eq('id', requestId)
+    .maybeSingle();
+  if (existing.error) {
+    const message = existing.error.message || '';
+    if (/schema cache|does not exist|agent_requests/i.test(message)) {
+      return error(req, 503, 'Agent requests are not available yet.', 'misconfigured');
+    }
+    return error(req, 400, existing.error.message || 'Could not load that request.', 'bad_request');
+  }
+  if (!existing.data) return error(req, 404, 'That request was not found.', 'not_found');
+
+  const patch: Record<string, unknown> = {};
+  if (nextStatus) patch.status = nextStatus;
+  if (nextApproval) patch.approval_state = nextApproval;
+  if (reasonGiven) patch.approval_reason = reason || null;
+  if (
+    (patch.status == null || patch.status === existing.data.status)
+    && (patch.approval_state == null || patch.approval_state === existing.data.approval_state)
+    && (patch.approval_reason === undefined
+      || patch.approval_reason === existing.data.approval_reason
+      || (patch.approval_reason == null && !existing.data.approval_reason))
+  ) {
+    return json(req, 200, {
+      ok: true,
+      unchanged: true,
+      via: source.via,
+      request: existing.data,
+    });
+  }
+
+  const updated = await admin
+    .from('agent_requests')
+    .update(patch)
+    .eq('id', requestId)
+    .select('id, conversation_id, sender_id, body, status, approval_state, approval_reason, created_at, updated_at')
+    .single();
+  if (updated.error) {
+    return error(req, 400, updated.error.message || 'Could not update that request.', 'bad_request');
+  }
+
+  return json(req, 200, {
+    ok: true,
+    unchanged: false,
+    via: source.via,
+    request: updated.data,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -7778,6 +7902,20 @@ Deno.serve(async (req) => {
       const message = err instanceof Error ? err.message : 'Mailbox import failed.';
       console.error('rippling mailbox', message);
       return error(req, 400, message, 'bad_request');
+    }
+  }
+  if (early.path === '/agent/request-status' && req.method === 'POST' && hasAgentStatusSecret(req)) {
+    if (!agentStatusSecretOk(req)) {
+      return error(req, 401, 'Unauthorized.', 'unauthorized');
+    }
+    if (throttled('agent-request-status', 60)) {
+      return error(req, 429, 'Too many status updates.', 'throttled');
+    }
+    try {
+      return await handleAgentRequestStatus(req, await readBody(req), { via: 'secret' });
+    } catch (err) {
+      console.error('agent request status', err instanceof Error ? err.message : err);
+      return error(req, 400, 'Could not update that request.', 'bad_request');
     }
   }
 
@@ -7914,6 +8052,12 @@ Deno.serve(async (req) => {
     }
     if (path === '/agent/change-request' && req.method === 'POST') {
       return await handleAgentChangeRequest(req, staff, await readBody(req));
+    }
+    if (path === '/agent/request-status' && req.method === 'POST') {
+      if (!staff.isSystemAdmin) {
+        return error(req, 403, 'Only a System Admin can update request status.', 'forbidden');
+      }
+      return await handleAgentRequestStatus(req, await readBody(req), { via: 'admin', staff });
     }
     return error(req, 404, 'Unknown proxy route.', 'not_found');
   } catch (err) {
