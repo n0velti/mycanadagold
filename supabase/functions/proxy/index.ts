@@ -42,7 +42,7 @@
  *   /proxy/ringcentral/voicemail-content   GET   → voicemail audio for one message
  *   /proxy/ringcentral/recording-content   GET   → call recording audio (media host)
  *   /proxy/ringcentral/ai-webhook          POST  → RingCentral AI job results (signed per job, no staff session)
- *   /proxy/agent/change-request            POST  → isolated hand-off for staff change requests (TODO: no external URL yet)
+ *   /proxy/agent/change-request            POST  → POST staff change requests to AGENT_WEBHOOK_URL
  *   /proxy/agent/request-status            POST  → trusted status update (System Admin JWT or AGENT_STATUS_SECRET)
  *
  * AI providers use the company key saved in Settings (System Admin / GM) or,
@@ -7713,20 +7713,108 @@ async function handleRingCentralVoicemailContent(req: Request, query: URLSearchP
 // Agent change requests (Direct Messages → the agent)
 // ---------------------------------------------------------------------------
 
+const AGENT_WEBHOOK_TIMEOUT_MS = 8_000;
+
+function agentWebhookUrl(): string {
+  return String(Deno.env.get('AGENT_WEBHOOK_URL') || '').trim();
+}
+
+function agentWebhookKey(): string {
+  return String(Deno.env.get('AGENT_WEBHOOK_KEY') || '').trim();
+}
+
+function asTrimmedString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function profileDisplayName(row: {
+  full_name?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+} | null): string {
+  const full = String(row?.full_name || '').trim();
+  if (full) return full;
+  return [row?.first_name, row?.last_name].map((part) => String(part || '').trim()).filter(Boolean).join(' ');
+}
+
+async function lookupStaffName(staff: StaffContext): Promise<string> {
+  try {
+    const { data } = await adminClient()
+      .from('profiles')
+      .select('full_name, first_name, last_name')
+      .eq('id', staff.userId)
+      .maybeSingle();
+    return profileDisplayName(data);
+  } catch {
+    return '';
+  }
+}
+
 /**
  * Isolated hand-off for staff change requests from Direct Messages.
  *
- * TODO: Forward `payload` to the coding-agent destination (webhook / Cursor Cloud).
- * Do not call any external URL until that destination is configured.
+ * POSTs { id, sender_id, sender_name, sender_email, body, created_at } to
+ * AGENT_WEBHOOK_URL with Authorization: Bearer AGENT_WEBHOOK_KEY.
+ * Missing secrets skip forwarding; webhook errors are logged and swallowed.
  * Keep secrets in function env; never accept them from the client.
  */
-function forwardAgentChangeRequest(
-  _staff: StaffContext,
+async function forwardAgentChangeRequest(
+  staff: StaffContext,
   payload: Record<string, unknown>,
-): { forwarded: false; requestId: string | null } {
-  void _staff;
-  const requestId = typeof payload.id === 'string' ? payload.id : null;
-  return { forwarded: false, requestId };
+): Promise<{ forwarded: boolean; requestId: string | null }> {
+  const requestId = asTrimmedString(payload.id) || null;
+  const url = agentWebhookUrl();
+  const key = agentWebhookKey();
+  if (!url || !key) {
+    return { forwarded: false, requestId };
+  }
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      console.error('agent webhook skipped: invalid url');
+      return { forwarded: false, requestId };
+    }
+  } catch {
+    console.error('agent webhook skipped: invalid url');
+    return { forwarded: false, requestId };
+  }
+
+  const senderName = await lookupStaffName(staff);
+  const outbound = {
+    id: requestId,
+    sender_id: staff.userId,
+    sender_name: senderName,
+    sender_email: staff.email,
+    body: asTrimmedString(payload.body) || asTrimmedString(payload.text),
+    created_at:
+      asTrimmedString(payload.created_at) || asTrimmedString(payload.createdAt) || new Date().toISOString(),
+  };
+
+  try {
+    const upstream = await forward(
+      url,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          Authorization: `Bearer ${key}`,
+        },
+        body: JSON.stringify(outbound),
+      },
+      AGENT_WEBHOOK_TIMEOUT_MS,
+    );
+    if (!upstream.ok) {
+      console.error('agent webhook', upstream.status);
+      await upstream.text().catch(() => '');
+      return { forwarded: false, requestId };
+    }
+    await upstream.text().catch(() => '');
+    return { forwarded: true, requestId };
+  } catch (err) {
+    console.error('agent webhook', err instanceof Error ? err.message : err);
+    return { forwarded: false, requestId };
+  }
 }
 
 async function handleAgentChangeRequest(
@@ -7742,8 +7830,14 @@ async function handleAgentChangeRequest(
       return error(req, 400, 'Invalid JSON.', 'bad_request');
     }
   }
-  const result = forwardAgentChangeRequest(staff, payload);
-  return json(req, 200, { ok: true, ...result });
+  try {
+    const result = await forwardAgentChangeRequest(staff, payload);
+    return json(req, 200, { ok: true, ...result });
+  } catch (err) {
+    console.error('agent change request', err instanceof Error ? err.message : err);
+    const requestId = asTrimmedString(payload.id) || null;
+    return json(req, 200, { ok: true, forwarded: false, requestId });
+  }
 }
 
 const AGENT_STATUSES = new Set(['new', 'in_progress', 'done']);
