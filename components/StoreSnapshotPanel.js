@@ -255,7 +255,7 @@ function DashPinnedApp({ app, value, onOpen, onPress, compact = false, roomy = f
         <View style={[styles.dashPinnedAppIcon, { backgroundColor: app.accent }]}>
           <Ionicons name={filledIonicon(app.icon)} size={13} color="#fff" />
         </View>
-        <Text style={styles.dashPinnedAppLabel} numberOfLines={1}>
+        <Text style={styles.dashPinnedAppLabel} numberOfLines={roomy ? 2 : 1}>
           {app.label === 'Emails' ? 'Email' : app.label}
         </Text>
       </View>
@@ -382,28 +382,30 @@ function StoreHomeHero({
   const heroInset = (
     <View style={[styles.storeHomeHeroInset, !isMobile && styles.storeHomeHeroInsetDesktop]}>
       <View style={styles.storeHomeHeroPrimary}>
-        <View
-          style={[
-            styles.storeHomeHeroMetricBlock,
-            !isMobile && styles.storeHomeHeroMetricBlockDesktop,
-          ]}
-        >
-          <View style={styles.storeHomeHeroMetricMain}>
-            <View style={styles.storeHomeHeroAmountRow}>
-              <Text
-                style={[
-                  styles.storeHomeHeroAmount,
-                  !isMobile && styles.storeHomeHeroAmountDesktop,
-                  empty && styles.storeHomeHeroAmountEmpty,
-                ]}
-                numberOfLines={1}
-                adjustsFontSizeToFit
-                minimumFontScale={0.55}
-              >
-                {empty ? '—' : formatAmount(total)}
-              </Text>
+          <View
+            style={[
+              styles.storeHomeHeroMetricBlock,
+              !isMobile && styles.storeHomeHeroMetricBlockDesktop,
+              isMobile && styles.storeHomeHeroMetricBlockMobile,
+            ]}
+          >
+            <View style={[styles.storeHomeHeroMetricMain, isMobile && styles.storeHomeHeroMetricMainMobile]}>
+              <View style={[styles.storeHomeHeroAmountRow, isMobile && styles.storeHomeHeroAmountRowMobile]}>
+                <Text
+                  style={[
+                    styles.storeHomeHeroAmount,
+                    !isMobile && styles.storeHomeHeroAmountDesktop,
+                    isMobile && styles.storeHomeHeroAmountMobile,
+                    empty && styles.storeHomeHeroAmountEmpty,
+                  ]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.55}
+                >
+                  {empty ? '—' : formatAmount(total)}
+                </Text>
+              </View>
             </View>
-          </View>
           <View
             style={[
               styles.storeHomeHeroStats,
@@ -448,7 +450,9 @@ function StoreHomeHero({
             </View>
           </View>
         </View>
-        <View style={styles.storeHomeHeroContentCol}>{heroInset}</View>
+        <View style={[styles.storeHomeHeroContentCol, isMobile && styles.storeHomeHeroContentColMobile]}>
+          {heroInset}
+        </View>
       </View>
     </View>
   );
@@ -619,10 +623,16 @@ function DashSection({ title, meta, onPress, children, style, headStyle, app, fi
               <Ionicons name={filledIonicon(app.icon)} size={16} color="#fff" />
             </View>
           ) : null}
-          <Text style={app ? styles.dashHeadTitleCard : styles.dashHeadTitle}>{title}</Text>
+          <Text style={app ? styles.dashHeadTitleCard : styles.dashHeadTitle} numberOfLines={1}>
+            {title}
+          </Text>
         </View>
         <View style={styles.dashHeadTrail}>
-          {meta ? <Text style={styles.dashHeadMeta}>{meta}</Text> : null}
+          {meta ? (
+            <Text style={styles.dashHeadMeta} numberOfLines={1}>
+              {meta}
+            </Text>
+          ) : null}
           {onPress ? <Ionicons name="chevron-forward" size={app ? 16 : 14} color={SECONDARY} /> : null}
         </View>
       </Pressable>
@@ -996,6 +1006,8 @@ const TransactionRow = memo(function TransactionRow({
       : null;
 
   if (stacked) {
+    const photoLabel = item.reference || (isBuy ? 'PO' : 'SO');
+    const metaLine = [refLabel, item.timeLabel].filter(Boolean).join(' · ') || '—';
     return (
       <Pressable
         onPress={() => onPress?.(item)}
@@ -1007,9 +1019,9 @@ const TransactionRow = memo(function TransactionRow({
         accessibilityRole="button"
         accessibilityLabel={`${isBuy ? 'PO' : 'SO'} ${item.customerName || ''} ${item.amountLabel || ''}`}
       >
-        <View style={styles.mobileTxThumb}>
+        <View style={styles.mobileTxIconCol}>
           {photos.length ? (
-            <TxnPhotoThumb urls={photos} label={item.reference || (isBuy ? 'PO' : 'SO')} size={44} />
+            <TxnPhotoThumb urls={photos} label={photoLabel} size={48} />
           ) : (
             <View style={[styles.mobileTxKind, isBuy && styles.mobileTxKindBuy]}>
               <Text style={[styles.mobileTxKindText, isBuy && styles.mobileTxKindTextBuy]}>
@@ -1018,26 +1030,29 @@ const TransactionRow = memo(function TransactionRow({
             </View>
           )}
         </View>
-        <View style={styles.mobileTxCopy}>
-          <View style={styles.mobileTxLead}>
-            <Text style={styles.mobileTxCustomer} numberOfLines={1}>
-              {item.customerName || '—'}
-            </Text>
-            <Text style={styles.mobileTxMeta} numberOfLines={1}>
-              {[refLabel, item.timeLabel].filter(Boolean).join(' · ') || '—'}
-            </Text>
-          </View>
-          <View style={styles.mobileTxTrail}>
-            <View style={styles.mobileTxAmount} {...splitHover}>
+        <View style={styles.mobileTxBody}>
+          <View style={styles.mobileTxMain}>
+            <View style={styles.mobileTxCopy}>
+              <Text style={styles.mobileTxCustomer} numberOfLines={2}>
+                {item.customerName || '—'}
+              </Text>
+              <Text style={styles.mobileTxMeta} numberOfLines={2}>
+                {metaLine}
+              </Text>
+              {itemLine ? (
+                <Text style={styles.mobileTxItems} numberOfLines={2}>
+                  {itemLine}
+                </Text>
+              ) : null}
+            </View>
+            <View style={styles.mobileTxTrailing} {...splitHover}>
               <Text style={styles.mobileTxAmountText} numberOfLines={1}>
                 {item.amountLabel || '—'}
               </Text>
             </View>
-            {itemLine ? (
-              <Text style={styles.mobileTxItems} numberOfLines={1}>
-                {itemLine}
-              </Text>
-            ) : null}
+            <View style={styles.mobileTxChevron} pointerEvents="none">
+              <Ionicons name="chevron-forward" size={16} color="#c7c7cc" />
+            </View>
           </View>
         </View>
       </Pressable>
@@ -1962,20 +1977,15 @@ function StoreSnapshotPanel({
     showEmails ||
     showInventory ||
     desktopApps.length > 0;
-  const allAppsApp = {
-    key: 'apps',
-    label: 'All apps',
-    icon: 'apps-outline',
-    accent: '#52525B',
-  };
   const pinnedAppRow = showPinnedApps ? (
-      <View style={[styles.dashPinnedApps, !isMobile && styles.deskPinnedApps]}>
+      <View style={[styles.dashPinnedApps, isMobile && styles.dashPinnedAppsMobile, !isMobile && styles.deskPinnedApps]}>
         {showFinancials ? (
           <DashPinnedApp
             app={SNAPSHOT_APPS.financials}
             value={cashLoading && !cash ? '…' : cash ? formatAmount(cadAmt, 'CAD') : '—'}
             onOpen={openSnapshot}
             selected={listTab === 'financials'}
+            roomy={isMobile}
           />
         ) : null}
         {showPhone ? (
@@ -1984,7 +1994,8 @@ function StoreSnapshotPanel({
             value={phoneRatio.rate == null ? '—' : phoneRatio.ratio}
             onOpen={openSnapshot}
             selected={listTab === 'phone'}
-            compact
+            compact={!isMobile}
+            roomy={isMobile}
           />
         ) : null}
         {showEmails ? (
@@ -1997,7 +2008,8 @@ function StoreSnapshotPanel({
             }
             onOpen={openSnapshot}
             selected={listTab === 'emails'}
-            compact
+            compact={!isMobile}
+            roomy={isMobile}
           />
         ) : null}
         {showInventory ? (
@@ -2006,15 +2018,8 @@ function StoreSnapshotPanel({
             value="Search"
             onOpen={openSnapshot}
             selected={listTab === 'inventory'}
-            compact
-          />
-        ) : null}
-        {isMobile && desktopApps.length ? (
-          <DashPinnedApp
-            app={allAppsApp}
-            onPress={() => onAppsOpenChange?.(!appsOpen)}
-            selected={appsOpen}
-            compact
+            compact={!isMobile}
+            roomy={isMobile}
           />
         ) : null}
         {!isMobile && desktopApps.length ? (
@@ -2151,7 +2156,7 @@ function StoreSnapshotPanel({
 
   const mobileTitle = (
     <View style={styles.dashPinnedTitleBlock}>
-      <Text style={styles.dashPinnedTitle} numberOfLines={1}>
+      <Text style={styles.dashPinnedTitle} numberOfLines={2}>
         {storeName || 'Store'}
       </Text>
       <Text style={styles.dashPinnedDate} numberOfLines={1}>
@@ -2293,7 +2298,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   storeHomeHeroPadMobile: {
-    paddingHorizontal: 16,
+    paddingHorizontal: MOBILE_FILTER_INSET,
   },
   storeHomeHeroPadDesktop: {
     paddingHorizontal: 48,
@@ -2304,7 +2309,7 @@ const styles = StyleSheet.create({
   },
   storeHomePinnedTop: {
     paddingTop: 4,
-    paddingBottom: 20,
+    paddingBottom: 16,
     backgroundColor: 'transparent',
   },
   storeHomePinnedTopDesktop: {
@@ -2320,7 +2325,8 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
   },
   storeHomeHeroWithIconColMobile: {
-    gap: 10,
+    gap: 0,
+    alignItems: 'flex-start',
   },
   storeHomeHeroIconCol: {
     marginLeft: HOME_STORE_ROW_PAD,
@@ -2331,8 +2337,9 @@ const styles = StyleSheet.create({
     paddingTop: 1,
   },
   storeHomeHeroIconColMobile: {
-    width: 48,
-    paddingTop: 2,
+    marginLeft: 0,
+    width: HOME_STORE_ICON_COL_WIDTH,
+    paddingTop: 0,
   },
   storeHomeHeroIconWrap: {
     alignItems: 'center',
@@ -2348,6 +2355,9 @@ const styles = StyleSheet.create({
   storeHomeHeroContentCol: {
     flex: 1,
     minWidth: 0,
+    marginLeft: HOME_STORE_BODY_LEADING,
+  },
+  storeHomeHeroContentColMobile: {
     marginLeft: HOME_STORE_BODY_LEADING,
   },
   storeHomeHeroInset: {
@@ -2375,9 +2385,18 @@ const styles = StyleSheet.create({
   storeHomeHeroMetricBlockDesktop: {
     gap: 18,
   },
+  storeHomeHeroMetricBlockMobile: {
+    alignSelf: 'stretch',
+    width: '100%',
+    justifyContent: 'space-between',
+  },
   storeHomeHeroMetricMain: {
     flexShrink: 0,
     alignSelf: 'flex-start',
+  },
+  storeHomeHeroMetricMainMobile: {
+    flex: 1,
+    minWidth: 0,
   },
   storeHomeHeroAmountRow: {
     flexShrink: 0,
@@ -2386,6 +2405,10 @@ const styles = StyleSheet.create({
     flexWrap: 'nowrap',
     gap: 10,
     overflow: 'visible',
+  },
+  storeHomeHeroAmountRowMobile: {
+    flex: 1,
+    minWidth: 0,
   },
   storeHomeHeroAmount: {
     flexShrink: 0,
@@ -2404,6 +2427,11 @@ const styles = StyleSheet.create({
   },
   storeHomeHeroAmountEmpty: {
     color: '#aeaeb2',
+  },
+  storeHomeHeroAmountMobile: {
+    flexShrink: 1,
+    minWidth: 0,
+    maxWidth: '100%',
   },
   storeHomeHeroStats: {
     flexDirection: 'row',
@@ -2660,7 +2688,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     zIndex: 5,
-    paddingHorizontal: 16,
+    paddingHorizontal: MOBILE_FILTER_INSET,
     paddingTop: 6,
     backgroundColor: 'transparent',
   },
@@ -2670,9 +2698,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     minHeight: 44,
     marginBottom: 18,
-    paddingHorizontal: 52,
+    paddingHorizontal: 56,
+    overflow: 'hidden',
   },
   dashPinnedTitle: {
+    maxWidth: '100%',
     textAlign: 'center',
     fontFamily,
     fontSize: 15,
@@ -2754,6 +2784,12 @@ const styles = StyleSheet.create({
     alignItems: 'stretch',
     gap: 8,
     marginTop: 12,
+  },
+  dashPinnedAppsMobile: {
+    flexWrap: 'wrap',
+    alignItems: 'stretch',
+    gap: 12,
+    marginTop: 16,
   },
   deskPinnedApps: {
     marginTop: 14,
@@ -2857,6 +2893,7 @@ const styles = StyleSheet.create({
   dashPinnedApp: {
     flex: 1.45,
     minWidth: 0,
+    overflow: 'hidden',
     paddingVertical: 10,
     paddingHorizontal: 10,
     borderRadius: 14,
@@ -2883,7 +2920,7 @@ const styles = StyleSheet.create({
   dashPinnedAppRoomy: {
     flexGrow: 1,
     flexBasis: '46%',
-    minWidth: 148,
+    minWidth: 0,
     paddingVertical: 14,
     paddingHorizontal: 14,
   },
@@ -2911,6 +2948,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
   dashPinnedAppValue: {
+    minWidth: 0,
     fontFamily,
     fontSize: 15,
     fontWeight: '600',
@@ -3040,7 +3078,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
+    paddingHorizontal: MOBILE_FILTER_INSET,
     paddingVertical: 0,
     marginTop: 6,
     marginBottom: 6,
@@ -3070,6 +3108,8 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   dashHeadTitleCard: {
+    flexShrink: 1,
+    minWidth: 0,
     fontFamily,
     fontSize: 16,
     fontWeight: '600',
@@ -3080,8 +3120,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+    flexShrink: 0,
   },
   dashHeadMeta: {
+    flexShrink: 1,
+    minWidth: 0,
     fontFamily,
     fontSize: 15,
     fontWeight: '500',
@@ -3210,26 +3253,35 @@ const styles = StyleSheet.create({
   mobileTxRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 12,
-    paddingLeft: 16,
-    paddingRight: 16,
-    paddingVertical: 14,
+    gap: HOME_STORE_BODY_LEADING,
+    minHeight: 72,
+    paddingLeft: MOBILE_FILTER_INSET,
+    paddingRight: MOBILE_FILTER_INSET,
+    paddingTop: 12,
+    paddingBottom: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(60,60,67,0.24)',
+    borderBottomColor: 'rgba(60,60,67,0.18)',
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
+  mobileTxIconCol: {
+    width: HOME_STORE_ICON_COL_WIDTH,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    flexShrink: 0,
+    paddingTop: 0,
+  },
   mobileTxThumb: {
-    width: 44,
-    height: 44,
+    width: 48,
+    height: 48,
     flexShrink: 0,
   },
   mobileTxKind: {
-    width: 44,
-    height: 44,
-    borderRadius: 10,
+    width: 48,
+    height: 48,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#EEF3FF',
@@ -3247,12 +3299,21 @@ const styles = StyleSheet.create({
   mobileTxKindTextBuy: {
     color: PO_AMBER,
   },
+  mobileTxBody: {
+    flex: 1,
+    minWidth: 0,
+  },
+  mobileTxMain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minWidth: 0,
+    width: '100%',
+  },
   mobileTxCopy: {
     flex: 1,
     minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
+    gap: 2,
   },
   mobileTxLead: {
     flex: 1,
@@ -3265,13 +3326,25 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
     gap: 2,
   },
+  mobileTxTrailing: {
+    maxWidth: '42%',
+    flexShrink: 0,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+  },
+  mobileTxChevron: {
+    width: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
   mobileTxCustomer: {
     fontFamily,
     minWidth: 0,
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '600',
     color: LABEL,
-    letterSpacing: -0.3,
+    letterSpacing: -0.2,
   },
   mobileTxAmount: {
     flexDirection: 'row',
@@ -3282,10 +3355,10 @@ const styles = StyleSheet.create({
   },
   mobileTxAmountText: {
     fontFamily,
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '600',
     color: LABEL,
-    letterSpacing: -0.3,
+    letterSpacing: -0.2,
     fontVariant: ['tabular-nums'],
     textAlign: 'right',
   },
@@ -3294,15 +3367,15 @@ const styles = StyleSheet.create({
     minWidth: 0,
     fontSize: 13,
     color: SECONDARY,
-    letterSpacing: -0.08,
+    letterSpacing: 0,
   },
   mobileTxItems: {
     fontFamily,
+    minWidth: 0,
     fontSize: 13,
     lineHeight: 18,
     color: SECONDARY,
-    letterSpacing: -0.08,
-    textAlign: 'right',
+    letterSpacing: 0,
   },
   homeTxHeaderLabel: {
     fontFamily,
@@ -3749,6 +3822,7 @@ const styles = StyleSheet.create({
   emptyText: {
     fontFamily,
     flex: 1,
+    minWidth: 0,
     fontSize: 14,
     color: SECONDARY,
     letterSpacing: -0.2,

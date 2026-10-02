@@ -4034,6 +4034,7 @@ function HomeStoreDrawer({
                     accessibilityLabel="Close apps"
                   />
                   <View style={[styles.storeAppsCard, styles.storeAppsCardDocked]}>
+                    <Text style={styles.igFilterLabel}>Apps</Text>
                     <ScrollView
                       style={styles.storeAppsScroll}
                       keyboardShouldPersistTaps="handled"
@@ -4061,7 +4062,11 @@ function HomeStoreDrawer({
                               <Ionicons name={filledIonicon(tool.icon)} size={16} color="#fff" />
                             </View>
                             <Text
-                              style={[styles.igFilterActionLabel, selected && styles.storeAppsLabelSelected]}
+                              style={[
+                                styles.igFilterActionLabel,
+                                styles.storeAppsLabel,
+                                selected && styles.storeAppsLabelSelected,
+                              ]}
                               numberOfLines={1}
                             >
                               {tool.label}
@@ -10987,20 +10992,20 @@ const styles = StyleSheet.create({
     zIndex: 18,
   },
   storeAppsCardDocked: {
-    top: 6 + HOME_TOP_FILTER_SIZE + 8,
-    right: 22,
+    top: 8 + HOME_TOP_FILTER_SIZE + 8,
+    right: MOBILE_FILTER_INSET,
   },
   storeAppsCard: {
     position: 'absolute',
     right: HOME_FILTER_RIGHT,
-    width: 260,
-    maxWidth: '78%',
+    width: 308,
+    maxWidth: '92%',
     backgroundColor: '#fff',
-    borderRadius: 14,
-    paddingVertical: 6,
-    paddingHorizontal: 8,
+    borderRadius: 12,
+    padding: 12,
+    gap: 10,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(60,60,67,0.16)',
+    borderColor: TAB_BORDER,
     ...Platform.select({
       web: { boxShadow: '0 10px 32px rgba(0,0,0,0.16)' },
       default: {
@@ -11020,6 +11025,10 @@ const styles = StyleSheet.create({
   },
   storeAppsRowPressed: {
     backgroundColor: 'rgba(60,60,67,0.08)',
+  },
+  storeAppsLabel: {
+    flex: 1,
+    minWidth: 0,
   },
   storeAppsLabelSelected: {
     color: '#1a1a1a',
