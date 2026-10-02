@@ -182,6 +182,8 @@ export default function TriageDeletedPanel({ session, query = '' }) {
     <ChromePage
       hero={
         <ChromeHero
+          icon="trash"
+          iconColor="#8E8E93"
           value={String(visible.length)}
           stats={[
             { label: visible.length === 1 ? 'Item' : 'Items', value: String(visible.length) },
