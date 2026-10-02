@@ -67,6 +67,7 @@ import {
   loadRoleAppAccess,
   loadUserAppAccessMap,
   canUseWorkshopLocation,
+  isStoreScopedTriage,
   shouldPrefetchTriage,
   useAppAccess,
   visibleAppKeysForProfile,
@@ -156,6 +157,7 @@ import { attributedReviewEmployeeNames, employeeNameMatchesAny } from './lib/bon
 import { captureTokenFromLocation } from './lib/qrCode';
 import { fetchAureusEmployee } from './lib/aureusEmployees';
 import { useDirectMessages } from './lib/messages';
+import { useStaffNotifications } from './lib/notifications';
 import { CANVAS, MOBILE, MOBILE_FILTER_INSET, MOBILE_FILTER_SIZE, mobileSafeBottom } from './lib/mobileUi';
 import { FONT, FONT_LIGHT, SOHNE_NATIVE_FONTS, SOHNE_WEB_FONTS } from './lib/typography';
 
@@ -181,6 +183,7 @@ const SCREEN_LOADERS = {
   logs: () => import('./components/LogsScreen'),
   marketing: () => import('./components/MarketingScreen'),
   messages: () => import('./components/MessagesScreen'),
+  notifications: () => import('./components/NotificationsScreen'),
   phone: () => import('./components/PhoneScreen'),
   preorders: () => import('./components/PreordersScreen'),
   pricing: () => import('./components/PricingScreen'),
@@ -228,6 +231,7 @@ const TeamsScreen = lazy(SCREEN_LOADERS.teams);
 const TradeScreen = lazy(SCREEN_LOADERS.trade);
 const TransferScreen = lazy(SCREEN_LOADERS.transfer);
 const TriageScreen = lazy(SCREEN_LOADERS.triage);
+const NotificationsScreen = lazy(SCREEN_LOADERS.notifications);
 
 /**
  * Runs a background warm-up (inventory matrix, till positions, triage cache)
@@ -975,6 +979,7 @@ const STORE_DRAWER_TAB_KEYS = [
   'reviews',
   'audit',
   'supplies',
+  'triage',
   'settings',
 ];
 
@@ -987,6 +992,7 @@ const STORE_SNAPSHOT_TABS = new Set([
   'phone',
   'emails',
   'supplies',
+  'triage',
 ]);
 
 const STORE_DRAWER_TABS = STORE_DRAWER_TAB_KEYS.map((key) =>
@@ -7802,6 +7808,7 @@ function ProfileQuickActions({
   collapsed,
   locationName,
   notificationsActive,
+  notificationsUnread = 0,
   settingsActive,
   onOpenNotifications,
   onOpenLocation,
@@ -7824,12 +7831,19 @@ function ProfileQuickActions({
           collapsed && styles.profileQuickIslandCollapsed,
         ]}
       >
-        <SidebarIconButton
-          icon={notificationsActive ? 'notifications' : 'notifications-outline'}
-          label="Notifications"
-          color={notificationsActive ? TAB_INK : TAB_ICON_COLOR}
-          onPress={onOpenNotifications}
-        />
+        <View style={styles.profileNotifyWrap}>
+          <SidebarIconButton
+            icon={notificationsActive || notificationsUnread > 0 ? 'notifications' : 'notifications-outline'}
+            label={
+              notificationsUnread > 0
+                ? `Notifications, ${notificationsUnread} unread`
+                : 'Notifications'
+            }
+            color={notificationsActive || notificationsUnread > 0 ? TAB_INK : TAB_ICON_COLOR}
+            onPress={onOpenNotifications}
+          />
+          {notificationsUnread > 0 ? <View style={styles.profileNotifyDot} /> : null}
+        </View>
         <SidebarIconButton
           icon={silent ? 'volume-mute' : 'volume-high'}
           label={silent ? 'Turn ringtone on' : 'Ringtone on'}
@@ -7947,6 +7961,7 @@ function SidebarNavGroup({
   messagesActive,
   profileActive,
   notificationsActive,
+  notificationsUnread = 0,
   onSelectHome,
   onSelectSearch,
   onSelectApps,
@@ -8043,6 +8058,7 @@ function SidebarNavGroup({
         collapsed={collapsed}
         locationName={profileLocation}
         notificationsActive={notificationsActive}
+        notificationsUnread={notificationsUnread}
         settingsActive={settingsActive}
         onOpenNotifications={onOpenNotifications}
         onOpenLocation={onOpenLocation}
@@ -8438,6 +8454,10 @@ export default function App() {
     {
       enabled: isLoggedIn && hasApp('messages'),
     },
+  );
+  const { unread: notificationsUnread, refresh: refreshNotificationsUnread } = useStaffNotifications(
+    session,
+    { enabled: isLoggedIn },
   );
 
   const normalizedToolsQuery = toolsQuery.trim().toLowerCase();
@@ -9274,11 +9294,23 @@ export default function App() {
               <SharedServicesScreen />
             ) : activeTool.key === 'logs' ? (
               <LogsScreen session={session} />
+            ) : activeTool.key === 'notifications' ? (
+              <NotificationsScreen
+                onRefreshUnread={refreshNotificationsUnread}
+                onOpenTriage={() => {
+                  const tool = TOOL_CARDS.find((item) => item.key === 'triage');
+                  if (!tool || !hasApp('triage')) return;
+                  setActiveTab('tools');
+                  setActiveTool(tool);
+                  setSettingsPanel(null);
+                  setToolsQuery('');
+                }}
+              />
             ) : activeTool.key === 'triage' ? (
               <TriageScreen
                 session={session}
                 onRequireLogin={() => selectTab('profile')}
-                storeFilter={undefined}
+                storeFilter={isStoreScopedTriage(session?.profile) ? scopedStore || undefined : undefined}
                 onStoreBackChange={(fn, context) => {
                   setTriageStoreBack(() => fn || null);
                   setTriageBatch(context || null);
@@ -9635,6 +9667,7 @@ export default function App() {
             }
             profileActive={activeTab === PROFILE_TAB.key}
             notificationsActive={activeTab === 'tools' && activeTool?.key === 'notifications'}
+            notificationsUnread={notificationsUnread}
             settingsActive={activeTab === 'tools' && activeTool?.key === 'settings'}
             onSelectHome={() => selectTab('home')}
             onSelectSearch={() => selectTab('search')}
@@ -10115,6 +10148,20 @@ const styles = StyleSheet.create({
     gap: 2,
     paddingHorizontal: 4,
     paddingVertical: 6,
+  },
+  profileNotifyWrap: {
+    position: 'relative',
+  },
+  profileNotifyDot: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#FF3B30',
+    borderWidth: 1.5,
+    borderColor: '#fff',
   },
   profileQuickIcon: {
     width: 36,

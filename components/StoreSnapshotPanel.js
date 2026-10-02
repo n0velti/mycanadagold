@@ -46,6 +46,7 @@ import {
   resultLabel,
 } from '../lib/phoneCalls';
 import { storeKeyFromName } from '../lib/storeSettings';
+import StoreTriagePanel from './StoreTriagePanel';
 import { CANVAS, MOBILE_FILTER_INSET, MOBILE_FILTER_SIZE, useIsMobile } from '../lib/mobileUi';
 import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
 import { FONT_LIGHT } from '../lib/typography';
@@ -145,6 +146,7 @@ const SNAPSHOT_APPS = {
   preorders: { key: 'preorders', label: 'Preorders', icon: 'cart-outline', accent: '#EA580C' },
   audit: { key: 'audit', label: 'Audit', icon: 'clipboard-outline', accent: '#2F8A4E' },
   supplies: { key: 'supplies', label: 'Supplies', icon: 'bag-handle-outline', accent: '#BE123C' },
+  triage: { key: 'triage', label: 'Triage', icon: 'medkit-outline', accent: '#C2410C' },
   settings: { key: 'settings', label: 'Settings', icon: 'settings-outline', accent: '#52525B' },
 };
 
@@ -1422,6 +1424,7 @@ function StoreSnapshotPanel({
   const showEmails = hasApp('emails');
   const showFinancials = hasApp('financials');
   const showInventory = hasApp('inventory');
+  const showTriage = hasApp('triage');
   const [inventoryQuery, setInventoryQuery] = useState('');
   const [inventoryLimit, setInventoryLimit] = useState(INVENTORY_PAGE);
   const [cash, setCash] = useState(() => peekStoreCashPosition(session, { storeName: store?.store || '' }));
@@ -1888,6 +1891,8 @@ function StoreSnapshotPanel({
             ? phoneRatio.rate == null
               ? String(phoneCalls.length)
               : phoneRatio.ratio
+            : listTab === 'triage'
+            ? ''
             : listTab === 'transactions'
             ? txMeta
             : '';
@@ -1922,6 +1927,12 @@ function StoreSnapshotPanel({
     <PhoneSnapshotBody calls={phoneCalls} periodLabel={periodLabel} ratio={phoneRatio} />
   ) : listTab === 'supplies' ? (
     <EmptyRow text={`No supplies recorded for ${storeName || 'this store'}.`} />
+  ) : listTab === 'triage' ? (
+    showTriage ? (
+      <StoreTriagePanel storeName={storeName} startKey={startKey} endKey={endKey} variant="store" />
+    ) : (
+      <EmptyRow text="You don’t have access to triage for this store." />
+    )
   ) : (
     transactionsBody
   );
