@@ -16,6 +16,7 @@ import {
   GOOGLE_STORE_PLACES,
   currentReviewMonth,
   fetchAllGoogleStoreReviews,
+  filterReviewsByDateRange,
   getGooglePlaceForStore,
   reviewMonthRange,
   reviewPeriodLabel,
@@ -232,15 +233,16 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter, on
   const [startDate, setStartDate] = useState(initialPeriod.startDate);
   const [endDate, setEndDate] = useState(initialPeriod.endDate);
   const [dateMode, setDateMode] = useState('range');
+  const [results, setResults] = useState([]);
   const [selectedStore, setSelectedStore] = useState(
     () => getGooglePlaceForStore(storeFilter)?.storeName || storeFilter || null,
   );
   const [ratingFilter, setRatingFilter] = useState(0);
   const [needsReplyOnly, setNeedsReplyOnly] = useState(false);
-  const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const requestId = useRef(0);
+  const allTime = dateMode === 'all';
   const periodLabel = reviewPeriodLabel(startDate, endDate, dateMode);
   const currentMonth = currentReviewMonth();
   const start = parseDateParam(startDate);
@@ -260,58 +262,69 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter, on
     if (!allowFilters) setSelectedStore(null);
   }, [allowFilters, storeFilter]);
 
-  const load = useCallback(async () => {
-    if (!session?.token) {
-      setResults([]);
+  const load = useCallback(
+    async ({ refresh = false } = {}) => {
+      if (!session?.token) {
+        setResults([]);
+        setError('');
+        return;
+      }
+
+      const id = ++requestId.current;
+      const places = storeFilter
+        ? GOOGLE_STORE_PLACES.filter(
+            (place) =>
+              place.storeName === (getGooglePlaceForStore(storeFilter)?.storeName || storeFilter),
+          )
+        : GOOGLE_STORE_PLACES;
+
+      setLoading(true);
       setError('');
-      return;
-    }
+      setResults((current) =>
+        places.map((place) => {
+          const existing = current.find((row) => row.storeName === place.storeName);
+          return {
+            storeName: place.storeName,
+            place,
+            reviews: existing
+              ? allTime
+                ? existing.reviews
+                : filterReviewsByDateRange(existing.reviews || [], startDate, endDate)
+              : [],
+            error: '',
+            loading: true,
+          };
+        }),
+      );
 
-    const id = ++requestId.current;
-    const places = storeFilter
-      ? GOOGLE_STORE_PLACES.filter(
-          (place) => place.storeName === (getGooglePlaceForStore(storeFilter)?.storeName || storeFilter),
-        )
-      : GOOGLE_STORE_PLACES;
-
-    setLoading(true);
-    setError('');
-    setResults(
-      places.map((place) => ({
-        storeName: place.storeName,
-        place,
-        reviews: [],
-        error: '',
-        loading: true,
-      })),
-    );
-
-    try {
-      const next = await fetchAllGoogleStoreReviews({
-        storeName: storeFilter || undefined,
-        startDate,
-        endDate,
-        onPage: ({ storeName, reviews, done }) => {
-          if (id !== requestId.current) return;
-          setResults((current) =>
-            current.map((row) =>
-              row.storeName === storeName
-                ? { ...row, reviews, loading: !done }
-                : row,
-            ),
-          );
-        },
-      });
-      if (id !== requestId.current) return;
-      setResults(next.map((row) => ({ ...row, loading: false })));
-    } catch (err) {
-      if (id !== requestId.current) return;
-      setResults([]);
-      setError(err?.message || 'Failed to load Google reviews.');
-    } finally {
-      if (id === requestId.current) setLoading(false);
-    }
-  }, [session?.token, storeFilter, startDate, endDate]);
+      try {
+        const next = await fetchAllGoogleStoreReviews({
+          storeName: storeFilter || undefined,
+          startDate: allTime ? undefined : startDate,
+          endDate: allTime ? undefined : endDate,
+          allTime,
+          refresh: refresh === true,
+          onPage: ({ storeName, reviews, done }) => {
+            if (id !== requestId.current) return;
+            setResults((current) =>
+              current.map((row) =>
+                row.storeName === storeName ? { ...row, reviews, loading: !done } : row,
+              ),
+            );
+          },
+        });
+        if (id !== requestId.current) return;
+        setResults(next.map((row) => ({ ...row, loading: false })));
+      } catch (err) {
+        if (id !== requestId.current) return;
+        setResults([]);
+        setError(err?.message || 'Failed to load Google reviews.');
+      } finally {
+        if (id === requestId.current) setLoading(false);
+      }
+    },
+    [session?.token, storeFilter, startDate, endDate, allTime],
+  );
 
   useEffect(() => {
     load();
@@ -343,6 +356,10 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter, on
   const stillLoading = loading || results.some((row) => row.loading);
 
   const applyPeriod = (nextStart, nextEnd, mode) => {
+    if (mode === 'all') {
+      setDateMode('all');
+      return;
+    }
     const startKey = formatDateParam(nextStart);
     const endKey = formatDateParam(nextEnd || nextStart);
     setStartDate(startKey);
@@ -455,7 +472,7 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter, on
   const refreshButton = (
     <Pressable
       style={[styles.refresh, isMobile && styles.refreshMobile]}
-      onPress={load}
+      onPress={() => load({ refresh: true })}
       hitSlop={8}
       accessibilityRole="button"
       accessibilityLabel="Refresh reviews"
@@ -524,14 +541,16 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter, on
             accessibilityLabel={selectedMonth.label}
           >
             <Text style={[styles.monthLabel, isMobile && styles.monthLabelMobile]} numberOfLines={1}>
-              {selectedMonth.label}
+              {allTime ? 'All time' : selectedMonth.label}
             </Text>
             <Text style={styles.monthSub} numberOfLines={1}>
-              {isFullMonth
-                ? isCurrentMonth
-                  ? 'Current month'
-                  : 'Selected month'
-                : periodLabel}
+              {allTime
+                ? 'Every Google review'
+                : isFullMonth
+                  ? isCurrentMonth
+                    ? 'Current month'
+                    : 'Selected month'
+                  : periodLabel}
             </Text>
           </Pressable>
           <Pressable
@@ -557,7 +576,7 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter, on
             <HomeDatePicker
               startDate={startDate}
               endDate={endDate}
-              dateMode={dateMode}
+              dateMode={allTime ? 'range' : dateMode}
               onChange={({ mode, start: nextStart, end: nextEnd }) =>
                 applyPeriod(nextStart, nextEnd, mode)
               }
@@ -566,7 +585,17 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter, on
               fill
             />
           </View>
-          {!isCurrentMonth ? (
+          {!allTime ? (
+            <Pressable
+              style={[styles.chip, isMobile && styles.chipMobile]}
+              onPress={() => applyPeriod(null, null, 'all')}
+              accessibilityRole="button"
+              accessibilityLabel="Show all reviews"
+            >
+              <Text style={styles.chipText}>All time</Text>
+            </Pressable>
+          ) : null}
+          {!isCurrentMonth || allTime ? (
             <Pressable
               style={[styles.chip, isMobile && styles.chipMobile]}
               onPress={goToCurrentMonth}

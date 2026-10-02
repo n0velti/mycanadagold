@@ -3604,12 +3604,16 @@ async function googleCookie(): Promise<string> {
 function buildGoogleBoqSearch(query: URLSearchParams): string | null {
   const featureId = (query.get('featureId') || '').trim();
   const token = (query.get('token') || '').trim();
+  const mapsId = (query.get('mapsId') || '').trim();
   if (!/^0x[0-9a-f]+:0x[0-9a-f]+$/i.test(featureId)) return null;
   if (token && !/^[A-Za-z0-9_\-+/=]+$/.test(token)) return null;
+  if (mapsId && !/^\/g\/[A-Za-z0-9_]+$/.test(mapsId)) return null;
 
-  // Mode 2 = newest. Page size at [9]; continuation token at [19].
-  const inner: Array<string | number | string[] | null> = [
-    null, 2, null, null, null, null, null, null, null, 20, null, [featureId],
+  const place = mapsId ? [featureId, null, null, mapsId] : [featureId];
+
+  // Mode 2 = newest. Page size at [9] (Google serves at most 60); continuation token at [19].
+  const inner: Array<string | number | Array<string | null> | null> = [
+    null, 2, null, null, null, null, null, null, null, 60, null, place,
   ];
   if (token) {
     while (inner.length < 19) inner.push(null);
