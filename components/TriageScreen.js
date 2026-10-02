@@ -6,6 +6,8 @@ import TriagePoCapture from './TriagePoCapture';
 import TriageDailyReceiptsDrawer from './TriageDailyReceiptsDrawer';
 import TriageDashboardPanel from './TriageDashboardPanel';
 import TriageDeletedPanel from './TriageDeletedPanel';
+import TriageInsightsPanel from './TriageInsightsPanel';
+import { canViewTriageInsights } from '../lib/permissions';
 import { BarButton, EmptyState, FONT, SearchField, SegmentedSlider, T, TextTabs } from './TriageKit';
 import {
   MobileChromeCircle,
@@ -131,6 +133,7 @@ export default function TriageScreen({
   onMobileHeader,
 }) {
   const isMobile = useIsMobile();
+  const showStoreInsights = Boolean(embedded && storeFilter && canViewTriageInsights(session?.profile));
   const { triage, deleted = [] } = useTransferWorkflow();
   const [activeTab, setActiveTab] = useState('transfers');
   const [dashPage, setDashPage] = useState('');
@@ -155,6 +158,14 @@ export default function TriageScreen({
   const onStoreBackChangeRef = useRef(onStoreBackChange);
   onStoreBackChangeRef.current = onStoreBackChange;
   const currentTab = TRIAGE_TABS.find((tab) => tab.key === activeTab) || TRIAGE_TABS[0];
+
+  useLayoutEffect(() => {
+    if (!showStoreInsights) return undefined;
+    onNavTabs?.(null);
+    onMobileHeader?.(null);
+    onStoreBackChangeRef.current?.(null, null);
+    return undefined;
+  }, [onMobileHeader, onNavTabs, showStoreInsights]);
 
   useEffect(() => {
     if (!session?.supabaseUserId && !session?.token) return undefined;
@@ -433,6 +444,14 @@ export default function TriageScreen({
     });
     return () => onMobileHeader(null);
   }, [isMobile, lotsListView, onMobileHeader]);
+
+  if (showStoreInsights) {
+    return (
+      <View style={[styles.body, styles.bodyEmbedded, isMobile && styles.bodyMobile]}>
+        <TriageInsightsPanel session={session} storeFilter={storeFilter} onRequireLogin={onRequireLogin} />
+      </View>
+    );
+  }
 
   return (
     <View

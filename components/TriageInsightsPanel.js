@@ -1,13 +1,12 @@
 /**
- * Home dashboard: store-level triage correct/incorrect breakdown.
- * Reads existing triage batches + reviews; does not use the Triage app screen.
+ * Store-details triage insights for one branch.
+ * Branch managers, GMs, and admins open this from that store’s Triage app.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
   fetchTriageInsightSnapshot,
-  filterInsightStores,
   formatInsightCount,
   formatInsightPercent,
   insightForStore,
@@ -135,97 +134,10 @@ function HeroStat({ label, value, tone }) {
   );
 }
 
-function StoreList({ rows, compact, onOpenStore }) {
-  if (!rows.length) {
-    return <Text style={styles.empty}>No reviewed purchases yet.</Text>;
-  }
-
-  if (compact) {
-    return (
-      <View style={styles.list}>
-        {rows.map((row, index) => (
-          <InsightRow
-            key={row.store}
-            compact
-            title={row.store}
-            meta={CountLine(row)}
-            value={formatInsightPercent(row.accuracy, row.evaluated)}
-            valueTone={row.incorrect ? 'red' : row.evaluated ? 'green' : 'muted'}
-            last={index === rows.length - 1}
-            onPress={() => onOpenStore(row)}
-            leading={<StoreMark name={row.store} size={32} />}
-          />
-        ))}
-      </View>
-    );
-  }
-
-  return (
-    <View style={styles.list}>
-      <View style={[styles.deskRow, styles.headerRow]}>
-        <View style={[styles.deskRowBody, styles.headerRule]}>
-          <Text style={[styles.headerText, styles.headerStore]}>Store</Text>
-          <Text style={[styles.headerText, styles.headerNum]}>Correct</Text>
-          <Text style={[styles.headerText, styles.headerNum]}>Incorrect</Text>
-          <Text style={[styles.headerText, styles.headerNum]}>Accuracy</Text>
-          <View style={styles.chevron} />
-        </View>
-      </View>
-      {rows.map((row, index) => (
-        <Pressable
-          key={row.store}
-          onPress={() => onOpenStore(row)}
-          style={({ hovered, pressed }) => [styles.deskRow, (hovered || pressed) && styles.rowHovered]}
-          accessibilityRole="button"
-          accessibilityLabel={`${row.store}, ${CountLine(row)}, ${formatInsightPercent(row.accuracy, row.evaluated)} accurate`}
-        >
-          <View style={[styles.deskRowBody, index < rows.length - 1 && styles.rowDivider]}>
-            <View style={styles.headerStore}>
-              <Text style={styles.deskName} numberOfLines={1}>
-                {row.store}
-              </Text>
-              <Text style={styles.deskMeta} numberOfLines={1}>
-                {formatInsightCount(row.evaluated, 'reviewed purchase')}
-              </Text>
-            </View>
-            <Text style={[styles.deskValue, styles.headerNum, styles.valueGreen]}>{row.correct}</Text>
-            <Text
-              style={[
-                styles.deskValue,
-                styles.headerNum,
-                row.incorrect ? styles.valueRed : styles.valueMuted,
-              ]}
-            >
-              {row.incorrect}
-            </Text>
-            <Text style={[styles.deskValue, styles.headerNum]}>
-              {formatInsightPercent(row.accuracy, row.evaluated)}
-            </Text>
-            <View style={styles.chevron}>
-              <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
-            </View>
-          </View>
-        </Pressable>
-      ))}
-    </View>
-  );
-}
-
-function StoreDetail({ row, compact, showBack, onBack }) {
+function StoreDetail({ row, compact }) {
   return (
     <View>
       <View style={styles.hero}>
-        {showBack ? (
-          <Pressable
-            onPress={onBack}
-            style={({ hovered, pressed }) => [styles.backRow, (hovered || pressed) && styles.rowHovered]}
-            accessibilityRole="button"
-            accessibilityLabel="Back to triage insights"
-          >
-            <Ionicons name="chevron-back" size={20} color="#1d1d1f" />
-            <Text style={styles.backLabel}>Triage insights</Text>
-          </Pressable>
-        ) : null}
         <View style={styles.heroTitleRow}>
           <StoreMark name={row.store} size={compact ? 36 : 40} />
           <View style={styles.rowCopy}>
@@ -304,15 +216,8 @@ function StoreDetail({ row, compact, showBack, onBack }) {
   );
 }
 
-export default function TriageInsightsPanel({
-  selectedStore = '',
-  onSelectStore,
-  assignedStore = '',
-  allowAllStores = true,
-  compact: compactProp,
-}) {
+export default function TriageInsightsPanel({ storeFilter = '' }) {
   const isMobile = useIsMobile();
-  const compact = compactProp ?? isMobile;
   const [snapshot, setSnapshot] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -334,52 +239,36 @@ export default function TriageInsightsPanel({
     load();
   }, [load]);
 
-  const rows = useMemo(
-    () => filterInsightStores(snapshot, { storeName: assignedStore, allowAllStores }),
-    [allowAllStores, assignedStore, snapshot],
-  );
-
-  const active = useMemo(() => insightForStore({ stores: rows }, selectedStore), [rows, selectedStore]);
-
-  useEffect(() => {
-    if (!selectedStore || allowAllStores) return;
-    if (insightForStore({ stores: rows }, selectedStore)) return;
-    onSelectStore?.('');
-  }, [allowAllStores, onSelectStore, rows, selectedStore]);
-
-  const openStore = (row) => onSelectStore?.(row.store);
-  const drilled = Boolean(active);
+  const active = useMemo(() => insightForStore(snapshot, storeFilter), [snapshot, storeFilter]);
 
   return (
-    <View style={[styles.section, drilled && styles.sectionActive]}>
-      {drilled ? null : <Text style={styles.sectionLabel}>Triage insights</Text>}
+    <View style={styles.page}>
+      <Text style={styles.sectionLabel}>Triage insights</Text>
       {error ? <Text style={styles.error}>{error}</Text> : null}
       {loading && !snapshot ? (
         <View style={styles.loading}>
           <ActivityIndicator color="#1d1d1f" />
         </View>
-      ) : drilled ? (
-        <StoreDetail
-          row={active}
-          compact={compact}
-          showBack={!compact}
-          onBack={() => onSelectStore?.('')}
-        />
+      ) : active ? (
+        <StoreDetail row={active} compact={isMobile} />
       ) : (
-        <StoreList rows={rows} compact={compact} onOpenStore={openStore} />
+        <Text style={styles.empty}>
+          {storeFilter
+            ? `No reviewed purchases at ${storeFilter} yet.`
+            : 'No reviewed purchases yet.'}
+        </Text>
       )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  section: {
+  page: {
+    flex: 1,
+    minHeight: 0,
     alignSelf: 'stretch',
     width: '100%',
-    marginTop: 28,
-  },
-  sectionActive: {
-    marginTop: 8,
+    backgroundColor: CANVAS,
   },
   sectionLabel: {
     fontFamily,

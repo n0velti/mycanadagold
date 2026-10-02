@@ -144,6 +144,7 @@ const SNAPSHOT_APPS = {
   transactions: { key: 'transactions', label: 'Transactions', icon: 'swap-horizontal-outline', accent: '#2F6FED' },
   preorders: { key: 'preorders', label: 'Preorders', icon: 'cart-outline', accent: '#EA580C' },
   audit: { key: 'audit', label: 'Audit', icon: 'clipboard-outline', accent: '#2F8A4E' },
+  triage: { key: 'triage', label: 'Triage', icon: 'medkit-outline', accent: '#C2410C' },
   supplies: { key: 'supplies', label: 'Supplies', icon: 'bag-handle-outline', accent: '#BE123C' },
   settings: { key: 'settings', label: 'Settings', icon: 'settings-outline', accent: '#52525B' },
 };
