@@ -13631,7 +13631,7 @@ const styles = StyleSheet.create({
   igHomeStoreBody: {
     flexDirection: 'column',
     alignItems: 'stretch',
-    gap: 8,
+    gap: 12,
     paddingVertical: 0,
     paddingRight: MOBILE_FILTER_INSET,
   },
@@ -13684,13 +13684,15 @@ const styles = StyleSheet.create({
   igHomeStoreMetrics: {
     flexDirection: 'row',
     alignItems: 'center',
-    alignSelf: 'stretch',
-    gap: 8,
+    alignSelf: 'flex-start',
+    gap: 4,
   },
   igHomeStoreMetric: {
-    flex: 1,
-    width: undefined,
+    flexGrow: 0,
+    flexShrink: 0,
+    width: 'auto',
     minWidth: 0,
+    gap: 4,
   },
   igHomeStoreMetricText: {
     width: undefined,
