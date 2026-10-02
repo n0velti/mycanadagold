@@ -44,6 +44,9 @@
  *   /proxy/ringcentral/ai-webhook          POST  → RingCentral AI job results (signed per job, no staff session)
  *   /proxy/agent/change-request            POST  → POST staff change requests to AGENT_WEBHOOK_URL
  *   /proxy/agent/request-status            POST  → trusted status update (System Admin JWT or AGENT_STATUS_SECRET)
+ *   /proxy/dev-tickets/launch              POST  → create a Cursor cloud agent for a staff ticket
+ *   /proxy/dev-tickets/refresh             POST  → poll agent / Vercel preview for a ticket
+ *   /proxy/dev-tickets/decide              POST  → approve (merge PR) or reject (close PR)
  *
  * AI providers use the company key saved in Settings (System Admin / GM) or,
  * if none is saved, the Edge Function secret. Clients never send vendor keys.
@@ -53,6 +56,11 @@
  */
 import { corsHeaders, error, json, preflight, readJson, securityHeaders, sha256Hex } from '../_shared/http.ts';
 import { adminClient, requireActiveStaff, StaffAuthError, type StaffContext } from '../_shared/staff.ts';
+import {
+  handleDevTicketDecide,
+  handleDevTicketLaunch,
+  handleDevTicketRefresh,
+} from '../_shared/devTickets.ts';
 
 const FUNCTION_PREFIX = '/proxy';
 const MAX_BODY_BYTES = 25 * 1024 * 1024;
@@ -8143,6 +8151,15 @@ Deno.serve(async (req) => {
     }
     if (path === '/ringcentral/recording-content' && req.method === 'GET') {
       return await handleRingCentralRecordingContent(req, query);
+    }
+    if (path === '/dev-tickets/launch' && req.method === 'POST') {
+      return await handleDevTicketLaunch(req, staff);
+    }
+    if (path === '/dev-tickets/refresh' && req.method === 'POST') {
+      return await handleDevTicketRefresh(req, staff);
+    }
+    if (path === '/dev-tickets/decide' && req.method === 'POST') {
+      return await handleDevTicketDecide(req, staff);
     }
     if (path === '/agent/change-request' && req.method === 'POST') {
       return await handleAgentChangeRequest(req, staff, await readBody(req));
