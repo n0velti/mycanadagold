@@ -47,6 +47,9 @@ const STORE_ACCENTS = {
   Mississauga: '#C47A12',
   Toronto: '#2F8A4E',
   'Richmond Hill': '#6B4DE6',
+  Carlingwood: '#BE185D',
+  Gloucester: '#0E7490',
+  Halifax: '#9A3412',
 };
 
 const STORE_ACCENT_FALLBACKS = [
@@ -780,6 +783,7 @@ export default function BonusesScreen({
 
         const cursor = parseDateParam(startDate);
         const next = await buildBonusBoard({
+          session,
           transactionRows: tx.rows || [],
           year: cursor.getFullYear(),
           monthIndex: cursor.getMonth(),
@@ -802,8 +806,9 @@ export default function BonusesScreen({
             return current;
           }
           if (isMobile && !storeFilter) return current;
-          const laval = next.stores.find((store) => store.storeName === 'Laval');
-          return laval?.storeName || next.stores[0]?.storeName || null;
+          const withPayout = next.stores.find((store) => (store.totalPayout || 0) > 0);
+          const withReviews = next.stores.find((store) => (store.reviewCount || 0) > 0);
+          return withPayout?.storeName || withReviews?.storeName || next.stores[0]?.storeName || null;
         });
       } catch (err) {
         if (id !== requestId.current) return;
@@ -1067,8 +1072,20 @@ export default function BonusesScreen({
           {activeStore.photoReviewCount
             ? ` · ${activeStore.photoReviewCount} photo × ${formatMoney(PHOTO_BONUS)}`
             : ''}
+          {activeStore.rosterSource === 'aureus' && activeStore.aureusEmployeeCount
+            ? ` · ${activeStore.aureusEmployeeCount} on ${String(activeStore.posSystemKey || 'east').toUpperCase()} Aureus`
+            : activeStore.rosterSource === 'transactions' && (activeStore.aureusEmployeeCount || activeStore.directoryCount)
+              ? ` · ${activeStore.aureusEmployeeCount || activeStore.directoryCount} cashiers from ${String(activeStore.posSystemKey || 'east').toUpperCase()} transactions`
+              : ''}
         </Text>
       </View>
+      {activeStore.rosterSource === 'none' ? (
+        <Text style={styles.storeError}>
+          No employees found for {activeStore.storeName} on the{' '}
+          {String(activeStore.posSystemKey || 'east').toUpperCase()} Aureus host and no cashiers on
+          its transactions for this period. Check linked POS sessions in Profile.
+        </Text>
+      ) : null}
       <EmployeeList
         employees={activeStore.employees}
         selfOnly={!viewAllCounts}
@@ -1135,6 +1152,12 @@ export default function BonusesScreen({
       ) : null}
 
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
+      {board?.roster?.errors?.length ? (
+        <Text style={styles.errorText}>{board.roster.errors.join(' ')}</Text>
+      ) : null}
+      {board?.roster?.notes?.length ? (
+        <Text style={styles.rosterNote}>{board.roster.notes.join(' ')}</Text>
+      ) : null}
 
       <ScrollView
         style={styles.scroll}
@@ -1279,6 +1302,14 @@ const styles = StyleSheet.create({
     fontFamily: FONT,
     fontSize: 13,
     color: '#B91C1C',
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+  },
+  rosterNote: {
+    fontFamily: FONT,
+    fontSize: 12,
+    lineHeight: 16,
+    color: '#8e8e93',
     paddingHorizontal: 16,
     paddingBottom: 8,
   },
