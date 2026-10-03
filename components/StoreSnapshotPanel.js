@@ -49,7 +49,12 @@ import {
   phoneHistoryNeeded,
   resultLabel,
 } from '../lib/phoneCalls';
-import { storeKeyFromName } from '../lib/storeSettings';
+import {
+  defaultWeeklyHours,
+  loadStoreSettings,
+  storeKeyFromName,
+  summarizeHours,
+} from '../lib/storeSettings';
 import {
   fetchGoogleReviewsForStore,
   peekHomeStoreReviews,
@@ -1640,9 +1645,27 @@ function StoreSnapshotPanel({
   const [reviewStats, setReviewStats] = useState(() =>
     reviewStatsFromReviews(peekHomeStoreReviews(storeName, startKey, endKey) || []),
   );
+  const [hoursSummary, setHoursSummary] = useState('');
   useEffect(() => {
     setHeroFocus(heroFocusProp || 'all');
   }, [heroFocusProp, storeName]);
+  useEffect(() => {
+    if (!storeName) {
+      setHoursSummary('');
+      return undefined;
+    }
+    let cancelled = false;
+    setHoursSummary(summarizeHours(defaultWeeklyHours(storeName), storeName));
+    loadStoreSettings(storeName)
+      .then((settings) => {
+        if (cancelled) return;
+        setHoursSummary(summarizeHours(settings?.hours, storeName));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [storeName]);
   useEffect(() => {
     const cached = peekHomeStoreReviews(storeName, startKey, endKey);
     setReviewStats(reviewStatsFromReviews(cached || []));
@@ -2332,6 +2355,11 @@ function StoreSnapshotPanel({
           />
         ) : null}
         {desktopHeader}
+        {hoursSummary ? (
+          <Text style={styles.storeHoursLine} numberOfLines={2}>
+            {hoursSummary}
+          </Text>
+        ) : null}
         <View
           style={styles.storeHomeStage}
           onLayout={(event) => {
@@ -2398,6 +2426,11 @@ function StoreSnapshotPanel({
       <Text style={styles.dashPinnedTitle} numberOfLines={2}>
         {storeName || 'Store'}
       </Text>
+      {hoursSummary ? (
+        <Text style={styles.dashPinnedHours} numberOfLines={2}>
+          {hoursSummary}
+        </Text>
+      ) : null}
       <Text style={styles.dashPinnedDate} numberOfLines={1}>
         {periodLabel}
       </Text>
@@ -3214,6 +3247,24 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontFamily,
     fontSize: 12,
+    fontWeight: '500',
+    color: SECONDARY,
+    letterSpacing: 0,
+  },
+  dashPinnedHours: {
+    marginTop: 2,
+    textAlign: 'center',
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '500',
+    color: SECONDARY,
+    letterSpacing: 0,
+  },
+  storeHoursLine: {
+    paddingHorizontal: 48,
+    paddingBottom: 8,
+    fontFamily,
+    fontSize: 13,
     fontWeight: '500',
     color: SECONDARY,
     letterSpacing: 0,
