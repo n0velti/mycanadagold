@@ -316,7 +316,7 @@ function StoreHoursEditor({ session, storeName, onBack, embedded = false }) {
             <IosRow label="All Stores" onPress={onBack} />
           </IosGroup>
         ) : null}
-        <IosGroup header="Hours" footer={`Regular weekly hours for ${storeName}.`}>
+        <IosGroup header="Hours" footer={summarizeHours(hours, storeName) || `Regular weekly hours for ${storeName}.`}>
           {hours.map((row) => (
             <IosRow
               key={row.day}
@@ -467,7 +467,8 @@ function StoreHoursEditor({ session, storeName, onBack, embedded = false }) {
 
       <Text style={styles.storeTitle}>{storeName}</Text>
       <Text style={styles.intro}>
-        Regular weekly hours, then dates the store is closed or on a shortened schedule.
+        {summarizeHours(hours, storeName) ||
+          'Regular weekly hours, then dates the store is closed or on a shortened schedule.'}
       </Text>
 
       <Text style={styles.sectionTitle}>Hours</Text>
@@ -678,7 +679,7 @@ export default function StoreSettingsPanel({ session, storeName, embedded = fals
                 icon="storefront"
                 iconColor="#FF9500"
                 label={store.storeName}
-                value={store.exists ? summarizeHours(store.hours) : 'Not Set'}
+                value={summarizeHours(store.hours, store.storeName) || (store.exists ? '—' : 'Not Set')}
                 onPress={() => setSelectedName(store.storeName)}
               />
             ))
@@ -707,7 +708,7 @@ export default function StoreSettingsPanel({ session, storeName, embedded = fals
               <View style={styles.menuTextWrap}>
                 <Text style={styles.menuLabel}>{store.storeName}</Text>
                 <Text style={styles.hint}>
-                  {[store.systemLabel, store.exists ? summarizeHours(store.hours) : 'Hours not set']
+                  {[store.systemLabel, summarizeHours(store.hours, store.storeName) || (store.exists ? '' : 'Hours not set')]
                     .filter(Boolean)
                     .join(' · ')}
                 </Text>
