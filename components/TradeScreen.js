@@ -22,6 +22,7 @@ import { storeLocationFromSession } from '../lib/profiles';
 import { createClient, searchClients } from '../lib/triageLookups';
 import { formatAmount, formatDateParam, formatUnitCost, parseDateParam } from '../lib/transactions';
 import { BUY_MODAL_TABS, catalogBuyPricelist, catalogItemType, catalogSellMatchKeys, catalogSpecialtyPricelist, fetchWebsitePrices, itemMatchKey, specialtyBuyCatalog } from '../lib/websitePrices';
+import { DESKTOP_TOP_BAR_HEIGHT } from '../lib/mobileUi';
 import { SegmentedSlider, StaffAvatar } from './TriageKit';
 import LinePhotoModal from './LinePhotoModal';
 
@@ -1891,7 +1892,7 @@ export default function TradeScreen({ mode = 'buy', hideHeader = false, session 
     return (
       <View style={styles.screen}>
         {hideHeader ? null : (
-          <View style={styles.header}>
+          <View style={[styles.header, styles.headerDesktop]}>
             <View style={[styles.mark, { backgroundColor: spec.tint }]}>
               <Ionicons name={spec.icon} size={18} color={spec.accent} />
             </View>
@@ -1911,7 +1912,7 @@ export default function TradeScreen({ mode = 'buy', hideHeader = false, session 
 
   return (
     <View style={styles.screen}>
-      <View style={[styles.header, compact && styles.headerCompact]}>
+      <View style={[styles.header, compact && styles.headerCompact, !compact && styles.headerDesktop]}>
         {hideHeader ? null : (
           <View style={styles.headerTitle}>
             <View style={[styles.mark, { backgroundColor: spec.tint }]}>
@@ -2000,6 +2001,9 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 16,
     marginBottom: 32,
+  },
+  headerDesktop: {
+    paddingTop: DESKTOP_TOP_BAR_HEIGHT + 16,
   },
   headerCompact: {
     gap: 10,

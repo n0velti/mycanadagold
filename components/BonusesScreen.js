@@ -54,6 +54,17 @@ const STORE_ACCENTS = {
   Carlingwood: '#BE185D',
   Gloucester: '#0E7490',
   Halifax: '#9A3412',
+  'Calgary North': '#9A3412',
+  'Calgary South': '#B91C1C',
+  'Calgary SW': '#C2410C',
+  Edmonton: '#047857',
+  'Edmonton West': '#0E7490',
+  Surrey: '#166534',
+  Vancouver: '#1D4ED8',
+  Winnipeg: '#6D28D9',
+  'Canadian Coin & Currency': '#854D0E',
+  Portland: '#334155',
+  Seattle: '#0F172A',
 };
 
 const STORE_ACCENT_FALLBACKS = [

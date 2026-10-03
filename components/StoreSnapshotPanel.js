@@ -14,7 +14,12 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { fetchStoreCashPosition, peekStoreCashPosition } from '../lib/cashTill';
-import { checkTransactionPrices, formatPriceTolerance } from '../lib/priceCheck';
+import {
+  checkTransactionPrices,
+  formatPriceTolerance,
+  isBullionResaleLine,
+  isScrapJewelleryLine,
+} from '../lib/priceCheck';
 import {
   capturePurchasePriceCatalog,
   loadTransactionPriceSnapshots,
@@ -30,7 +35,6 @@ import {
   buildEmailCaptureByStore,
   formatAmount,
   formatDateParam,
-  isCashTransaction,
   parseDateParam,
 } from '../lib/transactions';
 import { useTxnCashBreakdowns } from '../lib/txnCashBreakdowns';
@@ -46,11 +50,18 @@ import {
   resultLabel,
 } from '../lib/phoneCalls';
 import { storeKeyFromName } from '../lib/storeSettings';
-import { CANVAS, MOBILE_FILTER_INSET, MOBILE_FILTER_SIZE, useIsMobile } from '../lib/mobileUi';
+import {
+  fetchGoogleReviewsForStore,
+  peekHomeStoreReviews,
+  rememberHomeStoreReviews,
+  reviewStatsFromReviews,
+} from '../lib/googleReviews';
+import { CANVAS, MOBILE, MOBILE_FILTER_INSET, MOBILE_FILTER_SIZE, NAV_TAB_ACTIVE_BG, useIsMobile } from '../lib/mobileUi';
+import { useDisplayCurrency } from '../lib/displayCurrency';
 import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
 import { FONT_LIGHT } from '../lib/typography';
 import { usePhoneCalls } from './PhoneCallProvider';
-import TxnCashBreakdownModal, { TxnCashIcon } from './TxnCashBreakdownModal';
+import TxnCashBreakdownModal from './TxnCashBreakdownModal';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -81,34 +92,6 @@ const HOME_STORE_ROW_PAD = 8;
 const HOME_STORE_ICON_COL_WIDTH = 56;
 const HOME_STORE_BODY_LEADING = 12;
 const titleFontFamily = FONT_LIGHT;
-
-const STORE_ACCENTS = {
-  Hamilton: '#2F6FED',
-  Mississauga: '#C47A12',
-  Toronto: '#2F8A4E',
-  'Richmond Hill': '#6B4DE6',
-};
-
-const STORE_ACCENT_FALLBACKS = [
-  '#1D4ED8',
-  '#0F766E',
-  '#B91C1C',
-  '#B45309',
-  '#6D28D9',
-  '#047857',
-  '#4338CA',
-  '#BE185D',
-];
-
-function storeAccent(name) {
-  if (STORE_ACCENTS[name]) return STORE_ACCENTS[name];
-  const value = String(name || '');
-  let hash = 0;
-  for (let i = 0; i < value.length; i += 1) {
-    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
-  }
-  return STORE_ACCENT_FALLBACKS[hash % STORE_ACCENT_FALLBACKS.length];
-}
 
 function sameJson(a, b) {
   if (a === b) return true;
@@ -315,11 +298,13 @@ function storeAmountForFocus(store, focus) {
   return Number(store?.totalAmount) || 0;
 }
 
-function StoreHomeHeroStat({ value, label, selected = false, onPress, compact = false }) {
+function StoreHomeHeroStat({ value, label, selected = false, onPress, compact = false, tone }) {
   const valueStyle = [
     compact ? styles.storeHomeHeroStatValueCompact : styles.storeHomeHeroStatValue,
     selected &&
       (compact ? styles.storeHomeHeroStatValueCompactSelected : styles.storeHomeHeroStatValueSelected),
+    tone === 'low' && styles.storeHomeHeroStatLow,
+    tone === 'ok' && styles.storeHomeHeroStatOk,
   ];
   const labelStyle = [
     compact ? styles.storeHomeHeroStatLabelCompact : styles.storeHomeHeroStatLabel,
@@ -358,15 +343,67 @@ function StoreHomeHeroStat({ value, label, selected = false, onPress, compact = 
   );
 }
 
+function StoreHeroBlock({ value, title, empty = false, onPress, children, tone }) {
+  const pair = (
+    <View style={styles.storeHomeHeroPair}>
+      <View style={styles.storeHomeHeroMetricStack}>
+        <Text
+          style={[
+            styles.storeHomeHeroAmount,
+            empty && styles.storeHomeHeroAmountEmpty,
+            !empty && tone === 'low' && styles.storeHomeHeroAmountLow,
+            !empty && tone === 'ok' && styles.storeHomeHeroAmountOk,
+          ]}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.55}
+        >
+          {empty ? '—' : value}
+        </Text>
+        <Text style={styles.storeHomeHeroBlockTitle}>{title}</Text>
+      </View>
+      {children}
+    </View>
+  );
+  if (!onPress) return pair;
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [pressed && styles.storeHomeHeroStatPressed]}
+      accessibilityRole="button"
+      accessibilityLabel={title}
+    >
+      {pair}
+    </Pressable>
+  );
+}
+
+function StoreHeroSide({ children }) {
+  return (
+    <View style={[styles.storeHomeHeroStats, styles.storeHomeHeroStatsSide, styles.storeHomeHeroStatsSideDesktop]}>
+      {children}
+    </View>
+  );
+}
+
 function StoreHomeHero({
   store,
   focus = 'all',
   onFocus,
   onPress,
+  onOpenApp,
   txSelected = false,
   isMobile = false,
-  accent,
+  dateHero = null,
+  periodLabel = 'Today',
+  emailCapture = null,
+  phoneRatio = null,
+  reviewStats = null,
+  cashCad = null,
+  cashLoading = false,
 }) {
+  const { money } = useDisplayCurrency();
+  const [opsFocus, setOpsFocus] = useState('email');
   const total = storeAmountForFocus(store, focus);
   const txCount = Number(store?.txCount) || 0;
   const saleCount = Number(store?.saleCount) || 0;
@@ -379,80 +416,134 @@ function StoreHomeHero({
     onFocus?.(resolved);
     onPress?.();
   };
+  const emailEmpty = !emailCapture || !emailCapture.customerCount;
+  const emailRate = emailEmpty ? null : Math.round(Number(emailCapture.rate));
+  const phoneEmpty = phoneRatio?.rate == null;
+  const bonusEmpty = !reviewStats || reviewStats.rate == null;
+  const cashValue = cashCad?.amount;
+  const cashEmpty = !Number.isFinite(Number(cashValue));
+  const opsApp =
+    opsFocus === 'phone' ? 'phone' : opsFocus === 'bonus' ? 'reviews' : 'emails';
+  const opsValue =
+    opsFocus === 'phone'
+      ? phoneEmpty
+        ? '—'
+        : phoneRatio.ratio
+      : opsFocus === 'bonus'
+        ? bonusEmpty
+          ? '—'
+          : String(reviewStats.count)
+        : emailEmpty
+          ? '—'
+          : `${emailRate}%`;
+  const opsTitle = opsFocus === 'phone' ? 'Phone' : opsFocus === 'bonus' ? 'Bonus' : 'Email';
+  const opsEmpty =
+    opsFocus === 'phone' ? phoneEmpty : opsFocus === 'bonus' ? bonusEmpty : emailEmpty;
+  const rateTone = (empty, rate) => {
+    if (empty || rate == null || !Number.isFinite(Number(rate))) return undefined;
+    return Number(rate) < 80 ? 'low' : 'ok';
+  };
+  const emailTone = rateTone(emailEmpty, emailCapture?.rate);
+  const phoneTone = rateTone(phoneEmpty, phoneRatio?.rate);
+  const bonusTone = rateTone(bonusEmpty, reviewStats?.rate);
+  const opsTone = opsFocus === 'phone' ? phoneTone : opsFocus === 'bonus' ? bonusTone : emailTone;
 
-  const heroInset = (
-    <View style={[styles.storeHomeHeroInset, !isMobile && styles.storeHomeHeroInsetDesktop]}>
-      <View style={styles.storeHomeHeroPrimary}>
-          <View
-            style={[
-              styles.storeHomeHeroMetricBlock,
-              !isMobile && styles.storeHomeHeroMetricBlockDesktop,
-              isMobile && styles.storeHomeHeroMetricBlockMobile,
-            ]}
-          >
-            <View style={[styles.storeHomeHeroMetricMain, isMobile && styles.storeHomeHeroMetricMainMobile]}>
-              <View style={[styles.storeHomeHeroAmountRow, isMobile && styles.storeHomeHeroAmountRowMobile]}>
-                <Text
-                  style={[
-                    styles.storeHomeHeroAmount,
-                    !isMobile && styles.storeHomeHeroAmountDesktop,
-                    isMobile && styles.storeHomeHeroAmountMobile,
-                    empty && styles.storeHomeHeroAmountEmpty,
-                  ]}
-                  numberOfLines={1}
-                  adjustsFontSizeToFit
-                  minimumFontScale={0.55}
-                >
-                  {empty ? '—' : formatAmount(total)}
-                </Text>
-              </View>
-            </View>
-          <View
-            style={[
-              styles.storeHomeHeroStats,
-              styles.storeHomeHeroStatsSide,
-              !isMobile && styles.storeHomeHeroStatsSideDesktop,
-            ]}
-          >
-            <StoreHomeHeroStat
-              compact
-              value={txCount}
-              label="Tx"
-              selected={txSelected && focus === 'all'}
-              onPress={() => selectFocus('all')}
-            />
-            <StoreHomeHeroStat
-              compact
-              value={saleCount}
-              label="Sales"
-              selected={focus === 'sales'}
-              onPress={() => selectFocus('sales')}
-            />
-            <StoreHomeHeroStat
-              compact
-              value={purchaseCount}
-              label="Purchases"
-              selected={focus === 'purchases'}
-              onPress={() => selectFocus('purchases')}
-            />
-          </View>
-        </View>
-      </View>
-    </View>
+  const revenuePair = (
+    <StoreHeroBlock value={money(total)} title="Revenue" empty={empty} onPress={() => onOpenApp?.('transactions')}>
+      <StoreHeroSide>
+        <StoreHomeHeroStat
+          compact
+          value={txCount}
+          label="Tx"
+          selected={txSelected && focus === 'all'}
+          onPress={() => selectFocus('all')}
+        />
+        <StoreHomeHeroStat
+          compact
+          value={saleCount}
+          label="Sales"
+          selected={focus === 'sales'}
+          onPress={() => selectFocus('sales')}
+        />
+        <StoreHomeHeroStat
+          compact
+          value={purchaseCount}
+          label="Purchases"
+          selected={focus === 'purchases'}
+          onPress={() => selectFocus('purchases')}
+        />
+      </StoreHeroSide>
+    </StoreHeroBlock>
+  );
+  const extraMetrics = (
+    <>
+      <StoreHeroBlock
+        value={cashLoading && cashEmpty ? '…' : formatAmount(cashValue, 'CAD')}
+        title="Cash"
+        empty={!cashLoading && cashEmpty}
+        onPress={() => onOpenApp?.('financials')}
+      >
+        <StoreHeroSide>
+          <StoreHomeHeroStat
+            compact
+            value={cashCad?.opening == null ? '—' : formatAmount(cashCad.opening, 'CAD')}
+            label="Open"
+          />
+          <StoreHomeHeroStat
+            compact
+            value={cashCad?.moved == null ? '—' : formatAmount(cashCad.moved, 'CAD')}
+            label="Today"
+          />
+        </StoreHeroSide>
+      </StoreHeroBlock>
+      <StoreHeroBlock
+        value={opsValue}
+        title={opsTitle}
+        empty={opsEmpty}
+        tone={opsTone}
+        onPress={() => onOpenApp?.(opsApp)}
+      >
+        <StoreHeroSide>
+          <StoreHomeHeroStat
+            compact
+            value={emailEmpty ? '—' : `${emailRate}%`}
+            label="Email"
+            selected={opsFocus === 'email'}
+            tone={emailTone}
+            onPress={() => setOpsFocus('email')}
+          />
+          <StoreHomeHeroStat
+            compact
+            value={phoneEmpty ? '—' : phoneRatio.ratio}
+            label="Phone"
+            selected={opsFocus === 'phone'}
+            tone={phoneTone}
+            onPress={() => setOpsFocus('phone')}
+          />
+          <StoreHomeHeroStat
+            compact
+            value={bonusEmpty ? '—' : String(reviewStats.count)}
+            label="Bonus"
+            selected={opsFocus === 'bonus'}
+            tone={bonusTone}
+            onPress={() => setOpsFocus('bonus')}
+          />
+        </StoreHeroSide>
+      </StoreHeroBlock>
+    </>
   );
 
   return (
     <View style={styles.storeHomeHeroShell}>
-      <View style={[styles.storeHomeHeroWithIconCol, isMobile && styles.storeHomeHeroWithIconColMobile]}>
-        <View style={[styles.storeHomeHeroIconCol, isMobile && styles.storeHomeHeroIconColMobile]}>
-          <View style={styles.storeHomeHeroIconWrap}>
-            <View style={[styles.storeHomeHeroIcon, { backgroundColor: accent }]}>
-              <Ionicons name="storefront" size={21} color="#fff" />
-            </View>
-          </View>
-        </View>
-        <View style={[styles.storeHomeHeroContentCol, isMobile && styles.storeHomeHeroContentColMobile]}>
-          {heroInset}
+      <View style={[styles.storeHomeHeroSplit, isMobile && styles.storeHomeHeroSplitMobile]}>
+        {dateHero && !isMobile ? (
+          dateHero
+        ) : (
+          <StoreHeroBlock value={periodLabel} title="Date" />
+        )}
+        <View style={[styles.storeHomeHeroFigures, isMobile && styles.storeHomeHeroFiguresMobile]}>
+          {revenuePair}
+          {extraMetrics}
         </View>
       </View>
     </View>
@@ -725,6 +816,91 @@ function firstItemLineLabel(row) {
   return more ? `${lead}…` : lead;
 }
 
+const WATCH_ITEM_RE =
+  /watch|rolex|omega|patek|tudor|breitling|cartier|hublot|iwc|audemars|breguet|perrelet/i;
+const ITEM_SUMMARY_ORDER = [
+  'Gold Jewellery',
+  'Silver Jewellery',
+  'Platinum Jewellery',
+  'Palladium Jewellery',
+  'Gold Bullion',
+  'Silver Bullion',
+  'Platinum Bullion',
+  'Palladium Bullion',
+  'Jewellery',
+  'Bullion',
+  'Watch',
+];
+
+function itemLineBlob(line) {
+  return [line?.name, line?.searchText, line?.quality, line?.productType, line?.productGroup, line?.metal]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .join(' ');
+}
+
+function itemLineMetal(line) {
+  const field = String(line?.metal || '').toLowerCase();
+  if (field.includes('palladium')) return 'Palladium';
+  if (field.includes('platinum')) return 'Platinum';
+  if (field.includes('silver')) return 'Silver';
+  if (field.includes('gold')) return 'Gold';
+  const text = itemLineBlob(line).toLowerCase();
+  if (/\bpalladium\b|\bpd\b/.test(text)) return 'Palladium';
+  if (/\bplatinum\b|\bpt\b/.test(text)) return 'Platinum';
+  if (/\bsilver\b|\bsterling\b|\bmexican\b|\b925\b|\bsml\b/.test(text)) return 'Silver';
+  if (/\bgold\b|\bau\b|gold filled|\bgml\b|\d+\s*k(?:t|arat)?/.test(text)) return 'Gold';
+  return '';
+}
+
+function classifyItemSummary(line) {
+  const text = itemLineBlob(line);
+  if (!text) return '';
+  if (WATCH_ITEM_RE.test(text)) return 'Watch';
+  const metal = itemLineMetal(line);
+  if (isBullionResaleLine(line) || /\bbullion\b/i.test(`${line?.productGroup || ''} ${text}`)) {
+    return metal ? `${metal} Bullion` : 'Bullion';
+  }
+  if (
+    isScrapJewelleryLine(line) ||
+    /jewell?ery|scrap|ring|chain|bracelet|necklace|earring|pendant/i.test(text)
+  ) {
+    return metal ? `${metal} Jewellery` : 'Jewellery';
+  }
+  if (metal) {
+    if (/\d+\s*k(?:t|arat)?|scrap|filled|sterling/i.test(text)) return `${metal} Jewellery`;
+    return `${metal} Bullion`;
+  }
+  return '';
+}
+
+function itemSummaryLabel(row) {
+  const priced = Array.isArray(row?.pricedLines) ? row.pricedLines.filter(Boolean) : [];
+  const lines = priced.length
+    ? priced
+    : (row?.itemNames || [])
+        .map((name) => String(name || '').trim())
+        .filter(Boolean)
+        .map((name) => ({ name, searchText: `${name} ${row?.itemSearchText || ''}` }));
+  const found = new Set();
+  for (const line of lines) {
+    const label = classifyItemSummary(line);
+    if (label) found.add(label);
+  }
+  if (!found.size && row?.itemSearchText) {
+    const label = classifyItemSummary({
+      name: row.itemSearchText,
+      searchText: row.itemSearchText,
+    });
+    if (label) found.add(label);
+  }
+  const ordered = ITEM_SUMMARY_ORDER.filter((key) => found.has(key));
+  for (const extra of found) {
+    if (!ordered.includes(extra)) ordered.push(extra);
+  }
+  return ordered.join(' and ');
+}
+
 function priceCheckIntro(check) {
   const tol = formatPriceTolerance(check?.tolerance);
   const when = check?.isPurchase ? 'this purchase came in' : 'this sale came in';
@@ -865,7 +1041,7 @@ function TxnPhotoThumb({ urls, label, size = 32 }) {
           resizeMode="cover"
           onError={() => setFailed(true)}
         />
-        {hasMany ? (
+        {hasMany && size > 26 ? (
           <View style={styles.txThumbBadge}>
             <Text style={styles.txThumbBadgeText}>{photos.length}</Text>
           </View>
@@ -963,8 +1139,6 @@ const TransactionRow = memo(function TransactionRow({
   item,
   last,
   onPress,
-  cashSaved,
-  onCashPress,
   priceCheck,
   onPricePress,
   employeePerson,
@@ -974,9 +1148,8 @@ const TransactionRow = memo(function TransactionRow({
   const [splitTip, setSplitTip] = useState('');
   const [splitAnchor, setSplitAnchor] = useState(null);
   const isBuy = item.type === 'purchase';
-  const itemLine = firstItemLineLabel(item);
+  const itemLine = itemSummaryLabel(item) || firstItemLineLabel(item);
   const employee = String(item.employeeName || employeePerson?.name || '').trim();
-  const showCash = typeof onCashPress === 'function' && isCashTransaction(item);
   const hoverPerson = employeePerson || { name: employee || '—', photoUrl: '' };
   const photos = Array.isArray(item.imageUrls) ? item.imageUrls.filter(Boolean) : [];
   const reference = String(item.reference || '').trim();
@@ -1060,68 +1233,94 @@ const TransactionRow = memo(function TransactionRow({
     );
   }
 
+  const photo = photos.length ? (
+    <TxnPhotoThumb urls={photos} label={item.reference || (isBuy ? 'PO' : 'SO')} size={30} />
+  ) : (
+    <View style={styles.storeTxPhotoEmpty} />
+  );
+  const kindTile = (
+    <View style={[styles.storeTxKind, isBuy && styles.storeTxKindBuy]}>
+      <Text style={[styles.storeTxKindText, isBuy && styles.storeTxKindTextBuy]}>
+        {isBuy ? 'PO' : 'SO'}
+      </Text>
+    </View>
+  );
+  const rowLabel = `${isBuy ? 'PO' : 'SO'} ${item.customerName || ''} ${item.amountLabel || ''}`;
+  const cells = (
+    <View style={styles.storeTxRowBody}>
+      <View style={styles.storeTxColPhoto}>{photo}</View>
+      <View style={styles.storeTxColKind}>{kindTile}</View>
+      <Text style={[styles.storeTxName, styles.storeTxColCustomer]} numberOfLines={1}>
+        {item.customerName || '—'}
+      </Text>
+      <Text style={[styles.storeTxMeta, styles.storeTxColRef]} numberOfLines={1}>
+        {refLabel || '—'}
+      </Text>
+      <Text style={[styles.storeTxMeta, styles.storeTxColTime]} numberOfLines={1}>
+        {item.timeLabel || '—'}
+      </Text>
+      <Text style={[styles.storeTxMeta, styles.storeTxColItem]} numberOfLines={1}>
+        {itemLine || item.paymentMethodLabel || '—'}
+      </Text>
+      <View
+        style={styles.storeTxColEmployee}
+        accessibilityLabel={employee || 'Employee'}
+        {...(Platform.OS === 'web' ? { title: employee || undefined } : null)}
+      >
+        <EmployeeAvatar person={hoverPerson} size={24} />
+      </View>
+      <View style={styles.storeTxColAmount} {...splitHover}>
+        <Text style={styles.storeTxAmount} numberOfLines={1}>
+          {item.amountLabel || '—'}
+        </Text>
+      </View>
+      <View style={styles.storeTxChevron}>
+        <Ionicons name="chevron-forward" size={14} color="#c7c7cc" />
+      </View>
+    </View>
+  );
+
+  if (Platform.OS === 'web') {
+    return (
+      <View style={styles.storeTxRow} className="cgold-store-tx-row" accessibilityLabel={rowLabel}>
+        <Pressable
+          onPress={() => onPress?.(item)}
+          style={({ hovered, pressed }) => [
+            StyleSheet.absoluteFill,
+            (hovered || pressed) && styles.storeTxRowHovered,
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel={rowLabel}
+        />
+        <View pointerEvents="none" style={styles.storeTxRowForeground}>
+          {cells}
+        </View>
+        <View
+          style={[styles.storeTxRowRule, last && styles.storeTxRowRuleLast]}
+          {...(Platform.OS === 'web' ? { className: 'cgold-store-tx-rule' } : null)}
+        />
+        <FloatingTooltip
+          visible={Boolean(splitAnchor && splitTip)}
+          text={splitTip}
+          anchorEl={splitAnchor}
+          align="end"
+        />
+      </View>
+    );
+  }
+
   return (
     <Pressable
       onPress={() => onPress?.(item)}
       style={({ hovered, pressed }) => [
-        styles.desktopTxRow,
-        last && styles.rowLast,
-        (hovered || pressed) && styles.rowHovered,
+        styles.storeTxRow,
+        (hovered || pressed) && styles.storeTxRowHoveredNative,
       ]}
       accessibilityRole="button"
-      accessibilityLabel={`${isBuy ? 'PO' : 'SO'} ${item.customerName || ''} ${item.amountLabel || ''}`}
+      accessibilityLabel={rowLabel}
     >
-      <View style={styles.desktopTxThumb}>
-        {photos.length ? (
-          <TxnPhotoThumb urls={photos} label={item.reference || (isBuy ? 'PO' : 'SO')} size={48} />
-        ) : (
-          <View style={[styles.mobileTxKind, styles.desktopTxKind, isBuy && styles.mobileTxKindBuy]}>
-            <Text style={[styles.mobileTxKindText, isBuy && styles.mobileTxKindTextBuy]}>
-              {isBuy ? 'PO' : 'SO'}
-            </Text>
-          </View>
-        )}
-      </View>
-      <View style={styles.desktopTxLead}>
-        <Text style={styles.desktopTxCustomer} numberOfLines={1}>
-          {item.customerName || '—'}
-        </Text>
-        <Text style={styles.desktopTxMeta} numberOfLines={1}>
-          {[refLabel, item.timeLabel].filter(Boolean).join('  ·  ') || '—'}
-        </Text>
-      </View>
-      <View style={styles.desktopTxMid}>
-        <View style={styles.desktopTxEmployee}>
-          <EmployeeAvatar person={hoverPerson} size={28} />
-          <Text style={styles.desktopTxMeta} numberOfLines={1}>
-            {employee || '—'}
-          </Text>
-        </View>
-        {item.paymentMethodLabel && item.paymentMethodLabel !== '—' ? (
-          <Text style={styles.desktopTxMeta} numberOfLines={1}>
-            {item.paymentMethodLabel}
-          </Text>
-        ) : null}
-      </View>
-      <View style={styles.desktopTxTrail} {...splitHover}>
-        <View style={styles.desktopTxAmountRow}>
-          {showCash ? <TxnCashIcon saved={cashSaved} onPress={() => onCashPress(item)} /> : null}
-          <Text style={styles.desktopTxAmount} numberOfLines={1}>
-            {item.amountLabel || '—'}
-          </Text>
-        </View>
-        {itemLine ? (
-          <Text style={styles.desktopTxItems} numberOfLines={1}>
-            {itemLine}
-          </Text>
-        ) : null}
-      </View>
-      <FloatingTooltip
-        visible={Boolean(splitAnchor && splitTip)}
-        text={splitTip}
-        anchorEl={splitAnchor}
-        align="end"
-      />
+      {cells}
+      <View style={[styles.storeTxRowRule, last && styles.storeTxRowRuleLast]} />
     </Pressable>
   );
 });
@@ -1406,6 +1605,7 @@ function StoreSnapshotPanel({
   topInset = 0,
   ready = true,
   desktopHeader = null,
+  dateHero = null,
   heroFocus: heroFocusProp = 'all',
   focusTab = 'overview',
   desktopApps = [],
@@ -1437,15 +1637,34 @@ function StoreSnapshotPanel({
   const [txCatalogs, setTxCatalogs] = useState(() => new Map());
   const [priceReview, setPriceReview] = useState(null);
   const [heroFocus, setHeroFocus] = useState(heroFocusProp || 'all');
+  const [reviewStats, setReviewStats] = useState(() =>
+    reviewStatsFromReviews(peekHomeStoreReviews(storeName, startKey, endKey) || []),
+  );
   useEffect(() => {
     setHeroFocus(heroFocusProp || 'all');
   }, [heroFocusProp, storeName]);
+  useEffect(() => {
+    const cached = peekHomeStoreReviews(storeName, startKey, endKey);
+    setReviewStats(reviewStatsFromReviews(cached || []));
+    if (!storeName || !startKey || !endKey) return undefined;
+    let cancelled = false;
+    fetchGoogleReviewsForStore(storeName, { startDate: startKey, endDate: endKey })
+      .then((fetched) => {
+        if (cancelled) return;
+        const reviews = fetched?.reviews || [];
+        rememberHomeStoreReviews(storeName, startKey, endKey, reviews);
+        setReviewStats(reviewStatsFromReviews(reviews));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [endKey, startKey, storeName]);
   const tolerance = usePriceCheckTolerance();
   const [stageHeight, setStageHeight] = useState(0);
   const [titleBarBottom, setTitleBarBottom] = useState(62);
   const ticketOpen = Boolean(transactionTicket);
   const pageScrollRef = useRef(null);
-  const storeColor = storeAccent(storeName);
   const cashRequestId = useRef(0);
   const inventoryRequestId = useRef(0);
   const hasInventoryRef = useRef(false);
@@ -1784,6 +2003,13 @@ function StoreSnapshotPanel({
   );
 
   const cadAmt = cash?.cad?.aureusOnHand ?? cash?.cad?.expectedOnHand ?? 0;
+  const cashCad = cash?.cad
+    ? {
+        amount: cadAmt,
+        opening: cash.cad.openingBalance,
+        moved: cash.cad.movementNet,
+      }
+    : null;
 
   const inventoryBody = inventoryError && !hasInventoryRef.current ? (
     <Pressable onPress={loadInventory}>
@@ -1848,21 +2074,37 @@ function StoreSnapshotPanel({
     visibleTxRows.length === 0 ? (
       <EmptyRow text={emptyTxCopy} />
     ) : (
-      visibleTxRows.map((item, index) => (
-        <TransactionRow
-          key={item.id}
-          item={item}
-          last={index === visibleTxRows.length - 1}
-          onPress={onOpenTransaction}
-          cashSaved={cashSlips.isSaved(item)}
-          onCashPress={cashSlips.openEditor}
-          priceCheck={priceChecks.get(item.id)}
-          onPricePress={setPriceReview}
-          employeePerson={employeePersonForTx(item, employeesByName, staff)}
-          onAmountHover={onAmountHover}
-          stacked={isMobile}
-        />
-      ))
+      <>
+        {isMobile ? null : (
+          <View style={styles.storeTxHeaderRow}>
+            <View style={styles.storeTxRowBody}>
+              <Text style={[styles.storeTxHeader, styles.storeTxColPhoto]}>Photo</Text>
+              <Text style={[styles.storeTxHeader, styles.storeTxColKind]}>Type</Text>
+              <Text style={[styles.storeTxHeader, styles.storeTxColCustomer]}>Customer</Text>
+              <Text style={[styles.storeTxHeader, styles.storeTxColRef]}>PO/SO #</Text>
+              <Text style={[styles.storeTxHeader, styles.storeTxColTime]}>Time</Text>
+              <Text style={[styles.storeTxHeader, styles.storeTxColItem]}>Item</Text>
+              <View style={styles.storeTxColEmployee} />
+              <Text style={[styles.storeTxHeader, styles.storeTxColAmount, styles.storeTxHeaderEnd]}>Amount</Text>
+              <View style={styles.storeTxChevron} />
+            </View>
+            <View style={[styles.storeTxRowRule, styles.storeTxHeaderRule]} />
+          </View>
+        )}
+        {visibleTxRows.map((item, index) => (
+          <TransactionRow
+            key={item.id}
+            item={item}
+            last={index === visibleTxRows.length - 1}
+            onPress={onOpenTransaction}
+            priceCheck={priceChecks.get(item.id)}
+            onPricePress={setPriceReview}
+            employeePerson={employeePersonForTx(item, employeesByName, staff)}
+            onAmountHover={onAmountHover}
+            stacked={isMobile}
+          />
+        ))}
+      </>
     );
 
   const transactionsBody = mappedTxRows;
@@ -1961,7 +2203,7 @@ function StoreSnapshotPanel({
           {transactionsBody}
         </View>
       ) : (
-        <DashSection title={listTitle} app={listApp} meta={listMeta} fill>
+        <DashSection title={listTitle} meta={listMeta} fill>
           {listBody}
         </DashSection>
       )}
@@ -1973,11 +2215,8 @@ function StoreSnapshotPanel({
   const mobileContent = mobileLists;
 
   const showPinnedApps =
-    showFinancials ||
-    showPhone ||
-    showEmails ||
-    showInventory ||
-    desktopApps.length > 0;
+    isMobile &&
+    (showFinancials || showPhone || showEmails || showInventory || desktopApps.length > 0);
   const pinnedAppRow = showPinnedApps ? (
       <View style={[styles.dashPinnedApps, isMobile && styles.dashPinnedAppsMobile, !isMobile && styles.deskPinnedApps]}>
         {showFinancials ? (
@@ -2092,16 +2331,7 @@ function StoreSnapshotPanel({
             accessibilityLabel="Close apps"
           />
         ) : null}
-        {desktopHeader || (
-          <View pointerEvents="box-none" style={styles.deskChromeRow}>
-            <Text style={styles.deskChromeStore} numberOfLines={1}>
-              {storeName || 'Store'}
-            </Text>
-            <Text style={styles.deskChromePeriod} numberOfLines={1}>
-              {periodLabel}
-            </Text>
-          </View>
-        )}
+        {desktopHeader}
         <View
           style={styles.storeHomeStage}
           onLayout={(event) => {
@@ -2114,6 +2344,7 @@ function StoreSnapshotPanel({
             style={styles.scroll}
             contentContainerStyle={[
               styles.storeHomeScrollContent,
+              topInset > 0 ? { paddingTop: topInset } : null,
               stageHeight > 0 ? { minHeight: stageHeight } : null,
             ]}
             showsVerticalScrollIndicator={false}
@@ -2133,8 +2364,15 @@ function StoreSnapshotPanel({
                   onFocus={setHeroFocus}
                   txSelected={listTab === 'transactions'}
                   onPress={() => onOpenApp?.('transactions')}
+                  onOpenApp={onOpenApp}
                   isMobile={false}
-                  accent={storeColor}
+                  dateHero={dateHero}
+                  periodLabel={periodLabel}
+                  emailCapture={emailCapture}
+                  phoneRatio={phoneRatio}
+                  reviewStats={reviewStats}
+                  cashCad={cashCad}
+                  cashLoading={cashLoading}
                 />
                 {pinnedAppRow}
               </View>
@@ -2213,8 +2451,14 @@ function StoreSnapshotPanel({
               onFocus={setHeroFocus}
               txSelected={listTab === 'transactions'}
               onPress={() => onOpenApp?.('transactions')}
+              onOpenApp={onOpenApp}
               isMobile
-              accent={storeColor}
+              periodLabel={periodLabel}
+              emailCapture={emailCapture}
+              phoneRatio={phoneRatio}
+              reviewStats={reviewStats}
+              cashCad={cashCad}
+              cashLoading={cashLoading}
             />
             {pinnedAppRow}
           </View>
@@ -2261,6 +2505,7 @@ export default memo(
     prev.topInset === next.topInset &&
     prev.ready === next.ready &&
     prev.desktopHeader === next.desktopHeader &&
+    prev.dateHero === next.dateHero &&
     prev.heroFocus === next.heroFocus &&
     prev.focusTab === next.focusTab &&
     prev.desktopApps === next.desktopApps &&
@@ -2302,10 +2547,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: MOBILE_FILTER_INSET,
   },
   storeHomeHeroPadDesktop: {
-    paddingHorizontal: 48,
+    paddingLeft: 32,
+    paddingRight: 24,
   },
   storeHomeSheetPadDesktop: {
-    paddingHorizontal: 48,
+    paddingHorizontal: 0,
     paddingBottom: 24,
   },
   storeHomePinnedTop: {
@@ -2315,10 +2561,64 @@ const styles = StyleSheet.create({
   },
   storeHomePinnedTopDesktop: {
     paddingTop: 0,
-    paddingBottom: 24,
+    paddingBottom: 40,
   },
   storeHomeHeroShell: {
     alignSelf: 'stretch',
+    alignItems: 'stretch',
+    width: '100%',
+  },
+  storeHomeHeroSplit: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    alignSelf: 'stretch',
+    width: '100%',
+    gap: 24,
+    rowGap: 22,
+  },
+  storeHomeHeroSplitMobile: {
+    gap: 16,
+    rowGap: 16,
+  },
+  storeHomeHeroFigures: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'flex-end',
+    marginLeft: 'auto',
+    flexShrink: 0,
+    gap: 36,
+  },
+  storeHomeHeroFiguresMobile: {
+    marginLeft: 0,
+    width: '100%',
+    justifyContent: 'space-between',
+    gap: 16,
+    flexWrap: 'wrap',
+  },
+  storeHomeHeroPair: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    flexShrink: 0,
+    gap: 6,
+  },
+  storeHomeHeroPairMobile: {
+    width: '100%',
+    justifyContent: 'space-between',
+  },
+  storeHomeHeroMetricStack: {
+    alignItems: 'flex-end',
+    gap: 2,
+    alignSelf: 'flex-start',
+  },
+  storeHomeHeroBlockTitle: {
+    fontFamily,
+    fontSize: 10,
+    fontWeight: '400',
+    color: '#aeaeb2',
+    letterSpacing: 0.02,
+    textAlign: 'right',
   },
   storeHomeHeroWithIconCol: {
     flexDirection: 'row',
@@ -2414,17 +2714,25 @@ const styles = StyleSheet.create({
   storeHomeHeroAmount: {
     flexShrink: 0,
     fontFamily: titleFontFamily,
-    fontSize: 34,
-    lineHeight: 40,
+    fontSize: 22,
+    lineHeight: 26,
     fontWeight: '400',
     color: '#1d1d1f',
-    letterSpacing: -0.8,
+    letterSpacing: -0.4,
     fontVariant: ['tabular-nums'],
+    textAlign: 'right',
+    alignSelf: 'flex-end',
   },
   storeHomeHeroAmountDesktop: {
-    alignSelf: 'flex-start',
-    fontSize: 44,
-    lineHeight: 48,
+    alignSelf: 'flex-end',
+    fontSize: 22,
+    lineHeight: 26,
+  },
+  storeHomeHeroAmountLow: {
+    color: '#B91C1C',
+  },
+  storeHomeHeroAmountOk: {
+    color: '#15803D',
   },
   storeHomeHeroAmountEmpty: {
     color: '#aeaeb2',
@@ -2447,19 +2755,19 @@ const styles = StyleSheet.create({
     flexShrink: 0,
     alignSelf: 'stretch',
     justifyContent: 'flex-start',
-    gap: 1,
+    gap: 4,
     minWidth: 108,
     maxWidth: 132,
-    paddingTop: 6,
-    paddingLeft: 14,
+    paddingTop: 2,
+    paddingLeft: 10,
     borderLeftWidth: StyleSheet.hairlineWidth,
-    borderLeftColor: 'rgba(60, 60, 67, 0.12)',
+    borderLeftColor: 'rgba(42,38,30,0.08)',
   },
   storeHomeHeroStatsSideDesktop: {
-    minWidth: 116,
-    maxWidth: 140,
-    paddingTop: 10,
-    paddingLeft: 18,
+    minWidth: 156,
+    maxWidth: 220,
+    paddingTop: 0,
+    paddingLeft: 10,
   },
   storeHomeHeroStat: {
     flex: 1,
@@ -2537,17 +2845,24 @@ const styles = StyleSheet.create({
     color: '#1d1d1f',
     fontWeight: '600',
   },
+  storeHomeHeroStatLow: {
+    color: '#B91C1C',
+    fontWeight: '600',
+  },
+  storeHomeHeroStatOk: {
+    color: '#15803D',
+  },
   storeHomeSheet: {
-    backgroundColor: '#fff',
+    backgroundColor: 'transparent',
     borderRadius: 0,
     overflow: 'hidden',
-    marginTop: 12,
+    marginTop: 8,
     width: '100%',
     alignSelf: 'stretch',
   },
   storeHomeSheetDesktop: {
-    marginTop: 0,
-    borderRadius: 24,
+    marginTop: 8,
+    borderRadius: 0,
     paddingBottom: 24,
   },
   deskChromeRow: {
@@ -2599,13 +2914,196 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     paddingHorizontal: 12,
   },
+  storeTxHeaderRow: {
+    position: 'relative',
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 28,
+    paddingLeft: 32,
+    paddingRight: 24,
+    backgroundColor: CANVAS,
+  },
+  storeTxHeader: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '500',
+    color: MOBILE.secondary,
+    letterSpacing: -0.15,
+  },
+  storeTxHeaderEnd: {
+    textAlign: 'right',
+  },
+  storeTxHeaderRule: {
+    backgroundColor: 'rgba(42,38,30,0.16)',
+  },
+  storeTxRow: {
+    position: 'relative',
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 40,
+    minHeight: 40,
+    maxHeight: 40,
+    paddingVertical: 0,
+    paddingLeft: 32,
+    paddingRight: 24,
+    overflow: 'visible',
+    backgroundColor: 'transparent',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  storeTxRowHovered: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 26,
+    right: 16,
+    borderRadius: 6,
+    backgroundColor: NAV_TAB_ACTIVE_BG,
+  },
+  storeTxRowHoveredNative: {
+    backgroundColor: NAV_TAB_ACTIVE_BG,
+    borderRadius: 6,
+  },
+  storeTxRowForeground: {
+    flex: 1,
+    alignSelf: 'stretch',
+    flexDirection: 'row',
+    alignItems: 'center',
+    zIndex: 1,
+  },
+  storeTxRowBody: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginLeft: 10,
+  },
+  storeTxRowRule: {
+    position: 'absolute',
+    left: 32,
+    right: 24,
+    bottom: 0,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(42,38,30,0.08)',
+  },
+  storeTxRowRuleLast: {
+    opacity: 0,
+  },
+  storeTxColPhoto: {
+    width: 36,
+    flexShrink: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 2,
+    ...Platform.select({ web: { pointerEvents: 'auto' }, default: {} }),
+  },
+  storeTxPhotoEmpty: {
+    width: 30,
+    height: 30,
+    borderRadius: 7,
+    backgroundColor: 'rgba(42,38,30,0.06)',
+  },
+  storeTxColKind: {
+    width: 28,
+    flexShrink: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  storeTxKind: {
+    width: 22,
+    height: 18,
+    borderRadius: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#2F6FED',
+  },
+  storeTxKindBuy: {
+    backgroundColor: '#C47A12',
+  },
+  storeTxKindText: {
+    fontFamily,
+    fontSize: 8,
+    fontWeight: '700',
+    color: '#fff',
+    letterSpacing: 0.2,
+  },
+  storeTxKindTextBuy: {
+    color: '#fff',
+  },
+  storeTxColCustomer: {
+    flexGrow: 1,
+    flexShrink: 1,
+    minWidth: 120,
+    maxWidth: 220,
+  },
+  storeTxColRef: {
+    width: 88,
+    flexShrink: 1,
+    minWidth: 72,
+  },
+  storeTxColTime: {
+    width: 76,
+    flexShrink: 0,
+  },
+  storeTxColEmployee: {
+    width: 32,
+    flexShrink: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  storeTxColItem: {
+    flex: 1.2,
+    minWidth: 100,
+  },
+  storeTxColAmount: {
+    width: 120,
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 6,
+    zIndex: 2,
+    ...Platform.select({ web: { pointerEvents: 'auto' }, default: {} }),
+  },
+  storeTxChevron: {
+    width: 14,
+    flexShrink: 0,
+    alignItems: 'center',
+  },
+  storeTxName: {
+    fontFamily: titleFontFamily,
+    fontSize: 13,
+    lineHeight: 16,
+    fontWeight: '400',
+    color: MOBILE.label,
+    letterSpacing: -0.2,
+  },
+  storeTxMeta: {
+    fontFamily,
+    fontSize: 13,
+    lineHeight: 16,
+    color: MOBILE.secondary,
+    letterSpacing: -0.1,
+  },
+  storeTxAmount: {
+    fontFamily,
+    fontSize: 13,
+    lineHeight: 16,
+    fontWeight: '600',
+    color: MOBILE.label,
+    letterSpacing: -0.2,
+    fontVariant: ['tabular-nums'],
+  },
   desktopTxRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 20,
     minHeight: 76,
-    paddingLeft: 24,
-    paddingRight: 24,
+    paddingLeft: 32,
+    paddingRight: 32,
     paddingVertical: 16,
     backgroundColor: '#fff',
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -2896,8 +3394,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     paddingVertical: 10,
     paddingHorizontal: 10,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255,255,255,0.72)',
+    borderRadius: 6,
+    backgroundColor: '#fff',
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: 'rgba(42,38,30,0.08)',
     gap: 6,
@@ -2907,11 +3405,11 @@ const styles = StyleSheet.create({
     }),
   },
   dashPinnedAppSelected: {
-    backgroundColor: '#fff',
-    borderColor: 'rgba(42,38,30,0.22)',
+    backgroundColor: '#e5e5ea',
+    borderColor: 'transparent',
   },
   dashPinnedAppPressed: {
-    backgroundColor: '#fff',
+    backgroundColor: '#f5f5f5',
   },
   dashPinnedAppCompact: {
     flex: 0.72,
@@ -3078,7 +3576,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: MOBILE_FILTER_INSET,
+    paddingHorizontal: 32,
     paddingVertical: 0,
     marginTop: 6,
     marginBottom: 6,
@@ -3113,7 +3611,7 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 16,
     fontWeight: '600',
-    color: LABEL,
+    color: MOBILE.label,
     letterSpacing: -0.2,
   },
   dashHeadTrail: {
@@ -3133,9 +3631,8 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
   },
   dashList: {
-    backgroundColor: '#fff',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(60,60,67,0.18)',
+    backgroundColor: 'transparent',
+    borderTopWidth: 0,
   },
   dashTitle: {
     fontFamily,

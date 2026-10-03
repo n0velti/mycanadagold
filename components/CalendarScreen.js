@@ -24,6 +24,7 @@ import {
   syncHoursFeed,
   torontoToday,
 } from '../lib/ripplingTime';
+import { storesMatch } from '../lib/storeCatalog';
 import { HOME_STORES } from '../lib/transactions';
 import { useLiveRefresh } from '../lib/liveRefresh';
 import {
@@ -132,10 +133,10 @@ function monthCells(iso) {
 }
 
 function locationMatchesStore(locationName, storeName) {
+  if (storesMatch(locationName, storeName)) return true;
   const store = String(storeName || '').trim().toLowerCase();
   const location = String(locationName || '').trim().toLowerCase();
   if (!store || !location) return false;
-  if (location === store) return true;
   return location.includes(store) || store.includes(location);
 }
 

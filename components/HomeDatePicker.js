@@ -85,8 +85,12 @@ export default function HomeDatePicker({
   blur = false,
   dark = false,
   searchChrome = false,
+  hideField = false,
+  openRef,
+  anchorRef,
 }) {
   const fieldRef = useRef(null);
+  const openIntent = useRef(null);
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const isMobileLayout = windowWidth < MOBILE_BREAKPOINT;
   const [open, setOpen] = useState(false);
@@ -109,6 +113,24 @@ export default function HomeDatePicker({
     if (!open) return;
     const start = parseDateParam(startDate);
     const end = parseDateParam(endDate);
+    const intent = openIntent.current;
+    openIntent.current = null;
+    if (intent === 'range') {
+      setRangePicking(true);
+      setDraftStart(null);
+      setDraftEnd(null);
+      setHoverKey('');
+      setCursor(startOfMonth(start));
+      return;
+    }
+    if (intent === 'day') {
+      setRangePicking(false);
+      setDraftStart(start);
+      setDraftEnd(start);
+      setHoverKey('');
+      setCursor(startOfMonth(start));
+      return;
+    }
     const ranged = dateMode === 'range' && dayKey(start) !== dayKey(end);
     setRangePicking(ranged);
     setDraftStart(start);
@@ -155,7 +177,7 @@ export default function HomeDatePicker({
 
   const openCalendar = () => {
     if (disabled) return;
-    const node = fieldRef.current;
+    const node = anchorRef?.current || fieldRef.current;
     if (node?.measureInWindow) {
       node.measureInWindow((x, y, width, height) => {
         setAnchor({ x, y, width, height });
@@ -166,6 +188,17 @@ export default function HomeDatePicker({
     setAnchor(null);
     setOpen(true);
   };
+
+  useEffect(() => {
+    if (!openRef) return undefined;
+    openRef.current = (opts = {}) => {
+      openIntent.current = opts.range ? 'range' : 'day';
+      openCalendar();
+    };
+    return () => {
+      openRef.current = null;
+    };
+  });
 
   const handleDayPress = (day) => {
     if ((minDate && isBefore(day, minDate)) || (maxDate && isAfter(day, maxDate))) return;
@@ -246,7 +279,7 @@ export default function HomeDatePicker({
 
   return (
     <>
-      {useBlurChrome ? (
+      {hideField ? null : useBlurChrome ? (
         <View style={styles.blurLift}>
           <BlurView
             intensity={32}

@@ -64,7 +64,7 @@ import { prepareAiChatSession, sendAiChatMessage, titleAiChat } from '../lib/aiC
 import { OPENROUTER_MODELS } from '../lib/openrouter';
 import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
 import { useLiveRefresh } from '../lib/liveRefresh';
-import { CANVAS, mobileSafeBottom } from '../lib/mobileUi';
+import { CANVAS, DESKTOP_TOP_BAR_HEIGHT, mobileSafeBottom } from '../lib/mobileUi';
 import { listStaffProfiles, useAppAccess } from '../lib/permissions';
 import ProfilePhotoModal from './ProfilePhotoModal';
 import { usePhoneCalls } from './PhoneCallProvider';
@@ -1917,7 +1917,10 @@ export default function MessagesScreen({
           paddingTop: 8,
           paddingBottom: mobileTabBarReserve() + 16,
         },
-        !isMobile && { flexGrow: 1, paddingTop: 8 },
+        !isMobile && {
+          flexGrow: 1,
+          paddingTop: DESKTOP_TOP_BAR_HEIGHT + 76,
+        },
       ]}
       keyboardShouldPersistTaps="handled"
       keyboardDismissMode={isMobile ? 'on-drag' : undefined}
@@ -1979,7 +1982,7 @@ export default function MessagesScreen({
               </Pressable>
             </View>
           ) : (
-            <View pointerEvents="box-none" style={styles.chromeRow}>
+            <View pointerEvents="box-none" style={[styles.chromeRow, styles.chromeRowDesktop]}>
               <View style={styles.chromeTitle} accessibilityRole="image" accessibilityLabel="Direct Messages">
                 <Ionicons name="chatbubbles" size={22} color="#6B5E3A" />
               </View>
@@ -2033,7 +2036,7 @@ export default function MessagesScreen({
         <View style={[styles.thread, isMobile && styles.canvasMobile, !isMobile && styles.threadDesktop]}>
           {threadLive ? (
             <>
-              <View style={[styles.threadHeader, isMobile && styles.threadHeaderMobile]}>
+              <View style={[styles.threadHeader, isMobile && styles.threadHeaderMobile, !isMobile && styles.threadHeaderDesktop]}>
                 {isMobile ? (
                   <Pressable
                     onPress={() => {
@@ -2534,6 +2537,7 @@ const styles = StyleSheet.create({
     width: 380,
     maxWidth: 420,
     flexShrink: 0,
+    position: 'relative',
   },
   inboxMobile: {
     width: '100%',
@@ -2555,6 +2559,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 16,
     paddingBottom: 12,
+  },
+  chromeRowDesktop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    paddingTop: DESKTOP_TOP_BAR_HEIGHT + 16,
   },
   chromeRowMobile: {
     zIndex: 24,
@@ -2984,6 +2995,9 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: 'rgba(0,0,0,0.08)',
+  },
+  threadHeaderDesktop: {
+    paddingTop: DESKTOP_TOP_BAR_HEIGHT + 14,
   },
   threadHeaderMobile: {
     paddingTop: 8,
