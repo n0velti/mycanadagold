@@ -148,6 +148,7 @@ import {
   emptyStoreSettings,
   isStoreOpenNow,
   listSavedStoreSettings,
+  settingsForStoreName,
   storeKeyFromName,
 } from './lib/storeSettings';
 import {
@@ -5235,7 +5236,7 @@ function HomeStoresTable({
     const now = new Date(nowTick);
     const next = new Map();
     for (const row of rows) {
-      const settings = hoursByKey.get(storeKeyFromName(row.store)) || emptyStoreSettings(row.store);
+      const settings = settingsForStoreName(hoursByKey, row.store) || emptyStoreSettings(row.store);
       next.set(row.store, isStoreOpenNow(settings, now));
     }
     return next;
