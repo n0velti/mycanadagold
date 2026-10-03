@@ -3622,14 +3622,34 @@ function buildGoogleBoqSearch(query: URLSearchParams): string | null {
 
   const place = mapsId ? [featureId, null, null, mapsId] : [featureId];
 
-  // Mode 2 = newest. Page size at [9] (Google serves at most 60); continuation token at [19].
-  const inner: Array<string | number | Array<string | null> | null> = [
-    null, 2, null, null, null, null, null, null, null, 60, null, place,
+  // Same envelope Safari sends for Maps “load more” (Carlingwood / PMX):
+  // mode 2 = newest, page size at [9], review filter at [16], cursor at [19].
+  const inner: Array<unknown> = [
+    null,
+    2,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    60,
+    null,
+    place,
+    null,
+    null,
+    null,
+    null,
+    [1, 1, null, [[3], [4], [5], [6], [7]]],
+    null,
+    null,
+    token || null,
+    null,
+    null,
+    null,
+    0,
   ];
-  if (token) {
-    while (inner.length < 19) inner.push(null);
-    inner[19] = token;
-  }
 
   return new URLSearchParams({
     msc: 'gwsrpc',
