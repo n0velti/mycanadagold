@@ -9,6 +9,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { POS_SYSTEMS, posSystemShortLabel } from '../lib/auth';
 import { CANVAS, useIsMobile } from '../lib/mobileUi';
 import { MobileSafeTop } from './MobileChrome';
 
@@ -18,13 +19,16 @@ const ICON = '#8e8e93';
 export default function LoginScreen({
   loginId,
   password,
+  systemKey,
   error,
   submitting,
   onChangeLoginId,
   onChangePassword,
+  onChangeSystemKey,
   onSubmit,
 }) {
   const isMobile = useIsMobile();
+  const selectedKey = systemKey || 'east';
   const canSubmit = Boolean(loginId.trim() && password.trim() && !submitting);
 
   return (
@@ -41,6 +45,38 @@ export default function LoginScreen({
         </View>
 
         <View style={[styles.card, isMobile && styles.cardMobile]}>
+          <Text style={[styles.dbLabel, isMobile && styles.dbLabelMobile]}>Aureus database</Text>
+          <View style={[styles.dbRow, isMobile && styles.dbRowMobile]}>
+            {POS_SYSTEMS.map((system) => {
+              const selected = system.key === selectedKey;
+              return (
+                <Pressable
+                  key={system.key}
+                  onPress={() => onChangeSystemKey?.(system.key)}
+                  disabled={submitting}
+                  style={[
+                    styles.dbChip,
+                    isMobile && styles.dbChipMobile,
+                    selected && styles.dbChipSelected,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  accessibilityLabel={system.label}
+                >
+                  <Text
+                    style={[
+                      styles.dbChipText,
+                      isMobile && styles.dbChipTextMobile,
+                      selected && styles.dbChipTextSelected,
+                    ]}
+                  >
+                    {posSystemShortLabel(system.key)}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
           <View style={[styles.fields, isMobile && styles.fieldsMobile]}>
             <View style={[styles.fieldRow, isMobile && styles.fieldRowMobile]}>
               <Ionicons
@@ -159,6 +195,61 @@ const styles = StyleSheet.create({
   },
   cardMobile: {
     maxWidth: 400,
+  },
+  dbLabel: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#6b6b6b',
+    marginBottom: 8,
+  },
+  dbLabelMobile: {
+    fontSize: 13,
+  },
+  dbRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 14,
+  },
+  dbRowMobile: {
+    marginBottom: 16,
+  },
+  dbChip: {
+    flex: 1,
+    minHeight: 36,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#d0d0d0',
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  dbChipMobile: {
+    minHeight: 44,
+    borderRadius: 12,
+    borderColor: 'rgba(60,60,67,0.18)',
+  },
+  dbChipSelected: {
+    backgroundColor: '#1a1a1a',
+    borderColor: '#1a1a1a',
+  },
+  dbChipText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1a1a1a',
+  },
+  dbChipTextMobile: {
+    fontSize: 15,
+  },
+  dbChipTextSelected: {
+    color: '#fff',
   },
   logo: {
     width: 72,
