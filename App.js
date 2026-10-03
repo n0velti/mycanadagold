@@ -38,7 +38,6 @@ import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import {
   accessiblePosSystems,
   hasStoredSession,
-  loadLastPosSystemKey,
   login as loginRequest,
   logout as logoutRequest,
   onAureusSessionExpired,
@@ -120,7 +119,7 @@ import { useTxnCashBreakdowns } from './lib/txnCashBreakdowns';
 import { flushNow as flushActionLog, setActionLogActor, setActionLogContext } from './lib/actionLog';
 import HomeDatePicker from './components/HomeDatePicker';
 import LoginScreen from './components/LoginScreen';
-import SessionAccountBar from './components/SessionAccountBar';
+import ProfileLoginSwitcher, { ProfileLoginIcon } from './components/ProfileLoginSwitcher';
 import {
   MobileNavHeader,
   MobileSafeTop,
@@ -7718,6 +7717,7 @@ function ProfileQuickActions({
   onOpenNotifications,
   onOpenLocation,
   onOpenSettings,
+  onOpenLoginSwitcher,
 }) {
   const { silent, setSilent } = usePhoneCalls();
   const storeCode = locationShortLabel(locationName);
@@ -7765,6 +7765,13 @@ function ProfileQuickActions({
           color={settingsActive ? TAB_INK : TAB_ICON_COLOR}
           onPress={onOpenSettings}
         />
+        {collapsed && onOpenLoginSwitcher ? (
+          <SidebarIconButton
+            icon="swap-horizontal-outline"
+            label="Change login"
+            onPress={onOpenLoginSwitcher}
+          />
+        ) : null}
       </View>
     </View>
   );
@@ -7867,6 +7874,7 @@ function SidebarNavGroup({
   onOpenNotifications,
   onOpenLocation,
   onOpenSettings,
+  onOpenLoginSwitcher,
   profileLabel,
   profileLocation,
   profileAvatarUrl,
@@ -7934,20 +7942,32 @@ function SidebarNavGroup({
             {index > 0 && !items[index - 1].active && !item.active ? (
               <SidebarNavDivider collapsed={collapsed} />
             ) : null}
-            <SidebarNavItem
-              label={item.label}
-              subtitle={item.subtitle}
-              icon={item.icon}
-              leading={item.leading}
-              trailing={item.trailing}
-              accessibilityLabel={item.accessibilityLabel}
-              active={item.active}
-              collapsed={collapsed}
-              grouped
-              edge={tabGroupEdgeStyle(index, items.length)}
-              style={styles.sidebarNavItem}
-              onPress={item.onPress}
-            />
+            <View
+              style={
+                item.key === 'profile' && !collapsed ? styles.sidebarProfileRow : undefined
+              }
+            >
+              <SidebarNavItem
+                label={item.label}
+                subtitle={item.subtitle}
+                icon={item.icon}
+                leading={item.leading}
+                trailing={item.trailing}
+                accessibilityLabel={item.accessibilityLabel}
+                active={item.active}
+                collapsed={collapsed}
+                grouped
+                edge={tabGroupEdgeStyle(index, items.length)}
+                style={[
+                  styles.sidebarNavItem,
+                  item.key === 'profile' && !collapsed && styles.sidebarProfileItem,
+                ]}
+                onPress={item.onPress}
+              />
+              {item.key === 'profile' && !collapsed && onOpenLoginSwitcher ? (
+                <ProfileLoginIcon onPress={onOpenLoginSwitcher} />
+              ) : null}
+            </View>
           </View>
         ))}
       </View>
@@ -7959,6 +7979,7 @@ function SidebarNavGroup({
         onOpenNotifications={onOpenNotifications}
         onOpenLocation={onOpenLocation}
         onOpenSettings={onOpenSettings}
+        onOpenLoginSwitcher={onOpenLoginSwitcher}
       />
     </View>
   );
@@ -8260,11 +8281,11 @@ export default function App() {
   const [bootstrapping, setBootstrapping] = useState(true);
   const [loginId, setLoginId] = useState('');
   const [password, setPassword] = useState('');
-  const [loginSystemKey, setLoginSystemKey] = useState('east');
   const [loginError, setLoginError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [switchingPos, setSwitchingPos] = useState(false);
   const [switchError, setSwitchError] = useState('');
+  const [loginSwitcherOpen, setLoginSwitcherOpen] = useState(false);
   const [emailsFocus, setEmailsFocus] = useState(null);
   const [accessByRole, setAccessByRole] = useState(null);
   const [ownUserAccess, setOwnUserAccess] = useState(null);
@@ -8275,16 +8296,6 @@ export default function App() {
   const [profileReturnTo, setProfileReturnTo] = useState(null);
   const [locationPickerOpen, setLocationPickerOpen] = useState(false);
   const emailsFocusSeq = useRef(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    loadLastPosSystemKey().then((key) => {
-      if (!cancelled && key) setLoginSystemKey(key);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   useEffect(() => {
     if (!session?.token) {
@@ -8396,6 +8407,8 @@ export default function App() {
     setTeamsFocusId('');
     setProfileReturnTo(null);
     setLocationPickerOpen(false);
+    setLoginSwitcherOpen(false);
+    setSwitchError('');
   }, []);
 
   useEffect(() => {
@@ -8841,7 +8854,7 @@ export default function App() {
     setLoginError('');
 
     try {
-      const next = await loginRequest(loginId, password, { systemKey: loginSystemKey });
+      const next = await loginRequest(loginId, password);
       const [pins, access, view, userAccess] = await Promise.all([
         loadPinnedTools(next, TOOL_KEYS),
         loadRoleAppAccess(ACCESS_CATALOG_KEYS),
@@ -8858,8 +8871,8 @@ export default function App() {
       setActiveTab('home');
       setActiveTool(null);
       setSettingsPanel(null);
-      setSwitchError(next.preferredSystemError || '');
-      if (next.systemKey) setLoginSystemKey(next.systemKey);
+      setSwitchError('');
+      setLoginSwitcherOpen(false);
     } catch (error) {
       setLoginError(error?.message || 'Login failed.');
     } finally {
@@ -8874,45 +8887,32 @@ export default function App() {
     await logoutRequest().catch(() => {});
     resetToSignedOut();
     setSwitchError('');
+    setLoginSwitcherOpen(false);
   };
 
   const handleChangeLogin = async (systemKey) => {
     if (!session?.token || !systemKey) return;
     if (primaryPosSystem(session).key === systemKey) return;
     const target = accessiblePosSystems(session).find((system) => system.key === systemKey);
-    if (target?.available) {
-      setSwitchingPos(true);
-      setSwitchError('');
-      try {
-        const next = await switchPrimaryPosSystem(session, systemKey);
-        clearInventoryCache();
-        clearCashTillCache();
-        clearLocationCache();
-        setSession(next);
-        setLoginSystemKey(systemKey);
-      } catch (error) {
-        setSwitchError(error?.message || 'Could not switch Aureus database.');
-      } finally {
-        setSwitchingPos(false);
-      }
+    if (!target?.available) {
+      setSwitchError('This login does not have access to that Aureus database.');
+      setLoginSwitcherOpen(true);
       return;
     }
-    const rememberedLogin = session.login || loginId;
-    await flushActionLog().catch(() => {});
-    await logoutRequest().catch(() => {});
-    resetToSignedOut();
-    if (rememberedLogin) setLoginId(rememberedLogin);
-    setLoginSystemKey(systemKey);
-  };
-
-  const handleUseDifferentAccount = async () => {
-    const rememberedLogin = session?.login || loginId;
-    const rememberedSystem = primaryPosSystem(session)?.key || loginSystemKey;
-    await flushActionLog().catch(() => {});
-    await logoutRequest().catch(() => {});
-    resetToSignedOut();
-    if (rememberedLogin) setLoginId(rememberedLogin);
-    if (rememberedSystem) setLoginSystemKey(rememberedSystem);
+    setSwitchingPos(true);
+    setSwitchError('');
+    try {
+      const next = await switchPrimaryPosSystem(session, systemKey);
+      clearInventoryCache();
+      clearCashTillCache();
+      clearLocationCache();
+      setSession(next);
+    } catch (error) {
+      setSwitchError(error?.message || 'Could not switch Aureus database.');
+      setLoginSwitcherOpen(true);
+    } finally {
+      setSwitchingPos(false);
+    }
   };
 
   const renderToolsHeader = () => {
@@ -9462,12 +9462,10 @@ export default function App() {
         <LoginScreen
           loginId={loginId}
           password={password}
-          systemKey={loginSystemKey}
           error={loginError}
           submitting={submitting}
           onChangeLoginId={setLoginId}
           onChangePassword={setPassword}
-          onChangeSystemKey={setLoginSystemKey}
           onSubmit={handleLogin}
         />
       </View>
@@ -9489,14 +9487,6 @@ export default function App() {
         >
           <StatusBar style="dark" />
           <MobileSafeTop />
-          <SessionAccountBar
-            session={session}
-            switchError={switchError}
-            switching={switchingPos}
-            onChangeLogin={handleChangeLogin}
-            onLogout={handleLogout}
-            onUseDifferentAccount={handleUseDifferentAccount}
-          />
           {activeTab === 'buy' || activeTab === 'sell' ? (
             <MobileNavHeader
               title={activeTab === 'buy' ? 'Buy' : 'Sell'}
@@ -9555,8 +9545,23 @@ export default function App() {
               messagesUnread={messagesUnread}
               profileAvatarUrl={session?.profile?.avatarUrl || ''}
               profileName={userLabel}
+              profileAction={
+                <ProfileLoginIcon
+                  size="tab"
+                  onPress={() => setLoginSwitcherOpen(true)}
+                />
+              }
             />
           )}
+          <ProfileLoginSwitcher
+            visible={loginSwitcherOpen}
+            session={session}
+            switchError={switchError}
+            switching={switchingPos}
+            onClose={() => setLoginSwitcherOpen(false)}
+            onChangeLogin={handleChangeLogin}
+            onLogout={handleLogout}
+          />
           <TransactionDetailDrawer
             visible={Boolean(searchDoc)}
             summary={searchDoc}
@@ -9629,6 +9634,7 @@ export default function App() {
             onOpenNotifications={openNotificationsApp}
             onOpenLocation={() => setLocationPickerOpen(true)}
             onOpenSettings={openSettingsApp}
+            onOpenLoginSwitcher={() => setLoginSwitcherOpen(true)}
             profileLabel={userLabel}
             profileLocation={storeLocationFromSession(session)}
             profileAvatarUrl={session?.profile?.avatarUrl || ''}
@@ -9660,17 +9666,16 @@ export default function App() {
         </View>
       </Animated.View>
 
-      <View style={styles.mainColumn}>
-        <SessionAccountBar
-          session={session}
-          switchError={switchError}
-          switching={switchingPos}
-          onChangeLogin={handleChangeLogin}
-          onLogout={handleLogout}
-          onUseDifferentAccount={handleUseDifferentAccount}
-        />
-        <View style={contentStyle}>{renderContent()}</View>
-      </View>
+      <View style={contentStyle}>{renderContent()}</View>
+      <ProfileLoginSwitcher
+        visible={loginSwitcherOpen}
+        session={session}
+        switchError={switchError}
+        switching={switchingPos}
+        onClose={() => setLoginSwitcherOpen(false)}
+        onChangeLogin={handleChangeLogin}
+        onLogout={handleLogout}
+      />
       <TransactionDetailDrawer
         visible={Boolean(searchDoc)}
         summary={searchDoc}
@@ -9701,15 +9706,6 @@ const styles = StyleSheet.create({
     backgroundColor: CANVAS,
     ...Platform.select({
       web: { height: '100%', maxHeight: '100dvh', overflow: 'hidden' },
-      default: {},
-    }),
-  },
-  mainColumn: {
-    flex: 1,
-    minWidth: 0,
-    minHeight: 0,
-    ...Platform.select({
-      web: { display: 'flex', flexDirection: 'column', overflow: 'hidden' },
       default: {},
     }),
   },
@@ -9801,6 +9797,15 @@ const styles = StyleSheet.create({
   sidebarNavRow: {
     width: '100%',
     alignSelf: 'stretch',
+  },
+  sidebarProfileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+  },
+  sidebarProfileItem: {
+    flex: 1,
+    minWidth: 0,
   },
   sidebarNavGroupCollapsed: {
     alignItems: 'stretch',
