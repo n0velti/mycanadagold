@@ -18,7 +18,10 @@ import { useAppAccess } from '../lib/permissions';
 import { CANVAS, MOBILE_BREAKPOINT, mobileSafeBottom, useIsMobile } from '../lib/mobileUi';
 import { useHeldValue, useRightDrawerAnimation } from './TriageKit';
 import {
+  bonusSpreadsheetFilename,
+  bonusViewerMatchesEmployee,
   buildBonusBoard,
+  buildBonusSpreadsheetCsv,
   canViewAllBonusCounts,
   canonicalBonusStoreName,
   currentBonusMonth,
@@ -91,6 +94,42 @@ function rateColor(rate, empty = false) {
 function starsLabel(rating) {
   const value = Math.max(0, Math.min(5, Number(rating) || 0));
   return `${'★'.repeat(value)}${'☆'.repeat(5 - value)}`;
+}
+
+function SpreadsheetButton({ onPress, disabled }) {
+  return (
+    <Pressable
+      style={({ hovered, pressed }) => [
+        styles.spreadsheetBtn,
+        disabled && styles.refreshDisabled,
+        (hovered || pressed) && !disabled && styles.spreadsheetBtnPressed,
+      ]}
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel="Download bonuses spreadsheet"
+    >
+      <Ionicons name="download-outline" size={15} color={disabled ? '#c7c7cc' : '#4a4a4a'} />
+      <Text style={[styles.spreadsheetBtnText, disabled && styles.spreadsheetBtnTextDisabled]}>
+        Spreadsheet
+      </Text>
+    </Pressable>
+  );
+}
+
+function downloadSpreadsheet(filename, csv) {
+  if (Platform.OS !== 'web' || typeof document === 'undefined') return false;
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  return true;
 }
 
 function initialsFromName(name) {
@@ -422,40 +461,62 @@ function EmployeeList({ employees, selfOnly, onOpenEmployee }) {
 
   return (
     <View style={styles.employeeList}>
-      {employees.map((row, index) => (
-        <Pressable
-          key={row.employeeName}
-          onPress={() => onOpenEmployee?.(row)}
-          style={({ hovered, pressed }) => [
-            styles.employeeRow,
-            index === employees.length - 1 && styles.employeeRowLast,
-            (hovered || pressed) && styles.employeeRowPressed,
-          ]}
-          accessibilityRole="button"
-          accessibilityLabel={`${row.employeeName}, ${formatMoney(row.total)}`}
-        >
-          <View style={[styles.employeeAvatar, { backgroundColor: storeAccent(row.employeeName) }]}>
-            <Text style={styles.employeeAvatarText}>{initialsFromName(row.employeeName)}</Text>
-          </View>
-          <View style={styles.employeeCopy}>
-            <Text style={styles.employeeName} numberOfLines={1}>
-              {row.employeeName}
-            </Text>
-            <Text style={styles.employeeMeta} numberOfLines={1}>
-              {row.eligibleCount} review{row.eligibleCount === 1 ? '' : 's'}
-              {row.photoCount > 0 ? ` · ${row.photoCount} photo` : ''}
-            </Text>
-          </View>
-          <View style={styles.employeeTrailing}>
-            <Text style={styles.employeeTotal}>{formatMoney(row.total)}</Text>
-            <Text style={styles.employeeBreakdown}>
-              {formatMoney(row.reviewBonus)}
-              {row.photoBonus > 0 ? ` + ${formatMoney(row.photoBonus)}` : ''}
-            </Text>
-          </View>
-          <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
-        </Pressable>
-      ))}
+      {employees.map((row, index) => {
+        const inactive = Boolean(row.zeroPayout) || (Number(row.total) || 0) === 0;
+        return (
+          <Pressable
+            key={row.employeeName}
+            onPress={() => onOpenEmployee?.(row)}
+            style={({ hovered, pressed }) => [
+              styles.employeeRow,
+              index === employees.length - 1 && styles.employeeRowLast,
+              inactive && styles.employeeRowInactive,
+              (hovered || pressed) && styles.employeeRowPressed,
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={`${row.employeeName}, ${formatMoney(row.total)}`}
+          >
+            <View
+              style={[
+                styles.employeeAvatar,
+                { backgroundColor: inactive ? '#c7c7cc' : storeAccent(row.employeeName) },
+              ]}
+            >
+              <Text style={styles.employeeAvatarText}>{initialsFromName(row.employeeName)}</Text>
+            </View>
+            <View style={styles.employeeCopy}>
+              <Text
+                style={[styles.employeeName, inactive && styles.employeeNameInactive]}
+                numberOfLines={1}
+              >
+                {row.employeeName}
+              </Text>
+              <Text style={[styles.employeeMeta, inactive && styles.employeeMetaInactive]} numberOfLines={1}>
+                {inactive
+                  ? row.title
+                    ? `${row.title} · no reviews`
+                    : 'No reviews this period'
+                  : `${row.eligibleCount} review${row.eligibleCount === 1 ? '' : 's'}${
+                      row.photoCount > 0 ? ` · ${row.photoCount} photo` : ''
+                    }`}
+              </Text>
+            </View>
+            <View style={styles.employeeTrailing}>
+              <Text style={[styles.employeeTotal, inactive && styles.employeeTotalInactive]}>
+                {formatMoney(row.total)}
+              </Text>
+              <Text style={[styles.employeeBreakdown, inactive && styles.employeeMetaInactive]}>
+                {inactive
+                  ? '$0'
+                  : `${formatMoney(row.reviewBonus)}${
+                      row.photoBonus > 0 ? ` + ${formatMoney(row.photoBonus)}` : ''
+                    }`}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+          </Pressable>
+        );
+      })}
     </View>
   );
 }
@@ -561,9 +622,13 @@ function reviewsNamedForEmployee(reviews, employeeName) {
       ...(review.attributedEmployees || []),
       ...(review.namedEmployees || []),
     ];
-    return names.some(
-      (name) => name.localeCompare(key, undefined, { sensitivity: 'base' }) === 0,
-    );
+    return names.some((name) => {
+      if (name.localeCompare(key, undefined, { sensitivity: 'base' }) === 0) return true;
+      return (
+        bonusViewerMatchesEmployee(name, { fullName: key }) ||
+        bonusViewerMatchesEmployee(key, { fullName: name })
+      );
+    });
   });
 }
 
@@ -880,6 +945,18 @@ export default function BonusesScreen({
     await load({ silent: true });
   }, [load]);
 
+  const downloadPayouts = useCallback(() => {
+    const source = displayBoard || board;
+    if (!source?.stores?.length) return;
+    const csv = buildBonusSpreadsheetCsv(source, { periodLabel });
+    const filename = bonusSpreadsheetFilename({
+      startDate,
+      endDate,
+      storeName: storeFilter ? canonicalBonusStoreName(storeFilter) : '',
+    });
+    downloadSpreadsheet(filename, csv);
+  }, [board, displayBoard, endDate, periodLabel, startDate, storeFilter]);
+
   const openStore = (store) => {
     setSelectedStore(store.storeName);
   };
@@ -965,6 +1042,7 @@ export default function BonusesScreen({
           <Text style={styles.chipText}>This month</Text>
         </Pressable>
       ) : null}
+      <SpreadsheetButton onPress={downloadPayouts} disabled={!visibleStores.length} />
     </View>
   );
 
@@ -1072,18 +1150,14 @@ export default function BonusesScreen({
           {activeStore.photoReviewCount
             ? ` · ${activeStore.photoReviewCount} photo × ${formatMoney(PHOTO_BONUS)}`
             : ''}
-          {activeStore.rosterSource === 'aureus' && activeStore.aureusEmployeeCount
-            ? ` · ${activeStore.aureusEmployeeCount} on ${String(activeStore.posSystemKey || 'east').toUpperCase()} Aureus`
-            : activeStore.rosterSource === 'transactions' && (activeStore.aureusEmployeeCount || activeStore.directoryCount)
-              ? ` · ${activeStore.aureusEmployeeCount || activeStore.directoryCount} cashiers from ${String(activeStore.posSystemKey || 'east').toUpperCase()} transactions`
-              : ''}
+          {activeStore.aureusEmployeeCount
+            ? ` · ${activeStore.aureusEmployeeCount} analysts & managers on roster`
+            : ''}
         </Text>
       </View>
       {activeStore.rosterSource === 'none' ? (
         <Text style={styles.storeError}>
-          No employees found for {activeStore.storeName} on the{' '}
-          {String(activeStore.posSystemKey || 'east').toUpperCase()} Aureus host and no cashiers on
-          its transactions for this period. Check linked POS sessions in Profile.
+          No precious-metals analysts or branch managers are listed for {activeStore.storeName}.
         </Text>
       ) : null}
       <EmployeeList
@@ -1297,6 +1371,17 @@ const styles = StyleSheet.create({
     height: 32,
     alignItems: 'center',
     justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  refreshDisabled: {
+    opacity: 0.45,
+    ...Platform.select({
+      web: { cursor: 'default' },
+      default: {},
+    }),
   },
   errorText: {
     fontFamily: FONT,
@@ -1456,6 +1541,31 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: '#4a4a4a',
+  },
+  spreadsheetBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: '#f3f3f3',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  spreadsheetBtnPressed: {
+    backgroundColor: '#e8e8e8',
+  },
+  spreadsheetBtnText: {
+    fontFamily: FONT,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#4a4a4a',
+  },
+  spreadsheetBtnTextDisabled: {
+    color: '#c7c7cc',
   },
   loadingBlock: {
     paddingVertical: 36,
@@ -1713,6 +1823,20 @@ const styles = StyleSheet.create({
   },
   employeeRowPressed: {
     backgroundColor: '#f5f5f5',
+  },
+  employeeRowInactive: {
+    backgroundColor: '#fafafa',
+  },
+  employeeNameInactive: {
+    color: '#8e8e93',
+    fontWeight: '500',
+  },
+  employeeMetaInactive: {
+    color: '#c7c7cc',
+  },
+  employeeTotalInactive: {
+    color: '#8e8e93',
+    fontWeight: '600',
   },
   employeeAvatar: {
     width: 36,
