@@ -5616,7 +5616,6 @@ function HomeScreen({
   onSell,
   onOpenAnalytics,
   homeRootTick = 0,
-  onStoreDetailsChange,
 }) {
   const { isMobile, tableMaxWidth, homeSearchMaxWidth, pagePad, tablePagePad } = useHomePageLayout();
   const homeDesktopPad = useMemo(
@@ -5965,11 +5964,6 @@ function HomeScreen({
     };
   }, []);
 
-  useEffect(() => {
-    onStoreDetailsChange?.(Boolean(selectedStore));
-  }, [onStoreDetailsChange, selectedStore]);
-
-  useEffect(() => () => onStoreDetailsChange?.(false), [onStoreDetailsChange]);
   const homeRootTickRef = useRef(homeRootTick);
   useEffect(() => {
     if (homeRootTickRef.current === homeRootTick) return;
@@ -8257,26 +8251,6 @@ export default function App() {
   const toggleSidebarCollapsed = useCallback(() => {
     applySidebarCollapsed(!sidebarCollapsed);
   }, [applySidebarCollapsed, sidebarCollapsed]);
-  const handleStoreDetailsChange = useCallback(
-    (open) => {
-      if (isMobile || !open) return;
-      applySidebarCollapsed(true);
-    },
-    [applySidebarCollapsed, isMobile],
-  );
-  const showingMessagesApp =
-    activeTab === 'messages' || (activeTab === 'tools' && activeTool?.key === 'messages');
-  const wasShowingMessagesApp = useRef(false);
-  useEffect(() => {
-    if (isMobile) {
-      wasShowingMessagesApp.current = showingMessagesApp;
-      return;
-    }
-    if (showingMessagesApp && !wasShowingMessagesApp.current) {
-      applySidebarCollapsed(true);
-    }
-    wasShowingMessagesApp.current = showingMessagesApp;
-  }, [applySidebarCollapsed, isMobile, showingMessagesApp]);
   const [session, setSession] = useState(null);
   const [bootstrapping, setBootstrapping] = useState(true);
   const [loginId, setLoginId] = useState('');
@@ -9352,7 +9326,6 @@ export default function App() {
           onBuy={() => selectTab('buy')}
           onSell={() => selectTab('sell')}
           onOpenAnalytics={openAnalyticsApp}
-          onStoreDetailsChange={handleStoreDetailsChange}
         />
       );
     }
