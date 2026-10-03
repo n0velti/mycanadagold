@@ -138,7 +138,16 @@ export async function loginToPos(baseUrl: string, login: string, password: strin
  * Linked-POS auto-login (shared secrets) is a separate path — do not change
  * this "first success wins" behaviour.
  */
-export async function loginToStaffPos(login: string, password: string): Promise<AureusSession> {
+export async function loginToStaffPos(
+  login: string,
+  password: string,
+  options: { preferKey?: string } = {},
+): Promise<AureusSession> {
+  const preferred = POS_SYSTEMS.find((system) => system.key === options.preferKey);
+  if (preferred) {
+    return loginToPos(preferred.baseUrl, login, password);
+  }
+
   const results = await Promise.allSettled(
     POS_SYSTEMS.map((system) => loginToPos(system.baseUrl, login, password)),
   );

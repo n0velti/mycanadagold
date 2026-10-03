@@ -309,6 +309,7 @@ export function MobileTabBar({
   messagesUnread = 0,
   profileAvatarUrl = '',
   profileName = '',
+  profileAction = null,
 }) {
   const tabLayouts = useRef({});
   const indicatorX = useRef(new Animated.Value(0)).current;
@@ -478,52 +479,59 @@ export function MobileTabBar({
               const badge = unread > 99 ? '99+' : unread > 0 ? String(unread) : '';
               const isProfile = tab.key === 'profile';
               const isHome = tab.key === 'home';
+              const showProfileAction = isProfile && profileAction;
+              const rememberLayout = (event) => {
+                const { x, width } = event.nativeEvent.layout;
+                const prev = tabLayouts.current[tab.key];
+                tabLayouts.current[tab.key] = { x, width };
+                if (draggingRef.current || tab.key !== activeKey) return;
+                if (!prev || prev.x !== x || prev.width !== width) {
+                  placeActiveIndicator(tab.key, indicatorPlaced.current);
+                }
+              };
               return (
-                <Pressable
+                <View
                   key={tab.key}
-                  onPress={() => {
-                    expandMobileTabBar();
-                    onSelect(tab.key);
-                  }}
-                  onLayout={(event) => {
-                    const { x, width } = event.nativeEvent.layout;
-                    const prev = tabLayouts.current[tab.key];
-                    tabLayouts.current[tab.key] = { x, width };
-                    if (draggingRef.current || tab.key !== activeKey) return;
-                    if (!prev || prev.x !== x || prev.width !== width) {
-                      placeActiveIndicator(tab.key, indicatorPlaced.current);
-                    }
-                  }}
-                  style={styles.tab}
-                  hitSlop={8}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: isActive }}
-                  accessibilityLabel={badge ? `${tab.label}, ${badge} unread` : tab.label}
+                  onLayout={rememberLayout}
+                  style={showProfileAction ? styles.tabProfileCluster : styles.tab}
                 >
-                  <View style={styles.tabIconWrap}>
-                    {isHome ? (
-                      <Image
-                        source={require('../assets/small_logo.png')}
-                        style={[styles.tabLogo, !isActive && styles.tabLogoDim]}
-                        resizeMode="cover"
-                        accessibilityIgnoresInvertColors
-                      />
-                    ) : isProfile ? (
-                      <TabProfileAvatar uri={profileAvatarUrl} name={profileName} active={isActive} />
-                    ) : (
-                      <Ionicons
-                        name={isActive ? tab.iconActive : tab.icon}
-                        size={28}
-                        color={isActive ? NAV_ICON_ACTIVE : NAV_ICON_INACTIVE}
-                      />
-                    )}
-                    {badge ? (
-                      <View style={styles.badge} pointerEvents="none">
-                        <Text style={styles.badgeText}>{badge}</Text>
-                      </View>
-                    ) : null}
-                  </View>
-                </Pressable>
+                  <Pressable
+                    onPress={() => {
+                      expandMobileTabBar();
+                      onSelect(tab.key);
+                    }}
+                    style={showProfileAction ? styles.tabProfileHit : styles.tabFill}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: isActive }}
+                    accessibilityLabel={badge ? `${tab.label}, ${badge} unread` : tab.label}
+                  >
+                    <View style={styles.tabIconWrap}>
+                      {isHome ? (
+                        <Image
+                          source={require('../assets/small_logo.png')}
+                          style={[styles.tabLogo, !isActive && styles.tabLogoDim]}
+                          resizeMode="cover"
+                          accessibilityIgnoresInvertColors
+                        />
+                      ) : isProfile ? (
+                        <TabProfileAvatar uri={profileAvatarUrl} name={profileName} active={isActive} />
+                      ) : (
+                        <Ionicons
+                          name={isActive ? tab.iconActive : tab.icon}
+                          size={28}
+                          color={isActive ? NAV_ICON_ACTIVE : NAV_ICON_INACTIVE}
+                        />
+                      )}
+                      {badge ? (
+                        <View style={styles.badge} pointerEvents="none">
+                          <Text style={styles.badgeText}>{badge}</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                  </Pressable>
+                  {showProfileAction ? profileAction : null}
+                </View>
               );
             })}
           </View>
@@ -898,6 +906,31 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     minHeight: 44,
     overflow: 'visible',
+  },
+  tabFill: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
+    alignSelf: 'stretch',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  tabProfileCluster: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+    minHeight: 44,
+    overflow: 'visible',
+  },
+  tabProfileHit: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},

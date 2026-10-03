@@ -1,9 +1,10 @@
 /**
  * aureus-login — the only way into MyCanadaGold.
  *
- *   POST { action: "login", login, password }
+ *   POST { action: "login", login, password, systemKey? }
  *     1. Throttles by IP + login.
- *     2. Verifies the credentials against East, GTA, and PMX.
+ *     2. Verifies the credentials against East, GTA, and PMX
+ *        (`systemKey` pins one host; otherwise first success wins).
  *     3. Finds or creates the matching Supabase Auth user (email pre-confirmed,
  *        so no confirmation mail is ever sent) and stamps app_metadata with the
  *        Aureus identity (`aureus_user_id`) that RLS and the proxy check.
@@ -103,6 +104,7 @@ interface LoginBody {
   locationId?: string;
   locationName?: string;
   baseUrl?: string;
+  systemKey?: string;
   bonusAuth?: Record<string, { token?: string; baseUrl?: string }>;
 }
 
@@ -115,6 +117,7 @@ interface BonusAccessResult {
   granted: boolean | null;
   bySystem: Record<string, BonusSystemProbe>;
   bonusAuth: Record<string, LinkedPosResult>;
+  staffPos: Record<string, LinkedPosResult>;
 }
 
 interface ProfileRow {
@@ -454,6 +457,20 @@ function visibilityFromProbe(probe: EmployeeVisibility): BonusSystemProbe {
   return { canViewEmployees: probe.canViewEmployees, namedCount: probe.namedCount };
 }
 
+function staffPosFromSessions(sessions: Iterable<AureusSession>): Record<string, LinkedPosResult> {
+  const out: Record<string, LinkedPosResult> = {};
+  for (const session of sessions) {
+    if (!session?.token || !session.systemKey) continue;
+    out[session.systemKey] = {
+      key: session.systemKey,
+      label: session.systemLabel || session.systemKey,
+      baseUrl: session.baseUrl,
+      token: session.token,
+    };
+  }
+  return out;
+}
+
 async function probeSessionVisibility(session: AureusSession): Promise<{
   probe: EmployeeVisibility;
   auth: LinkedPosResult | null;
@@ -524,13 +541,16 @@ async function evaluateBonusAccess(
     if (row.auth?.token) bonusAuth[row.key] = row.auth;
   }
 
+  const staffPos = staffPosFromSessions(sessions.values());
+
   if (!probed) {
-    return { granted: null, bySystem, bonusAuth };
+    return { granted: null, bySystem, bonusAuth, staffPos };
   }
   return {
     granted: Object.values(bySystem).some((row) => row.canViewEmployees),
     bySystem,
     bonusAuth,
+    staffPos,
   };
 }
 
@@ -619,6 +639,7 @@ async function evaluateBonusAccessFromTokens(
     granted: Object.values(bySystem).some((row) => row.canViewEmployees),
     bySystem,
     bonusAuth,
+    staffPos: staffPosFromSessions(sessions),
   };
 }
 
@@ -712,9 +733,13 @@ async function handleLogin(req: Request, body: LoginBody): Promise<Response> {
     return error(req, 429, 'Too many sign-in attempts. Try again in 15 minutes.', 'throttled');
   }
 
+  const preferKey = POS_SYSTEMS.some((system) => system.key === String(body.systemKey || '').trim())
+    ? String(body.systemKey).trim()
+    : '';
+
   let aureus;
   try {
-    aureus = await loginToStaffPos(login, password);
+    aureus = await loginToStaffPos(login, password, preferKey ? { preferKey } : {});
   } catch (err) {
     await recordAttempt(admin, ipHash, loginHash, false);
     if (err instanceof AureusError && err.status === 401) {
@@ -813,6 +838,7 @@ async function handleLogin(req: Request, body: LoginBody): Promise<Response> {
     granted: null,
     bySystem: emptyBonusBySystem(),
     bonusAuth: {},
+    staffPos: {},
   };
   try {
     bonusAccess = await evaluateBonusAccess(login, password, aureus);
@@ -844,6 +870,17 @@ async function handleLogin(req: Request, body: LoginBody): Promise<Response> {
     linked,
     bonusAccess: publicBonusAccess(bonusAccess),
     bonusAuth: bonusAccess.bonusAuth,
+    staffPos:
+      Object.keys(bonusAccess.staffPos || {}).length > 0
+        ? bonusAccess.staffPos
+        : {
+            [aureus.systemKey]: {
+              key: aureus.systemKey,
+              label: aureus.systemLabel || aureus.systemKey,
+              baseUrl: aureus.baseUrl,
+              token: aureus.token,
+            },
+          },
     profile: published,
     firstLogin,
   });
@@ -1026,6 +1063,7 @@ async function handleSyncBonusAccess(req: Request, body: LoginBody): Promise<Res
   return json(req, 200, {
     bonusAccess: publicBonusAccess(bonusAccess),
     bonusAuth: bonusAccess.bonusAuth,
+    staffPos: bonusAccess.staffPos || {},
     profile: published,
   });
 }
