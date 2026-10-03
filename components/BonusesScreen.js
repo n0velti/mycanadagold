@@ -17,6 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAppAccess } from '../lib/permissions';
 import { CANVAS, MOBILE_BREAKPOINT, mobileSafeBottom, useIsMobile } from '../lib/mobileUi';
 import { useHeldValue, useRightDrawerAnimation } from './TriageKit';
+import { BONUS_ACCESS_DENIED, canViewBonusReviewData } from '../lib/auth';
 import {
   bonusSpreadsheetFilename,
   bonusViewerMatchesEmployee,
@@ -25,6 +26,7 @@ import {
   canViewAllBonusCounts,
   canonicalBonusStoreName,
   currentBonusMonth,
+  downloadBonusReviewSpreadsheet,
   formatMoney,
   monthRange,
   NEGATIVE_COLUMNS,
@@ -800,6 +802,7 @@ export default function BonusesScreen({
     storeFilter ? canonicalBonusStoreName(storeFilter) : null,
   );
   const [selectedEmployeeName, setSelectedEmployeeName] = useState(null);
+  const [downloadError, setDownloadError] = useState('');
   const requestId = useRef(0);
   const displayBoard = useMemo(
     () => (viewAllCounts ? board : restrictBonusBoardToViewer(board, session?.profile)),
@@ -830,6 +833,13 @@ export default function BonusesScreen({
       if (!session?.token) {
         setBoard(null);
         setError('');
+        return;
+      }
+      if (canViewBonusReviewData(session) === false) {
+        setBoard(null);
+        setError(BONUS_ACCESS_DENIED);
+        setLoading(false);
+        setRefreshing(false);
         return;
       }
 
@@ -928,6 +938,10 @@ export default function BonusesScreen({
   }, [selectedEmployeeName, visibleStores, activeStore]);
 
   const totals = useMemo(() => boardTotals(visibleStores), [visibleStores]);
+  const exportReviewCount = useMemo(
+    () => visibleStores.reduce((sum, store) => sum + (store.reviews?.length || 0), 0),
+    [visibleStores],
+  );
   const emailRate = totals.customerCount > 0 ? (totals.withEmail / totals.customerCount) * 100 : 0;
   const emailRateLabel = totals.customerCount ? `${emailRate.toFixed(1)}%` : '—';
   const stillLoading = loading || visibleStores.some((store) => store.reviewsLoading);
@@ -956,6 +970,34 @@ export default function BonusesScreen({
     });
     downloadSpreadsheet(filename, csv);
   }, [board, displayBoard, endDate, periodLabel, startDate, storeFilter]);
+
+  const downloadReviews = useCallback(() => {
+    setDownloadError('');
+    try {
+      const result = downloadBonusReviewSpreadsheet(visibleStores, { startDate, endDate });
+      if (!result.rows) {
+        setDownloadError('No Google review bonuses to download for this period.');
+      }
+    } catch (err) {
+      setDownloadError(err?.message || 'Could not download the spreadsheet.');
+    }
+  }, [visibleStores, startDate, endDate]);
+
+  const downloadDisabled = stillLoading || !exportReviewCount;
+  const downloadButton = (
+    <Pressable
+      style={[styles.downloadBtn, downloadDisabled && styles.downloadBtnDisabled]}
+      onPress={downloadReviews}
+      disabled={downloadDisabled}
+      accessibilityRole="button"
+      accessibilityLabel="Download Google review bonuses spreadsheet"
+    >
+      <Ionicons name="download-outline" size={16} color={downloadDisabled ? '#c4c4c4' : '#1a1a1a'} />
+      <Text style={[styles.downloadBtnText, downloadDisabled && styles.downloadBtnTextDisabled]}>
+        Spreadsheet
+      </Text>
+    </Pressable>
+  );
 
   const openStore = (store) => {
     setSelectedStore(store.storeName);
@@ -1043,6 +1085,7 @@ export default function BonusesScreen({
         </Pressable>
       ) : null}
       <SpreadsheetButton onPress={downloadPayouts} disabled={!visibleStores.length} />
+      {isMobile || embedded ? downloadButton : null}
     </View>
   );
 
@@ -1113,6 +1156,9 @@ export default function BonusesScreen({
           <Text style={styles.heroStatLabel}>Per review</Text>
         </View>
       </View>
+      {isMobile && !embedded ? (
+        <View style={styles.storeHeroActions}>{downloadButton}</View>
+      ) : null}
     </View>
   ) : null;
 
@@ -1218,6 +1264,7 @@ export default function BonusesScreen({
           </View>
           <View style={styles.pageControls}>
             {stillLoading ? <ActivityIndicator size="small" color="#8e8e93" /> : null}
+            {downloadButton}
             <Pressable style={styles.refresh} onPress={() => load()} hitSlop={8} accessibilityLabel={`Refresh ${title.toLowerCase()}`}>
               <Ionicons name="refresh" size={16} color="#8e8e93" />
             </Pressable>
@@ -1226,6 +1273,7 @@ export default function BonusesScreen({
       ) : null}
 
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
+      {downloadError ? <Text style={styles.errorText}>{downloadError}</Text> : null}
       {board?.roster?.errors?.length ? (
         <Text style={styles.errorText}>{board.roster.errors.join(' ')}</Text>
       ) : null}
@@ -1383,6 +1431,31 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
+  downloadBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: '#f3f3f3',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  downloadBtnDisabled: {
+    opacity: 0.5,
+  },
+  downloadBtnText: {
+    fontFamily: FONT,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#4a4a4a',
+  },
+  downloadBtnTextDisabled: {
+    color: '#c4c4c4',
+  },
   errorText: {
     fontFamily: FONT,
     fontSize: 13,
@@ -1428,6 +1501,10 @@ const styles = StyleSheet.create({
     letterSpacing: -1.2,
     fontVariant: ['tabular-nums'],
     marginTop: 2,
+  },
+  storeHeroActions: {
+    marginTop: 10,
+    alignSelf: 'flex-start',
   },
   heroStats: {
     flexDirection: 'row',

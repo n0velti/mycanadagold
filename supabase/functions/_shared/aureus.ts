@@ -134,8 +134,20 @@ export async function loginToPos(baseUrl: string, login: string, password: strin
 /**
  * Staff sign-in across East, GTA, and PMX. First host that accepts the
  * password wins so GTA / Richmond Hill logins work the same as East.
+ *
+ * Linked-POS auto-login (shared secrets) is a separate path — do not change
+ * this "first success wins" behaviour.
  */
-export async function loginToStaffPos(login: string, password: string): Promise<AureusSession> {
+export async function loginToStaffPos(
+  login: string,
+  password: string,
+  options: { preferKey?: string } = {},
+): Promise<AureusSession> {
+  const preferred = POS_SYSTEMS.find((system) => system.key === options.preferKey);
+  if (preferred) {
+    return loginToPos(preferred.baseUrl, login, password);
+  }
+
   const results = await Promise.allSettled(
     POS_SYSTEMS.map((system) => loginToPos(system.baseUrl, login, password)),
   );
@@ -261,6 +273,82 @@ export async function fetchEmployeeDirectory(baseUrl: string, token: string): Pr
   }
 
   return all;
+}
+
+export interface EmployeeVisibility {
+  canViewEmployees: boolean;
+  namedCount: number;
+  status: number;
+  error?: string;
+}
+
+function rowHasEmployeeName(row: unknown): boolean {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return false;
+  const source = row as Record<string, unknown>;
+  const nested =
+    source.user && typeof source.user === 'object' && !Array.isArray(source.user)
+      ? (source.user as Record<string, unknown>)
+      : source;
+  const first = String(nested.first_name ?? nested.firstName ?? '').trim();
+  const last = String(nested.last_name ?? nested.lastName ?? '').trim();
+  const full = String(
+    nested.full_name ?? nested.fullName ?? nested.name ?? nested.display_name ?? nested.displayName ?? '',
+  ).trim();
+  return Boolean(first || last || full);
+}
+
+/**
+ * Live POS check for the bonuses-only grant: can this session read the
+ * employee directory, including names? 403 / "not allowed to manage the
+ * employees" is a deny. A 200 (even an empty list) means the account has
+ * the Employees permission.
+ */
+export async function probeEmployeeVisibility(baseUrl: string, token: string): Promise<EmployeeVisibility> {
+  const root = assertHttps(baseUrl);
+  const headers = { ...JSON_HEADERS, Authorization: `Bearer ${token}` };
+  let result = await fetchJson(`${root}/employees?page=1&items_per_page=50`, { method: 'GET', headers });
+  if (!result.ok) {
+    result = await fetchJson(`${root}/employees`, { method: 'GET', headers });
+  }
+  const message = messageFrom(result.payload, '');
+  const denied =
+    !result.ok ||
+    result.status === 401 ||
+    result.status === 403 ||
+    /not allowed|forbidden|permission|unauthori[sz]ed to manage/i.test(message);
+  if (denied) {
+    return {
+      canViewEmployees: false,
+      namedCount: 0,
+      status: result.status,
+      error: message || 'You are not allowed to manage the employees.',
+    };
+  }
+  const rows = rowsFromListPayload(result.payload);
+  return {
+    canViewEmployees: true,
+    namedCount: rows.filter(rowHasEmployeeName).length,
+    status: result.status,
+  };
+}
+
+/**
+ * Every POS host that accepts this staff password. Used only by the
+ * bonuses-authorization path. Does not replace loginToStaffPos or linked
+ * shared-credential login.
+ */
+export async function loginToAllStaffPos(
+  login: string,
+  password: string,
+  options: { exceptKey?: string } = {},
+): Promise<AureusSession[]> {
+  const hosts = POS_SYSTEMS.filter((system) => system.key !== options.exceptKey);
+  const results = await Promise.allSettled(
+    hosts.map((system) => loginToPos(system.baseUrl, login, password)),
+  );
+  return results
+    .filter((result): result is PromiseFulfilledResult<AureusSession> => result.status === 'fulfilled')
+    .map((result) => result.value);
 }
 
 /**

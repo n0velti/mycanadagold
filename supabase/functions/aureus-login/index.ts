@@ -1,9 +1,10 @@
 /**
  * aureus-login — the only way into MyCanadaGold.
  *
- *   POST { action: "login", login, password }
+ *   POST { action: "login", login, password, systemKey? }
  *     1. Throttles by IP + login.
- *     2. Verifies the credentials against East, GTA, and PMX.
+ *     2. Verifies the credentials against East, GTA, and PMX
+ *        (`systemKey` pins one host; otherwise first success wins).
  *     3. Finds or creates the matching Supabase Auth user (email pre-confirmed,
  *        so no confirmation mail is ever sent) and stamps app_metadata with the
  *        Aureus identity (`aureus_user_id`) that RLS and the proxy check.
@@ -20,6 +21,10 @@
  *   POST { action: "set-location", aureusToken, locationId, locationName }
  *     Writes the caller's assigned store onto their profile after POS updated it.
  *
+ *   POST { action: "sync-bonus-access", aureusToken, baseUrl, bonusAuth? }
+ *     Re-probes GET /employees with the caller's own POS tokens (not the
+ *     linked shared logins) and refreshes the bonuses-only grant.
+ *
  * verify_jwt is off for this function (the caller is not signed in yet), so
  * every check happens here.
  */
@@ -33,9 +38,15 @@ import {
   loginLinkedPosSystems,
   fetchEmployeeById,
   fetchEmployeeDirectory,
+  loginToAllStaffPos,
   loginToStaffPos,
   lookupLocationName,
   posSystemFromBaseUrl,
+  probeEmployeeVisibility,
+  POS_SYSTEMS,
+  type AureusSession,
+  type EmployeeVisibility,
+  type LinkedPosResult,
 } from '../_shared/aureus.ts';
 import {
   authEmailForIdentity,
@@ -59,6 +70,9 @@ const MAX_FAILURES_PER_IP = 40;
 const THROTTLE_WINDOW = '15 minutes';
 
 const PROFILE_COLUMNS =
+  'id, aureus_user_id, aureus_login, email, first_name, last_name, full_name, role, employee_type, location_id, location_name, app_role, allowed_app_roles, is_system_admin, is_active, can_view_bonus_data, bonus_employee_visibility, pinned_tools, apps_view, avatar_url, team_id, is_team_intake, last_login_at, created_at';
+
+const PROFILE_COLUMNS_WITHOUT_BONUS =
   'id, aureus_user_id, aureus_login, email, first_name, last_name, full_name, role, employee_type, location_id, location_name, app_role, allowed_app_roles, is_system_admin, is_active, pinned_tools, apps_view, avatar_url, team_id, is_team_intake, last_login_at, created_at';
 
 const PROFILE_COLUMNS_LEGACY =
@@ -67,7 +81,15 @@ const PROFILE_COLUMNS_LEGACY =
 async function selectProfileById(admin: SupabaseClient, userId: string) {
   const full = await admin.from('profiles').select(PROFILE_COLUMNS).eq('id', userId).single();
   if (!full.error && full.data) return { data: full.data as ProfileRow, error: null };
-  if (full.error && !/allowed_app_roles/i.test(full.error.message || '')) {
+  if (full.error && /can_view_bonus_data|bonus_employee_visibility/i.test(full.error.message || '')) {
+    const withoutBonus = await admin.from('profiles').select(PROFILE_COLUMNS_WITHOUT_BONUS).eq('id', userId).single();
+    if (!withoutBonus.error && withoutBonus.data) {
+      return { data: withoutBonus.data as ProfileRow, error: null };
+    }
+    if (withoutBonus.error && !/allowed_app_roles/i.test(withoutBonus.error.message || '')) {
+      return { data: null, error: withoutBonus.error };
+    }
+  } else if (full.error && !/allowed_app_roles/i.test(full.error.message || '')) {
     return { data: null, error: full.error };
   }
   const fallback = await admin.from('profiles').select(PROFILE_COLUMNS_LEGACY).eq('id', userId).single();
@@ -82,6 +104,20 @@ interface LoginBody {
   locationId?: string;
   locationName?: string;
   baseUrl?: string;
+  systemKey?: string;
+  bonusAuth?: Record<string, { token?: string; baseUrl?: string }>;
+}
+
+interface BonusSystemProbe {
+  canViewEmployees: boolean;
+  namedCount: number;
+}
+
+interface BonusAccessResult {
+  granted: boolean | null;
+  bySystem: Record<string, BonusSystemProbe>;
+  bonusAuth: Record<string, LinkedPosResult>;
+  staffPos: Record<string, LinkedPosResult>;
 }
 
 interface ProfileRow {
@@ -103,6 +139,8 @@ interface ProfileRow {
   allowed_app_roles?: unknown;
   is_system_admin: boolean;
   is_active: boolean;
+  can_view_bonus_data?: boolean;
+  bonus_employee_visibility?: unknown;
   pinned_tools: unknown;
   apps_view: string | null;
   last_login_at: string;
@@ -279,10 +317,20 @@ async function upsertProfile(
     row.app_role = inferAppRole(identity.role, identity.employeeType);
   }
 
+  const optionalColumnError = /allowed_app_roles|can_view_bonus_data|bonus_employee_visibility/i;
+
   if (existing) {
     const updated = await admin.from('profiles').update(row).eq('id', userId).select(PROFILE_COLUMNS).single();
     if (!updated.error && updated.data) return { profile: updated.data as ProfileRow, firstLogin };
-    if (updated.error && !/allowed_app_roles/i.test(updated.error.message || '')) throw updated.error;
+    if (updated.error && !optionalColumnError.test(updated.error.message || '')) throw updated.error;
+    const withoutBonus = await admin
+      .from('profiles')
+      .update(row)
+      .eq('id', userId)
+      .select(PROFILE_COLUMNS_WITHOUT_BONUS)
+      .single();
+    if (!withoutBonus.error && withoutBonus.data) return { profile: withoutBonus.data as ProfileRow, firstLogin };
+    if (withoutBonus.error && !/allowed_app_roles/i.test(withoutBonus.error.message || '')) throw withoutBonus.error;
     const fallback = await admin.from('profiles').update(row).eq('id', userId).select(PROFILE_COLUMNS_LEGACY).single();
     if (fallback.error) throw fallback.error;
     return { profile: fallback.data as ProfileRow, firstLogin };
@@ -294,7 +342,14 @@ async function upsertProfile(
     .select(PROFILE_COLUMNS)
     .single();
   if (!inserted.error && inserted.data) return { profile: inserted.data as ProfileRow, firstLogin };
-  if (inserted.error && !/allowed_app_roles/i.test(inserted.error.message || '')) throw inserted.error;
+  if (inserted.error && !optionalColumnError.test(inserted.error.message || '')) throw inserted.error;
+  const withoutBonus = await admin
+    .from('profiles')
+    .insert({ id: userId, created_at: now, ...row })
+    .select(PROFILE_COLUMNS_WITHOUT_BONUS)
+    .single();
+  if (!withoutBonus.error && withoutBonus.data) return { profile: withoutBonus.data as ProfileRow, firstLogin };
+  if (withoutBonus.error && !/allowed_app_roles/i.test(withoutBonus.error.message || '')) throw withoutBonus.error;
   const fallback = await admin
     .from('profiles')
     .insert({ id: userId, created_at: now, ...row })
@@ -377,10 +432,214 @@ function publicProfile(row: ProfileRow) {
       : [],
     isSystemAdmin: Boolean(row.is_system_admin),
     isActive: Boolean(row.is_active),
+    canViewBonusData: Boolean((row as ProfileRow & { can_view_bonus_data?: boolean }).can_view_bonus_data),
+    bonusEmployeeVisibility:
+      (row as ProfileRow & { bonus_employee_visibility?: unknown }).bonus_employee_visibility &&
+      typeof (row as ProfileRow & { bonus_employee_visibility?: unknown }).bonus_employee_visibility === 'object'
+        ? (row as ProfileRow & { bonus_employee_visibility: Record<string, unknown> }).bonus_employee_visibility
+        : {},
     pinnedTools: Array.isArray(row.pinned_tools) ? row.pinned_tools : null,
     appsView: row.apps_view || null,
     lastLoginAt: row.last_login_at || null,
     createdAt: row.created_at || null,
+  };
+}
+
+function emptyBonusBySystem(): Record<string, BonusSystemProbe> {
+  return {
+    east: { canViewEmployees: false, namedCount: 0 },
+    gta: { canViewEmployees: false, namedCount: 0 },
+    pmx: { canViewEmployees: false, namedCount: 0 },
+  };
+}
+
+function visibilityFromProbe(probe: EmployeeVisibility): BonusSystemProbe {
+  return { canViewEmployees: probe.canViewEmployees, namedCount: probe.namedCount };
+}
+
+function staffPosFromSessions(sessions: Iterable<AureusSession>): Record<string, LinkedPosResult> {
+  const out: Record<string, LinkedPosResult> = {};
+  for (const session of sessions) {
+    if (!session?.token || !session.systemKey) continue;
+    out[session.systemKey] = {
+      key: session.systemKey,
+      label: session.systemLabel || session.systemKey,
+      baseUrl: session.baseUrl,
+      token: session.token,
+    };
+  }
+  return out;
+}
+
+async function probeSessionVisibility(session: AureusSession): Promise<{
+  probe: EmployeeVisibility;
+  auth: LinkedPosResult | null;
+}> {
+  const probe = await probeEmployeeVisibility(session.baseUrl, session.token);
+  if (!probe.canViewEmployees) {
+    return { probe, auth: null };
+  }
+  return {
+    probe,
+    auth: {
+      key: session.systemKey,
+      label: session.systemLabel || session.systemKey,
+      baseUrl: session.baseUrl,
+      token: session.token,
+    },
+  };
+}
+
+/**
+ * Bonuses-only path. Tries the staff password on every POS host (the same
+ * credentials they just typed) and checks GET /employees + names. Does not
+ * write into `linked` — that stays the shared-credential auto-login.
+ */
+async function evaluateBonusAccess(
+  login: string,
+  password: string,
+  primary: AureusSession,
+): Promise<BonusAccessResult> {
+  const bySystem = emptyBonusBySystem();
+  const bonusAuth: Record<string, LinkedPosResult> = {};
+  const sessions = new Map<string, AureusSession>();
+  sessions.set(primary.systemKey, primary);
+
+  try {
+    const others = await loginToAllStaffPos(login, password, { exceptKey: primary.systemKey });
+    for (const session of others) {
+      // Keep the primary session as-is so linked auto-login is untouched.
+      if (!sessions.has(session.systemKey)) sessions.set(session.systemKey, session);
+    }
+  } catch (err) {
+    console.error('bonus pos login failed', err instanceof Error ? err.message : err);
+  }
+
+  const probes = await Promise.all(
+    [...sessions.values()].map(async (session) => {
+      try {
+        return { key: session.systemKey, ...(await probeSessionVisibility(session)) };
+      } catch (err) {
+        return {
+          key: session.systemKey,
+          probe: {
+            canViewEmployees: false,
+            namedCount: 0,
+            status: 0,
+            error: err instanceof Error ? err.message : 'Employee visibility check failed.',
+          } satisfies EmployeeVisibility,
+          auth: null,
+        };
+      }
+    }),
+  );
+
+  let probed = 0;
+  for (const row of probes) {
+    probed += 1;
+    bySystem[row.key] = visibilityFromProbe(row.probe);
+    if (row.auth?.token) bonusAuth[row.key] = row.auth;
+  }
+
+  const staffPos = staffPosFromSessions(sessions.values());
+
+  if (!probed) {
+    return { granted: null, bySystem, bonusAuth, staffPos };
+  }
+  return {
+    granted: Object.values(bySystem).some((row) => row.canViewEmployees),
+    bySystem,
+    bonusAuth,
+    staffPos,
+  };
+}
+
+async function persistBonusAccess(
+  admin: SupabaseClient,
+  userId: string,
+  access: BonusAccessResult,
+): Promise<void> {
+  if (access.granted == null) return;
+  const patch = {
+    can_view_bonus_data: access.granted,
+    bonus_employee_visibility: access.bySystem,
+    updated_at: new Date().toISOString(),
+  };
+  const updated = await admin.from('profiles').update(patch).eq('id', userId);
+  if (updated.error && /can_view_bonus_data|bonus_employee_visibility/i.test(updated.error.message || '')) {
+    return;
+  }
+  if (updated.error) {
+    console.error('bonus access persist failed', updated.error.message);
+  }
+}
+
+function publicBonusAccess(access: BonusAccessResult) {
+  return {
+    granted: access.granted === true,
+    bySystem: access.bySystem,
+  };
+}
+
+function allowedBonusBaseUrl(baseUrl: string): string {
+  const system = posSystemFromBaseUrl(baseUrl);
+  if (!system) return '';
+  return system.baseUrl;
+}
+
+async function evaluateBonusAccessFromTokens(
+  primary: AureusSession,
+  extras: Record<string, { token?: string; baseUrl?: string }> = {},
+): Promise<BonusAccessResult> {
+  const bySystem = emptyBonusBySystem();
+  const bonusAuth: Record<string, LinkedPosResult> = {};
+  const sessions: AureusSession[] = [primary];
+
+  for (const system of POS_SYSTEMS) {
+    if (system.key === primary.systemKey) continue;
+    const extra = extras[system.key];
+    const token = String(extra?.token || '').trim();
+    const baseUrl = allowedBonusBaseUrl(String(extra?.baseUrl || system.baseUrl));
+    if (!token || !baseUrl) continue;
+    sessions.push({
+      token,
+      user: null,
+      login: '',
+      baseUrl,
+      systemKey: system.key,
+      systemLabel: system.label,
+    });
+  }
+
+  const probes = await Promise.all(
+    sessions.map(async (session) => {
+      try {
+        return { key: session.systemKey, ...(await probeSessionVisibility(session)) };
+      } catch (err) {
+        return {
+          key: session.systemKey,
+          probe: {
+            canViewEmployees: false,
+            namedCount: 0,
+            status: 0,
+            error: err instanceof Error ? err.message : 'Employee visibility check failed.',
+          } satisfies EmployeeVisibility,
+          auth: null,
+        };
+      }
+    }),
+  );
+
+  for (const row of probes) {
+    bySystem[row.key] = visibilityFromProbe(row.probe);
+    if (row.auth?.token) bonusAuth[row.key] = row.auth;
+  }
+
+  return {
+    granted: Object.values(bySystem).some((row) => row.canViewEmployees),
+    bySystem,
+    bonusAuth,
+    staffPos: staffPosFromSessions(sessions),
   };
 }
 
@@ -474,9 +733,13 @@ async function handleLogin(req: Request, body: LoginBody): Promise<Response> {
     return error(req, 429, 'Too many sign-in attempts. Try again in 15 minutes.', 'throttled');
   }
 
+  const preferKey = POS_SYSTEMS.some((system) => system.key === String(body.systemKey || '').trim())
+    ? String(body.systemKey).trim()
+    : '';
+
   let aureus;
   try {
-    aureus = await loginToStaffPos(login, password);
+    aureus = await loginToStaffPos(login, password, preferKey ? { preferKey } : {});
   } catch (err) {
     await recordAttempt(admin, ipHash, loginHash, false);
     if (err instanceof AureusError && err.status === 401) {
@@ -571,7 +834,28 @@ async function handleLogin(req: Request, body: LoginBody): Promise<Response> {
     include: aureus,
   });
 
+  let bonusAccess: BonusAccessResult = {
+    granted: null,
+    bySystem: emptyBonusBySystem(),
+    bonusAuth: {},
+    staffPos: {},
+  };
+  try {
+    bonusAccess = await evaluateBonusAccess(login, password, aureus);
+    await persistBonusAccess(admin, userId, bonusAccess);
+    const refreshed = await selectProfileById(admin, userId);
+    if (refreshed.data) profile = refreshed.data;
+  } catch (err) {
+    console.error('bonus access probe failed', err instanceof Error ? err.message : err);
+  }
+
   await recordAttempt(admin, ipHash, loginHash, true);
+
+  const published = publicProfile(await withTeamName(admin, profile));
+  if (bonusAccess.granted != null) {
+    published.canViewBonusData = bonusAccess.granted;
+    published.bonusEmployeeVisibility = bonusAccess.bySystem;
+  }
 
   return json(req, 200, {
     supabase: supabaseSession,
@@ -584,7 +868,20 @@ async function handleLogin(req: Request, body: LoginBody): Promise<Response> {
       systemLabel: aureus.systemLabel,
     },
     linked,
-    profile: publicProfile(await withTeamName(admin, profile)),
+    bonusAccess: publicBonusAccess(bonusAccess),
+    bonusAuth: bonusAccess.bonusAuth,
+    staffPos:
+      Object.keys(bonusAccess.staffPos || {}).length > 0
+        ? bonusAccess.staffPos
+        : {
+            [aureus.systemKey]: {
+              key: aureus.systemKey,
+              label: aureus.systemLabel || aureus.systemKey,
+              baseUrl: aureus.baseUrl,
+              token: aureus.token,
+            },
+          },
+    profile: published,
     firstLogin,
   });
 }
@@ -722,6 +1019,55 @@ async function handleSetLocation(req: Request, body: LoginBody): Promise<Respons
   });
 }
 
+async function handleSyncBonusAccess(req: Request, body: LoginBody): Promise<Response> {
+  let staff;
+  try {
+    staff = await requireAureusStaff(req);
+  } catch (err) {
+    const detail = err as { status?: number; code?: string; message?: string };
+    return error(req, detail.status || 401, detail.message || 'Sign in first.', detail.code || 'unauthenticated');
+  }
+
+  const aureusToken = String(body.aureusToken || '').trim();
+  if (!aureusToken) {
+    return error(req, 400, 'Aureus session missing.', 'missing_token');
+  }
+
+  const baseUrl = posBaseUrlFromBody(body);
+  const system = posSystemFromBaseUrl(baseUrl) || POS_SYSTEMS[0];
+  const primary: AureusSession = {
+    token: aureusToken,
+    user: null,
+    login: '',
+    baseUrl,
+    systemKey: system.key,
+    systemLabel: system.label,
+  };
+
+  let bonusAccess: BonusAccessResult;
+  try {
+    bonusAccess = await evaluateBonusAccessFromTokens(primary, body.bonusAuth || {});
+    await persistBonusAccess(staff.admin, staff.userId, bonusAccess);
+  } catch (err) {
+    console.error('sync-bonus-access failed', err instanceof Error ? err.message : err);
+    return error(req, 502, 'Could not check employee visibility on Aureus.', 'pos_unavailable');
+  }
+
+  const { data: profile } = await selectProfileById(staff.admin, staff.userId);
+  const published = profile ? publicProfile(await withTeamName(staff.admin, profile as ProfileRow)) : null;
+  if (published && bonusAccess.granted != null) {
+    published.canViewBonusData = bonusAccess.granted;
+    published.bonusEmployeeVisibility = bonusAccess.bySystem;
+  }
+
+  return json(req, 200, {
+    bonusAccess: publicBonusAccess(bonusAccess),
+    bonusAuth: bonusAccess.bonusAuth,
+    staffPos: bonusAccess.staffPos || {},
+    profile: published,
+  });
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return preflight(req);
   if (req.method !== 'POST') return error(req, 405, 'Use POST.', 'method_not_allowed');
@@ -750,6 +1096,8 @@ Deno.serve(async (req) => {
         return await handleSyncStaff(req, body);
       case 'set-location':
         return await handleSetLocation(req, body);
+      case 'sync-bonus-access':
+        return await handleSyncBonusAccess(req, body);
       default:
         return error(req, 400, 'Unknown action.', 'bad_request');
     }
