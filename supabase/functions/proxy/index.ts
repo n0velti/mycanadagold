@@ -30,7 +30,7 @@
  *   /proxy/gmail/message                   GET   → one Gmail message body
  *   /proxy/google/local-boq                GET   → Google local reviews (GetLocalBoqProxy)
  *   /proxy/bonus/google-reviews            GET   → same Google feed, bonuses-only grant
- *   /proxy/bonus/roster                    POST  → POS /employees with the caller's own tokens
+ *   /proxy/bonus/roster                    POST  → legacy no-op (bonuses use the in-app HR roster)
  *   /proxy/canadagold/page                 GET   → canadagold.ca buy/sell price pages
  *   /proxy/moneris/cloud                   POST  → Moneris Cloud (Move 5000 / Go)
  *   /proxy/moneris/poll                    POST  → poll a Moneris receipt URL
@@ -58,7 +58,7 @@
  */
 import { corsHeaders, error, json, preflight, readJson, securityHeaders, sha256Hex } from '../_shared/http.ts';
 import { adminClient, requireActiveStaff, StaffAuthError, type StaffContext } from '../_shared/staff.ts';
-import { fetchEmployeeDirectory, posSystemFromBaseUrl, POS_SYSTEMS } from '../_shared/aureus.ts';
+import { POS_SYSTEMS } from '../_shared/aureus.ts';
 import {
   handleDevTicketDecide,
   handleDevTicketLaunch,
@@ -3738,57 +3738,19 @@ async function handleBonusRoster(req: Request, staff: StaffContext): Promise<Res
   const denied = requireBonusDataAccess(req, staff);
   if (denied) return denied;
 
-  let body: { systems?: Array<{ key?: string; token?: string; baseUrl?: string }> };
-  try {
-    body = await readJson(req);
-  } catch (err) {
-    return error(req, 400, err instanceof Error ? err.message : 'Invalid request.', 'bad_request');
-  }
-
-  const requested = Array.isArray(body?.systems) ? body.systems : [];
-  const systems = POS_SYSTEMS.map((system) => {
-    const match = requested.find((row) => String(row?.key || '').trim() === system.key);
-    const token = String(match?.token || '').trim();
-    const baseUrl = posSystemFromBaseUrl(String(match?.baseUrl || system.baseUrl))?.baseUrl || system.baseUrl;
-    return { ...system, token, baseUrl };
+  // Bonuses match PMA / manager names from the in-app HR roster (Excel), not
+  // POS /employees. Keep this route so older clients do not 404, but do not
+  // require East / GTA / PMX tokens or call Aureus.
+  return json(req, 200, {
+    systems: POS_SYSTEMS.map((system) => ({
+      key: system.key,
+      label: system.label,
+      baseUrl: system.baseUrl,
+      ok: true,
+      rows: [] as unknown[],
+      error: '',
+    })),
   });
-
-  const batches = await Promise.all(
-    systems.map(async (system) => {
-      if (!system.token) {
-        return {
-          key: system.key,
-          label: system.label,
-          baseUrl: system.baseUrl,
-          ok: false,
-          rows: [] as unknown[],
-          error: `No ${system.label} token for the bonuses path.`,
-        };
-      }
-      try {
-        const rows = await fetchEmployeeDirectory(system.baseUrl, system.token);
-        return {
-          key: system.key,
-          label: system.label,
-          baseUrl: system.baseUrl,
-          ok: true,
-          rows,
-          error: '',
-        };
-      } catch (err) {
-        return {
-          key: system.key,
-          label: system.label,
-          baseUrl: system.baseUrl,
-          ok: false,
-          rows: [] as unknown[],
-          error: err instanceof Error ? err.message : `Failed to load employees (${system.label}).`,
-        };
-      }
-    }),
-  );
-
-  return json(req, 200, { systems: batches });
 }
 
 async function handleGoogleBoq(req: Request, query: URLSearchParams): Promise<Response> {
