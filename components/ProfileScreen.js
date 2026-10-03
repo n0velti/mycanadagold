@@ -26,7 +26,7 @@ import {
 import { listTeams, teamMemberName } from '../lib/teams';
 import { posEmployeeId } from '../lib/auth';
 import { fetchAureusEmployee } from '../lib/aureusEmployees';
-import { CANVAS, MOBILE, MOBILE_FILTER_INSET, useIsMobile } from '../lib/mobileUi';
+import { CANVAS, DESKTOP_TOP_BAR_HEIGHT, MOBILE, MOBILE_FILTER_INSET, useIsMobile } from '../lib/mobileUi';
 import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
 import { FONT_LIGHT } from '../lib/typography';
 import { IOS } from './IosSettings';
@@ -1255,7 +1255,7 @@ export default function ProfileScreen({
 
   return (
     <View style={styles.screen}>
-      <View pointerEvents="box-none" style={styles.chromeRow}>
+      <View pointerEvents="box-none" style={[styles.chromeRow, styles.chromeRowDesktop]}>
         <View style={styles.chromeLead}>
           {showBack ? (
             <Pressable
@@ -1348,6 +1348,7 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
     backgroundColor: CANVAS,
+    position: 'relative',
   },
   screenMobile: {
     backgroundColor: CANVAS,
@@ -1369,6 +1370,13 @@ const styles = StyleSheet.create({
     paddingTop: 16,
     paddingBottom: 12,
     backgroundColor: 'transparent',
+  },
+  chromeRowDesktop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    paddingTop: DESKTOP_TOP_BAR_HEIGHT + 16,
   },
   chromeLead: {
     flex: 1,
@@ -1451,7 +1459,7 @@ const styles = StyleSheet.create({
   },
   pinnedTopDesktop: {
     paddingHorizontal: 32,
-    paddingTop: 0,
+    paddingTop: DESKTOP_TOP_BAR_HEIGHT + 56,
     paddingBottom: 4,
   },
   topDate: {

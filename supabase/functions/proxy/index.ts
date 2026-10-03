@@ -32,6 +32,7 @@
  *   /proxy/bonus/google-reviews            GET   → same Google feed, bonuses-only grant
  *   /proxy/bonus/roster                    POST  → legacy no-op (bonuses use the in-app HR roster)
  *   /proxy/canadagold/page                 GET   → canadagold.ca buy/sell price pages
+ *   /proxy/spot-prices                     GET   → api.gold-api.com XAU/XAG/XPT/XPD CAD spots
  *   /proxy/moneris/cloud                   POST  → Moneris Cloud (Move 5000 / Go)
  *   /proxy/moneris/poll                    POST  → poll a Moneris receipt URL
  *   /proxy/ringcentral/stores              GET   → per-store RingCentral connection status
@@ -3816,6 +3817,94 @@ async function handleCanadaGoldPage(req: Request, query: URLSearchParams): Promi
       'Cache-Control': 'private, max-age=30',
     },
   });
+}
+
+const GOLD_API_ORIGIN = 'https://api.gold-api.com';
+const SPOT_SYMBOLS = ['XAU', 'XAG', 'XPT', 'XPD'] as const;
+/** gold-api.com: cache at least 30s or the isolate IP gets blocked. */
+const SPOT_CACHE_MIN_MS = 30_000;
+
+type SpotMetal = {
+  symbol: string;
+  name: string;
+  price: number;
+  currency: string;
+  updatedAt: string | null;
+};
+
+type SpotPayload = { metals: SpotMetal[]; usdCadRate: number | null };
+
+let spotCache: { expires: number; payload: SpotPayload } | null = null;
+let spotInflight: Promise<SpotPayload> | null = null;
+
+function cacheControlTtlMs(headers: Headers): number {
+  const match = /max-age=(\d+)/i.exec(headers.get('cache-control') || '');
+  const seconds = match ? Number(match[1]) : 0;
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 0;
+}
+
+async function loadSpotPrices(): Promise<SpotPayload> {
+  let ttlMs = SPOT_CACHE_MIN_MS;
+  let usdCadRate: number | null = null;
+  const results = await Promise.all(
+    SPOT_SYMBOLS.map(async (symbol) => {
+      const upstream = await forward(
+        `${GOLD_API_ORIGIN}/price/${symbol}/CAD`,
+        {
+          method: 'GET',
+          headers: {
+            Accept: 'application/json',
+            'User-Agent': 'CanadaGoldStaff/1.0 (+https://mycanadagold.app)',
+          },
+        },
+        8_000,
+      );
+      ttlMs = Math.max(ttlMs, cacheControlTtlMs(upstream.headers));
+      if (!upstream.ok) return null;
+      const payload = await upstream.json().catch(() => null);
+      const price = Number(payload?.price);
+      if (!Number.isFinite(price)) return null;
+      const rate = Number(payload?.exchangeRate);
+      if (usdCadRate == null && Number.isFinite(rate) && rate > 0) {
+        usdCadRate = rate;
+      }
+      return {
+        symbol,
+        name: String(payload?.name || ''),
+        price,
+        currency: 'CAD',
+        updatedAt: typeof payload?.updatedAt === 'string' ? payload.updatedAt : null,
+      };
+    }),
+  );
+  const metals = results.filter((row): row is SpotMetal => Boolean(row));
+  if (!metals.length) {
+    throw new Error('Spot prices are unavailable.');
+  }
+  const payload = { metals, usdCadRate };
+  spotCache = { expires: Date.now() + ttlMs, payload };
+  return payload;
+}
+
+async function handleSpotPrices(req: Request): Promise<Response> {
+  const now = Date.now();
+  if (spotCache && now < spotCache.expires) {
+    return json(req, 200, { ...spotCache.payload, cached: true });
+  }
+  try {
+    if (!spotInflight) {
+      spotInflight = loadSpotPrices().finally(() => {
+        spotInflight = null;
+      });
+    }
+    const payload = await spotInflight;
+    return json(req, 200, { ...payload, cached: false });
+  } catch {
+    if (spotCache?.payload?.metals?.length) {
+      return json(req, 200, { ...spotCache.payload, cached: true });
+    }
+    return error(req, 502, 'Spot prices are unavailable.', 'upstream_failed');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -8192,6 +8281,9 @@ Deno.serve(async (req) => {
     }
     if (path === '/canadagold/page' && req.method === 'GET') {
       return await handleCanadaGoldPage(req, query);
+    }
+    if (path === '/spot-prices' && req.method === 'GET') {
+      return await handleSpotPrices(req);
     }
     if (path === '/moneris/cloud') {
       return await handleMonerisCloud(req, staff.userId);

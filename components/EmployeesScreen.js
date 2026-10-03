@@ -28,6 +28,8 @@ import {
 import { syncStaffRoles } from '../lib/auth';
 import { reloadClockedIn, useIsClockedIn } from '../lib/clockedIn';
 import { mergeEmployeesWithProfiles } from '../lib/aureusEmployees';
+import { mergeStaffWithEmployeeRoster } from '../lib/employeeRoster';
+import { storesMatch } from '../lib/storeCatalog';
 import { getGmailRedirectUri, loadGmailOAuthApp } from '../lib/gmail';
 import { categoryLabel, listStaffProfiles, useAppAccess } from '../lib/permissions';
 import {
@@ -60,7 +62,7 @@ import {
   setHoursFeedSource,
 } from '../lib/ripplingTime';
 import { useLiveRefresh } from '../lib/liveRefresh';
-import { CANVAS, useIsMobile } from '../lib/mobileUi';
+import { CANVAS, DESKTOP_TOP_BAR_HEIGHT, useIsMobile } from '../lib/mobileUi';
 import { FONT_LIGHT } from '../lib/typography';
 import ProfilePhotoModal from './ProfilePhotoModal';
 import {
@@ -929,10 +931,10 @@ function StaffEmployeeDetail({ person, onClose, compact, onOpenPhoto, hours, hou
 }
 
 function locationMatchesStore(locationName, storeName) {
+  if (storesMatch(locationName, storeName)) return true;
   const store = String(storeName || '').trim().toLowerCase();
   const location = String(locationName || '').trim().toLowerCase();
   if (!store || !location) return false;
-  if (location === store) return true;
   return location.includes(store) || store.includes(location);
 }
 
@@ -1058,14 +1060,14 @@ function AppEmployeesPanel({ session, onProfileUpdated, storeFilter, hours }) {
         }
       }
       const profiles = await listStaffProfiles();
-      const rows = mergeEmployeesWithProfiles([], profiles);
+      const rows = mergeStaffWithEmployeeRoster(mergeEmployeesWithProfiles([], profiles));
       setPeople(rows);
       setSelectedId((current) => {
         if (current && rows.some((row) => row.id === current)) return current;
         return null;
       });
     } catch (err) {
-      setPeople([]);
+      setPeople(mergeStaffWithEmployeeRoster([]));
       setError(err?.message || 'Could not load employees.');
     } finally {
       setLoading(false);
@@ -2192,7 +2194,7 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingLeft: 8,
     paddingRight: 32,
-    paddingTop: 24,
+    paddingTop: DESKTOP_TOP_BAR_HEIGHT + 24,
     paddingBottom: 16,
     flexShrink: 0,
   },

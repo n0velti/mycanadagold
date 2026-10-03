@@ -14,7 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { ensureLinkedPosSessions } from '../lib/auth';
 import { rankCustomers, storeNamesFromRows } from '../lib/customerRank';
 import { fetchTransferStores, uniquePreferredStores } from '../lib/locations';
-import { CANVAS, useIsMobile } from '../lib/mobileUi';
+import { CANVAS, DESKTOP_TOP_BAR_HEIGHT, useIsMobile } from '../lib/mobileUi';
 import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
 import { useAppAccess } from '../lib/permissions';
 import {
@@ -789,7 +789,7 @@ const styles = StyleSheet.create({
   },
   searchWrap: {
     paddingHorizontal: 20,
-    paddingTop: 20,
+    paddingTop: DESKTOP_TOP_BAR_HEIGHT + 20,
     paddingBottom: 12,
     gap: 12,
   },
@@ -837,7 +837,7 @@ const styles = StyleSheet.create({
   },
   detailContent: {
     paddingHorizontal: 24,
-    paddingTop: 20,
+    paddingTop: DESKTOP_TOP_BAR_HEIGHT + 20,
     paddingBottom: 40,
   },
   detailContentMobile: {

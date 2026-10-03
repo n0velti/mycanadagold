@@ -17,7 +17,7 @@ import { ensureLinkedPosSessions, posEmployeeId } from '../lib/auth';
 import { fetchAureusEmployee } from '../lib/aureusEmployees';
 import { documentQueryCandidates, lookupDocuments } from '../lib/docSearch';
 import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
-import { CANVAS, MOBILE_BREAKPOINT, useIsMobile } from '../lib/mobileUi';
+import { CANVAS, DESKTOP_TOP_BAR_HEIGHT, MOBILE_BREAKPOINT, useIsMobile } from '../lib/mobileUi';
 import { listStaffProfiles, staffDisplayName, useAppAccess } from '../lib/permissions';
 import {
   formatTransactionDate,
@@ -328,7 +328,17 @@ async function staffPhoneNumber(session, person) {
   return number;
 }
 
-export default function SearchScreen({ session, onOpenPerson, onOpenDocument, onOpenCustomer, onMessage }) {
+export default function SearchScreen({
+  session,
+  onOpenPerson,
+  onOpenDocument,
+  onOpenCustomer,
+  onMessage,
+  query: queryProp,
+  onQueryChange,
+  hideSearchField = false,
+  enterRef,
+}) {
   const isMobile = useIsMobile();
   const { contentMaxWidth, searchMaxWidth } = useSearchPageLayout();
   const tabBarScroll = useMobileTabBarScrollProps();
@@ -340,7 +350,17 @@ export default function SearchScreen({ session, onOpenPerson, onOpenDocument, on
   const myId = session?.supabaseUserId || session?.profile?.id || '';
   const canPhone = hasApp('phone');
   const canMessage = hasApp('messages');
-  const [query, setQuery] = useState('');
+  const [localQuery, setLocalQuery] = useState('');
+  const controlled = typeof onQueryChange === 'function';
+  const query = controlled ? String(queryProp ?? '') : localQuery;
+  const setQuery = useCallback(
+    (next) => {
+      const value = typeof next === 'function' ? next(query) : next;
+      if (controlled) onQueryChange(value);
+      else setLocalQuery(value);
+    },
+    [controlled, onQueryChange, query],
+  );
   const [staff, setStaff] = useState([]);
   const [staffError, setStaffError] = useState('');
   const [tickets, setTickets] = useState([]);
@@ -376,12 +396,13 @@ export default function SearchScreen({ session, onOpenPerson, onOpenDocument, on
   }, [session]);
 
   useEffect(() => {
+    if (hideSearchField) return undefined;
     if (Platform.OS === 'web') {
       const timer = setTimeout(() => inputRef.current?.focus?.(), 80);
       return () => clearTimeout(timer);
     }
     return undefined;
-  }, []);
+  }, [hideSearchField]);
 
   useEffect(() => {
     let cancelled = false;
@@ -602,6 +623,16 @@ export default function SearchScreen({ session, onOpenPerson, onOpenDocument, on
     setAiError('');
   }, []);
 
+  useEffect(() => {
+    if (!enterRef) return undefined;
+    enterRef.current = () => {
+      if (aiMode) void sendAiQuestion();
+    };
+    return () => {
+      enterRef.current = null;
+    };
+  }, [aiMode, enterRef, sendAiQuestion]);
+
   const callStaff = useCallback(
     async (person, kind) => {
       if (!canPhone) {
@@ -642,8 +673,9 @@ export default function SearchScreen({ session, onOpenPerson, onOpenDocument, on
 
   return (
     <View style={styles.root}>
-      <View style={[styles.chrome, isMobile && styles.chromeMobile, !isMobile && styles.chromeDesktop]}>
+      <View style={[styles.chrome, isMobile && styles.chromeMobile, !isMobile && styles.chromeDesktop]} pointerEvents="box-none">
         <View style={[styles.searchChromeRow, searchStyle]}>
+          {hideSearchField ? null : (
           <View
             style={[
               styles.searchField,
@@ -682,6 +714,7 @@ export default function SearchScreen({ session, onOpenPerson, onOpenDocument, on
               </Pressable>
             ) : null}
           </View>
+          )}
           <Pressable
             onPress={toggleAiMode}
             disabled={aiBusy}
@@ -857,6 +890,7 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
     backgroundColor: CANVAS,
+    position: 'relative',
   },
   chrome: {
     paddingHorizontal: 32,
@@ -864,9 +898,14 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
   },
   chromeDesktop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 24,
     alignItems: 'center',
     paddingHorizontal: 24,
-    paddingTop: 24,
+    paddingTop: DESKTOP_TOP_BAR_HEIGHT + 16,
   },
   chromeMobile: {
     paddingHorizontal: 16,
@@ -997,6 +1036,7 @@ const styles = StyleSheet.create({
   scrollContentDesktop: {
     alignItems: 'center',
     paddingHorizontal: 24,
+    paddingTop: DESKTOP_TOP_BAR_HEIGHT + 72,
   },
   scrollContentMobile: {
     paddingHorizontal: 16,
