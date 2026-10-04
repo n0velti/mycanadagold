@@ -6143,25 +6143,27 @@ function HomeScreen({
             txStats
           ) : (
             <>
-              <View style={[styles.igHomeHeroMetricMain, styles.igHomeHeroRevenueStack]}>
-                <View style={[styles.igHomeHeroAmountSlot, styles.igHomeHeroAmountSlotTight, styles.igHomeHeroRevenueAmount]}>
-                  {heroFocusLoading ? (
-                    <ActivityIndicator color="#1d1d1f" />
-                  ) : (
-                    <HomeReelValue
-                      style={[
-                        styles.igHomeHeroAmount,
-                        styles.igHomeHeroAmountEnd,
-                        !isMobile && styles.igHomeHeroAmountDesktop,
-                      ]}
-                      value={heroTotals.amount}
-                      kind="currency"
-                      accessibilityLabel={money(heroTotals.amount)}
-                    />
-                  )}
+              {isMobile ? null : (
+                <View style={[styles.igHomeHeroMetricMain, styles.igHomeHeroRevenueStack]}>
+                  <View style={[styles.igHomeHeroAmountSlot, styles.igHomeHeroAmountSlotTight, styles.igHomeHeroRevenueAmount]}>
+                    {heroFocusLoading ? (
+                      <ActivityIndicator color="#1d1d1f" />
+                    ) : (
+                      <HomeReelValue
+                        style={[
+                          styles.igHomeHeroAmount,
+                          styles.igHomeHeroAmountEnd,
+                          styles.igHomeHeroAmountDesktop,
+                        ]}
+                        value={heroTotals.amount}
+                        kind="currency"
+                        accessibilityLabel={money(heroTotals.amount)}
+                      />
+                    )}
+                  </View>
+                  <Text style={styles.igHomeHeroBlockTitle}>Revenue</Text>
                 </View>
-                <Text style={styles.igHomeHeroBlockTitle}>Revenue</Text>
-              </View>
+              )}
               <View
                 style={[
                   styles.igHomeHeroStats,
