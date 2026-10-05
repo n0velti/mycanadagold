@@ -1983,9 +1983,6 @@ export default function MessagesScreen({
             </View>
           ) : (
             <View pointerEvents="box-none" style={[styles.chromeRow, styles.chromeRowDesktop]}>
-              <View style={styles.chromeTitle} accessibilityRole="image" accessibilityLabel="Direct Messages">
-                <Ionicons name="chatbubbles" size={22} color="#6B5E3A" />
-              </View>
               {searchField}
               <Pressable
                 onPress={openAgentConversation}
@@ -2565,6 +2562,8 @@ const styles = StyleSheet.create({
     top: 0,
     left: 0,
     right: 0,
+    flexWrap: 'nowrap',
+    paddingHorizontal: 16,
     paddingTop: DESKTOP_TOP_BAR_HEIGHT + 16,
   },
   chromeRowMobile: {
@@ -2577,13 +2576,9 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 8,
   },
-  chromeTitle: {
+  chromeSearchChip: {
     flex: 1,
     minWidth: 0,
-    justifyContent: 'center',
-  },
-  chromeSearchChip: {
-    width: 220,
     height: 40,
     borderRadius: 20,
     ...Platform.select({
@@ -2601,6 +2596,7 @@ const styles = StyleSheet.create({
   },
   chromeSearchBlur: {
     flex: 1,
+    width: '100%',
     height: 40,
     flexDirection: 'row',
     alignItems: 'center',
@@ -2627,6 +2623,7 @@ const styles = StyleSheet.create({
     height: 40,
     borderRadius: 20,
     overflow: 'hidden',
+    flexShrink: 0,
     ...Platform.select({
       web: {
         cursor: 'pointer',
