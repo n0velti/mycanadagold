@@ -20,9 +20,11 @@ import { CANVAS, MOBILE_BREAKPOINT, mobileSafeBottom, useIsMobile } from '../lib
 import { useHeldValue, useRightDrawerAnimation } from './TriageKit';
 import { BONUS_ACCESS_DENIED, canViewBonusReviewData } from '../lib/auth';
 import {
+  bonusReviewDetailSpreadsheetFilename,
   bonusSpreadsheetFilename,
   bonusViewerMatchesEmployee,
   buildBonusBoard,
+  buildBonusReviewDetailWorkbook,
   buildBonusSpreadsheetCsv,
   canViewAllBonusCounts,
   canonicalBonusStoreName,
@@ -109,7 +111,7 @@ function starsLabel(rating) {
   return `${'★'.repeat(value)}${'☆'.repeat(5 - value)}`;
 }
 
-function SpreadsheetButton({ onPress, disabled }) {
+function SpreadsheetButton({ onPress, disabled, label = 'Spreadsheet', icon = 'download-outline' }) {
   return (
     <Pressable
       style={({ hovered, pressed }) => [
@@ -120,19 +122,19 @@ function SpreadsheetButton({ onPress, disabled }) {
       onPress={onPress}
       disabled={disabled}
       accessibilityRole="button"
-      accessibilityLabel="Download bonuses spreadsheet"
+      accessibilityLabel={label}
     >
-      <Ionicons name="download-outline" size={15} color={disabled ? '#c7c7cc' : '#4a4a4a'} />
+      <Ionicons name={icon} size={15} color={disabled ? '#c7c7cc' : '#4a4a4a'} />
       <Text style={[styles.spreadsheetBtnText, disabled && styles.spreadsheetBtnTextDisabled]}>
-        Spreadsheet
+        {label}
       </Text>
     </Pressable>
   );
 }
 
-function downloadSpreadsheet(filename, csv) {
+function downloadFile(filename, data, type) {
   if (Platform.OS !== 'web' || typeof document === 'undefined') return false;
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const blob = new Blob([data], { type });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
@@ -143,6 +145,10 @@ function downloadSpreadsheet(filename, csv) {
   link.remove();
   URL.revokeObjectURL(url);
   return true;
+}
+
+function downloadSpreadsheet(filename, csv) {
+  return downloadFile(filename, csv, 'text/csv;charset=utf-8;');
 }
 
 function initialsFromName(name) {
@@ -1148,6 +1154,21 @@ export default function BonusesScreen({
     downloadSpreadsheet(filename, csv);
   }, [board, displayBoard, endDate, periodLabel, startDate, storeFilter]);
 
+  const downloadReviewDetails = useCallback(() => {
+    if (!visibleStores.length) return;
+    const bytes = buildBonusReviewDetailWorkbook({ stores: visibleStores });
+    const filename = bonusReviewDetailSpreadsheetFilename({
+      startDate,
+      endDate,
+      storeName: storeFilter ? canonicalBonusStoreName(storeFilter) : '',
+    });
+    downloadFile(
+      filename,
+      bytes,
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+  }, [endDate, startDate, storeFilter, visibleStores]);
+
   const openStore = (store) => {
     setSelectedStore(store.storeName);
   };
@@ -1234,6 +1255,12 @@ export default function BonusesScreen({
         </Pressable>
       ) : null}
       <SpreadsheetButton onPress={downloadPayouts} disabled={!visibleStores.length} />
+      <SpreadsheetButton
+        onPress={downloadReviewDetails}
+        disabled={!visibleStores.length}
+        label="Review details"
+        icon="documents-outline"
+      />
     </View>
   );
 
