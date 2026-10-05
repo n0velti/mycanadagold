@@ -1,26 +1,29 @@
 /**
- * Dashboard Stores: every store, month-filtered error POs, then store details tabs.
+ * Dashboard Stores: Home-style store table, then store POs and insight tabs.
  */
-import { useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { formatAmount } from '../lib/transactions';
-import { formatErrorAmount } from '../lib/triageDraft';
-import { formatInsightPercent } from '../lib/triageInsights';
-import { storeMarkColor, storeShortCode } from '../lib/storeMarks';
 import {
-  canAdvanceErrorMonth,
-  currentReviewMonth,
+  fetchSearchCreatedByNames,
+  fetchTransactionDetail,
+  formatAmount,
+  posCreatedByName,
+  posDocumentId,
+  resolvePosAuthForRow,
+} from '../lib/transactions';
+import { formatInsightPercent } from '../lib/triageInsights';
+import { storeMarkColor } from '../lib/storeMarks';
+import {
+  errorAmountOf,
   errorEmployeeName,
   errorTypeOf,
   listStoreErrorSummaries,
-  shiftErrorMonth,
   storeErrorSummary,
+  summarizeStoreErrors,
 } from '../lib/triageStoreErrors';
-import { MOBILE, MOBILE_FILTER_INSET, useIsMobile } from '../lib/mobileUi';
+import { MOBILE, MOBILE_FILTER_INSET, MOBILE_TOP_FILTER_SIZE, NAV_TAB_ACTIVE_BG, NAV_TAB_ACTIVE_RADIUS, useIsMobile } from '../lib/mobileUi';
 import {
-  ChromeHero,
-  ChromeListRow,
   ChromePage,
   EmptyState,
   FONT,
@@ -32,83 +35,284 @@ import { PoThumb } from './TriageTable';
 
 const fontFamily = FONT;
 
-const DETAIL_TABS = [
+export const STORE_INSIGHT_TABS = [
+  { key: 'purchases', label: 'Purchases' },
   { key: 'type', label: 'Error Type' },
   { key: 'employees', label: 'Employees' },
   { key: 'value', label: 'Value' },
   { key: 'items', label: 'Items' },
 ];
 
-const DETAIL_TABS_MOBILE = [
+export const STORE_INSIGHT_TABS_MOBILE = [
+  { key: 'purchases', label: 'Purchases' },
   { key: 'type', label: 'Type' },
   { key: 'employees', label: 'Employees' },
   { key: 'value', label: 'Value' },
   { key: 'items', label: 'Items' },
 ];
 
-function StoreMark({ name, size = 46 }) {
-  const code = storeShortCode(name);
+function StorefrontMark({ name, faded = false }) {
   return (
-    <View
-      style={[
-        styles.storeMark,
-        { width: size, height: size, backgroundColor: storeMarkColor(name) },
-      ]}
-    >
-      <Text style={[styles.storeMarkText, size < 32 && styles.storeMarkTextSm]} numberOfLines={1}>
-        {code || '—'}
-      </Text>
+    <View style={styles.homeIconWrap}>
+      <View
+        style={[
+          styles.homeIconTile,
+          { backgroundColor: storeMarkColor(name) },
+          faded && styles.homeIconFaded,
+        ]}
+      >
+        <Ionicons name="storefront" size={14} color="#fff" />
+      </View>
     </View>
   );
 }
 
-function MonthNav({ month, onChange, action = null }) {
-  const isMobile = useIsMobile();
-  const current = currentReviewMonth();
-  const canForward = canAdvanceErrorMonth(month);
-  const isCurrent = month?.startDate === current.startDate && month?.endDate === current.endDate;
+function HomeLikeRule({ last, header = false }) {
+  if (last && !header) return null;
+  return <View pointerEvents="none" style={[styles.homeRule, header && styles.homeRuleHeader]} />;
+}
 
+function HomeLikeTableHeader({ storeLabel, countLabel, valueLabel }) {
+  const isMobile = useIsMobile();
   return (
-    <View style={[styles.monthBar, isMobile && styles.monthBarMobile]}>
-      <View style={styles.monthNav}>
-        <Pressable
-          style={[styles.monthBtn, isMobile && styles.monthBtnMobile]}
-          onPress={() => onChange(shiftErrorMonth(month, -1))}
-          hitSlop={10}
-          accessibilityLabel="Previous month"
-        >
-          <Ionicons name="chevron-back" size={isMobile ? 22 : 18} color={isMobile ? MOBILE.blue : T.text} />
-        </Pressable>
-        <Pressable
-          style={styles.monthCopy}
-          onPress={() => onChange(current)}
-          accessibilityRole="button"
-          accessibilityLabel={month?.label || current.label}
-        >
-          <Text style={[styles.monthLabel, isMobile && styles.monthLabelMobile]} numberOfLines={1}>
-            {month?.label || current.label}
+    <View style={[styles.homeRow, styles.homeHeaderRow, isMobile && styles.homeRowMobile]}>
+      <View style={[styles.homeIconSpacer, isMobile && styles.homeIconSpacerMobile]} />
+      <View style={[styles.homeRowBody, isMobile && styles.homeRowBodyMobile]}>
+        <View style={[styles.homeColStore, isMobile && styles.homeColStoreMobile]}>
+          <Text style={[styles.homeHeader, isMobile && styles.homeHeaderMobile]}>{storeLabel}</Text>
+        </View>
+        <View style={[styles.homeColCount, isMobile && styles.homeColCountMobile]}>
+          <Text
+            style={[styles.homeHeader, styles.homeHeaderEnd, isMobile && styles.homeHeaderMobile]}
+            numberOfLines={1}
+          >
+            {countLabel}
           </Text>
-          <Text style={styles.monthSub} numberOfLines={1}>
-            {isCurrent ? 'Current month' : 'Tap for this month'}
+        </View>
+        <View style={[styles.homeColMoney, isMobile && styles.homeColMoneyMobile]}>
+          <Text
+            style={[styles.homeHeader, styles.homeHeaderEnd, isMobile && styles.homeHeaderMobile]}
+            numberOfLines={1}
+          >
+            {valueLabel}
           </Text>
-        </Pressable>
-        <Pressable
-          style={[styles.monthBtn, isMobile && styles.monthBtnMobile, !canForward && styles.monthBtnDisabled]}
-          onPress={() => onChange(shiftErrorMonth(month, 1))}
-          disabled={!canForward}
-          hitSlop={10}
-          accessibilityLabel="Next month"
-        >
-          <Ionicons
-            name="chevron-forward"
-            size={isMobile ? 22 : 18}
-            color={canForward ? (isMobile ? MOBILE.blue : T.text) : '#c4c4c4'}
-          />
-        </Pressable>
+        </View>
+        <View style={[styles.homeChevron, isMobile && styles.homeChevronMobile]} />
       </View>
-      {action}
     </View>
   );
+}
+
+function HomeLikeRow({
+  title,
+  meta,
+  count,
+  countLabel,
+  amount,
+  storeName,
+  last,
+  onPress,
+  leading,
+}) {
+  const isMobile = useIsMobile();
+  const faded = !count;
+  const rowBody = (
+    <View style={[styles.homeRowBody, isMobile && styles.homeRowBodyMobile]} pointerEvents="none">
+      <View style={[styles.homeColStore, isMobile && styles.homeColStoreMobile]}>
+        <Text style={[styles.homeName, isMobile && styles.homeNameMobile]} numberOfLines={1}>
+          {title}
+        </Text>
+        {meta ? (
+          <Text style={styles.homeMeta} numberOfLines={isMobile ? 2 : 1}>
+            {meta}
+          </Text>
+        ) : null}
+      </View>
+      <View style={[styles.homeColCount, isMobile && styles.homeColCountMobile]}>
+        <Text
+          style={[styles.homeCount, isMobile && styles.homeCountMobile, faded && styles.homeMoneyEmpty]}
+          numberOfLines={isMobile ? 2 : 1}
+        >
+          {countLabel != null ? countLabel : count || '—'}
+        </Text>
+      </View>
+      <View style={[styles.homeColMoney, isMobile && styles.homeColMoneyMobile]}>
+        <Text
+          style={[styles.homeMoney, isMobile && styles.homeMoneyMobile, !amount && styles.homeMoneyEmpty]}
+          numberOfLines={1}
+        >
+          {amount ? formatAmount(amount) : '—'}
+        </Text>
+      </View>
+      <View style={[styles.homeChevron, isMobile && styles.homeChevronMobile]}>
+        {onPress ? <Ionicons name="chevron-forward" size={isMobile ? 12 : 14} color="#c7c7cc" /> : null}
+      </View>
+    </View>
+  );
+
+  const mark = leading || <StorefrontMark name={storeName || title} faded={faded} />;
+
+  if (!onPress) {
+    return (
+      <View style={[styles.homeRow, isMobile && styles.homeRowMobile]}>
+        {mark}
+        {rowBody}
+        <HomeLikeRule last={last} />
+      </View>
+    );
+  }
+
+  if (Platform.OS === 'web') {
+    return (
+      <View style={[styles.homeRow, isMobile && styles.homeRowMobile]}>
+        <Pressable
+          onPress={onPress}
+          style={({ hovered, pressed }) => [
+            StyleSheet.absoluteFill,
+            (hovered || pressed) && styles.homeRowHovered,
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel={title}
+        />
+        <View pointerEvents="none" style={styles.homeRowForeground}>
+          {mark}
+          {rowBody}
+        </View>
+        <HomeLikeRule last={last} />
+      </View>
+    );
+  }
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ hovered, pressed }) => [
+        styles.homeRow,
+        isMobile && styles.homeRowMobile,
+        (hovered || pressed) && styles.homeRowHoveredNative,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={title}
+    >
+      {mark}
+      {rowBody}
+      <HomeLikeRule last={last} />
+    </Pressable>
+  );
+}
+
+function HomeLikeTotalRow({ label, count, amount }) {
+  const isMobile = useIsMobile();
+  return (
+    <View style={[styles.homeRow, styles.homeTotalRow, isMobile && styles.homeRowMobile]}>
+      <View style={[styles.homeIconSpacer, isMobile && styles.homeIconSpacerMobile]} />
+      <View style={[styles.homeRowBody, isMobile && styles.homeRowBodyMobile]}>
+        <View style={[styles.homeColStore, isMobile && styles.homeColStoreMobile]}>
+          <Text style={[styles.homeTotalLabel, isMobile && styles.homeNameMobile]} numberOfLines={1}>
+            {label}
+          </Text>
+        </View>
+        <View style={[styles.homeColCount, isMobile && styles.homeColCountMobile]}>
+          <Text style={[styles.homeCount, styles.homeTotalLabel, isMobile && styles.homeCountMobile]}>
+            {count || '—'}
+          </Text>
+        </View>
+        <View style={[styles.homeColMoney, isMobile && styles.homeColMoneyMobile]}>
+          <Text style={[styles.homeMoney, styles.homeTotalLabel, isMobile && styles.homeMoneyMobile]}>
+            {amount ? formatAmount(amount) : '—'}
+          </Text>
+        </View>
+        <View style={[styles.homeChevron, isMobile && styles.homeChevronMobile]} />
+      </View>
+    </View>
+  );
+}
+
+function usePurchaseEmployees(rows, session) {
+  const [byId, setById] = useState({});
+  const fetchedRef = useRef(new Set());
+  const list = Array.isArray(rows) ? rows : [];
+  const listKey = list.map((row) => String(row?.id || '')).join('|');
+  const rowsRef = useRef(list);
+  rowsRef.current = list;
+
+  useEffect(() => {
+    if (!session?.token) return undefined;
+    const missing = rowsRef.current.filter((row) => {
+      const id = String(row?.id || '');
+      if (!id || fetchedRef.current.has(id) || !posDocumentId(row)) return false;
+      return errorEmployeeName(row) === 'Unspecified';
+    });
+    if (!missing.length) return undefined;
+
+    let cancelled = false;
+    missing.forEach((row) => fetchedRef.current.add(String(row.id)));
+
+    (async () => {
+      const found = {};
+      const groups = new Map();
+      for (const row of missing) {
+        const auth = resolvePosAuthForRow(session, row);
+        if (!auth?.token) continue;
+        const day = String(row?.date || '').slice(0, 10);
+        const key = `${auth.baseUrl}|${auth.token}|${day || 'range'}`;
+        const group = groups.get(key) || { auth, rows: [], days: [] };
+        group.rows.push(row);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(day)) group.days.push(day);
+        groups.set(key, group);
+      }
+
+      for (const group of groups.values()) {
+        if (cancelled) return;
+        const days = [...new Set(group.days)].sort();
+        const startDate = days[0];
+        const endDate = days[days.length - 1] || days[0];
+        if (startDate) {
+          try {
+            const names = await fetchSearchCreatedByNames(group.auth.token, {
+              startDate,
+              endDate,
+              baseUrl: group.auth.baseUrl,
+              includePurchases: group.rows.some((row) => (row.type || 'purchase') !== 'order'),
+              includeOrders: group.rows.some((row) => row.type === 'order'),
+            });
+            for (const row of group.rows) {
+              const name = names[posDocumentId(row)];
+              if (name) found[String(row.id)] = name;
+            }
+          } catch {
+            // Fall through to the document lookup below.
+          }
+        }
+
+        for (const row of group.rows) {
+          if (cancelled) return;
+          if (found[String(row.id)]) continue;
+          try {
+            const detail = await fetchTransactionDetail(group.auth.token, {
+              type: row.type || 'purchase',
+              sourceId: posDocumentId(row),
+              baseUrl: group.auth.baseUrl,
+            });
+            const name = posCreatedByName(detail);
+            if (name) found[String(row.id)] = name;
+          } catch {
+            // Leave unspecified when Aureus has no created_by.
+          }
+        }
+      }
+
+      if (!cancelled && Object.keys(found).length) {
+        setById((prev) => ({ ...prev, ...found }));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [listKey, session?.token]);
+
+  return byId;
 }
 
 function matchesRowQuery(row, query) {
@@ -137,7 +341,7 @@ function RankRow({ title, meta, value, count, total, last }) {
   return (
     <View style={[styles.rankRow, isMobile && styles.rankRowMobile, last && styles.rankRowLast]}>
       <View style={styles.rankCopy}>
-        <Text style={[styles.rankTitle, isMobile && styles.rankTitleMobile]} numberOfLines={1}>
+        <Text style={[styles.rankTitle, isMobile && styles.rankTitleMobile]} numberOfLines={isMobile ? 2 : 1}>
           {title}
         </Text>
         {meta ? (
@@ -147,15 +351,14 @@ function RankRow({ title, meta, value, count, total, last }) {
         ) : null}
         <ProgressBar value={count} total={total || count || 1} tone="orange" height={4} style={styles.rankBar} />
       </View>
-      <Text style={[styles.rankValue, isMobile && styles.rankValueMobile]} numberOfLines={1}>
+      <Text style={[styles.rankValue, isMobile && styles.rankValueMobile]}>
         {value}
       </Text>
     </View>
   );
 }
 
-function StoreListPage({ stores, query, month, onMonthChange, onOpen }) {
-  const isMobile = useIsMobile();
+function StoreListPage({ stores, query, onOpen, month }) {
   const visible = useMemo(() => {
     const q = String(query || '')
       .trim()
@@ -169,55 +372,40 @@ function StoreListPage({ stores, query, month, onMonthChange, onOpen }) {
         (acc, row) => {
           acc.count += row.count;
           acc.amount += row.amount;
-          if (row.count) acc.withErrors += 1;
           return acc;
         },
-        { count: 0, amount: 0, withErrors: 0 },
+        { count: 0, amount: 0 },
       ),
     [visible],
   );
 
   return (
     <ChromePage
-      hero={
-        <View>
-          <MonthNav month={month} onChange={onMonthChange} />
-          <ChromeHero
-            icon="storefront"
-            iconColor="#1F7A9A"
-            value={totals.amount ? formatAmount(totals.amount) : String(totals.count)}
-            stats={[
-              { label: totals.count === 1 ? 'Error' : 'Errors', value: String(totals.count) },
-              { label: totals.withErrors === 1 ? 'Store' : 'Stores', value: String(totals.withErrors) },
-              { label: month?.label || 'Month', value: String(visible.length) },
-            ]}
-          />
-        </View>
-      }
-      title="Stores"
-      meta={`${month?.label || ''} · ${visible.length} ${visible.length === 1 ? 'store' : 'stores'}`}
+      tableHeader={<HomeLikeTableHeader storeLabel="Store" countLabel="Errors" valueLabel="Value" />}
+      title=""
       data={visible}
-      extraData={`${month?.startDate}:${visible.map((row) => `${row.store}:${row.count}`).join('|')}`}
+      extraData={`${month?.startDate || ''}:${month?.endDate || ''}|${visible
+        .map((row) => `${row.store}:${row.count}:${row.amount}`)
+        .join('|')}`}
       keyExtractor={(row) => row.store}
       renderItem={({ item: row, index }) => (
-        <ChromeListRow
+        <HomeLikeRow
           title={row.store}
+          storeName={row.store}
           meta={
             row.count
-              ? [
-                  row.topType ? `${row.topType.label} most common` : null,
-                  `${row.count} ${row.count === 1 ? 'error' : 'errors'}`,
-                ]
+              ? [row.topType?.label, `${row.count} ${row.count === 1 ? 'error' : 'errors'}`]
                   .filter(Boolean)
                   .join(' · ')
-              : 'No errors this month'
+              : 'No errors'
           }
-          value={row.amount ? formatAmount(row.amount) : String(row.count)}
-          leading={<StoreMark name={row.store} size={isMobile ? 40 : 46} />}
+          count={row.count}
+          amount={row.amount}
           last={index === visible.length - 1}
           onPress={() => onOpen(row.store)}
         />
       )}
+      footer={visible.length ? <HomeLikeTotalRow label="Total" count={totals.count} amount={totals.amount} /> : null}
     >
       {visible.length ? null : (
         <Text style={styles.emptyCopy}>
@@ -228,205 +416,199 @@ function StoreListPage({ stores, query, month, onMonthChange, onOpen }) {
   );
 }
 
-function StoreErrorsPage({ store, query, month, onMonthChange, onOpen, onOpenDetails }) {
+function StorePage({ store, query, month, tab, onTabChange, onOpen, session }) {
   const isMobile = useIsMobile();
-  const visible = useMemo(() => store.rows.filter((row) => matchesRowQuery(row, query)), [query, store.rows]);
-  const amount = useMemo(
-    () => visible.reduce((sum, row) => sum + (Number(String(row?.review?.errorAmount || '').replace(/[^0-9.-]/g, '')) || 0), 0),
-    [visible],
+  const employeesById = usePurchaseEmployees(store.rows, session);
+  const resolvedStore = useMemo(() => {
+    if (!Object.keys(employeesById).length) return store;
+    const rows = (store.rows || []).map((row) => {
+      const name = employeesById[String(row.id)];
+      return name ? { ...row, created_by: name, employeeName: name } : row;
+    });
+    return { ...store, ...summarizeStoreErrors(rows), rows };
+  }, [employeesById, store]);
+  const visible = useMemo(
+    () => resolvedStore.rows.filter((row) => matchesRowQuery(row, query)),
+    [query, resolvedStore.rows],
   );
-
-  return (
-    <ChromePage
-      hero={
-        <View>
-          <MonthNav
-            month={month}
-            onChange={onMonthChange}
-            action={
-              isMobile ? (
-                <Pressable
-                  onPress={onOpenDetails}
-                  style={styles.detailsChip}
-                  accessibilityRole="button"
-                  accessibilityLabel="Open store error details"
-                >
-                  <Text style={styles.detailsChipText}>Details</Text>
-                  <Ionicons name="chevron-forward" size={16} color={MOBILE.blue} />
-                </Pressable>
-              ) : null
-            }
-          />
-          <ChromeHero
-            icon="alert-circle"
-            iconColor="#B91C1C"
-            value={amount ? formatAmount(amount) : String(visible.length)}
-            stats={[
-              { label: visible.length === 1 ? 'Error' : 'Errors', value: String(visible.length) },
-              { label: store.types.length === 1 ? 'Type' : 'Types', value: String(store.types.length) },
-              { label: store.employees.length === 1 ? 'Employee' : 'Employees', value: String(store.employees.length) },
-            ]}
-            onPress={onOpenDetails}
-            accessibilityLabel="Open store error details"
-          />
-        </View>
-      }
-      title={store.store}
-      meta={`${month?.label || ''} · ${visible.length} ${visible.length === 1 ? 'error' : 'errors'}`}
-      data={visible}
-      extraData={`${store.store}:${month?.startDate}:${visible.length}`}
-      keyExtractor={(row) => `${row.triageId}-${row.id}`}
-      renderItem={({ item: row, index }) => (
-        <ChromeListRow
-          title={row.reference || 'Document'}
-          meta={[errorTypeOf(row), errorEmployeeName(row), row.dateLabel].filter(Boolean).join(' · ')}
-          value={formatErrorAmount(row?.review?.errorAmount || '') || ''}
-          leading={<PoThumb urls={row.imageUrls} label={row.reference} size={isMobile ? 40 : 46} />}
-          last={index === visible.length - 1}
-          onPress={() => onOpen(row)}
-        />
-      )}
-    >
-      {visible.length ? null : (
-        <Text style={styles.emptyCopy}>
-          {store.rows.length
-            ? `No error matches “${query.trim()}”.`
-            : `No flagged POs at ${store.store} in ${month?.label || 'this month'}.`}
-        </Text>
-      )}
-    </ChromePage>
+  const amount = useMemo(() => visible.reduce((sum, row) => sum + errorAmountOf(row), 0), [visible]);
+  const valueRows = useMemo(
+    () =>
+      [...(resolvedStore.rows || [])].sort(
+        (a, b) => errorAmountOf(b) - errorAmountOf(a) || String(a.reference || '').localeCompare(String(b.reference || '')),
+      ),
+    [resolvedStore.rows],
   );
-}
+  const valueTotal = useMemo(() => valueRows.reduce((sum, row) => sum + errorAmountOf(row), 0), [valueRows]);
+  const total = resolvedStore.count || 0;
 
-function StoreDetailsPage({ store, month, onMonthChange }) {
-  const isMobile = useIsMobile();
-  const [tab, setTab] = useState('type');
-  const total = store.count || 0;
+  useEffect(() => {
+    if (!STORE_INSIGHT_TABS.some((option) => option.key === tab)) onTabChange?.('purchases');
+  }, [onTabChange, tab]);
+
   const tabs = (
-    <View style={[styles.tabsWrap, isMobile && styles.tabsWrapMobile]}>
-      <TextTabs
-        options={isMobile ? DETAIL_TABS_MOBILE : DETAIL_TABS}
-        value={tab}
-        onChange={setTab}
-        size={isMobile ? 'md' : 'lg'}
-        layout={isMobile ? 'bar' : 'inline'}
-      />
-    </View>
+    <TextTabs
+      options={isMobile ? STORE_INSIGHT_TABS_MOBILE : STORE_INSIGHT_TABS}
+      value={tab}
+      onChange={onTabChange}
+      size={isMobile ? 'md' : 'lg'}
+      layout="bar"
+      style={isMobile ? styles.storeTabsMobile : styles.storeTabs}
+    />
   );
 
-  let body = null;
-  if (tab === 'type') {
-    body = store.types.length ? (
-      store.types.map((row, index) => (
-        <RankRow
-          key={row.label}
-          title={row.label}
-          meta={`${row.count} of ${total} · ${formatInsightPercent(row.percent, total)}`}
-          value={formatInsightPercent(row.percent, total)}
-          count={row.count}
-          total={total}
-          last={index === store.types.length - 1}
-        />
-      ))
-    ) : (
-      <Text style={styles.emptyCopy}>No error types this month.</Text>
-    );
-  } else if (tab === 'employees') {
-    body = store.employees.length ? (
-      store.employees.map((row, index) => (
-        <RankRow
-          key={row.name}
-          title={row.name}
-          meta={`${row.count} ${row.count === 1 ? 'error' : 'errors'}`}
-          value={row.amount ? formatAmount(row.amount) : String(row.count)}
-          count={row.count}
-          total={total}
-          last={index === store.employees.length - 1}
-        />
-      ))
-    ) : (
-      <Text style={styles.emptyCopy}>No employees with errors this month.</Text>
+  let page = null;
+  if (tab === 'purchases') {
+    page = (
+      <ChromePage
+        filterPad={false}
+        tableHeader={<HomeLikeTableHeader storeLabel="Document" countLabel="Type" valueLabel="Value" />}
+        title=""
+        data={visible}
+        extraData={`${store.store}:${month?.startDate}:${visible.length}`}
+        keyExtractor={(row) => `${row.triageId}-${row.id}`}
+        renderItem={({ item: row, index }) => {
+          return (
+            <HomeLikeRow
+              title={row.reference || 'Document'}
+              storeName={store.store}
+              meta={[errorEmployeeName(row), row.dateLabel].filter(Boolean).join(' · ')}
+              count={1}
+              countLabel={errorTypeOf(row)}
+              amount={errorAmountOf(row)}
+              last={index === visible.length - 1}
+              onPress={() => onOpen(row)}
+              leading={
+                <View style={styles.homeIconWrap}>
+                  <PoThumb urls={row.imageUrls} label={row.reference} size={22} />
+                </View>
+              }
+            />
+          );
+        }}
+        footer={visible.length ? <HomeLikeTotalRow label="Total" count={visible.length} amount={amount} /> : null}
+      >
+        {visible.length ? null : (
+          <Text style={styles.emptyCopy}>
+            {resolvedStore.rows.length
+              ? `No purchase matches “${query.trim()}”.`
+              : `No flagged POs at ${store.store} in ${month?.label || 'this period'}.`}
+          </Text>
+        )}
+      </ChromePage>
     );
   } else if (tab === 'value') {
-    body = (
-      <View style={styles.valueBlock}>
-        <Text style={styles.valueHero}>{store.amount ? formatAmount(store.amount) : '$0.00'}</Text>
-        <Text style={styles.valueMeta}>
-          {total
-            ? `${total} ${total === 1 ? 'error' : 'errors'} · avg ${formatAmount(store.average)}`
-            : `No error value at ${store.store} in ${month?.label || 'this month'}`}
-        </Text>
-      </View>
+    page = (
+      <ChromePage
+        filterPad={false}
+        tableHeader={<HomeLikeTableHeader storeLabel="PO" countLabel="Error type" valueLabel="Value" />}
+        title=""
+        data={valueRows}
+        extraData={`${store.store}:${month?.startDate}:${valueRows.length}`}
+        keyExtractor={(row) => `${row.triageId}-${row.id}`}
+        renderItem={({ item: row, index }) => (
+          <HomeLikeRow
+            title={row.reference || 'PO'}
+            storeName={store.store}
+            meta={[errorEmployeeName(row), row.dateLabel].filter(Boolean).join(' · ')}
+            count={1}
+            countLabel={errorTypeOf(row)}
+            amount={errorAmountOf(row)}
+            last={index === valueRows.length - 1}
+            onPress={() => onOpen(row)}
+            leading={
+              <View style={styles.homeIconWrap}>
+                <PoThumb urls={row.imageUrls} label={row.reference} size={22} />
+              </View>
+            }
+          />
+        )}
+        footer={valueRows.length ? <HomeLikeTotalRow label="Total" count={valueRows.length} amount={valueTotal} /> : null}
+      >
+        {valueRows.length ? null : (
+          <Text style={styles.emptyCopy}>
+            {`No flagged POs at ${store.store} in ${month?.label || 'this period'}.`}
+          </Text>
+        )}
+      </ChromePage>
+    );
+  } else if (tab === 'employees') {
+    const employeeRows = resolvedStore.employees;
+    const employeeTotal = employeeRows.reduce((sum, row) => sum + (row.amount || 0), 0);
+    page = (
+      <ChromePage
+        filterPad={false}
+        tableHeader={<HomeLikeTableHeader storeLabel="Employee" countLabel="Error type" valueLabel="Value" />}
+        title=""
+        data={employeeRows}
+        extraData={`${store.store}:${month?.startDate}:${employeeRows.map((row) => `${row.name}:${row.type}:${row.amount}`).join('|')}`}
+        keyExtractor={(row) => row.name}
+        renderItem={({ item: row, index }) => (
+          <HomeLikeRow
+            title={row.name}
+            storeName={row.name}
+            meta={`${row.count} ${row.count === 1 ? 'purchase' : 'purchases'}`}
+            count={row.count}
+            countLabel={row.types?.length > 1 ? `${row.type} +${row.types.length - 1}` : row.type}
+            amount={row.amount}
+            last={index === employeeRows.length - 1}
+          />
+        )}
+        footer={employeeRows.length ? <HomeLikeTotalRow label="Total" count={employeeRows.length} amount={employeeTotal} /> : null}
+      >
+        {employeeRows.length ? null : (
+          <Text style={styles.emptyCopy}>No purchase employees in this period.</Text>
+        )}
+      </ChromePage>
     );
   } else {
-    body = store.items.length ? (
-      store.items.map((row, index) => (
-        <RankRow
-          key={row.label}
-          title={row.label}
-          meta={`${row.count} ${row.count === 1 ? 'error' : 'errors'} · ${formatInsightPercent(row.percent, total)}`}
-          value={`${row.count} · ${formatInsightPercent(row.percent, total)}`}
-          count={row.count}
-          total={total}
-          last={index === store.items.length - 1}
-        />
-      ))
-    ) : (
-      <Text style={styles.emptyCopy}>No item categories this month.</Text>
+    let body = null;
+    if (tab === 'type') {
+      body = resolvedStore.types.length ? (
+        resolvedStore.types.map((row, index) => (
+          <RankRow
+            key={row.label}
+            title={row.label}
+            meta={`${row.count} of ${total} · ${formatInsightPercent(row.percent, total)}`}
+            value={formatInsightPercent(row.percent, total)}
+            count={row.count}
+            total={total}
+            last={index === resolvedStore.types.length - 1}
+          />
+        ))
+      ) : (
+        <Text style={styles.emptyCopy}>No error types in this period.</Text>
+      );
+    } else {
+      body = resolvedStore.items.length ? (
+        resolvedStore.items.map((row, index) => (
+          <RankRow
+            key={row.label}
+            title={row.label}
+            meta={`${row.count} ${row.count === 1 ? 'error' : 'errors'} · ${formatInsightPercent(row.percent, total)}`}
+            value={`${row.count} · ${formatInsightPercent(row.percent, total)}`}
+            count={row.count}
+            total={total}
+            last={index === resolvedStore.items.length - 1}
+          />
+        ))
+      ) : (
+        <Text style={styles.emptyCopy}>No items in this period.</Text>
+      );
+    }
+
+    page = (
+      <ChromePage filterPad={false} title="">
+        <View style={styles.tabBody}>{body}</View>
+      </ChromePage>
     );
   }
 
-  const heroValue =
-    tab === 'value'
-      ? store.amount
-        ? formatAmount(store.amount)
-        : '$0.00'
-      : tab === 'type'
-        ? store.topType
-          ? formatInsightPercent(store.topType.percent, total)
-          : '—'
-        : String(total);
-
-  const heroStats =
-    tab === 'type'
-      ? [
-          { label: isMobile ? 'Common' : 'Most common', value: store.topType?.label || '—' },
-          { label: 'Share', value: store.topType ? formatInsightPercent(store.topType.percent, total) : '—' },
-          { label: store.types.length === 1 ? 'Type' : 'Types', value: String(store.types.length) },
-        ]
-      : tab === 'employees'
-        ? [
-            { label: store.employees.length === 1 ? 'Employee' : 'Employees', value: String(store.employees.length) },
-            { label: total === 1 ? 'Error' : 'Errors', value: String(total) },
-            { label: 'Value', value: store.amount ? formatAmount(store.amount) : '$0.00' },
-          ]
-        : tab === 'value'
-          ? [
-              { label: total === 1 ? 'Error' : 'Errors', value: String(total) },
-              { label: 'Average', value: total ? formatAmount(store.average) : '—' },
-              { label: 'Month', value: month?.label?.split(' ')[0] || '—' },
-            ]
-          : [
-              { label: store.items.length === 1 ? 'Category' : 'Categories', value: String(store.items.length) },
-              { label: total === 1 ? 'Error' : 'Errors', value: String(total) },
-              { label: 'Top', value: store.items[0]?.label || '—' },
-            ];
-
   return (
-    <ChromePage
-      hero={
-        <View>
-          <MonthNav month={month} onChange={onMonthChange} />
-          <ChromeHero icon="analytics" iconColor="#6D28D9" value={heroValue} stats={heroStats} />
-          {isMobile ? tabs : null}
-        </View>
-      }
-      title={store.store}
-      meta={month?.label || ''}
-    >
-      {isMobile ? null : tabs}
-      <View style={[styles.tabBody, isMobile && styles.tabBodyMobile]}>{body}</View>
-    </ChromePage>
+    <View style={[styles.storePage, isMobile && styles.storePageMobile]}>
+      {tabs}
+      {page}
+    </View>
   );
 }
 
@@ -434,12 +616,12 @@ export default function TriageStoresPanel({
   rows = [],
   query = '',
   month,
-  onMonthChange,
   selectedStore = '',
-  detailsOpen = false,
+  storeTab = 'purchases',
+  onStoreTabChange,
   onOpenStore,
-  onOpenDetails,
   onOpenPo,
+  session,
 }) {
   const stores = useMemo(() => listStoreErrorSummaries(rows, month), [month, rows]);
   const store = useMemo(
@@ -447,19 +629,16 @@ export default function TriageStoresPanel({
     [selectedStore, stores],
   );
 
-  if (store && detailsOpen) {
-    return <StoreDetailsPage store={store} month={month} onMonthChange={onMonthChange} />;
-  }
-
   if (store) {
     return (
-      <StoreErrorsPage
+      <StorePage
         store={store}
         query={query}
         month={month}
-        onMonthChange={onMonthChange}
+        tab={storeTab}
+        onTabChange={onStoreTabChange}
         onOpen={onOpenPo}
-        onOpenDetails={onOpenDetails}
+        session={session}
       />
     );
   }
@@ -474,103 +653,248 @@ export default function TriageStoresPanel({
     );
   }
 
-  return (
-    <StoreListPage
-      stores={stores}
-      query={query}
-      month={month}
-      onMonthChange={onMonthChange}
-      onOpen={onOpenStore}
-    />
-  );
+  return <StoreListPage stores={stores} query={query} month={month} onOpen={onOpenStore} />;
 }
 
 const styles = StyleSheet.create({
-  monthBar: {
+  homeRow: {
+    position: 'relative',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    marginBottom: 12,
-    paddingHorizontal: 2,
+    minHeight: 46,
+    paddingVertical: 6,
+    overflow: 'visible',
+    ...Platform.select({
+      web: {
+        cursor: 'pointer',
+        transitionProperty: 'background-color',
+        transitionDuration: '120ms',
+        transitionTimingFunction: 'ease',
+      },
+      default: {},
+    }),
   },
-  monthBarMobile: {
-    marginBottom: 8,
-    paddingRight: 4,
+  homeHeaderRow: {
+    minHeight: 34,
+    ...Platform.select({ web: { cursor: 'default' }, default: {} }),
   },
-  monthNav: {
+  homeTotalRow: {
+    minHeight: 46,
+    backgroundColor: '#f5f5f5',
+    ...Platform.select({ web: { cursor: 'default' }, default: {} }),
+  },
+  homeRowHovered: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: -6,
+    right: 8,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    backgroundColor: NAV_TAB_ACTIVE_BG,
+  },
+  homeRowHoveredNative: {
+    marginLeft: -6,
+    marginRight: 8,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    backgroundColor: NAV_TAB_ACTIVE_BG,
+  },
+  homeRowForeground: {
+    flex: 1,
+    alignSelf: 'stretch',
+    flexDirection: 'row',
+    alignItems: 'center',
+    zIndex: 1,
+  },
+  homeRowBody: {
     flex: 1,
     minWidth: 0,
+    alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 12,
+    marginLeft: 10,
+    paddingRight: 10,
   },
-  monthBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+  homeRowMobile: {
+    minHeight: 64,
+    paddingLeft: 4,
+  },
+  homeRowBodyMobile: {
+    gap: 8,
+    marginLeft: 8,
+    paddingRight: 8,
+  },
+  homeRule: {
+    position: 'absolute',
+    left: 32,
+    right: 10,
+    bottom: 0,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(42,38,30,0.08)',
+  },
+  homeRuleHeader: {
+    backgroundColor: 'rgba(42,38,30,0.16)',
+  },
+  homeIconWrap: {
+    width: 32,
+    height: 32,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#fff',
-  },
-  monthBtnMobile: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'transparent',
-  },
-  monthBtnDisabled: {
-    opacity: 0.5,
-  },
-  monthCopy: {
-    flex: 1,
-    minWidth: 0,
-    alignItems: 'center',
-  },
-  monthLabel: {
-    fontFamily,
-    fontSize: 17,
-    fontWeight: '600',
-    color: T.text,
-    letterSpacing: -0.3,
-  },
-  monthLabelMobile: {
-    fontSize: 16,
-    textAlign: 'center',
-  },
-  monthSub: {
-    fontFamily,
-    fontSize: 12,
-    color: T.secondary,
-    marginTop: 1,
-  },
-  detailsChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    alignSelf: 'center',
     flexShrink: 0,
   },
-  detailsChipText: {
-    fontFamily,
-    fontSize: 16,
-    fontWeight: '600',
-    color: MOBILE.blue,
+  homeIconSpacer: {
+    width: 32,
+    flexShrink: 0,
   },
-  storeMark: {
-    borderRadius: 12,
+  homeIconSpacerMobile: {
+    width: 28,
+  },
+  homeIconTile: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 0,
   },
-  storeMarkText: {
+  homeIconFaded: {
+    opacity: 0.5,
+  },
+  homeHeader: {
     fontFamily,
     fontSize: 13,
-    fontWeight: '700',
-    color: '#fff',
-    letterSpacing: 0.3,
+    fontWeight: '500',
+    color: MOBILE.secondary,
+    letterSpacing: -0.15,
+    textDecorationLine: 'none',
   },
-  storeMarkTextSm: {
+  homeHeaderEnd: {
+    textAlign: 'right',
+  },
+  homeHeaderMobile: {
     fontSize: 11,
+  },
+  homeColStore: {
+    flex: 1,
+    flexGrow: 1,
+    flexShrink: 1,
+    minWidth: 140,
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+    gap: 1,
+  },
+  homeColStoreMobile: {
+    minWidth: 0,
+  },
+  homeColCount: {
+    minWidth: 148,
+    flexShrink: 0,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+  },
+  homeColCountMobile: {
+    minWidth: 0,
+    maxWidth: 104,
+    flexShrink: 1,
+    flexGrow: 0,
+  },
+  homeColMoney: {
+    minWidth: 128,
+    flexShrink: 0,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+  },
+  homeColMoneyMobile: {
+    minWidth: 56,
+    maxWidth: 72,
+    flexShrink: 0,
+  },
+  homeName: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: MOBILE.label,
+    letterSpacing: -0.2,
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  homeNameMobile: {
+    fontSize: 15,
+  },
+  homeMeta: {
+    fontFamily,
+    fontSize: 12,
+    color: MOBILE.secondary,
+    letterSpacing: -0.1,
+    fontVariant: ['tabular-nums'],
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  homeCount: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: MOBILE.label,
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+    flexShrink: 0,
+  },
+  homeCountMobile: {
+    fontSize: 12,
+    flexShrink: 1,
+  },
+  homeMoney: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: MOBILE.label,
+    letterSpacing: -0.2,
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+    flexShrink: 0,
+  },
+  homeMoneyMobile: {
+    fontSize: 13,
+  },
+  homeMoneyEmpty: {
+    color: '#c7c7cc',
+  },
+  homeTotalLabel: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '600',
+    color: MOBILE.label,
+    letterSpacing: -0.2,
+  },
+  homeChevron: {
+    width: 14,
+    flexShrink: 0,
+    alignItems: 'flex-end',
+  },
+  homeChevronMobile: {
+    width: 12,
+  },
+  storePage: {
+    flex: 1,
+    minHeight: 0,
+    backgroundColor: '#fcfcfb',
+  },
+  storePageMobile: {
+    paddingTop: MOBILE_TOP_FILTER_SIZE + MOBILE_FILTER_INSET,
+  },
+  storeTabs: {
+    paddingHorizontal: 32,
+    paddingTop: 4,
+  },
+  storeTabsMobile: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    paddingLeft: 8,
+    paddingRight: 60,
+    paddingTop: 0,
+    paddingBottom: 0,
   },
   emptyCopy: {
     fontFamily,
@@ -581,19 +905,7 @@ const styles = StyleSheet.create({
     paddingVertical: 18,
     backgroundColor: '#fff',
   },
-  tabsWrap: {
-    backgroundColor: '#fff',
-    paddingTop: 4,
-  },
-  tabsWrapMobile: {
-    marginTop: 10,
-    marginHorizontal: -MOBILE_FILTER_INSET,
-    backgroundColor: 'transparent',
-  },
   tabBody: {
-    backgroundColor: '#fff',
-  },
-  tabBodyMobile: {
     backgroundColor: '#fff',
   },
   rankRow: {
@@ -643,27 +955,12 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: T.text,
     fontVariant: ['tabular-nums'],
+    flexShrink: 0,
+    textAlign: 'right',
   },
   rankValueMobile: {
     fontSize: 16,
+    maxWidth: 96,
     paddingTop: 2,
-  },
-  valueBlock: {
-    paddingHorizontal: 16,
-    paddingVertical: 22,
-    backgroundColor: '#fff',
-  },
-  valueHero: {
-    fontFamily,
-    fontSize: 34,
-    fontWeight: '600',
-    color: T.text,
-    letterSpacing: -0.8,
-  },
-  valueMeta: {
-    fontFamily,
-    fontSize: 14,
-    color: T.secondary,
-    marginTop: 4,
   },
 });

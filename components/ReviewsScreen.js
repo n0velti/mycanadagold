@@ -23,6 +23,7 @@ import {
   reviewPeriodLabel,
   summarizeReviews,
 } from '../lib/googleReviews';
+import { useAppDate } from '../lib/appDate';
 import { formatDateParam, parseDateParam } from '../lib/transactions';
 import HomeDatePicker from './HomeDatePicker';
 import ReviewAuthorLink from './ReviewAuthorLink';
@@ -230,10 +231,11 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter, on
   const isMobile = useIsMobile();
   const { canFilter } = useAppAccess();
   const allowFilters = canFilter('reviews');
-  const initialPeriod = useMemo(() => currentReviewMonth(), []);
-  const [startDate, setStartDate] = useState(initialPeriod.startDate);
-  const [endDate, setEndDate] = useState(initialPeriod.endDate);
-  const [dateMode, setDateMode] = useState('range');
+  const appDate = useAppDate();
+  const startDate = appDate.startDate;
+  const endDate = appDate.endDate;
+  const [allTimeOverride, setAllTimeOverride] = useState(false);
+  const dateMode = allTimeOverride ? 'all' : appDate.mode;
   const [results, setResults] = useState([]);
   const [selectedStore, setSelectedStore] = useState(
     () => getGooglePlaceForStore(storeFilter)?.storeName || storeFilter || null,
@@ -243,6 +245,10 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter, on
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const requestId = useRef(0);
+  useEffect(() => {
+    setAllTimeOverride(false);
+  }, [appDate.endDate, appDate.generation, appDate.mode, appDate.startDate]);
+
   const allTime = dateMode === 'all';
   const periodLabel = reviewPeriodLabel(startDate, endDate, dateMode);
   const currentMonth = currentReviewMonth();
@@ -365,14 +371,11 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter, on
 
   const applyPeriod = (nextStart, nextEnd, mode) => {
     if (mode === 'all') {
-      setDateMode('all');
+      setAllTimeOverride(true);
       return;
     }
-    const startKey = formatDateParam(nextStart);
-    const endKey = formatDateParam(nextEnd || nextStart);
-    setStartDate(startKey);
-    setEndDate(endKey);
-    setDateMode(mode === 'day' || startKey === endKey ? 'day' : 'range');
+    setAllTimeOverride(false);
+    appDate.applyPicker({ mode, start: nextStart, end: nextEnd || nextStart });
   };
 
   const goMonth = (delta) => {

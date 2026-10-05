@@ -424,6 +424,44 @@ export function EmptyState({ icon, title, body, action }) {
 export function TextTabs({ options, value, onChange, leading, trailing, size = 'md', layout = 'bar', style }) {
   const isMobile = useIsMobile();
   const inline = layout === 'inline';
+  const fill = layout === 'fill';
+  const segment = layout === 'segment';
+
+  if (segment) {
+    return (
+      <View
+        style={[styles.segmentTabBar, isMobile && styles.segmentTabBarMobile, style]}
+        accessibilityRole="tablist"
+      >
+        {options.map((option) => {
+          const active = option.key === value;
+          return (
+            <Pressable
+              key={option.key}
+              style={[styles.segmentTab, active && styles.segmentTabActive]}
+              onPress={() => onChange(option.key)}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: active }}
+              accessibilityLabel={option.label}
+            >
+              <Text
+                style={[styles.segmentTabLabel, active && styles.segmentTabLabelActive]}
+                numberOfLines={1}
+              >
+                {option.label}
+              </Text>
+              {option.count != null ? (
+                <Text style={[styles.segmentTabCount, active && styles.segmentTabCountActive]}>
+                  {option.count}
+                </Text>
+              ) : null}
+            </Pressable>
+          );
+        })}
+      </View>
+    );
+  }
+
   const tabs = options.map((option) => {
     const active = option.key === value;
     return (
@@ -434,20 +472,22 @@ export function TextTabs({ options, value, onChange, leading, trailing, size = '
           size === 'lg' && styles.tabLg,
           isMobile && styles.tabMobile,
           inline && styles.tabInline,
+          fill && styles.tabFill,
         ]}
         onPress={() => onChange(option.key)}
         accessibilityRole="tab"
         accessibilityState={{ selected: active }}
         accessibilityLabel={option.label}
       >
-        <View style={styles.tabLabelRow}>
+        <View style={[styles.tabLabelRow, fill && styles.tabLabelRowFill]}>
           <Text
             style={[
               styles.tabLabel,
               size === 'lg' && styles.tabLabelLg,
+              fill && styles.tabLabelFill,
               active && styles.tabLabelActive,
             ]}
-            numberOfLines={1}
+            {...(fill ? null : { numberOfLines: 1 })}
           >
             {option.label}
           </Text>
@@ -460,18 +500,19 @@ export function TextTabs({ options, value, onChange, leading, trailing, size = '
     );
   });
 
-  const tabRow = isMobile && !inline ? (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      contentContainerStyle={styles.tabsMobile}
-      style={styles.tabsMobileScroll}
-    >
-      {tabs}
-    </ScrollView>
-  ) : (
-    <View style={[styles.tabs, size === 'lg' && styles.tabsLg, inline && styles.tabsInline]}>{tabs}</View>
-  );
+  const tabRow =
+    fill || (isMobile && !inline) ? (
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={[fill ? styles.tabsFillScroll : styles.tabsMobile]}
+        style={styles.tabsMobileScroll}
+      >
+        {tabs}
+      </ScrollView>
+    ) : (
+      <View style={[styles.tabs, size === 'lg' && styles.tabsLg, inline && styles.tabsInline]}>{tabs}</View>
+    );
 
   if (inline) {
     return (
@@ -500,10 +541,12 @@ export function TextTabs({ options, value, onChange, leading, trailing, size = '
 
   return (
     <View
-      style={[
+        style={[
         styles.tabBar,
         size === 'lg' && styles.tabBarLg,
         isMobile ? styles.tabBarMobile : stable && styles.tabBarStable,
+        fill && styles.tabBarFill,
+        isMobile && fill && styles.tabBarFillMobile,
         style,
       ]}
       accessibilityRole="tablist"
@@ -513,7 +556,7 @@ export function TextTabs({ options, value, onChange, leading, trailing, size = '
           {leadingNode}
           {tabRow}
         </View>
-      ) : stable ? (
+      ) : stable && leading ? (
         <View style={[styles.tabSlot, styles.tabSlotStart, styles.tabSlotLg]}>{leading}</View>
       ) : (
         leadingNode
@@ -531,7 +574,7 @@ export function TextTabs({ options, value, onChange, leading, trailing, size = '
             {trailing}
           </View>
         ) : null
-      ) : stable ? (
+      ) : stable && trailing ? (
         <View style={[styles.tabSlot, styles.tabSlotEnd, styles.tabSlotLg]}>{trailing}</View>
       ) : trailing ? (
         <View style={[styles.tabTrailing, size === 'lg' && styles.tabTrailingLg]}>{trailing}</View>
@@ -904,7 +947,7 @@ export function GroupRow({ label, value, valueTone, last, onPress, children }) {
   );
 }
 
-/** Dark gold hero on desktop; Home-matching amount + compact stats on mobile. */
+/** Home-style amount + compact stats. No card, lift, or shadow. */
 export function ChromeHero({
   value,
   stats,
@@ -912,114 +955,52 @@ export function ChromeHero({
   onPress,
   accessibilityLabel,
   footer,
-  icon = 'medkit',
-  iconColor = '#C2410C',
 }) {
   const isMobile = useIsMobile();
-  if (isMobile) {
-    const body = (
-      <View style={styles.chromeHeroMobileRow}>
-        <View style={styles.chromeHeroIconCol}>
-          <View style={[styles.chromeHeroIcon, { backgroundColor: iconColor }]}>
-            <Ionicons name={icon} size={21} color="#fff" />
-          </View>
-        </View>
-        <View style={styles.chromeHeroMobileContent}>
-          <View style={styles.chromeHeroMobilePrimary}>
-            <View style={styles.chromeHeroMobileAmountBlock}>
-              <Text style={styles.chromeHeroAmountMobile} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.55}>
-                {value}
+  const body = (
+    <View style={[styles.chromeHeroHome, isMobile && styles.chromeHeroHomeMobile, wide && styles.chromeHeroHomeWide]}>
+      <View style={styles.chromeHeroHomeMain}>
+        <Text
+          style={[styles.chromeHeroHomeAmount, isMobile && styles.chromeHeroHomeAmountMobile]}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.55}
+        >
+          {value}
+        </Text>
+        {footer}
+      </View>
+      {stats?.length ? (
+        <View style={[styles.chromeHeroHomeStats, !isMobile && styles.chromeHeroHomeStatsDesktop]}>
+          {stats.map((stat) => (
+            <View key={stat.label} style={styles.chromeHeroHomeStat}>
+              <Text style={styles.chromeHeroHomeStatLabel} numberOfLines={1}>
+                {stat.label}
+              </Text>
+              <Text style={styles.chromeHeroHomeStatValue} numberOfLines={1}>
+                {stat.value}
               </Text>
             </View>
-            {stats?.length ? (
-              <View style={styles.chromeHeroStatsMobile}>
-                {stats.map((stat) => (
-                  <View key={stat.label} style={styles.chromeHeroStatMobile}>
-                    <Text style={styles.chromeHeroStatMobileLabel} numberOfLines={1}>
-                      {stat.label}
-                    </Text>
-                    <Text style={styles.chromeHeroStatMobileValue} numberOfLines={1}>
-                      {stat.value}
-                    </Text>
-                  </View>
-                ))}
-              </View>
-            ) : null}
-          </View>
-          {footer}
-        </View>
-      </View>
-    );
-    if (onPress) {
-      return (
-        <Pressable
-          style={styles.chromeHeroMobileHit}
-          onPress={onPress}
-          accessibilityRole="button"
-          accessibilityLabel={accessibilityLabel}
-        >
-          {body}
-        </Pressable>
-      );
-    }
-    return (
-      <View style={styles.chromeHeroMobileHit} accessibilityLabel={accessibilityLabel}>
-        {body}
-      </View>
-    );
-  }
-
-  const body = (
-    <>
-      <Text
-        style={[styles.chromeHeroAmount, (wide || !isMobile) && styles.chromeHeroAmountWide]}
-        numberOfLines={1}
-        adjustsFontSizeToFit
-      >
-        {value}
-      </Text>
-      {stats?.length || footer ? (
-        <View style={[(wide || !isMobile) && styles.chromeHeroSide, footer && styles.chromeHeroSideStack]}>
-          {stats?.length ? (
-            <View style={[styles.chromeHeroStats, (wide || !isMobile) && styles.chromeHeroStatsWide]}>
-              {stats.map((stat, index) => (
-                <View key={stat.label} style={styles.chromeHeroStatWrap}>
-                  {index ? <View style={styles.chromeHeroStatDivider} /> : null}
-                  <View style={styles.chromeHeroStat}>
-                    <Text style={styles.chromeHeroStatValue} numberOfLines={1}>
-                      {stat.value}
-                    </Text>
-                    <Text style={styles.chromeHeroStatLabel} numberOfLines={1}>
-                      {stat.label}
-                    </Text>
-                  </View>
-                </View>
-              ))}
-            </View>
-          ) : null}
-          {footer}
+          ))}
         </View>
       ) : null}
-    </>
+    </View>
   );
-  const cardStyle = [styles.chromeHeroCard, (wide || !isMobile) && styles.chromeHeroCardWide];
+  if (onPress) {
+    return (
+      <Pressable
+        style={styles.chromeHeroMobileHit}
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityLabel={accessibilityLabel}
+      >
+        {body}
+      </Pressable>
+    );
+  }
   return (
-    <View style={styles.chromeHeroShell}>
-      <View pointerEvents="none" style={styles.chromeHeroLift} />
-      {onPress ? (
-        <Pressable
-          style={cardStyle}
-          onPress={onPress}
-          accessibilityRole="button"
-          accessibilityLabel={accessibilityLabel}
-        >
-          {body}
-        </Pressable>
-      ) : (
-        <View style={cardStyle} accessibilityLabel={accessibilityLabel}>
-          {body}
-        </View>
-      )}
+    <View style={styles.chromeHeroMobileHit} accessibilityLabel={accessibilityLabel}>
+      {body}
     </View>
   );
 }
@@ -1161,6 +1142,7 @@ export function ChromePage({
   children,
   empty,
   footer,
+  tableHeader,
   filterPad = true,
   data,
   renderItem,
@@ -1169,17 +1151,15 @@ export function ChromePage({
 }) {
   const isMobile = useIsMobile();
   const tabBarScroll = useMobileTabBarScrollProps();
-  const heroLift = useRef(new Animated.Value(1)).current;
-  const [heroHeight, setHeroHeight] = useState(isMobile ? 120 : 200);
-  const restGap = 18;
-  const raisedOffset = hero ? Math.max(0, heroHeight + restGap) : 0;
   const topPad = filterPad ? MOBILE_TOP_FILTER_SIZE + MOBILE_FILTER_INSET : 8;
   const useVirtualList = isMobile && Array.isArray(data) && typeof renderItem === 'function';
+  const list = Array.isArray(data) && typeof renderItem === 'function' ? data : null;
 
   if (isMobile) {
     const listHeader = (
       <>
         {hero ? <View style={styles.chromeHeroPadMobile}>{hero}</View> : null}
+        {tableHeader}
         {empty || !title ? null : (
           <View style={styles.chromeListMobile}>
             <View style={[styles.chromeSheetHead, styles.chromeSheetHeadMobile]}>
@@ -1237,6 +1217,7 @@ export function ChromePage({
           {empty || (
             <View pointerEvents="auto" style={styles.chromeListMobile}>
               <ChromeSheet title={title} meta={meta}>
+                {tableHeader}
                 {children}
               </ChromeSheet>
             </View>
@@ -1249,57 +1230,34 @@ export function ChromePage({
 
   return (
     <View style={styles.chromePage}>
-      {hero ? (
-        <View
-          pointerEvents="box-none"
-          style={styles.chromePinnedHero}
-          onLayout={(event) => {
-            const height = event.nativeEvent.layout.height;
-            setHeroHeight((current) => (Math.abs(current - height) < 0.5 ? current : height));
-          }}
-        >
-          <Animated.View pointerEvents="none" style={[styles.chromePinnedLift, { opacity: heroLift }]} />
-          <View style={[styles.chromeHeroPad, styles.chromeHeroPadDesktop]}>{hero}</View>
-        </View>
-      ) : null}
       <ScrollView
-        pointerEvents="box-none"
         style={styles.chromeOverlayScroll}
         contentContainerStyle={[styles.chromePageContent, { flexGrow: 1 }]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
         scrollEventThrottle={16}
         {...tabBarScroll}
-        onScroll={(event) => {
-          tabBarScroll.onScroll?.(event);
-          const y = event?.nativeEvent?.contentOffset?.y;
-          if (!Number.isFinite(y) || !hero) return;
-          const reach = Math.max(1, heroHeight - 12);
-          heroLift.setValue(1 - Math.max(0, Math.min(1, y / reach)));
-        }}
-        {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll cgold-store-overlay-scroll' } : null)}
+        onScroll={tabBarScroll.onScroll}
+        {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll' } : null)}
       >
-        {hero ? <View pointerEvents="none" style={{ height: raisedOffset }} /> : null}
+        {hero ? <View style={[styles.chromeHeroPad, styles.chromeHeroPadDesktop]}>{hero}</View> : null}
         {empty || (
-          <View
-            pointerEvents="auto"
-            style={styles.chromeOverlaySheet}
-            {...(Platform.OS === 'web' ? { className: 'cgold-store-sheet' } : null)}
-          >
-            <ChromeSheet title={title} meta={meta} style={styles.chromeSheetGrow}>
-              {Array.isArray(data) && renderItem
-                ? data.length
-                  ? data.map((item, index) => (
+          <View style={styles.chromeListFlat}>
+            <ChromeSheet title={title} meta={meta}>
+              {tableHeader}
+              {list
+                ? list.length
+                  ? list.map((item, index) => (
                       <View key={keyExtractor ? keyExtractor(item, index) : String(index)}>
                         {renderItem({ item, index })}
                       </View>
                     ))
                   : children
                 : children}
+              {footer}
             </ChromeSheet>
           </View>
         )}
-        {footer}
       </ScrollView>
     </View>
   );
@@ -1666,6 +1624,54 @@ const styles = StyleSheet.create({
   emptyAction: {
     marginTop: 10,
   },
+  segmentTabBar: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    alignSelf: 'stretch',
+    backgroundColor: 'rgba(118, 118, 128, 0.12)',
+    borderRadius: 10,
+    padding: 2,
+    minHeight: 36,
+  },
+  segmentTabBarMobile: {
+    minHeight: 40,
+  },
+  segmentTab: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 7,
+    borderRadius: 8,
+    ...webCursor,
+  },
+  segmentTabActive: {
+    backgroundColor: '#fff',
+  },
+  segmentTabLabel: {
+    fontFamily: FONT,
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#8e8e93',
+    letterSpacing: -0.2,
+  },
+  segmentTabLabelActive: {
+    fontWeight: '600',
+    color: '#1d1d1f',
+  },
+  segmentTabCount: {
+    fontFamily: FONT,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#8e8e93',
+    fontVariant: ['tabular-nums'],
+  },
+  segmentTabCountActive: {
+    color: '#1d1d1f',
+  },
   tabBar: {
     flexShrink: 0,
     flexDirection: 'row',
@@ -1708,11 +1714,52 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
     backgroundColor: T.bg,
   },
-  tabs: {
+  tabBarFill: {
+    alignItems: 'stretch',
+    gap: 0,
+    paddingHorizontal: 8,
+    paddingTop: 0,
+  },
+  tabBarFillMobile: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    paddingHorizontal: 4,
+    paddingTop: 0,
+    paddingBottom: 0,
+  },
+  tabsFill: {
     flex: 1,
+    gap: 0,
+    alignItems: 'stretch',
+  },
+  tabsFillScroll: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    flexGrow: 1,
+    minWidth: '100%',
+  },
+  tabFill: {
+    flexGrow: 1,
+    flexShrink: 0,
+    paddingTop: 12,
+    paddingHorizontal: 12,
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+  },
+  tabLabelRowFill: {
+    flexShrink: 0,
+    justifyContent: 'center',
+  },
+  tabLabelFill: {
+    flexShrink: 0,
+  },
+  tabs: {
+    flexGrow: 0,
+    flexShrink: 1,
     minWidth: 0,
     flexDirection: 'row',
     alignItems: 'flex-end',
+    justifyContent: 'flex-start',
     gap: 20,
   },
   tabSlot: {
@@ -1775,7 +1822,7 @@ const styles = StyleSheet.create({
   tab: {
     paddingTop: 10,
     paddingHorizontal: 2,
-    alignItems: 'center',
+    alignItems: 'flex-start',
     ...webCursor,
   },
   tabLg: {
@@ -2685,26 +2732,87 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
   },
+  chromeListFlat: {
+    flexGrow: 1,
+    backgroundColor: '#fff',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(60, 60, 67, 0.12)',
+  },
+  chromeHeroHome: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    alignSelf: 'stretch',
+    gap: 10,
+  },
+  chromeHeroHomeMobile: {
+    width: '100%',
+  },
+  chromeHeroHomeWide: {
+    gap: 24,
+  },
+  chromeHeroHomeMain: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: 'flex-end',
+  },
+  chromeHeroHomeAmount: {
+    fontFamily: FONT,
+    fontSize: 28,
+    lineHeight: 32,
+    fontWeight: '400',
+    color: '#1d1d1f',
+    letterSpacing: -0.6,
+    fontVariant: ['tabular-nums'],
+  },
+  chromeHeroHomeAmountMobile: {
+    fontSize: 34,
+    lineHeight: 40,
+    letterSpacing: -0.8,
+  },
+  chromeHeroHomeStats: {
+    flexDirection: 'column',
+    flexShrink: 0,
+    justifyContent: 'flex-start',
+    gap: 2,
+    minWidth: 108,
+    maxWidth: 132,
+    paddingTop: 4,
+    paddingLeft: 12,
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderLeftColor: 'rgba(60, 60, 67, 0.12)',
+  },
+  chromeHeroHomeStatsDesktop: {
+    minWidth: 148,
+    maxWidth: 200,
+  },
+  chromeHeroHomeStat: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: 8,
+    paddingVertical: 2,
+  },
+  chromeHeroHomeStatLabel: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: FONT,
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+  },
+  chromeHeroHomeStatValue: {
+    fontFamily: FONT,
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#1d1d1f',
+    letterSpacing: -0.2,
+    fontVariant: ['tabular-nums'],
+  },
   chromeSheet: {
     flexGrow: 1,
     backgroundColor: '#fff',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
     overflow: 'hidden',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(0,0,0,0.08)',
-    ...Platform.select({
-      web: {
-        boxShadow: '0 -8px 24px rgba(0,0,0,0.12), 0 -1px 0 rgba(255,255,255,0.9)',
-      },
-      default: {
-        shadowColor: '#000',
-        shadowOpacity: 0.14,
-        shadowRadius: 16,
-        shadowOffset: { width: 0, height: -6 },
-        elevation: 8,
-      },
-    }),
   },
   chromeSheetGrow: {
     flexGrow: 1,

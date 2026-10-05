@@ -15,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { activeCallKicker, usePhoneCalls } from './PhoneCallProvider';
 import CallRecordingsPanel from './CallRecordingsPanel';
 import { fetchTransferStores } from '../lib/locations';
+import { useAppDate } from '../lib/appDate';
 import { formatDateParam, formatPickerDate, parseDateParam } from '../lib/transactions';
 import {
   callPartyLabel,
@@ -865,9 +866,10 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
   const isMobile = useIsMobile();
   const phone = usePhoneCalls();
   const [tab, setTab] = useState('incoming');
-  const [dateMode, setDateMode] = useState('today');
-  const [startDate, setStartDate] = useState(() => parseDateParam(new Date()));
-  const [endDate, setEndDate] = useState(() => parseDateParam(new Date()));
+  const appDate = useAppDate();
+  const startDate = parseDateParam(appDate.startDate);
+  const endDate = parseDateParam(appDate.endDate);
+  const dateMode = appDate.mode === 'range' ? 'range' : appDate.isToday ? 'today' : 'day';
   const [historyByStore, setHistoryByStore] = useState({});
   const [historyLoading, setHistoryLoading] = useState({});
   const [historyError, setHistoryError] = useState('');
@@ -987,40 +989,41 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
 
   const selectDateMode = useCallback(
     (mode) => {
-      setDateMode(mode);
       const today = parseDateParam(new Date());
       if (mode === 'today') {
-        setStartDate(today);
-        setEndDate(today);
-      } else if (mode === 'range' && formatDateParam(startDate) === formatDateParam(endDate)) {
-        // Open the range on the past week so the pickers start apart.
-        const weekAgo = new Date(today.getTime() - 6 * DAY_MS);
-        setStartDate(parseDateParam(weekAgo));
-        setEndDate(today);
+        appDate.applyPicker({ mode: 'day', start: today, end: today });
+        return;
       }
+      if (mode === 'range') {
+        if (formatDateParam(startDate) === formatDateParam(endDate)) {
+          const weekAgo = new Date(today.getTime() - 6 * DAY_MS);
+          appDate.applyPicker({ mode: 'range', start: weekAgo, end: today });
+          return;
+        }
+        appDate.applyPicker({ mode: 'range', start: startDate, end: endDate });
+        return;
+      }
+      appDate.applyPicker({ mode: 'day', start: startDate, end: startDate });
     },
-    [endDate, startDate],
+    [appDate, endDate, startDate],
   );
   const handleDayChange = useCallback((date) => {
     const next = parseDateParam(date);
-    setStartDate(next);
-    setEndDate(next);
-  }, []);
+    appDate.applyPicker({ mode: 'day', start: next, end: next });
+  }, [appDate]);
   const handleStartChange = useCallback(
     (date) => {
       const next = parseDateParam(date);
-      setStartDate(next);
-      if (next > endDate) setEndDate(next);
+      appDate.applyPicker({ mode: 'range', start: next, end: next > endDate ? next : endDate });
     },
-    [endDate],
+    [appDate, endDate],
   );
   const handleEndChange = useCallback(
     (date) => {
       const next = parseDateParam(date);
-      setEndDate(next);
-      if (next < startDate) setStartDate(next);
+      appDate.applyPicker({ mode: 'range', start: next < startDate ? next : startDate, end: next });
     },
-    [startDate],
+    [appDate, startDate],
   );
 
   useEffect(() => {
