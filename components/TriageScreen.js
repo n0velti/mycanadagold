@@ -64,8 +64,12 @@ const TRIAGE_TABS = [
   { key: 'deleted', label: 'Deleted', icon: 'trash-outline' },
 ];
 
-function triagePageTitle({ dashPage, activeTab, resultsLotId }) {
+function triagePageTitle({ dashPage, activeTab, resultsLotId, storesView }) {
   if (dashPage === 'errors') return 'Errors';
+  if (dashPage === 'stores') {
+    if (storesView?.detailsOpen) return storesView.selectedStore || 'Details';
+    return storesView?.selectedStore || 'Stores';
+  }
   if (dashPage === 'shipments') return 'Transfers';
   if (dashPage === 'lots') return 'Lots';
   if (dashPage === 'allocation') return 'Allocation';
@@ -137,6 +141,8 @@ export default function TriageScreen({
   const { triage, deleted = [] } = useTransferWorkflow();
   const [activeTab, setActiveTab] = useState('transfers');
   const [dashPage, setDashPage] = useState('');
+  const [storesView, setStoresView] = useState({ selectedStore: '', detailsOpen: false });
+  const openStoreDetailsRef = useRef(() => {});
   const [accuracyTab, setAccuracyTab] = useState('all');
   const [accuracyStats, setAccuracyStats] = useState({ correct: 0, incorrect: 0, total: 0, lots: 0, ratio: '0/0', percent: 0 });
   const [accuracyBreakdownOpen, setAccuracyBreakdownOpen] = useState(false);
@@ -193,7 +199,12 @@ export default function TriageScreen({
 
   const changeTab = useCallback((key) => {
     const dashPageKey =
-      key === 'allocation' || key === 'return' || key === 'errors' || key === 'shipments' || key === 'lots'
+      key === 'allocation' ||
+      key === 'return' ||
+      key === 'errors' ||
+      key === 'stores' ||
+      key === 'shipments' ||
+      key === 'lots'
         ? key
         : '';
     if (!dashPageKey) leaveStoreRef.current?.();
@@ -261,8 +272,10 @@ export default function TriageScreen({
           ? resultsLotId
             ? 'PO / person / store'
             : 'Lot / store'
-          : dashPage === 'errors'
+          : dashPage === 'errors' || (dashPage === 'stores' && storesView.selectedStore && !storesView.detailsOpen)
             ? 'PO / person / store'
+            : dashPage === 'stores'
+              ? 'Store'
             : dashPage === 'lots'
               ? 'Lot / store'
             : activeTab === 'deleted'
@@ -283,7 +296,16 @@ export default function TriageScreen({
   }, [batchContext]);
 
   const trailing =
-    session?.token && activeTab === 'transfers' && !inBatch && (dashPage === 'errors' || dashPage === 'lots') ? (
+    session?.token && activeTab === 'transfers' && !inBatch && dashPage === 'stores' && storesView.selectedStore && !storesView.detailsOpen ? (
+      <View style={styles.deskChromeActions}>
+        {searchField}
+        <BarButton
+          label="Details"
+          onPress={() => openStoreDetailsRef.current?.()}
+          accessibilityLabel="Open store error details"
+        />
+      </View>
+    ) : session?.token && activeTab === 'transfers' && !inBatch && (dashPage === 'errors' || dashPage === 'lots' || (dashPage === 'stores' && !storesView.detailsOpen)) ? (
       searchField
     ) : session?.token && activeTab === 'transfers' && !inBatch ? (
       scanButton()
@@ -354,13 +376,15 @@ export default function TriageScreen({
   const portalNav = Boolean(onNavTabs) && !isMobile;
   const lotsListView =
     dashPage === 'lots' || (activeTab === 'accuracy' && !resultsLotId);
+  const storesPageView = dashPage === 'stores';
+  const showMobileNav = lotsListView || storesPageView;
   const canAdd =
     Boolean(session?.token) &&
     ((activeTab === 'transfers' && !dashPage) ||
       (inBatch && storeTab === 'melt') ||
       lotsListView);
   const canGoBack = canLeaveStore || activeTab !== 'transfers' || Boolean(dashPage);
-  const pageTitle = triagePageTitle({ dashPage, activeTab, resultsLotId });
+  const pageTitle = triagePageTitle({ dashPage, activeTab, resultsLotId, storesView });
 
   const goBack = useCallback(() => {
     setFiltersOpen(false);
@@ -439,11 +463,11 @@ export default function TriageScreen({
       return () => onMobileHeader(null);
     }
     onMobileHeader({
-      hideAppHeader: lotsListView,
+      hideAppHeader: showMobileNav,
       trailing: null,
     });
     return () => onMobileHeader(null);
-  }, [isMobile, lotsListView, onMobileHeader]);
+  }, [isMobile, onMobileHeader, showMobileNav]);
 
   if (showStoreInsights) {
     return (
@@ -458,9 +482,7 @@ export default function TriageScreen({
       ref={screenRootRef}
       style={[styles.body, embedded && styles.bodyEmbedded, isMobile && styles.bodyMobile]}
     >
-      {isMobile && lotsListView ? (
-        <MobileNavHeader title={pageTitle} onBack={goBack} />
-      ) : null}
+      {isMobile && showMobileNav ? <MobileNavHeader title={pageTitle} onBack={goBack} /> : null}
       {showMobileFilter ? (
         <MobileFilterDock>
           <MobileChromeCircle
@@ -492,6 +514,8 @@ export default function TriageScreen({
           onPageChange={setDashPage}
           onBackChange={handleBackChange}
           onOpenTab={changeTab}
+          onStoresViewChange={setStoresView}
+          openStoreDetailsRef={openStoreDetailsRef}
           onOpenLot={(lotId) => {
             setDashPage('');
             setActiveTab('accuracy');
@@ -558,7 +582,7 @@ export default function TriageScreen({
           right={filterAnchor.right}
           onClose={closeFilters}
         >
-          {searchField ? (
+          {searchField && !(dashPage === 'stores' && storesView.detailsOpen) ? (
             <>
               <MobileFilterSheetLabel>Search</MobileFilterSheetLabel>
               {searchField}
@@ -590,7 +614,11 @@ export default function TriageScreen({
               />
             </>
           ) : null}
-          {canAdd || (session?.token && activeTab === 'accuracy') ? <MobileFilterSheetDivider /> : null}
+          {canAdd ||
+          (session?.token && activeTab === 'accuracy') ||
+          (session?.token && dashPage === 'stores' && storesView.selectedStore && !storesView.detailsOpen) ? (
+            <MobileFilterSheetDivider />
+          ) : null}
           {canAdd ? (
             <MobileFilterSheetAction
               icon="add"
@@ -613,6 +641,18 @@ export default function TriageScreen({
                 setAccuracyBreakdownOpen(true);
               }}
               accessibilityLabel="Open lot details"
+            />
+          ) : null}
+          {session?.token && dashPage === 'stores' && storesView.selectedStore && !storesView.detailsOpen ? (
+            <MobileFilterSheetAction
+              icon="analytics-outline"
+              iconBg="#6D28D9"
+              label="Details"
+              onPress={() => {
+                closeFilters();
+                openStoreDetailsRef.current?.();
+              }}
+              accessibilityLabel="Open store error details"
             />
           ) : null}
         </MobileFilterSheet>
