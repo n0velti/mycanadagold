@@ -36,6 +36,7 @@ import {
   restrictBonusBoardToViewer,
 } from '../lib/bonuses';
 import { reviewMonthRange, reviewPeriodLabel } from '../lib/googleReviews';
+import { useAppDate } from '../lib/appDate';
 import { formatDateParam, fetchTransactionsAcrossPos, parseDateParam } from '../lib/transactions';
 import { FONT, FONT_LIGHT } from '../lib/typography';
 import HomeDatePicker from './HomeDatePicker';
@@ -976,10 +977,10 @@ export default function BonusesScreen({
   const { canFilter } = useAppAccess();
   const allowFilters = canFilter('bonuses');
   const viewAllCounts = canViewAllBonusCounts(session?.profile);
-  const initial = useMemo(() => currentBonusMonth(), []);
-  const [startDate, setStartDate] = useState(initial.startDate);
-  const [endDate, setEndDate] = useState(initial.endDate);
-  const [dateMode, setDateMode] = useState('range');
+  const appDate = useAppDate();
+  const startDate = appDate.startDate;
+  const endDate = appDate.endDate;
+  const dateMode = appDate.mode;
   const [board, setBoard] = useState(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -1007,11 +1008,7 @@ export default function BonusesScreen({
     startDate === selectedMonth.startDate && endDate === selectedMonth.endDate;
 
   const applyPeriod = (nextStart, nextEnd, mode) => {
-    const startKey = formatDateParam(nextStart);
-    const endKey = formatDateParam(nextEnd || nextStart);
-    setStartDate(startKey);
-    setEndDate(endKey);
-    setDateMode(mode === 'day' || startKey === endKey ? 'day' : 'range');
+    appDate.applyPicker({ mode, start: nextStart, end: nextEnd || nextStart });
   };
 
   const load = useCallback(

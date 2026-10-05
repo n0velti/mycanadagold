@@ -12,6 +12,7 @@ import {
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
 import { fetchPremiumJewelryByStore } from '../lib/premiumJewelry';
+import { useAppDate } from '../lib/appDate';
 import {
   defaultDateRange,
   formatDateParam,
@@ -191,10 +192,11 @@ function StoreDetailDrawer({ visible, store, onClose }) {
 }
 
 export default function HundredWaysScreen({ session, onRequireLogin }) {
+  const appDate = useAppDate();
   const initialRange = useMemo(() => defaultDateRange(7), []);
-  const [dateMode, setDateMode] = useState('day');
-  const [startDate, setStartDate] = useState(() => parseDateParam(new Date()));
-  const [endDate, setEndDate] = useState(() => parseDateParam(new Date()));
+  const dateMode = appDate.mode;
+  const startDate = parseDateParam(appDate.startDate);
+  const endDate = parseDateParam(appDate.endDate);
   const [rows, setRows] = useState([]);
   const [totals, setTotals] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -271,35 +273,30 @@ export default function HundredWaysScreen({ session, onRequireLogin }) {
 
   const selectToday = () => {
     const day = parseDateParam(new Date());
-    setDateMode('day');
-    setStartDate(day);
-    setEndDate(day);
+    appDate.applyPicker({ mode: 'day', start: day, end: day });
   };
 
   const selectRange = () => {
-    setDateMode('range');
     if (formatDateParam(startDate) === formatDateParam(endDate)) {
-      setStartDate(initialRange.start);
-      setEndDate(initialRange.end);
+      appDate.applyPicker({ mode: 'range', start: initialRange.start, end: initialRange.end });
+      return;
     }
+    appDate.applyPicker({ mode: 'range', start: startDate, end: endDate });
   };
 
   const handleDayChange = (date) => {
     const next = parseDateParam(date);
-    setStartDate(next);
-    setEndDate(next);
+    appDate.applyPicker({ mode: 'day', start: next, end: next });
   };
 
   const handleStartChange = (date) => {
     const next = parseDateParam(date);
-    setStartDate(next);
-    if (next > endDate) setEndDate(next);
+    appDate.applyPicker({ mode: 'range', start: next, end: next > endDate ? next : endDate });
   };
 
   const handleEndChange = (date) => {
     const next = parseDateParam(date);
-    setEndDate(next);
-    if (next < startDate) setStartDate(next);
+    appDate.applyPicker({ mode: 'range', start: next < startDate ? next : startDate, end: next });
   };
 
   if (!session?.token) {

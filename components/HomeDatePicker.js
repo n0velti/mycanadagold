@@ -63,11 +63,17 @@ export function formatHomeDateLabel(startDate, endDate, dateMode) {
   if (!isRange) {
     return dayKey(start) === dayKey(today) ? 'Today' : formatPickerDate(start);
   }
-  const startLabel = start.toLocaleDateString('en-CA', { month: 'short', day: 'numeric' });
+  const thisYear = today.getFullYear();
+  const sameYear = start.getFullYear() === end.getFullYear();
+  const startLabel = start.toLocaleDateString('en-CA', {
+    month: 'short',
+    day: 'numeric',
+    ...(sameYear ? {} : { year: 'numeric' }),
+  });
   const endLabel = end.toLocaleDateString('en-CA', {
     month: 'short',
     day: 'numeric',
-    year: 'numeric',
+    ...(sameYear && end.getFullYear() === thisYear ? {} : { year: 'numeric' }),
   });
   return `${startLabel} – ${endLabel}`;
 }
@@ -88,9 +94,12 @@ export default function HomeDatePicker({
   hideField = false,
   openRef,
   anchorRef,
+  onOpenChange,
 }) {
   const fieldRef = useRef(null);
   const openIntent = useRef(null);
+  const blockOpenUntil = useRef(0);
+  const skipDismissApply = useRef(false);
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const isMobileLayout = windowWidth < MOBILE_BREAKPOINT;
   const [open, setOpen] = useState(false);
@@ -117,8 +126,8 @@ export default function HomeDatePicker({
     openIntent.current = null;
     if (intent === 'range') {
       setRangePicking(true);
-      setDraftStart(null);
-      setDraftEnd(null);
+      setDraftStart(start);
+      setDraftEnd(dayKey(start) === dayKey(end) ? null : end);
       setHoverKey('');
       setCursor(startOfMonth(start));
       return;
@@ -155,10 +164,13 @@ export default function HomeDatePicker({
   const pickingEnd = rangePicking && draftStart && !draftEnd;
   const previewEnd = pickingEnd && hoverKey ? parseDateParam(hoverKey) : draftEnd;
 
-  const close = () => {
+  const dismiss = () => {
+    skipDismissApply.current = true;
+    blockOpenUntil.current = Date.now() + 400;
     setOpen(false);
     setAnchor(null);
     setHoverKey('');
+    onOpenChange?.(false);
   };
 
   const commit = (mode, start, end) => {
@@ -167,32 +179,58 @@ export default function HomeDatePicker({
     const ordered = isAfter(nextStart, nextEnd)
       ? { start: nextEnd, end: nextStart }
       : { start: nextStart, end: nextEnd };
+    skipDismissApply.current = true;
     onChange?.({
       mode: mode === 'range' && dayKey(ordered.start) !== dayKey(ordered.end) ? 'range' : 'day',
       start: ordered.start,
       end: ordered.end,
     });
-    close();
+    dismiss();
+  };
+
+  const close = () => {
+    if (skipDismissApply.current) {
+      dismiss();
+      return;
+    }
+    if (rangePicking && draftStart && draftEnd) {
+      commit('range', draftStart, draftEnd);
+      return;
+    }
+    dismiss();
   };
 
   const openCalendar = () => {
     if (disabled) return;
+    if (open) return;
+    if (Date.now() < blockOpenUntil.current) return;
+    skipDismissApply.current = false;
+    const reveal = (nextAnchor) => {
+      setAnchor(nextAnchor);
+      setOpen(true);
+      onOpenChange?.(true);
+    };
     const node = anchorRef?.current || fieldRef.current;
     if (node?.measureInWindow) {
       node.measureInWindow((x, y, width, height) => {
-        setAnchor({ x, y, width, height });
-        setOpen(true);
+        if (Date.now() < blockOpenUntil.current) return;
+        reveal({ x, y, width, height });
       });
       return;
     }
-    setAnchor(null);
-    setOpen(true);
+    reveal(null);
   };
 
   useEffect(() => {
     if (!openRef) return undefined;
     openRef.current = (opts = {}) => {
-      openIntent.current = opts.range ? 'range' : 'day';
+      if (opts.close) {
+        dismiss();
+        return;
+      }
+      if (opts.range) openIntent.current = 'range';
+      else if (opts.day) openIntent.current = 'day';
+      else openIntent.current = null;
       openCalendar();
     };
     return () => {
@@ -214,8 +252,10 @@ export default function HomeDatePicker({
     commit('range', draftStart, day);
   };
 
-  const toggleRange = () => {
-    if (rangePicking) {
+  const toggleRange = (nextRange) => {
+    const enable = nextRange == null ? !rangePicking : Boolean(nextRange);
+    if (enable === rangePicking) return;
+    if (!enable) {
       setRangePicking(false);
       setDraftStart(parseDateParam(startDate));
       setDraftEnd(parseDateParam(startDate));
@@ -223,9 +263,24 @@ export default function HomeDatePicker({
       return;
     }
     setRangePicking(true);
-    setDraftStart(null);
-    setDraftEnd(null);
+    setDraftStart(parseDateParam(startDate));
+    setDraftEnd(dateMode === 'range' && dayKey(startDate) !== dayKey(endDate) ? parseDateParam(endDate) : null);
     setHoverKey('');
+  };
+
+  const applyPreset = (kind) => {
+    if (kind === 'today') {
+      commit('day', today, today);
+      return;
+    }
+    if (kind === 'week') {
+      const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6);
+      commit('range', start, today);
+      return;
+    }
+    const monthStart = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
+    const monthEnd = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0);
+    commit('range', monthStart, monthEnd);
   };
 
   const calendarLeft = (() => {
@@ -235,7 +290,7 @@ export default function HomeDatePicker({
   })();
 
   const calendarTop = (() => {
-    const height = 380;
+    const height = 456;
     if (!anchor) return Math.max(24, (windowHeight - height) / 2);
     const below = anchor.y + anchor.height + 8;
     if (below + height <= windowHeight - 12) return below;
@@ -294,10 +349,13 @@ export default function HomeDatePicker({
         field
       )}
 
-      <Modal visible={open} transparent animationType="fade" onRequestClose={close}>
+      <Modal visible={open} transparent animationType="none" onRequestClose={close}>
         <View style={styles.modalRoot} pointerEvents="box-none">
-          <Pressable style={StyleSheet.absoluteFill} onPress={close} accessibilityLabel="Close calendar" />
-          <View style={[styles.calCard, { top: calendarTop, left: calendarLeft }]}>
+          <Pressable style={styles.calBackdrop} onPress={close} accessibilityLabel="Close calendar" />
+          <Pressable
+            style={[styles.calCard, { top: calendarTop, left: calendarLeft }]}
+            onPress={(event) => event?.stopPropagation?.()}
+          >
             <View style={styles.calHeader}>
               <Pressable
                 onPress={() => setCursor((current) => addMonths(current, -1))}
@@ -396,37 +454,53 @@ export default function HomeDatePicker({
               })}
             </View>
 
+            <View style={styles.calTools}>
+              <View style={styles.modeRow}>
+                <Pressable
+                  onPress={() => toggleRange(false)}
+                  style={[styles.modeChip, !rangePicking && styles.modeChipActive]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: !rangePicking }}
+                  accessibilityLabel="Single day"
+                >
+                  <Text style={[styles.modeChipText, !rangePicking && styles.modeChipTextActive]}>Day</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => toggleRange(true)}
+                  style={[styles.modeChip, rangePicking && styles.modeChipActive]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: rangePicking }}
+                  accessibilityLabel="Date range"
+                >
+                  <Text style={[styles.modeChipText, rangePicking && styles.modeChipTextActive]}>Range</Text>
+                </Pressable>
+              </View>
+              <View style={styles.presetRow}>
+                <Pressable onPress={() => applyPreset('today')} style={styles.presetChip} accessibilityLabel="Today">
+                  <Text style={styles.presetText}>Today</Text>
+                </Pressable>
+                <Pressable onPress={() => applyPreset('week')} style={styles.presetChip} accessibilityLabel="Last 7 days">
+                  <Text style={styles.presetText}>7 days</Text>
+                </Pressable>
+                <Pressable onPress={() => applyPreset('month')} style={styles.presetChip} accessibilityLabel="Calendar month">
+                  <Text style={styles.presetText}>Month</Text>
+                </Pressable>
+              </View>
+            </View>
+
             <View style={styles.calFooter}>
-              <Pressable
-                onPress={toggleRange}
-                style={[styles.rangeButton, rangePicking && styles.rangeButtonActive]}
-                accessibilityRole="button"
-                accessibilityState={{ selected: rangePicking }}
-                accessibilityLabel="Select date range"
-              >
-                <Ionicons
-                  name="swap-horizontal"
-                  size={14}
-                  color={rangePicking ? '#fff' : '#1a1a1a'}
-                />
-                <Text style={[styles.rangeButtonText, rangePicking && styles.rangeButtonTextActive]}>
-                  Range
-                </Text>
-              </Pressable>
               <Text style={styles.calHint} numberOfLines={1}>
                 {rangePicking
                   ? pickingEnd
                     ? 'Pick end date'
-                    : draftEnd
-                      ? formatHomeDateLabel(draftStart, draftEnd, 'range')
-                      : 'Pick start date'
+                    : 'Pick start date'
                   : 'Pick a date'}
               </Text>
-              <Pressable onPress={() => commit('day', today, today)} hitSlop={8} accessibilityLabel="Today">
+              <Pressable onPress={() => applyPreset('today')} hitSlop={8} accessibilityLabel="Today">
                 <Text style={styles.calToday}>Today</Text>
               </Pressable>
             </View>
-          </View>
+          </Pressable>
         </View>
       </Modal>
     </>
@@ -523,8 +597,13 @@ const styles = StyleSheet.create({
   modalRoot: {
     flex: 1,
   },
+  calBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 1,
+  },
   calCard: {
     position: 'absolute',
+    zIndex: 2,
     width: CALENDAR_WIDTH,
     backgroundColor: '#fff',
     borderRadius: 14,
@@ -640,19 +719,49 @@ const styles = StyleSheet.create({
   calDayTextDisabled: {
     color: '#8e8e93',
   },
-  calFooter: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  calTools: {
     gap: 8,
     paddingTop: 8,
     paddingHorizontal: 2,
   },
-  rangeButton: {
+  modeRow: {
     flexDirection: 'row',
+    backgroundColor: '#f2f2f4',
+    borderRadius: 8,
+    padding: 2,
+  },
+  modeChip: {
+    flex: 1,
+    height: 28,
     alignItems: 'center',
-    gap: 5,
-    height: 30,
-    paddingHorizontal: 10,
+    justifyContent: 'center',
+    borderRadius: 6,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  modeChipActive: {
+    backgroundColor: '#fff',
+  },
+  modeChipText: {
+    fontFamily: FONT,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#8e8e93',
+  },
+  modeChipTextActive: {
+    color: '#1a1a1a',
+  },
+  presetRow: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  presetChip: {
+    flex: 1,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
     borderRadius: 8,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: BORDER,
@@ -662,18 +771,18 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  rangeButtonActive: {
-    backgroundColor: '#1a1a1a',
-    borderColor: '#1a1a1a',
-  },
-  rangeButtonText: {
+  presetText: {
     fontFamily: FONT,
     fontSize: 12,
     fontWeight: '600',
     color: '#1a1a1a',
   },
-  rangeButtonTextActive: {
-    color: '#fff',
+  calFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingTop: 8,
+    paddingHorizontal: 2,
   },
   calHint: {
     flex: 1,

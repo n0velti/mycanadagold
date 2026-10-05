@@ -36,7 +36,7 @@ import {
 } from '../lib/triageLots';
 import { formatAmount } from '../lib/transactions';
 import { formatErrorAmount } from '../lib/triageDraft';
-import { currentReviewMonth } from '../lib/triageStoreErrors';
+import { currentErrorPeriod } from '../lib/triageStoreErrors';
 import { CANVAS, useIsMobile } from '../lib/mobileUi';
 import {
   ChromeHero,
@@ -79,7 +79,7 @@ function staffName(row) {
 
 function errorTypeOf(row) {
   const type = String(row?.review?.errorType || '').trim();
-  if (type) return type;
+  if (type && !/^notes?\s+only$/i.test(type)) return type;
   const corrections = Array.isArray(row?.review?.corrections) ? row.review.corrections : [];
   if (corrections.length) {
     const labels = corrections.map((item) => String(item?.label || '').toLowerCase());
@@ -90,7 +90,6 @@ function errorTypeOf(row) {
     if (labels.some((label) => /name|item/.test(label))) return 'Wrong item';
     return corrections[0].label || 'Unspecified';
   }
-  if (String(row?.review?.note || '').trim()) return 'Note only';
   return 'Unspecified';
 }
 
@@ -289,6 +288,7 @@ function TransfersPage({ summary }) {
 }
 
 function LotsPage({ lots, allRows, errors, query, onOpen }) {
+  const isMobile = useIsMobile();
   const visible = useMemo(() => lots.filter((lot) => lotMatchesQuery(lot, query)), [lots, query]);
   const [breakdownOpen, setBreakdownOpen] = useState(false);
   const totals = useMemo(() => {
@@ -399,7 +399,7 @@ function LotsPage({ lots, allRows, errors, query, onOpen }) {
       widthRatio={0.38}
       minWidth={360}
     >
-      <ScrollView style={styles.breakScroll} contentContainerStyle={styles.breakPad} showsVerticalScrollIndicator={false}>
+      <ScrollView style={styles.breakScroll} contentContainerStyle={[styles.breakPad, isMobile && styles.breakPadMobile]} showsVerticalScrollIndicator={false}>
         <Text style={styles.breakKicker}>Progress</Text>
         <Text style={styles.breakValue}>{totals.expected ? `${totals.percent}%` : '—'}</Text>
         <Text style={styles.breakMeta}>
@@ -457,6 +457,7 @@ function LotsPage({ lots, allRows, errors, query, onOpen }) {
 }
 
 function AllocationPage({ rows, session }) {
+  const isMobile = useIsMobile();
   const summary = useMemo(() => summarizePoAllocations(rows), [rows]);
   const [openPo, setOpenPo] = useState(null);
   const [draft, setDraft] = useState({ lines: [] });
@@ -545,7 +546,7 @@ function AllocationPage({ rows, session }) {
         widthRatio={0.42}
         minWidth={380}
       >
-        <ScrollView style={styles.breakScroll} contentContainerStyle={styles.breakPad} showsVerticalScrollIndicator={false}>
+        <ScrollView style={styles.breakScroll} contentContainerStyle={[styles.breakPad, isMobile && styles.breakPadMobile]} showsVerticalScrollIndicator={false}>
           <TriageAllocationForm draft={draft} onChange={setDraft} disabled={saving} />
           {error ? <Text style={styles.allocError}>{error}</Text> : null}
         </ScrollView>
@@ -613,14 +614,19 @@ export default function TriageDashboardPanel({
   onOpenLot,
   onOpenTab,
   onStoresViewChange,
-  openStoreDetailsRef,
+  storesNavRef,
+  storePeriod: storePeriodProp,
+  storeInsightTab = 'purchases',
+  onStoreInsightTabChange,
+  onStorePeriodChange,
 }) {
   const { triage, planned = [] } = useTransferWorkflow();
   const isMobile = useIsMobile();
   const [openRow, setOpenRow] = useState(null);
   const [selectedStore, setSelectedStore] = useState('');
-  const [storeDetails, setStoreDetails] = useState(false);
-  const [storeMonth, setStoreMonth] = useState(() => currentReviewMonth());
+  const [storePeriodLocal, setStorePeriodLocal] = useState(() => currentErrorPeriod());
+  const storePeriod = storePeriodProp || storePeriodLocal;
+  const setStorePeriod = onStorePeriodChange || setStorePeriodLocal;
 
   const evaluated = useMemo(() => (active ? collectAccuracyTriagePos(triage) : []), [active, triage]);
   const allRows = useMemo(() => (active ? collectAllTriagePos(triage) : []), [active, triage]);
@@ -632,40 +638,35 @@ export default function TriageDashboardPanel({
 
   const openPage = useCallback((key) => onPageChange?.(key || ''), [onPageChange]);
   const closePage = useCallback(() => {
-    if (page === 'stores' && storeDetails) {
-      setStoreDetails(false);
-      return;
-    }
     if (page === 'stores' && selectedStore) {
       setSelectedStore('');
       return;
     }
     onPageChange?.('');
-  }, [onPageChange, page, selectedStore, storeDetails]);
+  }, [onPageChange, page, selectedStore]);
 
   useEffect(() => {
     if (page !== 'stores') {
       setSelectedStore('');
-      setStoreDetails(false);
     }
   }, [page]);
 
   useEffect(() => {
     onStoresViewChange?.({
       selectedStore: page === 'stores' ? selectedStore : '',
-      detailsOpen: page === 'stores' && storeDetails,
+      period: storePeriod,
     });
-  }, [onStoresViewChange, page, selectedStore, storeDetails]);
+  }, [onStoresViewChange, page, selectedStore, storePeriod]);
 
   useEffect(() => {
-    if (!openStoreDetailsRef) return undefined;
-    openStoreDetailsRef.current = () => {
-      if (selectedStore) setStoreDetails(true);
+    if (!storesNavRef) return undefined;
+    storesNavRef.current = {
+      closeStore: () => setSelectedStore(''),
     };
     return () => {
-      openStoreDetailsRef.current = () => {};
+      storesNavRef.current = { closeStore() {} };
     };
-  }, [openStoreDetailsRef, selectedStore]);
+  }, [storesNavRef]);
 
   useEffect(() => {
     if (!active) return undefined;
@@ -675,7 +676,7 @@ export default function TriageDashboardPanel({
     }
     const titles = {
       errors: 'Errors',
-      stores: storeDetails ? selectedStore || 'Details' : selectedStore || 'Stores',
+      stores: selectedStore || 'Stores',
       shipments: 'Transfers',
       lots: 'Lots',
       allocation: 'Allocation',
@@ -683,7 +684,7 @@ export default function TriageDashboardPanel({
     };
     onBackChange?.(closePage, { dateLabel: titles[page] || 'Dashboard' });
     return () => onBackChange?.(null, null);
-  }, [active, closePage, onBackChange, page, selectedStore, storeDetails]);
+  }, [active, closePage, onBackChange, page, selectedStore]);
 
   const saveReview = useCallback(
     (poId, review) => {
@@ -707,22 +708,7 @@ export default function TriageDashboardPanel({
   }
 
   const home = (
-    <ChromePage
-      hero={
-        <ChromeHero
-          icon="medkit"
-          iconColor="#C2410C"
-          value={errors.amount ? formatAmount(errors.amount) : String(errors.count)}
-          stats={[
-            { label: errors.count === 1 ? 'Error' : 'Errors', value: String(errors.count) },
-            { label: 'Transfers', value: String(transferSummary.count) },
-            { label: lotSummary.lots === 1 ? 'Lot' : 'Lots', value: String(lotSummary.lots) },
-          ]}
-        />
-      }
-      title="Triage"
-      meta={`${errors.count + transferSummary.count} open`}
-    >
+    <ChromePage title="Triage">
       <ChromeListRow
         title="Lots"
         meta={
@@ -757,8 +743,8 @@ export default function TriageDashboardPanel({
         title="Stores"
         meta={
           errors.stores
-            ? `${errors.stores} ${errors.stores === 1 ? 'store' : 'stores'} with errors · ${storeMonth.label}`
-            : `Every store · ${storeMonth.label}`
+            ? `${errors.stores} ${errors.stores === 1 ? 'store' : 'stores'} with errors · ${storePeriod.label}`
+            : `Every store · ${storePeriod.label}`
         }
         value={String(errors.stores || 0)}
         icon="storefront"
@@ -821,16 +807,14 @@ export default function TriageDashboardPanel({
         <TriageStoresPanel
           rows={errors.rows}
           query={listQuery}
-          month={storeMonth}
-          onMonthChange={setStoreMonth}
+          month={storePeriod}
+          onMonthChange={setStorePeriod}
           selectedStore={selectedStore}
-          detailsOpen={storeDetails}
-          onOpenStore={(name) => {
-            setSelectedStore(name);
-            setStoreDetails(false);
-          }}
-          onOpenDetails={() => setStoreDetails(true)}
+          storeTab={storeInsightTab}
+          onStoreTabChange={onStoreInsightTabChange}
+          onOpenStore={(name) => setSelectedStore(name)}
           onOpenPo={setOpenRow}
+          session={session}
         />
       ) : page === 'shipments' ? (
         <TransfersPage summary={transferSummary} />
@@ -894,6 +878,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 22,
     paddingTop: 18,
     paddingBottom: 40,
+  },
+  breakPadMobile: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 28,
   },
   breakKicker: {
     fontFamily,

@@ -1,6 +1,7 @@
 import {
   Component,
   createElement,
+  Fragment,
   lazy,
   memo,
   Suspense,
@@ -117,6 +118,7 @@ import { capturePurchasePriceCatalog } from './lib/priceCheckSettings';
 import { useTxnCashBreakdowns } from './lib/txnCashBreakdowns';
 import { flushNow as flushActionLog, setActionLogActor, setActionLogContext } from './lib/actionLog';
 import { DISPLAY_CURRENCIES, DisplayCurrencyProvider, useDisplayCurrency } from './lib/displayCurrency';
+import { AppDateProvider, AppDateRouteReset, useAppDate } from './lib/appDate';
 import { SPOT_METALS } from './lib/spotPrices';
 import HomeDatePicker from './components/HomeDatePicker';
 import LoginScreen from './components/LoginScreen';
@@ -5541,9 +5543,10 @@ function HomeScreen({
   const allowHomeFilters = canFilter('home');
   const dateRestricted = isRestrictedHomeEmployee(session?.profile);
   const assignedStore = allocatedStoreName(session?.profile);
-  const [dateMode, setDateMode] = useState('day');
-  const [startDate, setStartDate] = useState(() => parseDateParam(new Date()));
-  const [endDate, setEndDate] = useState(() => parseDateParam(new Date()));
+  const appDate = useAppDate();
+  const dateMode = appDate.mode;
+  const startDate = parseDateParam(appDate.startDate);
+  const endDate = parseDateParam(appDate.endDate);
   const [query, setQuery] = useState('');
   const [heroFocus, setHeroFocus] = useState('all');
   const [heroFocusLoading, setHeroFocusLoading] = useState(false);
@@ -5663,13 +5666,6 @@ function HomeScreen({
     });
   }, [storeRows]);
 
-  useEffect(() => {
-    if (!dateRestricted) return;
-    const day = parseDateParam(new Date());
-    setDateMode('day');
-    setStartDate(day);
-    setEndDate(day);
-  }, [dateRestricted]);
 
   useEffect(() => {
     emailFetchedAt.current = 0;
@@ -5797,11 +5793,7 @@ function HomeScreen({
     [],
   );
 
-  const handleHomeDateChange = ({ mode, start, end }) => {
-    setDateMode(mode);
-    setStartDate(parseDateParam(start));
-    setEndDate(parseDateParam(end));
-  };
+  const handleHomeDateChange = appDate.applyPicker;
 
   const selectToday = () => {
     if (dateRestricted) return;
@@ -6553,10 +6545,11 @@ function EmailCaptureScreen({
   onFocusConsumed,
   storeFilter = '',
 }) {
+  const appDate = useAppDate();
   const initialRange = useMemo(() => defaultDateRange(7), []);
-  const [dateMode, setDateMode] = useState('day'); // 'day' | 'range'
-  const [startDate, setStartDate] = useState(() => parseDateParam(new Date()));
-  const [endDate, setEndDate] = useState(() => parseDateParam(new Date()));
+  const dateMode = appDate.mode;
+  const startDate = parseDateParam(appDate.startDate);
+  const endDate = parseDateParam(appDate.endDate);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -6576,11 +6569,13 @@ function EmailCaptureScreen({
     const nextStart = parseDateParam(focus.startDate || new Date());
     const nextEnd = parseDateParam(focus.endDate || focus.startDate || new Date());
     pendingStoreRef.current = focus.storeName || null;
-    setDateMode(formatDateParam(nextStart) === formatDateParam(nextEnd) ? 'day' : 'range');
-    setStartDate(nextStart);
-    setEndDate(nextEnd);
+    appDate.applyPicker({
+      mode: formatDateParam(nextStart) === formatDateParam(nextEnd) ? 'day' : 'range',
+      start: nextStart,
+      end: nextEnd,
+    });
     onFocusConsumed?.();
-  }, [focus, onFocusConsumed]);
+  }, [appDate, focus, onFocusConsumed]);
 
   const load = useCallback(async () => {
     if (!session?.token) {
@@ -6665,35 +6660,30 @@ function EmailCaptureScreen({
 
   const selectToday = () => {
     const day = parseDateParam(new Date());
-    setDateMode('day');
-    setStartDate(day);
-    setEndDate(day);
+    appDate.applyPicker({ mode: 'day', start: day, end: day });
   };
 
   const selectRange = () => {
-    setDateMode('range');
     if (formatDateParam(startDate) === formatDateParam(endDate)) {
-      setStartDate(initialRange.start);
-      setEndDate(initialRange.end);
+      appDate.applyPicker({ mode: 'range', start: initialRange.start, end: initialRange.end });
+      return;
     }
+    appDate.applyPicker({ mode: 'range', start: startDate, end: endDate });
   };
 
   const handleDayChange = (date) => {
     const next = parseDateParam(date);
-    setStartDate(next);
-    setEndDate(next);
+    appDate.applyPicker({ mode: 'day', start: next, end: next });
   };
 
   const handleStartChange = (date) => {
     const next = parseDateParam(date);
-    setStartDate(next);
-    if (next > endDate) setEndDate(next);
+    appDate.applyPicker({ mode: 'range', start: next, end: next > endDate ? next : endDate });
   };
 
   const handleEndChange = (date) => {
     const next = parseDateParam(date);
-    setEndDate(next);
-    if (next < startDate) setStartDate(next);
+    appDate.applyPicker({ mode: 'range', start: next < startDate ? next : startDate, end: next });
   };
 
   if (!session?.token) {
@@ -6883,10 +6873,11 @@ function TransactionsScreen({ session, onRequireLogin, storeFilter }) {
   const isMobile = useIsMobile();
   const { canFilter } = useAppAccess();
   const allowFilters = canFilter('transactions');
+  const appDate = useAppDate();
   const initialRange = useMemo(() => defaultDateRange(7), []);
-  const [dateMode, setDateMode] = useState('day'); // 'day' | 'range'
-  const [startDate, setStartDate] = useState(() => parseDateParam(new Date()));
-  const [endDate, setEndDate] = useState(() => parseDateParam(new Date()));
+  const dateMode = appDate.mode;
+  const startDate = parseDateParam(appDate.startDate);
+  const endDate = parseDateParam(appDate.endDate);
   const [query, setQuery] = useState('');
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -7212,35 +7203,30 @@ function TransactionsScreen({ session, onRequireLogin, storeFilter }) {
 
   const selectToday = () => {
     const day = parseDateParam(new Date());
-    setDateMode('day');
-    setStartDate(day);
-    setEndDate(day);
+    appDate.applyPicker({ mode: 'day', start: day, end: day });
   };
 
   const selectRange = () => {
-    setDateMode('range');
     if (formatDateParam(startDate) === formatDateParam(endDate)) {
-      setStartDate(initialRange.start);
-      setEndDate(initialRange.end);
+      appDate.applyPicker({ mode: 'range', start: initialRange.start, end: initialRange.end });
+      return;
     }
+    appDate.applyPicker({ mode: 'range', start: startDate, end: endDate });
   };
 
   const handleDayChange = (date) => {
     const next = parseDateParam(date);
-    setStartDate(next);
-    setEndDate(next);
+    appDate.applyPicker({ mode: 'day', start: next, end: next });
   };
 
   const handleStartChange = (date) => {
     const next = parseDateParam(date);
-    setStartDate(next);
-    if (next > endDate) setEndDate(next);
+    appDate.applyPicker({ mode: 'range', start: next, end: next > endDate ? next : endDate });
   };
 
   const handleEndChange = (date) => {
     const next = parseDateParam(date);
-    setEndDate(next);
-    if (next < startDate) setStartDate(next);
+    appDate.applyPicker({ mode: 'range', start: next < startDate ? next : startDate, end: next });
   };
 
   if (!session?.token) {
@@ -7703,6 +7689,48 @@ function TopTradeButton({ kind, label, active, onPress }) {
   );
 }
 
+function TopDateToggle() {
+  const { mode, startDate, endDate, label, applyPicker } = useAppDate();
+  const fieldRef = useRef(null);
+  const openRef = useRef(null);
+  const [open, setOpen] = useState(false);
+
+  return (
+    <View ref={fieldRef} collapsable={false} style={styles.topSpotWrap}>
+      <Pressable
+        onPress={() => {
+          if (open) openRef.current?.({ close: true });
+          else openRef.current?.();
+        }}
+        style={[styles.topSpot, styles.topDateField, mode === 'range' && styles.topDateFieldRange]}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        accessibilityLabel={`Date ${label}`}
+      >
+        <Ionicons name="calendar-outline" size={14} color={MOBILE.secondary} />
+        <Text style={styles.topSpotPrice} numberOfLines={1}>
+          {label}
+        </Text>
+        <View style={styles.topSpotChevrons}>
+          <Ionicons name="chevron-up" size={9} color="#8e8e93" />
+          <Ionicons name="chevron-down" size={9} color="#8e8e93" style={styles.topSpotChevronDown} />
+        </View>
+      </Pressable>
+      <HomeDatePicker
+        hideField
+        startDate={startDate}
+        endDate={endDate}
+        dateMode={mode}
+        onChange={applyPicker}
+        maximumDate={new Date()}
+        openRef={openRef}
+        anchorRef={fieldRef}
+        onOpenChange={setOpen}
+      />
+    </View>
+  );
+}
+
 function TopNavSearch({ value, onChangeText, onFocus, onSubmit, onClear }) {
   return (
     <View style={styles.topSearchField}>
@@ -7930,7 +7958,18 @@ function TopNavBar({
   onSearchClear,
   storeName = '',
   documentRef = '',
+  crumbs,
 }) {
+  const trail =
+    Array.isArray(crumbs) && crumbs.length
+      ? crumbs.filter((crumb) => crumb?.label)
+      : storeName
+        ? [
+            { label: storeName, onPress: documentRef && onSelectStore ? onSelectStore : undefined },
+            documentRef ? { label: documentRef } : null,
+          ].filter(Boolean)
+        : [];
+
   return (
     <BlurView
       intensity={56}
@@ -7949,41 +7988,32 @@ function TopNavBar({
         >
           <HomeGlyph size={22} />
         </Pressable>
-        {storeName ? (
-          <>
+        {trail.map((crumb, index) => (
+          <Fragment key={`${crumb.label}-${index}`}>
             <Text style={styles.topBarCrumbSep} accessible={false}>
               /
             </Text>
-            {documentRef && onSelectStore ? (
+            {crumb.onPress ? (
               <Pressable
-                onPress={onSelectStore}
+                onPress={crumb.onPress}
                 accessibilityRole="button"
-                accessibilityLabel={storeName}
+                accessibilityLabel={crumb.label}
                 style={styles.topBarCrumbPress}
               >
                 <Text style={styles.topBarPlace} numberOfLines={1}>
-                  {storeName}
+                  {crumb.label}
                 </Text>
               </Pressable>
             ) : (
               <Text style={styles.topBarPlace} numberOfLines={1}>
-                {storeName}
+                {crumb.label}
               </Text>
             )}
-            {documentRef ? (
-              <>
-                <Text style={styles.topBarCrumbSep} accessible={false}>
-                  /
-                </Text>
-                <Text style={styles.topBarPlace} numberOfLines={1}>
-                  {documentRef}
-                </Text>
-              </>
-            ) : null}
-          </>
-        ) : null}
+          </Fragment>
+        ))}
       </View>
       <View style={styles.topBarRight}>
+        <TopDateToggle />
         <TopNavSearch
           value={searchValue}
           onChangeText={onSearchChange}
@@ -8313,6 +8343,7 @@ export default function App() {
   const [triageBatch, setTriageBatch] = useState(null);
   const [triageNav, setTriageNav] = useState(null);
   const [triageMobileHeader, setTriageMobileHeader] = useState(null);
+  const [triageCrumbs, setTriageCrumbs] = useState([]);
   const [settingsPanel, setSettingsPanel] = useState(null);
   const [pinnedKeys, setPinnedKeys] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -8841,12 +8872,14 @@ export default function App() {
 
   const openTool = (tool) => {
     if (!hasApp(tool?.key)) return;
+    expandMobileTabBar();
     setActiveTool(tool);
     setSettingsPanel(null);
   };
 
   const openPinnedTool = (tool) => {
     if (!hasApp(tool?.key)) return;
+    expandMobileTabBar();
     setActiveTab('tools');
     setActiveTool(tool);
     setSettingsPanel(null);
@@ -8988,7 +9021,11 @@ export default function App() {
     if (isMobile) {
       return null;
     }
-    if (activeTool.key === 'employees' || activeTool.key === 'customers') {
+    if (
+      activeTool.key === 'employees' ||
+      activeTool.key === 'customers' ||
+      activeTool.key === 'triage'
+    ) {
       return null;
     }
 
@@ -9309,6 +9346,7 @@ export default function App() {
                 }}
                 onNavTabs={setTriageNav}
                 onMobileHeader={setTriageMobileHeader}
+                onCrumbsChange={setTriageCrumbs}
               />
             ) : activeTool.key === 'messages' ? (
               <View style={styles.messagesHost}>
@@ -9523,12 +9561,16 @@ export default function App() {
     );
   }
 
+  const datePageKey = activeTab === 'tools' && activeTool?.key ? `tools:${activeTool.key}` : activeTab;
+
   if (isMobile) {
     const mobileTabs = MOBILE_TABS.filter((tab) => tab.key !== 'messages' || hasApp('messages'));
     const groupedShell = groupedMobileTab || showingSettings;
     return (
       <AppAccessContext.Provider value={appAccessValue}>
       <DisplayCurrencyProvider enabled={Boolean(session?.token)}>
+      <AppDateProvider>
+      <AppDateRouteReset pageKey={datePageKey} />
       <PhoneCallProvider session={session} storeFilter={scopedStore || undefined} enabled={hasApp('phone')}>
         <View
           style={[
@@ -9624,6 +9666,7 @@ export default function App() {
           />
         </View>
       </PhoneCallProvider>
+      </AppDateProvider>
       </DisplayCurrencyProvider>
       </AppAccessContext.Provider>
     );
@@ -9632,6 +9675,8 @@ export default function App() {
   return (
     <AppAccessContext.Provider value={appAccessValue}>
     <DisplayCurrencyProvider enabled={Boolean(session?.token)}>
+    <AppDateProvider>
+    <AppDateRouteReset pageKey={datePageKey} />
     <PhoneCallProvider session={session} storeFilter={scopedStore || undefined} enabled={hasApp('phone')}>
     <View nativeID="cgold-app-shell" style={styles.container}>
       <StatusBar style="auto" />
@@ -9712,6 +9757,7 @@ export default function App() {
         sellActive={activeTab === 'sell'}
         storeName={activeTab === 'home' ? homeStoreName : ''}
         documentRef={activeTab === 'home' ? homeDocRef : ''}
+        crumbs={activeTab === 'tools' && activeTool?.key === 'triage' ? triageCrumbs : undefined}
         onSelectHome={() => selectTab('home')}
         onSelectStore={homeDocRef ? () => homeDocumentCloseRef.current?.() : undefined}
         onSelectBuy={() => selectTab('buy')}
@@ -9758,6 +9804,7 @@ export default function App() {
       />
     </View>
     </PhoneCallProvider>
+    </AppDateProvider>
     </DisplayCurrencyProvider>
     </AppAccessContext.Provider>
   );
@@ -9890,6 +9937,15 @@ const styles = StyleSheet.create({
   topSpotWrapCompact: {
     paddingTop: 8,
     alignSelf: 'stretch',
+  },
+  topDateField: {
+    minWidth: 124,
+    maxWidth: 248,
+    gap: 8,
+  },
+  topDateFieldRange: {
+    minWidth: 168,
+    maxWidth: 280,
   },
   topSpot: {
     flexDirection: 'row',

@@ -16,14 +16,13 @@ import { rankCustomers, storeNamesFromRows } from '../lib/customerRank';
 import { fetchTransferStores, uniquePreferredStores } from '../lib/locations';
 import { CANVAS, DESKTOP_TOP_BAR_HEIGHT, useIsMobile } from '../lib/mobileUi';
 import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
+import { useAppDate } from '../lib/appDate';
 import { useAppAccess } from '../lib/permissions';
 import {
   fetchTransactionsAcrossPos,
   formatAmount,
-  formatDateParam,
   formatTransactionDate,
   formatTransactionTime,
-  parseDateParam,
   posSourcesFromSession,
 } from '../lib/transactions';
 import { customerContact, enrichClientActivity, loadCustomerProfile, searchClients } from '../lib/triageLookups';
@@ -54,14 +53,6 @@ const LIST_MODES = [
   { key: 'count', label: 'By visits' },
   { key: 'volume', label: 'By volume' },
 ];
-
-function currentMonthRange() {
-  const now = parseDateParam(new Date());
-  return {
-    startDate: formatDateParam(new Date(now.getFullYear(), now.getMonth(), 1)),
-    endDate: formatDateParam(new Date(now.getFullYear(), now.getMonth() + 1, 0)),
-  };
-}
 
 async function mapLimit(items, limit, mapper) {
   const out = new Array(items.length);
@@ -358,7 +349,7 @@ export default function CustomersScreen({ session, focusCustomer, onFocusConsume
   const canPhone = hasApp('phone');
   const allowFilters = canFilter('customers');
   const assignedStore = String(session?.profile?.locationName || '').trim();
-  const initialMonth = useMemo(() => currentMonthRange(), []);
+  const appDate = useAppDate();
   const [mode, setMode] = useState('search');
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
@@ -372,9 +363,9 @@ export default function CustomersScreen({ session, focusCustomer, onFocusConsume
   const [storeName, setStoreName] = useState(() =>
     allowFilters ? '' : assignedStore,
   );
-  const [startDate, setStartDate] = useState(initialMonth.startDate);
-  const [endDate, setEndDate] = useState(initialMonth.endDate);
-  const [dateMode, setDateMode] = useState('range');
+  const startDate = appDate.startDate;
+  const endDate = appDate.endDate;
+  const dateMode = appDate.mode;
   const [txRows, setTxRows] = useState([]);
   const [txBusy, setTxBusy] = useState(false);
   const [txError, setTxError] = useState('');
@@ -668,9 +659,7 @@ export default function CustomersScreen({ session, focusCustomer, onFocusConsume
               endDate={endDate}
               dateMode={dateMode}
               onChange={({ mode: nextMode, start, end }) => {
-                setDateMode(nextMode === 'day' ? 'day' : 'range');
-                setStartDate(formatDateParam(start));
-                setEndDate(formatDateParam(end || start));
+                appDate.applyPicker({ mode: nextMode, start, end: end || start });
               }}
               maximumDate={new Date()}
               compact={!isMobile}

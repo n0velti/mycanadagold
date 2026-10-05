@@ -117,7 +117,7 @@ function errorDetailSummary(review) {
 
 function errorPlace(row) {
   const type = String(row?.review?.errorType || '').trim();
-  if (type) return type;
+  if (type && !/^notes?\s+only$/i.test(type)) return type;
   const corrections = Array.isArray(row?.review?.corrections) ? row.review.corrections : [];
   if (corrections.length) {
     const labels = corrections.map((item) => String(item?.label || '').toLowerCase());
@@ -128,7 +128,6 @@ function errorPlace(row) {
     if (labels.some((label) => /name|item/.test(label))) return 'Wrong item';
     return corrections[0].label || 'Unspecified';
   }
-  if (String(row?.review?.note || '').trim()) return 'Note only';
   return 'Unspecified';
 }
 
