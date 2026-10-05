@@ -229,9 +229,9 @@ export default function ProfileLocationPicker({
                           >
                             {store.name}
                           </Text>
-                          {store.city ? (
+                          {store.city || String(store.name || '').toLowerCase() === 'in transit' ? (
                             <Text style={styles.optionMeta} numberOfLines={1}>
-                              {store.city}
+                              {store.city || 'Between stores'}
                             </Text>
                           ) : null}
                         </View>

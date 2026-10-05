@@ -58,6 +58,7 @@ import {
   detectTransferMode,
   fetchTransferInventory,
   formatQty,
+  isInTransitStore,
   isWorkshopStore,
   moveQtyKey,
 } from '../lib/transferPlan';
@@ -162,11 +163,14 @@ function SectionHead({ title, meta }) {
   );
 }
 
-function StoreName({ name, isWorkshop, style, activeStyle, active }) {
+function StoreName({ name, isWorkshop, isInTransit, style, activeStyle, active }) {
   return (
     <View style={styles.nameWithStar}>
       {isWorkshop ? (
         <Ionicons name="star" size={13} color="#C9A227" style={styles.starIcon} />
+      ) : null}
+      {isInTransit ? (
+        <Ionicons name="swap-horizontal" size={14} color="#8e8e93" style={styles.starIcon} />
       ) : null}
       <Text
         style={[style, active && activeStyle, isWorkshop && styles.workshopName]}
@@ -189,13 +193,21 @@ function StoreDropdown({
 }) {
   const selected = stores.find((store) => store.id === value) || null;
   const groups = useMemo(() => {
+    const transit = [];
     const bySystem = new Map();
     for (const store of stores) {
+      if (isInTransitStore(store)) {
+        transit.push(store);
+        continue;
+      }
       const key = store.systemLabel || store.systemKey || 'Stores';
       if (!bySystem.has(key)) bySystem.set(key, []);
       bySystem.get(key).push(store);
     }
-    return Array.from(bySystem.entries());
+    const next = [];
+    if (transit.length) next.push(['In Transit', transit]);
+    next.push(...bySystem.entries());
+    return next;
   }, [stores]);
 
   return (
@@ -210,6 +222,7 @@ function StoreDropdown({
             <StoreName
               name={selected.name}
               isWorkshop={isWorkshopStore(selected)}
+              isInTransit={isInTransitStore(selected)}
               style={styles.dropdownValue}
             />
           ) : (
@@ -236,6 +249,7 @@ function StoreDropdown({
                 {groupStores.map((store) => {
                   const active = store.id === value;
                   const workshop = isWorkshopStore(store);
+                  const inTransit = isInTransitStore(store);
                   return (
                     <Pressable
                       key={store.id}
@@ -246,14 +260,16 @@ function StoreDropdown({
                         <StoreName
                           name={store.name}
                           isWorkshop={workshop}
+                          isInTransit={inTransit}
                           style={styles.optionText}
                           activeStyle={styles.optionTextActive}
                           active={active}
                         />
-                        {store.city ? (
+                        {store.city || (inTransit && store.systemLabel) ? (
                           <Text style={styles.optionMeta} numberOfLines={1}>
-                            {store.city}
-                            {store.state ? `, ${store.state}` : ''}
+                            {store.city
+                              ? `${store.city}${store.state ? `, ${store.state}` : ''}`
+                              : store.systemLabel}
                           </Text>
                         ) : null}
                       </View>
@@ -2846,11 +2862,24 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
     >
-      {pathLabels.length >= 2 ? (
-        <Text style={[styles.pathLine, isMobile && styles.pathLineMobile]} numberOfLines={2}>
-          {pathLabels.join(' → ')}
-        </Text>
-      ) : null}
+      <PageHero
+        label="Create"
+        value={pathLabels.length >= 2 ? pathLabels.join(' → ') : 'New transfer'}
+        hint="Build a one-way route. In Transit is a stop for metal that has left a store but is not received yet."
+        stats={[
+          { label: 'Stops', value: selectedStores.length },
+          { label: 'Mode', value: mode === 'workshop' ? 'Workshop' : 'Quebec' },
+        ]}
+      />
+
+      <SectionHead
+        title="Route"
+        meta={
+          loading && stores.length === 0
+            ? 'Loading locations…'
+            : `${stores.length} location${stores.length === 1 ? '' : 's'}`
+        }
+      />
 
       {loading && stores.length === 0 ? (
         <View style={[styles.loadingRow, isMobile && styles.insetTextMobile]}>
@@ -2988,6 +3017,9 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
                     <View style={styles.stopHeader}>
                       {sheet.isWorkshop ? (
                         <Ionicons name="star" size={14} color="#C9A227" />
+                      ) : null}
+                      {sheet.isInTransit ? (
+                        <Ionicons name="swap-horizontal" size={14} color="#8e8e93" />
                       ) : null}
                       <Text style={styles.stopTitle}>{sheet.storeName}</Text>
                     </View>

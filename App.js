@@ -3632,6 +3632,7 @@ const STORE_ACCENTS = {
   'Canadian Coin & Currency': '#854D0E',
   Portland: '#334155',
   Seattle: '#0F172A',
+  'In Transit': '#64748B',
 };
 
 const STORE_ACCENT_FALLBACKS = [
@@ -3646,6 +3647,7 @@ const STORE_ACCENT_FALLBACKS = [
 ];
 
 function storeAccent(name) {
+  if (String(name || '').trim().toLowerCase() === 'in transit') return '#64748B';
   if (STORE_ACCENTS[name]) return STORE_ACCENTS[name];
   const value = String(name || '');
   let hash = 0;
@@ -7611,6 +7613,7 @@ function locationShortLabel(name) {
   if (!cleaned) return '';
   const known = {
     montreal: 'MTL',
+    'in transit': 'TRN',
     toronto: 'TOR',
     ottawa: 'OTT',
     quebec: 'QC',
