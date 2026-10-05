@@ -103,11 +103,64 @@ function HomeLikeTableHeader({ storeLabel, countLabel, valueLabel }) {
   );
 }
 
+function typeEntries(types) {
+  return (types || [])
+    .map((entry) =>
+      typeof entry === 'string'
+        ? { label: entry, count: 0 }
+        : { label: String(entry?.label || '').trim(), count: Number(entry?.count) || 0 },
+    )
+    .filter((entry) => entry.label);
+}
+
+function TypeTipLabel({ label, types, faded, mobile, onOpenChange }) {
+  const entries = typeEntries(types);
+  const [open, setOpen] = useState(false);
+  const show = (next) => {
+    setOpen(next);
+    onOpenChange?.(next);
+  };
+  const text = (
+    <Text
+      style={[styles.homeCount, mobile && styles.homeCountMobile, faded && styles.homeMoneyEmpty]}
+      numberOfLines={mobile ? 2 : 1}
+    >
+      {label}
+    </Text>
+  );
+  if (entries.length < 2) return text;
+
+  return (
+    <Pressable
+      onHoverIn={() => show(true)}
+      onHoverOut={() => show(false)}
+      onPress={() => show(!open)}
+      style={styles.typeTipHit}
+      accessibilityRole="button"
+      accessibilityLabel={entries.map((entry) => entry.label).join(', ')}
+      accessibilityState={{ expanded: open }}
+    >
+      {text}
+      {open ? (
+        <View style={styles.typeTipCard} pointerEvents="none">
+          {entries.map((entry) => (
+            <View key={entry.label} style={styles.typeTipRow}>
+              <Text style={styles.typeTipName}>{entry.label}</Text>
+              {entry.count ? <Text style={styles.typeTipCount}>{entry.count}</Text> : null}
+            </View>
+          ))}
+        </View>
+      ) : null}
+    </Pressable>
+  );
+}
+
 function HomeLikeRow({
   title,
   meta,
   count,
   countLabel,
+  countTypes,
   amount,
   storeName,
   last,
@@ -116,8 +169,12 @@ function HomeLikeRow({
 }) {
   const isMobile = useIsMobile();
   const faded = !count;
+  const [tipOpen, setTipOpen] = useState(false);
   const rowBody = (
-    <View style={[styles.homeRowBody, isMobile && styles.homeRowBodyMobile]} pointerEvents="none">
+    <View
+      style={[styles.homeRowBody, isMobile && styles.homeRowBodyMobile]}
+      pointerEvents={onPress ? 'none' : 'auto'}
+    >
       <View style={[styles.homeColStore, isMobile && styles.homeColStoreMobile]}>
         <Text style={[styles.homeName, isMobile && styles.homeNameMobile]} numberOfLines={1}>
           {title}
@@ -129,12 +186,13 @@ function HomeLikeRow({
         ) : null}
       </View>
       <View style={[styles.homeColCount, isMobile && styles.homeColCountMobile]}>
-        <Text
-          style={[styles.homeCount, isMobile && styles.homeCountMobile, faded && styles.homeMoneyEmpty]}
-          numberOfLines={isMobile ? 2 : 1}
-        >
-          {countLabel != null ? countLabel : count || '—'}
-        </Text>
+        <TypeTipLabel
+          label={countLabel != null ? countLabel : count || '—'}
+          types={countTypes}
+          faded={faded}
+          mobile={isMobile}
+          onOpenChange={setTipOpen}
+        />
       </View>
       <View style={[styles.homeColMoney, isMobile && styles.homeColMoneyMobile]}>
         <Text
@@ -154,7 +212,7 @@ function HomeLikeRow({
 
   if (!onPress) {
     return (
-      <View style={[styles.homeRow, isMobile && styles.homeRowMobile]}>
+      <View style={[styles.homeRow, isMobile && styles.homeRowMobile, tipOpen && styles.homeRowTipOpen]}>
         {mark}
         {rowBody}
         <HomeLikeRule last={last} />
@@ -550,6 +608,7 @@ function StorePage({ store, query, month, tab, onTabChange, onOpen, session }) {
             meta={`${row.count} ${row.count === 1 ? 'purchase' : 'purchases'}`}
             count={row.count}
             countLabel={row.types?.length > 1 ? `${row.type} +${row.types.length - 1}` : row.type}
+            countTypes={row.types}
             amount={row.amount}
             last={index === employeeRows.length - 1}
           />
@@ -683,6 +742,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#f5f5f5',
     ...Platform.select({ web: { cursor: 'default' }, default: {} }),
   },
+  homeRowTipOpen: {
+    zIndex: 12,
+  },
   homeRowHovered: {
     position: 'absolute',
     top: 0,
@@ -799,6 +861,51 @@ const styles = StyleSheet.create({
     maxWidth: 104,
     flexShrink: 1,
     flexGrow: 0,
+  },
+  typeTipHit: {
+    position: 'relative',
+    alignItems: 'flex-end',
+    minWidth: 0,
+    zIndex: 8,
+    ...Platform.select({ web: { cursor: 'default' }, default: {} }),
+  },
+  typeTipCard: {
+    position: 'absolute',
+    top: '100%',
+    right: 0,
+    marginTop: 6,
+    minWidth: 168,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(42,38,30,0.12)',
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+    gap: 6,
+    zIndex: 20,
+  },
+  typeTipRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: 16,
+  },
+  typeTipName: {
+    fontFamily,
+    fontSize: 13,
+    color: T.text,
+    flexShrink: 1,
+  },
+  typeTipCount: {
+    fontFamily,
+    fontSize: 13,
+    color: T.secondary,
+    fontVariant: ['tabular-nums'],
   },
   homeColMoney: {
     minWidth: 128,
