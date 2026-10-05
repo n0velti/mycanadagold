@@ -10,6 +10,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   useWindowDimensions,
   View,
 } from 'react-native';
@@ -605,7 +606,9 @@ function ReviewCard({ review, showCount = false, session, onOpenCustomer }) {
       ) : null}
       {review.ownerReply ? (
         <View style={styles.ownerReply}>
-          <Text style={styles.ownerReplyLabel}>Owner reply</Text>
+          <Text style={styles.ownerReplyLabel}>
+            Owner reply{review.ownerReplyTime ? ` · ${review.ownerReplyTime}` : ''}
+          </Text>
           <Text style={styles.ownerReplyText}>{review.ownerReply}</Text>
         </View>
       ) : null}
@@ -625,6 +628,53 @@ function ReviewCard({ review, showCount = false, session, onOpenCustomer }) {
             Not counted · {review.ineligibleReason || 'Ineligible'}
           </Text>
         </View>
+      ) : null}
+    </View>
+  );
+}
+
+function reviewSearchHay(review) {
+  return [
+    review?.text,
+    review?.author,
+    review?.ownerReply,
+    review?.ineligibleReason,
+    ...(review?.namedEmployees || []),
+    ...(review?.attributedEmployees || []),
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
+function reviewMatchesQuery(review, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return true;
+  return reviewSearchHay(review).includes(q);
+}
+
+function isUnallocatedReview(review) {
+  return !review?.attributedEmployees?.length && !review?.namedEmployees?.length;
+}
+
+function ReviewSearchBar({ value, onChange, placeholder }) {
+  return (
+    <View style={styles.searchBar}>
+      <Ionicons name="search-outline" size={15} color="#8a8a8a" />
+      <TextInput
+        style={styles.searchInput}
+        value={value}
+        onChangeText={onChange}
+        placeholder={placeholder}
+        placeholderTextColor="#999"
+        autoCapitalize="none"
+        autoCorrect={false}
+        clearButtonMode="while-editing"
+      />
+      {value ? (
+        <Pressable onPress={() => onChange('')} hitSlop={8} accessibilityLabel="Clear search">
+          <Ionicons name="close-circle" size={15} color="#b0b0b0" />
+        </Pressable>
       ) : null}
     </View>
   );
@@ -657,6 +707,11 @@ function EmployeeBonusDrawer({ visible, employee, store, onClose, session, onOpe
   const { mounted, slide, backdrop } = useRightDrawerAnimation(visible, panelWidth);
   const heldEmployee = useHeldValue(employee);
   const heldStore = useHeldValue(store);
+  const [query, setQuery] = useState('');
+
+  useEffect(() => {
+    if (visible) setQuery('');
+  }, [visible, employee?.employeeName]);
 
   if (!mounted || !heldEmployee) return null;
 
@@ -665,6 +720,8 @@ function EmployeeBonusDrawer({ visible, employee, store, onClose, session, onOpe
   const named = reviewsNamedForEmployee(heldStore?.reviews, heldEmployee.employeeName);
   const notCounted = named.filter((review) => !countedIds.has(review.id));
   const splitCount = counted.filter((review) => Number(review.share) < 0.999).length;
+  const visibleCounted = counted.filter((review) => reviewMatchesQuery(review, query));
+  const visibleNotCounted = notCounted.filter((review) => reviewMatchesQuery(review, query));
 
   return (
     <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose}>
@@ -740,14 +797,20 @@ function EmployeeBonusDrawer({ visible, employee, store, onClose, session, onOpe
               </Text>
             </View>
 
+            <ReviewSearchBar
+              value={query}
+              onChange={setQuery}
+              placeholder={`Search ${heldEmployee.employeeName}'s reviews`}
+            />
+
             <Text style={styles.drawerSectionTitle}>Counted toward bonus</Text>
             <Text style={styles.drawerSectionHint}>
               Eligible 5★ reviews attributed to {heldEmployee.employeeName}
               {heldStore?.storeName ? ` at ${heldStore.storeName}` : ''}.
             </Text>
-            {counted.length ? (
+            {visibleCounted.length ? (
               <View style={styles.reviewList}>
-                {counted.map((review) => (
+                {visibleCounted.map((review) => (
                   <ReviewCard
                     key={review.id}
                     review={review}
@@ -759,7 +822,11 @@ function EmployeeBonusDrawer({ visible, employee, store, onClose, session, onOpe
               </View>
             ) : (
               <View style={styles.emptyBlock}>
-                <Text style={styles.emptyText}>No reviews were counted for this person.</Text>
+                <Text style={styles.emptyText}>
+                  {query
+                    ? 'No counted reviews match that search.'
+                    : 'No reviews were counted for this person.'}
+                </Text>
               </View>
             )}
 
@@ -771,19 +838,118 @@ function EmployeeBonusDrawer({ visible, employee, store, onClose, session, onOpe
                 <Text style={styles.drawerSectionHint}>
                   These reviews name them but did not add to the payout.
                 </Text>
-                <View style={styles.reviewList}>
-                  {notCounted.map((review) => (
-                    <ReviewCard
-                      key={review.id}
-                      review={review}
-                      showCount
-                      session={session}
-                      onOpenCustomer={onOpenCustomer}
-                    />
-                  ))}
-                </View>
+                {visibleNotCounted.length ? (
+                  <View style={styles.reviewList}>
+                    {visibleNotCounted.map((review) => (
+                      <ReviewCard
+                        key={review.id}
+                        review={review}
+                        showCount
+                        session={session}
+                        onOpenCustomer={onOpenCustomer}
+                      />
+                    ))}
+                  </View>
+                ) : (
+                  <View style={styles.emptyBlock}>
+                    <Text style={styles.emptyText}>No uncounted mentions match that search.</Text>
+                  </View>
+                )}
               </>
             ) : null}
+          </ScrollView>
+        </Animated.View>
+      </View>
+    </Modal>
+  );
+}
+
+function UnassignedReviewsDrawer({ visible, store, onClose, session, onOpenCustomer }) {
+  const { width: windowWidth } = useWindowDimensions();
+  const isMobile = windowWidth < MOBILE_BREAKPOINT;
+  const panelWidth = isMobile
+    ? Math.max(windowWidth, 240)
+    : Math.min(Math.max(Math.round(windowWidth * 0.46), 400), 560);
+  const { mounted, slide, backdrop } = useRightDrawerAnimation(visible, panelWidth);
+  const heldStore = useHeldValue(store);
+  const [query, setQuery] = useState('');
+
+  useEffect(() => {
+    if (visible) setQuery('');
+  }, [visible, store?.storeName]);
+
+  if (!mounted || !heldStore) return null;
+
+  const unallocated = (heldStore.reviews || []).filter(isUnallocatedReview);
+  const visibleReviews = unallocated.filter((review) => reviewMatchesQuery(review, query));
+
+  return (
+    <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose}>
+      <View style={styles.drawerRoot}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close">
+          <Animated.View style={[styles.drawerBackdrop, { opacity: backdrop }]} />
+        </Pressable>
+        <Animated.View
+          style={[
+            styles.drawerPanel,
+            isMobile && styles.drawerPanelMobile,
+            { width: panelWidth, transform: [{ translateX: slide }] },
+          ]}
+        >
+          <View
+            style={[styles.drawerTopBar, isMobile && styles.drawerTopBarMobile]}
+            {...(Platform.OS === 'web' && isMobile ? { className: 'cgold-mobile-sheet-top' } : null)}
+          >
+            <Text style={styles.drawerTitle} numberOfLines={1}>
+              No allocation
+            </Text>
+            <Pressable
+              onPress={onClose}
+              hitSlop={8}
+              style={styles.drawerClose}
+              accessibilityLabel="Close"
+            >
+              <Ionicons name="close" size={18} color="#1a1a1a" />
+            </Pressable>
+          </View>
+
+          <ScrollView
+            style={styles.drawerBody}
+            contentContainerStyle={[
+              styles.drawerBodyContent,
+              isMobile && styles.drawerBodyContentMobile,
+            ]}
+            showsVerticalScrollIndicator={false}
+          >
+            <Text style={styles.drawerSectionHint}>
+              {unallocated.length} Google review{unallocated.length === 1 ? '' : 's'} at{' '}
+              {heldStore.storeName} with no employee named or matched.
+            </Text>
+            <ReviewSearchBar
+              value={query}
+              onChange={setQuery}
+              placeholder="Search unassigned reviews"
+            />
+            {visibleReviews.length ? (
+              <View style={styles.reviewList}>
+                {visibleReviews.map((review) => (
+                  <ReviewCard
+                    key={review.id}
+                    review={review}
+                    session={session}
+                    onOpenCustomer={onOpenCustomer}
+                  />
+                ))}
+              </View>
+            ) : (
+              <View style={styles.emptyBlock}>
+                <Text style={styles.emptyText}>
+                  {query
+                    ? 'No unassigned reviews match that search.'
+                    : 'Every review in this period is allocated.'}
+                </Text>
+              </View>
+            )}
           </ScrollView>
         </Animated.View>
       </View>
@@ -816,6 +982,7 @@ export default function BonusesScreen({
     storeFilter ? canonicalBonusStoreName(storeFilter) : null,
   );
   const [selectedEmployeeName, setSelectedEmployeeName] = useState(null);
+  const [unassignedOpen, setUnassignedOpen] = useState(false);
   const requestId = useRef(0);
   const displayBoard = useMemo(
     () => (viewAllCounts ? board : restrictBonusBoardToViewer(board, session?.profile)),
@@ -842,7 +1009,7 @@ export default function BonusesScreen({
   };
 
   const load = useCallback(
-    async ({ silent = false } = {}) => {
+    async ({ silent = false, refresh = false } = {}) => {
       if (!session?.token) {
         setBoard(null);
         setError('');
@@ -878,6 +1045,7 @@ export default function BonusesScreen({
           startDate,
           endDate,
           storeFilter: storeFilter || null,
+          refresh,
           onStore: (store) => {
             if (id !== requestId.current) return;
             setBoard((current) =>
@@ -965,7 +1133,7 @@ export default function BonusesScreen({
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
-    await load({ silent: true });
+    await load({ silent: true, refresh: true });
   }, [load]);
 
   const downloadPayouts = useCallback(() => {
@@ -1202,6 +1370,21 @@ export default function BonusesScreen({
             : ''}
         </Text>
       </View>
+      {viewAllCounts ? (
+        <Pressable
+          style={styles.emailJump}
+          onPress={() => setUnassignedOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Reviews with no allocation"
+        >
+          <Ionicons name="help-circle-outline" size={16} color={ACCENT} />
+          <Text style={styles.emailJumpText}>
+            {(activeStore.reviews || []).filter(isUnallocatedReview).length} reviews with no
+            allocation
+          </Text>
+          <Ionicons name="chevron-forward" size={16} color={ACCENT} />
+        </Pressable>
+      ) : null}
       <RatingBreakdown breakdown={activeStore.ratingBreakdown} total={activeStore.reviewCount} />
       {activeStore.reviewsError && !activeStore.reviews.length ? (
         <Text style={styles.storeError}>{activeStore.reviewsError}</Text>
@@ -1241,7 +1424,7 @@ export default function BonusesScreen({
           </View>
           <View style={styles.pageControls}>
             {stillLoading ? <ActivityIndicator size="small" color="#8e8e93" /> : null}
-            <Pressable style={styles.refresh} onPress={() => load()} hitSlop={8} accessibilityLabel={`Refresh ${title.toLowerCase()}`}>
+            <Pressable style={styles.refresh} onPress={() => load({ refresh: true })} hitSlop={8} accessibilityLabel={`Refresh ${title.toLowerCase()}`}>
               <Ionicons name="refresh" size={16} color="#8e8e93" />
             </Pressable>
           </View>
@@ -1307,6 +1490,13 @@ export default function BonusesScreen({
         employee={selectedPerson?.employee}
         store={selectedPerson?.store}
         onClose={() => setSelectedEmployeeName(null)}
+        session={session}
+        onOpenCustomer={onOpenCustomer}
+      />
+      <UnassignedReviewsDrawer
+        visible={unassignedOpen}
+        store={activeStore}
+        onClose={() => setUnassignedOpen(false)}
         session={session}
         onOpenCustomer={onOpenCustomer}
       />
@@ -1946,6 +2136,26 @@ const styles = StyleSheet.create({
     color: '#6a6a6a',
     width: 24,
     textAlign: 'right',
+  },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    height: 40,
+  },
+  searchInput: {
+    flex: 1,
+    fontFamily: FONT,
+    fontSize: 15,
+    color: '#1d1d1f',
+    paddingVertical: 0,
+    ...Platform.select({
+      web: { outlineStyle: 'none' },
+      default: {},
+    }),
   },
   reviewList: {
     gap: 8,

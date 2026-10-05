@@ -3642,7 +3642,7 @@ function buildGoogleBoqSearch(query: URLSearchParams): string | null {
     null,
     null,
     null,
-    [1, 1, null, [[3], [4], [5], [6], [7]]],
+    [1, 1, null, [[1], [2], [3], [4], [5], [6], [7]]],
     null,
     null,
     token || null,
