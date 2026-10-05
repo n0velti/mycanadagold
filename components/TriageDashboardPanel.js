@@ -36,6 +36,7 @@ import {
 } from '../lib/triageLots';
 import { formatAmount } from '../lib/transactions';
 import { formatErrorAmount } from '../lib/triageDraft';
+import { currentReviewMonth } from '../lib/triageStoreErrors';
 import { CANVAS, useIsMobile } from '../lib/mobileUi';
 import {
   ChromeHero,
@@ -51,6 +52,7 @@ import {
 import { PoThumb } from './TriageTable';
 import TriageAllocationForm from './TriageAllocationForm';
 import TriageReviewDrawer from './TriageReviewDrawer';
+import TriageStoresPanel from './TriageStoresPanel';
 
 const fontFamily = FONT;
 
@@ -610,10 +612,15 @@ export default function TriageDashboardPanel({
   onBackChange,
   onOpenLot,
   onOpenTab,
+  onStoresViewChange,
+  openStoreDetailsRef,
 }) {
   const { triage, planned = [] } = useTransferWorkflow();
   const isMobile = useIsMobile();
   const [openRow, setOpenRow] = useState(null);
+  const [selectedStore, setSelectedStore] = useState('');
+  const [storeDetails, setStoreDetails] = useState(false);
+  const [storeMonth, setStoreMonth] = useState(() => currentReviewMonth());
 
   const evaluated = useMemo(() => (active ? collectAccuracyTriagePos(triage) : []), [active, triage]);
   const allRows = useMemo(() => (active ? collectAllTriagePos(triage) : []), [active, triage]);
@@ -624,7 +631,41 @@ export default function TriageDashboardPanel({
   const transferSummary = useMemo(() => (active ? summarizeTransfers(planned) : { rows: [], count: 0, open: 0, partial: 0, received: 0, workshop: 0 }), [active, planned]);
 
   const openPage = useCallback((key) => onPageChange?.(key || ''), [onPageChange]);
-  const closePage = useCallback(() => onPageChange?.(''), [onPageChange]);
+  const closePage = useCallback(() => {
+    if (page === 'stores' && storeDetails) {
+      setStoreDetails(false);
+      return;
+    }
+    if (page === 'stores' && selectedStore) {
+      setSelectedStore('');
+      return;
+    }
+    onPageChange?.('');
+  }, [onPageChange, page, selectedStore, storeDetails]);
+
+  useEffect(() => {
+    if (page !== 'stores') {
+      setSelectedStore('');
+      setStoreDetails(false);
+    }
+  }, [page]);
+
+  useEffect(() => {
+    onStoresViewChange?.({
+      selectedStore: page === 'stores' ? selectedStore : '',
+      detailsOpen: page === 'stores' && storeDetails,
+    });
+  }, [onStoresViewChange, page, selectedStore, storeDetails]);
+
+  useEffect(() => {
+    if (!openStoreDetailsRef) return undefined;
+    openStoreDetailsRef.current = () => {
+      if (selectedStore) setStoreDetails(true);
+    };
+    return () => {
+      openStoreDetailsRef.current = () => {};
+    };
+  }, [openStoreDetailsRef, selectedStore]);
 
   useEffect(() => {
     if (!active) return undefined;
@@ -634,6 +675,7 @@ export default function TriageDashboardPanel({
     }
     const titles = {
       errors: 'Errors',
+      stores: storeDetails ? selectedStore || 'Details' : selectedStore || 'Stores',
       shipments: 'Transfers',
       lots: 'Lots',
       allocation: 'Allocation',
@@ -641,7 +683,7 @@ export default function TriageDashboardPanel({
     };
     onBackChange?.(closePage, { dateLabel: titles[page] || 'Dashboard' });
     return () => onBackChange?.(null, null);
-  }, [active, closePage, onBackChange, page]);
+  }, [active, closePage, onBackChange, page, selectedStore, storeDetails]);
 
   const saveReview = useCallback(
     (poId, review) => {
@@ -712,6 +754,18 @@ export default function TriageDashboardPanel({
         onPress={() => openPage('errors')}
       />
       <ChromeListRow
+        title="Stores"
+        meta={
+          errors.stores
+            ? `${errors.stores} ${errors.stores === 1 ? 'store' : 'stores'} with errors · ${storeMonth.label}`
+            : `Every store · ${storeMonth.label}`
+        }
+        value={String(errors.stores || 0)}
+        icon="storefront"
+        iconColor="#1F7A9A"
+        onPress={() => openPage('stores')}
+      />
+      <ChromeListRow
         title="Transfers"
         meta={
           transferSummary.count
@@ -763,6 +817,21 @@ export default function TriageDashboardPanel({
     <View style={[styles.body, isMobile && styles.bodyMobile]}>
       {page === 'errors' ? (
         <ErrorsPage rows={errors.rows} query={listQuery} onOpen={setOpenRow} />
+      ) : page === 'stores' ? (
+        <TriageStoresPanel
+          rows={errors.rows}
+          query={listQuery}
+          month={storeMonth}
+          onMonthChange={setStoreMonth}
+          selectedStore={selectedStore}
+          detailsOpen={storeDetails}
+          onOpenStore={(name) => {
+            setSelectedStore(name);
+            setStoreDetails(false);
+          }}
+          onOpenDetails={() => setStoreDetails(true)}
+          onOpenPo={setOpenRow}
+        />
       ) : page === 'shipments' ? (
         <TransfersPage summary={transferSummary} />
       ) : page === 'lots' ? (
