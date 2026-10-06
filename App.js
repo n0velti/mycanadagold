@@ -766,6 +766,12 @@ function TxTableHeader({
 }
 
 const APP_GRID_MAX_WIDTH = 880;
+const APPS_GRID_MOBILE_PAD = 20;
+const APPS_GRID_MOBILE_COL_GAP = 18;
+const APPS_GRID_MOBILE_ROW_GAP = 30;
+const APPS_GRID_MOBILE_COLUMNS = 3;
+const APPS_GRID_MOBILE_CELL_MIN = 92;
+const APPS_GRID_MOBILE_CELL_MAX = 120;
 const MOBILE_BREAKPOINT = 768;
 
 function useIsMobile() {
@@ -1264,16 +1270,40 @@ function ProfileAvatar({ uri, name, size = 24, style, showClock = true, clockMar
 }
 
 function useAppGridMetrics() {
+  const { width } = useWindowDimensions();
   const { isMobile } = useHomePageLayout();
   const iconSize = isMobile ? 60 : 64;
+  if (!isMobile) {
+    return {
+      isMobile,
+      iconSize,
+      radius: Math.round(iconSize * 0.223),
+      glyph: Math.round(iconSize * 0.44),
+      cellWidth: 156,
+      rowGap: 28,
+      colGap: 18,
+    };
+  }
+
+  // Fit three columns from the viewport so gaps stay open on small phones.
+  const colGap = APPS_GRID_MOBILE_COL_GAP;
+  const available = Math.max(0, width - APPS_GRID_MOBILE_PAD * 2);
+  const rawCell = Math.floor(
+    (available - colGap * (APPS_GRID_MOBILE_COLUMNS - 1)) / APPS_GRID_MOBILE_COLUMNS,
+  );
+  const cellWidth = Math.min(
+    APPS_GRID_MOBILE_CELL_MAX,
+    Math.max(APPS_GRID_MOBILE_CELL_MIN, rawCell),
+  );
+
   return {
     isMobile,
     iconSize,
     radius: Math.round(iconSize * 0.223),
     glyph: Math.round(iconSize * 0.44),
-    cellWidth: isMobile ? 112 : 156,
-    rowGap: isMobile ? 22 : 28,
-    colGap: isMobile ? 10 : 18,
+    cellWidth,
+    rowGap: APPS_GRID_MOBILE_ROW_GAP,
+    colGap,
   };
 }
 
@@ -1392,6 +1422,7 @@ function AppsLibrary({
   onTogglePin,
 }) {
   const { isMobile, pagePad, contentMaxWidth } = useHomePageLayout();
+  const insetPad = isMobile ? APPS_GRID_MOBILE_PAD : pagePad;
   const tabBarScroll = useMobileTabBarScrollProps();
 
   const appsBody =
@@ -1433,8 +1464,8 @@ function AppsLibrary({
               styles.igHomeScrollContent,
               {
                 flexGrow: 1,
-                paddingTop: isMobile ? 24 : TOP_BAR_HEIGHT + 28,
-                paddingBottom: isMobile ? mobileTabBarReserve() + 24 : 36,
+                paddingTop: isMobile ? 32 : TOP_BAR_HEIGHT + 28,
+                paddingBottom: isMobile ? mobileTabBarReserve() + 32 : 36,
               },
             ]}
             showsVerticalScrollIndicator={false}
@@ -1448,10 +1479,10 @@ function AppsLibrary({
               style={[
                 styles.igHomeContentInset,
                 isMobile
-                  ? { paddingHorizontal: pagePad, width: '100%' }
+                  ? { paddingHorizontal: insetPad, width: '100%' }
                   : {
-                      paddingLeft: pagePad,
-                      paddingRight: pagePad,
+                      paddingLeft: insetPad,
+                      paddingRight: insetPad,
                       width: '100%',
                       ...(contentMaxWidth ? { maxWidth: contentMaxWidth } : null),
                     },
@@ -12557,7 +12588,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   toolCardMobile: {
-    gap: 8,
+    gap: 10,
+    paddingTop: 8,
+    paddingBottom: 4,
+    paddingHorizontal: 4,
   },
   toolIconTile: {
     alignItems: 'center',
