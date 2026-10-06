@@ -14,7 +14,7 @@ import {
 } from '../lib/transactions';
 import { formatInsightPercent } from '../lib/triageInsights';
 import { storeMarkColor } from '../lib/storeMarks';
-import { groupStoresByRegion } from '../lib/storeCatalog';
+import { filterStoresByRegion, groupStoresByRegion, storeRegionByKey } from '../lib/storeCatalog';
 import {
   errorAmountOf,
   errorEmployeeName,
@@ -449,7 +449,7 @@ function RegionHead({ label }) {
   );
 }
 
-function StoreRegionDropdown({ stores, value, onChange, pageRef }) {
+function StoreRegionDropdown({ stores, value, onChange, pageRef, allLabel = 'All stores' }) {
   const isMobile = useIsMobile();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const fieldRef = useRef(null);
@@ -457,7 +457,8 @@ function StoreRegionDropdown({ stores, value, onChange, pageRef }) {
   const [anchor, setAnchor] = useState(null);
   const groups = useMemo(() => groupStoresByRegion(stores), [stores]);
   const selected = String(value || '').trim();
-  const label = selected || 'All stores';
+  const emptyLabel = String(allLabel || '').trim() || 'All stores';
+  const label = selected || emptyLabel;
 
   const openMenu = () => {
     const field = fieldRef.current;
@@ -520,7 +521,7 @@ function StoreRegionDropdown({ stores, value, onChange, pageRef }) {
         accessibilityState={{ selected: !selected }}
       >
         <Text style={[styles.pickerOptionText, !selected && styles.pickerOptionTextOn]} numberOfLines={1}>
-          All stores
+          {emptyLabel}
         </Text>
         {!selected ? <Ionicons name="checkmark" size={16} color={T.text} /> : null}
       </Pressable>
@@ -901,6 +902,7 @@ export default function TriageStoresPanel({
   query = '',
   month,
   selectedStore = '',
+  selectedRegion = '',
   storeTab = 'purchases',
   onStoreTabChange,
   onOpenStore,
@@ -909,6 +911,11 @@ export default function TriageStoresPanel({
 }) {
   const pageRef = useRef(null);
   const stores = useMemo(() => listStoreErrorSummaries(rows, month), [month, rows]);
+  const visibleStores = useMemo(
+    () => (selectedRegion ? filterStoresByRegion(stores, selectedRegion) : stores),
+    [selectedRegion, stores],
+  );
+  const region = storeRegionByKey(selectedRegion);
   const store = useMemo(
     () => (selectedStore ? storeErrorSummary(stores, selectedStore) : null),
     [selectedStore, stores],
@@ -920,7 +927,7 @@ export default function TriageStoresPanel({
     onOpenStore?.(next);
   };
 
-  let body = <StoreListPage stores={stores} query={query} month={month} onOpen={onOpenStore} />;
+  let body = <StoreListPage stores={visibleStores} query={query} month={month} onOpen={onOpenStore} />;
   if (store) {
     body = (
       <StorePage
@@ -950,6 +957,7 @@ export default function TriageStoresPanel({
         stores={stores}
         value={selectedStore}
         onChange={changeStore}
+        allLabel={region?.label || 'All stores'}
       />
       {body}
     </View>
