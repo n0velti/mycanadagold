@@ -421,6 +421,25 @@ const ALL_STORES = '';
 const PICKER_MENU_MIN = 280;
 const PICKER_MENU_MAX = 360;
 
+function measureFieldInPage(fieldNode, pageNode, callback) {
+  if (!fieldNode?.measureInWindow || !pageNode?.measureInWindow) {
+    callback(null);
+    return;
+  }
+  fieldNode.measureInWindow((x, y, width, height) => {
+    pageNode.measureInWindow((pageX, pageY, pageWidth, pageHeight) => {
+      callback({
+        x: x - pageX,
+        y: y - pageY,
+        width,
+        height,
+        pageY,
+        pageWidth,
+      });
+    });
+  });
+}
+
 function RegionHead({ label }) {
   const isMobile = useIsMobile();
   return (
@@ -430,7 +449,7 @@ function RegionHead({ label }) {
   );
 }
 
-function StoreRegionDropdown({ stores, value, onChange }) {
+function StoreRegionDropdown({ stores, value, onChange, pageRef }) {
   const isMobile = useIsMobile();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const fieldRef = useRef(null);
@@ -441,10 +460,18 @@ function StoreRegionDropdown({ stores, value, onChange }) {
   const label = selected || 'All stores';
 
   const openMenu = () => {
-    const node = fieldRef.current;
-    if (typeof node?.measureInWindow === 'function') {
-      node.measureInWindow((x, y, width, height) => {
-        setAnchor({ x, y, width, height });
+    const field = fieldRef.current;
+    const page = pageRef?.current;
+    if (page) {
+      measureFieldInPage(field, page, (next) => {
+        setAnchor(next);
+        setOpen(true);
+      });
+      return;
+    }
+    if (typeof field?.measureInWindow === 'function') {
+      field.measureInWindow((x, y, width, height) => {
+        setAnchor({ x, y, width, height, pageY: 0, pageWidth: windowWidth });
         setOpen(true);
       });
       return;
@@ -464,11 +491,13 @@ function StoreRegionDropdown({ stores, value, onChange }) {
     PICKER_MENU_MAX,
     Math.max(PICKER_MENU_MIN, anchor?.width || PICKER_MENU_MIN),
   );
+  const pageWidth = anchor?.pageWidth || windowWidth;
   const menuLeft = anchor
-    ? Math.min(Math.max(16, anchor.x), Math.max(16, windowWidth - menuWidth - 16))
+    ? Math.min(Math.max(16, anchor.x), Math.max(16, pageWidth - menuWidth - 16))
     : 16;
-  const spaceBelow = anchor ? windowHeight - (anchor.y + anchor.height) : windowHeight;
-  const openUp = Boolean(anchor && spaceBelow < 280 && anchor.y > 280);
+  const anchorBottomInWindow = anchor ? (anchor.pageY ?? 0) + anchor.y + anchor.height : 0;
+  const spaceBelow = anchor ? windowHeight - anchorBottomInWindow : windowHeight;
+  const openUp = Boolean(anchor && !isMobile && spaceBelow < 280 && anchor.y > 280);
   const menuMaxHeight = isMobile
     ? Math.min(420, windowHeight * 0.62)
     : Math.min(360, Math.max(180, openUp ? anchor.y - 24 : spaceBelow - 16));
@@ -527,10 +556,9 @@ function StoreRegionDropdown({ stores, value, onChange }) {
     </>
   );
 
-  return (
-    <>
+  const field = (
+    <View ref={fieldRef} collapsable={false} style={isMobile ? styles.pickerFieldWrapMobile : styles.pickerFieldWrap}>
       <Pressable
-        ref={fieldRef}
         onPress={openMenu}
         style={({ hovered, pressed }) => [
           styles.pickerField,
@@ -548,10 +576,31 @@ function StoreRegionDropdown({ stores, value, onChange }) {
         </Text>
         <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={14} color={T.secondary} />
       </Pressable>
-      <Modal visible={open} transparent animationType="fade" onRequestClose={close}>
-        <View style={styles.pickerModalRoot} pointerEvents="box-none">
-          <Pressable style={StyleSheet.absoluteFill} onPress={close} accessibilityLabel="Close store list" />
-          {isMobile ? (
+    </View>
+  );
+
+  const desktopMenu =
+    open && !isMobile ? (
+      <View style={styles.pickerOverlay} pointerEvents="box-none">
+        <Pressable style={StyleSheet.absoluteFill} onPress={close} accessibilityLabel="Close store list" />
+        <View
+          style={[styles.pickerMenu, { top: menuTop, left: menuLeft, width: menuWidth, maxHeight: menuMaxHeight }]}
+        >
+          <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+            {options}
+          </ScrollView>
+        </View>
+      </View>
+    ) : null;
+
+  return (
+    <>
+      <View style={[styles.storePickerChrome, isMobile && styles.storePickerChromeMobile]}>{field}</View>
+      {desktopMenu}
+      {isMobile ? (
+        <Modal visible={open} transparent animationType="fade" onRequestClose={close}>
+          <View style={styles.pickerModalRoot} pointerEvents="box-none">
+            <Pressable style={StyleSheet.absoluteFill} onPress={close} accessibilityLabel="Close store list" />
             <View style={[styles.pickerSheet, { maxHeight: menuMaxHeight + 72 }]}>
               <View style={styles.pickerSheetHead}>
                 <Text style={styles.pickerSheetTitle}>Store</Text>
@@ -567,15 +616,9 @@ function StoreRegionDropdown({ stores, value, onChange }) {
                 {options}
               </ScrollView>
             </View>
-          ) : (
-            <View style={[styles.pickerMenu, { top: menuTop, left: menuLeft, width: menuWidth, maxHeight: menuMaxHeight }]}>
-              <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-                {options}
-              </ScrollView>
-            </View>
-          )}
-        </View>
-      </Modal>
+          </View>
+        </Modal>
+      ) : null}
     </>
   );
 }
@@ -864,7 +907,7 @@ export default function TriageStoresPanel({
   onOpenPo,
   session,
 }) {
-  const isMobile = useIsMobile();
+  const pageRef = useRef(null);
   const stores = useMemo(() => listStoreErrorSummaries(rows, month), [month, rows]);
   const store = useMemo(
     () => (selectedStore ? storeErrorSummary(stores, selectedStore) : null),
@@ -901,10 +944,13 @@ export default function TriageStoresPanel({
   }
 
   return (
-    <View style={styles.storePage}>
-      <View style={[styles.storePickerChrome, isMobile && styles.storePickerChromeMobile]}>
-        <StoreRegionDropdown stores={stores} value={selectedStore} onChange={changeStore} />
-      </View>
+    <View ref={pageRef} style={styles.storePage}>
+      <StoreRegionDropdown
+        pageRef={pageRef}
+        stores={stores}
+        value={selectedStore}
+        onChange={changeStore}
+      />
       {body}
     </View>
   );
@@ -1181,7 +1227,18 @@ const styles = StyleSheet.create({
   storePage: {
     flex: 1,
     minHeight: 0,
+    position: 'relative',
     backgroundColor: '#fcfcfb',
+  },
+  pickerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 40,
+  },
+  pickerFieldWrap: {
+    alignSelf: 'flex-start',
+  },
+  pickerFieldWrapMobile: {
+    alignSelf: 'stretch',
   },
   storePickerChrome: {
     flexShrink: 0,
@@ -1239,6 +1296,7 @@ const styles = StyleSheet.create({
   },
   pickerMenu: {
     position: 'absolute',
+    zIndex: 41,
     backgroundColor: '#fff',
     borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,

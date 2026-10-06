@@ -5,6 +5,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -130,6 +131,7 @@ function TriageCorrectionImages({
   showSourceButtons = false,
   captureButtons = false,
   pickerOnly = false,
+  insetCard = false,
 }, ref) {
   const isMobile = useIsMobile();
   const list = normalizeReviewImages(images);
@@ -242,10 +244,61 @@ function TriageCorrectionImages({
     onChange?.(list.filter((item) => item.id !== id));
   };
 
+  const thumbGrid = (
+    <View style={[styles.grid, isMobile && styles.gridMobile, insetCard && styles.gridInset]}>
+      {list.map((item) => (
+        <View
+          key={item.id}
+          style={[
+            styles.thumbWrap,
+            isMobile && styles.thumbWrapMobile,
+            insetCard && styles.thumbWrapInset,
+          ]}
+        >
+          <Pressable
+            onPress={() => {
+              const index = list.findIndex((entry) => entry.id === item.id);
+              setViewerIndex(index < 0 ? 0 : index);
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="View captured photo"
+          >
+            <Image
+              source={{ uri: item.uri }}
+              style={[styles.thumb, isMobile && styles.thumbMobile, insetCard && styles.thumbInset]}
+            />
+          </Pressable>
+          {readOnly ? null : (
+            <Pressable
+              style={[styles.remove, insetCard && styles.removeInset]}
+              onPress={() => removeAt(item.id)}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Remove photo"
+            >
+              <Ionicons name="close-circle" size={22} color={TEXT} />
+            </Pressable>
+          )}
+        </View>
+      ))}
+      {canAdd && !showSourceButtons && !isMobile && !insetCard ? (
+        <Pressable
+          style={styles.addTile}
+          onPress={openAddMenu}
+          accessibilityRole="button"
+          accessibilityLabel="Add image"
+        >
+          <Ionicons name="add" size={22} color={TEXT} />
+          <Text style={styles.addTileText}>Add</Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+
   return (
     <>
     {pickerOnly ? null : (
-    <View style={styles.wrap}>
+    <View style={[styles.wrap, insetCard && styles.wrapInset]}>
       {hideHeading ? null : <Text style={styles.label}>Photos</Text>}
       {hideHeading ? null : (
         <Text style={styles.hint}>
@@ -254,45 +307,25 @@ function TriageCorrectionImages({
       )}
       {list.length === 0 && readOnly ? (
         <Text style={styles.empty}>No photos attached</Text>
-      ) : list.length > 0 || (canAdd && !showSourceButtons && !isMobile) ? (
-        <View style={[styles.grid, isMobile && styles.gridMobile]}>
-          {list.map((item) => (
-            <View key={item.id} style={[styles.thumbWrap, isMobile && styles.thumbWrapMobile]}>
-              <Pressable
-                onPress={() => {
-                  const index = list.findIndex((entry) => entry.id === item.id);
-                  setViewerIndex(index < 0 ? 0 : index);
-                }}
-                accessibilityRole="button"
-                accessibilityLabel="View captured photo"
-              >
-                <Image source={{ uri: item.uri }} style={[styles.thumb, isMobile && styles.thumbMobile]} />
-              </Pressable>
-              {readOnly ? null : (
-                <Pressable
-                  style={styles.remove}
-                  onPress={() => removeAt(item.id)}
-                  hitSlop={8}
-                  accessibilityRole="button"
-                  accessibilityLabel="Remove photo"
-                >
-                  <Ionicons name="close-circle" size={22} color={TEXT} />
-                </Pressable>
-              )}
-            </View>
-          ))}
-          {canAdd && !showSourceButtons && !isMobile ? (
-            <Pressable
-              style={styles.addTile}
-              onPress={openAddMenu}
-              accessibilityRole="button"
-              accessibilityLabel="Add image"
-            >
-              <Ionicons name="add" size={22} color={TEXT} />
-              <Text style={styles.addTileText}>Add</Text>
-            </Pressable>
-          ) : null}
+      ) : list.length === 0 && insetCard && !readOnly ? (
+        <View style={styles.insetEmpty}>
+          <Ionicons name="images-outline" size={28} color={SECONDARY} />
+          <Text style={styles.insetEmptyText}>No photos yet</Text>
+          <Text style={styles.insetEmptySub}>Use Photo in the top bar to add one.</Text>
         </View>
+      ) : list.length > 0 || (canAdd && !showSourceButtons && !isMobile) ? (
+        insetCard ? (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.insetScroll}
+            keyboardShouldPersistTaps="handled"
+          >
+            {thumbGrid}
+          </ScrollView>
+        ) : (
+          thumbGrid
+        )
       ) : null}
 
       {showSourceButtons && !readOnly ? (
@@ -377,9 +410,11 @@ function TriageCorrectionImages({
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setSourceOpen(false)} accessibilityLabel="Close" />
           <View style={[styles.sourceCard, isMobile && styles.sourceCardMobile]}>
             {isMobile ? <View style={styles.sourceGrabber} /> : null}
-            <Text style={styles.sourceTitle}>{isMobile ? 'Add a photo' : 'Add image'}</Text>
+            <Text style={styles.sourceTitle}>{isMobile ? 'Add photo' : 'Add image'}</Text>
             <Text style={styles.sourceSub}>
-              {isMobile ? 'Take a photo of the item, tag, or receipt.' : 'Take a photo or attach a file of the item, tag, or receipt.'}
+              {isMobile
+                ? 'Take a picture or upload from your library.'
+                : 'Take a photo or attach a file of the item, tag, or receipt.'}
             </Text>
             <Pressable
               style={styles.sourceOption}
@@ -700,6 +735,54 @@ const styles = StyleSheet.create({
     width: 104,
     height: 104,
     borderRadius: 12,
+  },
+  wrapInset: {
+    marginTop: 0,
+    gap: 0,
+  },
+  gridInset: {
+    flexDirection: 'row',
+    flexWrap: 'nowrap',
+    gap: 10,
+    paddingVertical: 2,
+  },
+  insetScroll: {
+    paddingHorizontal: 2,
+    paddingVertical: 4,
+  },
+  thumbWrapInset: {
+    width: 112,
+    height: 112,
+  },
+  thumbInset: {
+    width: 112,
+    height: 112,
+    borderRadius: 12,
+    backgroundColor: '#f2f2f7',
+  },
+  removeInset: {
+    top: 4,
+    right: 4,
+  },
+  insetEmpty: {
+    minHeight: 112,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingHorizontal: 16,
+    paddingVertical: 20,
+  },
+  insetEmptyText: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '500',
+    color: TEXT,
+  },
+  insetEmptySub: {
+    fontFamily,
+    fontSize: 13,
+    color: SECONDARY,
+    textAlign: 'center',
   },
   mobileCaptureStack: {
     gap: 8,

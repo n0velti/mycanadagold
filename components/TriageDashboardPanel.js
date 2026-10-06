@@ -619,10 +619,17 @@ export default function TriageDashboardPanel({
   storeInsightTab = 'purchases',
   onStoreInsightTabChange,
   onStorePeriodChange,
+  onReviewOpenChange,
 }) {
   const { triage, planned = [] } = useTransferWorkflow();
   const isMobile = useIsMobile();
   const [openRow, setOpenRow] = useState(null);
+
+  useEffect(() => {
+    if (!onReviewOpenChange) return undefined;
+    onReviewOpenChange(Boolean(openRow));
+    return () => onReviewOpenChange(false);
+  }, [onReviewOpenChange, openRow]);
   const [selectedStore, setSelectedStore] = useState('');
   const [storePeriodLocal, setStorePeriodLocal] = useState(() => currentErrorPeriod());
   const storePeriod = storePeriodProp || storePeriodLocal;
@@ -708,7 +715,7 @@ export default function TriageDashboardPanel({
   }
 
   const home = (
-    <ChromePage title="Triage">
+    <ChromePage title={isMobile ? undefined : 'Triage'} filterPad={false}>
       <ChromeListRow
         title="Lots"
         meta={

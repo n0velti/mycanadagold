@@ -47,6 +47,9 @@
  *   /proxy/ringcentral/ai-webhook          POST  → RingCentral AI job results (signed per job, no staff session)
  *   /proxy/agent/change-request            POST  → POST staff change requests to AGENT_WEBHOOK_URL
  *   /proxy/agent/request-status            POST  → trusted status update (System Admin JWT or AGENT_STATUS_SECRET)
+ *   /proxy/agent/build/start               POST  → Cursor cloud agent for a DM conversation (create or follow-up run)
+ *   /proxy/agent/build/refresh             POST  → poll that agent + Vercel preview for the conversation
+ *   /proxy/agent/build/publish             POST  → requester is happy with the preview; flag it for a System Admin to push
  *   /proxy/dev-tickets/launch              POST  → create a Cursor cloud agent for a staff ticket
  *   /proxy/dev-tickets/refresh             POST  → poll agent / Vercel preview for a ticket
  *   /proxy/dev-tickets/decide              POST  → approve (merge PR) or reject (close PR)
@@ -65,6 +68,11 @@ import {
   handleDevTicketLaunch,
   handleDevTicketRefresh,
 } from '../_shared/devTickets.ts';
+import {
+  handleAgentBuildPublish,
+  handleAgentBuildRefresh,
+  handleAgentBuildStart,
+} from '../_shared/agentBuilds.ts';
 
 const FUNCTION_PREFIX = '/proxy';
 const MAX_BODY_BYTES = 25 * 1024 * 1024;
@@ -8326,6 +8334,15 @@ Deno.serve(async (req) => {
     }
     if (path === '/agent/change-request' && req.method === 'POST') {
       return await handleAgentChangeRequest(req, staff, await readBody(req));
+    }
+    if (path === '/agent/build/start' && req.method === 'POST') {
+      return await handleAgentBuildStart(req, staff);
+    }
+    if (path === '/agent/build/refresh' && req.method === 'POST') {
+      return await handleAgentBuildRefresh(req, staff);
+    }
+    if (path === '/agent/build/publish' && req.method === 'POST') {
+      return await handleAgentBuildPublish(req, staff);
     }
     if (path === '/agent/request-status' && req.method === 'POST') {
       if (!staff.isSystemAdmin) {

@@ -23,7 +23,7 @@ type TicketRow = {
   error: string;
 };
 
-function env(name: string, fallback = ''): string {
+export function env(name: string, fallback = ''): string {
   return String(Deno.env.get(name) || fallback).trim();
 }
 
@@ -65,23 +65,31 @@ function cursorHeaders(): HeadersInit {
   };
 }
 
-async function cursorJson(path: string, init: RequestInit = {}): Promise<Record<string, unknown>> {
+export class CursorApiError extends Error {
+  status: number;
+  code: string;
+  constructor(message: string, status: number, code = '') {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
+export async function cursorJson(path: string, init: RequestInit = {}): Promise<Record<string, unknown>> {
   const response = await fetch(`${CURSOR_API}${path}`, {
     ...init,
     headers: { ...cursorHeaders(), ...(init.headers || {}) },
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const message =
-      (payload as { message?: string; error?: { message?: string } })?.error?.message ||
-      (payload as { message?: string })?.message ||
-      `Cursor API failed (${response.status}).`;
-    throw new Error(message);
+    const typed = payload as { message?: string; code?: string; error?: { message?: string; code?: string } };
+    const message = typed?.error?.message || typed?.message || `Cursor API failed (${response.status}).`;
+    throw new CursorApiError(message, response.status, String(typed?.error?.code || typed?.code || ''));
   }
   return payload as Record<string, unknown>;
 }
 
-function firstBranch(payload: Record<string, unknown>): { branch: string; prUrl: string } {
+export function firstBranch(payload: Record<string, unknown>): { branch: string; prUrl: string } {
   const git = payload.git as { branches?: Array<{ branch?: string; prUrl?: string }> } | undefined;
   const item = git?.branches?.[0];
   return {
@@ -90,7 +98,7 @@ function firstBranch(payload: Record<string, unknown>): { branch: string; prUrl:
   };
 }
 
-async function resolveAgentModel(): Promise<string> {
+export async function resolveAgentModel(): Promise<string> {
   try {
     const { data } = await adminClient()
       .from('company_cursor_settings')
@@ -122,10 +130,22 @@ function agentPrompt(ticket: TicketRow): string {
   ].join('\n');
 }
 
-async function vercelPreview(branch: string): Promise<string> {
+export type VercelDeployment = {
+  /** Newest READY deployment for the branch (empty until one exists). */
+  readyUrl: string;
+  /** Newest deployment for the branch regardless of state. */
+  latestUrl: string;
+  /** State of the newest deployment for the branch, e.g. BUILDING / READY / ERROR. */
+  latestState: string;
+  /** True when Vercel has no deployment for the branch yet. */
+  none: boolean;
+};
+
+export async function vercelDeployment(branch: string): Promise<VercelDeployment> {
+  const empty: VercelDeployment = { readyUrl: '', latestUrl: '', latestState: '', none: true };
   const token = env('VERCEL_TOKEN');
   const projectId = env('VERCEL_PROJECT_ID');
-  if (!token || !projectId || !branch) return '';
+  if (!token || !projectId || !branch) return empty;
   const teamId = env('VERCEL_TEAM_ID');
   const query = new URLSearchParams({
     projectId,
@@ -137,13 +157,29 @@ async function vercelPreview(branch: string): Promise<string> {
     headers: { Authorization: `Bearer ${token}` },
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) return '';
+  if (!response.ok) return empty;
   const deployments = Array.isArray((payload as { deployments?: unknown[] }).deployments)
     ? (payload as { deployments: Array<{ url?: string; readyState?: string; state?: string }> }).deployments
     : [];
-  const ready = deployments.find((row) => row.readyState === 'READY' || row.state === 'READY') || deployments[0];
-  const host = String(ready?.url || '').replace(/^https?:\/\//, '');
-  return host ? `https://${host}` : '';
+  if (!deployments.length) return empty;
+  const stateOf = (row: { readyState?: string; state?: string }) =>
+    String(row.readyState || row.state || '').toUpperCase();
+  const toUrl = (row?: { url?: string }) => {
+    const host = String(row?.url || '').replace(/^https?:\/\//, '');
+    return host ? `https://${host}` : '';
+  };
+  const ready = deployments.find((row) => stateOf(row) === 'READY');
+  return {
+    readyUrl: toUrl(ready),
+    latestUrl: toUrl(deployments[0]),
+    latestState: stateOf(deployments[0]),
+    none: false,
+  };
+}
+
+async function vercelPreview(branch: string): Promise<string> {
+  const deployment = await vercelDeployment(branch);
+  return deployment.readyUrl || deployment.latestUrl;
 }
 
 function parseGithubPr(prUrl: string): { owner: string; repo: string; number: string } | null {

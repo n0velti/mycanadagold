@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { BlurView } from 'expo-blur';
 import { Ionicons } from '@expo/vector-icons';
 import { Animated, Image, PanResponder, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -13,11 +13,14 @@ import {
 import {
   CANVAS,
   MOBILE,
+  MOBILE_FEED_TOP_BAR_HEIGHT,
   MOBILE_FILTER_INSET,
   MOBILE_FILTER_SIZE,
   MOBILE_TOP_FILTER_SIZE,
   NAV_ICON_ACTIVE,
   NAV_ICON_INACTIVE,
+  NAV_TAB_ACTIVE_BG,
+  NAV_TAB_ACTIVE_RADIUS,
   mobileSafeBottom,
   mobileSafeTop,
 } from '../lib/mobileUi';
@@ -74,6 +77,209 @@ export function MobileSafeTop() {
       style={[styles.safeTop, { height: mobileSafeTop() }]}
       {...(Platform.OS === 'web' ? { className: 'cgold-mobile-inset-top' } : null)}
     />
+  );
+}
+
+export { MOBILE_FEED_TOP_BAR_HEIGHT };
+
+function CanadaGoldMark({ size = 22 }) {
+  return (
+    <Image
+      source={require('../assets/small_logo.png')}
+      style={{ width: size, height: size, borderRadius: size / 2 }}
+      resizeMode="cover"
+      accessibilityIgnoresInvertColors
+    />
+  );
+}
+
+/** Date chip matching the Home / store-details mobile top bar. */
+export function MobileFeedDateButton({ label, active = false, onPress, disabled = false }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={6}
+      disabled={disabled}
+      style={({ pressed }) => [
+        styles.mobileFeedDateBtn,
+        active && styles.mobileFeedDateBtnActive,
+        disabled && styles.mobileFeedDateBtnDisabled,
+        pressed && !disabled && styles.mobileFeedDateBtnPressed,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={`Date: ${label}`}
+      accessibilityHint="Change date or set a range"
+    >
+      <Ionicons name="calendar-outline" size={15} color={MOBILE.secondary} />
+      <Text style={styles.mobileFeedDateText} numberOfLines={1}>
+        {label}
+      </Text>
+      <View style={styles.mobileFeedDateChevrons}>
+        <Ionicons name="chevron-up" size={9} color="#8e8e93" />
+        <Ionicons name="chevron-down" size={9} color="#8e8e93" style={styles.mobileFeedDateChevronDown} />
+      </View>
+    </Pressable>
+  );
+}
+
+/** Trailing cluster: date + actions in the feed top bar. */
+export function MobileFeedTopBarActions({ children }) {
+  return <View style={styles.mobileFeedTopBarActions}>{children}</View>;
+}
+
+/** Outlined top-bar control (filter / retake / text actions). */
+export function MobileFeedOutlineButton({
+  label,
+  onPress,
+  accessibilityLabel,
+  active = false,
+  disabled = false,
+  leadingIcon,
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={6}
+      disabled={disabled}
+      style={({ pressed }) => [
+        styles.mobileFeedDateBtn,
+        active && styles.mobileFeedDateBtnActive,
+        disabled && styles.mobileFeedDateBtnDisabled,
+        pressed && !disabled && styles.mobileFeedDateBtnPressed,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel || label}
+    >
+      {leadingIcon ? <Ionicons name={leadingIcon} size={17} color="#1a1a1a" /> : null}
+      <Text style={styles.mobileFeedDateText} numberOfLines={1}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+/** Green pill in the feed top bar (+ or short label). */
+export function MobileFeedAddButton({ onPress, accessibilityLabel = 'Add', label, disabled = false }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={6}
+      disabled={disabled}
+      style={({ pressed }) => [
+        styles.mobileFeedAddBtn,
+        label && styles.mobileFeedAddBtnLabeled,
+        disabled && styles.mobileFeedAddBtnDisabled,
+        pressed && !disabled && styles.mobileFeedAddBtnPressed,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel || label || 'Add'}
+    >
+      {label ? (
+        <Text style={styles.mobileFeedGreenBtnLabel}>{label}</Text>
+      ) : (
+        <Ionicons name="add" size={22} color="#fff" />
+      )}
+    </Pressable>
+  );
+}
+
+/** Outlined danger control (e.g. Add error at bottom of a sheet). */
+export function MobileFeedDangerButton({ label, onPress, accessibilityLabel, disabled = false }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={6}
+      disabled={disabled}
+      style={({ pressed }) => [
+        styles.mobileFeedDangerBtn,
+        disabled && styles.mobileFeedAddBtnDisabled,
+        pressed && !disabled && styles.mobileFeedDateBtnPressed,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel || label}
+    >
+      <Text style={styles.mobileFeedDangerBtnLabel}>{label}</Text>
+    </Pressable>
+  );
+}
+
+/**
+ * Blur top bar used on mobile Home, store details, and in-app tools.
+ * `segments` appear after the brand mark as `/ Label` crumbs.
+ */
+export function MobileFeedTopBar({
+  segments = [],
+  onBrandPress,
+  trailing,
+  brandAccessibilityLabel = 'Canada Gold',
+  /** Full-screen surfaces (e.g. PO camera modal): blur flush to top, content inset in the bar. */
+  flushTop = false,
+}) {
+  const safeTop = flushTop ? mobileSafeTop() : 0;
+  const brandControl = onBrandPress ? (
+    <Pressable
+      onPress={onBrandPress}
+      hitSlop={8}
+      style={styles.mobileFeedBrandBtn}
+      accessibilityRole="button"
+      accessibilityLabel="Back"
+    >
+      <CanadaGoldMark size={22} />
+    </Pressable>
+  ) : (
+    <View style={styles.mobileFeedBrandBtn} accessibilityLabel={brandAccessibilityLabel}>
+      <CanadaGoldMark size={22} />
+    </View>
+  );
+
+  const left =
+    segments.length > 0 ? (
+      <View style={styles.mobileFeedCrumbs}>
+        {brandControl}
+        {segments.map((segment, index) => (
+          <Fragment key={`${segment.label}-${index}`}>
+            <Text style={styles.mobileFeedCrumbSep} accessible={false}>
+              /
+            </Text>
+            {segment.onPress ? (
+              <Pressable
+                onPress={segment.onPress}
+                style={styles.mobileFeedCrumbPress}
+                accessibilityRole="button"
+                accessibilityLabel={segment.label}
+              >
+                <Text style={styles.mobileFeedCrumbLabel} numberOfLines={1}>
+                  {segment.label}
+                </Text>
+              </Pressable>
+            ) : (
+              <Text style={styles.mobileFeedCrumbLabel} numberOfLines={1}>
+                {segment.label}
+              </Text>
+            )}
+          </Fragment>
+        ))}
+      </View>
+    ) : (
+      brandControl
+    );
+
+  return (
+    <View pointerEvents="box-none" style={styles.mobileFeedTopBarShell}>
+      <View style={[styles.mobileFeedTopBarClip, safeTop > 0 && { paddingTop: safeTop }]}>
+        <BlurView
+          intensity={32}
+          tint="light"
+          pointerEvents="none"
+          style={styles.mobileFeedTopBarBlur}
+          {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-bar' } : null)}
+        />
+        <View style={styles.mobileFeedTopBarRow}>
+          {left}
+          {trailing ? <View style={styles.mobileFeedTopBarTrailing}>{trailing}</View> : null}
+        </View>
+      </View>
+    </View>
   );
 }
 
@@ -529,6 +735,204 @@ const styles = StyleSheet.create({
   safeTop: {
     flexShrink: 0,
     backgroundColor: 'transparent',
+  },
+  mobileFeedTopBarShell: {
+    flexShrink: 0,
+    zIndex: 40,
+  },
+  mobileFeedTopBarClip: {
+    position: 'relative',
+    overflow: 'hidden',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(0,0,0,0.08)',
+  },
+  mobileFeedTopBarBlur: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(252,252,251,0.92)',
+    ...Platform.select({
+      web: {
+        backdropFilter: 'saturate(120%) blur(12px)',
+        WebkitBackdropFilter: 'saturate(120%) blur(12px)',
+      },
+      default: {},
+    }),
+  },
+  mobileFeedTopBarRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    paddingHorizontal: MOBILE_FILTER_INSET,
+    paddingTop: 8,
+    paddingBottom: 8,
+    minHeight: MOBILE_FEED_TOP_BAR_HEIGHT,
+  },
+  mobileFeedBrandBtn: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  mobileFeedCrumbs: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 1,
+    minWidth: 0,
+    gap: 8,
+  },
+  mobileFeedCrumbSep: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '400',
+    color: '#c7c7cc',
+    flexShrink: 0,
+  },
+  mobileFeedCrumbPress: {
+    flexShrink: 1,
+    minWidth: 0,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  mobileFeedCrumbLabel: {
+    flexShrink: 1,
+    minWidth: 0,
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: MOBILE.label,
+    letterSpacing: -0.3,
+  },
+  mobileFeedTopBarTrailing: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 8,
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  mobileFeedTopBarActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 8,
+    flexShrink: 1,
+    minWidth: 0,
+    maxWidth: '100%',
+  },
+  mobileFeedDateAnchor: {
+    flexShrink: 1,
+    minWidth: 0,
+    maxWidth: '100%',
+  },
+  mobileFeedDateBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-end',
+    height: 32,
+    flexGrow: 0,
+    flexShrink: 1,
+    maxWidth: '100%',
+    paddingLeft: 10,
+    paddingRight: 6,
+    gap: 8,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: '#d0d0d0',
+    backgroundColor: 'transparent',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  mobileFeedDateBtnActive: {
+    backgroundColor: NAV_TAB_ACTIVE_BG,
+  },
+  mobileFeedDateBtnDisabled: {
+    opacity: 0.45,
+  },
+  mobileFeedDateBtnPressed: {
+    opacity: 0.6,
+  },
+  mobileFeedDateText: {
+    flexShrink: 1,
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: '#1a1a1a',
+    letterSpacing: -0.2,
+    fontVariant: ['tabular-nums'],
+  },
+  mobileFeedDateChevrons: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+    flexShrink: 0,
+  },
+  mobileFeedDateChevronDown: {
+    marginTop: -3,
+  },
+  mobileFeedAddBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 32,
+    minWidth: 52,
+    paddingHorizontal: 16,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: '#1F8A4E',
+    backgroundColor: '#1F8A4E',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  mobileFeedAddBtnLabeled: {
+    minWidth: 64,
+    paddingHorizontal: 14,
+  },
+  mobileFeedAddBtnDisabled: {
+    opacity: 0.45,
+  },
+  mobileFeedAddBtnPressed: {
+    opacity: 0.6,
+  },
+  mobileFeedGreenBtnLabel: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#fff',
+    letterSpacing: -0.2,
+  },
+  mobileFeedDangerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 32,
+    minWidth: 52,
+    paddingHorizontal: 16,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: '#B91C1C',
+    backgroundColor: 'transparent',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  mobileFeedDangerBtnLabel: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#B91C1C',
+    letterSpacing: -0.2,
   },
   navHeader: {
     flexDirection: 'row',
