@@ -147,10 +147,12 @@ export async function vercelDeployment(branch: string): Promise<VercelDeployment
   const projectId = env('VERCEL_PROJECT_ID');
   if (!token || !projectId || !branch) return empty;
   const teamId = env('VERCEL_TEAM_ID');
+  // The filter param is `branch`; `gitBranch` is silently ignored and the list
+  // becomes every branch's deployments, so the "preview" opens someone else's build.
   const query = new URLSearchParams({
     projectId,
-    gitBranch: branch,
-    limit: '6',
+    branch,
+    limit: '10',
   });
   if (teamId) query.set('teamId', teamId);
   const response = await fetch(`${VERCEL_API}/v6/deployments?${query}`, {
@@ -158,9 +160,19 @@ export async function vercelDeployment(branch: string): Promise<VercelDeployment
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) return empty;
-  const deployments = Array.isArray((payload as { deployments?: unknown[] }).deployments)
-    ? (payload as { deployments: Array<{ url?: string; readyState?: string; state?: string }> }).deployments
+  type DeploymentRow = {
+    url?: string;
+    readyState?: string;
+    state?: string;
+    meta?: { githubCommitRef?: string; gitlabCommitRef?: string; bitbucketCommitRef?: string };
+  };
+  const all = Array.isArray((payload as { deployments?: unknown[] }).deployments)
+    ? (payload as { deployments: DeploymentRow[] }).deployments
     : [];
+  // Belt and braces: never hand back a deployment from another branch.
+  const refOf = (row: DeploymentRow) =>
+    String(row.meta?.githubCommitRef || row.meta?.gitlabCommitRef || row.meta?.bitbucketCommitRef || '');
+  const deployments = all.filter((row) => !refOf(row) || refOf(row) === branch);
   if (!deployments.length) return empty;
   const stateOf = (row: { readyState?: string; state?: string }) =>
     String(row.readyState || row.state || '').toUpperCase();
