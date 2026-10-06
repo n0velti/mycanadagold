@@ -137,7 +137,6 @@ export default function TriageScreen({
   const [activeTab, setActiveTab] = useState('transfers');
   const [dashPage, setDashPage] = useState('');
   const [storesView, setStoresView] = useState({ selectedStore: '' });
-  const [storeInsightTab, setStoreInsightTab] = useState('purchases');
   const appDate = useAppDate();
   const storePeriod = useMemo(
     () =>
@@ -147,16 +146,6 @@ export default function TriageScreen({
         appDate.mode === 'range' ? 'range' : appDate.mode === 'day' ? 'day' : 'month',
       ),
     [appDate.endDate, appDate.generation, appDate.mode, appDate.startDate],
-  );
-  const setStorePeriod = useCallback(
-    (period) => {
-      appDate.setAppDate({
-        mode: period?.mode === 'month' || period?.startDate !== period?.endDate ? 'range' : 'day',
-        startDate: period?.startDate,
-        endDate: period?.endDate,
-      });
-    },
-    [appDate],
   );
   const storesNavRef = useRef({ closeStore() {} });
   const [accuracyTab, setAccuracyTab] = useState('all');
@@ -207,15 +196,7 @@ export default function TriageScreen({
   );
 
   const changeTab = useCallback((key) => {
-    const dashPageKey =
-      key === 'allocation' ||
-      key === 'return' ||
-      key === 'errors' ||
-      key === 'stores' ||
-      key === 'shipments' ||
-      key === 'lots'
-        ? key
-        : '';
+    const dashPageKey = key === 'errors' || key === 'lots' ? key : '';
     if (!dashPageKey) leaveStoreRef.current?.();
     setActiveTab(dashPageKey ? 'transfers' : key);
     setListQuery('');
@@ -502,11 +483,17 @@ export default function TriageScreen({
     storesView.selectedStore,
   ]);
 
-  useEffect(() => {
-    setStoreInsightTab('purchases');
-  }, [storesView.selectedStore]);
-
   useEffect(() => () => onCrumbsChange?.([]), [onCrumbsChange]);
+
+  useEffect(() => {
+    if (dashPage && dashPage !== 'lots' && dashPage !== 'errors') {
+      setDashPage('');
+    }
+    if (activeTab === 'deleted') {
+      setActiveTab('transfers');
+      setDashPage('');
+    }
+  }, [activeTab, dashPage]);
 
   useEffect(() => {
     if (!canGoBack) {
@@ -640,17 +627,13 @@ export default function TriageScreen({
           session={session}
           onRequireLogin={onRequireLogin}
           active={activeTab === 'transfers'}
-          listQuery={dashPage === 'stores' ? '' : listQuery}
+          listQuery={listQuery}
           page={dashPage}
           onPageChange={setDashPage}
           onBackChange={handleBackChange}
-          onOpenTab={changeTab}
           onStoresViewChange={setStoresView}
           storesNavRef={storesNavRef}
           storePeriod={storePeriod}
-          onStorePeriodChange={setStorePeriod}
-          storeInsightTab={storeInsightTab}
-          onStoreInsightTabChange={setStoreInsightTab}
           onOpenLot={(lotId) => {
             setDashPage('');
             setActiveTab('accuracy');
