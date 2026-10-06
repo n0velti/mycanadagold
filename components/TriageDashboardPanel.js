@@ -1,5 +1,5 @@
 /**
- * Triage dashboard: region home, then Errors, Allocation, and Expected Return.
+ * Triage dashboard: region home, then Lots and Errors for that region.
  * Mobile matches the Home tab: hero, stat row, full-bleed list.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -8,24 +8,11 @@ import {
   applyTriageReviewToPo,
   collectAccuracyTriagePos,
   collectAllTriagePos,
-  persistTransferWorkflowNow,
-  RECEIVE_STATUS,
-  RECEIVE_STATUS_LABELS,
-  saveTriagePoAllocation,
   saveTriagePoReview,
-  transferGoesToWorkshop,
   triageEditorFromSession,
   triagePoNeedsCorrection,
   useTransferWorkflow,
 } from '../lib/transferWorkflow';
-import {
-  allocationDraftFromSaved,
-  allocationSummaryLabel,
-  formatGrams,
-  isAllocationComplete,
-  summarizePoAllocations,
-  TRIAGE_DESTINATIONS,
-} from '../lib/triageAllocations';
 import {
   formatFineProgress,
   groupPosIntoLots,
@@ -34,7 +21,7 @@ import {
   lotPeriodLabel,
   summarizeLotsFineMetals,
 } from '../lib/triageLots';
-import { STORE_REGIONS, regionKeyForStore, storeNameInRegion } from '../lib/storeCatalog';
+import { STORE_REGIONS, storeNameInRegion } from '../lib/storeCatalog';
 import { formatAmount } from '../lib/transactions';
 import { formatErrorAmount } from '../lib/triageDraft';
 import { currentErrorPeriod, errorStoreName, listRegionErrorSummaries } from '../lib/triageStoreErrors';
@@ -52,9 +39,7 @@ import {
   TriageDrawer,
 } from './TriageKit';
 import { PoThumb } from './TriageTable';
-import TriageAllocationForm from './TriageAllocationForm';
 import TriageReviewDrawer from './TriageReviewDrawer';
-import TriageStoresPanel from './TriageStoresPanel';
 
 const fontFamily = FONT;
 
@@ -147,32 +132,6 @@ function summarizeLots(lots) {
   };
 }
 
-function summarizeTransfers(planned) {
-  const rows = [...(planned || [])].sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
-  let open = 0;
-  let partial = 0;
-  let received = 0;
-  let workshop = 0;
-  for (const row of rows) {
-    if (row.receiveStatus === RECEIVE_STATUS.all_received) received += 1;
-    else if (row.receiveStatus === RECEIVE_STATUS.partially_received) partial += 1;
-    else open += 1;
-    if (transferGoesToWorkshop(row)) workshop += 1;
-  }
-  return { rows, count: rows.length, open, partial, received, workshop };
-}
-
-function transferStatusLabel(row) {
-  return RECEIVE_STATUS_LABELS[row?.receiveStatus] || 'Not Received';
-}
-
-function transferPathLabel(row) {
-  const from = String(row?.fromName || '').trim();
-  const to = String(row?.toName || '').trim();
-  if (from && to) return `${from} → ${to}`;
-  return from || to || 'Transfer';
-}
-
 function matchesQuery(row, query) {
   const q = String(query || '').trim().toLowerCase();
   if (!q) return true;
@@ -215,13 +174,6 @@ function regionStoreMeta(region) {
 
 function rowInRegion(row, regionKey) {
   return storeNameInRegion(errorStoreName(row) || row?.storeName, regionKey);
-}
-
-function transferInRegion(row, regionKey) {
-  if (!regionKey) return true;
-  return (
-    regionKeyForStore(row?.fromName) === regionKey || regionKeyForStore(row?.toName) === regionKey
-  );
 }
 
 function ErrorsPage({ rows, query, onOpen }) {
@@ -275,44 +227,6 @@ function ErrorsPage({ rows, query, onOpen }) {
       {visible.length
         ? null
         : emptyCopy(query.trim() ? `No error matches “${query.trim()}”.` : 'No errors.')}
-    </ChromePage>
-  );
-}
-
-function TransfersPage({ summary }) {
-  return (
-    <ChromePage
-      hero={
-        <ChromeHero
-          icon="swap-horizontal"
-          iconColor="#1F7A9A"
-          value={String(summary.count)}
-          stats={[
-            { label: 'Open', value: String(summary.open) },
-            { label: 'Partial', value: String(summary.partial) },
-            { label: 'Received', value: String(summary.received) },
-          ]}
-        />
-      }
-      title="Transfers"
-      meta={String(summary.count)}
-      data={summary.rows}
-      keyExtractor={(row) => String(row.id)}
-      renderItem={({ item: row, index }) => (
-        <ChromeListRow
-          title={row.reference || `TR# ${row.number || ''}`}
-          meta={[transferPathLabel(row), row.dateLabel].filter(Boolean).join(' · ')}
-          value={transferStatusLabel(row)}
-          icon="swap-horizontal"
-          iconColor="#1F7A9A"
-          last={index === summary.rows.length - 1}
-          chevron={false}
-        />
-      )}
-    >
-      {summary.rows.length
-        ? null
-        : emptyCopy('Store-to-workshop transfers land here as they are created.')}
     </ChromePage>
   );
 }
@@ -486,152 +400,6 @@ function LotsPage({ lots, allRows, errors, query, onOpen }) {
   );
 }
 
-function AllocationPage({ rows, session }) {
-  const isMobile = useIsMobile();
-  const summary = useMemo(() => summarizePoAllocations(rows), [rows]);
-  const [openPo, setOpenPo] = useState(null);
-  const [draft, setDraft] = useState({ lines: [] });
-  const [error, setError] = useState('');
-  const [saving, setSaving] = useState(false);
-  const allocatedGrams = TRIAGE_DESTINATIONS.reduce(
-    (sum, dest) => sum + (summary.totals[dest.id]?.objectGrams || 0),
-    0,
-  );
-  const destCount = TRIAGE_DESTINATIONS.filter((dest) => (summary.totals[dest.id]?.objectGrams || 0) > 0).length;
-
-  const open = (po) => {
-    setOpenPo(po);
-    setDraft(allocationDraftFromSaved(po, po.allocation));
-    setError('');
-  };
-
-  const save = () => {
-    if (!openPo || saving) return;
-    if (!isAllocationComplete(draft)) {
-      setError('Allocate the full object weight of each line.');
-      return;
-    }
-    setSaving(true);
-    try {
-      saveTriagePoAllocation(openPo.id, draft, triageEditorFromSession(session));
-      persistTransferWorkflowNow().catch(() => {});
-      setOpenPo(null);
-    } catch (err) {
-      setError(err?.message || 'Could not save allocation.');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const listed = [...summary.rows].sort((a, b) => Number(a.complete) - Number(b.complete));
-
-  return (
-    <>
-      <ChromePage
-        hero={
-          <ChromeHero
-            icon="git-branch"
-            iconColor="#3A3A3C"
-            value={String(summary.allocated)}
-            stats={[
-              { label: 'Ready', value: String(summary.ready) },
-              { label: 'Weight', value: `${formatGrams(allocatedGrams)} g` },
-              { label: destCount === 1 ? 'Place' : 'Places', value: String(destCount) },
-            ]}
-          />
-        }
-        title="Purchase orders"
-        meta={`${summary.allocated} allocated`}
-        data={listed}
-        keyExtractor={(row) => row.po.id}
-        renderItem={({ item: row, index }) => (
-          <ChromeListRow
-            title={row.po.reference || row.po.id}
-            meta={
-              row.complete
-                ? [allocationSummaryLabel(row.allocation), row.po.storeName].filter(Boolean).join(' · ')
-                : [row.po.storeName, row.po.dateLabel, 'Needs allocation'].filter(Boolean).join(' · ')
-            }
-            value={row.complete ? 'Allocated' : 'Open'}
-            icon={row.complete ? 'git-branch' : 'ellipse-outline'}
-            iconColor={row.complete ? '#3A3A3C' : '#C2410C'}
-            last={index === listed.length - 1}
-            onPress={() => open(row.po)}
-          />
-        )}
-      >
-        {listed.length
-          ? null
-          : emptyCopy('Finish a PO from Add to allocate 100Ways, Umicore, PMX, RCM, or Oliver here.')}
-      </ChromePage>
-      <TriageDrawer
-        visible={Boolean(openPo)}
-        onClose={() => setOpenPo(null)}
-        title="Allocate"
-        subtitle={openPo?.reference || ''}
-        leftLabel="Close"
-        onLeft={() => setOpenPo(null)}
-        rightLabel={saving ? 'Saving…' : 'Finish'}
-        onRight={save}
-        widthRatio={0.42}
-        minWidth={380}
-      >
-        <ScrollView style={styles.breakScroll} contentContainerStyle={[styles.breakPad, isMobile && styles.breakPadMobile]} showsVerticalScrollIndicator={false}>
-          <TriageAllocationForm draft={draft} onChange={setDraft} disabled={saving} />
-          {error ? <Text style={styles.allocError}>{error}</Text> : null}
-        </ScrollView>
-      </TriageDrawer>
-    </>
-  );
-}
-
-function ExpectedReturnPage({ lots, summary }) {
-  if (!lots.length) {
-    return (
-      <EmptyState
-        icon="trending-up-outline"
-        title="No expected return"
-        body="Finish POs into lots and expected melt return will show here."
-      />
-    );
-  }
-
-  return (
-    <ChromePage
-      hero={
-        <ChromeHero
-          icon="trending-up"
-          iconColor="#1F8A4E"
-          value={String(summary.expected)}
-          stats={[
-            { label: 'Evaluated', value: String(summary.evaluated) },
-            { label: 'Percent', value: summary.expected ? `${summary.percent}%` : '—' },
-            { label: summary.lots === 1 ? 'Lot' : 'Lots', value: String(summary.lots) },
-          ]}
-        />
-      }
-      title="Lots"
-      meta={String(lots.length)}
-      data={lots}
-      keyExtractor={(lot) => lot.id}
-      renderItem={({ item: lot, index }) => {
-        const progress = lotProgressOf(lot);
-        return (
-          <ChromeListRow
-            title={lot.id}
-            meta={[lot.location, lotPeriodLabel(lot)].filter(Boolean).join(' · ')}
-            value={progress.expected ? `${progress.evaluated}/${progress.expected}` : String(lot.pos.length)}
-            icon="folder"
-            iconColor="#1F8A4E"
-            last={index === lots.length - 1}
-            chevron={false}
-          />
-        );
-      }}
-    >
-    </ChromePage>
-  );
-}
 
 export default function TriageDashboardPanel({
   session,
@@ -642,16 +410,12 @@ export default function TriageDashboardPanel({
   onPageChange,
   onBackChange,
   onOpenLot,
-  onOpenTab,
   onStoresViewChange,
   storesNavRef,
   storePeriod: storePeriodProp,
-  storeInsightTab = 'purchases',
-  onStoreInsightTabChange,
-  onStorePeriodChange,
   onReviewOpenChange,
 }) {
-  const { triage, planned = [] } = useTransferWorkflow();
+  const { triage } = useTransferWorkflow();
   const isMobile = useIsMobile();
   const [openRow, setOpenRow] = useState(null);
 
@@ -660,11 +424,9 @@ export default function TriageDashboardPanel({
     onReviewOpenChange(Boolean(openRow));
     return () => onReviewOpenChange(false);
   }, [onReviewOpenChange, openRow]);
-  const [selectedStore, setSelectedStore] = useState('');
   const [selectedRegion, setSelectedRegion] = useState('');
-  const [storePeriodLocal, setStorePeriodLocal] = useState(() => currentErrorPeriod());
+  const [storePeriodLocal] = useState(() => currentErrorPeriod());
   const storePeriod = storePeriodProp || storePeriodLocal;
-  const setStorePeriod = onStorePeriodChange || setStorePeriodLocal;
 
   const evaluated = useMemo(() => (active ? collectAccuracyTriagePos(triage) : []), [active, triage]);
   const allRows = useMemo(() => (active ? collectAllTriagePos(triage) : []), [active, triage]);
@@ -700,59 +462,36 @@ export default function TriageDashboardPanel({
     [regionRollup.regions, selectedRegion],
   );
   const lotSummary = useMemo(() => summarizeLots(lots), [lots]);
-  const allocationSummary = useMemo(
-    () => (active ? summarizePoAllocations(scopedAllRows) : { rows: [], total: 0, allocated: 0, ready: 0, totals: {} }),
-    [active, scopedAllRows],
-  );
-  const transferSummary = useMemo(
-    () =>
-      active
-        ? summarizeTransfers(selectedRegion ? planned.filter((row) => transferInRegion(row, selectedRegion)) : planned)
-        : { rows: [], count: 0, open: 0, partial: 0, received: 0, workshop: 0 },
-    [active, planned, selectedRegion],
-  );
 
   const openPage = useCallback((key) => {
     onPageChange?.(key || '');
   }, [onPageChange]);
   const openRegion = useCallback((regionKey) => {
-    setSelectedStore('');
     setSelectedRegion(regionKey);
     onPageChange?.('');
   }, [onPageChange]);
   const closePage = useCallback(() => {
-    if (page === 'stores' && selectedStore) {
-      setSelectedStore('');
-      return;
-    }
     if (page) {
       onPageChange?.('');
       return;
     }
     setSelectedRegion('');
-  }, [onPageChange, page, selectedStore]);
-
-  useEffect(() => {
-    if (page !== 'stores') setSelectedStore('');
-  }, [page]);
+  }, [onPageChange, page]);
 
   useEffect(() => {
     onStoresViewChange?.({
-      selectedStore: page === 'stores' ? selectedStore : '',
+      selectedStore: '',
       selectedRegion,
       selectedRegionLabel: regionTitle(selectedRegion),
       period: storePeriod,
     });
-  }, [onStoresViewChange, page, selectedRegion, selectedStore, storePeriod]);
+  }, [onStoresViewChange, selectedRegion, storePeriod]);
 
   useEffect(() => {
     if (!storesNavRef) return undefined;
     storesNavRef.current = {
-      closeStore: () => setSelectedStore(''),
-      closeRegion: () => {
-        setSelectedStore('');
-        setSelectedRegion('');
-      },
+      closeStore() {},
+      closeRegion: () => setSelectedRegion(''),
     };
     return () => {
       storesNavRef.current = { closeStore() {} };
@@ -767,16 +506,12 @@ export default function TriageDashboardPanel({
     }
     const titles = {
       errors: 'Errors',
-      stores: selectedStore || 'Stores',
-      shipments: 'Transfers',
       lots: 'Lots',
-      allocation: 'Allocation',
-      return: 'Expected Return',
     };
     const label = page ? titles[page] || 'Dashboard' : regionTitle(selectedRegion) || 'Dashboard';
     onBackChange?.(closePage, { dateLabel: label });
     return () => onBackChange?.(null, null);
-  }, [active, closePage, onBackChange, page, selectedRegion, selectedStore]);
+  }, [active, closePage, onBackChange, page, selectedRegion]);
 
   const saveReview = useCallback(
     (poId, review) => {
@@ -792,7 +527,7 @@ export default function TriageDashboardPanel({
         <EmptyState
           icon="lock-closed-outline"
           title="Sign in to triage"
-          body="Log in to see errors, allocation, and expected return."
+          body="Log in to see regional errors and lots."
           action={<TextAction label="Go to Profile" strong onPress={onRequireLogin} />}
         />
       </View>
@@ -845,64 +580,8 @@ export default function TriageDashboardPanel({
         value={String(errors.count)}
         icon="alert-circle"
         iconColor="#B91C1C"
-        onPress={() => openPage('errors')}
-      />
-      <ChromeListRow
-        title="Stores"
-        meta={
-          errors.stores
-            ? `${errors.stores} ${errors.stores === 1 ? 'store' : 'stores'} with errors · ${storePeriod.label}`
-            : `Stores in ${regionTitle(selectedRegion)} · ${storePeriod.label}`
-        }
-        value={String(activeRegion?.storeCount || errors.stores || 0)}
-        icon="storefront"
-        iconColor="#1F7A9A"
-        onPress={() => openPage('stores')}
-      />
-      <ChromeListRow
-        title="Transfers"
-        meta={
-          transferSummary.count
-            ? `${transferSummary.open} open · ${transferSummary.partial} partial · ${transferSummary.received} received`
-            : 'No transfers yet'
-        }
-        value={String(transferSummary.count)}
-        icon="swap-horizontal"
-        iconColor="#1F7A9A"
-        onPress={() => openPage('shipments')}
-      />
-      <ChromeListRow
-        title="Allocation"
-        meta={
-          allocationSummary.total
-            ? `${allocationSummary.allocated} allocated · ${allocationSummary.ready} ready`
-            : 'Nothing to allocate yet'
-        }
-        value={String(allocationSummary.allocated)}
-        icon="git-branch"
-        iconColor="#3A3A3C"
-        onPress={() => openPage('allocation')}
-      />
-      <ChromeListRow
-        title="Expected Return"
-        meta={
-          lotSummary.expected
-            ? `${lotSummary.evaluated} evaluated · ${lotSummary.percent}% · ${lotSummary.lots} ${lotSummary.lots === 1 ? 'lot' : 'lots'}`
-            : 'No expected melt yet'
-        }
-        value={lotSummary.expected ? String(lotSummary.expected) : '0'}
-        icon="trending-up"
-        iconColor="#1F8A4E"
-        onPress={() => openPage('return')}
-      />
-      <ChromeListRow
-        title="Deleted"
-        meta="Removed POs and documents"
-        value=""
-        icon="trash"
-        iconColor="#8E8E93"
         last
-        onPress={() => onOpenTab?.('deleted')}
+        onPress={() => openPage('errors')}
       />
     </ChromePage>
     </PageWithBack>
@@ -946,26 +625,6 @@ export default function TriageDashboardPanel({
         <PageWithBack onPress={closePage} label={regionLabel}>
           <ErrorsPage rows={errors.rows} query={listQuery} onOpen={setOpenRow} />
         </PageWithBack>
-      ) : page === 'stores' ? (
-        <PageWithBack onPress={closePage} label={selectedStore ? 'Stores' : regionLabel}>
-          <TriageStoresPanel
-            rows={errors.rows}
-            query={listQuery}
-            month={storePeriod}
-            onMonthChange={setStorePeriod}
-            selectedStore={selectedStore}
-            regionKey={selectedRegion}
-            storeTab={storeInsightTab}
-            onStoreTabChange={onStoreInsightTabChange}
-            onOpenStore={(name) => setSelectedStore(name)}
-            onOpenPo={setOpenRow}
-            session={session}
-          />
-        </PageWithBack>
-      ) : page === 'shipments' ? (
-        <PageWithBack onPress={closePage} label={regionLabel}>
-          <TransfersPage summary={transferSummary} />
-        </PageWithBack>
       ) : page === 'lots' ? (
         <PageWithBack onPress={closePage} label={regionLabel}>
           <LotsPage
@@ -975,14 +634,6 @@ export default function TriageDashboardPanel({
             query={listQuery}
             onOpen={onOpenLot ? (lot) => onOpenLot(lot.id) : undefined}
           />
-        </PageWithBack>
-      ) : page === 'allocation' ? (
-        <PageWithBack onPress={closePage} label={regionLabel}>
-          <AllocationPage rows={scopedAllRows} session={session} />
-        </PageWithBack>
-      ) : page === 'return' ? (
-        <PageWithBack onPress={closePage} label={regionLabel}>
-          <ExpectedReturnPage lots={lots} summary={lotSummary} />
         </PageWithBack>
       ) : selectedRegion ? (
         pages
@@ -1178,11 +829,5 @@ const styles = StyleSheet.create({
   },
   breakBar: {
     marginTop: 2,
-  },
-  allocError: {
-    marginTop: 12,
-    fontFamily,
-    fontSize: 13,
-    color: T.red,
   },
 });
