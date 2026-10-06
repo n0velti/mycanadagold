@@ -15,6 +15,13 @@ import {
 import { formatInsightPercent } from '../lib/triageInsights';
 import { storeMarkColor } from '../lib/storeMarks';
 import {
+  DEFAULT_STORE_REGION,
+  STORE_REGIONS,
+  filterStoresByRegion,
+  regionKeyForStore,
+  sortStoresInRegion,
+} from '../lib/storeCatalog';
+import {
   errorAmountOf,
   errorEmployeeName,
   errorTypeOf,
@@ -416,6 +423,62 @@ function RankRow({ title, meta, value, count, total, last }) {
   );
 }
 
+function regionTabOptions(stores) {
+  return STORE_REGIONS.map((region) => {
+    const rows = filterStoresByRegion(stores, region.key);
+    const count = rows.reduce((sum, row) => sum + (Number(row?.count) || 0), 0);
+    return { key: region.key, label: region.label, ...(count ? { count } : {}) };
+  });
+}
+
+function storeTabOptions(stores, regionKey) {
+  const rows = filterStoresByRegion(stores, regionKey);
+  const names = sortStoresInRegion(
+    rows.map((row) => row.store),
+    regionKey,
+  );
+  return names.map((name) => {
+    const row = rows.find((entry) => entry.store === name);
+    const count = Number(row?.count) || 0;
+    return { key: name, label: name, ...(count ? { count } : {}) };
+  });
+}
+
+function RegionStoreTabs({
+  stores,
+  regionKey,
+  selectedStore,
+  onRegionChange,
+  onStoreChange,
+  padded = false,
+}) {
+  const isMobile = useIsMobile();
+  const regions = useMemo(() => regionTabOptions(stores), [stores]);
+  const storeOptions = useMemo(() => storeTabOptions(stores, regionKey), [regionKey, stores]);
+  return (
+    <View style={[styles.regionChrome, isMobile && styles.regionChromeMobile, padded && isMobile && styles.regionChromePad]}>
+      <TextTabs
+        options={regions}
+        value={regionKey}
+        onChange={onRegionChange}
+        size={isMobile ? 'md' : 'lg'}
+        layout="bar"
+        style={isMobile ? styles.regionTabsMobile : styles.regionTabs}
+      />
+      {storeOptions.length ? (
+        <TextTabs
+          options={storeOptions}
+          value={selectedStore}
+          onChange={onStoreChange}
+          size="md"
+          layout="bar"
+          style={isMobile ? styles.storeSubTabsMobile : styles.storeSubTabs}
+        />
+      ) : null}
+    </View>
+  );
+}
+
 function StoreListPage({ stores, query, onOpen, month }) {
   const visible = useMemo(() => {
     const q = String(query || '')
@@ -439,6 +502,7 @@ function StoreListPage({ stores, query, onOpen, month }) {
 
   return (
     <ChromePage
+      filterPad={false}
       tableHeader={<HomeLikeTableHeader storeLabel="Store" countLabel="Errors" valueLabel="Value" />}
       title=""
       data={visible}
@@ -664,7 +728,7 @@ function StorePage({ store, query, month, tab, onTabChange, onOpen, session }) {
   }
 
   return (
-    <View style={[styles.storePage, isMobile && styles.storePageMobile]}>
+    <View style={styles.storePage}>
       {tabs}
       {page}
     </View>
@@ -682,14 +746,48 @@ export default function TriageStoresPanel({
   onOpenPo,
   session,
 }) {
+  const isMobile = useIsMobile();
   const stores = useMemo(() => listStoreErrorSummaries(rows, month), [month, rows]);
   const store = useMemo(
     () => (selectedStore ? storeErrorSummary(stores, selectedStore) : null),
     [selectedStore, stores],
   );
+  const [regionKey, setRegionKey] = useState(() =>
+    selectedStore ? regionKeyForStore(selectedStore) : STORE_REGIONS[0].key,
+  );
 
+  useEffect(() => {
+    if (!selectedStore) return;
+    const next = regionKeyForStore(selectedStore);
+    if (next !== regionKey) setRegionKey(next);
+  }, [regionKey, selectedStore]);
+
+  const regionStores = useMemo(() => filterStoresByRegion(stores, regionKey), [regionKey, stores]);
+
+  const changeRegion = (key) => {
+    setRegionKey(key || DEFAULT_STORE_REGION);
+    if (selectedStore) onOpenStore?.('');
+  };
+
+  const changeStore = (name) => {
+    if (!name || name === selectedStore) return;
+    onOpenStore?.(name);
+  };
+
+  const tabs = (
+    <RegionStoreTabs
+      stores={stores}
+      regionKey={regionKey}
+      selectedStore={selectedStore}
+      onRegionChange={changeRegion}
+      onStoreChange={changeStore}
+      padded={isMobile}
+    />
+  );
+
+  let body = <StoreListPage stores={regionStores} query={query} month={month} onOpen={onOpenStore} />;
   if (store) {
-    return (
+    body = (
       <StorePage
         store={store}
         query={query}
@@ -700,10 +798,8 @@ export default function TriageStoresPanel({
         session={session}
       />
     );
-  }
-
-  if (selectedStore) {
-    return (
+  } else if (selectedStore) {
+    body = (
       <EmptyState
         icon="storefront-outline"
         title={selectedStore}
@@ -712,7 +808,12 @@ export default function TriageStoresPanel({
     );
   }
 
-  return <StoreListPage stores={stores} query={query} month={month} onOpen={onOpenStore} />;
+  return (
+    <View style={[styles.storePage, isMobile && styles.storePageWithTabs]}>
+      {tabs}
+      {body}
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
@@ -988,8 +1089,42 @@ const styles = StyleSheet.create({
     minHeight: 0,
     backgroundColor: '#fcfcfb',
   },
-  storePageMobile: {
+  storePageWithTabs: {
+    paddingTop: 0,
+  },
+  regionChrome: {
+    flexShrink: 0,
+    backgroundColor: '#fcfcfb',
+  },
+  regionChromeMobile: {
+    paddingRight: 52,
+  },
+  regionChromePad: {
     paddingTop: MOBILE_TOP_FILTER_SIZE + MOBILE_FILTER_INSET,
+  },
+  regionTabs: {
+    paddingHorizontal: 32,
+    paddingTop: 4,
+  },
+  regionTabsMobile: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    paddingLeft: 8,
+    paddingRight: 8,
+    paddingTop: 0,
+    paddingBottom: 0,
+  },
+  storeSubTabs: {
+    paddingHorizontal: 32,
+    paddingTop: 0,
+  },
+  storeSubTabsMobile: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    paddingLeft: 8,
+    paddingRight: 8,
+    paddingTop: 0,
+    paddingBottom: 0,
   },
   storeTabs: {
     paddingHorizontal: 32,
