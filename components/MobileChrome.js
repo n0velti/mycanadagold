@@ -18,7 +18,6 @@ import {
   MOBILE_TOP_FILTER_SIZE,
   NAV_ICON_ACTIVE,
   NAV_ICON_INACTIVE,
-  NAV_TAB_ACTIVE_BG,
   mobileSafeBottom,
   mobileSafeTop,
 } from '../lib/mobileUi';
@@ -309,7 +308,6 @@ export function MobileTabBar({
   messagesUnread = 0,
   profileAvatarUrl = '',
   profileName = '',
-  profileAction = null,
 }) {
   const tabLayouts = useRef({});
   const indicatorX = useRef(new Animated.Value(0)).current;
@@ -478,8 +476,6 @@ export function MobileTabBar({
               const unread = tab.key === 'messages' ? messagesUnread : 0;
               const badge = unread > 99 ? '99+' : unread > 0 ? String(unread) : '';
               const isProfile = tab.key === 'profile';
-              const isHome = tab.key === 'home';
-              const showProfileAction = isProfile && profileAction;
               const rememberLayout = (event) => {
                 const { x, width } = event.nativeEvent.layout;
                 const prev = tabLayouts.current[tab.key];
@@ -490,31 +486,20 @@ export function MobileTabBar({
                 }
               };
               return (
-                <View
-                  key={tab.key}
-                  onLayout={rememberLayout}
-                  style={showProfileAction ? styles.tabProfileCluster : styles.tab}
-                >
+                <View key={tab.key} onLayout={rememberLayout} style={styles.tab}>
                   <Pressable
                     onPress={() => {
                       expandMobileTabBar();
                       onSelect(tab.key);
                     }}
-                    style={showProfileAction ? styles.tabProfileHit : styles.tabFill}
+                    style={styles.tabFill}
                     hitSlop={8}
                     accessibilityRole="button"
                     accessibilityState={{ selected: isActive }}
                     accessibilityLabel={badge ? `${tab.label}, ${badge} unread` : tab.label}
                   >
                     <View style={styles.tabIconWrap}>
-                      {isHome ? (
-                        <Image
-                          source={require('../assets/small_logo.png')}
-                          style={[styles.tabLogo, !isActive && styles.tabLogoDim]}
-                          resizeMode="cover"
-                          accessibilityIgnoresInvertColors
-                        />
-                      ) : isProfile ? (
+                      {isProfile ? (
                         <TabProfileAvatar uri={profileAvatarUrl} name={profileName} active={isActive} />
                       ) : (
                         <Ionicons
@@ -530,7 +515,6 @@ export function MobileTabBar({
                       ) : null}
                     </View>
                   </Pressable>
-                  {showProfileAction ? profileAction : null}
                 </View>
               );
             })}
@@ -850,7 +834,7 @@ const styles = StyleSheet.create({
   },
   tabBarLift: {
     position: 'relative',
-    borderRadius: 999,
+    borderRadius: TAB_BAR_ACTIVE_RADIUS,
     ...Platform.select({
       web: {
         boxShadow: '0 10px 28px rgba(0,0,0,0.14), 0 1px 3px rgba(0,0,0,0.08)',
@@ -866,7 +850,7 @@ const styles = StyleSheet.create({
   },
   tabBarClip: {
     ...StyleSheet.absoluteFillObject,
-    borderRadius: 999,
+    borderRadius: TAB_BAR_ACTIVE_RADIUS,
     overflow: 'hidden',
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: 'rgba(0,0,0,0.08)',
@@ -874,7 +858,7 @@ const styles = StyleSheet.create({
   tabBarBlur: {
     ...StyleSheet.absoluteFillObject,
     overflow: 'hidden',
-    backgroundColor: 'rgba(252,252,251,0.92)',
+    backgroundColor: 'rgba(255,255,255,0.92)',
     ...Platform.select({
       web: {
         backdropFilter: 'saturate(120%) blur(12px)',
@@ -898,7 +882,8 @@ const styles = StyleSheet.create({
     bottom: 5,
     zIndex: 0,
     borderRadius: TAB_BAR_ACTIVE_RADIUS,
-    backgroundColor: NAV_TAB_ACTIVE_BG,
+    borderWidth: 1.5,
+    borderColor: MOBILE.label,
   },
   tab: {
     flex: 1,
@@ -917,32 +902,6 @@ const styles = StyleSheet.create({
       web: { cursor: 'pointer' },
       default: {},
     }),
-  },
-  tabProfileCluster: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 2,
-    minHeight: 44,
-    overflow: 'visible',
-  },
-  tabProfileHit: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 44,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  tabLogo: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-  },
-  tabLogoDim: {
-    opacity: 0.82,
   },
   tabIconWrap: {
     position: 'relative',
