@@ -62,7 +62,6 @@ import {
 import {
   agentWorkPreview,
   bakingBuild,
-  buildProgressLine,
   listAgentBuilds,
   publishAgentBuild,
   publishMessageText,
@@ -2492,6 +2491,7 @@ export default function MessagesScreen({
                     <Text style={styles.threadName} numberOfLines={1}>
                       {conversationTitle(activeThread)}
                     </Text>
+                    {activeThread.isAgent ? null : (
                     <Text
                       style={[
                         styles.threadSeen,
@@ -2499,13 +2499,10 @@ export default function MessagesScreen({
                       ]}
                     >
                       {conversationSubtitle(activeThread, {
-                        typingLabel: aiThinking
-                          ? 'Thinking…'
-                          : activeThread.isAgent
-                            ? buildProgressLine(activeBuild) || agentWorkPreview(activeBuild)
-                            : typingLabel,
+                        typingLabel: aiThinking ? 'Thinking…' : typingLabel,
                       })}
                     </Text>
+                    )}
                   </Pressable>
                 </View>
                 {activeThread.isAgent ? (
