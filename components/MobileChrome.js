@@ -601,11 +601,62 @@ export function MobileNavHeader({
 
 const TAB_ACTIVE_INSET = 4;
 
+function TabResumeAvatar({ uri, name }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setFailed(false);
+  }, [uri]);
+  const showImage = Boolean(uri) && !failed;
+  const initials = initialsFromName(name);
+  return (
+    <View style={[styles.resumeBadge, styles.resumeAvatar, !showImage && styles.resumeAvatarFallback]}>
+      {showImage ? (
+        <Image source={{ uri }} style={styles.resumeAvatarImage} onError={() => setFailed(true)} />
+      ) : (
+        <Text style={styles.resumeAvatarText}>{initials || '?'}</Text>
+      )}
+    </View>
+  );
+}
+
+function TabCornerMark({ app, thread, home }) {
+  if (app?.icon) {
+    return (
+      <View style={[styles.resumeBadge, { backgroundColor: app.tint || '#fff' }]} pointerEvents="none">
+        <Ionicons name={app.icon} size={11} color={app.accent || '#1a1a1a'} />
+      </View>
+    );
+  }
+  if (home?.code) {
+    return (
+      <View style={[styles.resumeBadge, styles.resumeHome, { backgroundColor: home.color || '#1a1a1a' }]} pointerEvents="none">
+        <Text style={styles.resumeHomeText} numberOfLines={1}>
+          {home.code}
+        </Text>
+      </View>
+    );
+  }
+  if (!thread) return null;
+  if (thread.kind === 'person') {
+    return <TabResumeAvatar uri={thread.avatarUrl} name={thread.name || thread.label} />;
+  }
+  const icon = thread.kind === 'agent' ? 'construct' : thread.kind === 'ai' ? 'sparkles' : 'people';
+  const backgroundColor = thread.kind === 'agent' ? '#0F766E' : thread.kind === 'ai' ? '#6B4DE6' : '#007AFF';
+  return (
+    <View style={[styles.resumeBadge, styles.resumeAvatar, { backgroundColor }]} pointerEvents="none">
+      <Ionicons name={icon} size={10} color="#fff" />
+    </View>
+  );
+}
+
 export function MobileTabBar({
   tabs,
   activeKey,
   onSelect,
   messagesUnread = 0,
+  resumeApp = null,
+  resumeThread = null,
+  resumeHome = null,
   profileAvatarUrl = '',
   profileName = '',
 }) {
@@ -796,7 +847,17 @@ export function MobileTabBar({
                     hitSlop={8}
                     accessibilityRole="button"
                     accessibilityState={{ selected: isActive }}
-                    accessibilityLabel={badge ? `${tab.label}, ${badge} unread` : tab.label}
+                    accessibilityLabel={
+                      tab.key === 'tools' && resumeApp?.label
+                        ? `${tab.label}, ${resumeApp.label}`
+                        : tab.key === 'messages' && resumeThread?.label
+                          ? `${tab.label}, ${resumeThread.label}`
+                          : tab.key === 'home' && resumeHome?.label
+                            ? `${tab.label}, ${resumeHome.label}`
+                            : badge
+                              ? `${tab.label}, ${badge} unread`
+                              : tab.label
+                    }
                   >
                     <View style={styles.tabIconWrap}>
                       {isProfile ? (
@@ -808,7 +869,14 @@ export function MobileTabBar({
                           color={isActive ? NAV_ICON_ACTIVE : NAV_ICON_INACTIVE}
                         />
                       )}
-                      {badge ? (
+                      {tab.key === 'tools' && resumeApp ? (
+                        <TabCornerMark app={resumeApp} />
+                      ) : tab.key === 'home' && resumeHome ? (
+                        <TabCornerMark home={resumeHome} />
+                      ) : tab.key === 'messages' && resumeThread ? (
+                        <TabCornerMark thread={resumeThread} />
+                      ) : null}
+                      {badge && !(tab.key === 'messages' && resumeThread) ? (
                         <View style={styles.badge} pointerEvents="none">
                           <Text style={styles.badgeText}>{badge}</Text>
                         </View>
@@ -1342,7 +1410,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    zIndex: 40,
+    zIndex: 60,
     paddingBottom: Platform.OS === 'web' ? TAB_BAR_BOTTOM_GAP : TAB_BAR_BOTTOM_GAP + mobileSafeBottom(),
   },
   tabBarDockFixed: {
@@ -1462,6 +1530,50 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: MOBILE.label,
     letterSpacing: -0.2,
+  },
+  resumeBadge: {
+    position: 'absolute',
+    top: -3,
+    right: -7,
+    width: 18,
+    height: 18,
+    borderRadius: 5,
+    borderWidth: 1.5,
+    borderColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  resumeAvatar: {
+    borderRadius: 9,
+    backgroundColor: '#E5E5EA',
+  },
+  resumeAvatarFallback: {
+    backgroundColor: '#3A3A3C',
+  },
+  resumeAvatarImage: {
+    width: 15,
+    height: 15,
+  },
+  resumeAvatarText: {
+    fontFamily,
+    fontSize: 7,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  resumeHome: {
+    width: undefined,
+    minWidth: 18,
+    height: 16,
+    paddingHorizontal: 2,
+    borderRadius: 4,
+  },
+  resumeHomeText: {
+    fontFamily,
+    fontSize: 8,
+    fontWeight: '700',
+    color: '#fff',
+    letterSpacing: -0.4,
   },
   badge: {
     position: 'absolute',

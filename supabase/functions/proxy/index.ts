@@ -7950,12 +7950,18 @@ async function forwardAgentChangeRequest(
   }
 
   const senderName = await lookupStaffName(staff);
+  const imageUrls = Array.isArray(payload.image_urls)
+    ? payload.image_urls.map((url) => asTrimmedString(url)).filter(Boolean).slice(0, 4)
+    : Array.isArray(payload.imageUrls)
+      ? payload.imageUrls.map((url) => asTrimmedString(url)).filter(Boolean).slice(0, 4)
+      : [];
   const outbound = {
     id: requestId,
     sender_id: staff.userId,
     sender_name: senderName,
     sender_email: staff.email,
     body: asTrimmedString(payload.body) || asTrimmedString(payload.text),
+    image_urls: imageUrls,
     created_at:
       asTrimmedString(payload.created_at) || asTrimmedString(payload.createdAt) || new Date().toISOString(),
   };

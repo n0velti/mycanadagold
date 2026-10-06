@@ -30,7 +30,6 @@ import {
   MOBILE_ICON_COL_WIDTH,
   MOBILE_ROW_BODY_LEADING,
   MOBILE_TOP_FILTER_SIZE,
-  mobileSafeBottom,
   mobileSafeTop,
   useIsMobile,
 } from '../lib/mobileUi';
@@ -313,9 +312,11 @@ export function TriageDrawer({
 
   if (!mounted) return null;
 
-  return (
-    <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose}>
-      <View style={styles.drawerRoot} pointerEvents="box-none">
+  const drawer = (
+      <View
+        style={[styles.drawerRoot, isMobile && Platform.OS === 'web' && styles.drawerRootMobile]}
+        pointerEvents="box-none"
+      >
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close">
           <Animated.View style={[styles.drawerBackdrop, { opacity: backdrop }]} />
         </Pressable>
@@ -403,6 +404,13 @@ export function TriageDrawer({
           <View style={styles.drawerBody}>{children}</View>
         </Animated.View>
       </View>
+  );
+
+  if (isMobile && Platform.OS === 'web') return drawer;
+
+  return (
+    <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose}>
+      {drawer}
     </Modal>
   );
 }
@@ -1454,6 +1462,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'flex-end',
   },
+  drawerRootMobile: Platform.select({
+    web: {
+      position: 'fixed',
+      top: 0,
+      right: 0,
+      bottom: 0,
+      left: 0,
+      zIndex: 45,
+    },
+    default: {},
+  }),
   drawerBackdrop: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.28)',
@@ -1470,7 +1489,7 @@ const styles = StyleSheet.create({
     }),
   },
   drawerPanelMobile: {
-    paddingBottom: Platform.OS === 'ios' ? Math.max(20, mobileSafeBottom()) : 12,
+    paddingBottom: mobileTabBarReserve(),
   },
   drawerBody: {
     flex: 1,
