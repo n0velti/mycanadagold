@@ -17,12 +17,13 @@ import {
   groupPosIntoLots,
   LOT_FINE_METALS,
   lotMatchesQuery,
-  lotPeriodLabel,
+  lotDisplayLabel,
+  lotStoreCount,
   summarizeLotsFineMetals,
 } from '../lib/triageLots';
 import { formatAmount } from '../lib/transactions';
 import { formatErrorAmount } from '../lib/triageDraft';
-import { regionMarkColor, storeNameInRegion, storeRegionByKey } from '../lib/storeCatalog';
+import { regionMarkColor, storeRegionByKey } from '../lib/storeCatalog';
 import {
   currentErrorPeriod,
   listRegionErrorSummaries,
@@ -238,7 +239,7 @@ function LotsPage({ lots, allRows, errors, query, onOpen }) {
       <EmptyState
         icon="folder-outline"
         title="No lots"
-        body="Finish a PO to create its lot. Lots group every PO / SO from the same store and month."
+        body="Finish a PO to create its lot. Lots group every PO / SO from every store in this region for the same month."
       />
     );
   }
@@ -279,10 +280,15 @@ function LotsPage({ lots, allRows, errors, query, onOpen }) {
       keyExtractor={(lot) => lot.id}
       renderItem={({ item: lot, index }) => {
         const progress = lotProgressOf(lot);
+        const stores = lotStoreCount(lot);
         return (
           <ChromeListRow
-            title={lot.id}
-            meta={[lot.location, lotPeriodLabel(lot), `${lot.pos.length} ${lot.pos.length === 1 ? 'PO' : 'POs'}`]
+            title={lotDisplayLabel(lot)}
+            meta={[
+              lot.location,
+              stores ? `${stores} ${stores === 1 ? 'store' : 'stores'}` : null,
+              `${lot.pos.length} ${lot.pos.length === 1 ? 'PO' : 'POs'}`,
+            ]
               .filter(Boolean)
               .join(' · ')}
             value={progress.expected ? `${progress.evaluated}/${progress.expected}` : String(lot.pos.length)}
@@ -410,7 +416,6 @@ export default function TriageDashboardPanel({
 
   const evaluated = useMemo(() => (active ? collectAccuracyTriagePos(triage) : []), [active, triage]);
   const allRows = useMemo(() => (active ? collectAllTriagePos(triage) : []), [active, triage]);
-  const lots = useMemo(() => (active ? groupPosIntoLots(evaluated, allRows) : []), [active, allRows, evaluated]);
   const errors = useMemo(() => (active ? summarizeErrors(evaluated) : { rows: [], count: 0, amount: 0, stores: 0, topType: null, types: [] }), [active, evaluated]);
   const regionSnapshot = useMemo(
     () =>
@@ -419,6 +424,7 @@ export default function TriageDashboardPanel({
         : { regions: [], totals: { evaluated: 0, count: 0, amount: 0, errorRate: 0 } },
     [active, evaluated, storePeriod],
   );
+  const region = selectedRegion ? storeRegionByKey(selectedRegion) : null;
   const scopedEvaluated = useMemo(
     () => (selectedRegion ? evaluated.filter((row) => poInRegion(row, selectedRegion)) : evaluated),
     [evaluated, selectedRegion],
@@ -428,13 +434,8 @@ export default function TriageDashboardPanel({
     [allRows, selectedRegion],
   );
   const scopedLots = useMemo(
-    () =>
-      selectedRegion
-        ? groupPosIntoLots(scopedEvaluated, scopedAllRows).filter((lot) =>
-            storeNameInRegion(lot.location, selectedRegion),
-          )
-        : lots,
-    [lots, scopedAllRows, scopedEvaluated, selectedRegion],
+    () => (region ? groupPosIntoLots(scopedEvaluated, scopedAllRows, { region }) : []),
+    [region, scopedAllRows, scopedEvaluated],
   );
   const scopedErrors = useMemo(
     () => (selectedRegion ? summarizeErrors(scopedEvaluated) : errors),
