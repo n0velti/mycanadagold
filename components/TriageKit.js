@@ -1051,16 +1051,23 @@ export const ChromeListRow = memo(function ChromeListRow({
   extra,
 }) {
   const isMobile = useIsMobile();
-  const iconNode = leading || (
+  const iconTile = leading || (
     <View style={[styles.chromeRowIcon, { backgroundColor: iconColor }]}>
       <Ionicons name={icon} size={isMobile ? 21 : 22} color="#fff" />
     </View>
   );
+  const iconNode = isMobile ? (
+    <View style={styles.chromeRowIconWrap}>{iconTile}</View>
+  ) : (
+    iconTile
+  );
   const chevronNode =
     onPress && chevron ? (
-      <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+      <View style={isMobile ? styles.chromeRowChevronMobile : null}>
+        <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+      </View>
     ) : (
-      <View style={styles.chromeRowChevron} />
+      <View style={isMobile ? styles.chromeRowChevronMobile : styles.chromeRowChevron} />
     );
 
   return (
@@ -1076,31 +1083,33 @@ export const ChromeListRow = memo(function ChromeListRow({
       accessibilityLabel={value ? `${title}, ${value}` : title}
       {...(Platform.OS === 'web' && onPress ? { className: 'cgold-triage-btn' } : null)}
     >
-      <View style={isMobile ? styles.chromeRowIconCol : null}>{iconNode}</View>
+      {iconNode}
       <View
         style={[
           styles.chromeRowBody,
           isMobile && styles.chromeRowBodyMobile,
-          !last && styles.chromeRowDivider,
+          !isMobile && !last && styles.chromeRowDivider,
         ]}
       >
         {isMobile ? (
           <>
             <View style={styles.chromeRowMain}>
-              <View style={styles.chromeRowCopy}>
+              <View style={styles.chromeRowCopyMobile}>
                 <Text style={styles.chromeRowTitleMobile} numberOfLines={1}>
                   {title}
                 </Text>
                 {meta ? (
-                  <Text style={styles.chromeRowMeta} numberOfLines={1}>
+                  <Text style={styles.chromeRowMetaMobile} numberOfLines={1}>
                     {meta}
                   </Text>
                 ) : null}
               </View>
               {value != null && value !== '' ? (
-                <Text style={styles.chromeRowValueMobile} numberOfLines={1}>
-                  {value}
-                </Text>
+                <View style={styles.chromeRowTrailingMobile}>
+                  <Text style={styles.chromeRowValueMobile} numberOfLines={1}>
+                    {value}
+                  </Text>
+                </View>
               ) : null}
               {trailing}
               {chevronNode}
@@ -1130,6 +1139,7 @@ export const ChromeListRow = memo(function ChromeListRow({
           </>
         )}
       </View>
+      {isMobile && !last ? <View style={styles.chromeRowRule} pointerEvents="none" /> : null}
     </Pressable>
   );
 });
@@ -1143,7 +1153,7 @@ export function ChromePage({
   empty,
   footer,
   tableHeader,
-  filterPad = true,
+  filterPad = false,
   data,
   renderItem,
   keyExtractor,
@@ -1151,7 +1161,7 @@ export function ChromePage({
 }) {
   const isMobile = useIsMobile();
   const tabBarScroll = useMobileTabBarScrollProps();
-  const topPad = filterPad ? MOBILE_TOP_FILTER_SIZE + MOBILE_FILTER_INSET : 8;
+  const topPad = filterPad ? MOBILE_TOP_FILTER_SIZE + MOBILE_FILTER_INSET : 0;
   const useVirtualList = isMobile && Array.isArray(data) && typeof renderItem === 'function';
   const list = Array.isArray(data) && typeof renderItem === 'function' ? data : null;
 
@@ -2544,7 +2554,10 @@ const styles = StyleSheet.create({
   chromeListMobile: {
     flexGrow: 1,
     backgroundColor: '#fff',
-    marginTop: 8,
+    marginTop: 0,
+    width: '100%',
+    alignSelf: 'stretch',
+    overflow: 'hidden',
   },
   chromeSheetMobile: {
     borderTopLeftRadius: 0,
@@ -2561,23 +2574,25 @@ const styles = StyleSheet.create({
     paddingTop: 12,
   },
   chromeRowMobile: {
-    alignItems: 'flex-start',
+    position: 'relative',
+    alignItems: 'center',
     gap: MOBILE_ROW_BODY_LEADING,
     minHeight: 72,
     paddingLeft: MOBILE_FILTER_INSET,
     paddingTop: 12,
     paddingBottom: 12,
   },
-  chromeRowIconCol: {
+  chromeRowIconWrap: {
     width: MOBILE_ICON_COL_WIDTH,
+    height: MOBILE_ICON_COL_WIDTH,
     alignItems: 'center',
-    justifyContent: 'flex-start',
+    justifyContent: 'center',
     flexShrink: 0,
   },
   chromeRowBodyMobile: {
     flexDirection: 'column',
     alignItems: 'stretch',
-    gap: 8,
+    gap: 12,
     paddingVertical: 0,
     paddingRight: MOBILE_FILTER_INSET,
   },
@@ -2588,6 +2603,11 @@ const styles = StyleSheet.create({
     minWidth: 0,
     width: '100%',
   },
+  chromeRowCopyMobile: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
   chromeRowTitleMobile: {
     fontFamily: FONT,
     fontSize: 16,
@@ -2595,15 +2615,42 @@ const styles = StyleSheet.create({
     color: MOBILE.label,
     letterSpacing: -0.2,
   },
+  chromeRowMetaMobile: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '400',
+    color: MOBILE.secondary,
+    letterSpacing: 0,
+  },
+  chromeRowTrailingMobile: {
+    width: 108,
+    maxWidth: '46%',
+    flexShrink: 0,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+  },
   chromeRowValueMobile: {
     fontFamily: FONT,
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
     color: MOBILE.label,
+    letterSpacing: 0,
     fontVariant: ['tabular-nums'],
-    flexShrink: 1,
-    maxWidth: '46%',
     textAlign: 'right',
+  },
+  chromeRowChevronMobile: {
+    width: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  chromeRowRule: {
+    position: 'absolute',
+    bottom: 0,
+    left: MOBILE_FILTER_INSET + MOBILE_ICON_COL_WIDTH + MOBILE_ROW_BODY_LEADING,
+    right: 0,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: '#d0d0d0',
   },
   chromeRowExtra: {
     alignSelf: 'flex-start',

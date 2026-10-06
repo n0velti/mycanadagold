@@ -59,6 +59,16 @@ import {
   requestStatusLine,
   subscribeAgentRequests,
 } from '../lib/agentRequests';
+import {
+  bakingBuild,
+  buildProgressLine,
+  listAgentBuilds,
+  publishAgentBuild,
+  publishMessageText,
+  refreshAgentBuild,
+  startAgentBuild,
+  subscribeAgentBuilds,
+} from '../lib/agentBuilds';
 import { fetchAureusEmployee } from '../lib/aureusEmployees';
 import { prepareAiChatSession, sendAiChatMessage, titleAiChat } from '../lib/aiChat';
 import { OPENROUTER_MODELS } from '../lib/openrouter';
@@ -67,6 +77,13 @@ import { useLiveRefresh } from '../lib/liveRefresh';
 import { CANVAS, DESKTOP_TOP_BAR_HEIGHT, mobileSafeBottom } from '../lib/mobileUi';
 import { listStaffProfiles, useAppAccess } from '../lib/permissions';
 import ProfilePhotoModal from './ProfilePhotoModal';
+import {
+  AgentPreviewSheet,
+  AgentPreviewTv,
+  AgentPublishButton,
+  AgentPublishSheet,
+  openPreviewUrl,
+} from './AgentPreviewTv';
 import { usePhoneCalls } from './PhoneCallProvider';
 
 const fontFamily = Platform.select({
@@ -728,6 +745,12 @@ export default function MessagesScreen({
   const [inbox, setInbox] = useState([]);
   const [agentInbox, setAgentInbox] = useState([]);
   const [agentMessages, setAgentMessages] = useState({});
+  const [agentBuilds, setAgentBuilds] = useState({});
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewRefreshing, setPreviewRefreshing] = useState(false);
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [publishAdmins, setPublishAdmins] = useState([]);
   const [contacts, setContacts] = useState([]);
   const [query, setQuery] = useState('');
   const [composeOpen, setComposeOpen] = useState(false);
@@ -760,9 +783,11 @@ export default function MessagesScreen({
   const inboxRef = useRef(inbox);
   const agentInboxRef = useRef(agentInbox);
   const agentMessagesRef = useRef(agentMessages);
+  const agentBuildsRef = useRef(agentBuilds);
   inboxRef.current = inbox;
   agentInboxRef.current = agentInbox;
   agentMessagesRef.current = agentMessages;
+  agentBuildsRef.current = agentBuilds;
   activeIdRef.current = activeId;
   draftRef.current = draft;
   const onUnreadChangeRef = useRef(onUnreadChange);
@@ -1184,6 +1209,11 @@ export default function MessagesScreen({
         delete next[conversationId];
         return next;
       });
+      setAgentBuilds((current) => {
+        const next = { ...current };
+        delete next[conversationId];
+        return next;
+      });
       return;
     }
     setInbox((current) => current.filter((row) => row.conversationId !== conversationId));
@@ -1267,7 +1297,34 @@ export default function MessagesScreen({
           requestStatusLine: requestStatusLine(saved),
         };
         setMessages((current) => mergeSentMessage(current, localKey, tempId, sentMessage));
-        await forwardAgentRequest(saved);
+        // The TV switches to "Baking" right away; the proxy answer replaces this.
+        const previousBuild = agentBuildsRef.current[conversationId] || null;
+        if (!saved.localOnly) {
+          setAgentBuilds((current) => ({
+            ...current,
+            [conversationId]: {
+              ...(previousBuild || bakingBuild(conversationId, myId)),
+              status: 'baking',
+              error: '',
+              localOnly: true,
+            },
+          }));
+        }
+        const [, startedBuild] = await Promise.all([
+          forwardAgentRequest(saved),
+          saved.localOnly
+            ? Promise.resolve(null)
+            : startAgentBuild({ requestId: saved.id, conversationId, senderId: myId }),
+        ]);
+        if (!saved.localOnly) {
+          setAgentBuilds((current) => {
+            const next = { ...current };
+            if (startedBuild) next[conversationId] = startedBuild;
+            else if (previousBuild) next[conversationId] = previousBuild;
+            else delete next[conversationId];
+            return next;
+          });
+        }
         const receivedMessage = { ...sentMessage, deliveryState: 'received' };
         const ack = {
           id: `${saved.id}-ack`,
@@ -1607,6 +1664,148 @@ export default function MessagesScreen({
   refreshAgentRequestsRef.current = refreshAgentRequests;
 
   useLiveRefresh(refreshAgentRequests, 20_000, Boolean(myId));
+
+  const refreshAgentBuilds = useCallback(async () => {
+    try {
+      const rows = await listAgentBuilds();
+      setAgentBuilds((current) => {
+        const next = {};
+        rows.forEach((row) => {
+          next[row.conversationId] = row;
+        });
+        // Keep optimistic "baking" rows the server has not written yet.
+        Object.keys(current).forEach((id) => {
+          if (!next[id] && current[id]?.localOnly) next[id] = current[id];
+        });
+        return next;
+      });
+    } catch {
+      // Table is not on the live project until this migration is applied.
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshAgentBuilds();
+  }, [refreshAgentBuilds]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeAgentBuilds(() => {
+      void refreshAgentBuilds();
+    });
+    return unsubscribe;
+  }, [refreshAgentBuilds]);
+
+  // The proxy only talks to Cursor / Vercel when asked, so poll while anything bakes.
+  const pollBakingBuilds = useCallback(async () => {
+    const baking = Object.values(agentBuildsRef.current).filter(
+      (row) => row && row.status === 'baking' && !row.localOnly,
+    );
+    if (!baking.length) return;
+    const openId = activeIdRef.current;
+    const ordered = baking.slice().sort((left, right) => {
+      if (left.conversationId === openId) return -1;
+      if (right.conversationId === openId) return 1;
+      return 0;
+    });
+    for (const row of ordered.slice(0, 4)) {
+      try {
+        const synced = await refreshAgentBuild(row.conversationId);
+        if (synced) {
+          setAgentBuilds((current) => ({ ...current, [row.conversationId]: synced }));
+        }
+      } catch {
+        // Keep the last known state; the next tick retries.
+      }
+    }
+  }, []);
+
+  const anyBaking = Object.values(agentBuilds).some((row) => row?.status === 'baking' && !row.localOnly);
+  useLiveRefresh(pollBakingBuilds, 15_000, Boolean(myId) && anyBaking);
+
+  const activeBuild = activeThread?.isAgent ? agentBuilds[activeThread.conversationId] || null : null;
+
+  const handlePreviewRefresh = useCallback(async () => {
+    const conversationId = activeIdRef.current;
+    if (!conversationId || previewRefreshing) return;
+    setPreviewRefreshing(true);
+    try {
+      const synced = await refreshAgentBuild(conversationId);
+      if (synced) setAgentBuilds((current) => ({ ...current, [conversationId]: synced }));
+    } catch (err) {
+      setError(err.message || 'Could not check the preview.');
+    } finally {
+      setPreviewRefreshing(false);
+    }
+  }, [previewRefreshing]);
+
+  useEffect(() => {
+    if (!activeThread?.isAgent) {
+      setPreviewOpen(false);
+      setPublishOpen(false);
+    }
+  }, [activeThread?.isAgent, activeId]);
+
+  // Who receives a Publish: every other active System Admin.
+  const loadPublishAdmins = useCallback(async () => {
+    try {
+      const staff = await listStaffProfiles();
+      const admins = staff.filter((person) => person.isSystemAdmin && person.isActive && person.id !== myId);
+      setPublishAdmins(admins);
+      return admins;
+    } catch {
+      setPublishAdmins([]);
+      return [];
+    }
+  }, [myId]);
+
+  const openPublish = useCallback(() => {
+    setPublishOpen(true);
+    void loadPublishAdmins();
+  }, [loadPublishAdmins]);
+
+  const handlePublish = useCallback(async () => {
+    const conversationId = activeIdRef.current;
+    const build = conversationId ? agentBuildsRef.current[conversationId] : null;
+    if (!conversationId || !build || publishing) return;
+    setPublishing(true);
+    setError('');
+    try {
+      const saved = await publishAgentBuild(conversationId);
+      if (saved) setAgentBuilds((current) => ({ ...current, [conversationId]: saved }));
+
+      const admins = publishAdmins.length ? publishAdmins : await loadPublishAdmins();
+      const firstRequest = (agentMessagesRef.current[conversationId] || []).find(
+        (item) => !item.isAssistant && item.body,
+      );
+      const text = publishMessageText({
+        requesterName: myName,
+        requestText: firstRequest?.body || '',
+        build: saved || build,
+      });
+      const failures = [];
+      for (const admin of admins) {
+        try {
+          const dmId = await getOrCreateDm(admin.id);
+          await sendDmMessage(dmId, text);
+        } catch (err) {
+          failures.push(contactName(admin) || admin.fullName || 'an admin');
+          console.warn('publish DM', err instanceof Error ? err.message : err);
+        }
+      }
+      if (admins.length) void refreshInbox();
+      setPublishOpen(false);
+      if (!admins.length) {
+        setError('Marked as ready to publish. No other System Admin is set up to receive the request.');
+      } else if (failures.length) {
+        setError(`Marked as ready to publish, but the message to ${failures.join(', ')} did not send.`);
+      }
+      void refreshAgentRequestsRef.current();
+    } catch (err) {
+      setError(err.message || 'Could not publish that change.');
+    } finally {
+      setPublishing(false);
+    }
+  }, [loadPublishAdmins, myName, publishAdmins, publishing, refreshInbox]);
 
   const threadLive = Boolean(activeId && activeThread);
   const memberIds = new Set((activeThread?.members || []).map((person) => person.id));
@@ -2095,12 +2294,25 @@ export default function MessagesScreen({
                       ]}
                     >
                       {conversationSubtitle(activeThread, {
-                        typingLabel: aiThinking ? 'Thinking…' : typingLabel,
+                        typingLabel: aiThinking
+                          ? 'Thinking…'
+                          : activeThread.isAgent
+                            ? buildProgressLine(activeBuild)
+                            : typingLabel,
                       })}
                     </Text>
                   </Pressable>
                 </View>
-                {activeThread.isAgent ? null : (
+                {activeThread.isAgent ? (
+                  <>
+                    <AgentPublishButton build={activeBuild} onPress={openPublish} busy={publishing} />
+                    <AgentPreviewTv
+                      build={activeBuild}
+                      onPress={() => setPreviewOpen(true)}
+                      onOpenPreview={openPreviewUrl}
+                    />
+                  </>
+                ) : (
                 <Pressable
                   onPress={() => void handleCallThread()}
                   style={styles.infoButton}
@@ -2299,7 +2511,7 @@ export default function MessagesScreen({
                         <Text style={styles.threadEmptyName}>{conversationTitle(activeThread)}</Text>
                         <Text style={styles.emptyHint}>
                           {activeThread.isAgent
-                            ? 'Write what you want changed or built. Send it like a message.'
+                            ? 'Write what you want changed or built. Send it like a message. The TV up top turns green when a preview is ready to open.'
                             : conversationSubtitle(activeThread)}
                         </Text>
                       </View>
@@ -2446,6 +2658,23 @@ export default function MessagesScreen({
           )}
         </View>
       ) : null}
+      <AgentPublishSheet
+        visible={publishOpen && Boolean(activeThread?.isAgent)}
+        build={activeBuild}
+        isMobile={isMobile}
+        adminNames={publishAdmins.map((person) => firstNameOf(person)).filter(Boolean)}
+        onClose={() => setPublishOpen(false)}
+        onConfirm={() => void handlePublish()}
+        busy={publishing}
+      />
+      <AgentPreviewSheet
+        visible={previewOpen && Boolean(activeThread?.isAgent)}
+        build={activeBuild}
+        isMobile={isMobile}
+        onClose={() => setPreviewOpen(false)}
+        onRefresh={() => void handlePreviewRefresh()}
+        refreshing={previewRefreshing}
+      />
       <Modal
         visible={Boolean(menuConversation)}
         transparent

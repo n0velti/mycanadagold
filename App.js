@@ -50,7 +50,10 @@ import {
   watchAureusToken,
 } from './lib/auth';
 import {
+  DEFAULT_APPS_VIEW,
+  loadAppsView,
   loadPinnedTools,
+  persistAppsView,
   persistPinnedTools,
   storeLocationFromSession,
   isRestrictedHomeEmployee,
@@ -124,6 +127,7 @@ import HomeDatePicker from './components/HomeDatePicker';
 import LoginScreen from './components/LoginScreen';
 import ProfileLoginSwitcher from './components/ProfileLoginSwitcher';
 import {
+  MobileFeedTopBar,
   MobileNavHeader,
   MobileSafeTop,
   MobileTabBar,
@@ -165,7 +169,18 @@ import { attributedReviewEmployeeNames, employeeNameMatchesAny } from './lib/bon
 import { captureTokenFromLocation } from './lib/qrCode';
 import { fetchAureusEmployee } from './lib/aureusEmployees';
 import { useDirectMessages } from './lib/messages';
-import { CANVAS, DESKTOP_TOP_BAR_HEIGHT, MOBILE, MOBILE_FILTER_INSET, MOBILE_FILTER_SIZE, NAV_ICON_ACTIVE, NAV_ICON_INACTIVE, NAV_TAB_ACTIVE_BG, mobileSafeBottom } from './lib/mobileUi';
+import {
+  CANVAS,
+  DESKTOP_TOP_BAR_HEIGHT,
+  MOBILE,
+  MOBILE_FEED_TOP_BAR_HEIGHT,
+  MOBILE_FILTER_INSET,
+  MOBILE_FILTER_SIZE,
+  NAV_ICON_ACTIVE,
+  NAV_ICON_INACTIVE,
+  NAV_TAB_ACTIVE_BG,
+  mobileSafeBottom,
+} from './lib/mobileUi';
 import { FONT, FONT_LIGHT, SOHNE_NATIVE_FONTS, SOHNE_WEB_FONTS } from './lib/typography';
 
 // Every tool screen is loaded on demand. On web, Metro turns each `import()`
@@ -766,6 +781,13 @@ function TxTableHeader({
 }
 
 const APP_GRID_MAX_WIDTH = 880;
+const APP_COLUMNS = 6;
+const APP_COLUMNS_MOBILE = 4;
+const APP_ICON_SIZE = 64;
+const APP_GAP = 18;
+const MOBILE_APP_GAP = 12;
+const MOBILE_APP_ICON_MAX = 84;
+const MOBILE_APP_ICON_SCALE = 0.94;
 const MOBILE_BREAKPOINT = 768;
 
 function useIsMobile() {
@@ -1263,26 +1285,65 @@ function ProfileAvatar({ uri, name, size = 24, style, showClock = true, clockMar
   );
 }
 
-function useAppGridMetrics() {
-  const { isMobile } = useHomePageLayout();
-  const iconSize = isMobile ? 60 : 64;
+function useAppGridLayout() {
+  const { width } = useWindowDimensions();
+  const isMobile = width < MOBILE_BREAKPOINT;
+  if (isMobile) {
+    const gap = MOBILE_APP_GAP;
+    const pagePad = MOBILE_FILTER_INSET;
+    const gridWidth = Math.max(0, width - pagePad * 2);
+    const cell = (gridWidth - gap * (APP_COLUMNS_MOBILE - 1)) / APP_COLUMNS_MOBILE;
+    const iconSize = Math.floor(
+      Math.min(MOBILE_APP_ICON_MAX, Math.max(56, cell)) * MOBILE_APP_ICON_SCALE,
+    );
+    return {
+      isMobile: true,
+      columns: APP_COLUMNS_MOBILE,
+      iconSize,
+      radius: Math.round(iconSize * 0.223),
+      glyph: Math.round(iconSize * 0.44),
+      gap,
+      rowGap: 24,
+      maxWidth: undefined,
+      labelBleed: gap / 2,
+    };
+  }
+  if (width < 1240) {
+    const iconSize = 52;
+    const gap = 14;
+    return {
+      isMobile: false,
+      columns: 5,
+      iconSize,
+      radius: Math.round(iconSize * 0.223),
+      glyph: Math.round(iconSize * 0.44),
+      gap,
+      rowGap: 22,
+      maxWidth: 740,
+      labelBleed: gap / 2,
+    };
+  }
+  const iconSize = APP_ICON_SIZE;
+  const gap = APP_GAP;
   return {
-    isMobile,
+    isMobile: false,
+    columns: APP_COLUMNS,
     iconSize,
     radius: Math.round(iconSize * 0.223),
     glyph: Math.round(iconSize * 0.44),
-    cellWidth: isMobile ? 112 : 156,
-    rowGap: isMobile ? 22 : 28,
-    colGap: isMobile ? 10 : 18,
+    gap,
+    rowGap: 26,
+    maxWidth: APP_GRID_MAX_WIDTH,
+    labelBleed: gap / 2,
   };
 }
 
-function ToolCard({ tool, pinned, onPress, onTogglePin, metrics }) {
-  const { iconSize, radius, glyph, cellWidth, isMobile } = metrics;
+function ToolCard({ tool, pinned, onPress, onTogglePin, layout, wrapStyle }) {
+  const { iconSize, radius, glyph, isMobile, labelBleed } = layout;
 
   return (
     <View
-      style={[styles.toolCardWrap, { width: cellWidth }]}
+      style={[styles.toolCardWrap, wrapStyle]}
       {...(Platform.OS === 'web' ? { className: 'cgold-app-icon' } : null)}
     >
       <Pressable
@@ -1333,8 +1394,15 @@ function ToolCard({ tool, pinned, onPress, onTogglePin, metrics }) {
           </Pressable>
         </View>
         <Text
-          style={[styles.appsGridLabel, pinned && styles.appsGridLabelPinned]}
-          numberOfLines={1}
+          style={[
+            styles.appsGridLabel,
+            isMobile && styles.toolCardLabelMobile,
+            pinned && styles.appsGridLabelPinned,
+            labelBleed
+              ? { marginHorizontal: -labelBleed, alignSelf: 'stretch' }
+              : null,
+          ]}
+          numberOfLines={2}
           ellipsizeMode="tail"
           selectable={false}
         >
@@ -1345,30 +1413,33 @@ function ToolCard({ tool, pinned, onPress, onTogglePin, metrics }) {
   );
 }
 
-function ToolsGrid({ tools, pinnedKeys, onOpen, onTogglePin }) {
-  const metrics = useAppGridMetrics();
-  const { cellWidth, rowGap, colGap } = metrics;
+function ToolsGrid({ tools, pinnedKeys, onOpen, onTogglePin, layout }) {
+  const { columns, gap, rowGap } = layout;
+  const wrapStyle = {
+    width: `${100 / columns}%`,
+    maxWidth: `${100 / columns}%`,
+    flexBasis: `${100 / columns}%`,
+    flexGrow: 0,
+    flexShrink: 0,
+    paddingHorizontal: gap / 2,
+    ...Platform.select({
+      web: { minWidth: 0, boxSizing: 'border-box' },
+      default: {},
+    }),
+  };
 
   return (
     <View
       style={[
         styles.toolsGrid,
-        {
-          ...(Platform.OS === 'web'
-            ? {
-                display: 'grid',
-                gridTemplateColumns: `repeat(auto-fit, ${cellWidth}px)`,
-                justifyContent: 'center',
-                justifyItems: 'center',
-                rowGap,
-                columnGap: colGap,
-              }
-            : {
-                justifyContent: 'center',
-                columnGap: colGap,
-                rowGap,
-              }),
-        },
+        { marginHorizontal: -(gap / 2), rowGap },
+        Platform.OS === 'web'
+          ? {
+              display: 'grid',
+              gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+              justifyItems: 'center',
+            }
+          : null,
       ]}
     >
       {tools.map((tool) => (
@@ -1378,9 +1449,197 @@ function ToolsGrid({ tools, pinnedKeys, onOpen, onTogglePin }) {
           pinned={pinnedKeys.includes(tool.key)}
           onPress={() => onOpen(tool)}
           onTogglePin={() => onTogglePin(tool.key)}
-          metrics={metrics}
+          layout={layout}
+          wrapStyle={wrapStyle}
         />
       ))}
+    </View>
+  );
+}
+
+function ToolListRow({ tool, pinned, onPress, onTogglePin, last, compact = false }) {
+  const iconSize = compact ? 46 : 28;
+  const radius = compact ? 13 : 7;
+  const glyphSize = compact ? 22 : 15;
+  const pinControl = (
+    <Pressable
+      style={compact ? styles.toolListPin : styles.appsRowPin}
+      onPress={(event) => {
+        event?.stopPropagation?.();
+        onTogglePin();
+      }}
+      hitSlop={10}
+      accessibilityRole="button"
+      accessibilityLabel={pinned ? `Unpin ${tool.label}` : `Pin ${tool.label}`}
+    >
+      <Ionicons
+        name={pinned ? 'pin' : 'pin-outline'}
+        size={compact ? 18 : 16}
+        color={pinned ? TAB_INK : '#C7C7CC'}
+      />
+    </Pressable>
+  );
+
+  if (compact) {
+    return (
+      <Pressable
+        onPress={onPress}
+        style={({ hovered, pressed }) => [
+          styles.igStoreCard,
+          (hovered || pressed) && styles.igStoreCardPressed,
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel={tool.label}
+      >
+        <View
+          style={[
+            styles.igStoreIcon,
+            {
+              width: iconSize,
+              height: iconSize,
+              borderRadius: radius,
+              backgroundColor: tool.accent,
+            },
+          ]}
+        >
+          <Ionicons name={filledIonicon(tool.icon)} size={glyphSize} color="#fff" />
+        </View>
+        <View style={[styles.igStoreBody, !last && styles.igStoreBodyDivider]}>
+          <View style={styles.igStoreBodyMain}>
+            <View style={styles.igStoreCopy}>
+              <Text style={styles.igStoreName} numberOfLines={1} selectable={false}>
+                {tool.label}
+              </Text>
+              <Text style={styles.igStoreMeta} numberOfLines={1}>
+                {pinned ? 'Pinned' : 'App'}
+              </Text>
+            </View>
+            {pinControl}
+            <Ionicons name="chevron-forward" size={18} color="#c7c7cc" style={styles.igStoreChevron} />
+          </View>
+        </View>
+      </Pressable>
+    );
+  }
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ hovered, pressed }) => [
+        styles.homeStoreRow,
+        (hovered || pressed) && styles.homeStoreRowHovered,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={tool.label}
+    >
+      <View style={styles.homeStoreIconWrap}>
+        <View style={[styles.homeStoreIconTile, { backgroundColor: tool.accent }]}>
+          <Ionicons name={filledIonicon(tool.icon)} size={glyphSize} color="#fff" />
+        </View>
+      </View>
+      <View style={[styles.homeStoreRowBody, !last && styles.homeStoreRowDivider]}>
+        <View style={styles.homeStoreColStore}>
+          <Text style={styles.homeStoreName} numberOfLines={1} selectable={false}>
+            {tool.label}
+          </Text>
+          <Text style={styles.homeStoreMeta} numberOfLines={1}>
+            {pinned ? 'Pinned to sidebar' : 'Available'}
+          </Text>
+        </View>
+        <View style={styles.appsRowStatus}>
+          <Text
+            style={[styles.homeStoreMeta, pinned && styles.appsRowStatusPinned]}
+            numberOfLines={1}
+          >
+            {pinned ? 'Pinned' : ''}
+          </Text>
+        </View>
+        {pinControl}
+        <View style={styles.homeStoreChevron}>
+          <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+        </View>
+      </View>
+    </Pressable>
+  );
+}
+
+function ToolsList({ tools, pinnedKeys, onOpen, onTogglePin, compact = false }) {
+  if (compact) {
+    return (
+      <View style={styles.igStoreList}>
+        {tools.map((tool, index) => (
+          <ToolListRow
+            key={tool.key}
+            tool={tool}
+            pinned={pinnedKeys.includes(tool.key)}
+            onPress={() => onOpen(tool)}
+            onTogglePin={() => onTogglePin(tool.key)}
+            last={index === tools.length - 1}
+            compact
+          />
+        ))}
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.homeStoreTableCard}>
+      <View style={[styles.homeStoreRow, styles.homeStoreHeaderRow]}>
+        <View style={styles.homeStoreIconSpacer} />
+        <View style={[styles.homeStoreRowBody, styles.homeStoreHeaderRule]}>
+          <Text style={[styles.homeStoreHeader, styles.homeStoreColStore]}>App</Text>
+          <Text style={[styles.homeStoreHeader, styles.appsRowStatus]}>Status</Text>
+          <View style={styles.appsRowPinSpacer} />
+          <View style={styles.homeStoreChevron} />
+        </View>
+      </View>
+      {tools.map((tool, index) => (
+        <ToolListRow
+          key={tool.key}
+          tool={tool}
+          pinned={pinnedKeys.includes(tool.key)}
+          onPress={() => onOpen(tool)}
+          onTogglePin={() => onTogglePin(tool.key)}
+          last={index === tools.length - 1}
+        />
+      ))}
+    </View>
+  );
+}
+
+function AppsViewToggle({ appsView, onSelectView, sheet = false, compact = false }) {
+  return (
+    <View
+      style={[
+        styles.appsViewToggle,
+        sheet && styles.appsViewToggleSheet,
+        compact && styles.appsViewToggleCompact,
+      ]}
+      accessibilityRole="tablist"
+    >
+      {[
+        { key: 'list', icon: 'list', label: 'List' },
+        { key: 'grid', icon: 'grid', label: 'Grid' },
+      ].map((option) => {
+        const selected = appsView === option.key;
+        return (
+          <Pressable
+            key={option.key}
+            style={[
+              styles.appsViewToggleButton,
+              sheet && styles.appsViewToggleButtonSheet,
+              compact && styles.appsViewToggleButtonCompact,
+              selected && styles.appsViewToggleButtonActive,
+            ]}
+            onPress={() => onSelectView(option.key)}
+            accessibilityRole="tab"
+            accessibilityLabel={option.label}
+            accessibilityState={{ selected }}
+          >
+            <Ionicons name={option.icon} size={16} color={selected ? TAB_INK : MOBILE.secondary} />
+          </Pressable>
+        );
+      })}
     </View>
   );
 }
@@ -1388,23 +1647,108 @@ function ToolsGrid({ tools, pinnedKeys, onOpen, onTogglePin }) {
 function AppsLibrary({
   tools,
   pinnedKeys,
+  appsView,
+  query,
+  onQueryChange,
+  onSelectView,
   onOpen,
   onTogglePin,
+  appGrid,
 }) {
   const { isMobile, pagePad, contentMaxWidth } = useHomePageLayout();
   const tabBarScroll = useMobileTabBarScrollProps();
+  const searching = Boolean(query.trim());
+  const emptyCopy = searching
+    ? `No apps match “${query.trim()}”.`
+    : 'No apps are available.';
+
+  const viewToggle = (
+    <AppsViewToggle
+      appsView={appsView}
+      onSelectView={onSelectView}
+      sheet={isMobile}
+      compact={isMobile}
+    />
+  );
+
+  const searchField = isMobile ? (
+    <View style={styles.igHomeMobileAppsSearch}>
+      <Ionicons name="search" size={15} color={MOBILE.secondary} />
+      <TextInput
+        style={styles.igHomeMobileAppsSearchInput}
+        value={query}
+        onChangeText={onQueryChange}
+        placeholder="Search apps"
+        placeholderTextColor={MOBILE.secondary}
+        autoCapitalize="none"
+        autoCorrect={false}
+        clearButtonMode="while-editing"
+        returnKeyType="search"
+      />
+      {query ? (
+        <Pressable onPress={() => onQueryChange('')} hitSlop={8} accessibilityLabel="Clear search">
+          <Ionicons name="close-circle" size={16} color="#c7c7cc" />
+        </Pressable>
+      ) : null}
+    </View>
+  ) : (
+    <View style={[styles.igHomeChromeChip, styles.igHomeChromeSearchDesktop, styles.appsChromeSearch]}>
+      <BlurView
+        intensity={32}
+        tint="light"
+        style={styles.igHomeChromeSearch}
+        {...(Platform.OS === 'web' ? { className: 'cgold-home-chip-blur' } : null)}
+      >
+        <Ionicons name="search" size={16} color={MOBILE.secondary} />
+        <TextInput
+          style={styles.igHomeChromeSearchInput}
+          value={query}
+          onChangeText={onQueryChange}
+          placeholder="Search apps"
+          placeholderTextColor={MOBILE.secondary}
+          autoCapitalize="none"
+          autoCorrect={false}
+          clearButtonMode="while-editing"
+          returnKeyType="search"
+        />
+        {query ? (
+          <Pressable onPress={() => onQueryChange('')} hitSlop={8} accessibilityLabel="Clear search">
+            <Ionicons name="close-circle" size={18} color="#c7c7cc" />
+          </Pressable>
+        ) : null}
+      </BlurView>
+    </View>
+  );
 
   const appsBody =
     tools.length === 0 ? (
-      <Text style={[styles.toolsEmpty, { paddingTop: 28 }]}>
-        No apps are available.
+      <Text style={[styles.toolsEmpty, isMobile ? { paddingTop: 20 } : { paddingTop: 28 }]}>
+        {emptyCopy}
       </Text>
+    ) : appsView === 'grid' ? (
+      <View
+        style={[
+          styles.toolsSection,
+          styles.toolsSectionMobile,
+          isMobile && { marginTop: 0, maxWidth: '100%' },
+          !isMobile && appGrid.maxWidth ? { maxWidth: appGrid.maxWidth } : null,
+        ]}
+      >
+        <ToolsGrid
+          tools={tools}
+          pinnedKeys={pinnedKeys}
+          onOpen={onOpen}
+          onTogglePin={onTogglePin}
+          layout={appGrid}
+        />
+      </View>
     ) : (
-      <ToolsGrid
+      <ToolsList
         tools={tools}
         pinnedKeys={pinnedKeys}
         onOpen={onOpen}
         onTogglePin={onTogglePin}
+        compact={isMobile}
       />
     );
 
@@ -1425,6 +1769,45 @@ function AppsLibrary({
           !isMobile && styles.igHomeDesktopFeed,
         ]}
       >
+        {isMobile ? (
+          <View pointerEvents="box-none" style={styles.igHomeMobileTopBarShell}>
+            <View style={styles.igHomeMobileTopBarClip}>
+              <BlurView
+                intensity={32}
+                tint="light"
+                pointerEvents="none"
+                style={styles.igHomeMobileTopBarBlur}
+                {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-bar' } : null)}
+              />
+              <View style={styles.igHomeMobileTopBarRow}>
+                <View style={styles.igHomeMobileBrand} accessibilityLabel="Canada Gold">
+                  <HomeGlyph size={22} />
+                </View>
+                <View style={styles.igHomeMobileTopBarTrailing}>
+                  {searchField}
+                  {viewToggle}
+                </View>
+              </View>
+            </View>
+          </View>
+        ) : (
+          <View
+            pointerEvents="box-none"
+            style={[styles.igHomeChromeRow, styles.igHomeChromeRowDesktop, styles.appsChromeRow]}
+          >
+            <View style={styles.appsViewChrome}>
+              <BlurView
+                intensity={32}
+                tint="light"
+                style={styles.appsViewChromeBlur}
+                {...(Platform.OS === 'web' ? { className: 'cgold-apps-view-blur' } : null)}
+              >
+                <AppsViewToggle appsView={appsView} onSelectView={onSelectView} />
+              </BlurView>
+            </View>
+            {searchField}
+          </View>
+        )}
         <View style={styles.igHomeStage}>
           <ScrollView
             style={[styles.toolsScroll, styles.igHomeOverlayScroll]}
@@ -1433,7 +1816,7 @@ function AppsLibrary({
               styles.igHomeScrollContent,
               {
                 flexGrow: 1,
-                paddingTop: isMobile ? 24 : TOP_BAR_HEIGHT + 28,
+                paddingTop: isMobile ? MOBILE_FEED_TOP_BAR_HEIGHT : TOP_BAR_HEIGHT + 28,
                 paddingBottom: isMobile ? mobileTabBarReserve() + 24 : 36,
               },
             ]}
@@ -8333,9 +8716,20 @@ export default function App() {
   const [triageBatch, setTriageBatch] = useState(null);
   const [triageNav, setTriageNav] = useState(null);
   const [triageMobileHeader, setTriageMobileHeader] = useState(null);
+  const handleTriageMobileHeader = useCallback((next) => {
+    setTriageMobileHeader((prev) => {
+      if (!next && !prev) return prev;
+      if (prev?.trailing === next?.trailing) return prev;
+      return next;
+    });
+  }, []);
   const [triageCrumbs, setTriageCrumbs] = useState([]);
+  const [triageMobileOverlay, setTriageMobileOverlay] = useState(false);
   const [settingsPanel, setSettingsPanel] = useState(null);
   const [pinnedKeys, setPinnedKeys] = useState([]);
+  const [toolsQuery, setToolsQuery] = useState('');
+  const [appsView, setAppsView] = useState(DEFAULT_APPS_VIEW);
+  const appGrid = useAppGridLayout();
   const [searchQuery, setSearchQuery] = useState('');
   const searchEnterRef = useRef(null);
   const [searchDoc, setSearchDoc] = useState(null);
@@ -8507,7 +8901,10 @@ export default function App() {
   const pinnedTools = pinnedKeys
     .map((key) => TOOL_CARDS.find((tool) => tool.key === key))
     .filter((tool) => tool && hasApp(tool.key));
-  const filteredTools = TOOL_CARDS.filter((tool) => hasApp(tool.key));
+  const normalizedToolsQuery = toolsQuery.trim().toLowerCase();
+  const matchesToolsQuery = (tool) =>
+    !normalizedToolsQuery || tool.label.toLowerCase().includes(normalizedToolsQuery);
+  const filteredTools = TOOL_CARDS.filter((tool) => hasApp(tool.key) && matchesToolsQuery(tool));
 
   const resetToSignedOut = useCallback(() => {
     clearInventoryCache();
@@ -8516,6 +8913,8 @@ export default function App() {
     clearPhoneHistoryCache();
     setSession(null);
     setPinnedKeys([]);
+    setToolsQuery('');
+    setAppsView(DEFAULT_APPS_VIEW);
     setAccessByRole(null);
     setOwnUserAccess(null);
     setLoginId('');
@@ -8585,8 +8984,9 @@ export default function App() {
       if (cancelled) return;
 
       if (restored?.token) {
-        const [pins, [access, userAccessMap]] = await Promise.all([
+        const [pins, view, [access, userAccessMap]] = await Promise.all([
           loadPinnedTools(restored, TOOL_KEYS),
+          loadAppsView(restored),
           accessPromise ||
             Promise.all([loadRoleAppAccess(ACCESS_CATALOG_KEYS), loadUserAppAccessMap(ACCESS_CATALOG_KEYS)]),
         ]);
@@ -8595,6 +8995,7 @@ export default function App() {
         const userAccess = (ownUserId && userAccessMap.byUser[ownUserId]) || null;
         setSession(restored);
         setPinnedKeys(pins);
+        setAppsView(view);
         setAccessByRole(access.byRole);
         setOwnUserAccess(userAccess);
         cancelWarmup = warmSessionCaches(restored);
@@ -8607,6 +9008,7 @@ export default function App() {
       } else {
         setSession(null);
         setPinnedKeys([]);
+        setAppsView(DEFAULT_APPS_VIEW);
         setAccessByRole(null);
         setOwnUserAccess(null);
       }
@@ -8890,6 +9292,18 @@ export default function App() {
     setSettingsPanel(null);
   }, [hasApp]);
 
+  const selectAppsView = (view) => {
+    if (view === appsView) return;
+    setAppsView(view);
+    if (session?.token) {
+      persistAppsView(session, view).catch(() => {});
+      setSession((current) => {
+        if (!current?.profile) return current;
+        return { ...current, profile: { ...current.profile, appsView: view } };
+      });
+    }
+  };
+
   const togglePin = (toolKey) => {
     setPinnedKeys((current) => {
       const next = current.includes(toolKey)
@@ -8929,13 +9343,15 @@ export default function App() {
 
     try {
       const next = await loginRequest(loginId, password);
-      const [pins, access, userAccess] = await Promise.all([
+      const [pins, view, access, userAccess] = await Promise.all([
         loadPinnedTools(next, TOOL_KEYS),
+        loadAppsView(next),
         loadRoleAppAccess(ACCESS_CATALOG_KEYS),
         loadOwnUserAppAccess(next.supabaseUserId || next.profile?.id, ACCESS_CATALOG_KEYS),
       ]);
       setSession(next);
       setPinnedKeys(pins);
+      setAppsView(view);
       setAccessByRole(access.byRole);
       setOwnUserAccess(userAccess);
       warmSessionCaches(next);
@@ -9335,7 +9751,8 @@ export default function App() {
                   setTriageBatch(context || null);
                 }}
                 onNavTabs={setTriageNav}
-                onMobileHeader={setTriageMobileHeader}
+                onMobileHeader={handleTriageMobileHeader}
+                onMobileOverlayChange={setTriageMobileOverlay}
                 onCrumbsChange={setTriageCrumbs}
               />
             ) : activeTool.key === 'messages' ? (
@@ -9361,8 +9778,13 @@ export default function App() {
         <AppsLibrary
           tools={filteredTools}
           pinnedKeys={pinnedKeys}
+          appsView={appsView}
+          query={toolsQuery}
+          onQueryChange={setToolsQuery}
+          onSelectView={selectAppsView}
           onOpen={openTool}
           onTogglePin={togglePin}
+          appGrid={appGrid}
         />
       );
     }
@@ -9476,6 +9898,38 @@ export default function App() {
     activeTool?.key === 'settings'
       ? settingsSubPanels[settingsPanel] || activeTool?.label
       : activeTool?.label;
+  const mobileToolSegments = useMemo(() => {
+    if (!activeTool) return [];
+    if (activeTool.key === 'triage') {
+      return (triageCrumbs || []).map((crumb) => ({
+        label: crumb.label,
+        onPress: crumb.onPress,
+      }));
+    }
+    if (activeTool.key === 'phone' && triageBatch?.storeName) {
+      return [
+        {
+          label: 'Phone',
+          onPress: triageStoreBack || undefined,
+        },
+        { label: triageBatch.storeName },
+      ];
+    }
+    return [{ label: mobileToolTitle }];
+  }, [activeTool, mobileToolTitle, triageBatch?.storeName, triageCrumbs, triageStoreBack]);
+  const handleMobileToolBrandPress = useCallback(() => {
+    if (activeTool?.key === 'settings' && settingsPanel) {
+      setSettingsPanel(null);
+      return;
+    }
+    if ((activeTool?.key === 'triage' || activeTool?.key === 'phone') && triageStoreBack) {
+      triageStoreBack();
+      return;
+    }
+    setActiveTool(null);
+    setSettingsPanel(null);
+    rememberOpenTool('');
+  }, [activeTool?.key, rememberOpenTool, settingsPanel, triageStoreBack]);
   const canvasMobileTab =
     isMobile &&
     (activeTab === 'home' ||
@@ -9506,7 +9960,6 @@ export default function App() {
       activeTab !== 'search' &&
       !isAppsLibrary &&
       !showingMessages &&
-      !(activeTab === 'tools' && activeTool?.key === 'triage') &&
       styles.contentMobileTabInset,
     isMobile &&
       !isFullBleedTool &&
@@ -9577,38 +10030,11 @@ export default function App() {
               onBack={() => selectTab('home')}
             />
           ) : null}
-          {activeTab === 'tools' && activeTool && !triageMobileHeader?.hideAppHeader ? (
-            <MobileNavHeader
-              title={
-                activeTool.key === 'triage' && triageBatch?.dateLabel
-                  ? triageBatch.dateLabel
-                  : activeTool.key === 'phone' && triageBatch?.storeName
-                    ? triageBatch.storeName
-                    : mobileToolTitle
-              }
-              subtitle={
-                activeTool.key === 'triage' && triageBatch?.storeNames
-                  ? triageBatch.storeNames
-                  : undefined
-              }
-              titleAction={
-                activeTool.key === 'triage' ? triageMobileHeader?.titleAction : null
-              }
+          {activeTab === 'tools' && activeTool && !(activeTool.key === 'triage' && triageMobileOverlay) ? (
+            <MobileFeedTopBar
+              segments={mobileToolSegments}
+              onBrandPress={handleMobileToolBrandPress}
               trailing={activeTool.key === 'triage' ? triageMobileHeader?.trailing : null}
-              backSide="left"
-              onBack={() => {
-                if (activeTool.key === 'settings' && settingsPanel) {
-                  setSettingsPanel(null);
-                  return;
-                }
-                if ((activeTool.key === 'triage' || activeTool.key === 'phone') && triageStoreBack) {
-                  triageStoreBack();
-                  return;
-                }
-                setActiveTool(null);
-                setSettingsPanel(null);
-                rememberOpenTool('');
-              }}
             />
           ) : null}
           <View style={contentStyle}>{renderContent()}</View>
@@ -12401,6 +12827,16 @@ const styles = StyleSheet.create({
       },
     }),
   },
+  appsViewToggleCompact: {
+    height: 32,
+    alignSelf: 'center',
+    flexShrink: 0,
+  },
+  appsViewToggleButtonCompact: {
+    width: 30,
+    height: 28,
+    borderRadius: 7,
+  },
   toolsScroll: {
     flex: 1,
     minHeight: 0,
@@ -12488,10 +12924,10 @@ const styles = StyleSheet.create({
   toolCard: {
     width: '100%',
     alignItems: 'center',
-    gap: 6,
+    gap: 7,
     paddingTop: 4,
-    paddingBottom: 0,
-    paddingHorizontal: 2,
+    paddingBottom: 2,
+    paddingHorizontal: 0,
     ...Platform.select({
       web: {
         cursor: 'pointer',
@@ -12545,8 +12981,16 @@ const styles = StyleSheet.create({
     color: '#1d1d1f',
     letterSpacing: -0.08,
     textAlign: 'center',
-    lineHeight: 15,
+    lineHeight: 16,
+    minHeight: 32,
     width: '100%',
+    ...Platform.select({
+      web: {
+        overflowWrap: 'anywhere',
+        wordBreak: 'normal',
+      },
+      default: {},
+    }),
   },
   appsGridLabelPinned: {
     fontWeight: '600',
@@ -14191,6 +14635,31 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginTop: 1,
     flexShrink: 0,
+  },
+  igHomeMobileAppsSearch: {
+    flex: 1,
+    flexShrink: 1,
+    minWidth: 64,
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 32,
+    paddingHorizontal: 10,
+    gap: 6,
+    borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: 'transparent',
+  },
+  igHomeMobileAppsSearchInput: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: '#1a1a1a',
+    letterSpacing: -0.2,
+    paddingVertical: 0,
+    outlineStyle: 'none',
   },
   igHomeHeroShell: {
     alignSelf: 'stretch',

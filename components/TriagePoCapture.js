@@ -19,12 +19,36 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { assetToDataUrl } from '../lib/avatarCartoon';
-import { mobileSafeBottom, mobileSafeTop, useIsMobile } from '../lib/mobileUi';
-import { formatErrorAmount, isListedErrorType, normalizeReviewImages } from '../lib/triageDraft';
-import { listTriageErrorTypes, mergeErrorTypes, saveTriageErrorType } from '../lib/triageErrorTypes';
+import {
+  CANVAS,
+  MOBILE,
+  MOBILE_FILTER_INSET,
+  mobileSafeBottom,
+  useIsMobile,
+} from '../lib/mobileUi';
+import { mobileTabBarReserve } from '../lib/mobileTabBar';
+import {
+  MobileFeedAddButton,
+  MobileFeedDangerButton,
+  MobileFeedOutlineButton,
+  MobileFeedTopBar,
+  MobileFeedTopBarActions,
+} from './MobileChrome';
+import {
+  ERROR_TYPES,
+  formatErrorAmount,
+  isListedErrorType,
+  normalizeReviewImages,
+} from '../lib/triageDraft';
+import {
+  deleteTriageErrorType,
+  listTriageErrorTypes,
+  mergeErrorTypes,
+  saveTriageErrorType,
+} from '../lib/triageErrorTypes';
 import { uploadTriageErrorPhotos } from '../lib/triageErrorPhotos';
 import { lookupPurchasesByPoNumber, normalizePoNumber, readPoNumberFromPhoto } from '../lib/triagePoRead';
-import { formatAmount } from '../lib/transactions';
+import { formatAmount, formatUnitCost, purchaseBuyerName } from '../lib/transactions';
 import {
   allocationDraftFromPo,
   isAllocationComplete,
@@ -40,8 +64,10 @@ import {
   triageEditorFromSession,
 } from '../lib/transferWorkflow';
 import { getVideoElement, useWebcam, webcamSupported } from '../lib/webcam';
+import { isBullionResaleLine, isScrapJewelleryLine } from '../lib/priceCheck';
 import { catalogNameForPurchaseLine, fetchWebsitePrices } from '../lib/websitePrices';
-import { FONT, T } from './TriageKit';
+import { ChromeListRow, confirmDestructive, FONT, T } from './TriageKit';
+import { PoThumb } from './TriageTable';
 import TriageAllocationForm from './TriageAllocationForm';
 import TriageCorrectionImages from './TriageCorrectionImages';
 
@@ -122,6 +148,55 @@ function weightLabel(line) {
   return unit ? `${shown} ${unit}` : shown;
 }
 
+function lineQuantityLabel(line) {
+  const q = line?.quantity;
+  if (q == null || q === '') return '';
+  const n = Number(q);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  const shown =
+    n % 1 === 0 ? n.toLocaleString('en-CA') : n.toLocaleString('en-CA', { maximumFractionDigits: 3 });
+  return `Qty ${shown}`;
+}
+
+/** Scrap/jewellery: scale weight. Named bullion (SML, maple, etc.): count. */
+function lineShowsGramWeight(line) {
+  if (isBullionResaleLine(line)) return false;
+  if (isScrapJewelleryLine(line)) return true;
+  const w = Number(line?.weight);
+  if (!Number.isFinite(w) || w <= 0) return false;
+  const payout = Number(line?.payout);
+  if (Number.isFinite(payout) && payout > 0) return true;
+  return false;
+}
+
+function lineUnitCostLabel(line) {
+  const unitType = isBullionResaleLine(line) ? 'ea' : line?.unitType;
+  return formatUnitCost(line?.unitPrice, unitType);
+}
+
+function lineDetailMeta(line) {
+  const parts = [];
+  if (lineShowsGramWeight(line)) {
+    const weight = weightLabel(line);
+    if (weight) parts.push(weight);
+  } else {
+    const qty = lineQuantityLabel(line);
+    if (qty) parts.push(qty);
+  }
+  const unitCost = lineUnitCostLabel(line);
+  if (unitCost && unitCost !== '—') parts.push(unitCost);
+  return parts;
+}
+
+function PoOrderTotal({ amount }) {
+  return (
+    <View style={styles.poTotalRow}>
+      <Text style={styles.poTotalLabel}>Total</Text>
+      <Text style={styles.poTotalValue}>{moneyLabel(amount)}</Text>
+    </View>
+  );
+}
+
 function moneyLabel(amount) {
   if (amount == null || !Number.isFinite(Number(amount))) return '—';
   return formatAmount(amount);
@@ -175,6 +250,97 @@ function actorNameOf(session) {
   return triageEditorFromSession(session)?.name || '';
 }
 
+function poBuyerLabel(po) {
+  return purchaseBuyerName(po) || '—';
+}
+
+function PoDetailMetaTable({ po }) {
+  const rows = [
+    ['Date', po?.dateLabel || '—'],
+    ['Store', po?.storeName || '—'],
+    ['Customer', po?.customerName || '—'],
+    ['Buyer', poBuyerLabel(po)],
+  ];
+  return (
+    <View style={styles.poMetaGroup}>
+      {rows.map(([label, value], index) => (
+        <View
+          key={label}
+          style={[styles.poMetaRow, index === rows.length - 1 && styles.poMetaRowLast]}
+        >
+          <Text style={styles.poMetaLabel}>{label}</Text>
+          <Text style={styles.poMetaValue} numberOfLines={2}>
+            {value}
+          </Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function lineImageUrls(line, po, extraPhotoUri = '') {
+  const fromLine = Array.isArray(line?.imageUrls) ? line.imageUrls.filter(Boolean) : [];
+  if (fromLine.length) return fromLine;
+  const pricedLines = Array.isArray(po?.pricedLines) ? po.pricedLines : [];
+  const poUrls = [
+    ...(Array.isArray(po?.imageUrls) ? po.imageUrls : []),
+    String(extraPhotoUri || '').trim(),
+  ].filter(Boolean);
+  if (pricedLines.length === 1 && poUrls.length) return poUrls;
+  return [];
+}
+
+function PoLineItemsBlock({ lines, buyCatalog, po, photoUri }) {
+  if (!lines.length) return null;
+  return (
+    <View style={styles.poLineGroup}>
+      {lines.map((line, index) => {
+        const title = lineTitle(line, buyCatalog);
+        const urls = lineImageUrls(line, po, photoUri);
+        const meta = lineDetailMeta(line);
+        const last = index === lines.length - 1;
+        return (
+          <View key={`${title}-${index}`} style={[styles.poLineRow, last && styles.poLineRowLast]}>
+            <View style={styles.poLineThumbCell}>
+              <PoThumb urls={urls} label={title} size={44} />
+            </View>
+            <View style={styles.poLineBody}>
+              <View style={styles.poLineTop}>
+                <Text style={styles.poLineName} numberOfLines={2}>
+                  {title}
+                </Text>
+                <Text style={styles.poLineTotal}>{moneyLabel(line.lineTotal)}</Text>
+              </View>
+              {meta.length ? (
+                <Text style={styles.poLineMeta} numberOfLines={2}>
+                  {meta.join(' · ')}
+                </Text>
+              ) : null}
+            </View>
+          </View>
+        );
+      })}
+      <PoOrderTotal amount={po?.amount} />
+    </View>
+  );
+}
+
+function CaptureTopBar({ segments, onBack, trailing, overlay = false }) {
+  return (
+    <View
+      style={[styles.captureTopShell, overlay && styles.captureTopOverlay]}
+      pointerEvents="box-none"
+    >
+      <MobileFeedTopBar
+        flushTop
+        segments={segments}
+        onBrandPress={onBack}
+        trailing={trailing}
+      />
+    </View>
+  );
+}
+
 function AddedToast({ label, onDone }) {
   const opacity = useRef(new Animated.Value(0)).current;
   const drop = useRef(new Animated.Value(-16)).current;
@@ -211,6 +377,207 @@ function AddedToast({ label, onDone }) {
         </Text>
       </BlurView>
     </Animated.View>
+  );
+}
+
+function isBuiltinErrorType(label) {
+  const key = String(label || '').trim().toLowerCase();
+  return ERROR_TYPES.some((row) => row.toLowerCase() === key);
+}
+
+function MobileErrorTypePicker({ types, value, onChange, onAdd, onRemove, disabled }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [addError, setAddError] = useState('');
+  const [savingType, setSavingType] = useState(false);
+  const needle = query.trim().toLowerCase();
+  const shown = needle ? types.filter((label) => label.toLowerCase().includes(needle)) : types;
+
+  const pick = (label) => {
+    onChange(label === value ? '' : label);
+    setOpen(false);
+    setQuery('');
+    setAdding(false);
+  };
+
+  const submit = async () => {
+    const label = draft.trim();
+    if (!isListedErrorType(label) || savingType) return;
+    setSavingType(true);
+    setAddError('');
+    try {
+      const saved = await onAdd(label);
+      onChange(saved || label);
+      setDraft('');
+      setAdding(false);
+      setQuery('');
+      setOpen(false);
+    } catch (err) {
+      setAddError(err?.message || 'Could not save that error type.');
+    } finally {
+      setSavingType(false);
+    }
+  };
+
+  const tryRemoveType = (label) => {
+    if (disabled || !onRemove || isBuiltinErrorType(label)) return;
+    confirmDestructive(
+      'Remove error type',
+      `Remove “${label}” for everyone?`,
+      () => void onRemove(label),
+      'Remove',
+    );
+  };
+
+  return (
+    <>
+      <View style={[styles.poMetaRow, styles.errorPickerRow]}>
+        <Text style={styles.poMetaLabel}>Error type</Text>
+        <Pressable
+          style={styles.errorPickerValueHit}
+          onPress={() => !disabled && setOpen(true)}
+          disabled={disabled}
+          accessibilityRole="button"
+          accessibilityLabel="Select error type"
+        >
+          <Text
+            style={[styles.errorPickerValue, !value && styles.errorFieldPlaceholder]}
+            numberOfLines={1}
+          >
+            {value || 'Select…'}
+          </Text>
+        </Pressable>
+        {value ? (
+          <Pressable
+            onPress={() => onChange('')}
+            disabled={disabled}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Clear error type"
+          >
+            <Ionicons name="close-circle-outline" size={20} color={MOBILE.secondary} />
+          </Pressable>
+        ) : null}
+        <Pressable
+          onPress={() => !disabled && setOpen(true)}
+          disabled={disabled}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Open error type list"
+        >
+          <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+        </Pressable>
+      </View>
+      <Modal visible={open} animationType="slide" onRequestClose={() => setOpen(false)}>
+        <KeyboardAvoidingView
+          style={styles.errorTypeSheet}
+          behavior={Platform.OS === 'android' ? undefined : 'padding'}
+        >
+          <View style={styles.errorTypeSheetHeader}>
+            <Pressable onPress={() => setOpen(false)} hitSlop={8} accessibilityLabel="Close">
+              <Text style={styles.errorTypeSheetClose}>Cancel</Text>
+            </Pressable>
+            <Text style={styles.errorTypeSheetTitle}>Error type</Text>
+            <View style={styles.errorTypeSheetHeaderSpacer} />
+          </View>
+          <View style={[styles.poMetaGroup, styles.errorTypeSearchGroup]}>
+            <TextInput
+              style={styles.errorTypeSearch}
+              value={query}
+              onChangeText={setQuery}
+              placeholder="Search"
+              placeholderTextColor={MOBILE.secondary}
+              editable={!disabled}
+              autoCorrect={false}
+              clearButtonMode="while-editing"
+              accessibilityLabel="Search error types"
+            />
+          </View>
+          <ScrollView
+            style={styles.errorTypeSheetBody}
+            contentContainerStyle={styles.errorTypeSheetScroll}
+            keyboardShouldPersistTaps="handled"
+          >
+            <View style={styles.poMetaGroup}>
+              {shown.map((label, index) => {
+                const selected = value === label;
+                const last = index === shown.length - 1 && !adding;
+                const removable = onRemove && !isBuiltinErrorType(label);
+                return (
+                  <View
+                    key={label}
+                    style={[styles.poMetaRow, last && styles.poMetaRowLast, styles.errorTypeOption]}
+                  >
+                    <Pressable
+                      style={styles.errorTypeOptionMain}
+                      onPress={() => pick(label)}
+                      disabled={disabled}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected }}
+                    >
+                      <Text style={styles.errorTypeOptionLabel} numberOfLines={2}>
+                        {label}
+                      </Text>
+                      {selected ? <Ionicons name="checkmark" size={20} color={MOBILE.label} /> : null}
+                    </Pressable>
+                    {removable ? (
+                      <Pressable
+                        onPress={() => tryRemoveType(label)}
+                        disabled={disabled}
+                        hitSlop={8}
+                        style={styles.errorTypeRemoveBtn}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Remove ${label}`}
+                      >
+                        <Ionicons name="trash-outline" size={18} color="#B91C1C" />
+                      </Pressable>
+                    ) : null}
+                  </View>
+                );
+              })}
+              {shown.length === 0 && !adding ? (
+                <Text style={styles.errorTypeEmpty}>No matching types</Text>
+              ) : null}
+              {adding ? (
+                <View style={[styles.poMetaRow, styles.poMetaRowLast, styles.errorTypeAddRow]}>
+                  <TextInput
+                    style={styles.errorTypeAddInput}
+                    value={draft}
+                    onChangeText={setDraft}
+                    placeholder="New error type"
+                    placeholderTextColor={MOBILE.secondary}
+                    editable={!disabled && !savingType}
+                    autoFocus
+                    onSubmitEditing={() => void submit()}
+                    accessibilityLabel="New error type"
+                  />
+                  <Pressable onPress={() => void submit()} disabled={disabled || savingType}>
+                    <Text style={styles.errorTypeAddSave}>{savingType ? 'Saving…' : 'Add'}</Text>
+                  </Pressable>
+                </View>
+              ) : (
+                <Pressable
+                  style={[styles.poMetaRow, styles.poMetaRowLast, styles.errorTypeAddLink]}
+                  onPress={() => {
+                    setAdding(true);
+                    setAddError('');
+                  }}
+                  disabled={disabled}
+                  accessibilityRole="button"
+                  accessibilityLabel="Add error type"
+                >
+                  <Ionicons name="add" size={20} color={MOBILE.label} />
+                  <Text style={styles.errorTypeAddLinkText}>Add error type</Text>
+                </Pressable>
+              )}
+            </View>
+            {addError ? <Text style={styles.errorTypeAddError}>{addError}</Text> : null}
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </Modal>
+    </>
   );
 }
 
@@ -309,7 +676,7 @@ function ErrorTypePicker({ types, value, onChange, onAdd, disabled }) {
   );
 }
 
-export default function TriagePoCapture({ session, openerRef }) {
+export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }) {
   const isMobile = useIsMobile();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const liveCamera = !prefersDeviceCamera() && webcamSupported();
@@ -333,6 +700,7 @@ export default function TriagePoCapture({ session, openerRef }) {
   const [lineDrafts, setLineDrafts] = useState([]);
   const [savedErrorTypes, setSavedErrorTypes] = useState([]);
   const errorTypes = mergeErrorTypes(savedErrorTypes);
+  const errorPhotosRef = useRef(null);
 
   useEffect(() => {
     if (!errorMode) return undefined;
@@ -352,6 +720,16 @@ export default function TriagePoCapture({ session, openerRef }) {
     setSavedErrorTypes((current) => mergeErrorTypes([...current, saved]));
     return saved;
   };
+
+  const removeSharedErrorType = async (label) => {
+    await deleteTriageErrorType(label);
+    setSavedErrorTypes((current) =>
+      current.filter((row) => String(row || '').trim().toLowerCase() !== String(label || '').trim().toLowerCase()),
+    );
+    setErrorType((current) =>
+      String(current || '').trim().toLowerCase() === String(label || '').trim().toLowerCase() ? '' : current,
+    );
+  };
   const [resultError, setResultError] = useState('');
   const [finishing, setFinishing] = useState(false);
   const [notice, setNotice] = useState('');
@@ -360,10 +738,17 @@ export default function TriagePoCapture({ session, openerRef }) {
   const [buyCatalog, setBuyCatalog] = useState(null);
   const [previewBox, setPreviewBox] = useState({ width: 0, height: 0 });
   const [poEntry, setPoEntry] = useState(false);
+  const [errorSheetOpen, setErrorSheetOpen] = useState(false);
   const requestRef = useRef(0);
   const openRef = useRef(false);
   openRef.current = open;
-  const onSnapCamera = !isMobile || (!resultOpen && !allocating && matches.length <= 1);
+
+  useEffect(() => {
+    onFlowOpenChange?.(open);
+    return () => onFlowOpenChange?.(false);
+  }, [onFlowOpenChange, open]);
+  const onSnapCamera =
+    !isMobile || (!resultOpen && !allocating && !errorSheetOpen && matches.length <= 1);
   const { videoRef, cameraState, startCamera, stopStream, setVideoNode } = useWebcam({
     active: open && liveCamera && !photoUri && onSnapCamera,
     autoStart: false,
@@ -416,6 +801,7 @@ export default function TriagePoCapture({ session, openerRef }) {
     setToast(null);
     setNeedsSettings(false);
     setPoEntry(false);
+    setErrorSheetOpen(false);
     return undefined;
   }, [open, stopStream]);
 
@@ -460,6 +846,7 @@ export default function TriagePoCapture({ session, openerRef }) {
     setErrorImages([]);
     setLineDrafts(lineDraftsFromPo(row?.pricedLines));
     setResultError('');
+    setErrorSheetOpen(false);
     setResultOpen(true);
   };
 
@@ -594,16 +981,49 @@ export default function TriagePoCapture({ session, openerRef }) {
     setLineDrafts([]);
     setResultError('');
     setPoEntry(false);
+    setErrorSheetOpen(false);
     if (isMobile) return;
     if (liveCamera) void startCamera();
     else void launchDeviceCamera();
+  };
+
+  const goPoDetailsFromError = () => {
+    setErrorSheetOpen(false);
+    setResultError('');
+  };
+
+  const goScanPoCamera = () => {
+    requestRef.current += 1;
+    setErrorSheetOpen(false);
+    setResultOpen(false);
+    setAllocating(false);
+    setPendingError(false);
+    setPo(null);
+    setMatches([]);
+    setResultError('');
+    setPoInput('');
+    setPhotoUri('');
+    setPhase('');
+    setError('');
+    setBusy(false);
+    setPoEntry(false);
+    setErrorMode(false);
+    setErrorNote('');
+    setErrorType('');
+    setErrorAmount('');
+    setErrorImages([]);
+    setLineDrafts([]);
   };
 
   const leaveMobilePage = () => {
     if (allocating) {
       setAllocating(false);
       setResultError('');
-      if (pendingError) setErrorMode(true);
+      if (pendingError) setErrorSheetOpen(true);
+      return;
+    }
+    if (errorSheetOpen) {
+      goPoDetailsFromError();
       return;
     }
     if (errorMode) {
@@ -636,7 +1056,27 @@ export default function TriagePoCapture({ session, openerRef }) {
     setAllocDraft(allocationDraftFromPo(po, (line) => lineTitle(line, buyCatalog)));
     setAllocating(true);
     setErrorMode(false);
+    setErrorSheetOpen(false);
     setResultError('');
+  };
+
+  const saveErrorSheet = () => {
+    const note = errorNote.trim();
+    const amount = errorAmount.trim();
+    const photos = normalizeReviewImages(errorImages);
+    const lineEdits = changedLineEdits(lineDrafts, lines, buyCatalog);
+    if (!note && !errorType && !amount && !photos.length && !lineEdits.length) {
+      setResultError('Pick an error type, add details, amount, or a photo.');
+      return;
+    }
+    setPendingError(true);
+    setErrorSheetOpen(false);
+    setResultError('');
+  };
+
+  const promptErrorPhoto = () => {
+    if (finishing) return;
+    errorPhotosRef.current?.addImage?.();
   };
 
   const finishPo = async ({ skipAllocation = false } = {}) => {
@@ -758,145 +1198,81 @@ export default function TriagePoCapture({ session, openerRef }) {
       </View>
     </>
   ) : null;
-  const poPictures = [
-    ...new Set(
-      [...(Array.isArray(po?.imageUrls) ? po.imageUrls : []), photoUri]
-        .map((value) => (typeof value === 'string' ? value : value?.uri))
-        .map((value) => String(value || '').trim())
-        .filter(Boolean),
-    ),
-  ];
-  const poPhotoStrip = poPictures.length ? (
-    <View style={styles.poPhotos}>
-      {poPictures.map((uri) => (
-        <Image
-          key={uri}
-          source={{ uri }}
-          style={styles.poPhoto}
-          resizeMode="contain"
-          accessibilityLabel="PO photo"
-        />
-      ))}
-    </View>
-  ) : null;
   const destLot = po ? lotFromPo(po) : null;
   const placeLine = destLot
     ? `Adds to ${destLot.id}`
     : 'Adds this purchase to its lot on Results.';
   if (openerRef) openerRef.current = openCapture;
 
-  const pagePad = Platform.OS === 'web' ? { className: 'cgold-mobile-sheet-top' } : null;
-  const dockPad = 16 + mobileSafeBottom();
+  const dockPad = 16 + mobileTabBarReserve() + mobileSafeBottom();
+  const poRefLabel = po?.reference || 'PO';
+  const mobileErrorForm = (
+    <>
+      <View style={[styles.poMetaGroup, styles.errorFormGroup]}>
+        <MobileErrorTypePicker
+          types={errorTypes}
+          value={errorType}
+          onChange={setErrorType}
+          onAdd={addSharedErrorType}
+          onRemove={removeSharedErrorType}
+          disabled={finishing}
+        />
+        <View style={[styles.poMetaRow, styles.errorFieldBlock]}>
+          <Text style={styles.errorFieldCaption}>Error dollar amount</Text>
+          <TextInput
+            style={styles.errorAmountInput}
+            value={errorAmount}
+            onChangeText={setErrorAmount}
+            placeholder="0.00"
+            placeholderTextColor={MOBILE.secondary}
+            keyboardType="decimal-pad"
+            editable={!finishing}
+            accessibilityLabel="Error dollar amount"
+          />
+        </View>
+        <View style={[styles.poMetaRow, styles.poMetaRowLast, styles.errorFieldBlock]}>
+          <Text style={styles.errorFieldCaption}>Details</Text>
+          <TextInput
+            style={styles.errorDetailsInput}
+            value={errorNote}
+            onChangeText={setErrorNote}
+            placeholder="What went wrong?"
+            placeholderTextColor={MOBILE.secondary}
+            multiline
+            editable={!finishing}
+            accessibilityLabel="Error details"
+          />
+        </View>
+      </View>
+      <View style={[styles.poMetaGroup, styles.errorPhotoGroup]}>
+        <TriageCorrectionImages
+          ref={errorPhotosRef}
+          images={errorImages}
+          onChange={setErrorImages}
+          hideHeading
+          hideActions
+          insetCard
+          readOnly={finishing}
+        />
+      </View>
+    </>
+  );
   const mobileFlow = (
     <View style={styles.mobileRoot}>
-      {resultOpen && po && errorMode ? (
-        <KeyboardAvoidingView
-          style={styles.page}
-          behavior={Platform.OS === 'android' ? undefined : 'padding'}
-        >
-          <View style={[styles.pageNav, Platform.OS !== 'web' && styles.pageNavNative]} {...pagePad}>
-            <Pressable
-              style={styles.pageBack}
-              onPress={() => {
-                setErrorMode(false);
-                setResultError('');
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="Back to PO details"
-            >
-              <Ionicons name="chevron-back" size={26} color="#1a1a1a" />
-              <Text style={styles.pageBackText}>Details</Text>
-            </Pressable>
-            <Text style={styles.pageTitle}>Error</Text>
-          </View>
-          <ScrollView
-            style={styles.pageBody}
-            contentContainerStyle={styles.pageScroll}
-            keyboardShouldPersistTaps="handled"
-          >
-            <ErrorTypePicker
-              types={errorTypes}
-              value={errorType}
-              onChange={setErrorType}
-              onAdd={addSharedErrorType}
-              disabled={finishing}
-            />
-            <TextInput
-              style={styles.appleNote}
-              value={errorNote}
-              onChangeText={setErrorNote}
-              placeholder="Error Details"
-              placeholderTextColor="#8E8E93"
-              multiline
-              editable={!finishing}
-              accessibilityLabel="Error note"
-            />
-            <Text style={styles.sectionLabel}>Set amount</Text>
-            <TextInput
-              style={styles.amountInput}
-              value={errorAmount}
-              onChangeText={setErrorAmount}
-              placeholder="0.00"
-              placeholderTextColor="#8E8E93"
-              keyboardType="decimal-pad"
-              editable={!finishing}
-              accessibilityLabel="Set amount"
-            />
-            {lineEditor}
-            {poPhotoStrip}
-            <Text style={styles.sectionLabel}>Photos</Text>
-            <TriageCorrectionImages
-              images={errorImages}
-              onChange={setErrorImages}
-              showSourceButtons
-              captureButtons
-              hideHeading
-              hideActions
-              readOnly={finishing}
-            />
-            {resultError ? <Text style={styles.error}>{resultError}</Text> : null}
-          </ScrollView>
-          <View style={[styles.pageFooter, { paddingBottom: dockPad }]}>
-            <Pressable
-              style={[styles.pageSecondary, finishing && styles.lookupOff]}
-              onPress={() => void finishPo({ skipAllocation: true })}
-              disabled={finishing}
-              accessibilityRole="button"
-              accessibilityLabel="Skip allocation and finish"
-            >
-              <Text style={styles.pageSecondaryText}>{finishing ? 'Saving…' : 'Skip allocation'}</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.pagePrimary, finishing && styles.lookupOff]}
-              onPress={() => goAllocate(true)}
-              disabled={finishing}
-              accessibilityRole="button"
-              accessibilityLabel="Next"
-            >
-              <Text style={styles.pagePrimaryText}>Next</Text>
-            </Pressable>
-          </View>
-        </KeyboardAvoidingView>
-      ) : allocating && po ? (
+      {allocating && po ? (
         <View style={styles.page}>
-          <View style={[styles.pageNav, Platform.OS !== 'web' && styles.pageNavNative]} {...pagePad}>
-            <Pressable
-              style={styles.pageBack}
-              onPress={leaveMobilePage}
-              accessibilityRole="button"
-              accessibilityLabel="Back to PO"
-            >
-              <Ionicons name="chevron-back" size={26} color="#1a1a1a" />
-              <Text style={styles.pageBackText}>PO</Text>
-            </Pressable>
-            <Text style={styles.pageTitle} numberOfLines={1}>Allocate</Text>
-          </View>
-          <ScrollView style={styles.pageBody} contentContainerStyle={styles.pageScroll}>
-            <Text style={styles.resultKicker}>{po.reference || 'PO'}</Text>
-            <Text style={styles.detailMeta}>
+          <CaptureTopBar
+            segments={[{ label: 'Scan PO' }, { label: poRefLabel }, { label: 'Allocate' }]}
+            onBack={leaveMobilePage}
+          />
+          <ScrollView style={styles.pageBody} contentContainerStyle={styles.pageScrollFeed}>
+            <Text style={styles.pageSectionTitle}>Allocation</Text>
+            <Text style={styles.pageDetailNote}>
               Split each line by object weight. Totals must match before you finish, or skip allocation.
             </Text>
-            <TriageAllocationForm draft={allocDraft} onChange={setAllocDraft} disabled={finishing} />
+            <View style={styles.feedSheet}>
+              <TriageAllocationForm draft={allocDraft} onChange={setAllocDraft} disabled={finishing} />
+            </View>
             {resultError ? <Text style={styles.error}>{resultError}</Text> : null}
           </ScrollView>
           <View style={[styles.pageFooter, { paddingBottom: dockPad }]}>
@@ -920,117 +1296,107 @@ export default function TriagePoCapture({ session, openerRef }) {
             </Pressable>
           </View>
         </View>
-      ) : resultOpen && po ? (
-        <View style={styles.page}>
-          <View style={[styles.pageNav, Platform.OS !== 'web' && styles.pageNavNative]} {...pagePad}>
-            <Pressable
-              style={styles.pageBack}
-              onPress={() => setResultOpen(false)}
-              accessibilityRole="button"
-              accessibilityLabel="Back to camera"
-            >
-              <Ionicons name="chevron-back" size={26} color="#1a1a1a" />
-              <Text style={styles.pageBackText}>Camera</Text>
-            </Pressable>
-            <Text style={styles.pageTitle} numberOfLines={1}>{po.reference || 'PO'}</Text>
-          </View>
-          <ScrollView style={styles.pageBody} contentContainerStyle={styles.pageScroll}>
-            <Text style={styles.resultKicker}>Total</Text>
-            <Text style={styles.pageTotal}>{moneyLabel(po.amount)}</Text>
-            <Text style={styles.detailMeta}>
-              {[po.dateLabel, po.storeName, po.customerName].filter(Boolean).join(' · ')}
-            </Text>
-            {lines.length ? (
-              <View style={styles.group}>
-                {lines.map((line, index) => {
-                  const weight = weightLabel(line);
-                  return (
-                    <View
-                      key={`${line.name}-${index}`}
-                      style={[styles.groupRow, index === lines.length - 1 && styles.groupRowLast]}
-                    >
-                      <View style={styles.lineCopy}>
-                        <Text style={styles.lineName} numberOfLines={2}>
-                          {lineTitle(line, buyCatalog)}
-                        </Text>
-                        {weight ? <Text style={styles.lineWeight}>{weight}</Text> : null}
-                      </View>
-                      <Text style={styles.lineMoney}>{moneyLabel(line.lineTotal)}</Text>
-                    </View>
-                  );
-                })}
-              </View>
-            ) : (
-              <Text style={styles.detailMeta}>No line items on this purchase.</Text>
-            )}
-            <Text style={styles.placeLine}>{placeLine}</Text>
+      ) : errorSheetOpen && resultOpen && po ? (
+        <KeyboardAvoidingView
+          style={styles.page}
+          behavior={Platform.OS === 'android' ? undefined : 'padding'}
+        >
+          <CaptureTopBar
+            segments={[
+              { label: 'Scan PO', onPress: goScanPoCamera },
+              { label: poRefLabel, onPress: goPoDetailsFromError },
+              { label: 'Error' },
+            ]}
+            onBack={goPoDetailsFromError}
+            trailing={
+              <MobileFeedTopBarActions>
+                <MobileFeedOutlineButton
+                  label="Photo"
+                  leadingIcon="add"
+                  onPress={promptErrorPhoto}
+                  disabled={finishing}
+                  accessibilityLabel="Add photo"
+                />
+                <MobileFeedAddButton
+                  label="Save"
+                  onPress={saveErrorSheet}
+                  disabled={finishing}
+                  accessibilityLabel="Save error"
+                />
+              </MobileFeedTopBarActions>
+            }
+          />
+          <ScrollView
+            style={styles.pageBody}
+            contentContainerStyle={[styles.pageScrollFeed, { paddingBottom: dockPad }]}
+            keyboardShouldPersistTaps="handled"
+          >
+            {mobileErrorForm}
             {resultError ? <Text style={styles.error}>{resultError}</Text> : null}
           </ScrollView>
-          <View style={[styles.pageFooter, styles.pageFooterWrap, { paddingBottom: dockPad }]}>
-            <Pressable
-              style={styles.pageSecondary}
-              onPress={() => {
-                setErrorMode(true);
-                setResultError('');
-              }}
-              disabled={finishing}
-              accessibilityRole="button"
-              accessibilityLabel="Add error"
-            >
-              <Text style={styles.pageSecondaryText}>Add error</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.pageSecondary, finishing && styles.lookupOff]}
-              onPress={() => void finishPo({ skipAllocation: true })}
-              disabled={finishing}
-              accessibilityRole="button"
-              accessibilityLabel="Skip allocation and finish"
-            >
-              <Text style={styles.pageSecondaryText}>{finishing ? 'Saving…' : 'Skip allocation'}</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.pagePrimary, finishing && styles.lookupOff]}
-              onPress={() => goAllocate(false)}
-              disabled={finishing}
-              accessibilityRole="button"
-              accessibilityLabel="Next"
-            >
-              <Text style={styles.pagePrimaryText}>Next</Text>
-            </Pressable>
-          </View>
+        </KeyboardAvoidingView>
+      ) : resultOpen && po ? (
+        <View style={styles.page}>
+          <CaptureTopBar
+            segments={[{ label: 'Scan PO' }, { label: poRefLabel }]}
+            onBack={leaveMobilePage}
+            trailing={
+              <MobileFeedTopBarActions>
+                <MobileFeedDangerButton
+                  label={pendingError ? 'Edit error' : 'Add error'}
+                  onPress={() => {
+                    setResultError('');
+                    setErrorSheetOpen(true);
+                  }}
+                  disabled={finishing}
+                  accessibilityLabel={pendingError ? 'Edit error' : 'Add error'}
+                />
+                <MobileFeedAddButton
+                  label="Next"
+                  onPress={() => goAllocate(Boolean(pendingError))}
+                  disabled={finishing}
+                  accessibilityLabel="Next"
+                />
+              </MobileFeedTopBarActions>
+            }
+          />
+          <ScrollView
+            style={styles.pageBody}
+            contentContainerStyle={[styles.pageScrollFeed, { paddingBottom: dockPad }]}
+          >
+            <PoDetailMetaTable po={po} />
+            {lines.length ? (
+              <>
+                <Text style={styles.pageSectionTitle}>Line items</Text>
+                <PoLineItemsBlock lines={lines} buyCatalog={buyCatalog} po={po} photoUri={photoUri} />
+              </>
+            ) : (
+              <Text style={styles.pageDetailNote}>No line items on this purchase.</Text>
+            )}
+            {resultError ? <Text style={styles.error}>{resultError}</Text> : null}
+          </ScrollView>
         </View>
       ) : matches.length > 1 ? (
         <View style={styles.page}>
-          <View style={[styles.pageNav, Platform.OS !== 'web' && styles.pageNavNative]} {...pagePad}>
-            <Pressable
-              style={styles.pageBack}
-              onPress={() => setMatches([])}
-              accessibilityRole="button"
-              accessibilityLabel="Back to camera"
-            >
-              <Ionicons name="chevron-back" size={26} color="#1a1a1a" />
-              <Text style={styles.pageBackText}>Camera</Text>
-            </Pressable>
-            <Text style={styles.pageTitle}>Choose PO</Text>
-          </View>
-          <ScrollView style={styles.pageBody} contentContainerStyle={styles.pageScroll}>
-            <Text style={styles.detailMeta}>More than one purchase uses this number.</Text>
-            <View style={styles.group}>
+          <CaptureTopBar
+            segments={[{ label: 'Scan PO' }, { label: 'Choose PO' }]}
+            onBack={leaveMobilePage}
+          />
+          <ScrollView style={styles.pageBody} contentContainerStyle={styles.pageScrollFeed}>
+            <Text style={styles.pageSectionTitle}>Choose purchase</Text>
+            <Text style={styles.pageDetailNote}>More than one purchase uses this number.</Text>
+            <View style={styles.feedList}>
               {matches.map((row, index) => (
-                <Pressable
+                <ChromeListRow
                   key={row.id}
-                  style={[styles.groupRow, index === matches.length - 1 && styles.groupRowLast]}
+                  title={row.reference}
+                  meta={matchPoMeta(row)}
+                  value={moneyLabel(row.amount)}
+                  icon="document-text-outline"
+                  iconColor="#1F7A9A"
                   onPress={() => openResult(row)}
-                  accessibilityRole="button"
-                >
-                  <View style={styles.lineCopy}>
-                    <Text style={styles.groupLabel}>{row.reference}</Text>
-                    <Text style={styles.lineWeight} numberOfLines={1}>
-                      {matchPoMeta(row)}
-                    </Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={18} color="#C7C7CC" />
-                </Pressable>
+                  last={index === matches.length - 1}
+                />
               ))}
             </View>
           </ScrollView>
@@ -1057,29 +1423,21 @@ export default function TriagePoCapture({ session, openerRef }) {
               })
             ) : null}
           </View>
+          <CaptureTopBar
+            overlay
+            segments={[{ label: 'Scan PO' }]}
+            onBack={close}
+            trailing={
+              photoUri ? (
+                <MobileFeedOutlineButton label="Retake" onPress={retake} accessibilityLabel="Retake photo" />
+              ) : null
+            }
+          />
           <KeyboardAvoidingView
             style={styles.snapOverlay}
             behavior={Platform.OS === 'android' ? undefined : 'padding'}
             pointerEvents="box-none"
           >
-            <View
-              style={[styles.snapTop, Platform.OS !== 'web' && styles.pageNavNative]}
-              {...pagePad}
-              pointerEvents="box-none"
-            >
-              <Pressable onPress={close} hitSlop={10} accessibilityRole="button" accessibilityLabel="Close">
-                <Ionicons name="close" size={34} color="#fff" />
-              </Pressable>
-              <View style={styles.snapTopActions}>
-                {photoUri ? (
-                  <Pressable onPress={retake} disabled={busy} accessibilityRole="button" accessibilityLabel="Retake photo">
-                    <Text style={styles.snapRetake}>Retake</Text>
-                  </Pressable>
-                ) : (
-                  <View style={styles.snapRetakeSpacer} />
-                )}
-              </View>
-            </View>
             {toast ? <AddedToast key={toast.id} label={toast.label} onDone={() => setToast(null)} /> : null}
             {phase || error ? (
               <View style={styles.snapStatus} pointerEvents="none">
@@ -1182,6 +1540,7 @@ export default function TriagePoCapture({ session, openerRef }) {
       transparent={!isMobile}
       animationType={isMobile ? 'slide' : 'fade'}
       presentationStyle={isMobile ? 'fullScreen' : undefined}
+      statusBarTranslucent={isMobile}
       onRequestClose={isMobile ? leaveMobilePage : close}
     >
       {isMobile ? (
@@ -1405,31 +1764,9 @@ export default function TriagePoCapture({ session, openerRef }) {
               </>
             ) : (
               <>
-            <Text style={styles.resultKicker}>Total</Text>
-            <Text style={styles.resultTotal}>{moneyLabel(po?.amount)}</Text>
-            <Text style={styles.detailMeta}>
-              {[po?.dateLabel, po?.storeName, po?.customerName].filter(Boolean).join(' · ')}
-            </Text>
+            <PoDetailMetaTable po={po} />
             {lines.length ? (
-              <View style={styles.resultLines}>
-                {lines.map((line, index) => {
-                  const weight = weightLabel(line);
-                  return (
-                    <View
-                      key={`${line.name}-${index}`}
-                      style={[styles.line, index === lines.length - 1 && styles.lineLast]}
-                    >
-                      <View style={styles.lineCopy}>
-                        <Text style={styles.lineName} numberOfLines={2}>
-                          {lineTitle(line, buyCatalog)}
-                        </Text>
-                        {weight ? <Text style={styles.lineWeight}>{weight}</Text> : null}
-                      </View>
-                      <Text style={styles.lineMoney}>{moneyLabel(line.lineTotal)}</Text>
-                    </View>
-                  );
-                })}
-              </View>
+              <PoLineItemsBlock lines={lines} buyCatalog={buyCatalog} po={po} photoUri={photoUri} />
             ) : (
               <Text style={styles.detailMeta}>No line items on this purchase.</Text>
             )}
@@ -2027,9 +2364,20 @@ const styles = StyleSheet.create({
     color: '#1d1d1f',
     fontVariant: ['tabular-nums'],
   },
+  captureTopShell: {
+    flexShrink: 0,
+  },
+  captureTopOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    width: '100%',
+    zIndex: 30,
+  },
   mobileRoot: {
     flex: 1,
-    backgroundColor: '#000',
+    backgroundColor: CANVAS,
     ...Platform.select({
       web: { height: '100vh' },
       default: {},
@@ -2241,43 +2589,201 @@ const styles = StyleSheet.create({
   },
   page: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
-  },
-  pageNav: {
-    position: 'relative',
-    minHeight: 52,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#f5f5f5',
-  },
-  pageNavNative: {
-    paddingTop: mobileSafeTop(),
-  },
-  pageBack: {
-    position: 'absolute',
-    left: 4,
-    bottom: 4,
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 44,
-    paddingRight: 8,
-    zIndex: 1,
-  },
-  pageBackText: {
-    fontFamily: FONT,
-    fontSize: 17,
-    color: '#1a1a1a',
-    marginLeft: -2,
-  },
-  pageTitle: {
-    fontFamily: FONT,
-    fontSize: 17,
-    fontWeight: '600',
-    color: '#000',
-    maxWidth: '46%',
+    backgroundColor: CANVAS,
   },
   pageBody: {
     flex: 1,
+  },
+  pageScrollFeed: {
+    paddingBottom: 28,
+    gap: 8,
+    flexGrow: 1,
+  },
+  pageSectionTitle: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '400',
+    color: MOBILE.secondary,
+    letterSpacing: -0.08,
+    textTransform: 'uppercase',
+    paddingHorizontal: MOBILE_FILTER_INSET,
+    paddingTop: 8,
+  },
+  pageDetailNote: {
+    fontFamily: FONT,
+    fontSize: 13,
+    lineHeight: 18,
+    color: MOBILE.secondary,
+    paddingHorizontal: MOBILE_FILTER_INSET,
+  },
+  feedList: {
+    marginTop: 8,
+    backgroundColor: '#fff',
+    width: '100%',
+    alignSelf: 'stretch',
+    overflow: 'hidden',
+  },
+  poMetaGroup: {
+    marginTop: 12,
+    marginHorizontal: MOBILE_FILTER_INSET,
+    borderRadius: 12,
+    backgroundColor: '#fff',
+    overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(60, 60, 67, 0.12)',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOpacity: 0.04,
+        shadowRadius: 10,
+        shadowOffset: { width: 0, height: 2 },
+      },
+      android: { elevation: 1 },
+      default: {},
+    }),
+  },
+  poMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    minHeight: 48,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(60, 60, 67, 0.12)',
+  },
+  poMetaRowLast: {
+    borderBottomWidth: 0,
+  },
+  poMetaLabel: {
+    width: 92,
+    flexShrink: 0,
+    fontFamily: FONT,
+    fontSize: 17,
+    fontWeight: '400',
+    letterSpacing: -0.41,
+    color: MOBILE.label,
+  },
+  poMetaValue: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: FONT,
+    fontSize: 17,
+    fontWeight: '400',
+    letterSpacing: -0.41,
+    color: MOBILE.secondary,
+    textAlign: 'right',
+  },
+  poLineGroup: {
+    marginTop: 4,
+    marginHorizontal: MOBILE_FILTER_INSET,
+    borderRadius: 12,
+    backgroundColor: '#fff',
+    overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(60, 60, 67, 0.12)',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOpacity: 0.04,
+        shadowRadius: 10,
+        shadowOffset: { width: 0, height: 2 },
+      },
+      android: { elevation: 1 },
+      default: {},
+    }),
+  },
+  poLineRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(60, 60, 67, 0.12)',
+  },
+  poLineRowLast: {
+    borderBottomWidth: 0,
+  },
+  poLineThumbCell: {
+    width: 44,
+    flexShrink: 0,
+    paddingTop: 1,
+  },
+  poLineBody: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  poLineTop: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  poLineName: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '500',
+    lineHeight: 20,
+    color: MOBILE.label,
+    letterSpacing: -0.2,
+  },
+  poLineTotal: {
+    flexShrink: 0,
+    maxWidth: '42%',
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '600',
+    lineHeight: 20,
+    color: MOBILE.label,
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
+  poLineMeta: {
+    fontFamily: FONT,
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: '400',
+    color: MOBILE.secondary,
+    letterSpacing: -0.08,
+  },
+  poTotalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    minHeight: 48,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(60, 60, 67, 0.18)',
+    backgroundColor: 'rgba(0, 0, 0, 0.02)',
+  },
+  poTotalLabel: {
+    fontFamily: FONT,
+    fontSize: 17,
+    fontWeight: '600',
+    letterSpacing: -0.41,
+    color: MOBILE.label,
+  },
+  poTotalValue: {
+    fontFamily: FONT,
+    fontSize: 17,
+    fontWeight: '600',
+    letterSpacing: -0.41,
+    color: MOBILE.label,
+    fontVariant: ['tabular-nums'],
+  },
+  feedSheet: {
+    marginTop: 8,
+    marginHorizontal: MOBILE_FILTER_INSET,
+    padding: 16,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    overflow: 'hidden',
   },
   pageScroll: {
     paddingHorizontal: 16,
@@ -2321,9 +2827,11 @@ const styles = StyleSheet.create({
   pageFooter: {
     flexDirection: 'row',
     gap: 10,
-    paddingHorizontal: 16,
+    paddingHorizontal: MOBILE_FILTER_INSET,
     paddingTop: 10,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: CANVAS,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(0,0,0,0.08)',
   },
   pageFooterWrap: {
     flexWrap: 'wrap',
@@ -2492,21 +3000,200 @@ const styles = StyleSheet.create({
   resultScroll: {
     maxHeight: 520,
   },
-  appleNote: {
+  errorFormGroup: {
+    marginTop: 4,
+  },
+  errorPickerRow: {
+    paddingRight: 12,
+    gap: 6,
+  },
+  errorPickerValueHit: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    minHeight: 28,
+  },
+  errorPickerValue: {
+    fontFamily: FONT,
+    fontSize: 17,
+    fontWeight: '400',
+    letterSpacing: -0.41,
+    color: MOBILE.label,
+    textAlign: 'right',
+  },
+  errorFieldPlaceholder: {
+    color: MOBILE.secondary,
+  },
+  errorPhotoGroup: {
     marginTop: 16,
-    minHeight: 120,
-    paddingHorizontal: 16,
+  },
+  errorFieldBlock: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 10,
+    paddingTop: 16,
+    paddingBottom: 16,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(60, 60, 67, 0.12)',
+  },
+  errorFieldCaption: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '500',
+    letterSpacing: -0.08,
+    color: MOBILE.secondary,
+    textTransform: 'uppercase',
+  },
+  errorAmountInput: {
+    minHeight: 48,
+    paddingHorizontal: 14,
     paddingVertical: 12,
-    borderRadius: 12,
-    backgroundColor: '#fff',
+    borderRadius: 10,
+    backgroundColor: 'rgba(0, 0, 0, 0.04)',
+    fontFamily: FONT,
+    fontSize: 20,
+    fontWeight: '500',
+    letterSpacing: -0.41,
+    color: MOBILE.label,
+    fontVariant: ['tabular-nums'],
+    ...Platform.select({
+      web: { outlineStyle: 'none' },
+      default: {},
+    }),
+  },
+  errorDetailsInput: {
+    minHeight: 96,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 10,
+    backgroundColor: 'rgba(0, 0, 0, 0.04)',
     fontFamily: FONT,
     fontSize: 17,
     lineHeight: 22,
-    color: '#000',
+    letterSpacing: -0.41,
+    color: MOBILE.label,
     textAlignVertical: 'top',
     ...Platform.select({
       web: { outlineStyle: 'none' },
       default: {},
     }),
+  },
+  errorTypeSheet: {
+    flex: 1,
+    backgroundColor: CANVAS,
+    paddingTop: Platform.OS === 'ios' ? 8 : 0,
+  },
+  errorTypeSheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: MOBILE_FILTER_INSET,
+    paddingVertical: 12,
+  },
+  errorTypeSheetClose: {
+    fontFamily: FONT,
+    fontSize: 17,
+    color: MOBILE.label,
+  },
+  errorTypeSheetTitle: {
+    fontFamily: FONT,
+    fontSize: 17,
+    fontWeight: '600',
+    color: MOBILE.label,
+  },
+  errorTypeSheetHeaderSpacer: {
+    width: 56,
+  },
+  errorTypeSearchGroup: {
+    marginTop: 0,
+  },
+  errorTypeSearch: {
+    minHeight: 44,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    fontFamily: FONT,
+    fontSize: 17,
+    color: MOBILE.label,
+    ...Platform.select({
+      web: { outlineStyle: 'none' },
+      default: {},
+    }),
+  },
+  errorTypeSheetBody: {
+    flex: 1,
+  },
+  errorTypeSheetScroll: {
+    paddingBottom: 32,
+    gap: 8,
+  },
+  errorTypeOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingRight: 12,
+  },
+  errorTypeOptionMain: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  errorTypeOptionLabel: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: FONT,
+    fontSize: 17,
+    letterSpacing: -0.41,
+    color: MOBILE.label,
+  },
+  errorTypeRemoveBtn: {
+    padding: 4,
+  },
+  errorTypeEmpty: {
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontFamily: FONT,
+    fontSize: 15,
+    color: MOBILE.secondary,
+  },
+  errorTypeAddRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  errorTypeAddInput: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: FONT,
+    fontSize: 17,
+    color: MOBILE.label,
+    ...Platform.select({
+      web: { outlineStyle: 'none' },
+      default: {},
+    }),
+  },
+  errorTypeAddSave: {
+    fontFamily: FONT,
+    fontSize: 17,
+    fontWeight: '600',
+    color: MOBILE.label,
+  },
+  errorTypeAddLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  errorTypeAddLinkText: {
+    fontFamily: FONT,
+    fontSize: 17,
+    color: MOBILE.label,
+  },
+  errorTypeAddError: {
+    marginHorizontal: MOBILE_FILTER_INSET,
+    fontFamily: FONT,
+    fontSize: 13,
+    color: '#FF3B30',
   },
 });
