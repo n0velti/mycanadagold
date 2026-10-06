@@ -1685,7 +1685,6 @@ function StoreSnapshotPanel({
   }, [endKey, startKey, storeName]);
   const tolerance = usePriceCheckTolerance();
   const [stageHeight, setStageHeight] = useState(0);
-  const [titleBarBottom, setTitleBarBottom] = useState(62);
   const ticketOpen = Boolean(transactionTicket);
   const pageScrollRef = useRef(null);
   const cashRequestId = useRef(0);
@@ -2201,7 +2200,7 @@ function StoreSnapshotPanel({
 
   const sheetFillHeight =
     stageHeight > 0
-      ? Math.max(0, stageHeight - (isMobile ? Math.max(52, titleBarBottom + 4) : 0))
+      ? Math.max(0, stageHeight - (isMobile ? (topInset > 0 ? topInset : 52) : 0))
       : undefined;
 
   const sheetLists = (
@@ -2421,22 +2420,6 @@ function StoreSnapshotPanel({
     );
   }
 
-  const mobileTitle = (
-    <View style={styles.dashPinnedTitleBlock}>
-      <Text style={styles.dashPinnedTitle} numberOfLines={2}>
-        {storeName || 'Store'}
-      </Text>
-      {hoursSummary ? (
-        <Text style={styles.dashPinnedHours} numberOfLines={2}>
-          {hoursSummary}
-        </Text>
-      ) : null}
-      <Text style={styles.dashPinnedDate} numberOfLines={1}>
-        {periodLabel}
-      </Text>
-    </View>
-  );
-
   return (
     <View
       style={[styles.body, styles.bodyMobile]}
@@ -2445,17 +2428,6 @@ function StoreSnapshotPanel({
         setStageHeight((current) => (Math.abs(current - height) < 0.5 ? current : height));
       }}
     >
-      <View
-        pointerEvents="box-none"
-        style={styles.dashPinnedTitleLayer}
-        onLayout={(event) => {
-          const { y, height } = event.nativeEvent.layout;
-          const bottom = y + height;
-          setTitleBarBottom((current) => (Math.abs(current - bottom) < 0.5 ? current : bottom));
-        }}
-      >
-        {mobileTitle}
-      </View>
       <ScrollView
         ref={pageScrollRef}
         style={styles.scroll}
@@ -2463,7 +2435,7 @@ function StoreSnapshotPanel({
         contentContainerStyle={[
           styles.storeHomeScrollContent,
           {
-            paddingTop: Math.max(52, titleBarBottom + 4),
+            paddingTop: topInset > 0 ? topInset : 52,
             paddingBottom: mobileTabBarReserve() + 16,
           },
           stageHeight > 0 ? { minHeight: stageHeight } : null,
@@ -2476,26 +2448,7 @@ function StoreSnapshotPanel({
         scrollEventThrottle={16}
         {...tabBarScroll}
       >
-        <View style={styles.storeHomeHeroPadMobile}>
-          <View style={styles.storeHomePinnedTop}>
-            <StoreHomeHero
-              store={store}
-              focus={heroFocus}
-              onFocus={setHeroFocus}
-              txSelected={listTab === 'transactions'}
-              onPress={() => onOpenApp?.('transactions')}
-              onOpenApp={onOpenApp}
-              isMobile
-              periodLabel={periodLabel}
-              emailCapture={emailCapture}
-              phoneRatio={phoneRatio}
-              reviewStats={reviewStats}
-              cashCad={cashCad}
-              cashLoading={cashLoading}
-            />
-            {pinnedAppRow}
-          </View>
-        </View>
+        {pinnedAppRow}
         {mobileContent}
       </ScrollView>
       <TxnCashBreakdownModal
@@ -3230,7 +3183,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     minHeight: 44,
     marginBottom: 18,
-    paddingHorizontal: 56,
+    paddingHorizontal: MOBILE_FILTER_INSET,
     overflow: 'hidden',
   },
   dashPinnedTitle: {

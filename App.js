@@ -122,7 +122,7 @@ import { AppDateProvider, AppDateRouteReset, useAppDate } from './lib/appDate';
 import { SPOT_METALS } from './lib/spotPrices';
 import HomeDatePicker from './components/HomeDatePicker';
 import LoginScreen from './components/LoginScreen';
-import ProfileLoginSwitcher, { ProfileLoginIcon } from './components/ProfileLoginSwitcher';
+import ProfileLoginSwitcher from './components/ProfileLoginSwitcher';
 import {
   MobileNavHeader,
   MobileSafeTop,
@@ -4096,23 +4096,21 @@ const HomeStoreCard = memo(function HomeStoreCard({
     </View>
   );
   const stackedBody = (
-    <View style={[styles.igStoreBody, styles.igHomeStoreBody, !last && styles.igStoreBodyDivider]}>
+    <View style={[styles.igStoreBody, styles.igHomeStoreBody]}>
       <View style={styles.igHomeStoreMain}>
         <View style={styles.igHomeStoreCopy}>
           <Text style={styles.igHomeStoreName} numberOfLines={1}>
             {row.store}
           </Text>
-          {closed ? null : (
-            <HomeLiveValue style={styles.igHomeStoreMeta} numeric={focused.count} numberOfLines={1}>
-              {hasActivity
-                ? homeCountLabel(focused.count, amountFocus)
-                : amountFocus === 'sales'
-                  ? 'No sales'
-                  : amountFocus === 'purchases'
-                    ? 'No purchases'
-                    : 'No transactions'}
-            </HomeLiveValue>
-          )}
+          <HomeLiveValue style={styles.igHomeStoreMeta} numeric={focused.count} numberOfLines={1}>
+            {hasActivity
+              ? homeCountLabel(focused.count, amountFocus)
+              : amountFocus === 'sales'
+                ? 'No sales'
+                : amountFocus === 'purchases'
+                  ? 'No purchases'
+                  : 'No transactions'}
+          </HomeLiveValue>
         </View>
         <View style={styles.igHomeStoreTrailing}>
           {closed ? (
@@ -4140,7 +4138,27 @@ const HomeStoreCard = memo(function HomeStoreCard({
           {canOpen ? <Ionicons name="chevron-forward" size={18} color="#c7c7cc" /> : null}
         </View>
       </View>
-      {closed ? null : (
+      {closed && canOpen && showAmounts ? (
+        <View style={styles.igHomeStoreMetricsRow}>
+          <View
+            style={styles.igHomeStoreMetrics}
+            pointerEvents="none"
+            accessibilityElementsHidden={false}
+          >
+            <HomeStoreMetric icon="mail" stats={emailStats} label="Email capture" stretch />
+            <View style={styles.igHomeStoreMetricRule} />
+            <HomeStoreMetric icon="call" stats={phoneStats} label="Phone answer rate" stretch />
+            <View style={styles.igHomeStoreMetricRule} />
+            <HomeStoreMetric icon="star" stats={reviewStats} label="Reviews" stretch />
+          </View>
+          <HomeStoreAmount
+            amount={focused.amount}
+            count={focused.count}
+            breakdown={amountFocus === 'all' ? row : null}
+            compact
+          />
+        </View>
+      ) : (
         <View
           style={styles.igHomeStoreMetrics}
           pointerEvents="none"
@@ -4229,7 +4247,10 @@ const HomeStoreCard = memo(function HomeStoreCard({
             <View style={styles.igStoreChevron} />
           </View>
         ) : (
-          stackedBody
+          <>
+            {stackedBody}
+            {!last ? <View style={styles.igHomeStoreCardRule} /> : null}
+          </>
         )}
       </View>
     );
@@ -4267,7 +4288,10 @@ const HomeStoreCard = memo(function HomeStoreCard({
           <Ionicons name="chevron-forward" size={18} color="#c7c7cc" style={styles.igStoreChevron} />
         </View>
       ) : (
-        stackedBody
+        <>
+          {stackedBody}
+          {!last ? <View style={styles.igHomeStoreCardRule} /> : null}
+        </>
       )}
     </Pressable>
   );
@@ -5402,6 +5426,10 @@ function HomeStoresTable({
 const HOME_FILTER_SIZE = MOBILE_FILTER_SIZE;
 const HOME_TOP_FILTER_SIZE = 44;
 const HOME_FILTER_RIGHT = MOBILE_FILTER_INSET;
+// Mobile top-bar row: 8pt top + 32pt controls + 8pt bottom. Scroll views and
+// the store drawer pad by this so content starts below the bar and slides
+// underneath its blur.
+const HOME_MOBILE_TOP_BAR_HEIGHT = 48;
 
 function HomeFilterLines({ color, large = false }) {
   return (
@@ -5410,53 +5438,6 @@ function HomeFilterLines({ color, large = false }) {
       <View style={[styles.igFilterLine, large && styles.igFilterLineLarge, { width: large ? 14 : 11, backgroundColor: color }]} />
       <View style={[styles.igFilterLine, large && styles.igFilterLineLarge, { width: large ? 9 : 7, backgroundColor: color }]} />
     </View>
-  );
-}
-
-function HomeFilterCircle({
-  buttonRef,
-  active = false,
-  onPress,
-  onLayout,
-  accessibilityLabel,
-  accessibilityState,
-  style,
-  size = HOME_FILTER_SIZE,
-  large = false,
-  chrome = false,
-  children,
-}) {
-  return (
-    <Pressable
-      ref={buttonRef}
-      hitSlop={large ? 10 : 6}
-      onLayout={onLayout}
-      onPress={onPress}
-      style={[
-        styles.igHomeFilterCircle,
-        chrome && styles.igHomeFilterCircleChrome,
-        { width: size, height: size, borderRadius: size / 2 },
-        style,
-      ]}
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel}
-      accessibilityState={accessibilityState}
-    >
-      <BlurView
-        intensity={chrome ? 32 : 72}
-        tint="light"
-        style={[
-          styles.igHomeFilterBlur,
-          chrome && styles.igHomeFilterBlurChrome,
-          { borderRadius: size / 2 },
-        ]}
-        {...(Platform.OS === 'web'
-          ? { className: chrome ? 'cgold-mobile-tab-bar' : 'cgold-mobile-filter-blur' }
-          : null)}
-      >
-        {children || <HomeFilterLines color={active ? TAB_INK : '#3A3A3C'} large={large} />}
-      </BlurView>
-    </Pressable>
   );
 }
 
@@ -5496,7 +5477,7 @@ function HomeScreen({
   onSelectedDocumentChange,
   documentCloseRef,
 }) {
-  const { isMobile, tableMaxWidth, homeSearchMaxWidth, pagePad, tablePagePad } = useHomePageLayout();
+  const { isMobile, tableMaxWidth, pagePad, tablePagePad } = useHomePageLayout();
   const homeHeroPad = pagePad + HOME_STORE_NAME_INSET;
   const homeContentInset = useMemo(
     () => [
@@ -5547,7 +5528,6 @@ function HomeScreen({
   const dateMode = appDate.mode;
   const startDate = parseDateParam(appDate.startDate);
   const endDate = parseDateParam(appDate.endDate);
-  const [query, setQuery] = useState('');
   const [heroFocus, setHeroFocus] = useState('all');
   const [heroFocusLoading, setHeroFocusLoading] = useState(false);
   const heroFocusTimer = useRef(null);
@@ -5727,11 +5707,7 @@ function HomeScreen({
     }
   }, [load]);
 
-  const visibleRows = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return storeRows;
-    return storeRows.filter((row) => row.store.toLowerCase().includes(q));
-  }, [storeRows, query]);
+  const visibleRows = storeRows;
 
   const hideHomeAmounts = !allowHomeFilters;
   const canOpenHomeStore = useCallback(
@@ -5906,53 +5882,6 @@ function HomeScreen({
     );
   }
 
-  const searchField = (
-    <View
-      style={[
-        styles.homeTabSearchField,
-        isMobile ? styles.homeTabSearchFieldMobile : styles.homeTabSearchFieldDesktop,
-        isMobile && styles.igFilterSearch,
-        !isMobile &&
-          homeSearchMaxWidth && {
-            maxWidth: homeSearchMaxWidth,
-            width: homeSearchMaxWidth,
-            flexGrow: 0,
-            flexShrink: 0,
-          },
-      ]}
-    >
-      <Ionicons name="search" size={16} color="#8e8e93" />
-      <TextInput
-        style={[styles.homeTabSearchInput, !isMobile && styles.homeTabSearchInputDesktop]}
-        value={query}
-        onChangeText={setQuery}
-        placeholder="Search stores"
-        placeholderTextColor="#8e8e93"
-        autoCapitalize="none"
-        autoCorrect={false}
-        clearButtonMode="while-editing"
-        returnKeyType="search"
-      />
-      {query ? (
-        <Pressable onPress={() => setQuery('')} hitSlop={8} accessibilityLabel="Clear search">
-          <Ionicons name="close-circle" size={18} color="#c7c7cc" />
-        </Pressable>
-      ) : null}
-    </View>
-  );
-
-  const datePicker = (
-    <HomeDatePicker
-      startDate={startDate}
-      endDate={endDate}
-      dateMode={dateMode}
-      onChange={handleHomeDateChange}
-      maximumDate={new Date()}
-      fill={isMobile}
-      searchChrome
-      disabled={dateRestricted}
-    />
-  );
   const renderHiddenDatePicker = (openRef, anchorRef) => (
     <HomeDatePicker
       startDate={startDate}
@@ -5967,8 +5896,7 @@ function HomeScreen({
     />
   );
 
-  const filtersActive =
-    Boolean(query.trim()) || dateMode === 'range' || (dateMode === 'day' && !isToday);
+  const filtersActive = dateMode === 'range' || (dateMode === 'day' && !isToday);
   const closeFilters = () => setFiltersOpen(false);
   const placeFilterMenu = () => {
     const button = filterButtonRef.current;
@@ -6182,19 +6110,100 @@ function HomeScreen({
         ref={homeRootRef}
         style={[styles.toolsScreen, styles.canvasFill, styles.igHomeScreen, !isMobile && styles.igHomeDesktopFeed]}
       >
-      {isMobile && !selectedStore ? (
-        <View pointerEvents="box-none" style={styles.igHomeFilterDock}>
-          <HomeFilterCircle
-            buttonRef={filterButtonRef}
-            large
-            chrome
-            size={HOME_TOP_FILTER_SIZE}
-            active={filtersOpen || filtersActive}
+      {isMobile ? (
+        <View pointerEvents="box-none" style={styles.igHomeMobileTopBarShell}>
+          <View style={styles.igHomeMobileTopBarClip}>
+            <BlurView
+              intensity={32}
+              tint="light"
+              pointerEvents="none"
+              style={styles.igHomeMobileTopBarBlur}
+              {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-bar' } : null)}
+            />
+            <View style={styles.igHomeMobileTopBarRow}>
+              {selectedStore ? (
+                <View style={styles.igHomeMobileStoreLeft}>
+                  <Pressable
+                    onPress={closeStoreOrDocument}
+                    hitSlop={8}
+                    style={styles.igHomeMobileCrumbHome}
+                    accessibilityRole="button"
+                    accessibilityLabel={homeDocRef ? 'Back to store' : 'Back to Home'}
+                  >
+                    <HomeGlyph size={22} />
+                  </Pressable>
+                  <Text style={styles.igHomeMobileCrumbSep} accessible={false}>
+                    /
+                  </Text>
+                  <Text style={styles.igHomeMobileStoreName} numberOfLines={1}>
+                    {selectedStore.store}
+                  </Text>
+                </View>
+              ) : (
+                <View style={styles.igHomeMobileBrand} accessibilityLabel="Canada Gold">
+                  <HomeGlyph size={22} />
+                </View>
+              )}
+              <View style={styles.igHomeMobileTopBarTrailing}>
+          <View
+            ref={heroDateAnchorRef}
+            collapsable={false}
+            style={styles.igHomeMobileDateAnchor}
+          >
+            <Pressable
+              onPress={() => {
+                if (dateRestricted) return;
+                expandMobileTabBar();
+                heroDateOpenRef.current?.({ range: dateMode === 'range' });
+              }}
+              style={({ pressed }) => [
+                styles.igHomeMobileDateBtn,
+                dateMode === 'range' || (dateMode === 'day' && !isToday)
+                  ? styles.igHomeMobileDateBtnActive
+                  : null,
+                dateRestricted && styles.igHomeMobileDateBtnDisabled,
+                pressed && !dateRestricted && styles.igHomeMobileDateBtnPressed,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel={`Date: ${heroDateLabel}`}
+              accessibilityHint="Change date or set a range"
+              disabled={dateRestricted}
+            >
+              <Ionicons name="calendar-outline" size={15} color={MOBILE.secondary} />
+              <Text style={styles.igHomeMobileDateText} numberOfLines={1}>
+                {heroDateLabel}
+              </Text>
+              <View style={styles.igHomeMobileDateChevrons}>
+                <Ionicons name="chevron-up" size={9} color="#8e8e93" />
+                <Ionicons name="chevron-down" size={9} color="#8e8e93" style={styles.topSpotChevronDown} />
+              </View>
+            </Pressable>
+            {renderHiddenDatePicker(heroDateOpenRef, heroDateAnchorRef)}
+          </View>
+          <Pressable
+            ref={filterButtonRef}
             onLayout={placeFilterMenu}
             onPress={pressHomeFilter}
-            accessibilityLabel="Home filters"
-            accessibilityState={{ expanded: filtersOpen }}
-          />
+            hitSlop={6}
+            style={({ pressed }) => [
+              styles.igHomeMobileFilterBtn,
+              (selectedStore ? storeAppsOpen : filtersOpen || filtersActive) &&
+                styles.igHomeMobileFilterBtnActive,
+              pressed && styles.igHomeMobileFilterBtnPressed,
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={selectedStore ? `${selectedStore.store} apps` : 'Home filters'}
+            accessibilityState={{ expanded: selectedStore ? storeAppsOpen : filtersOpen }}
+          >
+            <HomeFilterLines
+              color={
+                (selectedStore ? storeAppsOpen : filtersOpen || filtersActive) ? TAB_INK : '#3A3A3C'
+              }
+            />
+          </Pressable>
+              </View>
+            </View>
+          </View>
         </View>
       ) : null}
       <View
@@ -6211,7 +6220,7 @@ function HomeScreen({
           styles.igHomeScrollContent,
           {
             flexGrow: 1,
-            paddingTop: isMobile ? HOME_TOP_FILTER_SIZE + MOBILE_FILTER_INSET : TOP_BAR_HEIGHT + homeHeroPad - 10,
+            paddingTop: isMobile ? HOME_MOBILE_TOP_BAR_HEIGHT : TOP_BAR_HEIGHT + homeHeroPad - 10,
             paddingBottom: isMobile ? mobileTabBarReserve() + 8 : 24,
           },
         ]}
@@ -6225,15 +6234,14 @@ function HomeScreen({
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor="#8e8e93" />}
       >
         <View style={homeContentInset}>
-          {isMobile || showHomeHero ? (
+          {!isMobile && showHomeHero ? (
             <View
               style={[
                 styles.igHomePinnedTop,
-                isMobile && styles.igHomePinnedTopMobile,
                 !isMobile && styles.igHomePinnedTopDesktop,
               ]}
             >
-              {showHomeHero ? homeHeroCard : null}
+              {homeHeroCard}
             </View>
           ) : null}
           {error ? <Text style={[styles.errorText, styles.homeError]}>{error}</Text> : null}
@@ -6244,9 +6252,7 @@ function HomeScreen({
             </View>
           ) : visibleRows.length === 0 ? (
             <Text pointerEvents="auto" style={[styles.toolsEmpty, styles.igHomeScrollEnd]}>
-              {query.trim()
-                ? `No stores match “${query.trim()}”.`
-                : 'No store activity in this period.'}
+              No store activity in this period.
             </Text>
           ) : null}
         </View>
@@ -6258,6 +6264,7 @@ function HomeScreen({
                 styles.toolsSection,
                 styles.toolsSectionMobile,
                 styles.igHomeSection,
+                isMobile && styles.igHomeSectionMobile,
                 styles.igHomeTableSection,
                 isMobile && styles.igHomeTableSectionMobile,
                 !isMobile && styles.igHomeDesktopSheet,
@@ -6295,32 +6302,6 @@ function HomeScreen({
       </ScrollView>
       </View>
 
-      {isMobile && selectedStore ? (
-        <HomeFilterCircle
-          large
-          chrome
-          size={HOME_TOP_FILTER_SIZE}
-          onPress={closeStoreOrDocument}
-          style={styles.igHomeBackDock}
-          accessibilityLabel={homeDocRef ? 'Back to store' : 'Back to Home'}
-        >
-          <Ionicons name="chevron-back" size={22} color={TAB_INK} />
-        </HomeFilterCircle>
-      ) : null}
-      {isMobile && selectedStore ? (
-        <View pointerEvents="box-none" style={styles.igHomeFilterDock}>
-          <HomeFilterCircle
-            large
-            chrome
-            size={HOME_TOP_FILTER_SIZE}
-            active={storeAppsOpen}
-            onPress={() => setStoreAppsOpen((open) => !open)}
-            accessibilityLabel={`${selectedStore.store} apps`}
-            accessibilityState={{ expanded: storeAppsOpen }}
-          />
-        </View>
-      ) : null}
-
       {isMobile && !selectedStore && filtersOpen ? (
         <View style={styles.igHomeFilterLayer}>
           <Pressable style={StyleSheet.absoluteFill} onPress={closeFilters} accessibilityLabel="Close filters" />
@@ -6331,43 +6312,52 @@ function HomeScreen({
               { top: filterAnchor.top, right: filterAnchor.right },
             ]}
           >
-            <Text style={styles.igFilterLabel}>Search</Text>
-            {searchField}
-            <Text style={styles.igFilterLabel}>Currency</Text>
-            <CurrencyToggle compact />
-            <Text style={styles.igFilterLabel}>Spot</Text>
-            <SpotMetalToggle compact />
-            <Text style={styles.igFilterLabel}>Date</Text>
-            {datePicker}
-            <View style={styles.igFilterDivider} />
-            <Pressable
-              onPress={() => {
-                closeFilters();
-                onBuy?.();
-              }}
-              style={styles.igFilterAction}
-              accessibilityRole="button"
-              accessibilityLabel="Buy"
-            >
-              <View style={[styles.igFilterActionIcon, styles.igFilterActionBuy]}>
-                <Ionicons name="arrow-down" size={16} color="#fff" />
+            <BlurView
+              intensity={32}
+              tint="light"
+              style={styles.igHomeFiltersCardBlur}
+              {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-bar' } : null)}
+            />
+            <View style={styles.igHomeFiltersCardBody}>
+              <View style={styles.igHomeFiltersControls}>
+                <CurrencyToggle compact />
+                <SpotMetalToggle compact />
               </View>
-              <Text style={styles.igFilterActionLabel}>Buy</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => {
-                closeFilters();
-                onSell?.();
-              }}
-              style={styles.igFilterAction}
-              accessibilityRole="button"
-              accessibilityLabel="Sell"
-            >
-              <View style={[styles.igFilterActionIcon, styles.igFilterActionSell]}>
-                <Ionicons name="arrow-up" size={16} color="#fff" />
+              <View style={styles.igHomeFiltersTradeRow}>
+                <Pressable
+                  onPress={() => {
+                    closeFilters();
+                    onBuy?.();
+                  }}
+                  style={({ pressed }) => [
+                    styles.topTradeButton,
+                    styles.igHomeFiltersTradeBtn,
+                    pressed && styles.topTradeButtonHover,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Buy"
+                >
+                  <Ionicons name="arrow-down" size={TAB_ICON_SIZE} color={TRADE_BUY.accent} />
+                  <Text style={styles.topTradeLabel}>Buy</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    closeFilters();
+                    onSell?.();
+                  }}
+                  style={({ pressed }) => [
+                    styles.topTradeButton,
+                    styles.igHomeFiltersTradeBtn,
+                    pressed && styles.topTradeButtonHover,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Sell"
+                >
+                  <Ionicons name="arrow-up" size={TAB_ICON_SIZE} color={TRADE_SELL.accent} />
+                  <Text style={styles.topTradeLabel}>Sell</Text>
+                </Pressable>
               </View>
-              <Text style={styles.igFilterActionLabel}>Sell</Text>
-            </Pressable>
+            </View>
           </View>
         </View>
       ) : null}
@@ -6385,9 +6375,9 @@ function HomeScreen({
         appsOpen={storeAppsOpen}
         onAppsOpenChange={setStoreAppsOpen}
         txFocus={heroFocus}
-        mobileChromeWidth={HOME_FILTER_SIZE}
+        mobileChromeWidth={0}
         dateHero={!isMobile && !hideHomeAmounts ? renderDateHero(storeDateOpenRef, storeDateAnchorRef, false) : null}
-        contentPadTop={isMobile ? 0 : TOP_BAR_HEIGHT + homeHeroPad - 10}
+        contentPadTop={isMobile ? HOME_MOBILE_TOP_BAR_HEIGHT : TOP_BAR_HEIGHT + homeHeroPad - 10}
         onSelectedDocumentChange={setHomeDocRef}
         documentCloseRef={closeHomeDocRef}
       />
@@ -9639,12 +9629,6 @@ export default function App() {
               messagesUnread={messagesUnread}
               profileAvatarUrl={session?.profile?.avatarUrl || ''}
               profileName={userLabel}
-              profileAction={
-                <ProfileLoginIcon
-                  size="tab"
-                  onPress={() => setLoginSwitcherOpen(true)}
-                />
-              }
             />
           )}
           <ProfileLoginSwitcher
@@ -11483,7 +11467,7 @@ const styles = StyleSheet.create({
     zIndex: 18,
   },
   storeAppsCardDocked: {
-    top: 8 + HOME_TOP_FILTER_SIZE + 8,
+    top: HOME_MOBILE_TOP_BAR_HEIGHT + 8,
     right: MOBILE_FILTER_INSET,
   },
   storeAppsCard: {
@@ -13422,50 +13406,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     alignSelf: 'stretch',
   },
-  igHomeFilterCircleChrome: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(0,0,0,0.08)',
-  },
-  igHomeFilterCircle: {
-    width: HOME_FILTER_SIZE,
-    height: HOME_FILTER_SIZE,
-    borderRadius: HOME_FILTER_SIZE / 2,
-    overflow: 'hidden',
-    ...Platform.select({
-      web: {
-        cursor: 'pointer',
-        boxShadow: '0 1px 6px rgba(0,0,0,0.1)',
-      },
-      default: {
-        shadowColor: '#000',
-        shadowOpacity: 0.1,
-        shadowRadius: 6,
-        shadowOffset: { width: 0, height: 1 },
-        elevation: 3,
-      },
-    }),
-  },
-  igHomeFilterBlur: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: HOME_FILTER_SIZE / 2,
-    overflow: 'hidden',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: Platform.OS === 'web' ? 'transparent' : 'rgba(255,255,255,0.55)',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(0,0,0,0.14)',
-  },
-  igHomeFilterBlurChrome: {
-    backgroundColor: 'rgba(252,252,251,0.92)',
-    borderWidth: 0,
-    ...Platform.select({
-      web: {
-        backdropFilter: 'saturate(120%) blur(12px)',
-        WebkitBackdropFilter: 'saturate(120%) blur(12px)',
-      },
-      default: {},
-    }),
-  },
   igFilterLines: {
     width: 15,
     height: 11,
@@ -13489,18 +13429,59 @@ const styles = StyleSheet.create({
   },
   igHomeFilterCard: {
     position: 'absolute',
-    width: 300,
+    width: 264,
     maxWidth: '92%',
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    padding: 12,
-    gap: 10,
+    borderRadius: 12,
+    overflow: 'hidden',
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: TAB_BORDER,
+    borderColor: 'rgba(42,38,30,0.08)',
+    ...Platform.select({
+      web: {
+        boxShadow: '0 10px 28px rgba(0,0,0,0.12), 0 1px 3px rgba(0,0,0,0.06)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.12,
+        shadowRadius: 16,
+        elevation: 10,
+      },
+    }),
   },
   igHomeFiltersCard: {
-    width: 308,
-    borderRadius: 12,
+    width: 264,
+  },
+  igHomeFiltersCardBlur: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(252,252,251,0.92)',
+    ...Platform.select({
+      web: {
+        backdropFilter: 'saturate(120%) blur(12px)',
+        WebkitBackdropFilter: 'saturate(120%) blur(12px)',
+      },
+      default: {},
+    }),
+  },
+  igHomeFiltersCardBody: {
+    paddingHorizontal: 12,
+    paddingTop: 14,
+    paddingBottom: 12,
+    gap: 14,
+  },
+  igHomeFiltersControls: {
+    alignSelf: 'stretch',
+    gap: 18,
+  },
+  igHomeFiltersTradeRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 8,
+    paddingTop: 2,
+  },
+  igHomeFiltersTradeBtn: {
+    flex: 1,
+    justifyContent: 'center',
+    backgroundColor: 'transparent',
   },
   igFilterAction: {
     flexDirection: 'row',
@@ -14053,17 +14034,163 @@ const styles = StyleSheet.create({
     paddingTop: 4,
     paddingBottom: 12,
   },
-  igHomeFilterDock: {
+  igHomeMobileTopBarShell: {
     position: 'absolute',
-    top: 8,
-    right: MOBILE_FILTER_INSET,
-    zIndex: 24,
+    top: 0,
+    left: 0,
+    right: 0,
+    // Above the store drawer panel (zIndex 35) so the bar stays visible and
+    // tappable in store details. Below modals, which render in their own root.
+    zIndex: 40,
   },
-  igHomeBackDock: {
-    position: 'absolute',
-    top: 8,
-    left: MOBILE_FILTER_INSET,
-    zIndex: 24,
+  igHomeMobileTopBarClip: {
+    position: 'relative',
+    overflow: 'hidden',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(0,0,0,0.08)',
+  },
+  igHomeMobileTopBarBlur: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(252,252,251,0.92)',
+    ...Platform.select({
+      web: {
+        backdropFilter: 'saturate(120%) blur(12px)',
+        WebkitBackdropFilter: 'saturate(120%) blur(12px)',
+      },
+      default: {},
+    }),
+  },
+  igHomeMobileTopBarRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    paddingHorizontal: MOBILE_FILTER_INSET,
+    paddingTop: 8,
+    paddingBottom: 8,
+    minHeight: 48,
+  },
+  igHomeMobileBrand: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  igHomeMobileStoreLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 1,
+    minWidth: 0,
+    gap: 8,
+  },
+  igHomeMobileCrumbHome: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  igHomeMobileCrumbSep: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '400',
+    color: '#c7c7cc',
+    flexShrink: 0,
+  },
+  igHomeMobileStoreName: {
+    flexShrink: 1,
+    minWidth: 0,
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: MOBILE.label,
+    letterSpacing: -0.3,
+  },
+  igHomeMobileTopBarTrailing: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 8,
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  igHomeMobileFilterBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 32,
+    minWidth: 44,
+    paddingHorizontal: 12,
+    borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: 'transparent',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  igHomeMobileFilterBtnActive: {
+    backgroundColor: NAV_TAB_ACTIVE_BG,
+  },
+  igHomeMobileFilterBtnPressed: {
+    opacity: 0.6,
+  },
+  igHomeMobileDateAnchor: {
+    flexShrink: 1,
+    minWidth: 0,
+    maxWidth: '100%',
+    alignItems: 'flex-end',
+    alignSelf: 'flex-end',
+  },
+  igHomeMobileDateBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-end',
+    height: 32,
+    flexGrow: 0,
+    flexShrink: 1,
+    maxWidth: '100%',
+    paddingLeft: 10,
+    paddingRight: 6,
+    gap: 8,
+    borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: 'transparent',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  igHomeMobileDateBtnActive: {
+    backgroundColor: NAV_TAB_ACTIVE_BG,
+  },
+  igHomeMobileDateBtnDisabled: {
+    opacity: 0.45,
+  },
+  igHomeMobileDateBtnPressed: {
+    opacity: 0.6,
+  },
+  igHomeMobileDateText: {
+    flexShrink: 1,
+    fontFamily: FONT,
+    fontSize: 14,
+    fontWeight: '400',
+    color: '#1a1a1a',
+    letterSpacing: -0.2,
+    fontVariant: ['tabular-nums'],
+  },
+  igHomeMobileDateChevrons: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+    flexShrink: 0,
   },
   igHomeHeroShell: {
     alignSelf: 'stretch',
@@ -14334,8 +14461,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     zIndex: 2,
   },
+  igHomeSectionMobile: {
+    marginTop: 0,
+  },
   igHomeTableSectionMobile: {
-    marginTop: 8,
+    marginTop: 0,
+    paddingTop: 0,
   },
   igStoreList: {
     backgroundColor: '#fff',
@@ -14345,12 +14476,20 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
   },
   igHomeStoreCard: {
-    alignItems: 'flex-start',
+    alignItems: 'center',
     gap: HOME_STORE_BODY_LEADING,
     minHeight: 72,
     paddingLeft: MOBILE_FILTER_INSET,
     paddingTop: 12,
     paddingBottom: 12,
+  },
+  igHomeStoreCardRule: {
+    position: 'absolute',
+    bottom: 0,
+    left: MOBILE_FILTER_INSET + 56 + HOME_STORE_BODY_LEADING,
+    right: 0,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: TAB_BORDER,
   },
   igHomeStoreBody: {
     flexDirection: 'column',
@@ -14409,17 +14548,28 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     alignSelf: 'flex-start',
+    width: 216,
     gap: 0,
     paddingVertical: 3,
     paddingHorizontal: 2,
-    borderRadius: 999,
-    backgroundColor: MOBILE.bg,
+    borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: 'transparent',
     overflow: 'hidden',
   },
+  igHomeStoreMetricsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    alignSelf: 'stretch',
+    width: '100%',
+    gap: 10,
+  },
   igHomeStoreMetric: {
-    flexGrow: 0,
-    flexShrink: 0,
-    width: 'auto',
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
     minWidth: 0,
     gap: 4,
     paddingHorizontal: 8,
@@ -14489,6 +14639,8 @@ const styles = StyleSheet.create({
   igStoreIconWrap: {
     width: 56,
     height: 56,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   igStoreIcon: {
     width: 46,
