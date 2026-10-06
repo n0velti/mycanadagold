@@ -10146,6 +10146,10 @@ export default function App() {
               onBrandPress={
                 activeTab === 'messages' ? dmMobileHeader?.onBrandPress : handleMobileToolBrandPress
               }
+              showBack={
+                activeTab !== 'messages' &&
+                Boolean((activeTool?.key === 'triage' || activeTool?.key === 'phone') && triageStoreBack)
+              }
               trailing={
                 activeTab === 'messages'
                   ? dmMobileHeader?.trailing

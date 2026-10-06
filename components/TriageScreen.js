@@ -364,12 +364,44 @@ export default function TriageScreen({
   const pageTitle = triagePageTitle({ dashPage, activeTab, resultsLotId, storesView });
 
   const goBack = useCallback(() => {
+    if (activeTab === 'accuracy' || resultsLotId) {
+      setResultsLotId('');
+      setListQuery('');
+      setAccuracyTab('all');
+      setAccuracyBreakdownOpen(false);
+      setActiveTab('transfers');
+      setDashPage('lots');
+      return;
+    }
+    if (activeTab === 'deleted') {
+      setActiveTab('transfers');
+      setDashPage('');
+      setListQuery('');
+      return;
+    }
     if (leaveStoreRef.current) {
       leaveStoreRef.current();
       return;
     }
-    if (activeTab !== 'transfers' || dashPage) changeTab('transfers');
-  }, [activeTab, changeTab, dashPage]);
+    if (dashPage) {
+      setDashPage('');
+      return;
+    }
+    storesNavRef.current?.closeRegion?.();
+  }, [activeTab, dashPage, resultsLotId]);
+
+  const backLabel =
+    resultsLotId || activeTab === 'accuracy'
+      ? 'Lots'
+      : activeTab === 'deleted'
+        ? storesView.selectedRegionLabel || 'Triage'
+        : dashPage === 'stores' && storesView.selectedStore
+          ? 'Stores'
+          : dashPage
+            ? storesView.selectedRegionLabel || 'Regions'
+            : storesView.selectedRegion
+              ? 'Regions'
+              : 'Back';
 
   const goDashboard = useCallback(() => {
     storesNavRef.current?.closeRegion?.();
@@ -599,6 +631,10 @@ export default function TriageScreen({
         </View>
       ) : null}
 
+      {canGoBack && !inBatch && !isMobile ? (
+        <ChromeBackRow label={backLabel} onPress={goBack} />
+      ) : null}
+
       <View style={activeTab === 'transfers' ? styles.pageVisible : styles.pageHidden}>
         <TriageDashboardPanel
           session={session}
@@ -625,10 +661,6 @@ export default function TriageScreen({
           onReviewOpenChange={isMobile ? setReviewOpen : undefined}
         />
       </View>
-
-      {storesView.selectedRegion && !inBatch && activeTab !== 'transfers' ? (
-        <ChromeBackRow label="Regions" onPress={goDashboard} />
-      ) : null}
 
       {activeTab === 'accuracy' ? (
         <TriageAccuracyPanel

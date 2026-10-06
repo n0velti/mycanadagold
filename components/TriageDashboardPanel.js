@@ -45,7 +45,6 @@ import {
 } from '../lib/triageStoreErrors';
 import { CANVAS, useIsMobile } from '../lib/mobileUi';
 import {
-  ChromeBackRow,
   ChromeHero,
   ChromeListRow,
   ChromePage,
@@ -923,7 +922,6 @@ export default function TriageDashboardPanel({
 
   return (
     <View style={[styles.body, isMobile && styles.bodyMobile]}>
-      {selectedRegion ? <ChromeBackRow label="Regions" onPress={closeRegion} /> : null}
       {page === 'errors' ? (
         <ErrorsPage rows={scopedErrors.rows} query={listQuery} onOpen={setOpenRow} />
       ) : page === 'stores' ? (
