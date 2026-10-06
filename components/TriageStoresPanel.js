@@ -14,7 +14,7 @@ import {
 } from '../lib/transactions';
 import { formatInsightPercent } from '../lib/triageInsights';
 import { storeMarkColor } from '../lib/storeMarks';
-import { groupStoresByRegion } from '../lib/storeCatalog';
+import { filterStoresByRegion, groupStoresByRegion } from '../lib/storeCatalog';
 import {
   errorAmountOf,
   errorEmployeeName,
@@ -623,15 +623,19 @@ function StoreRegionDropdown({ stores, value, onChange, pageRef }) {
   );
 }
 
-function StoreListPage({ stores, query, onOpen, month }) {
+function StoreListPage({ stores, query, onOpen, month, regionKey = '' }) {
   const items = useMemo(() => {
     const q = String(query || '')
       .trim()
       .toLowerCase();
-    const visible = q ? stores.filter((row) => row.store.toLowerCase().includes(q)) : stores;
+    const scoped = regionKey ? filterStoresByRegion(stores, regionKey) : stores;
+    const visible = q ? scoped.filter((row) => row.store.toLowerCase().includes(q)) : scoped;
     const next = [];
-    for (const group of groupStoresByRegion(visible)) {
-      next.push({ kind: 'region', key: `region:${group.key}`, label: group.label });
+    const groups = regionKey
+      ? [{ key: regionKey, label: '', stores: visible }]
+      : groupStoresByRegion(visible);
+    for (const group of groups) {
+      if (group.label) next.push({ kind: 'region', key: `region:${group.key}`, label: group.label });
       group.stores.forEach((row, index) => {
         next.push({
           kind: 'store',
@@ -642,7 +646,7 @@ function StoreListPage({ stores, query, onOpen, month }) {
       });
     }
     return next;
-  }, [query, stores]);
+  }, [query, regionKey, stores]);
   const storeRows = useMemo(() => items.filter((item) => item.kind === 'store').map((item) => item.row), [items]);
   const totals = useMemo(
     () =>
@@ -901,6 +905,7 @@ export default function TriageStoresPanel({
   query = '',
   month,
   selectedStore = '',
+  regionKey = '',
   storeTab = 'purchases',
   onStoreTabChange,
   onOpenStore,
@@ -920,7 +925,20 @@ export default function TriageStoresPanel({
     onOpenStore?.(next);
   };
 
-  let body = <StoreListPage stores={stores} query={query} month={month} onOpen={onOpenStore} />;
+  const pickerStores = useMemo(
+    () => (regionKey ? filterStoresByRegion(stores, regionKey) : stores),
+    [regionKey, stores],
+  );
+
+  let body = (
+    <StoreListPage
+      stores={stores}
+      query={query}
+      month={month}
+      regionKey={regionKey}
+      onOpen={onOpenStore}
+    />
+  );
   if (store) {
     body = (
       <StorePage
@@ -947,7 +965,7 @@ export default function TriageStoresPanel({
     <View ref={pageRef} style={styles.storePage}>
       <StoreRegionDropdown
         pageRef={pageRef}
-        stores={stores}
+        stores={pickerStores}
         value={selectedStore}
         onChange={changeStore}
       />

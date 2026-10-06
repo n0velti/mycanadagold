@@ -1,5 +1,5 @@
 /**
- * Triage dashboard: Errors, Allocation, and Expected Return.
+ * Triage dashboard: region home, then Errors, Allocation, and Expected Return.
  * Mobile matches the Home tab: hero, stat row, full-bleed list.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -34,9 +34,11 @@ import {
   lotPeriodLabel,
   summarizeLotsFineMetals,
 } from '../lib/triageLots';
+import { STORE_REGIONS } from '../lib/storeCatalog';
 import { formatAmount } from '../lib/transactions';
 import { formatErrorAmount } from '../lib/triageDraft';
-import { currentErrorPeriod } from '../lib/triageStoreErrors';
+import { formatInsightPercent } from '../lib/triageInsights';
+import { currentErrorPeriod, listRegionErrorSummaries } from '../lib/triageStoreErrors';
 import { CANVAS, useIsMobile } from '../lib/mobileUi';
 import {
   ChromeHero,
@@ -192,6 +194,28 @@ function matchesQuery(row, query) {
 
 function emptyCopy(text) {
   return <Text style={styles.emptyCopy}>{text}</Text>;
+}
+
+const REGION_ICON_COLORS = {
+  ottawa: '#B91C1C',
+  quebec: '#0F766E',
+  halifax: '#1D4ED8',
+  gta: '#2F8A4E',
+  pmx: '#6B4DE6',
+  west: '#C2410C',
+};
+
+function regionTitle(key) {
+  return STORE_REGIONS.find((region) => region.key === key)?.label || '';
+}
+
+function regionCompareMeta(region) {
+  const stores =
+    region.storeCount === 1 ? '1 store' : `${region.storeCount || 0} stores`;
+  if (!region.amount && !region.otherAmount) {
+    return `${stores} · no error value yet`;
+  }
+  return `${formatAmount(region.amount)} vs ${formatAmount(region.otherAmount)} other regions · ${stores}`;
 }
 
 function ErrorsPage({ rows, query, onOpen }) {
@@ -631,6 +655,7 @@ export default function TriageDashboardPanel({
     return () => onReviewOpenChange(false);
   }, [onReviewOpenChange, openRow]);
   const [selectedStore, setSelectedStore] = useState('');
+  const [selectedRegion, setSelectedRegion] = useState('');
   const [storePeriodLocal, setStorePeriodLocal] = useState(() => currentErrorPeriod());
   const storePeriod = storePeriodProp || storePeriodLocal;
   const setStorePeriod = onStorePeriodChange || setStorePeriodLocal;
@@ -639,31 +664,45 @@ export default function TriageDashboardPanel({
   const allRows = useMemo(() => (active ? collectAllTriagePos(triage) : []), [active, triage]);
   const lots = useMemo(() => (active ? groupPosIntoLots(evaluated, allRows) : []), [active, allRows, evaluated]);
   const errors = useMemo(() => (active ? summarizeErrors(evaluated) : { rows: [], count: 0, amount: 0, stores: 0, topType: null, types: [] }), [active, evaluated]);
+  const regionRollup = useMemo(
+    () =>
+      active
+        ? listRegionErrorSummaries(errors.rows, storePeriod, evaluated)
+        : { regions: [], totals: { count: 0, amount: 0, evaluated: 0, rate: 0, stores: 0 } },
+    [active, errors.rows, evaluated, storePeriod],
+  );
   const lotSummary = useMemo(() => summarizeLots(lots), [lots]);
   const allocationSummary = useMemo(() => (active ? summarizePoAllocations(allRows) : { rows: [], total: 0, allocated: 0, ready: 0, totals: {} }), [active, allRows]);
   const transferSummary = useMemo(() => (active ? summarizeTransfers(planned) : { rows: [], count: 0, open: 0, partial: 0, received: 0, workshop: 0 }), [active, planned]);
 
-  const openPage = useCallback((key) => onPageChange?.(key || ''), [onPageChange]);
+  const openPage = useCallback((key, regionKey = '') => {
+    setSelectedRegion(regionKey);
+    onPageChange?.(key || '');
+  }, [onPageChange]);
   const closePage = useCallback(() => {
     if (page === 'stores' && selectedStore) {
       setSelectedStore('');
       return;
     }
+    setSelectedRegion('');
     onPageChange?.('');
   }, [onPageChange, page, selectedStore]);
 
   useEffect(() => {
     if (page !== 'stores') {
       setSelectedStore('');
+      setSelectedRegion('');
     }
   }, [page]);
 
   useEffect(() => {
     onStoresViewChange?.({
       selectedStore: page === 'stores' ? selectedStore : '',
+      selectedRegion: page === 'stores' ? selectedRegion : '',
+      selectedRegionLabel: page === 'stores' ? regionTitle(selectedRegion) : '',
       period: storePeriod,
     });
-  }, [onStoresViewChange, page, selectedStore, storePeriod]);
+  }, [onStoresViewChange, page, selectedRegion, selectedStore, storePeriod]);
 
   useEffect(() => {
     if (!storesNavRef) return undefined;
@@ -683,7 +722,7 @@ export default function TriageDashboardPanel({
     }
     const titles = {
       errors: 'Errors',
-      stores: selectedStore || 'Stores',
+      stores: selectedStore || regionTitle(selectedRegion) || 'Stores',
       shipments: 'Transfers',
       lots: 'Lots',
       allocation: 'Allocation',
@@ -691,7 +730,7 @@ export default function TriageDashboardPanel({
     };
     onBackChange?.(closePage, { dateLabel: titles[page] || 'Dashboard' });
     return () => onBackChange?.(null, null);
-  }, [active, closePage, onBackChange, page, selectedStore]);
+  }, [active, closePage, onBackChange, page, selectedRegion, selectedStore]);
 
   const saveReview = useCallback(
     (poId, review) => {
@@ -715,7 +754,34 @@ export default function TriageDashboardPanel({
   }
 
   const home = (
-    <ChromePage title={isMobile ? undefined : 'Triage'} filterPad={false}>
+    <ChromePage
+      title={isMobile ? undefined : 'Regions'}
+      meta={storePeriod.label}
+      filterPad={false}
+      hero={
+        <ChromeHero
+          value={formatInsightPercent(regionRollup.totals.rate, regionRollup.totals.evaluated)}
+          stats={[
+            { label: regionRollup.totals.count === 1 ? 'Error' : 'Errors', value: String(regionRollup.totals.count) },
+            { label: 'Value', value: regionRollup.totals.amount ? formatAmount(regionRollup.totals.amount) : '—' },
+            { label: 'Stores', value: String(regionRollup.totals.stores || 0) },
+          ]}
+        />
+      }
+    >
+      {regionRollup.regions.map((region) => (
+        <ChromeListRow
+          key={region.key}
+          title={region.label}
+          meta={regionCompareMeta(region)}
+          value={formatInsightPercent(region.evaluated ? region.rate : region.share, region.evaluated || region.count)}
+          icon="map"
+          iconColor={REGION_ICON_COLORS[region.key] || '#3A3A3C'}
+          last={false}
+          onPress={() => openPage('stores', region.key)}
+        />
+      ))}
+      <Text style={styles.toolsHead}>Tools</Text>
       <ChromeListRow
         title="Lots"
         meta={
@@ -747,7 +813,7 @@ export default function TriageDashboardPanel({
         onPress={() => openPage('errors')}
       />
       <ChromeListRow
-        title="Stores"
+        title="All stores"
         meta={
           errors.stores
             ? `${errors.stores} ${errors.stores === 1 ? 'store' : 'stores'} with errors · ${storePeriod.label}`
@@ -817,6 +883,7 @@ export default function TriageDashboardPanel({
           month={storePeriod}
           onMonthChange={setStorePeriod}
           selectedStore={selectedStore}
+          regionKey={selectedRegion}
           storeTab={storeInsightTab}
           onStoreTabChange={onStoreInsightTabChange}
           onOpenStore={(name) => setSelectedStore(name)}
@@ -871,6 +938,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 18,
     backgroundColor: '#fff',
+  },
+  toolsHead: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: T.secondary,
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+    paddingTop: 22,
+    paddingBottom: 6,
+    paddingHorizontal: 16,
   },
   lotRowBar: {
     marginTop: 6,

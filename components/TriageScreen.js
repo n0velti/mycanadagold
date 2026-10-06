@@ -63,7 +63,9 @@ const DASH_PAGE_LABELS = {
 
 function triagePageTitle({ dashPage, activeTab, resultsLotId, storesView }) {
   if (dashPage === 'errors') return 'Errors';
-  if (dashPage === 'stores') return storesView?.selectedStore || 'Stores';
+  if (dashPage === 'stores') {
+    return storesView?.selectedStore || storesView?.selectedRegionLabel || 'Stores';
+  }
   if (dashPage === 'shipments') return 'Transfers';
   if (dashPage === 'lots') return 'Lots';
   if (dashPage === 'allocation') return 'Allocation';
@@ -423,7 +425,9 @@ export default function TriageScreen({
     if (pageLabel) {
       const storeOpen = dashPage === 'stores' && storesView.selectedStore;
       crumbs.push({
-        label: pageLabel,
+        label: dashPage === 'stores' && storesView.selectedRegionLabel
+          ? storesView.selectedRegionLabel
+          : pageLabel,
         onPress: storeOpen ? () => storesNavRef.current?.closeStore?.() : undefined,
       });
     }
@@ -442,6 +446,7 @@ export default function TriageScreen({
     onCrumbsChange,
     pageTitle,
     resultsLotId,
+    storesView.selectedRegionLabel,
     storesView.selectedStore,
   ]);
 
