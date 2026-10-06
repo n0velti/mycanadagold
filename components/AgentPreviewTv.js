@@ -163,13 +163,7 @@ export function AgentPublishButton({ build, onPress, busy }) {
   );
 }
 
-export function AgentPublishSheet({ visible, build, isMobile, adminNames, onClose, onConfirm, busy }) {
-  const who =
-    Array.isArray(adminNames) && adminNames.length
-      ? adminNames.length <= 2
-        ? adminNames.join(' and ')
-        : `${adminNames.slice(0, 2).join(', ')} and ${adminNames.length - 2} more`
-      : 'a System Admin';
+export function AgentPublishSheet({ visible, build, isMobile, onClose, onConfirm, busy }) {
   return (
     <Modal visible={visible} transparent animationType={isMobile ? 'slide' : 'fade'} onRequestClose={onClose}>
       <View style={[styles.sheetRoot, !isMobile && styles.sheetRootDesktop]}>
@@ -180,9 +174,8 @@ export function AgentPublishSheet({ visible, build, isMobile, adminNames, onClos
             <Text style={styles.sheetTitle}>Publish this change?</Text>
           </View>
           <Text style={styles.sheetBody}>
-            Only do this once you are happy with the preview. It sends {who} a message with your request, the
-            preview, and the pull request so it can be pushed live. You can keep editing afterwards; a new edit
-            will need another Publish.
+            Only do this once you are happy with the preview. It asks for this to be pushed live. Other staff
+            are not messaged. You can keep editing afterwards; a new edit will need another Publish.
           </Text>
           {build?.summary ? (
             <View style={styles.summaryBox}>
