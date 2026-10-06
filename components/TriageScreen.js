@@ -195,17 +195,6 @@ export default function TriageScreen({
     [accuracyStats],
   );
 
-  const changeTab = useCallback((key) => {
-    const dashPageKey = key === 'errors' || key === 'lots' ? key : '';
-    if (!dashPageKey) leaveStoreRef.current?.();
-    setActiveTab(dashPageKey ? 'transfers' : key);
-    setListQuery('');
-    setAccuracyBreakdownOpen(false);
-    setDailyOpen(false);
-    setResultsLotId('');
-    setDashPage(dashPageKey);
-  }, []);
-
   const changeAccuracyTab = useCallback((key) => {
     setAccuracyTab(key);
     setListQuery('');
