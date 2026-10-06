@@ -3,7 +3,8 @@
  * Mobile matches the Home tab: hero, stat row, full-bleed list.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import {
   applyTriageReviewToPo,
   collectAccuracyTriagePos,
@@ -206,6 +207,25 @@ const REGION_ICON_COLORS = {
 
 function regionTitle(key) {
   return STORE_REGIONS.find((region) => region.key === key)?.label || '';
+}
+
+function RegionBack({ onPress }) {
+  const isMobile = useIsMobile();
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ hovered, pressed }) => [
+        styles.regionBack,
+        isMobile && styles.regionBackMobile,
+        (hovered || pressed) && styles.regionBackHover,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel="Back to regions"
+    >
+      <Ionicons name="chevron-back" size={isMobile ? 22 : 20} color={T.text} />
+      <Text style={[styles.regionBackLabel, isMobile && styles.regionBackLabelMobile]}>Regions</Text>
+    </Pressable>
+  );
 }
 
 function regionStoreMeta(region) {
@@ -799,6 +819,8 @@ export default function TriageDashboardPanel({
   }
 
   const pages = (
+    <View style={styles.regionPage}>
+    <RegionBack onPress={closePage} />
     <ChromePage
       title={isMobile ? undefined : regionTitle(selectedRegion) || 'Triage'}
       meta={storePeriod.label}
@@ -902,6 +924,7 @@ export default function TriageDashboardPanel({
         onPress={() => onOpenTab?.('deleted')}
       />
     </ChromePage>
+    </View>
   );
 
   const home = (
@@ -995,6 +1018,43 @@ const styles = StyleSheet.create({
   },
   bodyMobile: {
     backgroundColor: CANVAS,
+  },
+  regionPage: {
+    flex: 1,
+    minHeight: 0,
+  },
+  regionBack: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 2,
+    marginLeft: 24,
+    marginTop: 8,
+    marginBottom: 2,
+    paddingVertical: 6,
+    paddingRight: 10,
+    borderRadius: 8,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  regionBackMobile: {
+    marginLeft: 8,
+    marginTop: 4,
+    paddingLeft: 4,
+  },
+  regionBackHover: {
+    backgroundColor: '#f5f5f5',
+  },
+  regionBackLabel: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: T.text,
+  },
+  regionBackLabelMobile: {
+    fontSize: 16,
   },
   emptyCopy: {
     fontFamily,

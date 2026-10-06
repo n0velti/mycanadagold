@@ -8324,6 +8324,7 @@ function TopNavBar({
   onSelectBuy,
   onSelectSell,
   onSelectStore,
+  onBack,
   searchValue,
   onSearchChange,
   onSearchFocus,
@@ -8353,6 +8354,17 @@ function TopNavBar({
       {...(Platform.OS === 'web' ? { className: 'cgold-top-bar-blur' } : null)}
     >
       <View style={styles.topBarBrandRow}>
+        {onBack ? (
+          <Pressable
+            onPress={onBack}
+            accessibilityRole="button"
+            accessibilityLabel="Back"
+            hitSlop={8}
+            style={styles.topBarBack}
+          >
+            <Ionicons name="chevron-back" size={22} color={MOBILE.label} />
+          </Pressable>
+        ) : null}
         <Pressable
           onPress={onSelectHome}
           accessibilityRole="button"
@@ -10168,6 +10180,11 @@ export default function App() {
         storeName={activeTab === 'home' ? homeStoreName : ''}
         documentRef={activeTab === 'home' ? homeDocRef : ''}
         crumbs={activeTab === 'tools' && activeTool?.key === 'triage' ? triageCrumbs : undefined}
+        onBack={
+          activeTab === 'tools' && activeTool?.key === 'triage' && triageStoreBack
+            ? triageStoreBack
+            : undefined
+        }
         onSelectHome={() => selectTab('home')}
         onSelectStore={homeDocRef ? () => homeDocumentCloseRef.current?.() : undefined}
         onSelectBuy={() => selectTab('buy')}
@@ -10267,6 +10284,17 @@ const styles = StyleSheet.create({
     height: 32,
     alignItems: 'center',
     justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  topBarBack: {
+    height: 32,
+    width: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: -4,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},

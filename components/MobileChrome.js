@@ -297,6 +297,7 @@ export function MobileFeedTopBar({
     segments.length >= 2 && (fits === false || (fits == null && segments.length >= 3));
   const visibleSegments = collapseMiddle ? collapseMiddleCrumbs(segments, onBrandPress) : segments;
 
+  const showBackArrow = Boolean(onBrandPress && segments.length > 1);
   const brandControl = onBrandPress ? (
     <Pressable
       onPress={onBrandPress}
@@ -305,7 +306,11 @@ export function MobileFeedTopBar({
       accessibilityRole="button"
       accessibilityLabel="Back"
     >
-      <CanadaGoldMark size={22} />
+      {showBackArrow ? (
+        <Ionicons name="chevron-back" size={26} color={MOBILE.blue} />
+      ) : (
+        <CanadaGoldMark size={22} />
+      )}
     </Pressable>
   ) : (
     <View style={styles.mobileFeedBrandBtn} accessibilityLabel={brandAccessibilityLabel}>
@@ -314,7 +319,11 @@ export function MobileFeedTopBar({
   );
   const brandProbe = (
     <View style={styles.mobileFeedBrandBtn}>
-      <CanadaGoldMark size={22} />
+      {showBackArrow ? (
+        <Ionicons name="chevron-back" size={26} color={MOBILE.blue} />
+      ) : (
+        <CanadaGoldMark size={22} />
+      )}
     </View>
   );
 
