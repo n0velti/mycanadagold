@@ -49,7 +49,7 @@
  *   /proxy/agent/request-status            POST  → trusted status update (System Admin JWT or AGENT_STATUS_SECRET)
  *   /proxy/agent/build/start               POST  → Cursor cloud agent for a DM conversation (create or follow-up run)
  *   /proxy/agent/build/refresh             POST  → poll that agent + Vercel preview for the conversation
- *   /proxy/agent/build/publish             POST  → requester is happy with the preview; flag it for a System Admin to push
+ *   /proxy/agent/build/publish             POST  → requester is happy with the preview; flag it for Gilmour (no staff DMs)
  *   /proxy/dev-tickets/launch              POST  → create a Cursor cloud agent for a staff ticket
  *   /proxy/dev-tickets/refresh             POST  → poll agent / Vercel preview for a ticket
  *   /proxy/dev-tickets/decide              POST  → approve (merge PR) or reject (close PR)
@@ -7955,7 +7955,8 @@ async function forwardAgentChangeRequest(
     : Array.isArray(payload.imageUrls)
       ? payload.imageUrls.map((url) => asTrimmedString(url)).filter(Boolean).slice(0, 4)
       : [];
-  const outbound = {
+  const kind = asTrimmedString(payload.kind);
+  const outbound: Record<string, unknown> = {
     id: requestId,
     sender_id: staff.userId,
     sender_name: senderName,
@@ -7965,6 +7966,7 @@ async function forwardAgentChangeRequest(
     created_at:
       asTrimmedString(payload.created_at) || asTrimmedString(payload.createdAt) || new Date().toISOString(),
   };
+  if (kind) outbound.kind = kind;
 
   try {
     const upstream = await forward(
