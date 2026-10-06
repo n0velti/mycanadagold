@@ -23,6 +23,7 @@ import {
   NAV_TAB_ACTIVE_RADIUS,
   mobileSafeBottom,
   mobileSafeTop,
+  useIsMobile,
 } from '../lib/mobileUi';
 
 const fontFamily = 'Sohne';
@@ -603,6 +604,23 @@ export function MobileNavHeader({
         {backRight ? back : null}
       </View>
     </View>
+  );
+}
+
+/** Visible in-page back. Shell logo / crumbs are easy to miss after a drill-in. */
+export function ChromeBackRow({ label = 'Back', onPress }) {
+  const isMobile = useIsMobile();
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={10}
+      accessibilityRole="button"
+      accessibilityLabel="Back"
+      style={[styles.chromeBackRow, isMobile ? styles.chromeBackRowMobile : styles.chromeBackRowDesktop]}
+    >
+      <Ionicons name="chevron-back" size={isMobile ? 26 : 20} color={isMobile ? MOBILE.blue : '#1a1a1a'} />
+      <Text style={[styles.chromeBackLabel, isMobile && styles.chromeBackLabelMobile]}>{label}</Text>
+    </Pressable>
   );
 }
 
@@ -1602,5 +1620,37 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#fff',
     lineHeight: 11,
+  },
+  chromeBackRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    flexShrink: 0,
+    gap: 2,
+    minHeight: 44,
+  },
+  chromeBackRowDesktop: {
+    paddingHorizontal: 32,
+    paddingTop: 10,
+    paddingBottom: 4,
+    marginLeft: -6,
+  },
+  chromeBackRowMobile: {
+    paddingHorizontal: MOBILE_FILTER_INSET,
+    paddingTop: 6,
+    paddingBottom: 2,
+    marginLeft: -4,
+  },
+  chromeBackLabel: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    letterSpacing: -0.2,
+  },
+  chromeBackLabelMobile: {
+    fontSize: 17,
+    fontWeight: '400',
+    color: MOBILE.blue,
   },
 });

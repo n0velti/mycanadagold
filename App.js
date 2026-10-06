@@ -127,6 +127,7 @@ import HomeDatePicker from './components/HomeDatePicker';
 import LoginScreen from './components/LoginScreen';
 import ProfileLoginSwitcher from './components/ProfileLoginSwitcher';
 import {
+  ChromeBackRow,
   MobileFeedTopBar,
   MobileNavHeader,
   MobileSafeTop,
@@ -6520,7 +6521,7 @@ function HomeScreen({
                     accessibilityRole="button"
                     accessibilityLabel={homeDocRef ? 'Back to store' : 'Back to Home'}
                   >
-                    <HomeGlyph size={22} />
+                    <Ionicons name="chevron-back" size={28} color={MOBILE.blue} />
                   </Pressable>
                   <Text style={styles.igHomeMobileCrumbSep} accessible={false}>
                     /
@@ -8361,12 +8362,22 @@ function TopNavBar({
     >
       <View style={styles.topBarBrandRow}>
         <Pressable
-          onPress={onSelectHome}
+          onPress={() => {
+            if (storeName && documentRef && onSelectStore) {
+              onSelectStore();
+              return;
+            }
+            onSelectHome();
+          }}
           accessibilityRole="button"
-          accessibilityLabel="Home"
+          accessibilityLabel={storeName ? 'Back' : 'Home'}
           style={styles.topBarBrand}
         >
-          <HomeGlyph size={22} />
+          {storeName ? (
+            <Ionicons name="chevron-back" size={28} color={MOBILE.blue} />
+          ) : (
+            <HomeGlyph size={22} />
+          )}
         </Pressable>
         {trail.map((crumb, index) => (
           <Fragment key={`${crumb.label}-${index}`}>
@@ -8737,6 +8748,7 @@ export default function App() {
   const homeDocumentCloseRef = useRef(null);
   const messagesSeenRef = useRef(false);
   const [activeTool, setActiveTool] = useState(null);
+  const [toolReturnTo, setToolReturnTo] = useState(null);
   const [triageStoreBack, setTriageStoreBack] = useState(null);
   const [triageBatch, setTriageBatch] = useState(null);
   const [triageNav, setTriageNav] = useState(null);
@@ -9215,6 +9227,7 @@ export default function App() {
       setSettingsPanel(null);
       rememberOpenTool('');
       setActiveTool(null);
+      setToolReturnTo(null);
       return;
     }
 
@@ -9238,15 +9251,20 @@ export default function App() {
     });
   }, []);
 
+  const rememberToolReturn = useCallback(() => {
+    setToolReturnTo((current) => (activeTab === 'tools' && activeTool ? current : activeTab));
+  }, [activeTab, activeTool]);
+
   const openAnalyticsApp = useCallback(() => {
     const tool = TOOL_CARDS.find((item) => item.key === 'analytics');
     if (!tool || !hasApp('analytics')) return;
     startTransition(() => {
+      setToolReturnTo((current) => (activeTab === 'tools' && activeTool ? current : activeTab));
       setActiveTab('tools');
       setActiveTool(tool);
       setSettingsPanel(null);
     });
-  }, [hasApp]);
+  }, [activeTab, activeTool, hasApp]);
 
   const openPersonProfile = (raw) => {
     const person = profileTargetFromPerson(raw);
@@ -9275,6 +9293,7 @@ export default function App() {
 
   const openTeamsFromProfile = (teamId) => {
     if (!hasApp('teams')) return;
+    rememberToolReturn();
     setTeamsFocusId(teamId || '');
     const teamsTool = TOOL_CARDS.find((tool) => tool.key === 'teams');
     setActiveTab('tools');
@@ -9292,13 +9311,14 @@ export default function App() {
   const openCustomerProfile = useCallback(
     (row) => {
       if (!row || !hasApp('customers')) return;
+      rememberToolReturn();
       const customersTool = TOOL_CARDS.find((tool) => tool.key === 'customers');
       setCustomerFocus(row);
       setActiveTab('tools');
       setActiveTool(customersTool || { key: 'customers', label: 'Customers' });
       setSettingsPanel(null);
     },
-    [hasApp],
+    [hasApp, rememberToolReturn],
   );
 
   const openSearchDocument = useCallback(
@@ -9337,6 +9357,7 @@ export default function App() {
       selectTab('messages');
       return;
     }
+    rememberToolReturn();
     setActiveTool(tool);
     setSettingsPanel(null);
   };
@@ -9348,6 +9369,7 @@ export default function App() {
       selectTab('messages');
       return;
     }
+    rememberToolReturn();
     setActiveTab('tools');
     setActiveTool(tool);
     setSettingsPanel(null);
@@ -9362,11 +9384,12 @@ export default function App() {
       startDate: focus?.startDate,
       endDate: focus?.endDate,
     });
+    rememberToolReturn();
     const emailsTool = TOOL_CARDS.find((tool) => tool.key === 'emails');
     setActiveTab('tools');
     setActiveTool(emailsTool || { key: 'emails', label: 'Emails' });
     setSettingsPanel(null);
-  }, [hasApp]);
+  }, [hasApp, rememberToolReturn]);
 
   const selectAppsView = (view) => {
     if (view === appsView) return;
@@ -9407,6 +9430,7 @@ export default function App() {
     if (activeTool && !hasApp(activeTool.key)) {
       setActiveTool(null);
       setSettingsPanel(null);
+      setToolReturnTo(null);
       rememberOpenTool('');
     }
   }, [activeTool, hasApp]);
@@ -9441,6 +9465,7 @@ export default function App() {
       setPassword('');
       setActiveTab('home');
       setActiveTool(null);
+      setToolReturnTo(null);
       setSettingsPanel(null);
       setSwitchError('');
       setLoginSwitcherOpen(false);
@@ -9518,17 +9543,31 @@ export default function App() {
       return null;
     }
 
+    const phoneNested = activeTool.key === 'phone' && triageStoreBack && triageBatch;
+    if (!nestedLabel && !phoneNested) {
+      return (activeTool.key === 'audit' || activeTool.key === 'transfer') && triageNav ? (
+        <View style={[styles.breadcrumb, styles.breadcrumbDesktop]}>
+          <View style={styles.breadcrumbNav}>{triageNav}</View>
+        </View>
+      ) : null;
+    }
+
     return (
-      <View style={[styles.breadcrumb, !isMobile && styles.breadcrumbDesktop]}>
+      <View style={[styles.breadcrumb, styles.breadcrumbDesktop]}>
         <View style={styles.breadcrumbTrail}>
           <Pressable
-            onPress={() => {
-              setActiveTool(null);
-              setSettingsPanel(null);
-            }}
+            onPress={closeActiveTool}
             style={styles.breadcrumbLink}
           >
-            <Text style={styles.breadcrumbLinkText}>Apps</Text>
+            <Text style={styles.breadcrumbLinkText}>
+              {toolReturnTo === 'home'
+                ? 'Home'
+                : toolReturnTo === 'messages'
+                  ? 'Messages'
+                  : toolReturnTo === 'profile'
+                    ? 'Profile'
+                    : 'Apps'}
+            </Text>
           </Pressable>
           <Text style={styles.breadcrumbSep}>›</Text>
           {nestedLabel ? (
@@ -9544,37 +9583,26 @@ export default function App() {
               <Text style={styles.breadcrumbSep}>›</Text>
               <Text style={styles.breadcrumbCurrent}>{nestedLabel}</Text>
             </>
-          ) : (activeTool.key === 'triage' || activeTool.key === 'phone') && triageStoreBack && triageBatch ? (
+          ) : (
             <>
               <Pressable
                 onPress={triageStoreBack}
                 style={styles.breadcrumbLink}
                 accessibilityRole="button"
-                accessibilityLabel={activeTool.key === 'phone' ? 'Back to stores' : 'Back to triage dashboard'}
+                accessibilityLabel="Back to stores"
               >
-                <Text style={styles.breadcrumbLinkText}>
-                  {activeTool.key === 'phone' ? 'Stores' : activeTool.label}
-                </Text>
+                <Text style={styles.breadcrumbLinkText}>Stores</Text>
               </Pressable>
               <Text style={styles.breadcrumbSep}>›</Text>
               <View style={styles.breadcrumbBatch}>
                 <Text style={styles.breadcrumbCurrent} numberOfLines={1}>
-                  {activeTool.key === 'phone'
-                    ? triageBatch.storeName || triageBatch.dateLabel
-                    : triageBatch.dateLabel}
+                  {triageBatch.storeName || triageBatch.dateLabel}
                 </Text>
-                {activeTool.key !== 'phone' && triageBatch.storeNames ? (
-                  <Text style={styles.breadcrumbSub} numberOfLines={1}>
-                    {triageBatch.storeNames}
-                  </Text>
-                ) : null}
               </View>
             </>
-          ) : (
-            <Text style={styles.breadcrumbCurrent}>{activeTool.label}</Text>
           )}
         </View>
-        {(activeTool.key === 'triage' || activeTool.key === 'audit' || activeTool.key === 'transfer') && triageNav ? (
+        {(activeTool.key === 'audit' || activeTool.key === 'transfer') && triageNav ? (
           <View style={styles.breadcrumbNav}>{triageNav}</View>
         ) : null}
       </View>
@@ -9584,9 +9612,12 @@ export default function App() {
   const renderActiveTool = () => {
     if (!activeTool) return null;
     if (isMobile && activeTool.key === 'messages') return null;
+    const triageOwnsBack = activeTool.key === 'triage' && triageStoreBack;
+    const showShellChromeBack = Boolean(pageBack) && !isMobile && !triageOwnsBack;
     return (
       <View style={styles.toolsScreen}>
         {renderToolsHeader()}
+        {showShellChromeBack ? <ChromeBackRow label={pageBack.label} onPress={pageBack.onPress} /> : null}
         <ScreenGate resetKey={activeTool.key}>
         {activeTool.key === 'transactions' ? (
           <TransactionsScreen
@@ -9990,6 +10021,58 @@ export default function App() {
     activeTool?.key === 'settings'
       ? settingsSubPanels[settingsPanel] || activeTool?.label
       : activeTool?.label;
+
+  const closeActiveTool = useCallback(() => {
+    const returnTo = toolReturnTo;
+    setActiveTool(null);
+    setSettingsPanel(null);
+    rememberOpenTool('');
+    setToolReturnTo(null);
+    setActiveTab(returnTo && returnTo !== 'tools' ? returnTo : 'tools');
+  }, [toolReturnTo]);
+
+  const goPageBack = useCallback(() => {
+    if (activeTool?.key === 'settings' && settingsPanel) {
+      setSettingsPanel(null);
+      return;
+    }
+    if ((activeTool?.key === 'triage' || activeTool?.key === 'phone') && triageStoreBack) {
+      triageStoreBack();
+      return;
+    }
+    if (activeTab === 'buy' || activeTab === 'sell') {
+      setActiveTab('home');
+      return;
+    }
+    if (activeTool) {
+      closeActiveTool();
+    }
+  }, [activeTab, activeTool, closeActiveTool, settingsPanel, triageStoreBack]);
+
+  const pageBack = useMemo(() => {
+    if (activeTool?.key === 'settings' && settingsPanel) {
+      return { label: 'Settings', onPress: goPageBack };
+    }
+    if (activeTool?.key === 'phone' && triageStoreBack) {
+      return { label: 'Stores', onPress: goPageBack };
+    }
+    if (activeTool?.key === 'triage' && triageStoreBack) {
+      return {
+        label: triageBatch?.dateLabel || 'Back',
+        onPress: goPageBack,
+      };
+    }
+    if (activeTab === 'buy' || activeTab === 'sell') {
+      return { label: 'Home', onPress: goPageBack };
+    }
+    if (activeTool) {
+      const origin = toolReturnTo && toolReturnTo !== 'tools' ? toolReturnTo : 'tools';
+      const labels = { home: 'Home', messages: 'Messages', profile: 'Profile', search: 'Search' };
+      return { label: labels[origin] || 'Apps', onPress: goPageBack };
+    }
+    return null;
+  }, [activeTab, activeTool, goPageBack, settingsPanel, toolReturnTo, triageBatch?.dateLabel, triageStoreBack]);
+
   const mobileToolSegments = useMemo(() => {
     if (!activeTool) return [];
     if (activeTool.key === 'triage') {
@@ -10007,21 +10090,15 @@ export default function App() {
         { label: triageBatch.storeName },
       ];
     }
+    if (activeTool.key === 'settings' && settingsPanel) {
+      return [
+        { label: 'Settings', onPress: () => setSettingsPanel(null) },
+        { label: mobileToolTitle },
+      ];
+    }
     return [{ label: mobileToolTitle }];
-  }, [activeTool, mobileToolTitle, triageBatch?.storeName, triageCrumbs, triageStoreBack]);
-  const handleMobileToolBrandPress = useCallback(() => {
-    if (activeTool?.key === 'settings' && settingsPanel) {
-      setSettingsPanel(null);
-      return;
-    }
-    if ((activeTool?.key === 'triage' || activeTool?.key === 'phone') && triageStoreBack) {
-      triageStoreBack();
-      return;
-    }
-    setActiveTool(null);
-    setSettingsPanel(null);
-    rememberOpenTool('');
-  }, [activeTool?.key, rememberOpenTool, settingsPanel, triageStoreBack]);
+  }, [activeTool, mobileToolTitle, settingsPanel, triageBatch?.storeName, triageCrumbs, triageStoreBack]);
+  const handleMobileToolBrandPress = goPageBack;
   const canvasMobileTab =
     isMobile &&
     (activeTab === 'home' ||
@@ -10147,8 +10224,9 @@ export default function App() {
                 activeTab === 'messages' ? dmMobileHeader?.onBrandPress : handleMobileToolBrandPress
               }
               showBack={
-                activeTab !== 'messages' &&
-                Boolean((activeTool?.key === 'triage' || activeTool?.key === 'phone') && triageStoreBack)
+                activeTab === 'messages'
+                  ? Boolean(dmMobileHeader?.onBrandPress)
+                  : Boolean(pageBack)
               }
               trailing={
                 activeTab === 'messages'
