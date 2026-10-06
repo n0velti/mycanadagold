@@ -13,6 +13,7 @@ import {
   useTransferWorkflow,
 } from '../lib/transferWorkflow';
 import { ChromeHero, ChromePage, confirmDestructive, EmptyState, FONT, MobileListRow, T } from './TriageKit';
+import { storeNameInRegion } from '../lib/storeCatalog';
 import { useIsMobile } from '../lib/mobileUi';
 import { docNoun, PoThumb } from './TriageTable';
 
@@ -125,7 +126,17 @@ function deletedRowProps(entry) {
   };
 }
 
-export default function TriageDeletedPanel({ session, query = '' }) {
+function deletedStoreNames(entry) {
+  if (entry?.kind === 'doc') {
+    return [entry.item?.storeName, entry.storeName];
+  }
+  if (entry?.kind === 'po') {
+    return flattenBatchPos(entry.payload).map((item) => item?.storeName);
+  }
+  return (entry?.payload?.stores || []).map((store) => store?.name || store?.storeName);
+}
+
+export default function TriageDeletedPanel({ session, query = '', regionKey = '' }) {
   const { deleted = [] } = useTransferWorkflow();
   const rows = useMemo(
     () =>
@@ -138,8 +149,13 @@ export default function TriageDeletedPanel({ session, query = '' }) {
     const q = String(query || '')
       .trim()
       .toLowerCase();
-    if (!q) return rows;
     return rows.filter((entry) => {
+      if (regionKey) {
+        const names = deletedStoreNames(entry).filter(Boolean);
+        if (names.length && !names.some((name) => storeNameInRegion(name, regionKey))) return false;
+        if (!names.length) return false;
+      }
+      if (!q) return true;
       const props = deletedRowProps(entry);
       return [props.title, props.subtitle, entry.deletedBy]
         .filter(Boolean)
@@ -147,7 +163,7 @@ export default function TriageDeletedPanel({ session, query = '' }) {
         .toLowerCase()
         .includes(q);
     });
-  }, [query, rows]);
+  }, [query, regionKey, rows]);
 
   const restore = useCallback((entry) => {
     restoreTriageDeleted(entry.id);

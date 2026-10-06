@@ -70,7 +70,7 @@ function triagePageTitle({ dashPage, activeTab, resultsLotId, storesView }) {
   if (dashPage === 'return') return 'Expected Return';
   if (activeTab === 'accuracy') return resultsLotId || 'Results';
   if (activeTab === 'deleted') return 'Deleted';
-  return 'Triage';
+  return storesView?.selectedRegionLabel || 'Triage';
 }
 
 function ChromeStats({ items, onPress, accessibilityLabel, wide = false, actionLabel, attention = false }) {
@@ -356,7 +356,11 @@ export default function TriageScreen({
       (inBatch && storeTab === 'melt') ||
       dashPage === 'lots' ||
       (activeTab === 'accuracy' && !resultsLotId));
-  const canGoBack = canLeaveStore || activeTab !== 'transfers' || Boolean(dashPage);
+  const canGoBack =
+    canLeaveStore ||
+    activeTab !== 'transfers' ||
+    Boolean(dashPage) ||
+    Boolean(storesView.selectedRegion);
   const pageTitle = triagePageTitle({ dashPage, activeTab, resultsLotId, storesView });
 
   const goBack = useCallback(() => {
@@ -368,6 +372,7 @@ export default function TriageScreen({
   }, [activeTab, changeTab, dashPage]);
 
   const goDashboard = useCallback(() => {
+    storesNavRef.current?.closeRegion?.();
     leaveStoreRef.current?.();
     setActiveTab('transfers');
     setDashPage('');
@@ -381,11 +386,13 @@ export default function TriageScreen({
     if (!onCrumbsChange) return undefined;
     const pageLabel = DASH_PAGE_LABELS[dashPage];
     const crumbs = [];
+    const regionLabel = storesView.selectedRegionLabel;
     const onTriage =
       !inBatch &&
       activeTab === 'transfers' &&
       !dashPage &&
-      !resultsLotId
+      !resultsLotId &&
+      !regionLabel
         ? undefined
         : goDashboard;
     crumbs.push({ label: 'Triage', onPress: onTriage });
@@ -394,6 +401,22 @@ export default function TriageScreen({
       crumbs.push({ label: batchContext?.dateLabel || pageTitle });
       onCrumbsChange(crumbs);
       return undefined;
+    }
+
+    if (regionLabel) {
+      crumbs.push({
+        label: regionLabel,
+        onPress:
+          dashPage || activeTab !== 'transfers' || resultsLotId
+            ? () => {
+                storesNavRef.current?.closeStore?.();
+                setActiveTab('transfers');
+                setDashPage('');
+                setResultsLotId('');
+                setListQuery('');
+              }
+            : undefined,
+      });
     }
 
     if (activeTab === 'deleted') {
@@ -442,6 +465,8 @@ export default function TriageScreen({
     onCrumbsChange,
     pageTitle,
     resultsLotId,
+    storesView.selectedRegion,
+    storesView.selectedRegionLabel,
     storesView.selectedStore,
   ]);
 
@@ -620,7 +645,11 @@ export default function TriageScreen({
           onBackChange={handleBackChange}
         />
       ) : activeTab === 'deleted' ? (
-        <TriageDeletedPanel session={session} query={listQuery} />
+        <TriageDeletedPanel
+          session={session}
+          query={listQuery}
+          regionKey={storesView.selectedRegion}
+        />
       ) : null}
       </View>
 
