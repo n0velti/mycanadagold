@@ -45,6 +45,7 @@ import {
 } from '../lib/triageStoreErrors';
 import { CANVAS, useIsMobile } from '../lib/mobileUi';
 import {
+  ChromeBackRow,
   ChromeHero,
   ChromeListRow,
   ChromePage,
@@ -698,6 +699,11 @@ export default function TriageDashboardPanel({
     setSelectedRegion(String(regionKey || '').trim());
     onPageChange?.('');
   }, [onPageChange]);
+  const closeRegion = useCallback(() => {
+    setSelectedStore('');
+    setSelectedRegion('');
+    onPageChange?.('');
+  }, [onPageChange]);
   const closePage = useCallback(() => {
     if (page === 'stores' && selectedStore) {
       setSelectedStore('');
@@ -707,9 +713,8 @@ export default function TriageDashboardPanel({
       onPageChange?.('');
       return;
     }
-    setSelectedRegion('');
-    onPageChange?.('');
-  }, [onPageChange, page, selectedStore]);
+    closeRegion();
+  }, [closeRegion, onPageChange, page, selectedStore]);
 
   useEffect(() => {
     if (page !== 'stores') {
@@ -730,16 +735,12 @@ export default function TriageDashboardPanel({
     if (!storesNavRef) return undefined;
     storesNavRef.current = {
       closeStore: () => setSelectedStore(''),
-      closeRegion: () => {
-        setSelectedStore('');
-        setSelectedRegion('');
-        onPageChange?.('');
-      },
+      closeRegion,
     };
     return () => {
       storesNavRef.current = { closeStore() {}, closeRegion() {} };
     };
-  }, [onPageChange, storesNavRef]);
+  }, [closeRegion, storesNavRef]);
 
   useEffect(() => {
     if (!active) return undefined;
@@ -922,6 +923,7 @@ export default function TriageDashboardPanel({
 
   return (
     <View style={[styles.body, isMobile && styles.bodyMobile]}>
+      {selectedRegion ? <ChromeBackRow label="Regions" onPress={closeRegion} /> : null}
       {page === 'errors' ? (
         <ErrorsPage rows={scopedErrors.rows} query={listQuery} onOpen={setOpenRow} />
       ) : page === 'stores' ? (

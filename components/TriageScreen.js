@@ -9,7 +9,7 @@ import TriageDeletedPanel from './TriageDeletedPanel';
 import TriageInsightsPanel from './TriageInsightsPanel';
 import { canViewTriageInsights } from '../lib/permissions';
 import HomeDatePicker from './HomeDatePicker';
-import { BarButton, FONT, SearchField, SegmentedSlider, T } from './TriageKit';
+import { BarButton, ChromeBackRow, FONT, SearchField, SegmentedSlider, T } from './TriageKit';
 import {
   MobileFeedAddButton,
   MobileFeedDateButton,
@@ -625,6 +625,10 @@ export default function TriageScreen({
           onReviewOpenChange={isMobile ? setReviewOpen : undefined}
         />
       </View>
+
+      {storesView.selectedRegion && !inBatch && activeTab !== 'transfers' ? (
+        <ChromeBackRow label="Regions" onPress={goDashboard} />
+      ) : null}
 
       {activeTab === 'accuracy' ? (
         <TriageAccuracyPanel
