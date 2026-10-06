@@ -1263,26 +1263,64 @@ function ProfileAvatar({ uri, name, size = 24, style, showClock = true, clockMar
   );
 }
 
+function useAppsPagePad() {
+  const { isMobile, pagePad } = useHomePageLayout();
+  return isMobile ? Math.max(pagePad, 20) : pagePad;
+}
+
 function useAppGridMetrics() {
   const { isMobile } = useHomePageLayout();
+  const pagePad = useAppsPagePad();
+  const { width } = useWindowDimensions();
   const iconSize = isMobile ? 60 : 64;
+  const radius = Math.round(iconSize * 0.223);
+  const glyph = Math.round(iconSize * 0.44);
+
+  if (!isMobile) {
+    return {
+      isMobile,
+      iconSize,
+      radius,
+      glyph,
+      cellWidth: 156,
+      rowGap: 28,
+      colGap: 18,
+      columns: 0,
+      fillRow: false,
+    };
+  }
+
+  const inner = Math.max(0, width - pagePad * 2);
+  const columns = inner >= 540 ? 4 : 3;
+  const colGap = inner >= 400 ? 24 : 20;
+  const rowGap = inner >= 400 ? 36 : 32;
+  const cellWidth = Math.max(
+    72,
+    Math.floor((inner - colGap * (columns - 1)) / columns),
+  );
+
   return {
     isMobile,
     iconSize,
-    radius: Math.round(iconSize * 0.223),
-    glyph: Math.round(iconSize * 0.44),
-    cellWidth: isMobile ? 112 : 156,
-    rowGap: isMobile ? 22 : 28,
-    colGap: isMobile ? 10 : 18,
+    radius,
+    glyph,
+    cellWidth,
+    rowGap,
+    colGap,
+    columns,
+    fillRow: true,
   };
 }
 
 function ToolCard({ tool, pinned, onPress, onTogglePin, metrics }) {
-  const { iconSize, radius, glyph, cellWidth, isMobile } = metrics;
+  const { iconSize, radius, glyph, cellWidth, isMobile, fillRow } = metrics;
 
   return (
     <View
-      style={[styles.toolCardWrap, { width: cellWidth }]}
+      style={[
+        styles.toolCardWrap,
+        { width: fillRow && Platform.OS === 'web' ? '100%' : cellWidth },
+      ]}
       {...(Platform.OS === 'web' ? { className: 'cgold-app-icon' } : null)}
     >
       <Pressable
@@ -1347,7 +1385,7 @@ function ToolCard({ tool, pinned, onPress, onTogglePin, metrics }) {
 
 function ToolsGrid({ tools, pinnedKeys, onOpen, onTogglePin }) {
   const metrics = useAppGridMetrics();
-  const { cellWidth, rowGap, colGap } = metrics;
+  const { cellWidth, rowGap, colGap, columns, fillRow } = metrics;
 
   return (
     <View
@@ -1357,14 +1395,17 @@ function ToolsGrid({ tools, pinnedKeys, onOpen, onTogglePin }) {
           ...(Platform.OS === 'web'
             ? {
                 display: 'grid',
-                gridTemplateColumns: `repeat(auto-fit, ${cellWidth}px)`,
-                justifyContent: 'center',
+                gridTemplateColumns:
+                  fillRow && columns
+                    ? `repeat(${columns}, minmax(0, 1fr))`
+                    : `repeat(auto-fit, ${cellWidth}px)`,
+                justifyContent: fillRow ? 'stretch' : 'center',
                 justifyItems: 'center',
                 rowGap,
                 columnGap: colGap,
               }
             : {
-                justifyContent: 'center',
+                justifyContent: fillRow ? 'flex-start' : 'center',
                 columnGap: colGap,
                 rowGap,
               }),
@@ -1391,7 +1432,8 @@ function AppsLibrary({
   onOpen,
   onTogglePin,
 }) {
-  const { isMobile, pagePad, contentMaxWidth } = useHomePageLayout();
+  const { isMobile, contentMaxWidth } = useHomePageLayout();
+  const pagePad = useAppsPagePad();
   const tabBarScroll = useMobileTabBarScrollProps();
 
   const appsBody =
@@ -1433,8 +1475,8 @@ function AppsLibrary({
               styles.igHomeScrollContent,
               {
                 flexGrow: 1,
-                paddingTop: isMobile ? 24 : TOP_BAR_HEIGHT + 28,
-                paddingBottom: isMobile ? mobileTabBarReserve() + 24 : 36,
+                paddingTop: isMobile ? 32 : TOP_BAR_HEIGHT + 28,
+                paddingBottom: isMobile ? mobileTabBarReserve() + 28 : 36,
               },
             ]}
             showsVerticalScrollIndicator={false}
@@ -12557,7 +12599,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   toolCardMobile: {
-    gap: 8,
+    gap: 10,
+    paddingTop: 6,
+    paddingHorizontal: 4,
   },
   toolIconTile: {
     alignItems: 'center',
