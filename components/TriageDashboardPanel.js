@@ -3,8 +3,7 @@
  * Mobile matches the Home tab: hero, stat row, full-bleed list.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 import {
   applyTriageReviewToPo,
   collectAccuracyTriagePos,
@@ -46,6 +45,7 @@ import {
   ChromePage,
   EmptyState,
   FONT,
+  PageWithBack,
   ProgressBar,
   T,
   TextAction,
@@ -207,25 +207,6 @@ const REGION_ICON_COLORS = {
 
 function regionTitle(key) {
   return STORE_REGIONS.find((region) => region.key === key)?.label || '';
-}
-
-function RegionBack({ onPress }) {
-  const isMobile = useIsMobile();
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ hovered, pressed }) => [
-        styles.regionBack,
-        isMobile && styles.regionBackMobile,
-        (hovered || pressed) && styles.regionBackHover,
-      ]}
-      accessibilityRole="button"
-      accessibilityLabel="Back to regions"
-    >
-      <Ionicons name="chevron-back" size={isMobile ? 22 : 20} color={T.text} />
-      <Text style={[styles.regionBackLabel, isMobile && styles.regionBackLabelMobile]}>Regions</Text>
-    </Pressable>
-  );
 }
 
 function regionStoreMeta(region) {
@@ -818,9 +799,9 @@ export default function TriageDashboardPanel({
     );
   }
 
+  const regionLabel = regionTitle(selectedRegion) || 'Triage';
   const pages = (
-    <View style={styles.regionPage}>
-    <RegionBack onPress={closePage} />
+    <PageWithBack onPress={closePage} label="Regions">
     <ChromePage
       title={isMobile ? undefined : regionTitle(selectedRegion) || 'Triage'}
       meta={storePeriod.label}
@@ -924,7 +905,7 @@ export default function TriageDashboardPanel({
         onPress={() => onOpenTab?.('deleted')}
       />
     </ChromePage>
-    </View>
+    </PageWithBack>
   );
 
   const home = (
@@ -962,35 +943,47 @@ export default function TriageDashboardPanel({
   return (
     <View style={[styles.body, isMobile && styles.bodyMobile]}>
       {page === 'errors' ? (
-        <ErrorsPage rows={errors.rows} query={listQuery} onOpen={setOpenRow} />
+        <PageWithBack onPress={closePage} label={regionLabel}>
+          <ErrorsPage rows={errors.rows} query={listQuery} onOpen={setOpenRow} />
+        </PageWithBack>
       ) : page === 'stores' ? (
-        <TriageStoresPanel
-          rows={errors.rows}
-          query={listQuery}
-          month={storePeriod}
-          onMonthChange={setStorePeriod}
-          selectedStore={selectedStore}
-          regionKey={selectedRegion}
-          storeTab={storeInsightTab}
-          onStoreTabChange={onStoreInsightTabChange}
-          onOpenStore={(name) => setSelectedStore(name)}
-          onOpenPo={setOpenRow}
-          session={session}
-        />
+        <PageWithBack onPress={closePage} label={selectedStore ? 'Stores' : regionLabel}>
+          <TriageStoresPanel
+            rows={errors.rows}
+            query={listQuery}
+            month={storePeriod}
+            onMonthChange={setStorePeriod}
+            selectedStore={selectedStore}
+            regionKey={selectedRegion}
+            storeTab={storeInsightTab}
+            onStoreTabChange={onStoreInsightTabChange}
+            onOpenStore={(name) => setSelectedStore(name)}
+            onOpenPo={setOpenRow}
+            session={session}
+          />
+        </PageWithBack>
       ) : page === 'shipments' ? (
-        <TransfersPage summary={transferSummary} />
+        <PageWithBack onPress={closePage} label={regionLabel}>
+          <TransfersPage summary={transferSummary} />
+        </PageWithBack>
       ) : page === 'lots' ? (
-        <LotsPage
-          lots={lots}
-          allRows={allRows}
-          errors={errors}
-          query={listQuery}
-          onOpen={onOpenLot ? (lot) => onOpenLot(lot.id) : undefined}
-        />
+        <PageWithBack onPress={closePage} label={regionLabel}>
+          <LotsPage
+            lots={lots}
+            allRows={allRows}
+            errors={errors}
+            query={listQuery}
+            onOpen={onOpenLot ? (lot) => onOpenLot(lot.id) : undefined}
+          />
+        </PageWithBack>
       ) : page === 'allocation' ? (
-        <AllocationPage rows={scopedAllRows} session={session} />
+        <PageWithBack onPress={closePage} label={regionLabel}>
+          <AllocationPage rows={scopedAllRows} session={session} />
+        </PageWithBack>
       ) : page === 'return' ? (
-        <ExpectedReturnPage lots={lots} summary={lotSummary} />
+        <PageWithBack onPress={closePage} label={regionLabel}>
+          <ExpectedReturnPage lots={lots} summary={lotSummary} />
+        </PageWithBack>
       ) : selectedRegion ? (
         pages
       ) : (
@@ -1018,43 +1011,6 @@ const styles = StyleSheet.create({
   },
   bodyMobile: {
     backgroundColor: CANVAS,
-  },
-  regionPage: {
-    flex: 1,
-    minHeight: 0,
-  },
-  regionBack: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    gap: 2,
-    marginLeft: 24,
-    marginTop: 8,
-    marginBottom: 2,
-    paddingVertical: 6,
-    paddingRight: 10,
-    borderRadius: 8,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  regionBackMobile: {
-    marginLeft: 8,
-    marginTop: 4,
-    paddingLeft: 4,
-  },
-  regionBackHover: {
-    backgroundColor: '#f5f5f5',
-  },
-  regionBackLabel: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: T.text,
-  },
-  regionBackLabelMobile: {
-    fontSize: 16,
   },
   emptyCopy: {
     fontFamily,

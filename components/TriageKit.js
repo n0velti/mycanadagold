@@ -731,6 +731,38 @@ export function TextAction({ label, icon, onPress, disabled, destructive, strong
   );
 }
 
+/** In-page back control for drill-down triage screens. */
+export function PageBack({ onPress, label = 'Back', accessibilityLabel }) {
+  const isMobile = useIsMobile();
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ hovered, pressed }) => [
+        styles.pageBack,
+        isMobile && styles.pageBackMobile,
+        (hovered || pressed) && styles.pageBackHover,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel || `Back to ${label}`}
+      {...(Platform.OS === 'web' ? { className: 'cgold-triage-btn' } : null)}
+    >
+      <Ionicons name="chevron-back" size={isMobile ? 22 : 20} color={T.text} />
+      <Text style={[styles.pageBackLabel, isMobile && styles.pageBackLabelMobile]} numberOfLines={1}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+export function PageWithBack({ onPress, label, children }) {
+  return (
+    <View style={styles.pageWithBack}>
+      <PageBack onPress={onPress} label={label} />
+      {children}
+    </View>
+  );
+}
+
 /** Small round icon button for toolbars. */
 export function IconAction({ icon, onPress, accessibilityLabel, active, size = 18 }) {
   return (
@@ -2958,5 +2990,42 @@ const styles = StyleSheet.create({
   chromeRowChevron: {
     width: 18,
     flexShrink: 0,
+  },
+  pageWithBack: {
+    flex: 1,
+    minHeight: 0,
+  },
+  pageBack: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 2,
+    marginLeft: 24,
+    marginTop: 8,
+    marginBottom: 2,
+    paddingVertical: 6,
+    paddingRight: 10,
+    borderRadius: 8,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  pageBackMobile: {
+    marginLeft: 8,
+    marginTop: 4,
+    paddingLeft: 4,
+  },
+  pageBackHover: {
+    backgroundColor: '#f5f5f5',
+  },
+  pageBackLabel: {
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '600',
+    color: T.text,
+  },
+  pageBackLabelMobile: {
+    fontSize: 16,
   },
 });

@@ -9,7 +9,7 @@ import TriageDeletedPanel from './TriageDeletedPanel';
 import TriageInsightsPanel from './TriageInsightsPanel';
 import { canViewTriageInsights } from '../lib/permissions';
 import HomeDatePicker from './HomeDatePicker';
-import { BarButton, FONT, SearchField, SegmentedSlider, T } from './TriageKit';
+import { BarButton, FONT, PageWithBack, SearchField, SegmentedSlider, T } from './TriageKit';
 import {
   MobileFeedAddButton,
   MobileFeedDateButton,
@@ -634,25 +634,42 @@ export default function TriageScreen({
       </View>
 
       {activeTab === 'accuracy' ? (
-        <TriageAccuracyPanel
-          session={session}
-          storeFilter={storeFilter}
-          accuracyTab={accuracyTab}
-          onAccuracyTabChange={setAccuracyTab}
-          listQuery={listQuery}
-          onStatsChange={setAccuracyStats}
-          breakdownOpen={accuracyBreakdownOpen}
-          onBreakdownOpenChange={setAccuracyBreakdownOpen}
-          openLotId={resultsLotId}
-          onOpenLotChange={(id) => {
-            setResultsLotId(id || '');
-            setListQuery('');
-            setAccuracyTab('all');
+        <PageWithBack
+          onPress={() => {
+            if (resultsLotId) {
+              setResultsLotId('');
+              setListQuery('');
+              setAccuracyTab('all');
+              setActiveTab('transfers');
+              setDashPage('lots');
+              return;
+            }
+            goRegion();
           }}
-          onBackChange={handleBackChange}
-        />
+          label={resultsLotId ? 'Lots' : storesView.selectedRegionLabel || 'Triage'}
+        >
+          <TriageAccuracyPanel
+            session={session}
+            storeFilter={storeFilter}
+            accuracyTab={accuracyTab}
+            onAccuracyTabChange={setAccuracyTab}
+            listQuery={listQuery}
+            onStatsChange={setAccuracyStats}
+            breakdownOpen={accuracyBreakdownOpen}
+            onBreakdownOpenChange={setAccuracyBreakdownOpen}
+            openLotId={resultsLotId}
+            onOpenLotChange={(id) => {
+              setResultsLotId(id || '');
+              setListQuery('');
+              setAccuracyTab('all');
+            }}
+            onBackChange={handleBackChange}
+          />
+        </PageWithBack>
       ) : activeTab === 'deleted' ? (
-        <TriageDeletedPanel session={session} query={listQuery} regionKey={storesView.selectedRegion} />
+        <PageWithBack onPress={goRegion} label={storesView.selectedRegionLabel || 'Triage'}>
+          <TriageDeletedPanel session={session} query={listQuery} regionKey={storesView.selectedRegion} />
+        </PageWithBack>
       ) : null}
       </View>
 
