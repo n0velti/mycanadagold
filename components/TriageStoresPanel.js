@@ -2,7 +2,7 @@
  * Dashboard Stores: Home-style store table, then store POs and insight tabs.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
   fetchSearchCreatedByNames,
@@ -14,6 +14,7 @@ import {
 } from '../lib/transactions';
 import { formatInsightPercent } from '../lib/triageInsights';
 import { storeMarkColor } from '../lib/storeMarks';
+import { groupStoresByRegion } from '../lib/storeCatalog';
 import {
   errorAmountOf,
   errorEmployeeName,
@@ -416,17 +417,193 @@ function RankRow({ title, meta, value, count, total, last }) {
   );
 }
 
+const ALL_STORES = '';
+const PICKER_MENU_MIN = 280;
+const PICKER_MENU_MAX = 360;
+
+function RegionHead({ label }) {
+  const isMobile = useIsMobile();
+  return (
+    <View style={[styles.regionHead, isMobile && styles.regionHeadMobile]}>
+      <Text style={styles.regionHeadLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function StoreRegionDropdown({ stores, value, onChange }) {
+  const isMobile = useIsMobile();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const fieldRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [anchor, setAnchor] = useState(null);
+  const groups = useMemo(() => groupStoresByRegion(stores), [stores]);
+  const selected = String(value || '').trim();
+  const label = selected || 'All stores';
+
+  const openMenu = () => {
+    const node = fieldRef.current;
+    if (typeof node?.measureInWindow === 'function') {
+      node.measureInWindow((x, y, width, height) => {
+        setAnchor({ x, y, width, height });
+        setOpen(true);
+      });
+      return;
+    }
+    setAnchor(null);
+    setOpen(true);
+  };
+
+  const close = () => setOpen(false);
+
+  const pick = (name) => {
+    onChange?.(name);
+    close();
+  };
+
+  const menuWidth = Math.min(
+    PICKER_MENU_MAX,
+    Math.max(PICKER_MENU_MIN, anchor?.width || PICKER_MENU_MIN),
+  );
+  const menuLeft = anchor
+    ? Math.min(Math.max(16, anchor.x), Math.max(16, windowWidth - menuWidth - 16))
+    : 16;
+  const spaceBelow = anchor ? windowHeight - (anchor.y + anchor.height) : windowHeight;
+  const openUp = Boolean(anchor && spaceBelow < 280 && anchor.y > 280);
+  const menuMaxHeight = isMobile
+    ? Math.min(420, windowHeight * 0.62)
+    : Math.min(360, Math.max(180, openUp ? anchor.y - 24 : spaceBelow - 16));
+  const menuTop = !anchor
+    ? 72
+    : openUp
+      ? Math.max(16, anchor.y - menuMaxHeight - 8)
+      : anchor.y + anchor.height + 8;
+
+  const options = (
+    <>
+      <Pressable
+        style={({ hovered, pressed }) => [
+          styles.pickerOption,
+          !selected && styles.pickerOptionOn,
+          (hovered || pressed) && styles.pickerOptionHover,
+        ]}
+        onPress={() => pick(ALL_STORES)}
+        accessibilityRole="menuitem"
+        accessibilityState={{ selected: !selected }}
+      >
+        <Text style={[styles.pickerOptionText, !selected && styles.pickerOptionTextOn]} numberOfLines={1}>
+          All stores
+        </Text>
+        {!selected ? <Ionicons name="checkmark" size={16} color={T.text} /> : null}
+      </Pressable>
+      {groups.map((group) => (
+        <View key={group.key}>
+          <Text style={styles.pickerGroupLabel}>{group.label}</Text>
+          {group.stores.map((row) => {
+            const on = selected === row.store;
+            return (
+              <Pressable
+                key={row.store}
+                style={({ hovered, pressed }) => [
+                  styles.pickerOption,
+                  on && styles.pickerOptionOn,
+                  (hovered || pressed) && styles.pickerOptionHover,
+                ]}
+                onPress={() => pick(row.store)}
+                accessibilityRole="menuitem"
+                accessibilityState={{ selected: on }}
+              >
+                <Text style={[styles.pickerOptionText, on && styles.pickerOptionTextOn]} numberOfLines={1}>
+                  {row.store}
+                </Text>
+                {row.count ? (
+                  <Text style={[styles.pickerOptionCount, on && styles.pickerOptionCountOn]}>{row.count}</Text>
+                ) : null}
+                {on ? <Ionicons name="checkmark" size={16} color={T.text} /> : null}
+              </Pressable>
+            );
+          })}
+        </View>
+      ))}
+    </>
+  );
+
+  return (
+    <>
+      <Pressable
+        ref={fieldRef}
+        onPress={openMenu}
+        style={({ hovered, pressed }) => [
+          styles.pickerField,
+          isMobile && styles.pickerFieldMobile,
+          open && styles.pickerFieldOpen,
+          (hovered || pressed) && styles.pickerFieldHover,
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel="Select store"
+        accessibilityState={{ expanded: open }}
+      >
+        <Ionicons name="storefront-outline" size={isMobile ? 16 : 15} color={T.secondary} />
+        <Text style={[styles.pickerFieldValue, isMobile && styles.pickerFieldValueMobile]} numberOfLines={1}>
+          {label}
+        </Text>
+        <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={14} color={T.secondary} />
+      </Pressable>
+      <Modal visible={open} transparent animationType="fade" onRequestClose={close}>
+        <View style={styles.pickerModalRoot} pointerEvents="box-none">
+          <Pressable style={StyleSheet.absoluteFill} onPress={close} accessibilityLabel="Close store list" />
+          {isMobile ? (
+            <View style={[styles.pickerSheet, { maxHeight: menuMaxHeight + 72 }]}>
+              <View style={styles.pickerSheetHead}>
+                <Text style={styles.pickerSheetTitle}>Store</Text>
+                <Pressable onPress={close} hitSlop={8} accessibilityLabel="Done">
+                  <Text style={styles.pickerSheetDone}>Done</Text>
+                </Pressable>
+              </View>
+              <ScrollView
+                style={{ maxHeight: menuMaxHeight }}
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={false}
+              >
+                {options}
+              </ScrollView>
+            </View>
+          ) : (
+            <View style={[styles.pickerMenu, { top: menuTop, left: menuLeft, width: menuWidth, maxHeight: menuMaxHeight }]}>
+              <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+                {options}
+              </ScrollView>
+            </View>
+          )}
+        </View>
+      </Modal>
+    </>
+  );
+}
+
 function StoreListPage({ stores, query, onOpen, month }) {
-  const visible = useMemo(() => {
+  const items = useMemo(() => {
     const q = String(query || '')
       .trim()
       .toLowerCase();
-    if (!q) return stores;
-    return stores.filter((row) => row.store.toLowerCase().includes(q));
+    const visible = q ? stores.filter((row) => row.store.toLowerCase().includes(q)) : stores;
+    const next = [];
+    for (const group of groupStoresByRegion(visible)) {
+      next.push({ kind: 'region', key: `region:${group.key}`, label: group.label });
+      group.stores.forEach((row, index) => {
+        next.push({
+          kind: 'store',
+          key: row.store,
+          row,
+          last: index === group.stores.length - 1,
+        });
+      });
+    }
+    return next;
   }, [query, stores]);
+  const storeRows = useMemo(() => items.filter((item) => item.kind === 'store').map((item) => item.row), [items]);
   const totals = useMemo(
     () =>
-      visible.reduce(
+      storeRows.reduce(
         (acc, row) => {
           acc.count += row.count;
           acc.amount += row.amount;
@@ -434,38 +611,43 @@ function StoreListPage({ stores, query, onOpen, month }) {
         },
         { count: 0, amount: 0 },
       ),
-    [visible],
+    [storeRows],
   );
 
   return (
     <ChromePage
+      filterPad={false}
       tableHeader={<HomeLikeTableHeader storeLabel="Store" countLabel="Errors" valueLabel="Value" />}
       title=""
-      data={visible}
-      extraData={`${month?.startDate || ''}:${month?.endDate || ''}|${visible
+      data={items}
+      extraData={`${month?.startDate || ''}:${month?.endDate || ''}|${storeRows
         .map((row) => `${row.store}:${row.count}:${row.amount}`)
         .join('|')}`}
-      keyExtractor={(row) => row.store}
-      renderItem={({ item: row, index }) => (
-        <HomeLikeRow
-          title={row.store}
-          storeName={row.store}
-          meta={
-            row.count
-              ? [row.topType?.label, `${row.count} ${row.count === 1 ? 'error' : 'errors'}`]
-                  .filter(Boolean)
-                  .join(' · ')
-              : 'No errors'
-          }
-          count={row.count}
-          amount={row.amount}
-          last={index === visible.length - 1}
-          onPress={() => onOpen(row.store)}
-        />
-      )}
-      footer={visible.length ? <HomeLikeTotalRow label="Total" count={totals.count} amount={totals.amount} /> : null}
+      keyExtractor={(item) => item.key}
+      renderItem={({ item }) =>
+        item.kind === 'region' ? (
+          <RegionHead label={item.label} />
+        ) : (
+          <HomeLikeRow
+            title={item.row.store}
+            storeName={item.row.store}
+            meta={
+              item.row.count
+                ? [item.row.topType?.label, `${item.row.count} ${item.row.count === 1 ? 'error' : 'errors'}`]
+                    .filter(Boolean)
+                    .join(' · ')
+                : 'No errors'
+            }
+            count={item.row.count}
+            amount={item.row.amount}
+            last={item.last}
+            onPress={() => onOpen(item.row.store)}
+          />
+        )
+      }
+      footer={storeRows.length ? <HomeLikeTotalRow label="Total" count={totals.count} amount={totals.amount} /> : null}
     >
-      {visible.length ? null : (
+      {storeRows.length ? null : (
         <Text style={styles.emptyCopy}>
           {query.trim() ? `No store matches “${query.trim()}”.` : 'No stores to show.'}
         </Text>
@@ -664,7 +846,7 @@ function StorePage({ store, query, month, tab, onTabChange, onOpen, session }) {
   }
 
   return (
-    <View style={[styles.storePage, isMobile && styles.storePageMobile]}>
+    <View style={styles.storePage}>
       {tabs}
       {page}
     </View>
@@ -682,14 +864,22 @@ export default function TriageStoresPanel({
   onOpenPo,
   session,
 }) {
+  const isMobile = useIsMobile();
   const stores = useMemo(() => listStoreErrorSummaries(rows, month), [month, rows]);
   const store = useMemo(
     () => (selectedStore ? storeErrorSummary(stores, selectedStore) : null),
     [selectedStore, stores],
   );
 
+  const changeStore = (name) => {
+    const next = String(name || '').trim();
+    if (next === String(selectedStore || '').trim()) return;
+    onOpenStore?.(next);
+  };
+
+  let body = <StoreListPage stores={stores} query={query} month={month} onOpen={onOpenStore} />;
   if (store) {
-    return (
+    body = (
       <StorePage
         store={store}
         query={query}
@@ -700,10 +890,8 @@ export default function TriageStoresPanel({
         session={session}
       />
     );
-  }
-
-  if (selectedStore) {
-    return (
+  } else if (selectedStore) {
+    body = (
       <EmptyState
         icon="storefront-outline"
         title={selectedStore}
@@ -712,7 +900,14 @@ export default function TriageStoresPanel({
     );
   }
 
-  return <StoreListPage stores={stores} query={query} month={month} onOpen={onOpenStore} />;
+  return (
+    <View style={styles.storePage}>
+      <View style={[styles.storePickerChrome, isMobile && styles.storePickerChromeMobile]}>
+        <StoreRegionDropdown stores={stores} value={selectedStore} onChange={changeStore} />
+      </View>
+      {body}
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
@@ -988,8 +1183,184 @@ const styles = StyleSheet.create({
     minHeight: 0,
     backgroundColor: '#fcfcfb',
   },
-  storePageMobile: {
+  storePickerChrome: {
+    flexShrink: 0,
+    paddingHorizontal: 32,
+    paddingTop: 12,
+    paddingBottom: 4,
+    backgroundColor: '#fcfcfb',
+  },
+  storePickerChromeMobile: {
     paddingTop: MOBILE_TOP_FILTER_SIZE + MOBILE_FILTER_INSET,
+    paddingHorizontal: 16,
+    paddingRight: 68,
+    paddingBottom: 8,
+  },
+  pickerField: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 8,
+    minHeight: 40,
+    minWidth: 220,
+    maxWidth: 320,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  pickerFieldMobile: {
+    alignSelf: 'stretch',
+    maxWidth: '100%',
+    minHeight: 44,
+  },
+  pickerFieldOpen: {
+    borderColor: 'rgba(42,38,30,0.28)',
+  },
+  pickerFieldHover: {
+    backgroundColor: '#f5f5f5',
+  },
+  pickerFieldValue: {
+    fontFamily,
+    flex: 1,
+    minWidth: 0,
+    fontSize: 13,
+    fontWeight: '500',
+    color: T.text,
+    letterSpacing: -0.15,
+  },
+  pickerFieldValueMobile: {
+    fontSize: 16,
+  },
+  pickerModalRoot: {
+    flex: 1,
+  },
+  pickerMenu: {
+    position: 'absolute',
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
+    paddingVertical: 6,
+    overflow: 'hidden',
+    ...Platform.select({
+      web: { boxShadow: '0 8px 24px rgba(0,0,0,0.12)' },
+      default: {
+        shadowColor: '#000',
+        shadowOpacity: 0.12,
+        shadowRadius: 16,
+        shadowOffset: { width: 0, height: 8 },
+        elevation: 6,
+      },
+    }),
+  },
+  pickerSheet: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    bottom: 16,
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
+    overflow: 'hidden',
+    ...Platform.select({
+      web: { boxShadow: '0 12px 32px rgba(0,0,0,0.16)' },
+      default: {
+        shadowColor: '#000',
+        shadowOpacity: 0.16,
+        shadowRadius: 20,
+        shadowOffset: { width: 0, height: 8 },
+        elevation: 8,
+      },
+    }),
+  },
+  pickerSheetHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 8,
+  },
+  pickerSheetTitle: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: T.text,
+    letterSpacing: -0.3,
+  },
+  pickerSheetDone: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '600',
+    color: T.text,
+  },
+  pickerGroupLabel: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: T.secondary,
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 4,
+  },
+  pickerOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    minHeight: 40,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  pickerOptionOn: {
+    backgroundColor: 'rgba(0,0,0,0.04)',
+  },
+  pickerOptionHover: {
+    backgroundColor: 'rgba(0,0,0,0.04)',
+  },
+  pickerOptionText: {
+    fontFamily,
+    flex: 1,
+    minWidth: 0,
+    fontSize: 14,
+    color: T.text,
+  },
+  pickerOptionTextOn: {
+    fontWeight: '600',
+  },
+  pickerOptionCount: {
+    fontFamily,
+    fontSize: 12,
+    color: T.secondary,
+    fontVariant: ['tabular-nums'],
+  },
+  pickerOptionCountOn: {
+    color: T.text,
+  },
+  regionHead: {
+    paddingTop: 14,
+    paddingBottom: 4,
+    paddingLeft: 42,
+    paddingRight: 10,
+  },
+  regionHeadMobile: {
+    paddingLeft: 40,
+    paddingTop: 16,
+  },
+  regionHeadLabel: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: T.secondary,
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
   },
   storeTabs: {
     paddingHorizontal: 32,
