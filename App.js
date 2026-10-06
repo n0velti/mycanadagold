@@ -1415,18 +1415,25 @@ function ToolCard({ tool, pinned, onPress, onTogglePin, layout, wrapStyle }) {
 
 function ToolsGrid({ tools, pinnedKeys, onOpen, onTogglePin, layout }) {
   const { columns, gap, rowGap } = layout;
-  const wrapStyle = {
-    width: `${100 / columns}%`,
-    maxWidth: `${100 / columns}%`,
-    flexBasis: `${100 / columns}%`,
-    flexGrow: 0,
-    flexShrink: 0,
-    paddingHorizontal: gap / 2,
-    ...Platform.select({
-      web: { minWidth: 0, boxSizing: 'border-box' },
-      default: {},
-    }),
-  };
+  // Web uses CSS grid tracks for column width. Percentage width/maxWidth here
+  // would be relative to the cell, not the row, and crush the labels.
+  const wrapStyle = Platform.select({
+    web: {
+      width: '100%',
+      maxWidth: '100%',
+      minWidth: 0,
+      boxSizing: 'border-box',
+      paddingHorizontal: gap / 2,
+    },
+    default: {
+      width: `${100 / columns}%`,
+      maxWidth: `${100 / columns}%`,
+      flexBasis: `${100 / columns}%`,
+      flexGrow: 0,
+      flexShrink: 0,
+      paddingHorizontal: gap / 2,
+    },
+  });
 
   return (
     <View
@@ -1437,7 +1444,7 @@ function ToolsGrid({ tools, pinnedKeys, onOpen, onTogglePin, layout }) {
           ? {
               display: 'grid',
               gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-              justifyItems: 'center',
+              justifyItems: 'stretch',
             }
           : null,
       ]}
@@ -1816,7 +1823,7 @@ function AppsLibrary({
               styles.igHomeScrollContent,
               {
                 flexGrow: 1,
-                paddingTop: isMobile ? MOBILE_FEED_TOP_BAR_HEIGHT : TOP_BAR_HEIGHT + 28,
+                paddingTop: isMobile ? MOBILE_FEED_TOP_BAR_HEIGHT : 16,
                 paddingBottom: isMobile ? mobileTabBarReserve() + 24 : 36,
               },
             ]}
@@ -13156,8 +13163,10 @@ const styles = StyleSheet.create({
     width: '100%',
     ...Platform.select({
       web: {
-        overflowWrap: 'anywhere',
+        overflow: 'visible',
+        overflowWrap: 'break-word',
         wordBreak: 'normal',
+        hyphens: 'none',
       },
       default: {},
     }),
@@ -14192,6 +14201,8 @@ const styles = StyleSheet.create({
   appsChromeRow: {
     justifyContent: 'center',
     paddingHorizontal: 24,
+    paddingTop: TOP_BAR_HEIGHT + 12,
+    paddingBottom: 8,
   },
   appsChromeSearch: {
     marginLeft: 0,
