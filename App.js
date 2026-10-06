@@ -179,8 +179,8 @@ import {
   NAV_ICON_ACTIVE,
   NAV_ICON_INACTIVE,
   NAV_TAB_ACTIVE_BG,
-  mobileSafeBottom,
 } from './lib/mobileUi';
+import { storeMarkColor, storeShortCode } from './lib/storeMarks';
 import { FONT, FONT_LIGHT, SOHNE_NATIVE_FONTS, SOHNE_WEB_FONTS } from './lib/typography';
 
 // Every tool screen is loaded on demand. On web, Metro turns each `import()`
@@ -8710,7 +8710,25 @@ export default function App() {
   const [homeRootTick, setHomeRootTick] = useState(0);
   const [homeStoreName, setHomeStoreName] = useState('');
   const [homeDocRef, setHomeDocRef] = useState('');
+  const [resumeThread, setResumeThread] = useState(null);
+  const handleResumeThread = useCallback((next) => {
+    setResumeThread((prev) => {
+      if (!next && !prev) return prev;
+      if (
+        prev &&
+        next &&
+        prev.kind === next.kind &&
+        prev.label === next.label &&
+        prev.avatarUrl === next.avatarUrl &&
+        prev.name === next.name
+      ) {
+        return prev;
+      }
+      return next || null;
+    });
+  }, []);
   const homeDocumentCloseRef = useRef(null);
+  const messagesSeenRef = useRef(false);
   const [activeTool, setActiveTool] = useState(null);
   const [triageStoreBack, setTriageStoreBack] = useState(null);
   const [triageBatch, setTriageBatch] = useState(null);
@@ -8813,7 +8831,21 @@ export default function App() {
   const [ownUserAccess, setOwnUserAccess] = useState(null);
   const [viewedProfile, setViewedProfile] = useState(null);
   const [dmFocusUserId, setDmFocusUserId] = useState('');
-  const [dmConversationOpen, setDmConversationOpen] = useState(false);
+  const [dmMobileHeader, setDmMobileHeader] = useState(null);
+  const handleDmMobileHeader = useCallback((next) => {
+    setDmMobileHeader((prev) => {
+      if (!next && !prev) return prev;
+      if (
+        prev?.trailing === next?.trailing &&
+        prev?.onBrandPress === next?.onBrandPress &&
+        prev?.segments?.length === next?.segments?.length &&
+        prev?.segments?.[0]?.label === next?.segments?.[0]?.label
+      ) {
+        return prev;
+      }
+      return next;
+    });
+  }, []);
   const [teamsFocusId, setTeamsFocusId] = useState('');
   const [profileReturnTo, setProfileReturnTo] = useState(null);
   const [locationPickerOpen, setLocationPickerOpen] = useState(false);
@@ -8922,10 +8954,12 @@ export default function App() {
     setLoginError('');
     setActiveTab('home');
     setActiveTool(null);
+    setHomeStoreName('');
+    setHomeDocRef('');
+    setResumeThread(null);
     setSettingsPanel(null);
     setViewedProfile(null);
     setDmFocusUserId('');
-    setDmConversationOpen(false);
     setTeamsFocusId('');
     setProfileReturnTo(null);
     setLocationPickerOpen(false);
@@ -9145,16 +9179,39 @@ export default function App() {
       setViewedProfile(null);
       setProfileReturnTo(null);
     }
+
+    // On mobile, leaving an app for another tab keeps that app mounted.
+    // Tapping Apps again opens it where it was. Tapping Apps while already
+    // inside the app returns to the apps library.
+    const restoringApp = isMobile && tabKey === 'tools' && activeTab !== 'tools' && activeTool;
+    const openingLibrary = tabKey === 'tools' && !restoringApp;
+    const duplicateMessages = isMobile && tabKey === 'messages' && activeTool?.key === 'messages';
+    const leavingOpenApp = isMobile && activeTab === 'tools' && activeTool && tabKey !== 'tools';
+    const leavingKeptScreen =
+      isMobile &&
+      tabKey !== activeTab &&
+      (activeTab === 'home' || activeTab === 'messages' || Boolean(activeTab === 'tools' && activeTool));
+
+    if (leavingKeptScreen && Platform.OS === 'web' && typeof document !== 'undefined') {
+      document.activeElement?.blur?.();
+    }
+
     setActiveTab(tabKey);
-    setSettingsPanel(null);
-    rememberOpenTool('');
     if (tabKey !== 'search') {
       setSearchDoc(null);
       setSearchDocDetail(null);
       setSearchDocError('');
       setSearchDocLoading(false);
     }
-    setActiveTool(null);
+
+    if (!isMobile || openingLibrary || duplicateMessages) {
+      setSettingsPanel(null);
+      rememberOpenTool('');
+      setActiveTool(null);
+      return;
+    }
+
+    if (leavingOpenApp || restoringApp) expandMobileTabBar();
   };
 
   const applyOwnLocation = useCallback(({ locationId, locationName }) => {
@@ -9195,8 +9252,12 @@ export default function App() {
       setProfileReturnTo(activeTab === 'home' || activeTab === 'search' ? activeTab : null);
     }
     setActiveTab('profile');
-    setActiveTool(null);
-    setSettingsPanel(null);
+    if (!isMobile) {
+      setActiveTool(null);
+      setSettingsPanel(null);
+    } else if (activeTab === 'tools' && activeTool && Platform.OS === 'web' && typeof document !== 'undefined') {
+      document.activeElement?.blur?.();
+    }
   };
 
   const messagePerson = (profileId) => {
@@ -9265,6 +9326,10 @@ export default function App() {
   const openTool = (tool) => {
     if (!hasApp(tool?.key)) return;
     expandMobileTabBar();
+    if (isMobile && tool.key === 'messages') {
+      selectTab('messages');
+      return;
+    }
     setActiveTool(tool);
     setSettingsPanel(null);
   };
@@ -9272,6 +9337,10 @@ export default function App() {
   const openPinnedTool = (tool) => {
     if (!hasApp(tool?.key)) return;
     expandMobileTabBar();
+    if (isMobile && tool.key === 'messages') {
+      selectTab('messages');
+      return;
+    }
     setActiveTab('tools');
     setActiveTool(tool);
     setSettingsPanel(null);
@@ -9334,6 +9403,13 @@ export default function App() {
       rememberOpenTool('');
     }
   }, [activeTool, hasApp]);
+
+  useEffect(() => {
+    if (!isMobile || activeTool?.key !== 'messages') return;
+    setActiveTab('messages');
+    setActiveTool(null);
+    setSettingsPanel(null);
+  }, [isMobile, activeTool?.key]);
 
   const handleLogin = async () => {
     if (!loginId.trim() || !password.trim() || submitting) return;
@@ -9498,6 +9574,247 @@ export default function App() {
     );
   };
 
+  const renderActiveTool = () => {
+    if (!activeTool) return null;
+    if (isMobile && activeTool.key === 'messages') return null;
+    return (
+      <View style={styles.toolsScreen}>
+        {renderToolsHeader()}
+        <ScreenGate resetKey={activeTool.key}>
+        {activeTool.key === 'transactions' ? (
+          <TransactionsScreen
+            session={session}
+            onRequireLogin={() => selectTab('profile')}
+            storeFilter={scopedStore || undefined}
+          />
+        ) : activeTool.key === 'inventory' ? (
+          <InventoryScreen
+            session={session}
+            onRequireLogin={() => selectTab('profile')}
+            storeFilter={scopedStore || undefined}
+          />
+        ) : activeTool.key === 'preorders' ? (
+          <PreordersScreen storeFilter={scopedStore || undefined} />
+        ) : activeTool.key === 'financials' ? (
+          <FinancialsScreen
+            session={session}
+            onRequireLogin={() => selectTab('profile')}
+            storeFilter={scopedStore || undefined}
+          />
+        ) : activeTool.key === 'debit' ? (
+          <DebitScreen
+            session={session}
+            onRequireLogin={() => selectTab('profile')}
+            storeFilter={scopedStore || undefined}
+          />
+        ) : activeTool.key === 'accounting' ? (
+          <AccountingScreen />
+        ) : activeTool.key === 'analytics' ? (
+          <AnalyticsScreen
+            session={session}
+            storeFilter={scopedStore || undefined}
+          />
+        ) : activeTool.key === 'audit' ? (
+          <AuditScreen
+            session={session}
+            onRequireLogin={() => selectTab('profile')}
+            storeFilter={scopedStore || undefined}
+            onNavTabs={setTriageNav}
+          />
+        ) : activeTool.key === 'emails' ? (
+          <View style={styles.messagesHost}>
+            <EmailsScreen
+              session={session}
+              onRequireLogin={() => selectTab('profile')}
+              onOpenProfile={openPersonProfile}
+              focus={emailsFocus}
+              onFocusConsumed={() => setEmailsFocus(null)}
+              capture={
+                <EmailCaptureScreen
+                  session={session}
+                  onRequireLogin={() => selectTab('profile')}
+                  focus={emailsFocus}
+                  onFocusConsumed={() => setEmailsFocus(null)}
+                />
+              }
+            />
+          </View>
+        ) : activeTool.key === 'serphint' ? (
+          <SerphintScreen />
+        ) : activeTool.key === '100-ways' ? (
+          <HundredWaysScreen
+            session={session}
+            onRequireLogin={() => selectTab('profile')}
+          />
+        ) : activeTool.key === 'settings' ? (
+          <SettingsScreen
+            panel={settingsPanel}
+            onOpenPanel={setSettingsPanel}
+            session={session}
+            apps={PERMISSION_APPS}
+            onAccessSaved={(next) => {
+              setAccessByRole(next);
+            }}
+            onStaffAccessSaved={(staff) => {
+              setSession((current) => {
+                if (!current?.profile || current.profile.id !== staff.id) return current;
+                const profile = {
+                  ...current.profile,
+                  appRole: staff.appRole,
+                  allowedAppRoles: staff.allowedAppRoles || current.profile.allowedAppRoles || [],
+                  isSystemAdmin: staff.isSystemAdmin,
+                  isActive: staff.isActive ?? current.profile.isActive,
+                };
+                if (shouldPrefetchTriage(profile)) {
+                  import('./lib/transferWorkflow')
+                    .then((mod) => mod.warmTriageWorkflow())
+                    .catch(() => {});
+                }
+                return { ...current, profile };
+              });
+            }}
+            onUserAccessSaved={(userId, access) => {
+              if (userId !== (session?.supabaseUserId || session?.profile?.id)) return;
+              setOwnUserAccess(access);
+            }}
+          />
+        ) : activeTool.key === 'transfer' ? (
+          <TransferScreen
+            session={session}
+            onRequireLogin={() => selectTab('profile')}
+            onNavTabs={setTriageNav}
+            onLocationChanged={({ locationId, locationName }) => {
+              setSession((current) => {
+                if (!current?.profile) return current;
+                return {
+                  ...current,
+                  user: current.user
+                    ? { ...current.user, location_id: locationId || current.user.location_id }
+                    : current.user,
+                  profile: {
+                    ...current.profile,
+                    locationId: locationId || current.profile.locationId,
+                    locationName: locationName || current.profile.locationName,
+                  },
+                };
+              });
+            }}
+          />
+        ) : activeTool.key === 'fintrac' ? (
+          <FintracScreen
+            session={session}
+            onRequireLogin={() => selectTab('profile')}
+            storeFilter={scopedStore || undefined}
+          />
+        ) : activeTool.key === 'pricing' ? (
+          <PricingScreen />
+        ) : activeTool.key === 'bonuses' ? (
+          <BonusesScreen
+            session={session}
+            onRequireLogin={() => selectTab('profile')}
+            onOpenEmails={openEmailsFromBonuses}
+            onOpenCustomer={openCustomerProfile}
+            storeFilter={scopedStore || undefined}
+          />
+        ) : activeTool.key === 'reviews' ? (
+          <ReviewsScreen
+            session={session}
+            onRequireLogin={() => selectTab('profile')}
+            onOpenCustomer={openCustomerProfile}
+            storeFilter={scopedStore || undefined}
+          />
+        ) : activeTool.key === 'calendar' ? (
+          <CalendarScreen
+            session={session}
+            storeFilter={scopedStore || undefined}
+          />
+        ) : activeTool.key === 'phone' ? (
+          <PhoneScreen
+            session={session}
+            onRequireLogin={() => selectTab('profile')}
+            storeFilter={scopedStore || undefined}
+            onStoreBackChange={(fn, context) => {
+              setTriageStoreBack(() => fn || null);
+              setTriageBatch(context || null);
+            }}
+          />
+        ) : activeTool.key === 'customers' ? (
+          <CustomersScreen
+            session={session}
+            focusCustomer={customerFocus}
+            onFocusConsumed={() => setCustomerFocus(null)}
+            onOpenDocument={openSearchDocument}
+          />
+        ) : activeTool.key === 'employees' ? (
+          <EmployeesScreen
+            session={session}
+            onProfileUpdated={(profile) => {
+              setSession((current) => {
+                if (!current?.profile || current.profile.id !== profile.id) return current;
+                if (
+                  current.profile.appRole === (profile.appRole ?? current.profile.appRole) &&
+                  current.profile.employeeType ===
+                    (profile.employeeType ?? current.profile.employeeType) &&
+                  current.profile.role === (profile.role ?? current.profile.role)
+                ) {
+                  return current;
+                }
+                return {
+                  ...current,
+                  profile: {
+                    ...current.profile,
+                    role: profile.role ?? current.profile.role,
+                    employeeType: profile.employeeType ?? current.profile.employeeType,
+                    locationId: profile.locationId ?? current.profile.locationId,
+                    locationName: profile.locationName ?? current.profile.locationName,
+                    appRole: profile.appRole ?? current.profile.appRole,
+                    isSystemAdmin: profile.isSystemAdmin ?? current.profile.isSystemAdmin,
+                  },
+                };
+              });
+            }}
+          />
+        ) : activeTool.key === 'teams' ? (
+          <TeamsScreen focusTeamId={teamsFocusId} />
+        ) : activeTool.key === 'marketing' ? (
+          <MarketingScreen />
+        ) : activeTool.key === 'shared-services' ? (
+          <SharedServicesScreen />
+        ) : activeTool.key === 'logs' ? (
+          <LogsScreen session={session} />
+        ) : activeTool.key === 'triage' ? (
+          <TriageScreen
+            session={session}
+            onRequireLogin={() => selectTab('profile')}
+            storeFilter={undefined}
+            onStoreBackChange={(fn, context) => {
+              setTriageStoreBack(() => fn || null);
+              setTriageBatch(context || null);
+            }}
+            onNavTabs={setTriageNav}
+            onMobileHeader={handleTriageMobileHeader}
+            onMobileOverlayChange={setTriageMobileOverlay}
+            onCrumbsChange={setTriageCrumbs}
+          />
+        ) : activeTool.key === 'messages' ? (
+          <View style={styles.messagesHost}>
+            <MessagesScreen
+              session={session}
+              onUnreadChange={refreshMessagesUnread}
+              openUserId={dmFocusUserId}
+              onOpenedUser={() => setDmFocusUserId('')}
+                  onOpenProfile={openPersonProfile}
+                  onMobileHeader={handleDmMobileHeader}
+            />
+          </View>
+        ) : (
+          <Text style={styles.toolPageBody}>{activeTool.label} page</Text>
+        )}
+        </ScreenGate>
+      </View>
+    );
+  };
+
   const renderContent = () => {
     if (activeTab === 'profile') {
       return (
@@ -9536,242 +9853,8 @@ export default function App() {
 
     if (activeTab === 'tools') {
       if (activeTool) {
-        return (
-          <View style={styles.toolsScreen}>
-            {renderToolsHeader()}
-            <ScreenGate resetKey={activeTool.key}>
-            {activeTool.key === 'transactions' ? (
-              <TransactionsScreen
-                session={session}
-                onRequireLogin={() => selectTab('profile')}
-                storeFilter={scopedStore || undefined}
-              />
-            ) : activeTool.key === 'inventory' ? (
-              <InventoryScreen
-                session={session}
-                onRequireLogin={() => selectTab('profile')}
-                storeFilter={scopedStore || undefined}
-              />
-            ) : activeTool.key === 'preorders' ? (
-              <PreordersScreen storeFilter={scopedStore || undefined} />
-            ) : activeTool.key === 'financials' ? (
-              <FinancialsScreen
-                session={session}
-                onRequireLogin={() => selectTab('profile')}
-                storeFilter={scopedStore || undefined}
-              />
-            ) : activeTool.key === 'debit' ? (
-              <DebitScreen
-                session={session}
-                onRequireLogin={() => selectTab('profile')}
-                storeFilter={scopedStore || undefined}
-              />
-            ) : activeTool.key === 'accounting' ? (
-              <AccountingScreen />
-            ) : activeTool.key === 'analytics' ? (
-              <AnalyticsScreen
-                session={session}
-                storeFilter={scopedStore || undefined}
-              />
-            ) : activeTool.key === 'audit' ? (
-              <AuditScreen
-                session={session}
-                onRequireLogin={() => selectTab('profile')}
-                storeFilter={scopedStore || undefined}
-                onNavTabs={setTriageNav}
-              />
-            ) : activeTool.key === 'emails' ? (
-              <View style={styles.messagesHost}>
-                <EmailsScreen
-                  session={session}
-                  onRequireLogin={() => selectTab('profile')}
-                  onOpenProfile={openPersonProfile}
-                  focus={emailsFocus}
-                  onFocusConsumed={() => setEmailsFocus(null)}
-                  capture={
-                    <EmailCaptureScreen
-                      session={session}
-                      onRequireLogin={() => selectTab('profile')}
-                      focus={emailsFocus}
-                      onFocusConsumed={() => setEmailsFocus(null)}
-                    />
-                  }
-                />
-              </View>
-            ) : activeTool.key === 'serphint' ? (
-              <SerphintScreen />
-            ) : activeTool.key === '100-ways' ? (
-              <HundredWaysScreen
-                session={session}
-                onRequireLogin={() => selectTab('profile')}
-              />
-            ) : activeTool.key === 'settings' ? (
-              <SettingsScreen
-                panel={settingsPanel}
-                onOpenPanel={setSettingsPanel}
-                session={session}
-                apps={PERMISSION_APPS}
-                onAccessSaved={(next) => {
-                  setAccessByRole(next);
-                }}
-                onStaffAccessSaved={(staff) => {
-                  setSession((current) => {
-                    if (!current?.profile || current.profile.id !== staff.id) return current;
-                    const profile = {
-                      ...current.profile,
-                      appRole: staff.appRole,
-                      allowedAppRoles: staff.allowedAppRoles || current.profile.allowedAppRoles || [],
-                      isSystemAdmin: staff.isSystemAdmin,
-                      isActive: staff.isActive ?? current.profile.isActive,
-                    };
-                    if (shouldPrefetchTriage(profile)) {
-                      import('./lib/transferWorkflow')
-                        .then((mod) => mod.warmTriageWorkflow())
-                        .catch(() => {});
-                    }
-                    return { ...current, profile };
-                  });
-                }}
-                onUserAccessSaved={(userId, access) => {
-                  if (userId !== (session?.supabaseUserId || session?.profile?.id)) return;
-                  setOwnUserAccess(access);
-                }}
-              />
-            ) : activeTool.key === 'transfer' ? (
-              <TransferScreen
-                session={session}
-                onRequireLogin={() => selectTab('profile')}
-                onNavTabs={setTriageNav}
-                onLocationChanged={({ locationId, locationName }) => {
-                  setSession((current) => {
-                    if (!current?.profile) return current;
-                    return {
-                      ...current,
-                      user: current.user
-                        ? { ...current.user, location_id: locationId || current.user.location_id }
-                        : current.user,
-                      profile: {
-                        ...current.profile,
-                        locationId: locationId || current.profile.locationId,
-                        locationName: locationName || current.profile.locationName,
-                      },
-                    };
-                  });
-                }}
-              />
-            ) : activeTool.key === 'fintrac' ? (
-              <FintracScreen
-                session={session}
-                onRequireLogin={() => selectTab('profile')}
-                storeFilter={scopedStore || undefined}
-              />
-            ) : activeTool.key === 'pricing' ? (
-              <PricingScreen />
-            ) : activeTool.key === 'bonuses' ? (
-              <BonusesScreen
-                session={session}
-                onRequireLogin={() => selectTab('profile')}
-                onOpenEmails={openEmailsFromBonuses}
-                onOpenCustomer={openCustomerProfile}
-                storeFilter={scopedStore || undefined}
-              />
-            ) : activeTool.key === 'reviews' ? (
-              <ReviewsScreen
-                session={session}
-                onRequireLogin={() => selectTab('profile')}
-                onOpenCustomer={openCustomerProfile}
-                storeFilter={scopedStore || undefined}
-              />
-            ) : activeTool.key === 'calendar' ? (
-              <CalendarScreen
-                session={session}
-                storeFilter={scopedStore || undefined}
-              />
-            ) : activeTool.key === 'phone' ? (
-              <PhoneScreen
-                session={session}
-                onRequireLogin={() => selectTab('profile')}
-                storeFilter={scopedStore || undefined}
-                onStoreBackChange={(fn, context) => {
-                  setTriageStoreBack(() => fn || null);
-                  setTriageBatch(context || null);
-                }}
-              />
-            ) : activeTool.key === 'customers' ? (
-              <CustomersScreen
-                session={session}
-                focusCustomer={customerFocus}
-                onFocusConsumed={() => setCustomerFocus(null)}
-                onOpenDocument={openSearchDocument}
-              />
-            ) : activeTool.key === 'employees' ? (
-              <EmployeesScreen
-                session={session}
-                onProfileUpdated={(profile) => {
-                  setSession((current) => {
-                    if (!current?.profile || current.profile.id !== profile.id) return current;
-                    if (
-                      current.profile.appRole === (profile.appRole ?? current.profile.appRole) &&
-                      current.profile.employeeType ===
-                        (profile.employeeType ?? current.profile.employeeType) &&
-                      current.profile.role === (profile.role ?? current.profile.role)
-                    ) {
-                      return current;
-                    }
-                    return {
-                      ...current,
-                      profile: {
-                        ...current.profile,
-                        role: profile.role ?? current.profile.role,
-                        employeeType: profile.employeeType ?? current.profile.employeeType,
-                        locationId: profile.locationId ?? current.profile.locationId,
-                        locationName: profile.locationName ?? current.profile.locationName,
-                        appRole: profile.appRole ?? current.profile.appRole,
-                        isSystemAdmin: profile.isSystemAdmin ?? current.profile.isSystemAdmin,
-                      },
-                    };
-                  });
-                }}
-              />
-            ) : activeTool.key === 'teams' ? (
-              <TeamsScreen focusTeamId={teamsFocusId} />
-            ) : activeTool.key === 'marketing' ? (
-              <MarketingScreen />
-            ) : activeTool.key === 'shared-services' ? (
-              <SharedServicesScreen />
-            ) : activeTool.key === 'logs' ? (
-              <LogsScreen session={session} />
-            ) : activeTool.key === 'triage' ? (
-              <TriageScreen
-                session={session}
-                onRequireLogin={() => selectTab('profile')}
-                storeFilter={undefined}
-                onStoreBackChange={(fn, context) => {
-                  setTriageStoreBack(() => fn || null);
-                  setTriageBatch(context || null);
-                }}
-                onNavTabs={setTriageNav}
-                onMobileHeader={handleTriageMobileHeader}
-                onMobileOverlayChange={setTriageMobileOverlay}
-                onCrumbsChange={setTriageCrumbs}
-              />
-            ) : activeTool.key === 'messages' ? (
-              <View style={styles.messagesHost}>
-                <MessagesScreen
-                  session={session}
-                  onUnreadChange={refreshMessagesUnread}
-                  openUserId={dmFocusUserId}
-                  onOpenedUser={() => setDmFocusUserId('')}
-                  onOpenProfile={openPersonProfile}
-                  onConversationOpenChange={setDmConversationOpen}
-                />
-              </View>
-            ) : (
-              <Text style={styles.toolPageBody}>{activeTool.label} page</Text>
-            )}
-            </ScreenGate>
-          </View>
-        );
+        if (isMobile) return null;
+        return renderActiveTool();
       }
 
       return (
@@ -9808,6 +9891,7 @@ export default function App() {
     }
 
     if (activeTab === 'messages') {
+      if (isMobile && hasApp('messages')) return null;
       if (!hasApp('messages')) {
         return (
           <View style={styles.centered}>
@@ -9823,8 +9907,8 @@ export default function App() {
               onUnreadChange={refreshMessagesUnread}
               openUserId={dmFocusUserId}
               onOpenedUser={() => setDmFocusUserId('')}
-              onOpenProfile={openPersonProfile}
-              onConversationOpenChange={setDmConversationOpen}
+                  onOpenProfile={openPersonProfile}
+                  onMobileHeader={handleDmMobileHeader}
             />
           </ScreenGate>
         </View>
@@ -9840,6 +9924,7 @@ export default function App() {
     }
 
     if (activeTab === 'home') {
+      if (isMobile) return null;
       return (
         <HomeScreen
           session={session}
@@ -10007,7 +10092,22 @@ export default function App() {
   const datePageKey = activeTab === 'tools' && activeTool?.key ? `tools:${activeTool.key}` : activeTab;
 
   if (isMobile) {
+    if (activeTab === 'messages') messagesSeenRef.current = true;
     const mobileTabs = MOBILE_TABS.filter((tab) => tab.key !== 'messages' || hasApp('messages'));
+    const keepAppMounted = Boolean(activeTool) && !(activeTab === 'messages' && activeTool.key === 'messages');
+    const resumeApp =
+      keepAppMounted && activeTab !== 'tools'
+        ? TOOL_CARDS.find((tool) => tool.key === activeTool.key) || null
+        : null;
+    const resumeHome =
+      activeTab !== 'home' && homeStoreName
+        ? {
+            code: storeShortCode(homeStoreName),
+            color: storeMarkColor(homeStoreName),
+            label: homeStoreName,
+          }
+        : null;
+    const parkedThread = activeTab !== 'messages' ? resumeThread : null;
     const groupedShell = groupedMobileTab || showingSettings;
     return (
       <AppAccessContext.Provider value={appAccessValue}>
@@ -10030,33 +10130,98 @@ export default function App() {
               onBack={() => selectTab('home')}
             />
           ) : null}
-          {activeTab === 'tools' && activeTool && !(activeTool.key === 'triage' && triageMobileOverlay) ? (
+          {((activeTab === 'tools' && activeTool && !(activeTool.key === 'triage' && triageMobileOverlay)) ||
+            (activeTab === 'messages' && dmMobileHeader)) ? (
             <MobileFeedTopBar
-              segments={mobileToolSegments}
-              onBrandPress={handleMobileToolBrandPress}
-              trailing={activeTool.key === 'triage' ? triageMobileHeader?.trailing : null}
+              segments={
+                activeTab === 'messages' ? dmMobileHeader?.segments || [] : mobileToolSegments
+              }
+              onBrandPress={
+                activeTab === 'messages' ? dmMobileHeader?.onBrandPress : handleMobileToolBrandPress
+              }
+              trailing={
+                activeTab === 'messages'
+                  ? dmMobileHeader?.trailing
+                  : activeTool?.key === 'triage'
+                    ? triageMobileHeader?.trailing
+                    : null
+              }
             />
           ) : null}
-          <View style={contentStyle}>{renderContent()}</View>
-          <View
-            pointerEvents="box-none"
-            style={[
-              styles.mobilePhoneDockSlot,
-              dmConversationOpen && styles.mobilePhoneDockSlotThread,
-            ]}
-          >
+          <View style={contentStyle}>
+            {keepAppMounted ? (
+              <View
+                key="parked-tool"
+                pointerEvents={activeTab === 'tools' ? 'auto' : 'none'}
+                accessibilityElementsHidden={activeTab !== 'tools'}
+                importantForAccessibility={activeTab === 'tools' ? 'auto' : 'no-hide-descendants'}
+                style={activeTab === 'tools' ? styles.parkedToolLive : styles.parkedToolHidden}
+              >
+                {renderActiveTool()}
+              </View>
+            ) : null}
+            <View
+              pointerEvents={activeTab === 'home' ? 'auto' : 'none'}
+              accessibilityElementsHidden={activeTab !== 'home'}
+              importantForAccessibility={activeTab === 'home' ? 'auto' : 'no-hide-descendants'}
+              style={activeTab === 'home' ? styles.parkedToolLive : styles.parkedToolHidden}
+            >
+              <HomeScreen
+                session={session}
+                homeRootTick={homeRootTick}
+                onRequireLogin={() => selectTab('profile')}
+                onOpenPerson={openPersonProfile}
+                onOpenCustomer={openCustomerProfile}
+                onBuy={() => selectTab('buy')}
+                onSell={() => selectTab('sell')}
+                onOpenAnalytics={openAnalyticsApp}
+                onSelectedStoreChange={setHomeStoreName}
+                onSelectedDocumentChange={setHomeDocRef}
+                documentCloseRef={homeDocumentCloseRef}
+              />
+            </View>
+            {hasApp('messages') && messagesSeenRef.current ? (
+              <View
+                pointerEvents={activeTab === 'messages' ? 'auto' : 'none'}
+                accessibilityElementsHidden={activeTab !== 'messages'}
+                importantForAccessibility={activeTab === 'messages' ? 'auto' : 'no-hide-descendants'}
+                style={activeTab === 'messages' ? styles.parkedToolLive : styles.parkedToolHidden}
+              >
+                <View style={styles.messagesHost}>
+                  <ScreenGate resetKey="messages">
+                    <MessagesScreen
+                      session={session}
+                      onUnreadChange={refreshMessagesUnread}
+                      openUserId={dmFocusUserId}
+                      onOpenedUser={() => setDmFocusUserId('')}
+                      onOpenProfile={openPersonProfile}
+                      onMobileHeader={handleDmMobileHeader}
+                      onOpenThreadChange={handleResumeThread}
+                    />
+                  </ScreenGate>
+                </View>
+              </View>
+            ) : null}
+            {activeTab === 'home' ||
+            (activeTab === 'messages' && hasApp('messages')) ||
+            (activeTab === 'tools' && activeTool)
+              ? null
+              : renderContent()}
+          </View>
+          <View pointerEvents="box-none" style={styles.mobilePhoneDockSlot}>
             <MobilePhoneDock />
           </View>
-          {dmConversationOpen ? null : (
-            <MobileTabBar
-              tabs={mobileTabs}
-              activeKey={activeTab}
-              onSelect={selectTab}
-              messagesUnread={messagesUnread}
-              profileAvatarUrl={session?.profile?.avatarUrl || ''}
-              profileName={userLabel}
-            />
-          )}
+          <MobileTabBar
+            tabs={mobileTabs}
+            activeKey={activeTab}
+            onSelect={selectTab}
+            messagesUnread={messagesUnread}
+            resumeApp={resumeApp}
+            resumeThread={parkedThread}
+            resumeHome={resumeHome}
+            profileAvatarUrl={session?.profile?.avatarUrl || ''}
+            profileName={userLabel}
+          />
           <ProfileLoginSwitcher
             visible={loginSwitcherOpen}
             session={session}
@@ -10983,6 +11148,14 @@ const styles = StyleSheet.create({
   contentMobileApp: {
     paddingTop: 0,
   },
+  parkedToolLive: {
+    flex: 1,
+    minHeight: 0,
+    alignSelf: 'stretch',
+  },
+  parkedToolHidden: {
+    display: 'none',
+  },
   contentMobileGrouped: {
     backgroundColor: '#f2f2f7',
   },
@@ -10994,10 +11167,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: mobileTabBarReserve(),
-    zIndex: 50,
-  },
-  mobilePhoneDockSlotThread: {
-    bottom: mobileSafeBottom(),
+    zIndex: 70,
   },
   contentMobilePadded: {
     paddingHorizontal: 16,
@@ -15017,7 +15187,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     alignSelf: 'flex-start',
-    width: 216,
+    width: 252,
     gap: 0,
     paddingVertical: 3,
     paddingHorizontal: 2,
@@ -15051,7 +15221,7 @@ const styles = StyleSheet.create({
   },
   igHomeStoreMetricText: {
     width: undefined,
-    flexShrink: 1,
+    flexShrink: 0,
     minWidth: 0,
   },
   igStoreCard: {

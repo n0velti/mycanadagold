@@ -18,6 +18,7 @@ import {
   buildStatusLabel,
   canPublishBuild,
 } from '../lib/agentBuilds';
+import { MobileFeedAddButton, MobileFeedOutlineButton } from './MobileChrome';
 
 const fontFamily = Platform.select({ ios: 'Sohne', android: 'Sohne', default: 'Sohne' });
 
@@ -132,33 +133,33 @@ export function AgentPublishButton({ build, onPress, busy }) {
   const sent = buildIsPublishRequested(build);
   const enabled = !sent && !busy && canPublishBuild(build);
   const label = sent ? 'Sent' : busy ? 'Sending…' : 'Publish';
+  if (sent) {
+    return (
+      <MobileFeedOutlineButton
+        label={label}
+        leadingIcon="checkmark"
+        disabled
+        accessibilityLabel="Sent for publishing"
+      />
+    );
+  }
+  if (enabled) {
+    return (
+      <MobileFeedAddButton
+        label={label}
+        onPress={onPress}
+        disabled={busy}
+        accessibilityLabel="Publish this change"
+      />
+    );
+  }
   return (
-    <Pressable
-      onPress={enabled ? onPress : undefined}
-      disabled={!enabled}
-      style={({ hovered, pressed }) => [
-        styles.publishButton,
-        sent && styles.publishButtonSent,
-        !enabled && !sent && styles.publishButtonOff,
-        enabled && (hovered || pressed) && styles.publishButtonActive,
-      ]}
-      accessibilityRole="button"
-      accessibilityState={{ disabled: !enabled }}
-      accessibilityLabel={sent ? 'Sent for publishing' : 'Publish this change'}
-      accessibilityHint={
-        enabled
-          ? 'Tells a System Admin you are happy with the preview'
-          : sent
-            ? undefined
-            : 'Available once the agent has finished'
-      }
-      hitSlop={4}
-    >
-      {sent ? <Ionicons name="checkmark" size={14} color={GREEN} /> : null}
-      <Text style={[styles.publishText, sent && styles.publishTextSent, !enabled && !sent && styles.publishTextOff]}>
-        {label}
-      </Text>
-    </Pressable>
+    <MobileFeedOutlineButton
+      label={label}
+      disabled
+      accessibilityLabel="Publish this change"
+      accessibilityHint="Available once the agent has finished"
+    />
   );
 }
 
@@ -343,37 +344,6 @@ const styles = StyleSheet.create({
   tvStandFill: {
     height: '100%',
     borderRadius: 1.5,
-  },
-  publishButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    height: 28,
-    paddingHorizontal: 12,
-    borderRadius: 14,
-    backgroundColor: BLUE,
-  },
-  publishButtonActive: {
-    opacity: 0.85,
-  },
-  publishButtonOff: {
-    backgroundColor: 'rgba(60,60,67,0.08)',
-  },
-  publishButtonSent: {
-    backgroundColor: 'rgba(52,199,89,0.12)',
-    paddingHorizontal: 10,
-  },
-  publishText: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#fff',
-  },
-  publishTextOff: {
-    color: '#aeaeb2',
-  },
-  publishTextSent: {
-    color: GREEN,
   },
   sheetRoot: {
     flex: 1,

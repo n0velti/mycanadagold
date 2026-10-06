@@ -16,7 +16,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { AvatarRing } from '../lib/clockedIn';
 import {
   addDmGroupMembers,
@@ -60,6 +60,7 @@ import {
   subscribeAgentRequests,
 } from '../lib/agentRequests';
 import {
+  agentWorkPreview,
   bakingBuild,
   buildProgressLine,
   listAgentBuilds,
@@ -74,7 +75,14 @@ import { prepareAiChatSession, sendAiChatMessage, titleAiChat } from '../lib/aiC
 import { OPENROUTER_MODELS } from '../lib/openrouter';
 import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
 import { useLiveRefresh } from '../lib/liveRefresh';
-import { CANVAS, DESKTOP_TOP_BAR_HEIGHT, mobileSafeBottom } from '../lib/mobileUi';
+import {
+  MAX_AGENT_REQUEST_IMAGES,
+  normalizeAgentRequestImages,
+  uploadAgentRequestPhotos,
+} from '../lib/agentRequestPhotos';
+import { CANVAS, DESKTOP_TOP_BAR_HEIGHT } from '../lib/mobileUi';
+import { MobileFeedTopBarActions } from './MobileChrome';
+import { pickTriagePhotos } from './TriageCorrectionImages';
 import { listStaffProfiles, useAppAccess } from '../lib/permissions';
 import ProfilePhotoModal from './ProfilePhotoModal';
 import {
@@ -95,8 +103,73 @@ const fontFamily = Platform.select({
 
 const BLUE = '#0A84FF';
 const AI_PURPLE = '#6B4DE6';
-const AGENT_TEAL = '#0F766E';
 const INBOX_WIDTH = 340;
+const AGENT_BACKGROUNDS = [
+  '#000000',
+  '#1C1C1E',
+  '#FFFFFF',
+  '#F2F2F7',
+  '#FF3B30',
+  '#34C759',
+  '#0A84FF',
+  '#FF9500',
+  '#AF52DE',
+  '#FF2D55',
+  '#FFD60A',
+  '#5AC8FA',
+  '#5856D6',
+  '#8E8E93',
+];
+const AGENT_ICON_COLORS = [
+  '#000000',
+  '#FFFFFF',
+  '#FF3B30',
+  '#34C759',
+  '#0A84FF',
+  '#FFD60A',
+  '#FF9500',
+  '#AF52DE',
+  '#FF2D55',
+  '#5AC8FA',
+];
+
+function hashString(value) {
+  const text = String(value || '');
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+}
+
+function hexLuminance(hex) {
+  const n = String(hex || '').replace('#', '');
+  if (n.length < 6) return 0;
+  const r = parseInt(n.slice(0, 2), 16) / 255;
+  const g = parseInt(n.slice(2, 4), 16) / 255;
+  const b = parseInt(n.slice(4, 6), 16) / 255;
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function agentAvatarTheme(conversationId) {
+  const hash = hashString(conversationId || 'agent');
+  const bg = AGENT_BACKGROUNDS[hash % AGENT_BACKGROUNDS.length];
+  const bgLum = hexLuminance(bg);
+  const candidates = AGENT_ICON_COLORS.filter((color) => {
+    if (color.toLowerCase() === bg.toLowerCase()) return false;
+    return Math.abs(hexLuminance(color) - bgLum) > 0.32;
+  });
+  const pool = candidates.length
+    ? candidates
+    : bgLum > 0.55
+      ? ['#000000', '#FF3B30', '#0A84FF', '#34C759']
+      : ['#FFFFFF', '#FFD60A', '#34C759', '#5AC8FA'];
+  return {
+    bg,
+    icon: pool[Math.floor(hash / AGENT_BACKGROUNDS.length) % pool.length],
+    lightBg: bgLum > 0.82,
+  };
+}
 const MOBILE_BREAKPOINT = 768;
 const AI_MODEL =
   OPENROUTER_MODELS.find((model) => model.key === 'anthropic/claude-sonnet-5')?.key ||
@@ -220,6 +293,23 @@ function formatDmThreadForAi({ messages, peopleById, myId, myName, thread }) {
   ].join('\n\n');
 }
 
+function MessageImages({ urls, mine }) {
+  const list = (Array.isArray(urls) ? urls : []).filter(Boolean);
+  if (!list.length) return null;
+  return (
+    <View style={styles.messageImages}>
+      {list.map((uri, index) => (
+        <Image
+          key={`${uri}-${index}`}
+          source={{ uri }}
+          style={styles.messageImage}
+          accessibilityLabel="Attached photo"
+        />
+      ))}
+    </View>
+  );
+}
+
 function MessageBody({ body, mine }) {
   const source = String(body || '');
   const textStyle = [styles.bubbleText, mine && styles.bubbleTextMine];
@@ -291,19 +381,41 @@ function ComposeIcon({ size = 24, color = '#1d1d1f' }) {
 
 function ConversationAvatar({ conversation, size = 52 }) {
   if (conversation?.isAgent) {
+    const theme = agentAvatarTheme(conversation.conversationId || conversation.title || 'agent');
+    const badge = Math.max(16, Math.round(size * 0.4));
     return (
-      <View
-        style={[
-          styles.avatar,
-          {
-            width: size,
-            height: size,
-            borderRadius: size / 2,
-            backgroundColor: AGENT_TEAL,
-          },
-        ]}
-      >
-        <Ionicons name="construct" size={Math.max(16, Math.round(size * 0.42))} color="#fff" />
+      <View style={{ width: size, height: size }}>
+        <View
+          style={[
+            styles.avatar,
+            {
+              width: size,
+              height: size,
+              borderRadius: size / 2,
+              backgroundColor: theme.bg,
+              borderWidth: theme.lightBg ? 1 : 0,
+              borderColor: theme.lightBg ? '#d1d1d6' : 'transparent',
+            },
+          ]}
+        >
+          <MaterialCommunityIcons
+            name="robot"
+            size={Math.max(16, Math.round(size * 0.48))}
+            color={theme.icon}
+          />
+        </View>
+        <View
+          style={[
+            styles.agentToolsBadge,
+            {
+              width: badge,
+              height: badge,
+              borderRadius: badge / 2,
+            },
+          ]}
+        >
+          <Ionicons name="construct" size={Math.max(8, Math.round(badge * 0.58))} color="#1d1d1f" />
+        </View>
       </View>
     );
   }
@@ -623,7 +735,11 @@ function MessageBubble({
               bubbleHover && mine && styles.bubbleHoverMine,
             ]}
           >
-            <MessageBody body={message.body} mine={mine} />
+            {message.body &&
+            !(message.imageUrls?.length && message.body === '(Photo attached)') ? (
+              <MessageBody body={message.body} mine={mine} />
+            ) : null}
+            <MessageImages urls={message.imageUrls} mine={mine} />
             {mine && message.requestStatusLine ? (
               <Text style={[styles.requestStatusInBubble, mine && styles.requestStatusInBubbleMine]}>
                 {message.requestStatusLine}
@@ -730,7 +846,8 @@ export default function MessagesScreen({
   openUserId,
   onOpenedUser,
   onOpenProfile,
-  onConversationOpenChange,
+  onMobileHeader,
+  onOpenThreadChange,
 }) {
   const isMobile = useIsMobile();
   const tabBarScroll = useMobileTabBarScrollProps();
@@ -751,6 +868,8 @@ export default function MessagesScreen({
   const [publishOpen, setPublishOpen] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [publishAdmins, setPublishAdmins] = useState([]);
+  const [agentDraftImages, setAgentDraftImages] = useState([]);
+  const [agentPhotoBusy, setAgentPhotoBusy] = useState(false);
   const [contacts, setContacts] = useState([]);
   const [query, setQuery] = useState('');
   const [composeOpen, setComposeOpen] = useState(false);
@@ -792,18 +911,12 @@ export default function MessagesScreen({
   draftRef.current = draft;
   const onUnreadChangeRef = useRef(onUnreadChange);
   onUnreadChangeRef.current = onUnreadChange;
-  const onConversationOpenChangeRef = useRef(onConversationOpenChange);
-  onConversationOpenChangeRef.current = onConversationOpenChange;
+  const onMobileHeaderRef = useRef(onMobileHeader);
+  onMobileHeaderRef.current = onMobileHeader;
+  const onOpenThreadChangeRef = useRef(onOpenThreadChange);
+  onOpenThreadChangeRef.current = onOpenThreadChange;
   const refreshInboxRef = useRef(async () => []);
   const refreshAgentRequestsRef = useRef(async () => {});
-
-  useEffect(() => {
-    onConversationOpenChangeRef.current?.(Boolean(isMobile && activeId));
-  }, [isMobile, activeId]);
-
-  useEffect(() => {
-    return () => onConversationOpenChangeRef.current?.(false);
-  }, []);
 
   const mergedInbox = useMemo(() => {
     const seen = new Set();
@@ -827,6 +940,32 @@ export default function MessagesScreen({
   }, [agentInbox, inbox]);
 
   const activeThread = mergedInbox.find((row) => row.conversationId === activeId) || null;
+
+  useEffect(() => {
+    const report = onOpenThreadChangeRef.current;
+    if (!report) return;
+    if (!isMobile || !activeId) {
+      report(null);
+      return;
+    }
+    if (!activeThread) return;
+    const person = activeThread.other;
+    const kind = activeThread.isAgent
+      ? 'agent'
+      : activeThread.isAi
+        ? 'ai'
+        : activeThread.isTeam
+          ? 'team'
+          : activeThread.isGroup
+            ? 'group'
+            : 'person';
+    report({
+      kind,
+      label: conversationTitle(activeThread),
+      avatarUrl: person?.avatarUrl || '',
+      name: person ? contactName(person) : conversationTitle(activeThread),
+    });
+  }, [activeId, activeThread, isMobile]);
 
   const refreshInbox = useCallback(async () => {
     try {
@@ -1131,10 +1270,12 @@ export default function MessagesScreen({
     const q = query.trim().toLowerCase();
     if (!q || composeOpen) return mergedInbox;
     return mergedInbox.filter((row) => {
-      const hay = `${conversationTitle(row)} ${(row.members || []).map(contactName).join(' ')} ${row.lastMessagePreview}`.toLowerCase();
+      const hay = `${conversationTitle(row)} ${(row.members || []).map(contactName).join(' ')} ${
+        row.isAgent ? agentWorkPreview(agentBuilds[row.conversationId]) : row.lastMessagePreview
+      }`.toLowerCase();
       return hay.includes(q);
     });
-  }, [composeOpen, mergedInbox, query]);
+  }, [agentBuilds, composeOpen, mergedInbox, query]);
 
   const filteredPeople = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -1237,9 +1378,31 @@ export default function MessagesScreen({
     return prepared;
   };
 
+  const handleAttachAgentPhotos = async () => {
+    if (!activeThread?.isAgent || agentPhotoBusy) return;
+    const remaining = MAX_AGENT_REQUEST_IMAGES - agentDraftImages.length;
+    if (remaining <= 0) {
+      setError(`You can attach up to ${MAX_AGENT_REQUEST_IMAGES} photos.`);
+      return;
+    }
+    setAgentPhotoBusy(true);
+    try {
+      const picked = await pickTriagePhotos({ remaining });
+      if (picked.error) setError(picked.error);
+      if (picked.images?.length) {
+        setAgentDraftImages((current) =>
+          normalizeAgentRequestImages([...current, ...picked.images]),
+        );
+      }
+    } finally {
+      setAgentPhotoBusy(false);
+    }
+  };
+
   const handleSend = async () => {
     const text = draft.trim();
-    if (!text || !activeId || sending || sendingRef.current) return;
+    const pendingImages = activeThread?.isAgent ? normalizeAgentRequestImages(agentDraftImages) : [];
+    if ((!text && !pendingImages.length) || !activeId || sending || sendingRef.current) return;
     sendingRef.current = true;
     const localKey = `local-${Date.now()}`;
     const tempId = `temp-${localKey}`;
@@ -1252,7 +1415,9 @@ export default function MessagesScreen({
     }).start();
     if (activeThread?.isAgent) {
       const conversationId = activeId;
+      const localImages = pendingImages.map((image) => image.uri).filter(Boolean);
       setDraft('');
+      setAgentDraftImages([]);
       setEmojiOpen(false);
       setSending(true);
       setMessages((current) => [
@@ -1264,6 +1429,7 @@ export default function MessagesScreen({
           conversationId,
           senderId: myId,
           body: text,
+          imageUrls: localImages,
           createdAt: new Date().toISOString(),
           likedByMe: false,
           likeCount: 0,
@@ -1273,10 +1439,14 @@ export default function MessagesScreen({
         },
       ]);
       try {
+        const uploadedUrls = localImages.length
+          ? await uploadAgentRequestPhotos(pendingImages, conversationId)
+          : [];
         const saved = await createAgentRequest({
           conversationId,
           body: text,
           senderId: myId,
+          imageUrls: uploadedUrls,
         });
         const sentAt = saved.createdAt || new Date().toISOString();
         const sentMessage = {
@@ -1286,6 +1456,7 @@ export default function MessagesScreen({
           conversationId,
           senderId: saved.senderId || myId,
           body: saved.body || text,
+          imageUrls: saved.imageUrls?.length ? saved.imageUrls : uploadedUrls,
           createdAt: sentAt,
           likedByMe: false,
           likeCount: 0,
@@ -1370,6 +1541,7 @@ export default function MessagesScreen({
       } catch (err) {
         setMessages((current) => current.filter((item) => item.id !== tempId));
         setDraft(text);
+        setAgentDraftImages(pendingImages);
         setError(err.message || 'Could not send that request.');
       } finally {
         sendingRef.current = false;
@@ -1742,8 +1914,17 @@ export default function MessagesScreen({
     if (!activeThread?.isAgent) {
       setPreviewOpen(false);
       setPublishOpen(false);
+      setAgentDraftImages([]);
     }
   }, [activeThread?.isAgent, activeId]);
+
+  const leaveAgentThread = useCallback(() => {
+    setActiveId(null);
+    setEmojiOpen(false);
+    setDetailsOpen(false);
+    setAddingMembers(false);
+    setAgentDraftImages([]);
+  }, []);
 
   // Who receives a Publish: every other active System Admin.
   const loadPublishAdmins = useCallback(async () => {
@@ -1762,6 +1943,30 @@ export default function MessagesScreen({
     setPublishOpen(true);
     void loadPublishAdmins();
   }, [loadPublishAdmins]);
+
+  const agentMobileHeaderTrailing = useMemo(
+    () => (
+      <MobileFeedTopBarActions>
+        <AgentPublishButton build={activeBuild} onPress={openPublish} busy={publishing} />
+      </MobileFeedTopBarActions>
+    ),
+    [activeBuild, openPublish, publishing],
+  );
+
+  useEffect(() => {
+    const setHeader = onMobileHeaderRef.current;
+    if (!setHeader || !isMobile) return undefined;
+    if (showThread && activeThread?.isAgent) {
+      setHeader({
+        segments: [{ label: conversationTitle(activeThread) }],
+        onBrandPress: leaveAgentThread,
+        trailing: agentMobileHeaderTrailing,
+      });
+    } else {
+      setHeader(null);
+    }
+    return () => setHeader(null);
+  }, [activeThread, agentMobileHeaderTrailing, isMobile, leaveAgentThread, showThread]);
 
   const handlePublish = useCallback(async () => {
     const conversationId = activeIdRef.current;
@@ -1932,19 +2137,19 @@ export default function MessagesScreen({
         : row.lastMessageSenderId === myId
           ? 'You'
           : firstNameOf((row.members || []).find((person) => person.id === row.lastMessageSenderId));
-      const preview = row.lastMessagePreview
-        ? row.isGroup || row.lastMessageSenderId === myId
-          ? `${senderName}: ${row.lastMessagePreview}`
-          : row.lastMessagePreview
-        : row.isAgent
-          ? 'New conversation'
+      const preview = row.isAgent
+        ? agentWorkPreview(agentBuilds[row.conversationId]) || 'New conversation'
+        : row.lastMessagePreview
+          ? row.isGroup || row.lastMessageSenderId === myId
+            ? `${senderName}: ${row.lastMessagePreview}`
+            : row.lastMessagePreview
           : row.isAi
-          ? 'New AI chat'
-          : row.isTeam
-          ? 'New team chat'
-          : row.isGroup
-          ? 'New group chat'
-          : 'Start the conversation';
+            ? 'New AI chat'
+            : row.isTeam
+              ? 'New team chat'
+              : row.isGroup
+                ? 'New group chat'
+                : 'Start the conversation';
       const openMenu = (event) => {
         event?.preventDefault?.();
         event?.stopPropagation?.();
@@ -2233,7 +2438,7 @@ export default function MessagesScreen({
           {threadLive ? (
             <>
               <View style={[styles.threadHeader, isMobile && styles.threadHeaderMobile, !isMobile && styles.threadHeaderDesktop]}>
-                {isMobile ? (
+                {isMobile && !activeThread.isAgent ? (
                   <Pressable
                     onPress={() => {
                       setActiveId(null);
@@ -2297,21 +2502,18 @@ export default function MessagesScreen({
                         typingLabel: aiThinking
                           ? 'Thinking…'
                           : activeThread.isAgent
-                            ? buildProgressLine(activeBuild)
+                            ? buildProgressLine(activeBuild) || agentWorkPreview(activeBuild)
                             : typingLabel,
                       })}
                     </Text>
                   </Pressable>
                 </View>
                 {activeThread.isAgent ? (
-                  <>
-                    <AgentPublishButton build={activeBuild} onPress={openPublish} busy={publishing} />
-                    <AgentPreviewTv
-                      build={activeBuild}
-                      onPress={() => setPreviewOpen(true)}
-                      onOpenPreview={openPreviewUrl}
-                    />
-                  </>
+                  <AgentPreviewTv
+                    build={activeBuild}
+                    onPress={() => setPreviewOpen(true)}
+                    onOpenPreview={openPreviewUrl}
+                  />
                 ) : (
                 <Pressable
                   onPress={() => void handleCallThread()}
@@ -2338,6 +2540,9 @@ export default function MessagesScreen({
                     color={BLUE}
                   />
                 </Pressable>
+                {activeThread.isAgent && !isMobile ? (
+                  <AgentPublishButton build={activeBuild} onPress={openPublish} busy={publishing} />
+                ) : null}
               </View>
 
               {detailsOpen ? (
@@ -2511,7 +2716,7 @@ export default function MessagesScreen({
                         <Text style={styles.threadEmptyName}>{conversationTitle(activeThread)}</Text>
                         <Text style={styles.emptyHint}>
                           {activeThread.isAgent
-                            ? 'Write what you want changed or built. Send it like a message. The TV up top turns green when a preview is ready to open.'
+                            ? 'Describe what you want changed, or attach a screenshot. The TV up top turns green when a preview is ready to open.'
                             : conversationSubtitle(activeThread)}
                         </Text>
                       </View>
@@ -2580,13 +2785,56 @@ export default function MessagesScreen({
                   </ScrollView>
 
                   <EmojiPicker
-                    visible={emojiOpen}
+                    visible={emojiOpen && !activeThread?.isAgent}
                     onPick={(emoji) => {
                       onChangeDraft(`${draft}${emoji}`);
                     }}
                   />
 
+                  {activeThread?.isAgent && agentDraftImages.length ? (
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      style={styles.agentDraftImagesRow}
+                      contentContainerStyle={styles.agentDraftImagesContent}
+                    >
+                      {agentDraftImages.map((image) => (
+                        <View key={image.id} style={styles.agentDraftImageWrap}>
+                          <Image source={{ uri: image.uri }} style={styles.agentDraftImage} />
+                          <Pressable
+                            onPress={() =>
+                              setAgentDraftImages((current) => current.filter((row) => row.id !== image.id))
+                            }
+                            style={styles.agentDraftImageRemove}
+                            accessibilityLabel="Remove photo"
+                          >
+                            <Ionicons name="close-circle" size={20} color="#fff" />
+                          </Pressable>
+                        </View>
+                      ))}
+                    </ScrollView>
+                  ) : null}
+
                   <View style={[styles.composer, isMobile && styles.composerMobile]}>
+                    {activeThread?.isAgent ? (
+                      <Pressable
+                        onPress={() => void handleAttachAgentPhotos()}
+                        disabled={agentPhotoBusy || agentDraftImages.length >= MAX_AGENT_REQUEST_IMAGES}
+                        style={({ hovered, pressed }) => [
+                          styles.emojiToggle,
+                          (hovered || pressed) && styles.emojiToggleActive,
+                          (agentPhotoBusy || agentDraftImages.length >= MAX_AGENT_REQUEST_IMAGES) &&
+                            styles.emojiToggleDisabled,
+                        ]}
+                        accessibilityLabel="Attach a photo"
+                      >
+                        {agentPhotoBusy ? (
+                          <ActivityIndicator size="small" color={BLUE} />
+                        ) : (
+                          <Ionicons name="image-outline" size={isMobile ? 22 : 26} color={BLUE} />
+                        )}
+                      </Pressable>
+                    ) : (
                     <Pressable
                       onPress={() => setEmojiOpen((current) => !current)}
                       style={({ hovered, pressed }) => [
@@ -2601,6 +2849,7 @@ export default function MessagesScreen({
                         color={emojiOpen ? BLUE : '#8e8e93'}
                       />
                     </Pressable>
+                    )}
                     <View
                       style={[
                         styles.composerField,
@@ -2631,10 +2880,14 @@ export default function MessagesScreen({
                     <Animated.View style={{ transform: [{ scale: sendScale }] }}>
                       <Pressable
                         onPress={handleSend}
-                        disabled={!draft.trim() || sending}
+                        disabled={
+                          (!draft.trim() && !agentDraftImages.length) || sending
+                        }
                         style={[
                           styles.sendButton,
-                          draft.trim() ? styles.sendButtonOn : styles.sendButtonOff,
+                          draft.trim() || agentDraftImages.length
+                            ? styles.sendButtonOn
+                            : styles.sendButtonOff,
                         ]}
                         accessibilityLabel="Send"
                       >
@@ -3179,6 +3432,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  agentToolsBadge: {
+    position: 'absolute',
+    top: -2,
+    right: -2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f2f2f7',
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
   avatarInitials: {
     fontFamily,
     fontWeight: '700',
@@ -3362,7 +3625,7 @@ const styles = StyleSheet.create({
     paddingBottom: 32,
   },
   detailsContentMobile: {
-    paddingBottom: mobileSafeBottom() + 32,
+    paddingBottom: mobileTabBarReserve() + 32,
   },
   detailsLabel: {
     fontFamily,
@@ -3651,6 +3914,49 @@ const styles = StyleSheet.create({
   emojiGlyph: {
     fontSize: 22,
   },
+  messageImages: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 6,
+    maxWidth: 260,
+  },
+  messageImage: {
+    width: 120,
+    height: 120,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0,0,0,0.06)',
+  },
+  agentDraftImagesRow: {
+    maxHeight: 92,
+    marginHorizontal: 12,
+    marginBottom: 6,
+  },
+  agentDraftImagesContent: {
+    gap: 8,
+    paddingHorizontal: 4,
+  },
+  agentDraftImageWrap: {
+    position: 'relative',
+  },
+  agentDraftImage: {
+    width: 72,
+    height: 72,
+    borderRadius: 10,
+    backgroundColor: 'rgba(0,0,0,0.06)',
+  },
+  agentDraftImageRemove: {
+    position: 'absolute',
+    top: -6,
+    right: -6,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  emojiToggleDisabled: {
+    opacity: 0.45,
+  },
   composer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3711,7 +4017,7 @@ const styles = StyleSheet.create({
   },
   composerMobile: {
     paddingTop: 6,
-    paddingBottom: 8 + mobileSafeBottom(),
+    paddingBottom: 8 + mobileTabBarReserve(),
     alignItems: 'center',
   },
   composerFieldMobile: {

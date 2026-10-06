@@ -27,7 +27,7 @@ const STREAM_TAP_MS = 2_500;
 // A single run replays thousands of events (most are interaction_update noise); parsing is cheap.
 const STREAM_TAP_MAX_EVENTS = 4_000;
 
-const REQUEST_COLUMNS = 'id, conversation_id, sender_id, body, status, approval_state, created_at';
+const REQUEST_COLUMNS = 'id, conversation_id, sender_id, body, image_urls, status, approval_state, created_at';
 
 /** Finished run with no Vercel deployment after this long → stop waiting. */
 const DEPLOY_WAIT_MS = 10 * 60 * 1000;
@@ -67,10 +67,30 @@ type RequestRow = {
   conversation_id: string;
   sender_id: string;
   body: string;
+  image_urls: string[];
   status: string;
   approval_state: string;
   created_at: string;
 };
+
+function requestImages(request: RequestRow): string[] {
+  const urls = Array.isArray(request.image_urls) ? request.image_urls : [];
+  return urls.map((url) => String(url || '').trim()).filter(Boolean).slice(0, 4);
+}
+
+function promptWithImages(body: string, images: string[]): string {
+  const text = String(body || '').trim();
+  if (!images.length) return text;
+  const lines = images.map((url, index) => `${index + 1}. ${url}`);
+  return [
+    text,
+    '',
+    'Reference images from the requester (screenshots / mockups — open the URLs):',
+    ...lines,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
 
 function isMissingTable(message: string): boolean {
   return /schema cache|does not exist|agent_builds/i.test(message);
@@ -192,7 +212,7 @@ const REPLY_STYLE =
   'one to three short sentences on what changed and what to look at in the preview. ' +
   'If the request is unclear, ask one concise question instead of guessing.';
 
-function firstPrompt(body: string, name: string): string {
+function firstPrompt(body: string, name: string, images: string[]): string {
   return [
     'You are working on MyCanadaGold (`cgold`), the Canada Gold staff app.',
     'Read AGENTS.md and https://docs.expo.dev/versions/v54.0.0/ before changing Expo code.',
@@ -206,16 +226,16 @@ function firstPrompt(body: string, name: string): string {
     REPLY_STYLE,
     '',
     `Request${name ? ` from ${name}` : ''}:`,
-    body,
+    promptWithImages(body, images),
   ].join('\n');
 }
 
-function followUpPrompt(body: string, name: string): string {
+function followUpPrompt(body: string, name: string, images: string[]): string {
   return [
     `Follow-up${name ? ` from ${name}` : ''} on the same request. Keep working on this branch and update the pull request.`,
     REPLY_STYLE,
     '',
-    body,
+    promptWithImages(body, images),
   ].join('\n');
 }
 
@@ -687,14 +707,14 @@ export async function handleAgentBuildStart(req: Request, staff: StaffContext): 
   try {
     if (build?.agent_id) {
       try {
-        const saved = await followUp(build, request.id, followUpPrompt(request.body, name));
+        const saved = await followUp(build, request.id, followUpPrompt(request.body, name, requestImages(request)));
         return json(req, 200, { build: publicBuild(saved) });
       } catch (err) {
         // Agent gone (archived / deleted): start a fresh one on a new branch.
         if (!(err instanceof CursorApiError) || err.status < 400 || err.status >= 500) throw err;
       }
     }
-    const saved = await createAgent(build, request, firstPrompt(request.body, name));
+    const saved = await createAgent(build, request, firstPrompt(request.body, name, requestImages(request)));
     return json(req, 200, { build: publicBuild(saved) });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Could not start the agent.';

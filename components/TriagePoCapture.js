@@ -1535,17 +1535,15 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
 
   return (
     <>
+    {isMobile ? (
+      open ? mobileFlow : null
+    ) : (
     <Modal
       visible={open}
-      transparent={!isMobile}
-      animationType={isMobile ? 'slide' : 'fade'}
-      presentationStyle={isMobile ? 'fullScreen' : undefined}
-      statusBarTranslucent={isMobile}
-      onRequestClose={isMobile ? leaveMobilePage : close}
+      transparent
+      animationType="fade"
+      onRequestClose={close}
     >
-      {isMobile ? (
-        mobileFlow
-      ) : (
         <KeyboardAvoidingView
           style={styles.backdrop}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -1699,8 +1697,8 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
             </ScrollView>
           </View>
         </KeyboardAvoidingView>
-      )}
     </Modal>
+    )}
 
     <Modal
       visible={open && resultOpen && Boolean(po) && !isMobile}
@@ -2376,12 +2374,9 @@ const styles = StyleSheet.create({
     zIndex: 30,
   },
   mobileRoot: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 20,
     backgroundColor: CANVAS,
-    ...Platform.select({
-      web: { height: '100vh' },
-      default: {},
-    }),
   },
   snap: {
     flex: 1,
