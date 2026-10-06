@@ -731,7 +731,8 @@ export async function handleAgentBuildStart(req: Request, staff: StaffContext): 
 
 /**
  * The requester is happy with the preview. Marks the build and tells the
- * thread; the app then DMs the System Admins so one person pushes it live.
+ * requester's own Agent thread. Do not DM other staff — publish notes go
+ * to Gilmour via AGENT_WEBHOOK_URL (the app posts /agent/change-request).
  */
 export async function handleAgentBuildPublish(req: Request, staff: StaffContext): Promise<Response> {
   const body = await readJson<{ conversationId?: string }>(req);
@@ -767,7 +768,7 @@ export async function handleAgentBuildPublish(req: Request, staff: StaffContext)
   await postThreadEvent(
     saved,
     saved.last_request_id,
-    'Sent for publishing. A System Admin will push this live.',
+    'Sent for publishing.',
     'status',
     staff.userId,
   );

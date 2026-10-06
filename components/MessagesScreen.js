@@ -866,7 +866,6 @@ export default function MessagesScreen({
   const [previewRefreshing, setPreviewRefreshing] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
   const [publishing, setPublishing] = useState(false);
-  const [publishAdmins, setPublishAdmins] = useState([]);
   const [agentDraftImages, setAgentDraftImages] = useState([]);
   const [agentPhotoBusy, setAgentPhotoBusy] = useState(false);
   const [contacts, setContacts] = useState([]);
@@ -1925,23 +1924,9 @@ export default function MessagesScreen({
     setAgentDraftImages([]);
   }, []);
 
-  // Who receives a Publish: every other active System Admin.
-  const loadPublishAdmins = useCallback(async () => {
-    try {
-      const staff = await listStaffProfiles();
-      const admins = staff.filter((person) => person.isSystemAdmin && person.isActive && person.id !== myId);
-      setPublishAdmins(admins);
-      return admins;
-    } catch {
-      setPublishAdmins([]);
-      return [];
-    }
-  }, [myId]);
-
   const openPublish = useCallback(() => {
     setPublishOpen(true);
-    void loadPublishAdmins();
-  }, [loadPublishAdmins]);
+  }, []);
 
   const agentMobileHeaderTrailing = useMemo(
     () => (
@@ -1977,7 +1962,6 @@ export default function MessagesScreen({
       const saved = await publishAgentBuild(conversationId);
       if (saved) setAgentBuilds((current) => ({ ...current, [conversationId]: saved }));
 
-      const admins = publishAdmins.length ? publishAdmins : await loadPublishAdmins();
       const firstRequest = (agentMessagesRef.current[conversationId] || []).find(
         (item) => !item.isAssistant && item.body,
       );
@@ -1986,30 +1970,22 @@ export default function MessagesScreen({
         requestText: firstRequest?.body || '',
         build: saved || build,
       });
-      const failures = [];
-      for (const admin of admins) {
-        try {
-          const dmId = await getOrCreateDm(admin.id);
-          await sendDmMessage(dmId, text);
-        } catch (err) {
-          failures.push(contactName(admin) || admin.fullName || 'an admin');
-          console.warn('publish DM', err instanceof Error ? err.message : err);
-        }
-      }
-      if (admins.length) void refreshInbox();
+      // Gilmour only — never fan this out as a staff DM.
+      void forwardAgentRequest({
+        id: null,
+        body: text,
+        senderId: myId,
+        createdAt: new Date().toISOString(),
+        kind: 'publish_request',
+      });
       setPublishOpen(false);
-      if (!admins.length) {
-        setError('Marked as ready to publish. No other System Admin is set up to receive the request.');
-      } else if (failures.length) {
-        setError(`Marked as ready to publish, but the message to ${failures.join(', ')} did not send.`);
-      }
       void refreshAgentRequestsRef.current();
     } catch (err) {
       setError(err.message || 'Could not publish that change.');
     } finally {
       setPublishing(false);
     }
-  }, [loadPublishAdmins, myName, publishAdmins, publishing, refreshInbox]);
+  }, [myId, myName, publishing]);
 
   const threadLive = Boolean(activeId && activeThread);
   const memberIds = new Set((activeThread?.members || []).map((person) => person.id));
@@ -2912,7 +2888,6 @@ export default function MessagesScreen({
         visible={publishOpen && Boolean(activeThread?.isAgent)}
         build={activeBuild}
         isMobile={isMobile}
-        adminNames={publishAdmins.map((person) => firstNameOf(person)).filter(Boolean)}
         onClose={() => setPublishOpen(false)}
         onConfirm={() => void handlePublish()}
         busy={publishing}
