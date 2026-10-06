@@ -203,9 +203,66 @@ export function MobileFeedDangerButton({ label, onPress, accessibilityLabel, dis
   );
 }
 
+/** Replace middle crumbs with "…" so the current page and trailing actions stay visible. */
+function collapseMiddleCrumbs(segments, onEllipsisPress) {
+  if (!Array.isArray(segments) || segments.length < 2) return segments || [];
+  const current = segments[segments.length - 1];
+  const hidden = segments.slice(0, -1);
+  const parent = [...hidden].reverse().find((segment) => typeof segment.onPress === 'function');
+  return [
+    {
+      label: '…',
+      onPress: parent?.onPress || onEllipsisPress,
+      accessibilityLabel: parent?.label ? `More, back to ${parent.label}` : 'More pages',
+      isEllipsis: true,
+    },
+    current,
+  ];
+}
+
+function FeedCrumbTrail({ segments, brand, interactive = true }) {
+  return (
+    <>
+      {brand}
+      {segments.map((segment, index) => {
+        const last = index === segments.length - 1;
+        const labelStyle = [
+          styles.mobileFeedCrumbLabel,
+          segment.isEllipsis && styles.mobileFeedCrumbEllipsis,
+          last && !segment.isEllipsis && styles.mobileFeedCrumbCurrent,
+        ];
+        return (
+          <Fragment key={`${segment.label}-${index}`}>
+            <Text style={styles.mobileFeedCrumbSep} accessible={false}>
+              /
+            </Text>
+            {interactive && segment.onPress ? (
+              <Pressable
+                onPress={segment.onPress}
+                style={[styles.mobileFeedCrumbPress, segment.isEllipsis && styles.mobileFeedCrumbFixed]}
+                accessibilityRole="button"
+                accessibilityLabel={segment.accessibilityLabel || segment.label}
+              >
+                <Text style={labelStyle} numberOfLines={1}>
+                  {segment.label}
+                </Text>
+              </Pressable>
+            ) : (
+              <Text style={labelStyle} numberOfLines={1}>
+                {segment.label}
+              </Text>
+            )}
+          </Fragment>
+        );
+      })}
+    </>
+  );
+}
+
 /**
  * Blur top bar used on mobile Home, store details, and in-app tools.
  * `segments` appear after the brand mark as `/ Label` crumbs.
+ * Deep or overflowing trails collapse to logo / … / current so trailing actions stay usable.
  */
 export function MobileFeedTopBar({
   segments = [],
@@ -216,6 +273,30 @@ export function MobileFeedTopBar({
   flushTop = false,
 }) {
   const safeTop = flushTop ? mobileSafeTop() : 0;
+  const segmentKey = segments.map((segment) => segment.label).join('\0');
+  const hasTrailing = Boolean(trailing);
+  const [fits, setFits] = useState(null);
+  const rowWidth = useRef(0);
+  const trailWidth = useRef(0);
+  const probeWidth = useRef(0);
+
+  useEffect(() => {
+    setFits(null);
+    if (!hasTrailing) trailWidth.current = 0;
+  }, [segmentKey, hasTrailing]);
+
+  const updateFit = () => {
+    const available =
+      rowWidth.current - MOBILE_FILTER_INSET * 2 - trailWidth.current - (hasTrailing ? 8 : 0);
+    if (available <= 0 || probeWidth.current <= 0) return;
+    const nextFits = probeWidth.current <= available + 1;
+    setFits((prev) => (prev === nextFits ? prev : nextFits));
+  };
+
+  const collapseMiddle =
+    segments.length >= 2 && (fits === false || (fits == null && segments.length >= 3));
+  const visibleSegments = collapseMiddle ? collapseMiddleCrumbs(segments, onBrandPress) : segments;
+
   const brandControl = onBrandPress ? (
     <Pressable
       onPress={onBrandPress}
@@ -231,34 +312,16 @@ export function MobileFeedTopBar({
       <CanadaGoldMark size={22} />
     </View>
   );
+  const brandProbe = (
+    <View style={styles.mobileFeedBrandBtn}>
+      <CanadaGoldMark size={22} />
+    </View>
+  );
 
   const left =
     segments.length > 0 ? (
       <View style={styles.mobileFeedCrumbs}>
-        {brandControl}
-        {segments.map((segment, index) => (
-          <Fragment key={`${segment.label}-${index}`}>
-            <Text style={styles.mobileFeedCrumbSep} accessible={false}>
-              /
-            </Text>
-            {segment.onPress ? (
-              <Pressable
-                onPress={segment.onPress}
-                style={styles.mobileFeedCrumbPress}
-                accessibilityRole="button"
-                accessibilityLabel={segment.label}
-              >
-                <Text style={styles.mobileFeedCrumbLabel} numberOfLines={1}>
-                  {segment.label}
-                </Text>
-              </Pressable>
-            ) : (
-              <Text style={styles.mobileFeedCrumbLabel} numberOfLines={1}>
-                {segment.label}
-              </Text>
-            )}
-          </Fragment>
-        ))}
+        <FeedCrumbTrail segments={visibleSegments} brand={brandControl} />
       </View>
     ) : (
       brandControl
@@ -274,9 +337,40 @@ export function MobileFeedTopBar({
           style={styles.mobileFeedTopBarBlur}
           {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-bar' } : null)}
         />
-        <View style={styles.mobileFeedTopBarRow}>
+        <View
+          style={styles.mobileFeedTopBarRow}
+          onLayout={(event) => {
+            rowWidth.current = event.nativeEvent.layout.width;
+            updateFit();
+          }}
+        >
           {left}
-          {trailing ? <View style={styles.mobileFeedTopBarTrailing}>{trailing}</View> : null}
+          {trailing ? (
+            <View
+              style={styles.mobileFeedTopBarTrailing}
+              onLayout={(event) => {
+                trailWidth.current = event.nativeEvent.layout.width;
+                updateFit();
+              }}
+            >
+              {trailing}
+            </View>
+          ) : null}
+          {segments.length >= 2 ? (
+            <View
+              pointerEvents="none"
+              style={styles.mobileFeedCrumbsProbe}
+              onLayout={(event) => {
+                probeWidth.current = event.nativeEvent.layout.width;
+                updateFit();
+              }}
+              accessibilityElementsHidden
+              importantForAccessibility="no-hide-descendants"
+              {...(Platform.OS === 'web' ? { 'aria-hidden': true } : null)}
+            >
+              <FeedCrumbTrail segments={segments} brand={brandProbe} interactive={false} />
+            </View>
+          ) : null}
         </View>
       </View>
     </View>
@@ -781,9 +875,22 @@ const styles = StyleSheet.create({
   mobileFeedCrumbs: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexGrow: 1,
     flexShrink: 1,
     minWidth: 0,
+    overflow: 'hidden',
     gap: 8,
+  },
+  mobileFeedCrumbsProbe: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    opacity: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 8,
+    zIndex: -1,
   },
   mobileFeedCrumbSep: {
     fontFamily,
@@ -800,6 +907,9 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
+  mobileFeedCrumbFixed: {
+    flexShrink: 0,
+  },
   mobileFeedCrumbLabel: {
     flexShrink: 1,
     minWidth: 0,
@@ -809,22 +919,28 @@ const styles = StyleSheet.create({
     color: MOBILE.label,
     letterSpacing: -0.3,
   },
+  mobileFeedCrumbEllipsis: {
+    flexShrink: 0,
+  },
+  mobileFeedCrumbCurrent: {
+    flexShrink: 1,
+    minWidth: 44,
+  },
   mobileFeedTopBarTrailing: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
     gap: 8,
-    flexShrink: 1,
-    minWidth: 0,
+    flexGrow: 0,
+    flexShrink: 0,
   },
   mobileFeedTopBarActions: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
     gap: 8,
-    flexShrink: 1,
-    minWidth: 0,
-    maxWidth: '100%',
+    flexGrow: 0,
+    flexShrink: 0,
   },
   mobileFeedDateAnchor: {
     flexShrink: 1,
