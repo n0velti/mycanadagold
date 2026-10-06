@@ -35,7 +35,6 @@ import {
   summarizeLotsFineMetals,
 } from '../lib/triageLots';
 import { formatAmount } from '../lib/transactions';
-import { formatErrorAmount } from '../lib/triageDraft';
 import { currentErrorPeriod } from '../lib/triageStoreErrors';
 import { CANVAS, useIsMobile } from '../lib/mobileUi';
 import {
@@ -197,7 +196,6 @@ function emptyCopy(text) {
 function ErrorsPage({ rows, query, onOpen }) {
   const visible = useMemo(() => rows.filter((row) => matchesQuery(row, query)), [query, rows]);
   const types = useMemo(() => rankCounts(visible, errorTypeOf), [visible]);
-  const amount = useMemo(() => visible.reduce((sum, row) => sum + errorAmountOf(row), 0), [visible]);
   const storeCount = useMemo(
     () => new Set(visible.map((row) => String(row.storeName || '').trim()).filter((name) => name && name !== '—')).size,
     [visible],
@@ -219,7 +217,7 @@ function ErrorsPage({ rows, query, onOpen }) {
         <ChromeHero
           icon="alert-circle"
           iconColor="#B91C1C"
-          value={amount ? formatAmount(amount) : String(visible.length)}
+          value={String(visible.length)}
           stats={[
             { label: visible.length === 1 ? 'Error' : 'Errors', value: String(visible.length) },
             { label: storeCount === 1 ? 'Store' : 'Stores', value: String(storeCount) },
@@ -235,7 +233,6 @@ function ErrorsPage({ rows, query, onOpen }) {
         <ChromeListRow
           title={row.reference || 'Document'}
           meta={[errorTypeOf(row), row.storeName, staffName(row), row.dateLabel].filter(Boolean).join(' · ')}
-          value={formatErrorAmount(row?.review?.errorAmount || '') || ''}
           leading={<PoThumb urls={row.imageUrls} label={row.reference} size={46} />}
           last={index === visible.length - 1}
           onPress={() => onOpen(row)}
