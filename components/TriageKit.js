@@ -1152,6 +1152,23 @@ export const ChromeListRow = memo(function ChromeListRow({
   );
 });
 
+/** Visible in-page back. Shell back (logo / crumbs) is easy to miss after a drill-in. */
+export function ChromeBackRow({ label = 'Back', onPress }) {
+  const isMobile = useIsMobile();
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={10}
+      accessibilityRole="button"
+      accessibilityLabel="Back"
+      style={[styles.chromeBackRow, isMobile ? styles.chromeBackRowMobile : styles.chromeBackRowDesktop]}
+    >
+      <Ionicons name="chevron-back" size={isMobile ? 26 : 20} color={isMobile ? MOBILE.blue : T.text} />
+      <Text style={[styles.chromeBackLabel, isMobile && styles.chromeBackLabelMobile]}>{label}</Text>
+    </Pressable>
+  );
+}
+
 /** Hero + sheet page used by every triage surface. */
 export function ChromePage({
   hero,
@@ -2454,6 +2471,38 @@ const styles = StyleSheet.create({
   },
   chromeOverlaySheet: {
     flexGrow: 1,
+  },
+  chromeBackRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    flexShrink: 0,
+    gap: 2,
+    minHeight: 44,
+  },
+  chromeBackRowDesktop: {
+    paddingHorizontal: 32,
+    paddingTop: 10,
+    paddingBottom: 4,
+    marginLeft: -6,
+  },
+  chromeBackRowMobile: {
+    paddingHorizontal: MOBILE_FILTER_INSET,
+    paddingTop: 6,
+    paddingBottom: 2,
+    marginLeft: -4,
+  },
+  chromeBackLabel: {
+    fontFamily: FONT,
+    fontSize: 16,
+    fontWeight: '600',
+    color: T.text,
+    letterSpacing: -0.2,
+  },
+  chromeBackLabelMobile: {
+    fontSize: 17,
+    fontWeight: '400',
+    color: MOBILE.blue,
   },
   chromePageContent: {
     flexGrow: 1,

@@ -269,6 +269,8 @@ export function MobileFeedTopBar({
   onBrandPress,
   trailing,
   brandAccessibilityLabel = 'Canada Gold',
+  /** Replace the logo with a chevron when brand press is page-back, not leave-app. */
+  showBack = false,
   /** Full-screen surfaces (e.g. PO camera modal): blur flush to top, content inset in the bar. */
   flushTop = false,
 }) {
@@ -283,7 +285,7 @@ export function MobileFeedTopBar({
   useEffect(() => {
     setFits(null);
     if (!hasTrailing) trailWidth.current = 0;
-  }, [segmentKey, hasTrailing]);
+  }, [segmentKey, hasTrailing, showBack]);
 
   const updateFit = () => {
     const available =
@@ -297,6 +299,11 @@ export function MobileFeedTopBar({
     segments.length >= 2 && (fits === false || (fits == null && segments.length >= 3));
   const visibleSegments = collapseMiddle ? collapseMiddleCrumbs(segments, onBrandPress) : segments;
 
+  const brandMark = showBack ? (
+    <Ionicons name="chevron-back" size={28} color={MOBILE.blue} />
+  ) : (
+    <CanadaGoldMark size={22} />
+  );
   const brandControl = onBrandPress ? (
     <Pressable
       onPress={onBrandPress}
@@ -305,16 +312,16 @@ export function MobileFeedTopBar({
       accessibilityRole="button"
       accessibilityLabel="Back"
     >
-      <CanadaGoldMark size={22} />
+      {brandMark}
     </Pressable>
   ) : (
     <View style={styles.mobileFeedBrandBtn} accessibilityLabel={brandAccessibilityLabel}>
-      <CanadaGoldMark size={22} />
+      {brandMark}
     </View>
   );
   const brandProbe = (
     <View style={styles.mobileFeedBrandBtn}>
-      <CanadaGoldMark size={22} />
+      {brandMark}
     </View>
   );
 
