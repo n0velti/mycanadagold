@@ -49,17 +49,11 @@ import {
 import { uploadTriageErrorPhotos } from '../lib/triageErrorPhotos';
 import { lookupPurchasesByPoNumber, normalizePoNumber, readPoNumberFromPhoto } from '../lib/triagePoRead';
 import { formatAmount, formatUnitCost, purchaseBuyerName } from '../lib/transactions';
-import {
-  allocationDraftFromPo,
-  isAllocationComplete,
-  sanitizeAllocation,
-  weightPairLabel,
-} from '../lib/triageAllocations';
+import { weightPairLabel } from '../lib/triageAllocations';
 import { lotFromPo } from '../lib/triageLots';
 import {
   fileTriagePoToLot,
   persistTransferWorkflowNow,
-  saveTriagePoAllocation,
   saveTriagePoReview,
   triageEditorFromSession,
 } from '../lib/transferWorkflow';
@@ -68,7 +62,6 @@ import { isBullionResaleLine, isScrapJewelleryLine } from '../lib/priceCheck';
 import { catalogNameForPurchaseLine, fetchWebsitePrices } from '../lib/websitePrices';
 import { ChromeListRow, confirmDestructive, FONT, T } from './TriageKit';
 import { PoThumb } from './TriageTable';
-import TriageAllocationForm from './TriageAllocationForm';
 import TriageCorrectionImages from './TriageCorrectionImages';
 
 const PAPER_ASPECT = 8.5 / 11;
@@ -322,6 +315,122 @@ function PoLineItemsBlock({ lines, buyCatalog, po, photoUri }) {
       })}
       <PoOrderTotal amount={po?.amount} />
     </View>
+  );
+}
+
+function dash(value) {
+  const text = String(value || '').trim();
+  return text || '—';
+}
+
+function ErrorSummaryBlock({
+  po,
+  destLot,
+  errorType,
+  errorAmount,
+  errorNote,
+  photos,
+  lineEdits,
+  mobile = false,
+}) {
+  const amount = formatErrorAmount(errorAmount);
+  const rows = [
+    ['PO', po?.reference],
+    ['Store', po?.storeName],
+    ['Date', po?.dateLabel],
+    ['Lot', destLot?.id],
+    ['Type', errorType],
+    ['Amount', amount],
+  ];
+  const note = String(errorNote || '').trim();
+  const images = normalizeReviewImages(photos);
+  const edits = Array.isArray(lineEdits) ? lineEdits : [];
+
+  if (mobile) {
+    return (
+      <>
+        <View style={styles.poMetaGroup}>
+          {rows.map(([label, value], index) => (
+            <View
+              key={label}
+              style={[styles.poMetaRow, index === rows.length - 1 && !note && styles.poMetaRowLast]}
+            >
+              <Text style={styles.poMetaLabel}>{label}</Text>
+              <Text style={styles.poMetaValue} numberOfLines={2}>
+                {dash(value)}
+              </Text>
+            </View>
+          ))}
+          {note ? (
+            <View style={[styles.poMetaRow, styles.poMetaRowLast, styles.errorFieldBlock]}>
+              <Text style={styles.errorFieldCaption}>Details</Text>
+              <Text style={styles.summaryNote}>{note}</Text>
+            </View>
+          ) : null}
+        </View>
+        {edits.length ? (
+          <>
+            <Text style={styles.pageSectionTitle}>Line changes</Text>
+            <View style={styles.poMetaGroup}>
+              {edits.map((edit, index) => (
+                <View
+                  key={`${edit.index}-${edit.name}`}
+                  style={[styles.poMetaRow, index === edits.length - 1 && styles.poMetaRowLast]}
+                >
+                  <Text style={styles.poMetaLabel} numberOfLines={2}>
+                    {edit.name}
+                  </Text>
+                  <Text style={styles.poMetaValue}>
+                    {edit.originalAmount} → {edit.amount}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          </>
+        ) : null}
+        <Text style={styles.pageSectionTitle}>Photos</Text>
+        <View style={[styles.poMetaGroup, styles.errorPhotoGroup]}>
+          <TriageCorrectionImages images={images} hideHeading hideActions insetCard readOnly />
+        </View>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <Text style={styles.resultKicker}>{po?.reference || 'PO'}</Text>
+      <Text style={styles.detailMeta}>Check the error, then add this purchase to its lot.</Text>
+      <View style={styles.summaryRows}>
+        {rows.map(([label, value]) => (
+          <View key={label} style={styles.summaryRow}>
+            <Text style={styles.summaryLabel}>{label}</Text>
+            <Text style={styles.summaryValue}>{dash(value)}</Text>
+          </View>
+        ))}
+        {note ? (
+          <View style={styles.summaryNoteBlock}>
+            <Text style={styles.summaryLabel}>Details</Text>
+            <Text style={styles.summaryNoteDesktop}>{note}</Text>
+          </View>
+        ) : null}
+      </View>
+      {edits.length ? (
+        <View style={styles.summaryLines}>
+          {edits.map((edit) => (
+            <View key={`${edit.index}-${edit.name}`} style={styles.summaryRow}>
+              <Text style={styles.summaryLabel} numberOfLines={2}>
+                {edit.name}
+              </Text>
+              <Text style={styles.summaryValue}>
+                {edit.originalAmount} → {edit.amount}
+              </Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+      <Text style={styles.sectionLabel}>Photos</Text>
+      <TriageCorrectionImages images={images} hideHeading hideActions readOnly />
+    </>
   );
 }
 
@@ -689,8 +798,7 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
   const [matches, setMatches] = useState([]);
   const [po, setPo] = useState(null);
   const [resultOpen, setResultOpen] = useState(false);
-  const [allocating, setAllocating] = useState(false);
-  const [allocDraft, setAllocDraft] = useState({ lines: [] });
+  const [summarizing, setSummarizing] = useState(false);
   const [pendingError, setPendingError] = useState(false);
   const [errorMode, setErrorMode] = useState(false);
   const [errorNote, setErrorNote] = useState('');
@@ -748,7 +856,7 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
     return () => onFlowOpenChange?.(false);
   }, [onFlowOpenChange, open]);
   const onSnapCamera =
-    !isMobile || (!resultOpen && !allocating && !errorSheetOpen && matches.length <= 1);
+    !isMobile || (!resultOpen && !summarizing && !errorSheetOpen && matches.length <= 1);
   const { videoRef, cameraState, startCamera, stopStream, setVideoNode } = useWebcam({
     active: open && liveCamera && !photoUri && onSnapCamera,
     autoStart: false,
@@ -786,8 +894,7 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
     setMatches([]);
     setPo(null);
     setResultOpen(false);
-    setAllocating(false);
-    setAllocDraft({ lines: [] });
+    setSummarizing(false);
     setPendingError(false);
     setErrorMode(false);
     setErrorNote('');
@@ -847,6 +954,8 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
     setLineDrafts(lineDraftsFromPo(row?.pricedLines));
     setResultError('');
     setErrorSheetOpen(false);
+    setSummarizing(false);
+    setPendingError(false);
     setResultOpen(true);
   };
 
@@ -970,8 +1079,7 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
     setMatches([]);
     setPo(null);
     setResultOpen(false);
-    setAllocating(false);
-    setAllocDraft({ lines: [] });
+    setSummarizing(false);
     setPendingError(false);
     setErrorMode(false);
     setErrorNote('');
@@ -996,7 +1104,7 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
     requestRef.current += 1;
     setErrorSheetOpen(false);
     setResultOpen(false);
-    setAllocating(false);
+    setSummarizing(false);
     setPendingError(false);
     setPo(null);
     setMatches([]);
@@ -1016,8 +1124,8 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
   };
 
   const leaveMobilePage = () => {
-    if (allocating) {
-      setAllocating(false);
+    if (summarizing) {
+      setSummarizing(false);
       setResultError('');
       if (pendingError) setErrorSheetOpen(true);
       return;
@@ -1042,36 +1150,34 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
     close();
   };
 
-  const goAllocate = (withError) => {
+  const goSummary = () => {
     if (!po || finishing) return;
     const note = errorNote.trim();
     const amount = errorAmount.trim();
     const photos = normalizeReviewImages(errorImages);
     const lineEdits = changedLineEdits(lineDrafts, lines, buyCatalog);
-    if (withError && !note && !errorType && !amount && !photos.length && !lineEdits.length) {
+    if (!note && !errorType && !amount && !photos.length && !lineEdits.length) {
       setResultError('Add a note, set amount, photo, line change, or pick an error type.');
       return;
     }
-    setPendingError(Boolean(withError));
-    setAllocDraft(allocationDraftFromPo(po, (line) => lineTitle(line, buyCatalog)));
-    setAllocating(true);
+    setPendingError(true);
+    setSummarizing(true);
     setErrorMode(false);
     setErrorSheetOpen(false);
     setResultError('');
   };
 
-  const saveErrorSheet = () => {
-    const note = errorNote.trim();
-    const amount = errorAmount.trim();
-    const photos = normalizeReviewImages(errorImages);
-    const lineEdits = changedLineEdits(lineDrafts, lines, buyCatalog);
-    if (!note && !errorType && !amount && !photos.length && !lineEdits.length) {
-      setResultError('Pick an error type, add details, amount, or a photo.');
-      return;
-    }
-    setPendingError(true);
-    setErrorSheetOpen(false);
+  const leaveSummary = () => {
+    setSummarizing(false);
     setResultError('');
+    if (pendingError) {
+      if (isMobile) setErrorSheetOpen(true);
+      else setErrorMode(true);
+    }
+  };
+
+  const saveErrorSheet = () => {
+    goSummary();
   };
 
   const promptErrorPhoto = () => {
@@ -1079,17 +1185,13 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
     errorPhotosRef.current?.addImage?.();
   };
 
-  const finishPo = async ({ skipAllocation = false } = {}) => {
+  const finishPo = async () => {
     if (!po || finishing) return;
-    if (!skipAllocation && !isAllocationComplete(allocDraft)) {
-      setResultError('Allocate the full object weight of each line before finishing.');
-      return;
-    }
     const note = errorNote.trim();
     const amount = errorAmount.trim();
     const photos = normalizeReviewImages(errorImages);
     const lineEdits = changedLineEdits(lineDrafts, lines, buyCatalog);
-    const saveError = pendingError || errorMode;
+    const saveError = pendingError || errorMode || summarizing;
     if (saveError && !note && !errorType && !amount && !photos.length && !lineEdits.length) {
       setResultError('Add a note, set amount, photo, line change, or pick an error type.');
       return;
@@ -1112,9 +1214,6 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
           { note, errorType, errorAmount: formatErrorAmount(amount), images, lineEdits },
           editor,
         );
-      }
-      if (!skipAllocation) {
-        saveTriagePoAllocation(poId, sanitizeAllocation(allocDraft) || allocDraft, editor);
       }
       persistTransferWorkflowNow().catch(() => {});
       const label = po.reference || `PO#${normalizePoNumber(poInput) || po.id}`;
@@ -1199,6 +1298,7 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
     </>
   ) : null;
   const destLot = po ? lotFromPo(po) : null;
+  const errorLineEdits = changedLineEdits(lineDrafts, lines, buyCatalog);
   const placeLine = destLot
     ? `Adds to ${destLot.id}`
     : 'Adds this purchase to its lot on Results.';
@@ -1259,31 +1359,42 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
   );
   const mobileFlow = (
     <View style={styles.mobileRoot}>
-      {allocating && po ? (
+      {summarizing && po ? (
         <View style={styles.page}>
           <CaptureTopBar
-            segments={[{ label: 'Scan PO' }, { label: poRefLabel }, { label: 'Allocate' }]}
+            segments={[
+              { label: 'Scan PO', onPress: goScanPoCamera },
+              { label: 'Error', onPress: leaveSummary },
+              { label: 'Summary' },
+            ]}
             onBack={leaveMobilePage}
           />
           <ScrollView style={styles.pageBody} contentContainerStyle={styles.pageScrollFeed}>
-            <Text style={styles.pageSectionTitle}>Allocation</Text>
+            <Text style={styles.pageSectionTitle}>Summary</Text>
             <Text style={styles.pageDetailNote}>
-              Split each line by object weight. Totals must match before you finish, or skip allocation.
+              Check the error, then add this purchase to its lot.
             </Text>
-            <View style={styles.feedSheet}>
-              <TriageAllocationForm draft={allocDraft} onChange={setAllocDraft} disabled={finishing} />
-            </View>
+            <ErrorSummaryBlock
+              po={po}
+              destLot={destLot}
+              errorType={errorType}
+              errorAmount={errorAmount}
+              errorNote={errorNote}
+              photos={errorImages}
+              lineEdits={errorLineEdits}
+              mobile
+            />
             {resultError ? <Text style={styles.error}>{resultError}</Text> : null}
           </ScrollView>
           <View style={[styles.pageFooter, { paddingBottom: dockPad }]}>
             <Pressable
               style={[styles.pageSecondary, finishing && styles.lookupOff]}
-              onPress={() => void finishPo({ skipAllocation: true })}
+              onPress={leaveSummary}
               disabled={finishing}
               accessibilityRole="button"
-              accessibilityLabel="Skip allocation and finish"
+              accessibilityLabel="Back to error"
             >
-              <Text style={styles.pageSecondaryText}>{finishing ? 'Saving…' : 'Skip allocation'}</Text>
+              <Text style={styles.pageSecondaryText}>Back</Text>
             </Pressable>
             <Pressable
               style={[styles.pagePrimary, finishing && styles.lookupOff]}
@@ -1318,10 +1429,10 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
                   accessibilityLabel="Add photo"
                 />
                 <MobileFeedAddButton
-                  label="Save"
+                  label="Next"
                   onPress={saveErrorSheet}
                   disabled={finishing}
-                  accessibilityLabel="Save error"
+                  accessibilityLabel="Review error"
                 />
               </MobileFeedTopBarActions>
             }
@@ -1352,10 +1463,10 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
                   accessibilityLabel={pendingError ? 'Edit error' : 'Add error'}
                 />
                 <MobileFeedAddButton
-                  label="Next"
-                  onPress={() => goAllocate(Boolean(pendingError))}
+                  label={pendingError ? 'Next' : 'Finish'}
+                  onPress={() => (pendingError ? goSummary() : void finishPo())}
                   disabled={finishing}
-                  accessibilityLabel="Next"
+                  accessibilityLabel={pendingError ? 'Review error' : 'Finish'}
                 />
               </MobileFeedTopBarActions>
             }
@@ -1705,8 +1816,8 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
       transparent
       animationType={isMobile ? 'slide' : 'fade'}
       onRequestClose={() => {
-        if (allocating) {
-          setAllocating(false);
+        if (summarizing) {
+          leaveSummary();
           return;
         }
         setResultOpen(false);
@@ -1719,8 +1830,8 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
         <Pressable
           style={StyleSheet.absoluteFill}
           onPress={() => {
-            if (allocating) {
-              setAllocating(false);
+            if (summarizing) {
+              leaveSummary();
               return;
             }
             setResultOpen(false);
@@ -1729,13 +1840,11 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
         <View style={[styles.resultSheet, isMobile && styles.resultSheetMobile]} accessibilityViewIsModal>
           {isMobile ? <View style={styles.grabber} /> : null}
           <View style={styles.header}>
-            <Text style={styles.title} numberOfLines={1}>{allocating ? 'Allocate' : po?.reference || 'PO'}</Text>
+            <Text style={styles.title} numberOfLines={1}>{summarizing ? 'Summary' : po?.reference || 'PO'}</Text>
             <Pressable
               onPress={() => {
-                if (allocating) {
-                  setAllocating(false);
-                  setResultError('');
-                  if (pendingError) setErrorMode(true);
+                if (summarizing) {
+                  leaveSummary();
                   return;
                 }
                 setResultOpen(false);
@@ -1743,21 +1852,25 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
               hitSlop={8}
               accessibilityLabel="Close"
             >
-              <Text style={styles.resultClose}>{allocating ? 'Back' : 'Close'}</Text>
+              <Text style={styles.resultClose}>{summarizing ? 'Back' : 'Close'}</Text>
             </Pressable>
           </View>
           <ScrollView
-            style={errorMode || allocating ? styles.resultScroll : null}
+            style={errorMode || summarizing ? styles.resultScroll : null}
             contentContainerStyle={styles.resultContent}
             keyboardShouldPersistTaps="handled"
           >
-            {allocating ? (
+            {summarizing ? (
               <>
-                <Text style={styles.resultKicker}>{po?.reference || 'PO'}</Text>
-                <Text style={styles.detailMeta}>
-                  Split each line by object weight. Totals must match before you finish, or skip allocation.
-                </Text>
-                <TriageAllocationForm draft={allocDraft} onChange={setAllocDraft} disabled={finishing} />
+                <ErrorSummaryBlock
+                  po={po}
+                  destLot={destLot}
+                  errorType={errorType}
+                  errorAmount={errorAmount}
+                  errorNote={errorNote}
+                  photos={errorImages}
+                  lineEdits={errorLineEdits}
+                />
                 {resultError ? <Text style={styles.error}>{resultError}</Text> : null}
               </>
             ) : (
@@ -1820,16 +1933,16 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
             )}
           </ScrollView>
           <View style={[styles.resultActions, isMobile && styles.resultActionsMobile]}>
-            {allocating ? (
+            {summarizing ? (
               <>
                 <Pressable
-                  style={[styles.secondary, finishing && styles.lookupOff]}
-                  onPress={() => void finishPo({ skipAllocation: true })}
+                  style={styles.secondary}
+                  onPress={leaveSummary}
                   disabled={finishing}
                   accessibilityRole="button"
-                  accessibilityLabel="Skip allocation and finish"
+                  accessibilityLabel="Back to error"
                 >
-                  <Text style={styles.secondaryText}>{finishing ? 'Saving…' : 'Skip allocation'}</Text>
+                  <Text style={styles.secondaryText}>Back</Text>
                 </Pressable>
                 <Pressable
                   style={[styles.next, finishing && styles.lookupOff]}
@@ -1855,20 +1968,11 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
                   <Text style={styles.secondaryText}>Back</Text>
                 </Pressable>
                 <Pressable
-                  style={[styles.secondary, finishing && styles.lookupOff]}
-                  onPress={() => void finishPo({ skipAllocation: true })}
-                  disabled={finishing}
-                  accessibilityRole="button"
-                  accessibilityLabel="Skip allocation and finish"
-                >
-                  <Text style={styles.secondaryText}>{finishing ? 'Saving…' : 'Skip allocation'}</Text>
-                </Pressable>
-                <Pressable
                   style={[styles.next, finishing && styles.lookupOff]}
-                  onPress={() => goAllocate(true)}
+                  onPress={goSummary}
                   disabled={finishing}
                   accessibilityRole="button"
-                  accessibilityLabel="Next"
+                  accessibilityLabel="Review error"
                 >
                   <Text style={styles.nextText}>Next</Text>
                 </Pressable>
@@ -1885,25 +1989,16 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
                   accessibilityRole="button"
                   accessibilityLabel="Add error"
                 >
-                  <Text style={styles.secondaryText}>Add error</Text>
-                </Pressable>
-                <Pressable
-                  style={[styles.secondary, finishing && styles.lookupOff]}
-                  onPress={() => void finishPo({ skipAllocation: true })}
-                  disabled={finishing}
-                  accessibilityRole="button"
-                  accessibilityLabel="Skip allocation and finish"
-                >
-                  <Text style={styles.secondaryText}>{finishing ? 'Saving…' : 'Skip allocation'}</Text>
+                  <Text style={styles.secondaryText}>{pendingError ? 'Edit error' : 'Add error'}</Text>
                 </Pressable>
                 <Pressable
                   style={[styles.next, finishing && styles.lookupOff]}
-                  onPress={() => goAllocate(false)}
+                  onPress={() => (pendingError ? goSummary() : void finishPo())}
                   disabled={finishing}
                   accessibilityRole="button"
-                  accessibilityLabel="Next"
+                  accessibilityLabel={pendingError ? 'Review error' : 'Finish'}
                 >
-                  <Text style={styles.nextText}>Next</Text>
+                  <Text style={styles.nextText}>{pendingError ? 'Next' : finishing ? 'Saving…' : 'Finish'}</Text>
                 </Pressable>
               </>
             )}
@@ -2304,6 +2399,61 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '500',
     color: '#6e6e73',
+  },
+  summaryRows: {
+    marginTop: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#ececef',
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#ececef',
+  },
+  summaryLabel: {
+    width: 88,
+    flexShrink: 0,
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#6e6e73',
+  },
+  summaryValue: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '500',
+    color: '#1d1d1f',
+    textAlign: 'right',
+  },
+  summaryNoteBlock: {
+    paddingTop: 12,
+    paddingBottom: 4,
+    gap: 6,
+  },
+  summaryNoteDesktop: {
+    fontFamily: FONT,
+    fontSize: 15,
+    lineHeight: 21,
+    color: '#1d1d1f',
+  },
+  summaryLines: {
+    marginTop: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#ececef',
+  },
+  summaryNote: {
+    fontFamily: FONT,
+    fontSize: 17,
+    lineHeight: 22,
+    fontWeight: '400',
+    letterSpacing: -0.41,
+    color: MOBILE.label,
   },
   resultTotal: {
     fontFamily: FONT,

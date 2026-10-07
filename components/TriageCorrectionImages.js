@@ -29,8 +29,8 @@ const FILL = '#f5f5f5';
 const PICKER_OPTIONS = {
   mediaTypes: ['images'],
   allowsEditing: false,
-  quality: 0.6,
-  base64: true,
+  quality: 0.8,
+  base64: false,
 };
 
 const CAMERA_CONSTRAINTS = [
