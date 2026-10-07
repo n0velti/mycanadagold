@@ -38,7 +38,7 @@ import {
   ERROR_TYPES,
   errorOffUnitLabel,
   formatErrorAmount,
-  formatLineErrorSummary,
+  formatErrorGrams,
   isListedErrorType,
   lineErrorDraftsFromPo,
   normalizeReviewImages,
@@ -277,6 +277,76 @@ function SummaryMetaTable({ rows }) {
   );
 }
 
+function ErrorFormSummary({ errorType, errorAmount, errorNote, lineEdits, photos }) {
+  const amountText = String(errorAmount || '').trim();
+  const amountLabel = amountText ? formatErrorAmount(amountText) : 'Not set';
+  const note = String(errorNote || '').trim();
+  const edits = Array.isArray(lineEdits) ? lineEdits : [];
+  const images = Array.isArray(photos) ? photos : [];
+  return (
+    <>
+      <View style={[styles.poMetaGroup, styles.errorFormGroup]}>
+        <View style={[styles.poMetaRow, styles.errorPickerRow]}>
+          <Text style={styles.poMetaLabel}>Error type</Text>
+          <View style={styles.errorPickerValueHit}>
+            <Text
+              style={[styles.errorPickerValue, !errorType && styles.errorFieldPlaceholder]}
+              numberOfLines={2}
+            >
+              {errorType || 'Not set'}
+            </Text>
+          </View>
+        </View>
+        <View style={[styles.poMetaRow, styles.errorFieldBlock]}>
+          <Text style={styles.errorFieldCaption}>Error Amount</Text>
+          <View style={[styles.errorAmountInput, styles.errorSummaryBox]}>
+            <Text style={[styles.errorSummaryValue, !amountText && styles.summaryMuted]}>{amountLabel}</Text>
+          </View>
+        </View>
+        {edits.map((edit, index) => {
+          const title = edit.name || `Line ${Number(edit.index) + 1}`;
+          const grams = formatErrorGrams(edit.errorGrams);
+          const offLabel = errorOffUnitLabel(edit);
+          const was = String(edit.originalAmount || '').trim();
+          const now = String(edit.amount || '').trim();
+          const amountLine = now && now !== was ? `${was || '—'} → ${now}` : '';
+          return (
+            <View key={`${edit.index}-${title}-${index}`} style={[styles.poMetaRow, styles.errorFieldBlock]}>
+              <Text style={styles.errorFieldCaption} numberOfLines={2}>
+                {title}
+              </Text>
+              {edit.recordedGrams ? <Text style={styles.errorItemMeta}>On PO {edit.recordedGrams}</Text> : null}
+              {amountLine ? <Text style={styles.errorItemMeta}>{amountLine}</Text> : null}
+              <View style={styles.errorGramsRow}>
+                <View style={[styles.errorAmountInput, styles.errorGramsInput, styles.errorSummaryBox]}>
+                  <Text style={[styles.errorSummaryValue, !grams && styles.summaryMuted]}>{grams || '—'}</Text>
+                </View>
+                <Text style={styles.errorGramsUnit}>{offLabel}</Text>
+              </View>
+            </View>
+          );
+        })}
+        <View style={[styles.poMetaRow, styles.poMetaRowLast, styles.errorFieldBlock]}>
+          <Text style={styles.errorFieldCaption}>Details</Text>
+          <View style={styles.errorDetailsInput}>
+            <Text style={[styles.errorSummaryNote, !note && styles.summaryMuted]}>{note || 'None'}</Text>
+          </View>
+        </View>
+      </View>
+      <View style={[styles.poMetaGroup, styles.errorPhotoGroup, !images.length && styles.errorPhotoPad]}>
+        <TriageCorrectionImages
+          images={images}
+          onChange={() => {}}
+          hideHeading
+          hideActions
+          insetCard
+          readOnly
+        />
+      </View>
+    </>
+  );
+}
+
 function ErrorSubmitSummary({
   po,
   destLot,
@@ -286,8 +356,6 @@ function ErrorSubmitSummary({
   lineEdits,
   photos,
 }) {
-  const amountLabel = errorAmount.trim() ? formatErrorAmount(errorAmount) : 'Not set';
-  const note = errorNote.trim();
   const rows = [
     ['PO', po?.reference || '—'],
     ['Date', po?.dateLabel || '—'],
@@ -296,53 +364,87 @@ function ErrorSubmitSummary({
     ['Buyer', poBuyerLabel(po)],
     ['Total', moneyLabel(po?.amount)],
     ['Adds to', destLot?.id || 'its lot on Results'],
-    ['Error type', errorType || 'Not set'],
-    ['Amount', amountLabel],
   ];
   return (
     <>
-      <Text style={styles.pageSectionTitle}>Summary</Text>
-      <Text style={styles.pageDetailNote}>Review this error before submitting.</Text>
       <SummaryMetaTable rows={rows} />
-      <View style={styles.poMetaGroup}>
-        <View style={[styles.poMetaRow, styles.summaryBlockRow, styles.poMetaRowLast]}>
-          <Text style={styles.poMetaLabel}>Details</Text>
-          <Text style={[styles.poMetaValue, !note && styles.summaryMuted]} numberOfLines={8}>
-            {note || 'None'}
-          </Text>
-        </View>
-      </View>
-      <Text style={styles.pageSectionTitle}>Items off</Text>
-      {lineEdits.length ? (
-        <View style={styles.poMetaGroup}>
-          {lineEdits.map((edit, index) => (
-            <View
-              key={`${edit.index}-${edit.name}`}
-              style={[styles.poMetaRow, styles.summaryBlockRow, index === lineEdits.length - 1 && styles.poMetaRowLast]}
-            >
-              <Text style={styles.poMetaLabel} numberOfLines={2}>
-                {edit.name || `Line ${edit.index + 1}`}
-              </Text>
-              <Text style={styles.poMetaValue} numberOfLines={2}>
-                {formatLineErrorSummary(edit) || '—'}
-              </Text>
-            </View>
-          ))}
-        </View>
-      ) : (
-        <Text style={styles.pageDetailNote}>No items off recorded.</Text>
-      )}
-      <Text style={styles.pageSectionTitle}>Photos</Text>
-      {photos.length ? (
-        <View style={styles.summaryPhotoRow}>
-          {photos.map((photo) => (
-            <Image key={photo.id || photo.uri} source={{ uri: photo.uri }} style={styles.summaryPhoto} />
-          ))}
-        </View>
-      ) : (
-        <Text style={styles.pageDetailNote}>No photos attached.</Text>
-      )}
+      <ErrorFormSummary
+        errorType={errorType}
+        errorAmount={errorAmount}
+        errorNote={errorNote}
+        lineEdits={lineEdits}
+        photos={photos}
+      />
     </>
+  );
+}
+
+export function PoErrorSummaryPage({ po, onClose, onEdit }) {
+  const isMobile = useIsMobile();
+  const review = po?.review || {};
+  const destLot = po ? lotFromPo(po) : null;
+  const photos = normalizeReviewImages(review.images);
+  const lineEdits = Array.isArray(review.lineEdits) ? review.lineEdits : [];
+  const poRefLabel = po?.reference || 'PO';
+  return (
+    <View style={styles.page}>
+      {isMobile ? (
+        <CaptureTopBar
+          flushTop={false}
+          segments={[
+            { label: 'Errors', onPress: onClose },
+            { label: poRefLabel },
+            { label: 'Summary' },
+          ]}
+          onBack={onClose}
+          trailing={
+            onEdit ? (
+              <MobileFeedTopBarActions>
+                <MobileFeedOutlineButton
+                  label="Edit"
+                  onPress={onEdit}
+                  accessibilityLabel="Edit error"
+                />
+              </MobileFeedTopBarActions>
+            ) : null
+          }
+        />
+      ) : (
+        <View style={styles.summaryDeskHead}>
+          <Text style={styles.summaryDeskTitle} numberOfLines={1}>
+            {poRefLabel}
+          </Text>
+          {onEdit ? (
+            <Pressable
+              onPress={onEdit}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Edit error"
+            >
+              <Text style={styles.summaryDeskEdit}>Edit</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      )}
+      <ScrollView
+        style={styles.pageBody}
+        contentContainerStyle={[
+          styles.pageScrollFeed,
+          !isMobile && styles.summaryDeskScroll,
+          { paddingBottom: isMobile ? 16 + mobileTabBarReserve() + mobileSafeBottom() : 40 },
+        ]}
+      >
+        <ErrorSubmitSummary
+          po={po}
+          destLot={destLot}
+          errorType={review.errorType}
+          errorAmount={review.errorAmount}
+          errorNote={review.note}
+          lineEdits={lineEdits}
+          photos={photos}
+        />
+      </ScrollView>
+    </View>
   );
 }
 
@@ -393,14 +495,14 @@ function PoLineItemsBlock({ lines, buyCatalog, po, photoUri }) {
   );
 }
 
-function CaptureTopBar({ segments, onBack, trailing, overlay = false }) {
+function CaptureTopBar({ segments, onBack, trailing, overlay = false, flushTop = true }) {
   return (
     <View
       style={[styles.captureTopShell, overlay && styles.captureTopOverlay]}
       pointerEvents="box-none"
     >
       <MobileFeedTopBar
-        flushTop
+        flushTop={flushTop}
         segments={segments}
         onBrandPress={onBack}
         trailing={trailing}
@@ -1161,18 +1263,37 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
         return;
       }
       const poId = result.item?.id || po.id;
+      let photoWarning = '';
       if (saveError) {
-        const images = photos.length ? await uploadTriageErrorPhotos(photos, poId) : [];
+        let images = [];
+        if (photos.length) {
+          try {
+            images = await uploadTriageErrorPhotos(photos, poId);
+          } catch (err) {
+            photoWarning = err?.message || 'Photos could not be uploaded.';
+          }
+        }
+        const store = result.item?.originStoreName || result.item?.storeName || po.storeName;
         saveTriagePoReview(
           poId,
-          { note, errorType, errorAmount: formatErrorAmount(amount), images, lineEdits },
+          {
+            note,
+            errorType,
+            errorAmount: formatErrorAmount(amount),
+            images,
+            lineEdits,
+            errorStore: store,
+          },
           editor,
         );
       }
       persistTransferWorkflowNow().catch(() => {});
       const label = po.reference || `PO#${normalizePoNumber(poInput) || po.id}`;
       const lotName = result.lot?.id || lotFromPo(po).id;
-      setToast({ id: Date.now(), label: `${label} added to ${lotName}` });
+      setToast({
+        id: Date.now(),
+        label: photoWarning ? `${label} saved to ${lotName}. ${photoWarning}` : `${label} added to ${lotName}`,
+      });
       nextPo();
     } catch (err) {
       setResultError(err?.message || 'Could not add this PO to a lot.');
@@ -2694,21 +2815,59 @@ const styles = StyleSheet.create({
   summaryMuted: {
     color: MOBILE.secondary,
   },
-  summaryBlockRow: {
-    alignItems: 'flex-start',
-  },
-  summaryPhotoRow: {
+  summaryDeskHead: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 4,
-    marginHorizontal: MOBILE_FILTER_INSET,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    width: '100%',
+    maxWidth: 472,
+    alignSelf: 'center',
+    paddingHorizontal: MOBILE_FILTER_INSET,
+    paddingTop: 8,
+    paddingBottom: 4,
   },
-  summaryPhoto: {
-    width: 72,
-    height: 72,
-    borderRadius: 10,
-    backgroundColor: '#eee',
+  summaryDeskTitle: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: FONT,
+    fontSize: 22,
+    fontWeight: '600',
+    letterSpacing: -0.4,
+    color: MOBILE.label,
+  },
+  summaryDeskEdit: {
+    fontFamily: FONT,
+    fontSize: 17,
+    fontWeight: '600',
+    color: MOBILE.blue,
+  },
+  summaryDeskScroll: {
+    width: '100%',
+    maxWidth: 472,
+    alignSelf: 'center',
+  },
+  errorSummaryBox: {
+    justifyContent: 'center',
+  },
+  errorSummaryValue: {
+    fontFamily: FONT,
+    fontSize: 20,
+    fontWeight: '500',
+    letterSpacing: -0.41,
+    color: MOBILE.label,
+    fontVariant: ['tabular-nums'],
+  },
+  errorSummaryNote: {
+    fontFamily: FONT,
+    fontSize: 17,
+    lineHeight: 22,
+    letterSpacing: -0.41,
+    color: MOBILE.label,
+  },
+  errorPhotoPad: {
+    paddingHorizontal: 16,
+    paddingVertical: 16,
   },
   feedList: {
     marginTop: 8,
