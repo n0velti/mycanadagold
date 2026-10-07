@@ -370,10 +370,6 @@ class ScreenBoundary extends Component {
     return { failed: true };
   }
 
-  componentDidMount() {
-    this.clearReloadFlag();
-  }
-
   componentDidUpdate(prevProps) {
     if (this.state.failed && prevProps.resetKey !== this.props.resetKey) {
       this.setState({ failed: false });
@@ -394,6 +390,9 @@ class ScreenBoundary extends Component {
   }
 
   clearReloadFlag() {
+    // Only after a committed successful screen. Clearing on mount used to run
+    // while Suspense still showed the fallback; the lazy screen then threw,
+    // we reloaded, cgold-open-tool restored the same app, and the tab looped.
     if (this.state.failed || Platform.OS !== 'web') return;
     try {
       sessionStorage.removeItem('cgold-screen-reload');
