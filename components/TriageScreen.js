@@ -9,7 +9,7 @@ import TriageDeletedPanel from './TriageDeletedPanel';
 import TriageInsightsPanel from './TriageInsightsPanel';
 import { canViewTriageInsights } from '../lib/permissions';
 import HomeDatePicker from './HomeDatePicker';
-import { BarButton, ChromeBackRow, FONT, SearchField, SegmentedSlider, T } from './TriageKit';
+import { BarButton, ChromeBackRow, FONT, SearchField, SegmentedSlider, T, TriageErrorBoundary } from './TriageKit';
 import {
   MobileFeedAddButton,
   MobileFeedDateButton,
@@ -581,13 +581,16 @@ export default function TriageScreen({
 
   if (showStoreInsights) {
     return (
-      <View style={[styles.body, styles.bodyEmbedded, isMobile && styles.bodyMobile]}>
-        <TriageInsightsPanel session={session} storeFilter={storeFilter} onRequireLogin={onRequireLogin} />
-      </View>
+      <TriageErrorBoundary>
+        <View style={[styles.body, styles.bodyEmbedded, isMobile && styles.bodyMobile]}>
+          <TriageInsightsPanel session={session} storeFilter={storeFilter} onRequireLogin={onRequireLogin} />
+        </View>
+      </TriageErrorBoundary>
     );
   }
 
   return (
+    <TriageErrorBoundary>
     <View
       ref={screenRootRef}
       style={[
@@ -679,6 +682,7 @@ export default function TriageScreen({
       />
 
     </View>
+    </TriageErrorBoundary>
   );
 }
 
