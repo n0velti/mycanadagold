@@ -39,9 +39,10 @@ export function openPreviewUrl(url) {
 }
 
 /**
- * What the screen says. "Baking" until a preview exists, then a green
- * "View" (even while the agent keeps working), "Done" for a run with no
- * deployment, "Error" on failure. Idle shows a plain TV outline.
+ * What the screen says. "Baking" while the agent writes the change and
+ * Vercel builds it, then a green "View" once the finished run's deployment
+ * is live, "Done" for a run with no deployment, "Error" on failure. Idle
+ * shows a plain TV outline.
  */
 function screenTone(build) {
   const status = build?.status || 'idle';
@@ -66,7 +67,7 @@ export function AgentPreviewTv({ build, onPress, onOpenPreview }) {
   const pct = status === 'baking' ? Math.max(0, Math.min(100, Number(build?.progressPct) || 0)) : 0;
 
   useEffect(() => {
-    if (status !== 'baking' || hasPreview) {
+    if (status !== 'baking') {
       pulse.stopAnimation();
       pulse.setValue(1);
       return undefined;
@@ -79,7 +80,7 @@ export function AgentPreviewTv({ build, onPress, onOpenPreview }) {
     );
     loop.start();
     return () => loop.stop();
-  }, [hasPreview, pulse, status]);
+  }, [pulse, status]);
 
   useEffect(() => {
     Animated.timing(fill, {
@@ -215,7 +216,7 @@ export function AgentPublishSheet({ visible, build, isMobile, onClose, onConfirm
 export function AgentPreviewSheet({ visible, build, isMobile, onClose, onRefresh, refreshing }) {
   const status = build?.status || 'idle';
   const tone = screenTone(build);
-  const canOpen = (status === 'ready' || status === 'baking') && Boolean(build?.previewUrl);
+  const canOpen = buildHasPreview(build);
   return (
     <Modal visible={visible} transparent animationType={isMobile ? 'slide' : 'fade'} onRequestClose={onClose}>
       <View style={[styles.sheetRoot, !isMobile && styles.sheetRootDesktop]}>
@@ -255,9 +256,7 @@ export function AgentPreviewSheet({ visible, build, isMobile, onClose, onRefresh
               accessibilityLabel="Open preview"
             >
               <Ionicons name="open-outline" size={18} color="#fff" />
-              <Text style={styles.primaryButtonText}>
-                {status === 'baking' ? 'Open preview so far' : 'Open preview'}
-              </Text>
+              <Text style={styles.primaryButtonText}>Open preview</Text>
             </Pressable>
           ) : null}
           {status === 'baking' && build?.syncWarning ? (

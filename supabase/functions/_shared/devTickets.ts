@@ -141,7 +141,18 @@ export type VercelDeployment = {
   none: boolean;
 };
 
-export async function vercelDeployment(branch: string): Promise<VercelDeployment> {
+/**
+ * Narrow the branch's deployments to the ones that can be "the" preview for
+ * a run. `commitSha` keeps only deployments of that commit; `since` (ms)
+ * keeps only deployments created after the run started. With neither, the
+ * newest deployment on the branch wins.
+ */
+export type VercelDeploymentMatch = { commitSha?: string; since?: number };
+
+export async function vercelDeployment(
+  branch: string,
+  match: VercelDeploymentMatch = {},
+): Promise<VercelDeployment> {
   const empty: VercelDeployment = { readyUrl: '', latestUrl: '', latestState: '', none: true };
   const token = env('VERCEL_TOKEN');
   const projectId = env('VERCEL_PROJECT_ID');
@@ -164,7 +175,16 @@ export async function vercelDeployment(branch: string): Promise<VercelDeployment
     url?: string;
     readyState?: string;
     state?: string;
-    meta?: { githubCommitRef?: string; gitlabCommitRef?: string; bitbucketCommitRef?: string };
+    created?: number;
+    createdAt?: number;
+    meta?: {
+      githubCommitRef?: string;
+      gitlabCommitRef?: string;
+      bitbucketCommitRef?: string;
+      githubCommitSha?: string;
+      gitlabCommitSha?: string;
+      bitbucketCommitSha?: string;
+    };
   };
   const all = Array.isArray((payload as { deployments?: unknown[] }).deployments)
     ? (payload as { deployments: DeploymentRow[] }).deployments
@@ -172,7 +192,17 @@ export async function vercelDeployment(branch: string): Promise<VercelDeployment
   // Belt and braces: never hand back a deployment from another branch.
   const refOf = (row: DeploymentRow) =>
     String(row.meta?.githubCommitRef || row.meta?.gitlabCommitRef || row.meta?.bitbucketCommitRef || '');
-  const deployments = all.filter((row) => !refOf(row) || refOf(row) === branch);
+  const shaOf = (row: DeploymentRow) =>
+    String(row.meta?.githubCommitSha || row.meta?.gitlabCommitSha || row.meta?.bitbucketCommitSha || '').toLowerCase();
+  const createdOf = (row: DeploymentRow) => Number(row.createdAt || row.created || 0);
+  const wantSha = String(match.commitSha || '').toLowerCase();
+  const since = Number(match.since || 0);
+  const deployments = all.filter((row) => {
+    if (refOf(row) && refOf(row) !== branch) return false;
+    if (wantSha && shaOf(row) !== wantSha) return false;
+    if (since && createdOf(row) && createdOf(row) < since) return false;
+    return true;
+  });
   if (!deployments.length) return empty;
   const stateOf = (row: { readyState?: string; state?: string }) =>
     String(row.readyState || row.state || '').toUpperCase();
@@ -220,6 +250,31 @@ async function githubJson(path: string, init: RequestInit = {}): Promise<Record<
     throw new Error(message);
   }
   return payload as Record<string, unknown>;
+}
+
+function parseGithubRepo(repoUrl: string): { owner: string; repo: string } | null {
+  const match = String(repoUrl || '').match(/github\.com[/:]([^/]+)\/([^/#?]+?)(?:\.git)?\/?$/i);
+  if (!match) return null;
+  return { owner: match[1], repo: match[2] };
+}
+
+/**
+ * Commit the branch currently points at, or '' when GitHub is not
+ * configured / reachable or the repo is not on GitHub. Used to make sure a
+ * preview deployment really is the agent's final push and not an older one.
+ */
+export async function githubBranchHeadSha(repoUrl: string, branch: string): Promise<string> {
+  const parsed = parseGithubRepo(repoUrl);
+  if (!parsed || !branch || !env('GITHUB_TOKEN')) return '';
+  try {
+    // Agent branches look like cursor/foo-1a2b; GitHub wants the slash kept.
+    const path = branch.split('/').map(encodeURIComponent).join('/');
+    const payload = await githubJson(`/repos/${parsed.owner}/${parsed.repo}/branches/${path}`);
+    const commit = (payload.commit || {}) as { sha?: string };
+    return String(commit.sha || '').toLowerCase();
+  } catch {
+    return '';
+  }
 }
 
 async function syncAgent(ticket: TicketRow): Promise<TicketRow> {

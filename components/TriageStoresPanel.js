@@ -73,7 +73,7 @@ function HomeLikeRule({ last, header = false }) {
   return <View pointerEvents="none" style={[styles.homeRule, header && styles.homeRuleHeader]} />;
 }
 
-function HomeLikeTableHeader({ storeLabel, countLabel, valueLabel }) {
+function HomeLikeTableHeader({ storeLabel, countLabel, valueLabel, hideAmount = false }) {
   const isMobile = useIsMobile();
   return (
     <View style={[styles.homeRow, styles.homeHeaderRow, isMobile && styles.homeRowMobile]}>
@@ -90,14 +90,16 @@ function HomeLikeTableHeader({ storeLabel, countLabel, valueLabel }) {
             {countLabel}
           </Text>
         </View>
-        <View style={[styles.homeColMoney, isMobile && styles.homeColMoneyMobile]}>
-          <Text
-            style={[styles.homeHeader, styles.homeHeaderEnd, isMobile && styles.homeHeaderMobile]}
-            numberOfLines={1}
-          >
-            {valueLabel}
-          </Text>
-        </View>
+        {hideAmount ? null : (
+          <View style={[styles.homeColMoney, isMobile && styles.homeColMoneyMobile]}>
+            <Text
+              style={[styles.homeHeader, styles.homeHeaderEnd, isMobile && styles.homeHeaderMobile]}
+              numberOfLines={1}
+            >
+              {valueLabel}
+            </Text>
+          </View>
+        )}
         <View style={[styles.homeChevron, isMobile && styles.homeChevronMobile]} />
       </View>
     </View>
@@ -163,6 +165,7 @@ function HomeLikeRow({
   countLabel,
   countTypes,
   amount,
+  hideAmount = false,
   storeName,
   last,
   onPress,
@@ -195,14 +198,16 @@ function HomeLikeRow({
           onOpenChange={setTipOpen}
         />
       </View>
-      <View style={[styles.homeColMoney, isMobile && styles.homeColMoneyMobile]}>
-        <Text
-          style={[styles.homeMoney, isMobile && styles.homeMoneyMobile, !amount && styles.homeMoneyEmpty]}
-          numberOfLines={1}
-        >
-          {amount ? formatAmount(amount) : '—'}
-        </Text>
-      </View>
+      {hideAmount ? null : (
+        <View style={[styles.homeColMoney, isMobile && styles.homeColMoneyMobile]}>
+          <Text
+            style={[styles.homeMoney, isMobile && styles.homeMoneyMobile, !amount && styles.homeMoneyEmpty]}
+            numberOfLines={1}
+          >
+            {amount ? formatAmount(amount) : '—'}
+          </Text>
+        </View>
+      )}
       <View style={[styles.homeChevron, isMobile && styles.homeChevronMobile]}>
         {onPress ? <Ionicons name="chevron-forward" size={isMobile ? 12 : 14} color="#c7c7cc" /> : null}
       </View>
@@ -260,7 +265,7 @@ function HomeLikeRow({
   );
 }
 
-function HomeLikeTotalRow({ label, count, amount }) {
+function HomeLikeTotalRow({ label, count, amount, hideAmount = false }) {
   const isMobile = useIsMobile();
   return (
     <View style={[styles.homeRow, styles.homeTotalRow, isMobile && styles.homeRowMobile]}>
@@ -276,11 +281,13 @@ function HomeLikeTotalRow({ label, count, amount }) {
             {count || '—'}
           </Text>
         </View>
-        <View style={[styles.homeColMoney, isMobile && styles.homeColMoneyMobile]}>
-          <Text style={[styles.homeMoney, styles.homeTotalLabel, isMobile && styles.homeMoneyMobile]}>
-            {amount ? formatAmount(amount) : '—'}
-          </Text>
-        </View>
+        {hideAmount ? null : (
+          <View style={[styles.homeColMoney, isMobile && styles.homeColMoneyMobile]}>
+            <Text style={[styles.homeMoney, styles.homeTotalLabel, isMobile && styles.homeMoneyMobile]}>
+              {amount ? formatAmount(amount) : '—'}
+            </Text>
+          </View>
+        )}
         <View style={[styles.homeChevron, isMobile && styles.homeChevronMobile]} />
       </View>
     </View>
@@ -661,7 +668,7 @@ function StoreListPage({ stores, query, onOpen, month }) {
   return (
     <ChromePage
       filterPad={false}
-      tableHeader={<HomeLikeTableHeader storeLabel="Store" countLabel="Errors" valueLabel="Value" />}
+      tableHeader={<HomeLikeTableHeader storeLabel="Store" countLabel="Errors" hideAmount />}
       title=""
       data={items}
       extraData={`${month?.startDate || ''}:${month?.endDate || ''}|${storeRows
@@ -683,13 +690,13 @@ function StoreListPage({ stores, query, onOpen, month }) {
                 : 'No errors'
             }
             count={item.row.count}
-            amount={item.row.amount}
+            hideAmount
             last={item.last}
             onPress={() => onOpen(item.row.store)}
           />
         )
       }
-      footer={storeRows.length ? <HomeLikeTotalRow label="Total" count={totals.count} amount={totals.amount} /> : null}
+      footer={storeRows.length ? <HomeLikeTotalRow label="Total" count={totals.count} hideAmount /> : null}
     >
       {storeRows.length ? null : (
         <Text style={styles.emptyCopy}>

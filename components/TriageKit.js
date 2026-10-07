@@ -7,6 +7,7 @@
  */
 import { Component, memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Animated,
   Easing,
@@ -1057,6 +1058,7 @@ export const ChromeListRow = memo(function ChromeListRow({
   chevron = true,
   trailing,
   extra,
+  loading = false,
 }) {
   const isMobile = useIsMobile();
   const iconTile = leading || (
@@ -1088,7 +1090,7 @@ export const ChromeListRow = memo(function ChromeListRow({
         (hovered || pressed) && onPress && styles.chromeRowHover,
       ]}
       accessibilityRole={onPress ? 'button' : undefined}
-      accessibilityLabel={value ? `${title}, ${value}` : title}
+      accessibilityLabel={loading ? `${title}, loading` : value ? `${title}, ${value}` : title}
       {...(Platform.OS === 'web' && onPress ? { className: 'cgold-triage-btn' } : null)}
     >
       {iconNode}
@@ -1112,11 +1114,14 @@ export const ChromeListRow = memo(function ChromeListRow({
                   </Text>
                 ) : null}
               </View>
-              {value != null && value !== '' ? (
+              {loading || (value != null && value !== '') ? (
                 <View style={styles.chromeRowTrailingMobile}>
-                  <Text style={styles.chromeRowValueMobile} numberOfLines={1}>
-                    {value}
-                  </Text>
+                  {value != null && value !== '' ? (
+                    <Text style={styles.chromeRowValueMobile} numberOfLines={1}>
+                      {value}
+                    </Text>
+                  ) : null}
+                  {loading ? <ActivityIndicator size="small" color={T.secondary} /> : null}
                 </View>
               ) : null}
               {trailing}
@@ -1137,10 +1142,17 @@ export const ChromeListRow = memo(function ChromeListRow({
               ) : null}
               {extra}
             </View>
-            {value != null && value !== '' ? (
-              <Text style={styles.chromeRowValue} numberOfLines={1}>
-                {value}
-              </Text>
+            {loading || (value != null && value !== '') ? (
+              <View style={styles.chromeRowTrailingLoad}>
+                {value != null && value !== '' ? (
+                  <Text style={styles.chromeRowValue} numberOfLines={1}>
+                    {value}
+                  </Text>
+                ) : null}
+                {loading ? (
+                  <ActivityIndicator size="small" color={T.secondary} style={styles.chromeRowValueSpinner} />
+                ) : null}
+              </View>
             ) : null}
             {trailing}
             {chevronNode}
@@ -1300,11 +1312,12 @@ export function ChromePage({
 
 export function SearchField({ value, onChangeText, placeholder = 'Search', style, autoFocus, size }) {
   const large = size === 'lg';
+  const compact = size === 'sm';
   return (
-    <View style={[styles.search, large && styles.searchLg, style]}>
-      <Ionicons name="search" size={large ? 18 : 15} color={T.secondary} />
+    <View style={[styles.search, large && styles.searchLg, compact && styles.searchSm, style]}>
+      <Ionicons name="search" size={large ? 18 : compact ? 15 : 15} color={T.secondary} />
       <TextInput
-        style={[styles.searchInput, large && styles.searchInputLg]}
+        style={[styles.searchInput, large && styles.searchInputLg, compact && styles.searchInputSm]}
         value={value}
         onChangeText={onChangeText}
         placeholder={placeholder}
@@ -2198,6 +2211,12 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     gap: 8,
   },
+  searchSm: {
+    minHeight: 32,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    gap: 6,
+  },
   searchInput: {
     flex: 1,
     minWidth: 0,
@@ -2210,6 +2229,10 @@ const styles = StyleSheet.create({
   searchInputLg: {
     fontSize: 16,
     paddingVertical: 10,
+  },
+  searchInputSm: {
+    fontSize: 15,
+    paddingVertical: 4,
   },
   mobileCam: {
     width: 48,
@@ -2694,8 +2717,10 @@ const styles = StyleSheet.create({
     width: 108,
     maxWidth: '46%',
     flexShrink: 0,
-    alignItems: 'flex-end',
-    justifyContent: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 8,
   },
   chromeRowValueMobile: {
     fontFamily: FONT,
@@ -3022,6 +3047,15 @@ const styles = StyleSheet.create({
     color: '#1a1a1a',
     fontVariant: ['tabular-nums'],
     flexShrink: 0,
+  },
+  chromeRowTrailingLoad: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 0,
+  },
+  chromeRowValueSpinner: {
+    marginRight: 2,
   },
   chromeRowChevron: {
     width: 18,

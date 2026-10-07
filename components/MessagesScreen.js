@@ -1467,6 +1467,7 @@ export default function MessagesScreen({
         };
         setMessages((current) => mergeSentMessage(current, localKey, tempId, sentMessage));
         // The TV switches to "Baking" right away; the proxy answer replaces this.
+        // Drop the previous run's preview: it is the app before this message.
         const previousBuild = agentBuildsRef.current[conversationId] || null;
         if (!saved.localOnly) {
           setAgentBuilds((current) => ({
@@ -1474,6 +1475,9 @@ export default function MessagesScreen({
             [conversationId]: {
               ...(previousBuild || bakingBuild(conversationId, myId)),
               status: 'baking',
+              previewUrl: '',
+              progressNote: 'Sending to the agent',
+              progressPct: 0,
               error: '',
               localOnly: true,
             },

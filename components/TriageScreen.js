@@ -8,11 +8,9 @@ import TriageDashboardPanel from './TriageDashboardPanel';
 import TriageDeletedPanel from './TriageDeletedPanel';
 import TriageInsightsPanel from './TriageInsightsPanel';
 import { canViewTriageInsights } from '../lib/permissions';
-import HomeDatePicker from './HomeDatePicker';
 import { BarButton, ChromeBackRow, FONT, SearchField, SegmentedSlider, T, TriageErrorBoundary } from './TriageKit';
 import {
   MobileFeedAddButton,
-  MobileFeedDateButton,
   MobileFeedTopBarActions,
 } from './MobileChrome';
 import { ensureLinkedPosSessions } from '../lib/auth';
@@ -26,8 +24,6 @@ import {
   useDailyReceipts,
 } from '../lib/triageDailyReceipts';
 import { syncTransferWorkflowRemote } from '../lib/transferWorkflow';
-import { useAppDate } from '../lib/appDate';
-import { errorPeriodFromDates } from '../lib/triageStoreErrors';
 
 if (Platform.OS === 'web' && typeof document !== 'undefined') {
   const styleId = 'cgold-triage-row-hover';
@@ -54,6 +50,7 @@ export function clearTriageCache() {}
 
 const DASH_PAGE_LABELS = {
   errors: 'Errors',
+  analytics: 'Analytics',
   stores: 'Stores',
   shipments: 'Transfers',
   lots: 'Lots',
@@ -62,6 +59,7 @@ const DASH_PAGE_LABELS = {
 
 function triagePageTitle({ dashPage, activeTab, resultsLotId, storesView }) {
   if (dashPage === 'errors') return 'Errors';
+  if (dashPage === 'analytics') return 'Analytics';
   if (dashPage === 'stores') return storesView?.selectedStore || 'Stores';
   if (dashPage === 'shipments') return 'Transfers';
   if (dashPage === 'lots') return 'Lots';
@@ -135,16 +133,6 @@ export default function TriageScreen({
   const [activeTab, setActiveTab] = useState('transfers');
   const [dashPage, setDashPage] = useState('');
   const [storesView, setStoresView] = useState({ selectedStore: '' });
-  const appDate = useAppDate();
-  const storePeriod = useMemo(
-    () =>
-      errorPeriodFromDates(
-        appDate.startDate,
-        appDate.endDate,
-        appDate.mode === 'range' ? 'range' : appDate.mode === 'day' ? 'day' : 'month',
-      ),
-    [appDate.endDate, appDate.generation, appDate.mode, appDate.startDate],
-  );
   const storesNavRef = useRef({ closeStore() {} });
   const [accuracyTab, setAccuracyTab] = useState('all');
   const [accuracyStats, setAccuracyStats] = useState({ correct: 0, incorrect: 0, total: 0, lots: 0, ratio: '0/0', percent: 0 });
@@ -161,8 +149,6 @@ export default function TriageScreen({
   const leaveStoreRef = useRef(null);
   const screenRootRef = useRef(null);
   const openScanRef = useRef(() => {});
-  const triageDateOpenRef = useRef(null);
-  const triageDateAnchorRef = useRef(null);
   const onStoreBackChangeRef = useRef(onStoreBackChange);
   onStoreBackChangeRef.current = onStoreBackChange;
 
@@ -245,7 +231,9 @@ export default function TriageScreen({
               ? 'Lot / store'
             : activeTab === 'deleted'
               ? 'PO / store'
-              : 'PO / SO'
+              : !dashPage && !storesView.selectedStore
+                ? 'Store'
+                : 'PO / SO'
       }
       size={isMobile ? 'lg' : undefined}
       style={[styles.tabSearch, isMobile && styles.tabSearchMobile]}
@@ -263,10 +251,13 @@ export default function TriageScreen({
   const trailing =
     session?.token && activeTab === 'transfers' && !inBatch && dashPage === 'stores' ? (
       null
-    ) : session?.token && activeTab === 'transfers' && !inBatch && (dashPage === 'errors' || dashPage === 'lots') ? (
+    ) : session?.token && activeTab === 'transfers' && !inBatch && (dashPage === 'errors' || dashPage === 'lots' || dashPage === 'analytics') ? (
       searchField
     ) : session?.token && activeTab === 'transfers' && !inBatch ? (
-      scanButton()
+      <>
+        {searchField}
+        {scanButton()}
+      </>
     ) : session?.token && inBatch ? (
       <>
         <ChromeStats
@@ -328,7 +319,7 @@ export default function TriageScreen({
     canLeaveStore ||
     activeTab !== 'transfers' ||
     Boolean(dashPage) ||
-    Boolean(storesView.selectedRegion);
+    Boolean(storesView.selectedStore || storesView.selectedRegion);
   const pageTitle = triagePageTitle({ dashPage, activeTab, resultsLotId, storesView });
 
   const goBack = useCallback(() => {
@@ -362,13 +353,13 @@ export default function TriageScreen({
     resultsLotId || activeTab === 'accuracy'
       ? 'Lots'
       : activeTab === 'deleted'
-        ? storesView.selectedRegionLabel || 'Triage'
+        ? storesView.selectedStore || storesView.selectedRegionLabel || 'Triage'
         : dashPage === 'stores' && storesView.selectedStore
           ? 'Stores'
           : dashPage
-            ? storesView.selectedRegionLabel || 'Regions'
-            : storesView.selectedRegion
-              ? 'Regions'
+            ? storesView.selectedStore || storesView.selectedRegionLabel || 'Stores'
+            : storesView.selectedStore || storesView.selectedRegion
+              ? 'Stores'
               : 'Back';
 
   const goDashboard = useCallback(() => {
@@ -473,7 +464,11 @@ export default function TriageScreen({
   useEffect(() => () => onCrumbsChange?.([]), [onCrumbsChange]);
 
   useEffect(() => {
-    if (dashPage && dashPage !== 'lots' && dashPage !== 'errors') {
+    if (storesView.selectedStore) setListQuery('');
+  }, [storesView.selectedStore]);
+
+  useEffect(() => {
+    if (dashPage && dashPage !== 'lots' && dashPage !== 'errors' && dashPage !== 'analytics') {
       setDashPage('');
     }
     if (activeTab === 'deleted') {
@@ -512,56 +507,35 @@ export default function TriageScreen({
     expandMobileTabBar();
   }, []);
 
-  useEffect(() => {
-    if (embedded) return undefined;
-    return () => appDate.resetToToday();
-  }, [appDate.resetToToday, embedded]);
-
-  const triageDateActive =
-    appDate.mode === 'range' || (appDate.mode === 'day' && !appDate.isToday);
-  const openTriageDatePicker = useCallback(() => {
-    expandMobileTabBar();
-    triageDateOpenRef.current?.({ range: appDate.mode === 'range' });
-  }, [appDate.mode]);
+  const onTriageHome =
+    Boolean(session?.token) &&
+    activeTab === 'transfers' &&
+    !inBatch &&
+    !dashPage &&
+    !storesView.selectedStore;
 
   const mobileTopBarTrailing = useMemo(
-    () => (
-      <MobileFeedTopBarActions>
-        <View ref={triageDateAnchorRef} collapsable={false} style={{ flexShrink: 1, minWidth: 0 }}>
-          <MobileFeedDateButton
-            label={appDate.label}
-            active={triageDateActive}
-            onPress={openTriageDatePicker}
-          />
-          <HomeDatePicker
-            startDate={appDate.startDate}
-            endDate={appDate.endDate}
-            dateMode={appDate.mode}
-            onChange={appDate.applyPicker}
-            maximumDate={new Date()}
-            hideField
-            openRef={triageDateOpenRef}
-            anchorRef={triageDateAnchorRef}
-          />
-        </View>
-        {canAdd ? (
-          <MobileFeedAddButton
-            onPress={() => openScanRef.current()}
-            accessibilityLabel="Add a PO"
-          />
-        ) : null}
-      </MobileFeedTopBarActions>
-    ),
-    [
-      appDate.applyPicker,
-      appDate.endDate,
-      appDate.label,
-      appDate.mode,
-      appDate.startDate,
-      canAdd,
-      openTriageDatePicker,
-      triageDateActive,
-    ],
+    () =>
+      canAdd || onTriageHome ? (
+        <MobileFeedTopBarActions>
+          {onTriageHome ? (
+            <SearchField
+              value={listQuery}
+              onChangeText={setListQuery}
+              placeholder="Store"
+              size="sm"
+              style={styles.homeStoreSearch}
+            />
+          ) : null}
+          {canAdd ? (
+            <MobileFeedAddButton
+              onPress={() => openScanRef.current()}
+              accessibilityLabel="Add a PO"
+            />
+          ) : null}
+        </MobileFeedTopBarActions>
+      ) : null,
+    [canAdd, listQuery, onTriageHome],
   );
 
   useEffect(() => {
@@ -623,7 +597,6 @@ export default function TriageScreen({
           onBackChange={handleBackChange}
           onStoresViewChange={setStoresView}
           storesNavRef={storesNavRef}
-          storePeriod={storePeriod}
           onOpenLot={(lotId) => {
             setDashPage('');
             setActiveTab('accuracy');
@@ -658,6 +631,7 @@ export default function TriageScreen({
           session={session}
           query={listQuery}
           regionKey={storesView.selectedRegion}
+          storeName={storesView.selectedStore}
         />
       ) : null}
       </View>
@@ -706,6 +680,13 @@ const styles = StyleSheet.create({
   tabSearch: {
     width: 220,
     maxWidth: 220,
+  },
+  homeStoreSearch: {
+    width: 148,
+    maxWidth: 168,
+    minWidth: 112,
+    flexGrow: 1,
+    flexShrink: 1,
   },
   tabSlider: {
     minWidth: 220,

@@ -4,6 +4,8 @@ import { Ionicons } from '@expo/vector-icons';
 import {
   applyTriageReviewToPo,
   collectAllTriagePos,
+  deleteTriageDocument,
+  persistTransferWorkflowNow,
   saveTriagePoReview,
   triageEditorFromSession,
   triagePoNeedsCorrection,
@@ -18,7 +20,7 @@ import {
   summarizeLotFineMetals,
   summarizeLotsFineMetals,
 } from '../lib/triageLots';
-import { MAX_REVIEW_IMAGES, normalizeReviewImages } from '../lib/triageDraft';
+import { formatLineErrorSummary, MAX_REVIEW_IMAGES, normalizeReviewImages } from '../lib/triageDraft';
 import { captureTriagePhoto } from './TriageCorrectionImages';
 import {
   ColumnFilter,
@@ -26,7 +28,10 @@ import {
   PoThumb,
   selectedLabels,
   sortRows,
+  TableActions,
+  TableActionsHead,
   TableCell,
+  TableDeleteButton,
   TableEmpty,
   TableFrame,
   TablePhotoCell,
@@ -51,6 +56,7 @@ import {
   T,
   TextAction,
   TriageDrawer,
+  confirmDestructive,
 } from './TriageKit';
 import { useIsMobile } from '../lib/mobileUi';
 
@@ -100,10 +106,8 @@ function errorDetailParts(review) {
   const amount = String(review?.errorAmount || '').trim();
   const edits = (Array.isArray(review?.lineEdits) ? review.lineEdits : [])
     .map((line) => {
-      const name = String(line?.name || 'Line').trim();
-      const was = String(line?.originalAmount || '').trim() || '—';
-      const now = String(line?.amount || '').trim() || '—';
-      return `${name}: ${was} → ${now}`;
+      const detail = formatLineErrorSummary(line);
+      return detail ? `${String(line?.name || 'Item').trim()}: ${detail}` : '';
     })
     .filter(Boolean);
   const photos = normalizeReviewImages(review?.images);
@@ -293,7 +297,7 @@ const LotTableRow = memo(function LotTableRow({ lot, last, onOpen }) {
   );
 });
 
-const AccuracyTableRow = memo(function AccuracyTableRow({ row, last, showError, showAll, onOpen }) {
+const AccuracyTableRow = memo(function AccuracyTableRow({ row, last, showError, showAll, onOpen, onDelete }) {
   const detail = errorDetailParts(row.review);
   const flagged = triagePoNeedsCorrection(row);
   const summary = showError || (showAll && flagged) ? errorDetailSummary(row.review) : '';
@@ -332,6 +336,20 @@ const AccuracyTableRow = memo(function AccuracyTableRow({ row, last, showError, 
           </TableCell>
         )}
       </TableRowMain>
+      {onDelete ? (
+        <TableActions>
+          <TableDeleteButton
+            label={`Delete ${row.reference || 'document'}`}
+            onPress={() =>
+              confirmDestructive(
+                'Delete PO',
+                `Remove ${row.reference || 'this document'} from this lot?`,
+                () => onDelete(row),
+              )
+            }
+          />
+        </TableActions>
+      ) : null}
     </TableRow>
   );
 });
@@ -580,6 +598,16 @@ export default function TriageAccuracyPanel({
     setOpenRow(item);
   }, []);
 
+  const deletePo = useCallback(
+    (row) => {
+      if (!row?.id) return;
+      deleteTriageDocument(row.id, triageEditorFromSession(session)?.name || '');
+      persistTransferWorkflowNow();
+      setOpenRow((current) => (current?.id === row.id ? null : current));
+    },
+    [session],
+  );
+
   const renderRow = useCallback(
     ({ item, index }) => (
       <AccuracyTableRow
@@ -588,9 +616,10 @@ export default function TriageAccuracyPanel({
         showError={showError}
         showAll={showAll}
         onOpen={openFromTable}
+        onDelete={deletePo}
       />
     ),
-    [openFromTable, showAll, showError, visible.length],
+    [deletePo, openFromTable, showAll, showError, visible.length],
   );
 
   const openLotFolder = useCallback(
@@ -928,21 +957,37 @@ export default function TriageAccuracyPanel({
                     accessibilityLabel={`Open ${item.reference || 'document'}`}
                     leading={<PoThumb urls={item.imageUrls} label={item.reference} size={46} />}
                     trailing={
-                      showError || (showAll && flagged) ? (
-                        <MobileCameraButton
-                          count={photos.length}
-                          busy={photoBusyId === item.id}
-                          disabled={atMax && photoBusyId !== item.id}
-                          onPress={() => addPhotoToRow(item)}
-                          accessibilityLabel={
-                            atMax
-                              ? `View photos for ${item.reference}`
-                              : `Take a photo of ${item.reference}`
+                      <View style={styles.mobileTrail}>
+                        {showError || (showAll && flagged) ? (
+                          <MobileCameraButton
+                            count={photos.length}
+                            busy={photoBusyId === item.id}
+                            disabled={atMax && photoBusyId !== item.id}
+                            onPress={() => addPhotoToRow(item)}
+                            accessibilityLabel={
+                              atMax
+                                ? `View photos for ${item.reference}`
+                                : `Take a photo of ${item.reference}`
+                            }
+                          />
+                        ) : (
+                          <StatusPill label="Correct" tone="green" compact />
+                        )}
+                        <Pressable
+                          onPress={() =>
+                            confirmDestructive(
+                              'Delete PO',
+                              `Remove ${item.reference || 'this document'} from this lot?`,
+                              () => deletePo(item),
+                            )
                           }
-                        />
-                      ) : (
-                        <StatusPill label="Correct" tone="green" compact />
-                      )
+                          hitSlop={8}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Delete ${item.reference || 'document'}`}
+                        >
+                          <Ionicons name="trash-outline" size={18} color="#B91C1C" />
+                        </Pressable>
+                      </View>
                     }
                     extra={
                       showError || (showAll && flagged) ? (
@@ -1069,6 +1114,7 @@ export default function TriageAccuracyPanel({
                 {...sortProps('received')}
               />
             )}
+            <TableActionsHead />
           </>
         }
       />
@@ -1184,6 +1230,11 @@ const styles = StyleSheet.create({
     height: 64,
     borderRadius: 8,
     backgroundColor: '#f5f5f5',
+  },
+  mobileTrail: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   mobilePhotoError: {
     fontFamily,

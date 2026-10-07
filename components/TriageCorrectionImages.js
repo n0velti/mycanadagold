@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { encodePickerAsset } from '../lib/imageEncode';
 import { MAX_REVIEW_IMAGES, normalizeReviewImages } from '../lib/triageDraft';
 import { mobileSafeBottom, useIsMobile } from '../lib/mobileUi';
 import { getVideoElement, useWebcam, webcamSupported } from '../lib/webcam';
@@ -54,9 +55,8 @@ function prefersDeviceCamera(isMobile) {
   return /Android|iPhone|iPad|iPod/i.test(ua) || (navigator?.maxTouchPoints || 0) > 1;
 }
 
-function fromAsset(asset) {
-  const mime = asset?.mimeType || 'image/jpeg';
-  const uri = asset?.base64 ? `data:${mime};base64,${asset.base64}` : asset?.uri;
+async function fromAsset(asset) {
+  const uri = await encodePickerAsset(asset);
   return {
     id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     uri,
@@ -74,7 +74,7 @@ export async function captureTriagePhoto() {
       cameraType: ImagePicker.CameraType.back,
     });
     if (result.canceled || !result.assets?.[0]) return { cancelled: true };
-    const image = fromAsset(result.assets[0]);
+    const image = await fromAsset(result.assets[0]);
     if (!image.uri) return { error: 'Could not read that photo.' };
     return { image };
   } catch (err) {
@@ -96,8 +96,12 @@ export async function pickTriagePhotos({ remaining = MAX_REVIEW_IMAGES } = {}) {
     if (result.canceled || !result.assets?.length) return { cancelled: true };
     const images = [];
     for (const asset of result.assets) {
-      const image = fromAsset(asset);
-      if (image.uri) images.push(image);
+      try {
+        const image = await fromAsset(asset);
+        if (image.uri) images.push(image);
+      } catch (err) {
+        return { error: err?.message || 'Could not read those photos.' };
+      }
     }
     if (!images.length) return { error: 'Could not read those photos.' };
     return { images };
