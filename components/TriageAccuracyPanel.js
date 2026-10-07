@@ -13,11 +13,14 @@ import {
   formatFineProgress,
   groupPosIntoLots,
   LOT_FINE_METALS,
+  lotDisplayLabel,
   lotMatchesQuery,
   lotPeriodLabel,
   summarizeLotFineMetals,
   summarizeLotsFineMetals,
 } from '../lib/triageLots';
+import { storeRegionByKey } from '../lib/storeCatalog';
+import { poInRegion } from '../lib/triageStoreErrors';
 import { MAX_REVIEW_IMAGES, normalizeReviewImages } from '../lib/triageDraft';
 import { captureTriagePhoto } from './TriageCorrectionImages';
 import {
@@ -274,7 +277,7 @@ const LotTableRow = memo(function LotTableRow({ lot, last, onOpen }) {
         }
       >
         <TableCell flex={LOT_COL.lot.flex} minWidth={LOT_COL.lot.minWidth}>
-          <TableStrong>{lot.id}</TableStrong>
+          <TableStrong>{lotDisplayLabel(lot)}</TableStrong>
         </TableCell>
         <TableCell flex={LOT_COL.location.flex} minWidth={LOT_COL.location.minWidth}>
           {lot.location}
@@ -347,6 +350,7 @@ export default function TriageAccuracyPanel({
   onOpenLotChange,
   onAccuracyTabChange: _onAccuracyTabChange,
   onBackChange,
+  regionKey = '',
 }) {
   const { triage } = useTransferWorkflow();
   const isMobile = useIsMobile();
@@ -359,12 +363,20 @@ export default function TriageAccuracyPanel({
   const showError = accuracyTab === 'incorrect';
   const showAll = accuracyTab === 'all' || !accuracyTab;
 
-  const allRows = useMemo(() => collectAllTriagePos(triage), [triage]);
+  const allTriageRows = useMemo(() => collectAllTriagePos(triage), [triage]);
+  const region = regionKey ? storeRegionByKey(regionKey) : null;
+  const allRows = useMemo(
+    () => (region ? allTriageRows.filter((row) => poInRegion(row, region.key)) : allTriageRows),
+    [allTriageRows, region],
+  );
   const accuracyRows = useMemo(
     () => allRows.filter((row) => row.evaluated),
     [allRows],
   );
-  const lots = useMemo(() => groupPosIntoLots(accuracyRows, allRows), [accuracyRows, allRows]);
+  const lots = useMemo(
+    () => groupPosIntoLots(accuracyRows, allRows, region ? { region } : undefined),
+    [accuracyRows, allRows, region],
+  );
   const visibleLots = useMemo(
     () => lots.filter((lot) => lotMatchesQuery(lot, listQuery)),
     [listQuery, lots],
@@ -403,7 +415,7 @@ export default function TriageAccuracyPanel({
       onBackChange?.(null, null);
       return undefined;
     }
-    onBackChange?.(closeLot, { dateLabel: openLot.id, storeNames: openLot.location });
+    onBackChange?.(closeLot, { dateLabel: lotDisplayLabel(openLot), storeNames: openLot.location });
     return () => onBackChange?.(null, null);
   }, [closeLot, onBackChange, openLot]);
 
@@ -662,7 +674,7 @@ export default function TriageAccuracyPanel({
       <TriageDrawer
         visible={breakdownOpen}
         onClose={() => onBreakdownOpenChange?.(false)}
-        title={openLot ? openLot.id : 'Lots'}
+        title={openLot ? lotDisplayLabel(openLot) : 'Lots'}
         subtitle={
           lotProgress?.expected
             ? `${lotProgress.evaluated} of ${lotProgress.expected} melt POs · ${stats.incorrect} ${
@@ -783,7 +795,11 @@ export default function TriageAccuracyPanel({
           <EmptyState
             icon="folder-outline"
             title="Results"
-            body="Finish a PO to create its lot. Lots group every PO / SO from the same store and month."
+            body={
+              region
+                ? 'Finish a PO to create its lot. Lots group every PO / SO from every store in this region for the same month.'
+                : 'Finish a PO to create its lot. Lots group every PO / SO from the same store and month.'
+            }
           />,
           'Results',
           '0 lots',
@@ -815,8 +831,8 @@ export default function TriageAccuracyPanel({
                 return (
                   <MobileListRow
                     key={item.id}
-                    title={item.id}
-                    subtitle={[item.location, lotPeriodLabel(item)].filter(Boolean).join(' · ')}
+                    title={lotDisplayLabel(item)}
+                    subtitle={[item.location, item.regionKey ? null : lotPeriodLabel(item)].filter(Boolean).join(' · ')}
                     meta={`${item.pos.length} ${item.pos.length === 1 ? 'PO' : 'POs'}`}
                     last={index === visibleLots.length - 1}
                     onPress={() => openLotFolder(item)}

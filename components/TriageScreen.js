@@ -60,13 +60,13 @@ const DASH_PAGE_LABELS = {
   return: 'Expected Return',
 };
 
-function triagePageTitle({ dashPage, activeTab, resultsLotId, storesView }) {
+function triagePageTitle({ dashPage, activeTab, resultsLotId, storesView, lotLabel }) {
   if (dashPage === 'errors') return 'Errors';
   if (dashPage === 'stores') return storesView?.selectedStore || 'Stores';
   if (dashPage === 'shipments') return 'Transfers';
   if (dashPage === 'lots') return 'Lots';
   if (dashPage === 'return') return 'Expected Return';
-  if (activeTab === 'accuracy') return resultsLotId || 'Results';
+  if (activeTab === 'accuracy') return lotLabel || resultsLotId || 'Results';
   if (activeTab === 'deleted') return 'Deleted';
   return storesView?.selectedRegionLabel || 'Triage';
 }
@@ -242,7 +242,7 @@ export default function TriageScreen({
           : dashPage === 'errors'
             ? 'PO / person / store'
             : dashPage === 'lots'
-              ? 'Lot / store'
+              ? 'Month / store'
             : activeTab === 'deleted'
               ? 'PO / store'
               : 'PO / SO'
@@ -329,7 +329,13 @@ export default function TriageScreen({
     activeTab !== 'transfers' ||
     Boolean(dashPage) ||
     Boolean(storesView.selectedRegion);
-  const pageTitle = triagePageTitle({ dashPage, activeTab, resultsLotId, storesView });
+  const pageTitle = triagePageTitle({
+    dashPage,
+    activeTab,
+    resultsLotId,
+    storesView,
+    lotLabel: batchContext?.dateLabel,
+  });
 
   const goBack = useCallback(() => {
     if (activeTab === 'accuracy' || resultsLotId) {
@@ -438,7 +444,7 @@ export default function TriageScreen({
             }
           : undefined,
       });
-      if (resultsLotId) crumbs.push({ label: resultsLotId });
+      if (resultsLotId) crumbs.push({ label: batchContext?.dateLabel || resultsLotId });
       onCrumbsChange(crumbs);
       return undefined;
     }
@@ -643,6 +649,7 @@ export default function TriageScreen({
           breakdownOpen={accuracyBreakdownOpen}
           onBreakdownOpenChange={setAccuracyBreakdownOpen}
           openLotId={resultsLotId}
+          regionKey={storesView.selectedRegion}
           onOpenLotChange={(id) => {
             setResultsLotId(id || '');
             setListQuery('');
