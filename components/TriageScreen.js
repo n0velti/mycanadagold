@@ -57,7 +57,6 @@ const DASH_PAGE_LABELS = {
   stores: 'Stores',
   shipments: 'Transfers',
   lots: 'Lots',
-  allocation: 'Allocation',
   return: 'Expected Return',
 };
 
@@ -66,7 +65,6 @@ function triagePageTitle({ dashPage, activeTab, resultsLotId, storesView }) {
   if (dashPage === 'stores') return storesView?.selectedStore || 'Stores';
   if (dashPage === 'shipments') return 'Transfers';
   if (dashPage === 'lots') return 'Lots';
-  if (dashPage === 'allocation') return 'Allocation';
   if (dashPage === 'return') return 'Expected Return';
   if (activeTab === 'accuracy') return resultsLotId || 'Results';
   if (activeTab === 'deleted') return 'Deleted';
