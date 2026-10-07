@@ -522,6 +522,19 @@ export default function TriageDashboardPanel({
     );
   }
 
+  const regionHero = (
+    <ChromeHero
+      value={formatAmount(regionSnapshot.totals.amount)}
+      stats={regionSnapshot.regions.map((row) => ({
+        label: row.label,
+        value: String(row.count || 0),
+      }))}
+      accessibilityLabel={`${formatAmount(regionSnapshot.totals.amount)} in errors. ${regionSnapshot.regions
+        .map((row) => `${row.label} ${row.count || 0}`)
+        .join(', ')}`}
+    />
+  );
+
   const regionRows = (
     <>
       {regionSnapshot.regions.map((row, index) => (
@@ -533,16 +546,7 @@ export default function TriageDashboardPanel({
               ? `${row.count} ${row.count === 1 ? 'error' : 'errors'}`
               : 'No errors'
           }
-          value={String(row.count || 0)}
-          trailing={
-            row.amount ? (
-              <Text style={[styles.regionMoney, isMobile && styles.regionMoneyMobile]}>
-                {formatAmount(row.amount)}
-              </Text>
-            ) : (
-              <Text style={[styles.regionMoney, isMobile && styles.regionMoneyMobile, styles.regionMoneyEmpty]}>—</Text>
-            )
-          }
+          value={row.amount ? formatAmount(row.amount) : '—'}
           extra={
             regionSnapshot.totals.amount ? (
               <ProgressBar
@@ -564,13 +568,33 @@ export default function TriageDashboardPanel({
   );
 
   const home = (
-    <ChromePage title={isMobile ? undefined : 'Regions'} filterPad={false} meta={storePeriod.label}>
+    <ChromePage
+      hero={regionHero}
+      title={isMobile ? undefined : 'Regions'}
+      filterPad={false}
+      meta={storePeriod.label}
+    >
       {regionRows}
     </ChromePage>
   );
 
   const regionTools = (
-    <ChromePage title={isMobile ? undefined : regionLabel} filterPad={false} meta={storePeriod.label}>
+    <ChromePage
+      hero={
+        <ChromeHero
+          value={formatAmount(scopedErrors.amount)}
+          stats={[
+            { label: scopedErrors.count === 1 ? 'Error' : 'Errors', value: String(scopedErrors.count) },
+            { label: scopedErrors.stores === 1 ? 'Store' : 'Stores', value: String(scopedErrors.stores) },
+            { label: lotSummary.lots === 1 ? 'Lot' : 'Lots', value: String(lotSummary.lots) },
+          ]}
+          accessibilityLabel={`${regionLabel || 'Region'} ${formatAmount(scopedErrors.amount)}, ${scopedErrors.count} errors`}
+        />
+      }
+      title={isMobile ? undefined : regionLabel}
+      filterPad={false}
+      meta={storePeriod.label}
+    >
       <ChromeListRow
         title="Lots"
         meta={
@@ -653,21 +677,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 18,
     backgroundColor: '#fff',
-  },
-  regionMoney: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: T.text,
-    fontVariant: ['tabular-nums'],
-    marginRight: 4,
-  },
-  regionMoneyMobile: {
-    fontSize: 16,
-  },
-  regionMoneyEmpty: {
-    color: T.secondary,
-    fontWeight: '500',
   },
   regionBar: {
     marginTop: 6,
