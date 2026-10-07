@@ -34,10 +34,12 @@ import {
   TableDeleteButton,
   TableEmpty,
   TableFrame,
+  TableHead,
   TablePhotoCell,
   TableMuted,
   TableRow,
   TableRowMain,
+  TableStatus,
   TableStrong,
   uniqueLabels,
 } from './TriageTable';
@@ -86,7 +88,7 @@ const SORTERS = {
   dateLabel: (row) => row.dateLabel,
   person: (row) => staffName(row),
   store: (row) => row.storeName,
-  error: (row) => errorPlace(row),
+  error: (row) => (rowIsError(row) ? errorPlace(row) : 'Correct'),
   received: (row) => row.triageDateLabel || row.amountLabel,
   amount: (row) => Number(String(row?.review?.errorAmount || '').replace(/[^0-9.-]/g, '')) || 0,
 };
@@ -117,6 +119,11 @@ function errorDetailParts(review) {
 function errorDetailSummary(review) {
   const detail = errorDetailParts(review);
   return [detail.note, ...detail.edits].filter(Boolean).join(' · ');
+}
+
+function rowIsError(row) {
+  if (row?.incorrect === true) return true;
+  return triagePoNeedsCorrection(row);
 }
 
 function errorPlace(row) {
@@ -230,7 +237,7 @@ const LOT_COL = {
   lot: { flex: 1.6, minWidth: 200 },
   location: { flex: 1.1, minWidth: 110 },
   period: { flex: 1, minWidth: 120 },
-  documents: { flex: 0.7, minWidth: 72 },
+  documents: { flex: 1.15, minWidth: 148 },
   progress: { flex: 1.05, minWidth: 112 },
 };
 
@@ -287,9 +294,11 @@ const LotTableRow = memo(function LotTableRow({ lot, last, onOpen }) {
           {lotPeriodLabel(lot)}
         </TableCell>
         <TableCell flex={LOT_COL.documents.flex} minWidth={LOT_COL.documents.minWidth}>
-          {String(lot.pos.length)}
+          {lot.incorrect
+            ? `${lot.pos.length} · ${lot.incorrect} ${lot.incorrect === 1 ? 'error' : 'errors'}`
+            : String(lot.pos.length)}
         </TableCell>
-        <TableCell flex={LOT_COL.progress.flex} minWidth={LOT_COL.progress.minWidth} align="right" last>
+        <TableCell flex={LOT_COL.progress.flex} minWidth={LOT_COL.progress.minWidth} last>
           <LotProgress lot={lot} />
         </TableCell>
       </TableRowMain>
@@ -299,8 +308,10 @@ const LotTableRow = memo(function LotTableRow({ lot, last, onOpen }) {
 
 const AccuracyTableRow = memo(function AccuracyTableRow({ row, last, showError, showAll, onOpen, onDelete }) {
   const detail = errorDetailParts(row.review);
-  const flagged = triagePoNeedsCorrection(row);
-  const summary = showError || (showAll && flagged) ? errorDetailSummary(row.review) : '';
+  const flagged = rowIsError(row);
+  const typeName = flagged ? errorPlace(row) : '';
+  const typeLabel = typeName && typeName !== 'Unspecified' ? typeName : '';
+  const summary = showError || (showAll && flagged) ? [typeLabel, errorDetailSummary(row.review)].filter(Boolean).join(' · ') : '';
   const referenceCol = showError || showAll ? { flex: 1.8, minWidth: 220 } : COL.reference;
   return (
     <TableRow last={last}>
@@ -324,7 +335,7 @@ const AccuracyTableRow = memo(function AccuracyTableRow({ row, last, showError, 
         {showError || showAll ? (
           <>
             <TableCell flex={COL.error.flex} minWidth={COL.error.minWidth}>
-              {flagged ? errorPlace(row) : 'Correct'}
+              <TableStatus label={flagged ? 'Error' : 'Correct'} tone={flagged ? 'red' : 'green'} />
             </TableCell>
             <TableCell flex={COL.amount.flex} minWidth={COL.amount.minWidth} align="right" last>
               {flagged ? detail.amount || '—' : row.triageDateLabel || row.amountLabel || '—'}
@@ -457,7 +468,7 @@ export default function TriageAccuracyPanel({
   const errorRows = useMemo(
     () =>
       scoped.filter((row) => {
-        if (!triagePoNeedsCorrection(row)) return false;
+        if (!rowIsError(row)) return false;
         if (!matchesSelectedLabel(errorPlace(row), filters.error)) return false;
         return true;
       }),
@@ -468,7 +479,7 @@ export default function TriageAccuracyPanel({
     let correct = 0;
     let incorrect = 0;
     for (const row of scoped) {
-      if (triagePoNeedsCorrection(row)) {
+      if (rowIsError(row)) {
         if (matchesSelectedLabel(errorPlace(row), filters.error)) incorrect += 1;
       } else if (row.received) {
         if (matchesSelectedLabel(row.triageDateLabel || row.amountLabel, filters.received)) correct += 1;
@@ -497,13 +508,16 @@ export default function TriageAccuracyPanel({
   const source = useMemo(
     () =>
       scoped.filter((row) => {
-        if (showAll) return true;
+        if (showAll) {
+          if (!selectedLabels(filters.error).length) return true;
+          return rowIsError(row) && matchesSelectedLabel(errorPlace(row), filters.error);
+        }
         if (showError) {
-          return triagePoNeedsCorrection(row) && matchesSelectedLabel(errorPlace(row), filters.error);
+          return rowIsError(row) && matchesSelectedLabel(errorPlace(row), filters.error);
         }
         return (
           Boolean(row.received) &&
-          !triagePoNeedsCorrection(row) &&
+          !rowIsError(row) &&
           matchesSelectedLabel(row.triageDateLabel || row.amountLabel, filters.received)
         );
       }),
@@ -516,8 +530,8 @@ export default function TriageAccuracyPanel({
         if (openLot && !rowMatchesQuery(row, listQuery)) return false;
         if (showAll) return true;
         return showError
-          ? triagePoNeedsCorrection(row)
-          : Boolean(row.received) && !triagePoNeedsCorrection(row);
+          ? rowIsError(row)
+          : Boolean(row.received) && !rowIsError(row);
       }),
     [listQuery, lotRows, openLot, showAll, showError],
   );
@@ -544,7 +558,10 @@ export default function TriageAccuracyPanel({
   const dateOptions = useMemo(() => optionsFor('dateLabel', (row) => row.dateLabel), [optionsFor]);
   const personOptions = useMemo(() => optionsFor('person', staffName), [optionsFor]);
   const storeOptions = useMemo(() => optionsFor('store', (row) => row.storeName), [optionsFor]);
-  const errorOptions = useMemo(() => optionsFor('error', errorPlace), [optionsFor]);
+  const errorOptions = useMemo(
+    () => optionsFor('error', (row) => (rowIsError(row) ? errorPlace(row) : '')),
+    [optionsFor],
+  );
   const receivedOptions = useMemo(
     () => optionsFor('received', (row) => row.triageDateLabel || row.amountLabel),
     [optionsFor],
@@ -846,7 +863,12 @@ export default function TriageAccuracyPanel({
                     key={item.id}
                     title={item.id}
                     subtitle={[item.location, lotPeriodLabel(item)].filter(Boolean).join(' · ')}
-                    meta={`${item.pos.length} ${item.pos.length === 1 ? 'PO' : 'POs'}`}
+                    meta={[
+                      `${item.pos.length} ${item.pos.length === 1 ? 'PO' : 'POs'}`,
+                      item.incorrect ? `${item.incorrect} ${item.incorrect === 1 ? 'error' : 'errors'}` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
                     last={index === visibleLots.length - 1}
                     onPress={() => openLotFolder(item)}
                     accessibilityLabel={
@@ -881,20 +903,12 @@ export default function TriageAccuracyPanel({
             header={
               <>
                 <TablePhotoCell />
-                <View style={[styles.lotHead, { flex: LOT_COL.lot.flex, minWidth: LOT_COL.lot.minWidth }]}>
-                  <Text style={styles.lotHeadText}>Lot</Text>
-                </View>
-                <View style={[styles.lotHead, { flex: LOT_COL.location.flex, minWidth: LOT_COL.location.minWidth }]}>
-                  <Text style={styles.lotHeadText}>Store</Text>
-                </View>
-                <View style={[styles.lotHead, { flex: LOT_COL.period.flex, minWidth: LOT_COL.period.minWidth }]}>
-                  <Text style={styles.lotHeadText}>Period</Text>
-                </View>
-                <View style={[styles.lotHead, { flex: LOT_COL.documents.flex, minWidth: LOT_COL.documents.minWidth }]}>
-                  <Text style={styles.lotHeadText}>POs</Text>
-                </View>
-                <View style={[styles.lotHead, styles.lotHeadEnd, { flex: LOT_COL.progress.flex, minWidth: LOT_COL.progress.minWidth }]}>
-                  <Text style={styles.lotHeadText}>Progress</Text>
+                <View style={styles.lotHeadRow}>
+                  <TableHead label="Lot" flex={LOT_COL.lot.flex} minWidth={LOT_COL.lot.minWidth} />
+                  <TableHead label="Store" flex={LOT_COL.location.flex} minWidth={LOT_COL.location.minWidth} />
+                  <TableHead label="Period" flex={LOT_COL.period.flex} minWidth={LOT_COL.period.minWidth} />
+                  <TableHead label="POs" flex={LOT_COL.documents.flex} minWidth={LOT_COL.documents.minWidth} />
+                  <TableHead label="Progress" flex={LOT_COL.progress.flex} minWidth={LOT_COL.progress.minWidth} />
                 </View>
               </>
             }
@@ -941,7 +955,7 @@ export default function TriageAccuracyPanel({
             {visible.map((item, index) => {
               const photos = normalizeReviewImages(item.review?.images);
               const atMax = photos.length >= MAX_REVIEW_IMAGES;
-              const flagged = triagePoNeedsCorrection(item);
+              const flagged = rowIsError(item);
               return (
                 <View key={accuracyKey(item)}>
                   <MobileListRow
@@ -958,6 +972,11 @@ export default function TriageAccuracyPanel({
                     leading={<PoThumb urls={item.imageUrls} label={item.reference} size={46} />}
                     trailing={
                       <View style={styles.mobileTrail}>
+                        <StatusPill
+                          label={flagged ? 'Error' : 'Correct'}
+                          tone={flagged ? 'red' : 'green'}
+                          compact
+                        />
                         {showError || (showAll && flagged) ? (
                           <MobileCameraButton
                             count={photos.length}
@@ -970,9 +989,7 @@ export default function TriageAccuracyPanel({
                                 : `Take a photo of ${item.reference}`
                             }
                           />
-                        ) : (
-                          <StatusPill label="Correct" tone="green" compact />
-                        )}
+                        ) : null}
                         <Pressable
                           onPress={() =>
                             confirmDestructive(
@@ -1079,7 +1096,7 @@ export default function TriageAccuracyPanel({
               <>
                 <ColumnFilter
                   columnKey="error"
-                  label="Error"
+                  label="Status"
                   value={filters.error}
                   onChange={(value) => setFilter('error', value)}
                   options={errorOptions}
@@ -1272,26 +1289,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#8A6D1F',
   },
-  lotHead: {
-    justifyContent: 'center',
-    paddingHorizontal: 8,
-  },
-  lotHeadEnd: {
-    alignItems: 'flex-end',
-  },
-  lotHeadText: {
-    fontFamily,
-    fontSize: 11,
-    fontWeight: '600',
-    color: T.secondary,
-    letterSpacing: 0.2,
-    textTransform: 'uppercase',
+  lotHeadRow: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'stretch',
   },
   lotProgress: {
-    alignSelf: 'stretch',
+    width: '100%',
     alignItems: 'flex-end',
     gap: 6,
-    minWidth: 88,
   },
   lotProgressCompact: {
     minWidth: 0,

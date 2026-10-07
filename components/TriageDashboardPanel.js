@@ -49,6 +49,7 @@ import {
 } from './TriageKit';
 import { PoThumb } from './TriageTable';
 import TriageReviewDrawer from './TriageReviewDrawer';
+import { PoErrorSummaryPage } from './TriagePoCapture';
 
 const fontFamily = FONT;
 
@@ -158,6 +159,50 @@ function matchesQuery(row, query) {
     .join(' ')
     .toLowerCase()
     .includes(q);
+}
+
+export const ERROR_LIST_SORTS = [
+  { key: 'recent', label: 'Most recent added' },
+  { key: 'oldest', label: 'Oldest added' },
+  { key: 'date-new', label: 'By date, newest' },
+  { key: 'date-old', label: 'By date, oldest' },
+];
+
+function timeOf(value) {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+  const parsed = Date.parse(String(value || ''));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function errorAddedTime(row) {
+  return (
+    timeOf(row?.review?.editedAt) ||
+    timeOf(row?.review?.editedBy?.at) ||
+    timeOf(row?.updatedAt) ||
+    timeOf(row?.addedAt) ||
+    timeOf(row?.createdAt) ||
+    timeOf(row?.receivedAt) ||
+    0
+  );
+}
+
+function errorDocumentTime(row) {
+  return timeOf(row?.date) || timeOf(row?.dateLabel) || 0;
+}
+
+function sortErrorRows(rows, sort) {
+  const list = [...(rows || [])];
+  const ref = (row) => String(row?.reference || '');
+  list.sort((a, b) => {
+    let delta = 0;
+    if (sort === 'oldest') delta = errorAddedTime(a) - errorAddedTime(b);
+    else if (sort === 'date-new') delta = errorDocumentTime(b) - errorDocumentTime(a);
+    else if (sort === 'date-old') delta = errorDocumentTime(a) - errorDocumentTime(b);
+    else delta = errorAddedTime(b) - errorAddedTime(a);
+    if (delta) return delta;
+    return ref(a).localeCompare(ref(b));
+  });
+  return list;
 }
 
 function emptyCopy(text) {
@@ -282,8 +327,11 @@ function ErrorRowIcon({ label, icon, color, onPress }) {
   );
 }
 
-function ErrorsPage({ rows, query, onOpen, onDelete }) {
-  const visible = useMemo(() => rows.filter((row) => matchesQuery(row, query)), [query, rows]);
+function ErrorsPage({ rows, query, onOpen, onDelete, inStore = false, sort = 'recent' }) {
+  const visible = useMemo(
+    () => sortErrorRows(rows.filter((row) => matchesQuery(row, query)), sort),
+    [query, rows, sort],
+  );
   const types = useMemo(() => rankCounts(visible, errorTypeOf), [visible]);
   const amount = useMemo(() => visible.reduce((sum, row) => sum + errorAmountOf(row), 0), [visible]);
   const storeCount = useMemo(
@@ -310,7 +358,9 @@ function ErrorsPage({ rows, query, onOpen, onDelete }) {
           value={amount ? formatAmount(amount) : String(visible.length)}
           stats={[
             { label: visible.length === 1 ? 'Error' : 'Errors', value: String(visible.length) },
-            { label: storeCount === 1 ? 'Store' : 'Stores', value: String(storeCount) },
+            ...(inStore
+              ? []
+              : [{ label: storeCount === 1 ? 'Store' : 'Stores', value: String(storeCount) }]),
             { label: types.length === 1 ? 'Type' : 'Types', value: String(types.length) },
           ]}
         />
@@ -318,11 +368,12 @@ function ErrorsPage({ rows, query, onOpen, onDelete }) {
       title="Errors"
       meta={`${visible.length} error${visible.length === 1 ? '' : 's'}`}
       data={visible}
+      extraData={sort}
       keyExtractor={(row) => `${row.triageId}-${row.id}`}
       renderItem={({ item: row, index }) => (
         <ChromeListRow
           title={row.reference || 'Document'}
-          meta={[errorTypeOf(row), row.storeName, staffName(row), row.dateLabel].filter(Boolean).join(' · ')}
+          meta={[errorTypeOf(row), inStore ? null : row.storeName, staffName(row), row.dateLabel].filter(Boolean).join(' · ')}
           value={formatErrorAmount(row?.review?.errorAmount || '') || ''}
           leading={<PoThumb urls={row.imageUrls} label={row.reference} size={46} />}
           last={index === visible.length - 1}
@@ -432,7 +483,12 @@ function LotsPage({ lots, allRows, errors, query, onOpen }) {
         return (
           <ChromeListRow
             title={lot.id}
-            meta={[lot.location, lotPeriodLabel(lot), `${lot.pos.length} ${lot.pos.length === 1 ? 'PO' : 'POs'}`]
+            meta={[
+              lot.location,
+              lotPeriodLabel(lot),
+              `${lot.pos.length} ${lot.pos.length === 1 ? 'PO' : 'POs'}`,
+              lot.incorrect ? `${lot.incorrect} ${lot.incorrect === 1 ? 'error' : 'errors'}` : null,
+            ]
               .filter(Boolean)
               .join(' · ')}
             value={progress.expected ? `${progress.evaluated}/${progress.expected}` : String(lot.pos.length)}
@@ -543,11 +599,14 @@ export default function TriageDashboardPanel({
   onStoresViewChange,
   storesNavRef,
   onReviewOpenChange,
+  errorSort = 'recent',
 }) {
-  const { triage, remoteLoaded = false } = useTransferWorkflow();
-  const countsLoading = !remoteLoaded;
+  const { triage, remoteLoaded = false, localReady = false } = useTransferWorkflow();
+  // Cached rows paint straight away; the delta pull refreshes them in place.
+  const countsLoading = !remoteLoaded && !(localReady && triage.length > 0);
   const isMobile = useIsMobile();
   const [openRow, setOpenRow] = useState(null);
+  const [editingError, setEditingError] = useState(false);
 
   useEffect(() => {
     if (!onReviewOpenChange) return undefined;
@@ -634,8 +693,24 @@ export default function TriageDashboardPanel({
     };
   }, [closeStore, storesNavRef]);
 
+  const closeOpenError = useCallback(() => {
+    setEditingError(false);
+    setOpenRow(null);
+  }, []);
+
+  useEffect(() => {
+    if (page === 'errors') return undefined;
+    setEditingError(false);
+    setOpenRow(null);
+    return undefined;
+  }, [page]);
+
   useEffect(() => {
     if (!active) return undefined;
+    if (page === 'errors' && openRow) {
+      onBackChange?.(closeOpenError, { dateLabel: openRow.reference || 'Error' });
+      return () => onBackChange?.(null, null);
+    }
     if (!page && !selectedStore) {
       onBackChange?.(null, null);
       return () => onBackChange?.(null, null);
@@ -648,7 +723,7 @@ export default function TriageDashboardPanel({
     const label = page ? titles[page] || 'Dashboard' : selectedStore || 'Store';
     onBackChange?.(closePage, { dateLabel: label });
     return () => onBackChange?.(null, null);
-  }, [active, closePage, onBackChange, page, selectedStore]);
+  }, [active, closeOpenError, closePage, onBackChange, openRow, page, selectedStore]);
 
   const saveReview = useCallback(
     (poId, review) => {
@@ -781,7 +856,22 @@ export default function TriageDashboardPanel({
   return (
     <View style={[styles.body, isMobile && styles.bodyMobile]}>
       {page === 'errors' ? (
-        <ErrorsPage rows={scopedErrors.rows} query={listQuery} onOpen={setOpenRow} onDelete={deletePo} />
+        openRow ? (
+          <PoErrorSummaryPage
+            po={openRow}
+            onClose={closeOpenError}
+            onEdit={() => setEditingError(true)}
+          />
+        ) : (
+          <ErrorsPage
+            rows={scopedErrors.rows}
+            query={listQuery}
+            onOpen={setOpenRow}
+            onDelete={deletePo}
+            inStore={Boolean(selectedStore)}
+            sort={errorSort}
+          />
+        )
       ) : page === 'analytics' ? (
         <AnalyticsPage rows={scopedErrors.rows} />
       ) : page === 'lots' ? (
@@ -799,13 +889,13 @@ export default function TriageDashboardPanel({
       )}
 
       <TriageReviewDrawer
-        visible={Boolean(openRow)}
+        visible={Boolean(openRow) && editingError}
         session={session}
         row={openRow}
         review={openRow?.review || null}
         extraRows={scopedErrors.rows}
         startAt="reporting"
-        onClose={() => setOpenRow(null)}
+        onClose={() => setEditingError(false)}
         onSave={saveReview}
       />
     </View>

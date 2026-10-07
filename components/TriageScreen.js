@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Modal, Platform, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import TriageAccuracyPanel from './TriageAccuracyPanel';
 import TriagePoCapture from './TriagePoCapture';
 import TriageDailyReceiptsDrawer from './TriageDailyReceiptsDrawer';
-import TriageDashboardPanel from './TriageDashboardPanel';
+import TriageDashboardPanel, { ERROR_LIST_SORTS } from './TriageDashboardPanel';
 import TriageDeletedPanel from './TriageDeletedPanel';
 import TriageInsightsPanel from './TriageInsightsPanel';
 import { canViewTriageInsights } from '../lib/permissions';
 import { BarButton, ChromeBackRow, FONT, SearchField, SegmentedSlider, T, TriageErrorBoundary } from './TriageKit';
 import {
   MobileFeedAddButton,
+  MobileFeedOutlineButton,
   MobileFeedTopBarActions,
 } from './MobileChrome';
 import { ensureLinkedPosSessions } from '../lib/auth';
@@ -67,6 +68,88 @@ function triagePageTitle({ dashPage, activeTab, resultsLotId, storesView }) {
   if (activeTab === 'accuracy') return resultsLotId || 'Results';
   if (activeTab === 'deleted') return 'Deleted';
   return storesView?.selectedRegionLabel || 'Triage';
+}
+
+function ErrorFilterButton({ value, onChange, compact = false }) {
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const buttonRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [anchor, setAnchor] = useState(null);
+  const current = ERROR_LIST_SORTS.find((option) => option.key === value) || ERROR_LIST_SORTS[0];
+
+  const openMenu = () => {
+    const node = buttonRef.current;
+    if (typeof node?.measureInWindow === 'function') {
+      node.measureInWindow((x, y, width, height) => {
+        setAnchor({ x, y, width, height });
+        setOpen(true);
+      });
+      return;
+    }
+    setAnchor(null);
+    setOpen(true);
+  };
+
+  const menuWidth = 232;
+  const menuLeft = anchor
+    ? Math.min(Math.max(12, anchor.x + anchor.width - menuWidth), Math.max(12, windowWidth - menuWidth - 12))
+    : Math.max(12, windowWidth - menuWidth - 16);
+  const menuTop = anchor ? Math.min(anchor.y + anchor.height + 6, Math.max(12, windowHeight - 240)) : 64;
+
+  return (
+    <>
+      <View ref={buttonRef} collapsable={false}>
+        {compact ? (
+          <MobileFeedOutlineButton
+            label="Filter"
+            leadingIcon={current.key === 'recent' ? 'funnel-outline' : 'funnel'}
+            active={open || current.key !== 'recent'}
+            onPress={() => (open ? setOpen(false) : openMenu())}
+            accessibilityLabel={current.key === 'recent' ? 'Filter errors' : `Filter errors, ${current.label}`}
+          />
+        ) : (
+          <BarButton
+            icon={current.key === 'recent' ? 'funnel-outline' : 'funnel'}
+            label="Filter"
+            onPress={() => (open ? setOpen(false) : openMenu())}
+            accessibilityLabel={current.key === 'recent' ? 'Filter errors' : `Filter errors, ${current.label}`}
+          />
+        )}
+      </View>
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+        <View style={styles.filterModal} pointerEvents="box-none">
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setOpen(false)} accessibilityLabel="Close filter" />
+          <View style={[styles.filterMenu, { top: menuTop, left: menuLeft, width: menuWidth }]}>
+            {ERROR_LIST_SORTS.map((option) => {
+              const on = option.key === current.key;
+              return (
+                <Pressable
+                  key={option.key}
+                  onPress={() => {
+                    onChange(option.key);
+                    setOpen(false);
+                  }}
+                  style={({ hovered, pressed }) => [
+                    styles.filterOption,
+                    on && styles.filterOptionOn,
+                    (hovered || pressed) && styles.filterOptionHover,
+                  ]}
+                  accessibilityRole="menuitem"
+                  accessibilityState={{ selected: on }}
+                  {...(Platform.OS === 'web' ? { className: 'cgold-triage-btn' } : null)}
+                >
+                  <Text style={[styles.filterOptionText, on && styles.filterOptionTextOn]} numberOfLines={1}>
+                    {option.label}
+                  </Text>
+                  {on ? <Ionicons name="checkmark" size={16} color={T.text} /> : <View style={styles.filterCheckSpacer} />}
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+      </Modal>
+    </>
+  );
 }
 
 function ChromeStats({ items, onPress, accessibilityLabel, wide = false, actionLabel, attention = false }) {
@@ -140,6 +223,7 @@ export default function TriageScreen({
   const [resultsLotId, setResultsLotId] = useState('');
   const [storeTab, setStoreTab] = useState('melt');
   const [listQuery, setListQuery] = useState('');
+  const [errorSort, setErrorSort] = useState('recent');
   const [canLeaveStore, setCanLeaveStore] = useState(false);
   const [batchContext, setBatchContext] = useState(null);
   const [dailyOpen, setDailyOpen] = useState(false);
@@ -251,7 +335,12 @@ export default function TriageScreen({
   const trailing =
     session?.token && activeTab === 'transfers' && !inBatch && dashPage === 'stores' ? (
       null
-    ) : session?.token && activeTab === 'transfers' && !inBatch && (dashPage === 'errors' || dashPage === 'lots' || dashPage === 'analytics') ? (
+    ) : session?.token && activeTab === 'transfers' && !inBatch && dashPage === 'errors' ? (
+      <>
+        <ErrorFilterButton value={errorSort} onChange={setErrorSort} />
+        {searchField}
+      </>
+    ) : session?.token && activeTab === 'transfers' && !inBatch && (dashPage === 'lots' || dashPage === 'analytics') ? (
       searchField
     ) : session?.token && activeTab === 'transfers' && !inBatch ? (
       <>
@@ -514,10 +603,14 @@ export default function TriageScreen({
     !dashPage &&
     !storesView.selectedStore;
 
+  const onErrorsPage = activeTab === 'transfers' && !inBatch && dashPage === 'errors';
   const mobileTopBarTrailing = useMemo(
     () =>
-      canAdd || onTriageHome ? (
+      canAdd || onTriageHome || onErrorsPage ? (
         <MobileFeedTopBarActions>
+          {onErrorsPage ? (
+            <ErrorFilterButton value={errorSort} onChange={setErrorSort} compact />
+          ) : null}
           {onTriageHome ? (
             <SearchField
               value={listQuery}
@@ -535,7 +628,7 @@ export default function TriageScreen({
           ) : null}
         </MobileFeedTopBarActions>
       ) : null,
-    [canAdd, listQuery, onTriageHome],
+    [canAdd, errorSort, listQuery, onErrorsPage, onTriageHome],
   );
 
   useEffect(() => {
@@ -605,6 +698,7 @@ export default function TriageScreen({
             setAccuracyTab('all');
           }}
           onReviewOpenChange={isMobile ? setReviewOpen : undefined}
+          errorSort={errorSort}
         />
       </View>
 
@@ -731,6 +825,50 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+  },
+  filterModal: {
+    flex: 1,
+  },
+  filterMenu: {
+    position: 'absolute',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
+    paddingVertical: 4,
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 8,
+  },
+  filterOption: {
+    minHeight: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  filterOptionOn: {
+    backgroundColor: 'rgba(0,0,0,0.04)',
+  },
+  filterOptionHover: {
+    backgroundColor: '#f5f5f5',
+  },
+  filterOptionText: {
+    fontFamily: FONT,
+    flex: 1,
+    fontSize: 15,
+    color: T.text,
+  },
+  filterOptionTextOn: {
+    fontWeight: '600',
+  },
+  filterCheckSpacer: {
+    width: 16,
+    height: 16,
   },
   accuracyLead: {
     flexDirection: 'row',
