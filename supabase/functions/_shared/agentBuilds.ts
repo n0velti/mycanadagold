@@ -14,8 +14,10 @@ import {
   cursorJson,
   env,
   firstBranch,
+  githubBranchHeadSha,
   resolveAgentModel,
   vercelDeployment,
+  type VercelDeploymentMatch,
 } from './devTickets.ts';
 
 const BUILD_COLUMNS =
@@ -297,6 +299,8 @@ async function followUp(build: BuildRow, requestId: string | null, prompt: strin
       status: 'baking',
       run_id: String(run.id || ''),
       run_started_at: new Date().toISOString(),
+      // The old preview is the app before this message; hide it until the new run has deployed.
+      preview_url: '',
       error: '',
       pending_prompt: '',
       pending_request_id: null,
@@ -308,6 +312,7 @@ async function followUp(build: BuildRow, requestId: string | null, prompt: strin
       const pending = [build.pending_prompt, prompt].filter(Boolean).join('\n\n').slice(0, 16000);
       return saveBuild(build.conversation_id, {
         status: 'baking',
+        preview_url: '',
         error: '',
         pending_prompt: pending,
         pending_request_id: requestId || build.pending_request_id,
@@ -487,7 +492,8 @@ export async function tapRunStream(build: BuildRow, runId: string): Promise<Stre
 
 /**
  * 0-100 from milestones, never moving backwards within one run:
- * starting → working (grows with tool calls) → pushed → PR → preview building → preview ready → finished.
+ * starting → working (grows with tool calls) → pushed → PR → preview building → finished.
+ * The preview URL itself is only written once the finished run's commit is READY on Vercel.
  */
 function progressPercent(input: {
   previous: number;
@@ -496,7 +502,6 @@ function progressPercent(input: {
   branch: string;
   prUrl: string;
   deployState: string;
-  previewUrl: string;
   finished: boolean;
 }): number {
   let pct = 0;
@@ -507,7 +512,6 @@ function progressPercent(input: {
   if (input.deployState === 'BUILDING' || input.deployState === 'QUEUED' || input.deployState === 'INITIALIZING') {
     pct = Math.max(pct, 80);
   }
-  if (input.previewUrl) pct = Math.max(pct, 90);
   // The settled "ready" paths write 100 themselves; a finished run still waiting on Vercel sits at 95.
   if (input.finished) pct = Math.max(pct, 95);
   return Math.max(0, Math.min(100, Math.max(input.previous || 0, pct)));
@@ -551,7 +555,6 @@ async function syncBuild(build: BuildRow): Promise<BuildRow> {
     branch: String(patch.branch || ''),
     prUrl: String(patch.pr_url || ''),
     deployState: '',
-    previewUrl: build.preview_url || '',
     finished: false,
   };
 
@@ -564,20 +567,15 @@ async function syncBuild(build: BuildRow): Promise<BuildRow> {
       patch.stream_cursor = tap.cursor;
       progressInput.toolCalls = tap.toolCalls;
     }
-    // Still working, but anything already pushed may have a READY deployment
-    // the staff member can open while they wait.
+    // Still working: no preview yet. Anything Vercel has built so far is an
+    // earlier commit (or the previous run), so showing it would open the app
+    // without this change. Only the deployment state feeds the progress bar.
     if (progressInput.branch && vercelOn) {
-      const deployment = await vercelDeployment(progressInput.branch).catch(() => null);
-      if (deployment) {
-        progressInput.deployState = deployment.latestState;
-        if (deployment.readyUrl) {
-          patch.preview_url = deployment.readyUrl;
-          progressInput.previewUrl = deployment.readyUrl;
-        }
-      }
+      const deployment = await vercelDeployment(progressInput.branch, runWindow(build, run)).catch(() => null);
+      if (deployment) progressInput.deployState = deployment.latestState;
     }
     patch.progress_pct = progressPercent(progressInput);
-    return saveBuild(build.conversation_id, { ...patch, status: 'baking', error: '' });
+    return saveBuild(build.conversation_id, { ...patch, status: 'baking', preview_url: '', error: '' });
   }
   progressInput.finished = runStatus === 'FINISHED';
 
@@ -622,7 +620,10 @@ async function syncBuild(build: BuildRow): Promise<BuildRow> {
     });
   }
 
-  const deployment = await vercelDeployment(branch);
+  // The run is done, so the branch head is the agent's final push. Only a
+  // deployment of that commit counts as "the preview"; an older READY
+  // deployment on the same branch would open the app without this change.
+  const deployment = await vercelDeployment(branch, await finalDeploymentMatch(build, run, branch));
   progressInput.deployState = deployment.latestState;
   if (deployment.readyUrl && deployment.latestState === 'READY') {
     return saveBuild(build.conversation_id, {
@@ -638,7 +639,7 @@ async function syncBuild(build: BuildRow): Promise<BuildRow> {
     return saveBuild(build.conversation_id, {
       ...patch,
       status: 'failed',
-      preview_url: deployment.readyUrl || build.preview_url,
+      preview_url: '',
       error: 'The preview deployment failed to build.',
     });
   }
@@ -647,21 +648,43 @@ async function syncBuild(build: BuildRow): Promise<BuildRow> {
     return saveBuild(build.conversation_id, {
       ...patch,
       status: 'ready',
+      preview_url: '',
       error: '',
       progress_pct: 100,
       progress_note: 'Finished',
     });
   }
-  // Vercel is still building (or has not picked the branch up yet).
-  if (deployment.readyUrl) progressInput.previewUrl = deployment.readyUrl;
+  // Vercel is still building the final commit (or has not picked it up yet).
   return saveBuild(build.conversation_id, {
     ...patch,
     status: 'baking',
-    preview_url: deployment.readyUrl || build.preview_url,
+    preview_url: '',
     error: '',
     progress_pct: progressPercent(progressInput),
     progress_note: 'Building the preview',
   });
+}
+
+/** Deployments created during this run; older ones belong to a previous message. */
+function runWindow(build: BuildRow, run: Record<string, unknown>): VercelDeploymentMatch {
+  const since = Date.parse(String(build.run_started_at || run.createdAt || ''));
+  return Number.isFinite(since) && since > 0 ? { since } : {};
+}
+
+/**
+ * How to recognise the finished run's deployment. Preferred: the commit the
+ * branch points at now (GitHub). Without GitHub access, fall back to "created
+ * after the run started", which can miss a run that pushed nothing new.
+ */
+async function finalDeploymentMatch(
+  build: BuildRow,
+  run: Record<string, unknown>,
+  branch: string,
+): Promise<VercelDeploymentMatch> {
+  const repoUrl = env('CURSOR_REPO_URL', 'https://github.com/n0velti/mycanadagold');
+  const sha = await githubBranchHeadSha(repoUrl, branch);
+  if (sha) return { commitSha: sha };
+  return runWindow(build, run);
 }
 
 function publicBuild(row: BuildRow | null): Record<string, unknown> | null {

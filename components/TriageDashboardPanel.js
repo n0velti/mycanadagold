@@ -1,12 +1,15 @@
 /**
- * Triage dashboard: region home, then Lots and Errors inside a region.
+ * Triage dashboard: store home, then Lots and Errors inside a store.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import {
   applyTriageReviewToPo,
   collectAccuracyTriagePos,
   collectAllTriagePos,
+  deleteTriageDocument,
+  persistTransferWorkflowNow,
   saveTriagePoReview,
   triageEditorFromSession,
   triagePoNeedsCorrection,
@@ -22,11 +25,13 @@ import {
 } from '../lib/triageLots';
 import { formatAmount } from '../lib/transactions';
 import { formatErrorAmount } from '../lib/triageDraft';
-import { regionMarkColor, storeNameInRegion, storeRegionByKey } from '../lib/storeCatalog';
+import { formatInsightPercent } from '../lib/triageInsights';
+import { storesMatch } from '../lib/storeCatalog';
+import { storeMarkColor } from '../lib/storeMarks';
 import {
-  currentErrorPeriod,
-  listRegionErrorSummaries,
-  poInRegion,
+  listStoreErrorCounts,
+  poInStore,
+  summarizeStoreErrors,
 } from '../lib/triageStoreErrors';
 import { CANVAS, useIsMobile } from '../lib/mobileUi';
 import {
@@ -38,7 +43,9 @@ import {
   ProgressBar,
   T,
   TextAction,
+  TextTabs,
   TriageDrawer,
+  confirmDestructive,
 } from './TriageKit';
 import { PoThumb } from './TriageTable';
 import TriageReviewDrawer from './TriageReviewDrawer';
@@ -157,7 +164,125 @@ function emptyCopy(text) {
   return <Text style={styles.emptyCopy}>{text}</Text>;
 }
 
-function ErrorsPage({ rows, query, onOpen }) {
+const ANALYTICS_TABS = [
+  { key: 'type', label: 'Error type', short: 'Type', icon: 'pricetag', iconColor: '#C2410C' },
+  { key: 'items', label: 'Item', short: 'Item', icon: 'cube', iconColor: '#1D4ED8' },
+  { key: 'employees', label: 'Employee', short: 'Staff', icon: 'person', iconColor: '#0F766E' },
+  { key: 'value', label: 'Value', short: 'Value', icon: 'cash', iconColor: '#B45309' },
+];
+
+function AnalyticsPage({ rows = [] }) {
+  const isMobile = useIsMobile();
+  const [tab, setTab] = useState('type');
+  const summary = useMemo(() => summarizeStoreErrors(rows), [rows]);
+  const total = summary.count || 0;
+  const tabMeta = ANALYTICS_TABS.find((option) => option.key === tab) || ANALYTICS_TABS[0];
+  const tabOptions = useMemo(
+    () =>
+      ANALYTICS_TABS.map((option) => ({
+        key: option.key,
+        label: isMobile ? option.short : option.label,
+      })),
+    [isMobile],
+  );
+
+  let list = [];
+  let empty = 'No errors recorded.';
+  if (tab === 'type') {
+    list = summary.types;
+    empty = 'No error types recorded.';
+  } else if (tab === 'items') {
+    list = summary.items;
+    empty = 'No items on recorded errors.';
+  } else if (tab === 'employees') {
+    list = (summary.employees || []).map((row) => ({
+      label: row.name,
+      count: row.count,
+      amount: row.amount,
+      percent: row.percent,
+    }));
+    empty = 'No employees on recorded errors.';
+  } else {
+    list = summary.values || [];
+    empty = 'No error amounts recorded.';
+  }
+
+  if (!rows.length) {
+    return (
+      <EmptyState
+        icon="stats-chart-outline"
+        title="No analytics"
+        body="Flagged POs and SOs land here after triage reviews them."
+      />
+    );
+  }
+
+  return (
+    <ChromePage
+      title="Analytics"
+      meta={`${total} ${total === 1 ? 'error' : 'errors'}`}
+      tableHeader={
+        <View style={isMobile ? styles.analyticsTabsMobile : styles.analyticsTabs}>
+          <TextTabs
+            options={tabOptions}
+            value={tab}
+            onChange={setTab}
+            size={isMobile ? 'md' : 'lg'}
+            layout={isMobile ? 'segment' : 'bar'}
+          />
+        </View>
+      }
+      data={list}
+      extraData={tab}
+      keyExtractor={(row) => `${tab}-${row.label}`}
+      renderItem={({ item: row, index }) => {
+        const countLabel = `${row.count} ${row.count === 1 ? 'error' : 'errors'}`;
+        const meta =
+          tab === 'value' && row.amount ? `${countLabel} · ${formatAmount(row.amount)}` : countLabel;
+        return (
+          <ChromeListRow
+            title={row.label}
+            meta={meta}
+            value={formatInsightPercent(row.percent, total)}
+            icon={tabMeta.icon}
+            iconColor={tabMeta.iconColor}
+            last={index === list.length - 1}
+            chevron={false}
+            extra={
+              <ProgressBar
+                value={row.count}
+                total={total || row.count || 1}
+                tone="orange"
+                height={isMobile ? 6 : 4}
+                style={styles.analyticsRowBar}
+              />
+            }
+          />
+        );
+      }}
+    >
+      {list.length ? null : emptyCopy(empty)}
+    </ChromePage>
+  );
+}
+
+function ErrorRowIcon({ label, icon, color, onPress }) {
+  return (
+    <Pressable
+      onPress={(event) => {
+        event?.stopPropagation?.();
+        onPress?.();
+      }}
+      hitSlop={8}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+    >
+      <Ionicons name={icon} size={18} color={color} />
+    </Pressable>
+  );
+}
+
+function ErrorsPage({ rows, query, onOpen, onDelete }) {
   const visible = useMemo(() => rows.filter((row) => matchesQuery(row, query)), [query, rows]);
   const types = useMemo(() => rankCounts(visible, errorTypeOf), [visible]);
   const amount = useMemo(() => visible.reduce((sum, row) => sum + errorAmountOf(row), 0), [visible]);
@@ -202,6 +327,31 @@ function ErrorsPage({ rows, query, onOpen }) {
           leading={<PoThumb urls={row.imageUrls} label={row.reference} size={46} />}
           last={index === visible.length - 1}
           onPress={() => onOpen(row)}
+          chevron={false}
+          trailing={
+            <View style={styles.errorRowActions}>
+              <ErrorRowIcon
+                label={`Edit error for ${row.reference || 'document'}`}
+                icon="create-outline"
+                color="#007AFF"
+                onPress={() => onOpen(row)}
+              />
+              {onDelete ? (
+                <ErrorRowIcon
+                  label={`Delete ${row.reference || 'document'}`}
+                  icon="trash-outline"
+                  color="#B91C1C"
+                  onPress={() =>
+                    confirmDestructive(
+                      'Delete PO',
+                      `Remove ${row.reference || 'this document'} from this store?`,
+                      () => onDelete(row),
+                    )
+                  }
+                />
+              ) : null}
+            </View>
+          }
         />
       )}
     >
@@ -392,10 +542,10 @@ export default function TriageDashboardPanel({
   onOpenLot,
   onStoresViewChange,
   storesNavRef,
-  storePeriod: storePeriodProp,
   onReviewOpenChange,
 }) {
-  const { triage } = useTransferWorkflow();
+  const { triage, remoteLoaded = false } = useTransferWorkflow();
+  const countsLoading = !remoteLoaded;
   const isMobile = useIsMobile();
   const [openRow, setOpenRow] = useState(null);
 
@@ -404,52 +554,51 @@ export default function TriageDashboardPanel({
     onReviewOpenChange(Boolean(openRow));
     return () => onReviewOpenChange(false);
   }, [onReviewOpenChange, openRow]);
-  const [selectedRegion, setSelectedRegion] = useState('');
-  const [storePeriodLocal] = useState(() => currentErrorPeriod());
-  const storePeriod = storePeriodProp || storePeriodLocal;
+  const [selectedStore, setSelectedStore] = useState('');
 
-  const evaluated = useMemo(() => (active ? collectAccuracyTriagePos(triage) : []), [active, triage]);
-  const allRows = useMemo(() => (active ? collectAllTriagePos(triage) : []), [active, triage]);
-  const lots = useMemo(() => (active ? groupPosIntoLots(evaluated, allRows) : []), [active, allRows, evaluated]);
-  const errors = useMemo(() => (active ? summarizeErrors(evaluated) : { rows: [], count: 0, amount: 0, stores: 0, topType: null, types: [] }), [active, evaluated]);
-  const regionSnapshot = useMemo(
-    () =>
-      active
-        ? listRegionErrorSummaries(evaluated, storePeriod)
-        : { regions: [], totals: { evaluated: 0, count: 0, amount: 0, errorRate: 0 } },
-    [active, evaluated, storePeriod],
+  const needPos = active && Boolean(selectedStore || page);
+  const evaluated = useMemo(() => (needPos ? collectAccuracyTriagePos(triage) : []), [needPos, triage]);
+  const allRows = useMemo(() => (needPos ? collectAllTriagePos(triage) : []), [needPos, triage]);
+  const lots = useMemo(() => (needPos ? groupPosIntoLots(evaluated, allRows) : []), [allRows, evaluated, needPos]);
+  const errors = useMemo(() => (needPos ? summarizeErrors(evaluated) : { rows: [], count: 0, amount: 0, stores: 0, topType: null, types: [] }), [evaluated, needPos]);
+  const storeRows = useMemo(() => (active ? listStoreErrorCounts(triage) : []), [active, triage]);
+  const visibleStoreRows = useMemo(() => {
+    const q = String(listQuery || '').trim().toLowerCase();
+    if (!q) return storeRows;
+    return storeRows.filter((row) => String(row.store || '').toLowerCase().includes(q));
+  }, [listQuery, storeRows]);
+  const storeTotals = useMemo(
+    () => storeRows.reduce((sum, row) => sum + (Number(row.count) || 0), 0),
+    [storeRows],
   );
   const scopedEvaluated = useMemo(
-    () => (selectedRegion ? evaluated.filter((row) => poInRegion(row, selectedRegion)) : evaluated),
-    [evaluated, selectedRegion],
+    () => (selectedStore ? evaluated.filter((row) => poInStore(row, selectedStore)) : evaluated),
+    [evaluated, selectedStore],
   );
   const scopedAllRows = useMemo(
-    () => (selectedRegion ? allRows.filter((row) => poInRegion(row, selectedRegion)) : allRows),
-    [allRows, selectedRegion],
+    () => (selectedStore ? allRows.filter((row) => poInStore(row, selectedStore)) : allRows),
+    [allRows, selectedStore],
   );
   const scopedLots = useMemo(
     () =>
-      selectedRegion
-        ? groupPosIntoLots(scopedEvaluated, scopedAllRows).filter((lot) =>
-            storeNameInRegion(lot.location, selectedRegion),
-          )
+      selectedStore
+        ? groupPosIntoLots(scopedEvaluated, scopedAllRows).filter((lot) => storesMatch(lot.location, selectedStore))
         : lots,
-    [lots, scopedAllRows, scopedEvaluated, selectedRegion],
+    [lots, scopedAllRows, scopedEvaluated, selectedStore],
   );
   const scopedErrors = useMemo(
-    () => (selectedRegion ? summarizeErrors(scopedEvaluated) : errors),
-    [errors, scopedEvaluated, selectedRegion],
+    () => (selectedStore ? summarizeErrors(scopedEvaluated) : errors),
+    [errors, scopedEvaluated, selectedStore],
   );
   const lotSummary = useMemo(() => summarizeLots(scopedLots), [scopedLots]);
-  const regionLabel = storeRegionByKey(selectedRegion)?.label || '';
 
   const openPage = useCallback((key) => onPageChange?.(key || ''), [onPageChange]);
-  const openRegion = useCallback((regionKey = '') => {
-    setSelectedRegion(String(regionKey || '').trim());
+  const openStore = useCallback((storeName = '') => {
+    setSelectedStore(String(storeName || '').trim());
     onPageChange?.('');
   }, [onPageChange]);
-  const closeRegion = useCallback(() => {
-    setSelectedRegion('');
+  const closeStore = useCallback(() => {
+    setSelectedStore('');
     onPageChange?.('');
   }, [onPageChange]);
   const closePage = useCallback(() => {
@@ -457,54 +606,64 @@ export default function TriageDashboardPanel({
       onPageChange?.('');
       return;
     }
-    closeRegion();
-  }, [closeRegion, onPageChange, page]);
+    closeStore();
+  }, [closeStore, onPageChange, page]);
 
   useEffect(() => {
-    if (page && page !== 'lots' && page !== 'errors') {
+    if (page && page !== 'lots' && page !== 'errors' && page !== 'analytics') {
       onPageChange?.('');
     }
   }, [onPageChange, page]);
 
   useEffect(() => {
     onStoresViewChange?.({
-      selectedStore: '',
-      selectedRegion,
-      selectedRegionLabel: regionLabel,
-      period: storePeriod,
+      selectedStore,
+      selectedRegion: '',
+      selectedRegionLabel: selectedStore,
     });
-  }, [onStoresViewChange, regionLabel, selectedRegion, storePeriod]);
+  }, [onStoresViewChange, selectedStore]);
 
   useEffect(() => {
     if (!storesNavRef) return undefined;
     storesNavRef.current = {
-      closeStore() {},
-      closeRegion,
+      closeStore,
+      closeRegion: closeStore,
     };
     return () => {
       storesNavRef.current = { closeStore() {}, closeRegion() {} };
     };
-  }, [closeRegion, storesNavRef]);
+  }, [closeStore, storesNavRef]);
 
   useEffect(() => {
     if (!active) return undefined;
-    if (!page && !selectedRegion) {
+    if (!page && !selectedStore) {
       onBackChange?.(null, null);
       return () => onBackChange?.(null, null);
     }
     const titles = {
       errors: 'Errors',
       lots: 'Lots',
+      analytics: 'Analytics',
     };
-    const label = page ? titles[page] || 'Dashboard' : regionLabel || 'Region';
+    const label = page ? titles[page] || 'Dashboard' : selectedStore || 'Store';
     onBackChange?.(closePage, { dateLabel: label });
     return () => onBackChange?.(null, null);
-  }, [active, closePage, onBackChange, page, regionLabel, selectedRegion]);
+  }, [active, closePage, onBackChange, page, selectedStore]);
 
   const saveReview = useCallback(
     (poId, review) => {
       const saved = saveTriagePoReview(poId, review, triageEditorFromSession(session));
       setOpenRow((current) => (current?.id === poId ? applyTriageReviewToPo(current, saved || review) : current));
+    },
+    [session],
+  );
+
+  const deletePo = useCallback(
+    (row) => {
+      if (!row?.id) return;
+      deleteTriageDocument(row.id, triageEditorFromSession(session)?.name || '');
+      persistTransferWorkflowNow();
+      setOpenRow((current) => (current?.id === row.id ? null : current));
     },
     [session],
   );
@@ -515,62 +674,58 @@ export default function TriageDashboardPanel({
         <EmptyState
           icon="lock-closed-outline"
           title="Sign in to triage"
-          body="Log in to see region errors and lots."
+          body="Log in to see store errors and lots."
           action={<TextAction label="Go to Profile" strong onPress={onRequireLogin} />}
         />
       </View>
     );
   }
 
-  const regionRows = (
+  const storeList = (
     <>
-      {regionSnapshot.regions.map((row, index) => (
+      {visibleStoreRows.map((row, index) => (
         <ChromeListRow
-          key={row.key}
-          title={row.label}
+          key={row.store}
+          title={row.store}
           meta={
-            row.count
-              ? `${row.count} ${row.count === 1 ? 'error' : 'errors'}`
-              : 'No errors'
+            countsLoading
+              ? 'Loading errors…'
+              : row.count
+                ? `${row.count} ${row.count === 1 ? 'error' : 'errors'}`
+                : 'No errors'
           }
           value={String(row.count || 0)}
-          trailing={
-            row.amount ? (
-              <Text style={[styles.regionMoney, isMobile && styles.regionMoneyMobile]}>
-                {formatAmount(row.amount)}
-              </Text>
-            ) : (
-              <Text style={[styles.regionMoney, isMobile && styles.regionMoneyMobile, styles.regionMoneyEmpty]}>—</Text>
-            )
-          }
+          loading={countsLoading}
           extra={
-            regionSnapshot.totals.amount ? (
+            !countsLoading && storeTotals ? (
               <ProgressBar
-                value={row.amount}
-                total={regionSnapshot.totals.amount}
+                value={row.count}
+                total={storeTotals}
                 tone="orange"
                 height={4}
                 style={styles.regionBar}
               />
             ) : null
           }
-          icon="map"
-          iconColor={regionMarkColor(row.key)}
-          last={index === regionSnapshot.regions.length - 1}
-          onPress={() => openRegion(row.key)}
+          icon="storefront"
+          iconColor={storeMarkColor(row.store)}
+          last={index === visibleStoreRows.length - 1}
+          onPress={() => openStore(row.store)}
         />
       ))}
     </>
   );
 
   const home = (
-    <ChromePage title={isMobile ? undefined : 'Regions'} filterPad={false} meta={storePeriod.label}>
-      {regionRows}
+    <ChromePage title={isMobile ? undefined : 'Stores'} filterPad={false}>
+      {visibleStoreRows.length
+        ? storeList
+        : emptyCopy(listQuery.trim() ? `No store matches “${listQuery.trim()}”.` : 'No stores.')}
     </ChromePage>
   );
 
-  const regionTools = (
-    <ChromePage title={isMobile ? undefined : regionLabel} filterPad={false} meta={storePeriod.label}>
+  const storeTools = (
+    <ChromePage title={isMobile ? undefined : selectedStore} filterPad={false}>
       <ChromeListRow
         title="Lots"
         meta={
@@ -586,21 +741,39 @@ export default function TriageDashboardPanel({
       <ChromeListRow
         title="Errors"
         meta={
-          scopedErrors.count
-            ? [
-                scopedErrors.topType ? `${scopedErrors.topType.label} most common` : null,
-                scopedErrors.amount ? formatAmount(scopedErrors.amount) : null,
-                scopedErrors.stores ? `${scopedErrors.stores} ${scopedErrors.stores === 1 ? 'store' : 'stores'}` : null,
-              ]
-                .filter(Boolean)
-                .join(' · ')
-            : 'No flagged POs yet'
+          countsLoading
+            ? 'Loading errors…'
+            : scopedErrors.count
+              ? [
+                  scopedErrors.topType ? `${scopedErrors.topType.label} most common` : null,
+                  scopedErrors.amount ? formatAmount(scopedErrors.amount) : null,
+                  scopedErrors.stores ? `${scopedErrors.stores} ${scopedErrors.stores === 1 ? 'store' : 'stores'}` : null,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')
+              : 'No flagged POs yet'
         }
         value={String(scopedErrors.count)}
+        loading={countsLoading}
         icon="alert-circle"
         iconColor="#B91C1C"
-        last
         onPress={() => openPage('errors')}
+      />
+      <ChromeListRow
+        title="Analytics"
+        meta={
+          countsLoading
+            ? 'Loading errors…'
+            : scopedErrors.count
+              ? `${scopedErrors.types.length} ${scopedErrors.types.length === 1 ? 'type' : 'types'} · ${scopedErrors.stores} ${scopedErrors.stores === 1 ? 'store' : 'stores'}`
+              : 'Error type, item, employee, value'
+        }
+        value={scopedErrors.count ? `${scopedErrors.types.length}` : '0'}
+        loading={countsLoading}
+        icon="analytics"
+        iconColor="#4F46E5"
+        last
+        onPress={() => openPage('analytics')}
       />
     </ChromePage>
   );
@@ -608,7 +781,9 @@ export default function TriageDashboardPanel({
   return (
     <View style={[styles.body, isMobile && styles.bodyMobile]}>
       {page === 'errors' ? (
-        <ErrorsPage rows={scopedErrors.rows} query={listQuery} onOpen={setOpenRow} />
+        <ErrorsPage rows={scopedErrors.rows} query={listQuery} onOpen={setOpenRow} onDelete={deletePo} />
+      ) : page === 'analytics' ? (
+        <AnalyticsPage rows={scopedErrors.rows} />
       ) : page === 'lots' ? (
         <LotsPage
           lots={scopedLots}
@@ -617,8 +792,8 @@ export default function TriageDashboardPanel({
           query={listQuery}
           onOpen={onOpenLot ? (lot) => onOpenLot(lot.id) : undefined}
         />
-      ) : selectedRegion ? (
-        regionTools
+      ) : selectedStore ? (
+        storeTools
       ) : (
         home
       )}
@@ -629,6 +804,7 @@ export default function TriageDashboardPanel({
         row={openRow}
         review={openRow?.review || null}
         extraRows={scopedErrors.rows}
+        startAt="reporting"
         onClose={() => setOpenRow(null)}
         onSave={saveReview}
       />
@@ -654,25 +830,30 @@ const styles = StyleSheet.create({
     paddingVertical: 18,
     backgroundColor: '#fff',
   },
-  regionMoney: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: T.text,
-    fontVariant: ['tabular-nums'],
-    marginRight: 4,
-  },
-  regionMoneyMobile: {
-    fontSize: 16,
-  },
-  regionMoneyEmpty: {
-    color: T.secondary,
-    fontWeight: '500',
-  },
   regionBar: {
     marginTop: 6,
     alignSelf: 'stretch',
     maxWidth: 220,
+  },
+  analyticsTabs: {
+    paddingHorizontal: 4,
+    paddingBottom: 8,
+  },
+  analyticsTabsMobile: {
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 10,
+  },
+  analyticsRowBar: {
+    marginTop: 6,
+    alignSelf: 'stretch',
+    maxWidth: 220,
+  },
+  errorRowActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingRight: 2,
   },
   lotRowBar: {
     marginTop: 6,

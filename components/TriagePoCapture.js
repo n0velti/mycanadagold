@@ -36,9 +36,13 @@ import {
 } from './MobileChrome';
 import {
   ERROR_TYPES,
+  errorOffUnitLabel,
   formatErrorAmount,
+  formatLineErrorSummary,
   isListedErrorType,
+  lineErrorDraftsFromPo,
   normalizeReviewImages,
+  sanitizeReviewLineEdits,
 } from '../lib/triageDraft';
 import {
   deleteTriageErrorType,
@@ -205,38 +209,22 @@ function matchPoMeta(row) {
   return [matchStoreLabel(row), row?.dateLabel].filter(Boolean).join(' · ') || 'Store not listed';
 }
 
-function lineAmountNumber(value) {
-  const amount = Number(String(value ?? '').replace(/[^0-9.-]/g, ''));
-  return Number.isFinite(amount) ? amount : null;
-}
-
-function lineDraftsFromPo(lines) {
-  return (Array.isArray(lines) ? lines : []).map((line, index) => {
-    const original = line?.originalLineTotal != null ? line.originalLineTotal : line?.lineTotal;
-    const current = line?.lineTotal;
-    return {
-      index,
-      originalAmount: original,
-      amount: current == null || !Number.isFinite(Number(current)) ? '' : String(current),
-    };
-  });
+function lineDraftsFromPo(row, catalog) {
+  return lineErrorDraftsFromPo(row, [], (line) => lineTitle(line, catalog));
 }
 
 function changedLineEdits(drafts, lines, catalog) {
-  return (drafts || [])
-    .map((draft) => {
-      const line = lines[draft.index];
-      const next = lineAmountNumber(draft.amount);
-      const original = lineAmountNumber(draft.originalAmount);
-      if (next == null || original == null || Math.abs(next - original) < 0.001) return null;
-      return {
-        index: draft.index,
-        name: lineTitle(line, catalog),
-        originalAmount: moneyLabel(draft.originalAmount),
-        amount: formatErrorAmount(draft.amount),
-      };
-    })
-    .filter(Boolean);
+  return sanitizeReviewLineEdits(
+    (drafts || []).map((draft) => ({
+      index: draft.index,
+      name: draft.name || lineTitle(lines[draft.index], catalog),
+      originalAmount: draft.originalAmount,
+      amount: draft.amount,
+      errorGrams: draft.errorGrams,
+      recordedGrams: draft.recordedGrams,
+      errorUnit: draft.errorUnit,
+    })),
+  );
 }
 
 function actorNameOf(session) {
@@ -324,7 +312,7 @@ function ErrorSubmitSummary({
           </Text>
         </View>
       </View>
-      <Text style={styles.pageSectionTitle}>Line changes</Text>
+      <Text style={styles.pageSectionTitle}>Items off</Text>
       {lineEdits.length ? (
         <View style={styles.poMetaGroup}>
           {lineEdits.map((edit, index) => (
@@ -336,13 +324,13 @@ function ErrorSubmitSummary({
                 {edit.name || `Line ${edit.index + 1}`}
               </Text>
               <Text style={styles.poMetaValue} numberOfLines={2}>
-                {edit.originalAmount} → {edit.amount}
+                {formatLineErrorSummary(edit) || '—'}
               </Text>
             </View>
           ))}
         </View>
       ) : (
-        <Text style={styles.pageDetailNote}>No line amounts changed.</Text>
+        <Text style={styles.pageDetailNote}>No items off recorded.</Text>
       )}
       <Text style={styles.pageSectionTitle}>Photos</Text>
       {photos.length ? (
@@ -815,6 +803,10 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
   const [toast, setToast] = useState(null);
   const [needsSettings, setNeedsSettings] = useState(false);
   const [buyCatalog, setBuyCatalog] = useState(null);
+  useEffect(() => {
+    if (!po) return;
+    setLineDrafts((current) => (current.length ? current : lineDraftsFromPo(po, buyCatalog)));
+  }, [buyCatalog, po]);
   const [previewBox, setPreviewBox] = useState({ width: 0, height: 0 });
   const [poEntry, setPoEntry] = useState(false);
   const [errorSheetOpen, setErrorSheetOpen] = useState(false);
@@ -922,7 +914,7 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
     setErrorType('');
     setErrorAmount('');
     setErrorImages([]);
-    setLineDrafts(lineDraftsFromPo(row?.pricedLines));
+    setLineDrafts(lineDraftsFromPo(row, buyCatalog));
     setResultError('');
     setErrorSheetOpen(false);
     setReviewing(false);
@@ -1220,38 +1212,37 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
   const poFieldWidth = Math.min(168, Math.max(112, (windowWidth - 132) / 2));
 
   const lines = Array.isArray(po?.pricedLines) ? po.pricedLines : [];
-  const updateLineAmount = (index, value) => {
-    setLineDrafts((current) => current.map((draft) => (draft.index === index ? { ...draft, amount: value } : draft)));
+  const updateLineGrams = (index, value) => {
+    setLineDrafts((current) =>
+      current.map((draft) => (draft.index === index ? { ...draft, errorGrams: value } : draft)),
+    );
   };
   const lineEditor = lineDrafts.length ? (
     <>
-      <Text style={styles.sectionLabel}>Line items</Text>
+      <Text style={styles.sectionLabel}>Items</Text>
       <View style={styles.group}>
         {lineDrafts.map((draft, index) => {
-          const line = lines[draft.index];
-          const title = lineTitle(line, buyCatalog);
+          const title = draft.name || lineTitle(lines[draft.index], buyCatalog);
           const last = index === lineDrafts.length - 1;
+          const offLabel = errorOffUnitLabel(draft);
           return (
             <View key={`${title}-${draft.index}`} style={[styles.lineEdit, last && styles.groupRowLast]}>
               <Text style={styles.lineName} numberOfLines={2}>{title}</Text>
+              {draft.recordedGrams ? (
+                <Text style={styles.lineEditCaption}>On PO {draft.recordedGrams}</Text>
+              ) : null}
               <View style={styles.lineEditAmounts}>
-                <View style={styles.lineEditWas}>
-                  <Text style={styles.lineEditCaption}>Was</Text>
-                  <Text style={styles.lineMoney}>{moneyLabel(draft.originalAmount)}</Text>
-                </View>
-                <View style={styles.lineEditNow}>
-                  <Text style={styles.lineEditCaption}>Now</Text>
-                  <TextInput
-                    style={styles.lineEditInput}
-                    value={draft.amount}
-                    onChangeText={(value) => updateLineAmount(draft.index, value)}
-                    placeholder="0.00"
-                    placeholderTextColor="#8E8E93"
-                    keyboardType="decimal-pad"
-                    editable={!finishing}
-                    accessibilityLabel={`Updated amount for ${title}`}
-                  />
-                </View>
+                <TextInput
+                  style={styles.lineEditInput}
+                  value={draft.errorGrams}
+                  onChangeText={(value) => updateLineGrams(draft.index, value)}
+                  placeholder={draft.errorUnit === 'qty' ? '0' : '0.00'}
+                  placeholderTextColor="#8E8E93"
+                  keyboardType="decimal-pad"
+                  editable={!finishing}
+                  accessibilityLabel={`${offLabel} for ${title}`}
+                />
+                <Text style={styles.lineGramsUnit}>{offLabel}</Text>
               </View>
             </View>
           );
@@ -1292,7 +1283,7 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
           disabled={finishing}
         />
         <View style={[styles.poMetaRow, styles.errorFieldBlock]}>
-          <Text style={styles.errorFieldCaption}>Error dollar amount</Text>
+          <Text style={styles.errorFieldCaption}>Error Amount</Text>
           <TextInput
             style={styles.errorAmountInput}
             value={errorAmount}
@@ -1301,9 +1292,36 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
             placeholderTextColor={MOBILE.secondary}
             keyboardType="decimal-pad"
             editable={!finishing}
-            accessibilityLabel="Error dollar amount"
+            accessibilityLabel="Error Amount"
           />
         </View>
+        {lineDrafts.map((draft, index) => {
+          const title = draft.name || lineTitle(lines[draft.index], buyCatalog);
+          const offLabel = errorOffUnitLabel(draft);
+          return (
+            <View key={`${title}-${draft.index}`} style={[styles.poMetaRow, styles.errorFieldBlock]}>
+              <Text style={styles.errorFieldCaption} numberOfLines={2}>
+                {title}
+              </Text>
+              {draft.recordedGrams ? (
+                <Text style={styles.errorItemMeta}>On PO {draft.recordedGrams}</Text>
+              ) : null}
+              <View style={styles.errorGramsRow}>
+                <TextInput
+                  style={[styles.errorAmountInput, styles.errorGramsInput]}
+                  value={draft.errorGrams}
+                  onChangeText={(value) => updateLineGrams(draft.index, value)}
+                  placeholder={draft.errorUnit === 'qty' ? '0' : '0.00'}
+                  placeholderTextColor={MOBILE.secondary}
+                  keyboardType="decimal-pad"
+                  editable={!finishing}
+                  accessibilityLabel={`${offLabel} for ${title}`}
+                />
+                <Text style={styles.errorGramsUnit}>{offLabel}</Text>
+              </View>
+            </View>
+          );
+        })}
         <View style={[styles.poMetaRow, styles.poMetaRowLast, styles.errorFieldBlock]}>
           <Text style={styles.errorFieldCaption}>Details</Text>
           <TextInput
@@ -1867,7 +1885,7 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
                   editable={!finishing}
                   accessibilityLabel="Error note"
                 />
-                <Text style={styles.sectionLabel}>Set amount</Text>
+                <Text style={styles.sectionLabel}>Error Amount</Text>
                 <TextInput
                   style={styles.amountInput}
                   value={errorAmount}
@@ -1876,7 +1894,7 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
                   placeholderTextColor="#8E8E93"
                   keyboardType="decimal-pad"
                   editable={!finishing}
-                  accessibilityLabel="Set amount"
+                  accessibilityLabel="Error Amount"
                 />
                 {lineEditor}
                 <Text style={styles.sectionLabel}>Photos</Text>
@@ -3043,6 +3061,7 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   lineEditInput: {
+    flex: 1,
     minHeight: 36,
     paddingHorizontal: 10,
     paddingVertical: 6,
@@ -3056,6 +3075,31 @@ const styles = StyleSheet.create({
       web: { outlineStyle: 'none' },
       default: {},
     }),
+  },
+  lineGramsUnit: {
+    fontFamily: FONT,
+    fontSize: 15,
+    color: '#8E8E93',
+    flexShrink: 0,
+  },
+  errorItemMeta: {
+    fontFamily: FONT,
+    fontSize: 13,
+    color: MOBILE.secondary,
+  },
+  errorGramsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  errorGramsInput: {
+    flex: 1,
+  },
+  errorGramsUnit: {
+    fontFamily: FONT,
+    fontSize: 15,
+    color: MOBILE.secondary,
+    flexShrink: 0,
   },
   amountInput: {
     minHeight: 48,

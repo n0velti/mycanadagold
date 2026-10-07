@@ -25,8 +25,10 @@ import {
   collectCorrections,
   ERROR_TYPES,
   fieldChanged,
+  errorOffUnitLabel,
   formatErrorAmount,
   isListedErrorType,
+  lineErrorDraftsFromPo,
   makeField,
   MAX_REVIEW_IMAGES,
   normalizeDraft,
@@ -48,6 +50,7 @@ import {
   mergeEmployeeOptions,
   searchClients,
 } from '../lib/triageLookups';
+import { uploadTriageErrorPhotos } from '../lib/triageErrorPhotos';
 import { catalogProductOptions, fetchWebsitePrices } from '../lib/websitePrices';
 import { findStaffByEmployeeName, listStaffProfiles } from '../lib/permissions';
 import { triageReviewEditKey, useTransferWorkflow } from '../lib/transferWorkflow';
@@ -158,7 +161,7 @@ function ErrorReportFields({
         />
       </View>
 
-      <Text style={styles.groupHeader}>Set amount</Text>
+      <Text style={styles.groupHeader}>Error Amount</Text>
       <View style={[styles.detailsCard, styles.paneCard]}>
         <TextInput
           style={styles.noteCardInput}
@@ -167,36 +170,43 @@ function ErrorReportFields({
           placeholder="0.00"
           placeholderTextColor="#c7c7cc"
           keyboardType="decimal-pad"
+          accessibilityLabel="Error Amount"
         />
       </View>
 
-      {lineEdits.length ? (
-        <>
-          <Text style={styles.groupHeader}>Line items</Text>
-          <View style={[styles.detailsCard, styles.paneCard]}>
-            {lineEdits.map((line, index) => (
-              <View key={`${line.index}-${index}`} style={styles.detailReadRow}>
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text style={styles.detailReadLabel}>{line.name || 'Line'}</Text>
-                  <Text style={styles.readValue}>Was {line.originalAmount || '—'}</Text>
-                </View>
+      <Text style={styles.groupHeader}>Items</Text>
+      <View style={[styles.detailsCard, styles.paneCard]}>
+        {lineEdits.length ? (
+          lineEdits.map((line, index) => (
+            <View key={`${line.index}-${index}`} style={styles.detailReadRow}>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={styles.detailReadLabel}>{line.name || 'Item'}</Text>
+                {line.recordedGrams ? (
+                  <Text style={styles.readValue}>On PO {line.recordedGrams}</Text>
+                ) : null}
+              </View>
+              <View style={{ flex: 0.8, minWidth: 96, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                 <TextInput
-                  style={[styles.noteCardInput, { flex: 0.7, minWidth: 88 }]}
-                  value={String(line.amount || '')}
+                  style={[styles.noteCardInput, { flex: 1, minWidth: 72 }]}
+                  value={String(line.errorGrams || '')}
                   onChangeText={(value) =>
                     setLineEdits((current) =>
-                      current.map((row, rowIndex) => (rowIndex === index ? { ...row, amount: value } : row)),
+                      current.map((row, rowIndex) => (rowIndex === index ? { ...row, errorGrams: value } : row)),
                     )
                   }
-                  placeholder="Now"
+                  placeholder={line.errorUnit === 'qty' ? '0' : '0.00'}
                   placeholderTextColor="#c7c7cc"
                   keyboardType="decimal-pad"
+                  accessibilityLabel={`${errorOffUnitLabel(line)} for ${line.name || 'item'}`}
                 />
+                <Text style={styles.readValue}>{errorOffUnitLabel(line)}</Text>
               </View>
-            ))}
-          </View>
-        </>
-      ) : null}
+            </View>
+          ))
+        ) : (
+          <Text style={styles.readValue}>No line items on this purchase.</Text>
+        )}
+      </View>
 
       <Text style={styles.groupHeader}>Photos</Text>
       <View style={[styles.detailsCard, styles.photoCard, styles.paneCard]}>
@@ -592,7 +602,7 @@ function CapturedPhotoStrip({ images, onChange, readOnly = false, compact = fals
   );
 }
 
-export default function TriageReviewDrawer({ visible, session, row, review, extraRows = [], onClose, onSave, onHydrate }) {
+export default function TriageReviewDrawer({ visible, session, row, review, extraRows = [], startAt, onClose, onSave, onHydrate }) {
   const { width: windowWidth } = useWindowDimensions();
   const isMobile = windowWidth < MOBILE_BREAKPOINT;
   const heldRow = useHeldValue(row);
@@ -614,6 +624,8 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
   const [typeQuery, setTypeQuery] = useState('');
   const [images, setImages] = useState([]);
   const [lineEdits, setLineEdits] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const [locations, setLocations] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [staffProfiles, setStaffProfiles] = useState([]);
@@ -683,6 +695,8 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
     setImages([]);
     setLineEdits([]);
     setAddingCustomer(false);
+    setSaving(false);
+    setSaveError('');
   }, []);
 
   useEffect(() => {
@@ -712,15 +726,20 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
     const nextType = isListedErrorType(existingReview?.errorType) ? existingReview.errorType : '';
     const nextAmount = formatErrorAmount(existingReview?.errorAmount);
     const nextImages = normalizeReviewImages(existingReview?.images);
-    const nextLines = Array.isArray(existingReview?.lineEdits) ? existingReview.lineEdits : [];
+    const nextLines = lineErrorDraftsFromPo(
+      current,
+      Array.isArray(existingReview?.lineEdits) ? existingReview.lineEdits : [],
+      (line) => String(line?.name || '').trim() || 'Item',
+    );
     const hasError = Boolean(
       nextNote.trim() ||
         nextType ||
         nextAmount ||
         nextImages.length ||
-        nextLines.length ||
+        nextLines.some((line) => String(line.errorGrams || '').trim() || String(line.amount || '').trim()) ||
         (Array.isArray(existingReview?.corrections) && existingReview.corrections.length),
     );
+    const openReporting = startAt === 'reporting' || startAt === 1 || hasError;
     const savedExtras = {
       note: nextNote,
       errorType: nextType,
@@ -733,7 +752,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
     setErrorAmount(nextAmount);
     setImages(nextImages);
     setLineEdits(nextLines);
-    setStepIndex(hasError ? 1 : 0);
+    setStepIndex(openReporting ? 1 : 0);
     const safeDraft = (row, detail) => {
       try {
         return normalizeDraft(buildDraft(row, detail));
@@ -789,7 +808,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
       .finally(() => {
         if (id === detailRequestId.current) setDetailLoading(false);
       });
-  }, [row?.id, visible]);
+  }, [row?.id, startAt, visible]);
 
   useEffect(() => {
     if (!visible) return undefined;
@@ -1016,13 +1035,26 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
     setTypeQuery('');
   };
 
-  const finish = () => {
-    if (!activeRow || !draft) return;
-    const next = buildReview(activeRow, draft, { note, errorType, errorAmount, images, lineEdits });
-    if (triageReviewEditKey(next) !== baselineKeyRef.current) {
+  const finish = async () => {
+    if (!activeRow || !draft || saving) return;
+    setSaving(true);
+    setSaveError('');
+    try {
+      const uploaded = await uploadTriageErrorPhotos(images, activeRow.id);
+      const next = buildReview(activeRow, draft, {
+        note,
+        errorType,
+        errorAmount,
+        images: uploaded,
+        lineEdits,
+      });
       onSave?.(activeRow.id, next);
+      onClose?.();
+    } catch (err) {
+      setSaveError(err?.message || 'Could not save this error.');
+    } finally {
+      setSaving(false);
     }
-    onClose?.();
   };
 
   if (!mounted || !heldRow) return null;
@@ -1102,16 +1134,16 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
         }
         finish();
       }}
-      disabled={stepIndex === 0 && detailLoading}
+      disabled={saving || (stepIndex === 0 && detailLoading)}
       style={[
         styles.nextBtn,
         isMobile && styles.nextBtnMobile,
-        stepIndex === 0 && detailLoading && styles.addImageBtnDisabled,
+        (saving || (stepIndex === 0 && detailLoading)) && styles.addImageBtnDisabled,
       ]}
-      accessibilityLabel={nextStep ? `Next, ${nextStep.label}` : 'Done'}
+      accessibilityLabel={nextStep ? `Next, ${nextStep.label}` : 'Save'}
     >
       <Text style={[styles.nextBtnText, isMobile && styles.nextBtnTextMobile]}>
-        {nextStep ? nextStep.label : 'Done'}
+        {nextStep ? nextStep.label : saving ? 'Saving…' : 'Save'}
       </Text>
       {nextStep ? <Ionicons name="chevron-forward" size={isMobile ? 18 : 16} color="#fff" /> : null}
     </Pressable>
@@ -1199,6 +1231,7 @@ export default function TriageReviewDrawer({ visible, session, row, review, extr
             </View>
           ) : null}
           {detailError && stepIndex === 0 ? <Text style={styles.warnText}>{detailError}</Text> : null}
+          {saveError ? <Text style={styles.warnText}>{saveError}</Text> : null}
 
           {stepIndex === 0 ? (
             <DetailsPane {...detailsPaneProps}>
