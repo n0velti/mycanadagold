@@ -29,6 +29,9 @@ import { formatInsightPercent } from '../lib/triageInsights';
 import { storesMatch } from '../lib/storeCatalog';
 import { storeMarkColor } from '../lib/storeMarks';
 import {
+  currentErrorPeriod,
+  errorEnteredLabel,
+  errorRowsForSpan,
   listStoreErrorCounts,
   poInStore,
   summarizeStoreErrors,
@@ -282,8 +285,18 @@ function ErrorRowIcon({ label, icon, color, onPress }) {
   );
 }
 
+const ERROR_SPAN_TABS = [
+  { key: 'today', label: 'Today' },
+  { key: 'month', label: 'Month' },
+  { key: 'all', label: 'All' },
+];
+
 function ErrorsPage({ rows, query, onOpen, onDelete }) {
-  const visible = useMemo(() => rows.filter((row) => matchesQuery(row, query)), [query, rows]);
+  const isMobile = useIsMobile();
+  const [span, setSpan] = useState('today');
+  const period = useMemo(() => currentErrorPeriod(), []);
+  const spanned = useMemo(() => errorRowsForSpan(rows, span, period), [period, rows, span]);
+  const visible = useMemo(() => spanned.filter((row) => matchesQuery(row, query)), [query, spanned]);
   const types = useMemo(() => rankCounts(visible, errorTypeOf), [visible]);
   const amount = useMemo(() => visible.reduce((sum, row) => sum + errorAmountOf(row), 0), [visible]);
   const storeCount = useMemo(
@@ -301,6 +314,14 @@ function ErrorsPage({ rows, query, onOpen, onDelete }) {
     );
   }
 
+  const emptyBody = query.trim()
+    ? `No error matches “${query.trim()}”.`
+    : span === 'today'
+      ? 'No errors entered today. Switch to Month or All to see earlier ones.'
+      : span === 'month'
+        ? `No errors entered in ${period?.label || 'this month'}.`
+        : 'No errors.';
+
   return (
     <ChromePage
       hero={
@@ -315,14 +336,26 @@ function ErrorsPage({ rows, query, onOpen, onDelete }) {
           ]}
         />
       }
+      tableHeader={
+        <View style={isMobile ? styles.analyticsTabsMobile : styles.analyticsTabs}>
+          <TextTabs
+            options={ERROR_SPAN_TABS}
+            value={span}
+            onChange={setSpan}
+            size={isMobile ? 'md' : 'lg'}
+            layout={isMobile ? 'segment' : 'bar'}
+          />
+        </View>
+      }
       title="Errors"
       meta={`${visible.length} error${visible.length === 1 ? '' : 's'}`}
       data={visible}
+      extraData={`${span}:${visible.length}`}
       keyExtractor={(row) => `${row.triageId}-${row.id}`}
       renderItem={({ item: row, index }) => (
         <ChromeListRow
           title={row.reference || 'Document'}
-          meta={[errorTypeOf(row), row.storeName, staffName(row), row.dateLabel].filter(Boolean).join(' · ')}
+          meta={[errorTypeOf(row), row.storeName, staffName(row), errorEnteredLabel(row) || row.dateLabel].filter(Boolean).join(' · ')}
           value={formatErrorAmount(row?.review?.errorAmount || '') || ''}
           leading={<PoThumb urls={row.imageUrls} label={row.reference} size={46} />}
           last={index === visible.length - 1}
@@ -355,9 +388,7 @@ function ErrorsPage({ rows, query, onOpen, onDelete }) {
         />
       )}
     >
-      {visible.length
-        ? null
-        : emptyCopy(query.trim() ? `No error matches “${query.trim()}”.` : 'No errors.')}
+      {visible.length ? null : emptyCopy(emptyBody)}
     </ChromePage>
   );
 }
