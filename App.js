@@ -1470,6 +1470,7 @@ function ToolListRow({ tool, pinned, onPress, onTogglePin, last, compact = false
   const pinControl = (
     <Pressable
       style={compact ? styles.toolListPin : styles.appsRowPin}
+      pointerEvents="auto"
       onPress={(event) => {
         event?.stopPropagation?.();
         onTogglePin();
@@ -1528,44 +1529,56 @@ function ToolListRow({ tool, pinned, onPress, onTogglePin, last, compact = false
     );
   }
 
+  // The hover fill is an overlay. Applying it to the row itself sets
+  // position:absolute and pulls the row out of the list, so the pointer
+  // leaves it and the highlight flickers.
   return (
-    <Pressable
-      onPress={onPress}
-      style={({ hovered, pressed }) => [
-        styles.homeStoreRow,
-        (hovered || pressed) && styles.homeStoreRowHovered,
-      ]}
-      accessibilityRole="button"
-      accessibilityLabel={tool.label}
+    <View
+      style={styles.homeStoreRow}
+      {...(Platform.OS === 'web' ? { className: 'cgold-home-row' } : null)}
     >
-      <View style={styles.homeStoreIconWrap}>
-        <View style={[styles.homeStoreIconTile, { backgroundColor: tool.accent }]}>
-          <Ionicons name={filledIonicon(tool.icon)} size={glyphSize} color="#fff" />
+      <Pressable
+        onPress={onPress}
+        style={({ hovered, pressed }) => [
+          StyleSheet.absoluteFill,
+          Platform.OS !== 'web' && (hovered || pressed) ? styles.homeStoreRowHovered : null,
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel={tool.label}
+      />
+      <View pointerEvents="none" style={styles.homeStoreRowForeground}>
+        <View style={styles.homeStoreIconWrap}>
+          <View style={[styles.homeStoreIconTile, { backgroundColor: tool.accent }]}>
+            <Ionicons name={filledIonicon(tool.icon)} size={glyphSize} color="#fff" />
+          </View>
+        </View>
+        <View style={styles.homeStoreRowBody}>
+          <View style={styles.appsRowName}>
+            <Text style={styles.homeStoreName} numberOfLines={1} selectable={false}>
+              {tool.label}
+            </Text>
+            <Text style={styles.homeStoreMeta} numberOfLines={1}>
+              {pinned ? 'Pinned to sidebar' : 'Available'}
+            </Text>
+          </View>
+          <View style={styles.appsRowStatus}>
+            <Text
+              style={[styles.homeStoreMeta, pinned && styles.appsRowStatusPinned]}
+              numberOfLines={1}
+            >
+              {pinned ? 'Pinned' : ''}
+            </Text>
+          </View>
+          <View pointerEvents="auto" style={styles.appsRowPinSlot}>
+            {pinControl}
+          </View>
+          <View style={styles.homeStoreChevron}>
+            <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+          </View>
         </View>
       </View>
-      <View style={[styles.homeStoreRowBody, !last && styles.homeStoreRowDivider]}>
-        <View style={styles.homeStoreColStore}>
-          <Text style={styles.homeStoreName} numberOfLines={1} selectable={false}>
-            {tool.label}
-          </Text>
-          <Text style={styles.homeStoreMeta} numberOfLines={1}>
-            {pinned ? 'Pinned to sidebar' : 'Available'}
-          </Text>
-        </View>
-        <View style={styles.appsRowStatus}>
-          <Text
-            style={[styles.homeStoreMeta, pinned && styles.appsRowStatusPinned]}
-            numberOfLines={1}
-          >
-            {pinned ? 'Pinned' : ''}
-          </Text>
-        </View>
-        {pinControl}
-        <View style={styles.homeStoreChevron}>
-          <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
-        </View>
-      </View>
-    </Pressable>
+      <HomeStoreRowRule last={last} />
+    </View>
   );
 }
 
@@ -1590,14 +1603,22 @@ function ToolsList({ tools, pinnedKeys, onOpen, onTogglePin, compact = false }) 
 
   return (
     <View style={styles.homeStoreTableCard}>
-      <View style={[styles.homeStoreRow, styles.homeStoreHeaderRow]}>
+      <View
+        style={[styles.homeStoreRow, styles.homeStoreHeaderRow]}
+        {...(Platform.OS === 'web' ? { className: 'cgold-home-header-row' } : null)}
+      >
         <View style={styles.homeStoreIconSpacer} />
-        <View style={[styles.homeStoreRowBody, styles.homeStoreHeaderRule]}>
-          <Text style={[styles.homeStoreHeader, styles.homeStoreColStore]}>App</Text>
-          <Text style={[styles.homeStoreHeader, styles.appsRowStatus]}>Status</Text>
+        <View style={styles.homeStoreRowBody}>
+          <View style={styles.appsRowName}>
+            <Text style={styles.homeStoreHeader}>App</Text>
+          </View>
+          <View style={styles.appsRowStatus}>
+            <Text style={styles.homeStoreHeader}>Status</Text>
+          </View>
           <View style={styles.appsRowPinSpacer} />
           <View style={styles.homeStoreChevron} />
         </View>
+        <HomeStoreRowRule header />
       </View>
       {tools.map((tool, index) => (
         <ToolListRow
@@ -5899,7 +5920,6 @@ function HomeScreen({
   );
   const tabBarScroll = useMobileTabBarScrollProps();
   const { canFilter, hasApp } = useAppAccess();
-  const { money } = useDisplayCurrency();
   const homeRootRef = useRef(null);
   const filterButtonRef = useRef(null);
   const homeScrollYRef = useRef(0);
@@ -5917,14 +5937,11 @@ function HomeScreen({
   const dateMode = appDate.mode;
   const startDate = parseDateParam(appDate.startDate);
   const endDate = parseDateParam(appDate.endDate);
-  const [heroFocus, setHeroFocus] = useState('all');
-  const [heroFocusLoading, setHeroFocusLoading] = useState(false);
-  const heroFocusTimer = useRef(null);
+  const heroFocus = 'all';
   const heroDateOpenRef = useRef(null);
   const heroDateAnchorRef = useRef(null);
   const storeDateOpenRef = useRef(null);
   const storeDateAnchorRef = useRef(null);
-  const tableFade = useRef(new Animated.Value(1)).current;
   const [storeRows, setStoreRows] = useState([]);
   const [selectedStore, setSelectedStore] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -6126,37 +6143,7 @@ function HomeScreen({
     );
   }, [visibleRows]);
 
-  const listedRows = useMemo(() => sortRowsForHeroFocus(visibleRows, heroFocus), [heroFocus, visibleRows]);
-  const heroTotals = homeAmountForFocus(totals, heroFocus);
-  const selectHeroFocus = useCallback((next) => {
-    if (next === heroFocus || heroFocusLoading) return;
-    setHeroFocusLoading(true);
-    if (heroFocusTimer.current) clearTimeout(heroFocusTimer.current);
-    heroFocusTimer.current = setTimeout(() => {
-      setHeroFocus(next);
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => setHeroFocusLoading(false));
-      });
-    }, 70);
-  }, [heroFocus, heroFocusLoading]);
-  const toggleHeroFocus = (next) => {
-    selectHeroFocus(heroFocus === next ? 'all' : next);
-  };
-
-  useEffect(() => {
-    Animated.timing(tableFade, {
-      toValue: heroFocusLoading ? 0.22 : 1,
-      duration: heroFocusLoading ? 100 : 240,
-      useNativeDriver: true,
-    }).start();
-  }, [heroFocusLoading, tableFade]);
-
-  useEffect(
-    () => () => {
-      if (heroFocusTimer.current) clearTimeout(heroFocusTimer.current);
-    },
-    [],
-  );
+  const listedRows = useMemo(() => sortRowsForHeroFocus(visibleRows, heroFocus), [visibleRows]);
 
   const handleHomeDateChange = appDate.applyPicker;
 
@@ -6301,7 +6288,6 @@ function HomeScreen({
     });
   };
 
-  const showHomeHero = !(loading && storeRows.length === 0) && visibleRows.length > 0;
   const onHomeScroll = (event) => {
     tabBarScroll.onScroll?.(event);
     const y = event?.nativeEvent?.contentOffset?.y;
@@ -6324,7 +6310,6 @@ function HomeScreen({
     setFiltersOpen((open) => !open);
   };
 
-  const heroStatInteractive = true;
   const renderDateHero = (openRef, anchorRef, inset = true) => (
     <View
       ref={anchorRef}
@@ -6385,113 +6370,6 @@ function HomeScreen({
       {renderHiddenDatePicker(openRef, anchorRef)}
     </View>
   );
-  const txStats = (
-    <>
-      <HomeHeroStat
-        compact={!hideHomeAmounts}
-        interactive={heroStatInteractive}
-        value={totals.txCount}
-        numeric={totals.txCount}
-        format={formatHomeCountTick}
-        reel
-        label="Tx"
-        selected={heroFocus === 'all'}
-        onPress={() => selectHeroFocus('all')}
-      />
-      <HomeHeroStat
-        compact={!hideHomeAmounts}
-        interactive={heroStatInteractive}
-        value={totals.saleCount}
-        numeric={totals.saleCount}
-        format={formatHomeCountTick}
-        reel
-        label="Sales"
-        selected={heroFocus === 'sales'}
-        onPress={() => toggleHeroFocus('sales')}
-      />
-      <HomeHeroStat
-        compact={!hideHomeAmounts}
-        interactive={heroStatInteractive}
-        value={totals.purchaseCount}
-        numeric={totals.purchaseCount}
-        format={formatHomeCountTick}
-        reel
-        label="Purchases"
-        selected={heroFocus === 'purchases'}
-        onPress={() => toggleHeroFocus('purchases')}
-      />
-    </>
-  );
-  const heroInset = (
-    <View
-      style={[
-        styles.igHomeHeroInset,
-        !isMobile && styles.igHomeHeroInsetDesktop,
-      ]}
-    >
-      <View
-        style={[
-          styles.igHomeHeroSplit,
-          isMobile && styles.igHomeHeroSplitMobile,
-          hideHomeAmounts && styles.igHomeHeroSplitBare,
-        ]}
-      >
-        {hideHomeAmounts ? null : renderDateHero(heroDateOpenRef, heroDateAnchorRef)}
-        <View
-          style={[
-            styles.igHomeHeroFigures,
-            hideHomeAmounts && styles.igHomeHeroFiguresBare,
-          ]}
-        >
-        <View
-          style={[
-            styles.igHomeHeroPair,
-            !isMobile && !hideHomeAmounts && styles.igHomeHeroPairEnd,
-            hideHomeAmounts && styles.igHomeHeroPairBare,
-          ]}
-        >
-          {hideHomeAmounts ? (
-            txStats
-          ) : (
-            <>
-              {isMobile ? null : (
-                <View style={[styles.igHomeHeroMetricMain, styles.igHomeHeroRevenueStack]}>
-                  <View style={[styles.igHomeHeroAmountSlot, styles.igHomeHeroAmountSlotTight, styles.igHomeHeroRevenueAmount]}>
-                    {heroFocusLoading ? (
-                      <ActivityIndicator color="#1d1d1f" />
-                    ) : (
-                      <HomeReelValue
-                        style={[
-                          styles.igHomeHeroAmount,
-                          styles.igHomeHeroAmountEnd,
-                          styles.igHomeHeroAmountDesktop,
-                        ]}
-                        value={heroTotals.amount}
-                        kind="currency"
-                        accessibilityLabel={money(heroTotals.amount)}
-                      />
-                    )}
-                  </View>
-                  <Text style={styles.igHomeHeroBlockTitle}>Revenue</Text>
-                </View>
-              )}
-              <View
-                style={[
-                  styles.igHomeHeroStats,
-                  styles.igHomeHeroStatsSide,
-                  !isMobile && styles.igHomeHeroStatsSideDesktop,
-                ]}
-              >
-                {txStats}
-              </View>
-            </>
-          )}
-        </View>
-        </View>
-      </View>
-    </View>
-  );
-  const homeHeroCard = <View style={styles.igHomeHeroShell}>{heroInset}</View>;
 
   return (
     <View style={[styles.toolsScreen, styles.canvasFill, styles.igHomeScreen, !isMobile && styles.igHomeDesktopHost]}>
@@ -6623,16 +6501,6 @@ function HomeScreen({
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor="#8e8e93" />}
       >
         <View style={homeContentInset}>
-          {!isMobile && showHomeHero ? (
-            <View
-              style={[
-                styles.igHomePinnedTop,
-                !isMobile && styles.igHomePinnedTopDesktop,
-              ]}
-            >
-              {homeHeroCard}
-            </View>
-          ) : null}
           {error ? <Text style={[styles.errorText, styles.homeError]}>{error}</Text> : null}
 
           {loading && storeRows.length === 0 ? (
@@ -6662,27 +6530,20 @@ function HomeScreen({
             >
               {visibleRows.length > 0 ? (
                 <View style={styles.homeFocusStage}>
-                  <Animated.View style={{ opacity: tableFade }} pointerEvents={heroFocusLoading ? 'none' : 'auto'}>
-                    <HomeStoresTable
-                      rows={listedRows}
-                      selectedStore={null}
-                      totals={!isMobile && !hideHomeAmounts ? totals : null}
-                      staff={staff}
-                      startKey={startKey}
-                      endKey={endKey}
-                      onOpenStore={openStore}
-                      onOpenPerson={onOpenPerson}
-                      compact={isMobile}
-                      showAmounts={!hideHomeAmounts}
-                      canOpenStore={canOpenHomeStore}
-                      amountFocus={heroFocus}
-                    />
-                  </Animated.View>
-                  {heroFocusLoading ? (
-                    <View style={styles.homeFocusLoading} pointerEvents="none">
-                      <ActivityIndicator color="#1d1d1f" />
-                    </View>
-                  ) : null}
+                  <HomeStoresTable
+                    rows={listedRows}
+                    selectedStore={null}
+                    totals={!isMobile && !hideHomeAmounts ? totals : null}
+                    staff={staff}
+                    startKey={startKey}
+                    endKey={endKey}
+                    onOpenStore={openStore}
+                    onOpenPerson={onOpenPerson}
+                    compact={isMobile}
+                    showAmounts={!hideHomeAmounts}
+                    canOpenStore={canOpenHomeStore}
+                    amountFocus={heroFocus}
+                  />
                 </View>
               ) : null}
             </View>
@@ -11809,6 +11670,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexShrink: 0,
   },
+  appsRowName: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+    gap: 1,
+  },
   appsRowStatus: {
     width: 88,
     flexShrink: 0,
@@ -11820,12 +11689,20 @@ const styles = StyleSheet.create({
     color: '#1a1a1a',
     fontWeight: '600',
   },
+  appsRowPinSlot: {
+    width: 32,
+    flexShrink: 0,
+    zIndex: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   appsRowPin: {
     width: 32,
     height: 32,
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
+    zIndex: 2,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},

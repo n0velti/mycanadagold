@@ -9,7 +9,7 @@ module.exports = defineConfig([
     ignores: ['dist/*', 'supabase/functions/**'],
   },
   {
-    files: ['scripts/**/*.js', 'metro.config.js', 'eslint.config.js'],
+    files: ['scripts/**/*.js', '.cursor/hooks/**/*.js', 'metro.config.js', 'eslint.config.js'],
     languageOptions: {
       globals: {
         __dirname: 'readonly',
@@ -17,6 +17,7 @@ module.exports = defineConfig([
         require: 'readonly',
         module: 'writable',
         console: 'readonly',
+        Buffer: 'readonly',
       },
     },
   },

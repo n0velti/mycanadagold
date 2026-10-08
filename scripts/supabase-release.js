@@ -3,7 +3,8 @@
  * (Dashboard → Account → Access Tokens; needs database, auth, secrets and
  * edge-function write scopes). No Supabase CLI required.
  *
- *   SUPABASE_ACCESS_TOKEN=sbp_… npm run supabase:release
+ *   SUPABASE_ACCESS_TOKEN=sbp_… npm run supabase:release        # dev project
+ *   SUPABASE_ACCESS_TOKEN=sbp_… npm run supabase:release:prod   # production (--prod)
  *
  * Steps (each can be skipped with --skip-<step>):
  *   migrate   apply pending supabase/migrations (delegates to apply-migrations.js)
@@ -18,8 +19,10 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
+const { resolveProjectRef, describeProject } = require('./supabase-projects');
+
 const ROOT = path.join(__dirname, '..');
-const PROJECT_REF = String(process.env.SUPABASE_PROJECT_REF || 'bkvyyddtevzvuanzkobd').trim();
+const PROJECT_REF = resolveProjectRef();
 const API = `https://api.supabase.com/v1/projects/${PROJECT_REF}`;
 const FUNCTIONS = [
   { slug: 'aureus-login', verifyJwt: false },
@@ -150,6 +153,7 @@ async function deployFunctions(accessToken) {
 
 async function main() {
   const accessToken = token();
+  console.log(`Target: ${describeProject(PROJECT_REF)}`);
   await step('migrate', () => migrate(accessToken));
   await step('auth', () => configureAuth(accessToken));
   await step('secrets', () => pushSecrets(accessToken));

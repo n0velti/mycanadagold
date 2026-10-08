@@ -1,0 +1,21 @@
+---
+description: Never delete production data from an agent; dev vs production Supabase; how deletes and destructive SQL work here
+alwaysApply: true
+---
+
+# Database safety
+
+Two Supabase projects, same schema, separate data:
+
+- **Production** `bkvyyddtevzvuanzkobd` — only `main` / `.env.production` / `https://www.mycanadagold.ca`. Live store money, staff PII, FINTRAC.
+- **Dev** `mrvyckltclmcwshnnqfu` — local `.env.local`, the `dev` branch, Vercel previews, cloud-agent previews. The Supabase CLI is linked here; `npm run supabase:release` / `supabase:migrate` target it by default.
+
+Rules:
+
+- Work against dev. Never point `.env.local`, a preview, or a script at production unless the user asks for a production release (`npm run supabase:release:prod`, `--prod`, `--project-ref bkvyyddtevzvuanzkobd`).
+- Never run `DELETE`, `TRUNCATE`, `DROP TABLE`, `DROP COLUMN`, or `supabase db reset` against production, from the CLI, `psql`, the Management API, or the Supabase MCP. `.cursor/hooks/` blocks these; do not look for a way around the block. On dev the same commands ask the user first.
+- Never set `cgold.allow_destructive`. That override exists for a person in the Supabase SQL editor, inside one transaction, on purpose.
+- Rows are removed only by app features: a `.delete()` in `lib/` with an explicit filter, allowed by an RLS policy, triggered by a user action. Do not add a delete path to make a prompt or sync "work".
+- Direct SQL from an agent against production is read-only (`SELECT`). Schema changes go in a new file under `supabase/migrations/` (`npx supabase migration new <name>`), additive, applied to dev with `npm run supabase:push`; the user releases to production.
+- A migration that must remove data or drop a column states why in a comment and begins with `set local cgold.allow_destructive = 'on';`. Flag it to the user before they run the production release.
+- Every delete on a `public` table is archived in `cgold_audit.deleted_rows`. If something was removed by mistake, point the user at `cgold_audit.restore_deleted_row(id)` (README → Delete guardrails) rather than re-creating the data by hand.
