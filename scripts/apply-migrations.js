@@ -3,15 +3,17 @@
  * skipping versions already recorded in supabase_migrations.schema_migrations
  * (the same ledger the Supabase CLI uses, so `supabase db push` stays in sync).
  *
- *   SUPABASE_ACCESS_TOKEN=sbp_... npm run supabase:migrate
+ *   SUPABASE_ACCESS_TOKEN=sbp_... npm run supabase:migrate         # dev project
+ *   SUPABASE_ACCESS_TOKEN=sbp_... npm run supabase:migrate:prod    # production (--prod)
  *
  * Requires a personal access token (Dashboard → Account → Access Tokens).
  * Never pass the secret / service_role key here.
  */
 const fs = require('fs');
 const path = require('path');
+const { resolveProjectRef, describeProject } = require('./supabase-projects');
 
-const PROJECT_REF = String(process.env.SUPABASE_PROJECT_REF || 'bkvyyddtevzvuanzkobd').trim();
+const PROJECT_REF = resolveProjectRef();
 const MIGRATIONS_DIR = path.join(__dirname, '..', 'supabase', 'migrations');
 const DASHBOARD_SQL = `https://supabase.com/dashboard/project/${PROJECT_REF}/sql/new`;
 
@@ -90,6 +92,7 @@ async function main() {
   );
 
   const pending = listMigrations().filter((migration) => !applied.has(migration.version));
+  console.log(`Target: ${describeProject(PROJECT_REF)}`);
   if (pending.length === 0) {
     console.log('Database is up to date.');
     return;

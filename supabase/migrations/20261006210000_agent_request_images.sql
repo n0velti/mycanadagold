@@ -3,17 +3,27 @@
 alter table public.agent_requests
   add column if not exists image_urls text[] not null default '{}';
 
+-- CHECK constraints cannot contain subqueries, so the per-element length
+-- test lives in an immutable helper.
+create or replace function public.text_array_max_length(arr text[])
+returns integer
+language sql
+immutable
+set search_path = pg_catalog
+as $$
+  select coalesce(max(char_length(u)), 0) from unnest(arr) as u;
+$$;
+
+revoke all on function public.text_array_max_length(text[]) from public, anon;
+grant execute on function public.text_array_max_length(text[]) to authenticated, service_role;
+
 alter table public.agent_requests
   drop constraint if exists agent_requests_image_urls_check;
 alter table public.agent_requests
   add constraint agent_requests_image_urls_check
   check (
     coalesce(array_length(image_urls, 1), 0) <= 4
-    and not exists (
-      select 1
-      from unnest(image_urls) as u(url)
-      where char_length(url) > 2048
-    )
+    and public.text_array_max_length(image_urls) <= 2048
   );
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)

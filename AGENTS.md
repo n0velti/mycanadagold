@@ -8,7 +8,9 @@ This file is for agents. Operational setup (Supabase release, staff disable, key
 
 Staff-only tools for Canada Gold stores. One Expo app on web (primary), iOS, and Android. There is no public signup. Access requires an **active Aureus POS login**. The app talks to three POS tenants (East, GTA, PMX), a locked-down Supabase project, and third parties (AI, FINTRAC, Rippling, Gmail, Google reviews, Moneris, RingCentral) only through the `proxy` Edge Function.
 
-Live web: `https://www.mycanadagold.ca` (Vercel also serves `https://mycanadagold.vercel.app`). Supabase project ref: `bkvyyddtevzvuanzkobd`.
+Live web: `https://www.mycanadagold.ca` (Vercel also serves `https://mycanadagold.vercel.app`).
+
+Two Supabase projects, same schema and functions, separate data: **production** `bkvyyddtevzvuanzkobd` (only `main` / `.env.production`) and **dev** `mrvyckltclmcwshnnqfu` (local `.env.local`, the `dev` branch, Vercel previews, cloud-agent previews). Scripts and the CLI target dev unless told `:prod` / `--prod`. Never point `.env.local` or a preview at production.
 
 ## Stack
 
@@ -52,11 +54,11 @@ npm run lint
 npm run build:web && npm run check:secrets
 ```
 
-`.env.local` may only contain `EXPO_PUBLIC_*` values. Metro inlines `process.env.EXPO_PUBLIC_*` at build time (dot-access only — no destructure). `expo export` loads `.env.production`. Never put a service-role, vendor, or POS password in either file.
+`.env.local` may only contain `EXPO_PUBLIC_*` values and points at **dev**. Metro inlines `process.env.EXPO_PUBLIC_*` at build time (dot-access only — no destructure). `expo export` loads `.env.production` (production) unless the shell/Vercel env overrides it (previews → dev); `build:web` passes `--clear` because Metro's cache can keep a stale inlined URL, and `check:secrets` verifies the bundle's target. Never put a service-role, vendor, or POS password in either file.
 
-Supabase (migrations, auth lockdown, secrets, functions) is `npm run supabase:release` with a personal access token. Details: `README.md`. Until that has run against a project, sign-in fails with "Could not reach the sign-in service."
+Supabase (migrations, auth lockdown, secrets, functions) is `npm run supabase:release` (dev) / `npm run supabase:release:prod` (production) with a personal access token. Details: `README.md`. Until that has run against a project, sign-in fails with "Could not reach the sign-in service."
 
-Local web needs a real Aureus staff login. Preview and production share the **same** live Supabase + POS — there is no stub backend.
+Local web needs a real Aureus staff login (the POS is shared; the Supabase data is not). Dev starts empty — the first sign-in there becomes `system_admin`. There is no stub backend.
 
 ## Conventions
 
@@ -67,6 +69,7 @@ Local web needs a real Aureus staff login. Preview and production share the **sa
 - **Data**: POS reads go through `lib/auth.js` (`posFetch` / session tokens). Third-party HTTP goes through `lib/proxy.js`. Do not call vendor APIs from the browser.
 - **Packages**: `npx expo install`. Prefer existing components (`MobileChrome`, `IosSettings`) over new UI kits.
 - **SQL**: new `public` tables need RLS (`FORCE`) plus grants. Wrap `auth.uid()` / `is_active_staff()` in `(select …)` so Postgres can InitPlan (see `20260930153000_rls_auth_initplan.sql`).
+- **Deletes**: `20261008144120_delete_guardrails.sql` refuses `DELETE` from direct SQL and `TRUNCATE` / `DROP TABLE` / `DROP COLUMN` from anyone unless the transaction sets `cgold.allow_destructive = 'on'`. Agents never set it on production. Rows are removed only by app features behind RLS; a migration that must remove data says why and starts with that `set local`. Deleted rows are archived in `cgold_audit.deleted_rows` (see `README.md` → Delete guardrails).
 - **Comments**: only where the why is non-obvious (auth, CSP, Metro). Match the surrounding voice.
 
 ## Risky to touch
@@ -87,6 +90,6 @@ Treat these as high-blast-radius. Read the existing module and `README.md` acces
 
 ## Deploy (do not change Vercel project settings)
 
-`vercel.json` builds `npm run build:web && npm run check:secrets` and publishes `dist/` as a static SPA (`framework: null`, clean URLs, rewrite everything except `/_expo/`, `/assets/`, `/fonts/`). Git integration is on: **`main` → Production**, other branches and pull requests → **Preview** (`vercel[bot]` comments a preview URL). Previews hit the same production Supabase; login from a `*.vercel.app` host only works if that origin is allowed by `CGOLD_ALLOWED_ORIGINS`.
+`vercel.json` builds `npm run build:web && npm run check:secrets` and publishes `dist/` as a static SPA (`framework: null`, clean URLs, rewrite everything except `/_expo/`, `/assets/`, `/fonts/`). Git integration is on: **`main` → Production**, other branches and pull requests → **Preview** (`vercel[bot]` comments a preview URL). Previews use the **dev** Supabase project via Preview-only env vars (`README.md` → Two Supabase projects); login from a `*.vercel.app` host only works if that origin is allowed by `CGOLD_ALLOWED_ORIGINS`.
 
 Do not merge to `main` or deploy to production unless the user explicitly asks. Do not change Vercel project settings.

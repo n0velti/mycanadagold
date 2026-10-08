@@ -36,15 +36,33 @@ Client secrets that must exist on the device (FINTRAC portal token, Rippling tok
 | `scripts/` | `apply-migrations.js`, `check-bundle-secrets.js` |
 | `public/` | Web `index.html` (CSP) and `_headers` (security headers for static hosts) |
 
+## Two Supabase projects
+
+| | Project | Used by |
+| --- | --- | --- |
+| **Production** | `bkvyyddtevzvuanzkobd` (`mycanadagold`) | `main` → `https://www.mycanadagold.ca`. Values come from the committed `.env.production`. |
+| **Dev** | `mrvyckltclmcwshnnqfu` (`mycanadagold-dev`) | Local `npm run web` (`.env.local`), the `dev` branch, Vercel previews, cloud-agent previews. |
+
+Same schema (both get every file in `supabase/migrations/`), same Edge Functions and secrets, separate data and separate staff accounts. Dev starts empty; the first person to sign in there becomes `system_admin`. Scripts and the CLI default to **dev**; production is always an explicit `:prod` / `--prod`.
+
+Vercel previews only use dev once these are set for the **Preview** environment (Vercel → Project → Settings → Environment Variables; leave Production unset so it keeps `.env.production`):
+
+```
+EXPO_PUBLIC_SUPABASE_URL=https://mrvyckltclmcwshnnqfu.supabase.co
+EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_1OQ2FYvsAD5GG8K1vxdu1Q_Ltp6DZCa
+```
+
+`npm run check:secrets` (part of the Vercel build) refuses a production deploy whose bundle references the dev project and a build whose inlined URL does not match `EXPO_PUBLIC_SUPABASE_URL`. `build:web` clears Metro's cache so a cached bundle from the other environment is never reused.
+
 ## Local development
 
 ```sh
 npm install
-cp .env.example .env.local          # add EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+cp .env.example .env.local          # points at the dev project
 npm run web                         # or: npm run ios / npm run android
 ```
 
-`.env.local` may only contain `EXPO_PUBLIC_*` values that are safe to publish. Never put a secret, service-role key, or vendor API key in it.
+`.env.local` may only contain `EXPO_PUBLIC_*` values that are safe to publish. Never put a secret, service-role key, or vendor API key in it, and do not point it at production.
 
 ## Supabase setup (one time, and on every change)
 
@@ -52,19 +70,21 @@ Fastest path — one command with a personal access token (Dashboard → Account
 
 ```sh
 cp supabase/.env.example supabase/.env.local     # fill in vendor keys / Rippling app / linked POS logins
-SUPABASE_ACCESS_TOKEN=sbp_… npm run supabase:release
+SUPABASE_ACCESS_TOKEN=sbp_… npm run supabase:release        # dev
+SUPABASE_ACCESS_TOKEN=sbp_… npm run supabase:release:prod   # production
 ```
 
-This applies pending migrations, turns off signups and confirmation emails, raises the OTP verify rate limit, pushes the function secrets, and deploys both Edge Functions. Until it has run, the hosted project still allows signups and sends confirmation mail, and sign-in fails with "Could not reach the sign-in service."
+This applies pending migrations, turns off signups and confirmation emails, raises the OTP verify rate limit, pushes the function secrets, and deploys the Edge Functions. Until it has run, the hosted project still allows signups and sends confirmation mail, and sign-in fails with "Could not reach the sign-in service."
 
-The same steps individually (or with the Supabase CLI):
+The same steps individually (or with the Supabase CLI, which is linked to **dev**; add `--project-ref bkvyyddtevzvuanzkobd` for production):
 
 1. **Database**
 
    ```sh
-   npm run supabase:push            # with the Supabase CLI linked to the project
+   npm run supabase:push            # CLI, linked project (dev)
    # or, without the CLI:
-   SUPABASE_ACCESS_TOKEN=sbp_… npm run supabase:migrate
+   SUPABASE_ACCESS_TOKEN=sbp_… npm run supabase:migrate         # dev
+   SUPABASE_ACCESS_TOKEN=sbp_… npm run supabase:migrate:prod    # production
    ```
 
 2. **Auth settings** — `supabase/config.toml` disables signups and email confirmations and raises the OTP verification rate limit. Push it with `supabase config push`, or mirror in the dashboard: Authentication → Sign In / Providers → *Allow new users to sign up* **off**, *Confirm email* **off**; Authentication → Rate Limits → *Token verifications* ≥ 600 / 5 min.
@@ -82,10 +102,11 @@ The same steps individually (or with the Supabase CLI):
    npm run supabase:deploy
    ```
 
-   That uses `npx supabase` (no global CLI install). If deploy returns 403, the CLI is signed into a different org — log in with the Canada Gold account (`npx supabase login`, then `npx supabase link --project-ref bkvyyddtevzvuanzkobd`) or deploy with a personal access token:
+   That uses `npx supabase` (no global CLI install). If deploy returns 403, the CLI is signed into a different org — log in with the Canada Gold account (`npx supabase login`, then `npx supabase link --project-ref mrvyckltclmcwshnnqfu`) or deploy with a personal access token:
 
    ```sh
-   SUPABASE_ACCESS_TOKEN=sbp_… npm run supabase:deploy:token
+   SUPABASE_ACCESS_TOKEN=sbp_… npm run supabase:deploy:token        # dev
+   SUPABASE_ACCESS_TOKEN=sbp_… npm run supabase:deploy:token:prod   # production
    ```
 
 The first profile ever created becomes `system_admin`; admins manage roles and can disable staff from Settings → Permissions.
@@ -110,3 +131,33 @@ Connect the Git repo. `vercel.json` exports the web app into `dist/` and serves 
 - **Someone left Aureus**: their next sign-in fails at the POS step; nothing else to do. Optionally disable the profile so their existing session ends right away.
 - **Rotate a vendor key**: update the secret and redeploy (`npm run supabase:secrets && npm run supabase:deploy`). No app release needed.
 - **Login abuse**: `aureus-login` throttles per login (8 failures / 15 min) and per IP (40 / 15 min); attempts are hashed in `public.login_attempts` and pruned after two days.
+
+## Delete guardrails
+
+Migration `20261008144120_delete_guardrails.sql` protects every table in `public`, on both projects:
+
+- **App deletes are archived.** Every deleted row (from the app or from SQL) is copied to `cgold_audit.deleted_rows` with who did it. Exceptions: tables rebuilt on each import (`rippling_*` snapshots, `login_attempts`, `dm_presence`). Archive is purged after 180 days by `select cgold_audit.purge_deleted_rows();` (run it from the SQL editor occasionally, or schedule it if pg_cron is enabled).
+- **Direct SQL cannot delete.** `DELETE` from the SQL editor, CLI, Management API or MCP (anything that is not app traffic through PostgREST) is refused. `TRUNCATE`, `DROP TABLE`, `DROP COLUMN` and `DROP SCHEMA public` are refused for everyone. `DROP POLICY/TRIGGER/FUNCTION/CONSTRAINT` stay allowed. App traffic is unchanged: RLS policies and `safeupdate` (no `DELETE` without `WHERE`) govern it as before.
+- **Doing it on purpose** — one transaction, in the SQL editor, as a person:
+
+  ```sql
+  begin;
+  set local cgold.allow_destructive = 'on';
+  delete from public.some_table where id = '…';
+  commit;
+  ```
+
+  A migration that must remove data or drop a column starts with the same `set local` line. Nothing else disables the guards; agents are told never to set it (`.cursor/rules/database-safety.mdc`, `.cursor/hooks/`).
+- **Undo a delete**: find the row, then restore it by archive id.
+
+  ```sql
+  select id, deleted_at, table_name, session_role, auth_uid, row_data
+  from cgold_audit.deleted_rows
+  where table_name = 'triage_batches' and restored_at is null
+  order by deleted_at desc limit 50;
+
+  select cgold_audit.restore_deleted_row(123);
+  ```
+
+- **Backups**: daily physical backups (7 days) are on; point-in-time recovery is not. Turn PITR on in Dashboard → Database → Backups if a day of data loss is unacceptable.
+- **Agent tooling**: `.cursor/hooks.json` denies destructive database commands and Supabase MCP calls aimed at production (or at an unknown target) and asks before anything that writes to or deploys it. Commands aimed at the dev project are allowed, except destruction, which asks. Hooks run in Cursor and in cloud agents.

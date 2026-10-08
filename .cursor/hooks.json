@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": "node .cursor/hooks/guard-db-shell.js",
+        "failClosed": true,
+        "timeout": 10
+      }
+    ],
+    "beforeMCPExecution": [
+      {
+        "command": "node .cursor/hooks/guard-db-mcp.js",
+        "failClosed": true,
+        "timeout": 10
+      }
+    ]
+  }
+}

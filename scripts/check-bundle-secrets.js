@@ -6,6 +6,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { PROD_REF, DEV_REF } = require('./supabase-projects');
 
 const DIST = path.join(__dirname, '..', 'dist');
 
@@ -59,7 +60,41 @@ function main() {
     }
     process.exit(1);
   }
+  checkSupabaseTarget();
   console.log('Bundle check passed: no secrets or dev proxy fallbacks in dist/.');
+}
+
+/**
+ * The bundle must point at the Supabase project this build was meant for.
+ * Metro's transform cache can keep a stale inlined EXPO_PUBLIC_SUPABASE_URL
+ * (build:web passes --clear, this is the backstop), and a production deploy
+ * must never carry the dev project's URL.
+ */
+function checkSupabaseTarget() {
+  const js = walk(DIST)
+    .filter((file) => file.endsWith('.js'))
+    .map((file) => fs.readFileSync(file, 'utf8'))
+    .join('\n');
+  const wanted = String(process.env.EXPO_PUBLIC_SUPABASE_URL || '').trim();
+  if (wanted) {
+    let host = '';
+    try {
+      host = new URL(wanted).host;
+    } catch {
+      host = '';
+    }
+    if (host && !js.includes(host)) {
+      console.error(`Refusing to ship: EXPO_PUBLIC_SUPABASE_URL is ${host} but the bundle does not reference it (stale Metro cache?).`);
+      process.exit(1);
+    }
+  }
+  const isProductionDeploy = process.env.VERCEL_ENV === 'production';
+  if (isProductionDeploy && js.includes(`${DEV_REF}.supabase.co`)) {
+    console.error(`Refusing to ship: production build references the dev Supabase project (${DEV_REF}).`);
+    process.exit(1);
+  }
+  const target = js.includes(`${DEV_REF}.supabase.co`) ? `dev (${DEV_REF})` : `production (${PROD_REF})`;
+  console.log(`Bundle targets Supabase ${target}.`);
 }
 
 main();
