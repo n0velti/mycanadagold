@@ -32,6 +32,9 @@ const FUNCTIONS = [
 const AUTH_CONFIG = {
   disable_signup: true, // accounts are created only by aureus-login
   mailer_autoconfirm: true, // never send a confirmation email
+  // aureus-login mints sessions with a password grant. A new project has the
+  // email provider off, and sign-in then fails with "Could not start your session."
+  external_email_enabled: true,
   external_anonymous_users_enabled: false,
   rate_limit_verify: 600, // every sign-in is one OTP verify from the function's egress IP
   password_min_length: 12,

@@ -849,6 +849,16 @@ async function handleLogin(req: Request, body: LoginBody): Promise<Response> {
     console.error('bonus access probe failed', err instanceof Error ? err.message : err);
   }
 
+  for (const [key, entry] of Object.entries(bonusAccess.staffPos || {})) {
+    if (!entry?.token || linked[key]?.token) continue;
+    linked[key] = {
+      key,
+      label: entry.label,
+      baseUrl: entry.baseUrl,
+      token: entry.token,
+    };
+  }
+
   await recordAttempt(admin, ipHash, loginHash, true);
 
   const published = publicProfile(await withTeamName(admin, profile));

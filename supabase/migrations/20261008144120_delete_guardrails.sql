@@ -97,11 +97,11 @@ language plpgsql
 set search_path = pg_catalog
 as $$
 begin
-  if session_user = 'authenticator' then
-    return null;
-  end if;
-  if cgold_audit.destructive_allowed() then
-    return null;
+  -- Row-level: return OLD to let the delete proceed. (A statement-level
+  -- trigger fires even when the cascade matches nothing, which blocked
+  -- deleting an auth user who has no profile.)
+  if session_user = 'authenticator' or cgold_audit.destructive_allowed() then
+    return old;
   end if;
   raise exception using
     errcode = 'insufficient_privilege',
@@ -155,7 +155,7 @@ begin
   execute format('drop trigger if exists cgold_guard_block_delete on %s', target);
   execute format(
     'create trigger cgold_guard_block_delete before delete on %s '
-    'for each statement execute function cgold_audit.block_direct_delete()',
+    'for each row execute function cgold_audit.block_direct_delete()',
     target
   );
 

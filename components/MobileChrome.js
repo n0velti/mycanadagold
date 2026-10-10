@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { BlurView } from 'expo-blur';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, Octicons } from '@expo/vector-icons';
 import { Animated, Image, PanResponder, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import {
   attachWebTabBarScrollListeners,
@@ -869,6 +869,12 @@ export function MobileTabBar({
                     <View style={styles.tabIconWrap}>
                       {isProfile ? (
                         <TabProfileAvatar uri={profileAvatarUrl} name={profileName} active={isActive} />
+                      ) : tab.key === 'home' ? (
+                        <Octicons
+                          name={isActive ? 'home-fill' : 'home'}
+                          size={28}
+                          color={isActive ? NAV_ICON_ACTIVE : NAV_ICON_INACTIVE}
+                        />
                       ) : (
                         <Ionicons
                           name={isActive ? tab.iconActive : tab.icon}

@@ -18,7 +18,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAppAccess } from '../lib/permissions';
 import { CANVAS, MOBILE_BREAKPOINT, mobileSafeBottom, useIsMobile } from '../lib/mobileUi';
 import { useHeldValue, useRightDrawerAnimation } from './TriageKit';
-import { BONUS_ACCESS_DENIED, canViewBonusReviewData } from '../lib/auth';
+import { BONUS_ACCESS_DENIED } from '../lib/auth';
 import {
   bonusReviewDetailSpreadsheetFilename,
   bonusSpreadsheetFilename,
@@ -26,6 +26,7 @@ import {
   buildBonusBoard,
   buildBonusReviewDetailWorkbook,
   buildBonusSpreadsheetCsv,
+  bonusBoardAccessDenied,
   canViewAllBonusCounts,
   canonicalBonusStoreName,
   currentBonusMonth,
@@ -191,6 +192,7 @@ function boardTotals(stores) {
       acc.withEmail += Number(store.withEmail) || 0;
       acc.customerCount += Number(store.customerCount) || 0;
       acc.eligibleCount += Number(store.eligibleCount) || 0;
+      acc.photoCount += Number(store.photoReviewCount) || 0;
       acc.negativeCount += Number(store.negativeCount) || 0;
       acc.reviewCount += Number(store.reviewCount) || 0;
       acc.fiveStarCount += Number(store.fiveStarCount) || 0;
@@ -201,6 +203,7 @@ function boardTotals(stores) {
       withEmail: 0,
       customerCount: 0,
       eligibleCount: 0,
+      photoCount: 0,
       negativeCount: 0,
       reviewCount: 0,
       fiveStarCount: 0,
@@ -1018,7 +1021,7 @@ export default function BonusesScreen({
         setError('');
         return;
       }
-      if (canViewBonusReviewData(session) === false) {
+      if (bonusBoardAccessDenied(session)) {
         setBoard(null);
         setError(BONUS_ACCESS_DENIED);
         setLoading(false);
@@ -1270,24 +1273,40 @@ export default function BonusesScreen({
         {formatMoney(totals.totalPayout)}
       </Text>
       <View style={styles.heroStats}>
-        <View style={styles.heroStat}>
-          <Text style={[styles.heroStatValue, { color: rateColor(emailRate, !totals.customerCount) }]}>
-            {emailRateLabel}
-          </Text>
-          <Text style={styles.heroStatLabel}>Email</Text>
-        </View>
-        <View style={styles.heroStatDivider} />
-        <View style={styles.heroStat}>
-          <Text style={styles.heroStatValue}>{totals.eligibleCount}</Text>
-          <Text style={styles.heroStatLabel}>Eligible</Text>
-        </View>
-        <View style={styles.heroStatDivider} />
-        <View style={styles.heroStat}>
-          <Text style={[styles.heroStatValue, totals.negativeCount > 1 && styles.rateLow]}>
-            {totals.negativeCount}
-          </Text>
-          <Text style={styles.heroStatLabel}>Negatives</Text>
-        </View>
+        {viewAllCounts ? (
+          <>
+            <View style={styles.heroStat}>
+              <Text style={[styles.heroStatValue, { color: rateColor(emailRate, !totals.customerCount) }]}>
+                {emailRateLabel}
+              </Text>
+              <Text style={styles.heroStatLabel}>Email</Text>
+            </View>
+            <View style={styles.heroStatDivider} />
+            <View style={styles.heroStat}>
+              <Text style={styles.heroStatValue}>{totals.eligibleCount}</Text>
+              <Text style={styles.heroStatLabel}>Eligible</Text>
+            </View>
+            <View style={styles.heroStatDivider} />
+            <View style={styles.heroStat}>
+              <Text style={[styles.heroStatValue, totals.negativeCount > 1 && styles.rateLow]}>
+                {totals.negativeCount}
+              </Text>
+              <Text style={styles.heroStatLabel}>Negatives</Text>
+            </View>
+          </>
+        ) : (
+          <>
+            <View style={styles.heroStat}>
+              <Text style={styles.heroStatValue}>{totals.eligibleCount}</Text>
+              <Text style={styles.heroStatLabel}>Eligible</Text>
+            </View>
+            <View style={styles.heroStatDivider} />
+            <View style={styles.heroStat}>
+              <Text style={styles.heroStatValue}>{totals.photoCount}</Text>
+              <Text style={styles.heroStatLabel}>Photos</Text>
+            </View>
+          </>
+        )}
       </View>
       {stillLoading ? <Text style={styles.heroMeta}>Updating reviews…</Text> : null}
     </View>
@@ -1306,27 +1325,48 @@ export default function BonusesScreen({
         {formatMoney(activeStore.totalPayout)}
       </Text>
       <View style={styles.heroStats}>
-        <View style={styles.heroStat}>
-          <Text
-            style={[
-              styles.heroStatValue,
-              { color: rateColor(activeStore.emailRate, !activeStore.customerCount) },
-            ]}
-          >
-            {activeStore.emailRateLabel}
-          </Text>
-          <Text style={styles.heroStatLabel}>Email</Text>
-        </View>
-        <View style={styles.heroStatDivider} />
-        <View style={styles.heroStat}>
-          <Text style={styles.heroStatValue}>{activeStore.eligibleCount}</Text>
-          <Text style={styles.heroStatLabel}>Eligible</Text>
-        </View>
-        <View style={styles.heroStatDivider} />
-        <View style={styles.heroStat}>
-          <Text style={styles.heroStatValue}>{formatMoney(activeStore.perReviewBonus)}</Text>
-          <Text style={styles.heroStatLabel}>Per review</Text>
-        </View>
+        {viewAllCounts ? (
+          <>
+            <View style={styles.heroStat}>
+              <Text
+                style={[
+                  styles.heroStatValue,
+                  { color: rateColor(activeStore.emailRate, !activeStore.customerCount) },
+                ]}
+              >
+                {activeStore.emailRateLabel}
+              </Text>
+              <Text style={styles.heroStatLabel}>Email</Text>
+            </View>
+            <View style={styles.heroStatDivider} />
+            <View style={styles.heroStat}>
+              <Text style={styles.heroStatValue}>{activeStore.eligibleCount}</Text>
+              <Text style={styles.heroStatLabel}>Eligible</Text>
+            </View>
+            <View style={styles.heroStatDivider} />
+            <View style={styles.heroStat}>
+              <Text style={styles.heroStatValue}>{formatMoney(activeStore.perReviewBonus)}</Text>
+              <Text style={styles.heroStatLabel}>Per review</Text>
+            </View>
+          </>
+        ) : (
+          <>
+            <View style={styles.heroStat}>
+              <Text style={styles.heroStatValue}>{activeStore.eligibleCount}</Text>
+              <Text style={styles.heroStatLabel}>Eligible</Text>
+            </View>
+            <View style={styles.heroStatDivider} />
+            <View style={styles.heroStat}>
+              <Text style={styles.heroStatValue}>{activeStore.photoReviewCount}</Text>
+              <Text style={styles.heroStatLabel}>Photos</Text>
+            </View>
+            <View style={styles.heroStatDivider} />
+            <View style={styles.heroStat}>
+              <Text style={styles.heroStatValue}>{formatMoney(activeStore.perReviewBonus)}</Text>
+              <Text style={styles.heroStatLabel}>Per review</Text>
+            </View>
+          </>
+        )}
       </View>
     </View>
   ) : null;
@@ -1341,22 +1381,24 @@ export default function BonusesScreen({
         />
       ) : null}
 
-      <Pressable
-        style={styles.emailJump}
-        onPress={() =>
-          onOpenEmails?.({
-            storeName: activeStore.storeName,
-            startDate,
-            endDate,
-          })
-        }
-      >
-        <Ionicons name="mail-outline" size={16} color={ACCENT} />
-        <Text style={styles.emailJumpText}>
-          {activeStore.withEmail}/{activeStore.customerCount} named emails · {activeStore.emailRateLabel}
-        </Text>
-        <Ionicons name="chevron-forward" size={16} color={ACCENT} />
-      </Pressable>
+      {viewAllCounts ? (
+        <Pressable
+          style={styles.emailJump}
+          onPress={() =>
+            onOpenEmails?.({
+              storeName: activeStore.storeName,
+              startDate,
+              endDate,
+            })
+          }
+        >
+          <Ionicons name="mail-outline" size={16} color={ACCENT} />
+          <Text style={styles.emailJumpText}>
+            {activeStore.withEmail}/{activeStore.customerCount} named emails · {activeStore.emailRateLabel}
+          </Text>
+          <Ionicons name="chevron-forward" size={16} color={ACCENT} />
+        </Pressable>
+      ) : null}
 
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>{viewAllCounts ? 'Employees' : 'Your payout'}</Text>
@@ -1365,7 +1407,7 @@ export default function BonusesScreen({
           {activeStore.photoReviewCount
             ? ` · ${activeStore.photoReviewCount} photo × ${formatMoney(PHOTO_BONUS)}`
             : ''}
-          {activeStore.aureusEmployeeCount
+          {viewAllCounts && activeStore.aureusEmployeeCount
             ? ` · ${activeStore.aureusEmployeeCount} analysts & managers on roster`
             : ''}
         </Text>

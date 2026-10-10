@@ -61,7 +61,7 @@ import {
   rememberHomeStoreReviews,
   reviewStatsFromReviews,
 } from '../lib/googleReviews';
-import { CANVAS, MOBILE, MOBILE_FILTER_INSET, MOBILE_FILTER_SIZE, NAV_TAB_ACTIVE_BG, useIsMobile } from '../lib/mobileUi';
+import { CANVAS, MOBILE, MOBILE_FILTER_INSET, MOBILE_FILTER_SIZE, NAV_TAB_ACTIVE_RADIUS, useIsMobile } from '../lib/mobileUi';
 import { useDisplayCurrency } from '../lib/displayCurrency';
 import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
 import { FONT_LIGHT } from '../lib/typography';
@@ -702,11 +702,78 @@ function OverviewHero({
   );
 }
 
-function DashSection({ title, meta, onPress, children, style, headStyle, app, fill = false, grab = false, panHandlers, ...rest }) {
+function StoreOverviewStats({
+  cashLabel,
+  emailLabel,
+  phoneLabel,
+  bonusLabel,
+  emailTone,
+  phoneTone,
+  bonusTone,
+  onOpenCash,
+  onOpenEmail,
+  onOpenPhone,
+  onOpenBonus,
+}) {
+  const cols = [
+    { key: 'cash', label: 'Cash till', value: cashLabel, onPress: onOpenCash },
+    { key: 'email', label: 'Email', value: emailLabel, tone: emailTone, onPress: onOpenEmail },
+    { key: 'phone', label: 'Phone', value: phoneLabel, tone: phoneTone, onPress: onOpenPhone },
+    { key: 'bonus', label: 'Bonus', value: bonusLabel, tone: bonusTone, onPress: onOpenBonus },
+  ];
+  return (
+    <View style={styles.overviewStats}>
+      <View
+        style={[styles.storeTxRow, styles.storeTxHeaderRow]}
+        {...(Platform.OS === 'web' ? { className: 'cgold-home-header-row' } : null)}
+      >
+        <View style={styles.overviewStatsBody}>
+          {cols.map((col) => (
+            <Text key={col.key} style={[styles.storeTxHeader, styles.overviewStatsCol]} numberOfLines={1}>
+              {col.label}
+            </Text>
+          ))}
+        </View>
+        <View
+          style={[styles.storeTxRowRule, styles.storeTxHeaderRule]}
+          {...(Platform.OS === 'web' ? { className: 'cgold-home-row-rule' } : null)}
+        />
+      </View>
+      <View style={styles.storeTxRow}>
+        <View style={styles.overviewStatsBody}>
+          {cols.map((col) => (
+            <Pressable
+              key={col.key}
+              onPress={col.onPress}
+              style={styles.overviewStatsCol}
+              accessibilityRole="button"
+              accessibilityLabel={`${col.label} ${col.value}`}
+            >
+              <Text
+                style={[
+                  styles.overviewStatsValue,
+                  col.tone === 'low' && styles.storeHomeHeroStatLow,
+                  col.tone === 'ok' && styles.storeHomeHeroStatOk,
+                ]}
+                numberOfLines={1}
+              >
+                {col.value}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        <View style={styles.storeTxRowRule} />
+      </View>
+    </View>
+  );
+}
+
+function DashSection({ title, meta, onPress, children, style, headStyle, app, fill = false, grab = false, hideHead = false, panHandlers, ...rest }) {
   return (
     <View style={[styles.dashSection, fill && styles.dashSectionFill, style]} {...rest}>
       <View {...(grab ? panHandlers : null)} style={grab ? styles.dashSheetHandle : null}>
         {grab ? <View style={styles.dashSheetGrabPill} /> : null}
+      {hideHead ? null : (
       <Pressable
         onPress={onPress}
         disabled={!onPress}
@@ -733,6 +800,7 @@ function DashSection({ title, meta, onPress, children, style, headStyle, app, fi
           {onPress ? <Ionicons name="chevron-forward" size={app ? 16 : 14} color={SECONDARY} /> : null}
         </View>
       </Pressable>
+      )}
       </View>
       <View style={[styles.dashList, fill && styles.dashListFill]}>{children}</View>
     </View>
@@ -1279,19 +1347,23 @@ const TransactionRow = memo(function TransactionRow({
           {item.amountLabel || '—'}
         </Text>
       </View>
-      <View style={styles.storeTxChevron}>
-        <Ionicons name="chevron-forward" size={14} color="#c7c7cc" />
-      </View>
+    </View>
+  );
+
+  const chevron = (
+    <View style={styles.storeTxChevron} pointerEvents="none" accessibilityElementsHidden>
+      <Ionicons name="chevron-forward" size={18} color="#8e8e93" />
     </View>
   );
 
   if (Platform.OS === 'web') {
     return (
-      <View style={styles.storeTxRow} className="cgold-store-tx-row" accessibilityLabel={rowLabel}>
+      <View style={styles.storeTxRow} className="cgold-home-row" accessibilityLabel={rowLabel}>
         <Pressable
           onPress={() => onPress?.(item)}
+          className="cgold-home-row-hit"
           style={({ hovered, pressed }) => [
-            StyleSheet.absoluteFill,
+            styles.storeTxRowHit,
             (hovered || pressed) && styles.storeTxRowHovered,
           ]}
           accessibilityRole="button"
@@ -1300,9 +1372,10 @@ const TransactionRow = memo(function TransactionRow({
         <View pointerEvents="none" style={styles.storeTxRowForeground}>
           {cells}
         </View>
+        {chevron}
         <View
           style={[styles.storeTxRowRule, last && styles.storeTxRowRuleLast]}
-          {...(Platform.OS === 'web' ? { className: 'cgold-store-tx-rule' } : null)}
+          {...(Platform.OS === 'web' ? { className: 'cgold-home-row-rule' } : null)}
         />
         <FloatingTooltip
           visible={Boolean(splitAnchor && splitTip)}
@@ -1325,6 +1398,7 @@ const TransactionRow = memo(function TransactionRow({
       accessibilityLabel={rowLabel}
     >
       {cells}
+      {chevron}
       <View style={[styles.storeTxRowRule, last && styles.storeTxRowRuleLast]} />
     </Pressable>
   );
@@ -2098,7 +2172,10 @@ function StoreSnapshotPanel({
     ) : (
       <>
         {isMobile ? null : (
-          <View style={styles.storeTxHeaderRow}>
+          <View
+            style={[styles.storeTxRow, styles.storeTxHeaderRow]}
+            {...(Platform.OS === 'web' ? { className: 'cgold-home-header-row' } : null)}
+          >
             <View style={styles.storeTxRowBody}>
               <Text style={[styles.storeTxHeader, styles.storeTxColPhoto]}>Photo</Text>
               <Text style={[styles.storeTxHeader, styles.storeTxColKind]}>Type</Text>
@@ -2108,9 +2185,12 @@ function StoreSnapshotPanel({
               <Text style={[styles.storeTxHeader, styles.storeTxColItem]}>Item</Text>
               <View style={styles.storeTxColEmployee} />
               <Text style={[styles.storeTxHeader, styles.storeTxColAmount, styles.storeTxHeaderEnd]}>Amount</Text>
-              <View style={styles.storeTxChevron} />
             </View>
-            <View style={[styles.storeTxRowRule, styles.storeTxHeaderRule]} />
+            <View style={styles.storeTxChevron} />
+            <View
+              style={[styles.storeTxRowRule, styles.storeTxHeaderRule]}
+              {...(Platform.OS === 'web' ? { className: 'cgold-home-row-rule' } : null)}
+            />
           </View>
         )}
         {visibleTxRows.map((item, index) => (
@@ -2129,7 +2209,30 @@ function StoreSnapshotPanel({
       </>
     );
 
-  const transactionsBody = mappedTxRows;
+  const emailRate =
+    !emailCapture || !emailCapture.customerCount ? null : Math.round(Number(emailCapture.rate));
+  const phoneRate = phoneRatio?.rate == null ? null : Math.round(Number(phoneRatio.rate));
+  const rateToneFor = (rate) => (rate == null ? undefined : rate < 80 ? 'low' : 'ok');
+  const overviewStats = !isMobile ? (
+    <StoreOverviewStats
+      cashLabel={cashLoading && !cashCad ? '…' : cashCad ? formatAmount(cashCad.amount, 'CAD') : '—'}
+      emailLabel={emailRate == null ? '—' : `${emailRate}%`}
+      phoneLabel={phoneRate == null ? '—' : `${phoneRate}%`}
+      bonusLabel={reviewStats?.count == null ? '—' : String(reviewStats.count)}
+      emailTone={rateToneFor(emailRate)}
+      phoneTone={rateToneFor(phoneRate)}
+      onOpenCash={() => onOpenApp?.('financials')}
+      onOpenEmail={() => onOpenApp?.('emails')}
+      onOpenPhone={() => onOpenApp?.('phone')}
+      onOpenBonus={() => onOpenApp?.('reviews')}
+    />
+  ) : null;
+  const transactionsBody = (
+    <>
+      {overviewStats}
+      {mappedTxRows}
+    </>
+  );
 
   const openSnapshot = useCallback(
     (key) => {
@@ -2225,7 +2328,7 @@ function StoreSnapshotPanel({
           {transactionsBody}
         </View>
       ) : (
-        <DashSection title={listTitle} meta={listMeta} fill>
+        <DashSection title={listTitle} meta={listMeta} fill hideHead={!isMobile && listTab === 'transactions'}>
           {listBody}
         </DashSection>
       )}
@@ -2383,27 +2486,6 @@ function StoreSnapshotPanel({
             {...tabBarScroll}
             {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll' } : null)}
           >
-            <View style={styles.storeHomeHeroPadDesktop}>
-              <View style={styles.storeHomePinnedTopDesktop}>
-                <StoreHomeHero
-                  store={store}
-                  focus={heroFocus}
-                  onFocus={setHeroFocus}
-                  txSelected={listTab === 'transactions'}
-                  onPress={() => onOpenApp?.('transactions')}
-                  onOpenApp={onOpenApp}
-                  isMobile={false}
-                  dateHero={dateHero}
-                  periodLabel={periodLabel}
-                  emailCapture={emailCapture}
-                  phoneRatio={phoneRatio}
-                  reviewStats={reviewStats}
-                  cashCad={cashCad}
-                  cashLoading={cashLoading}
-                />
-                {pinnedAppRow}
-              </View>
-            </View>
             <View style={styles.storeHomeSheetPadDesktop}>{sheetLists}</View>
           </ScrollView>
         </View>
@@ -2537,7 +2619,7 @@ const styles = StyleSheet.create({
     paddingRight: 24,
   },
   storeHomeSheetPadDesktop: {
-    paddingHorizontal: 0,
+    paddingHorizontal: 16,
     paddingBottom: 24,
   },
   storeHomePinnedTop: {
@@ -2838,6 +2920,30 @@ const styles = StyleSheet.create({
   storeHomeHeroStatOk: {
     color: '#15803D',
   },
+  overviewStats: {
+    marginBottom: 20,
+  },
+  overviewStatsBody: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 28,
+    marginLeft: 10,
+    paddingRight: 28,
+  },
+  overviewStatsCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  overviewStatsValue: {
+    fontFamily: titleFontFamily,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '400',
+    color: MOBILE.label,
+    letterSpacing: -0.2,
+  },
   storeHomeSheet: {
     backgroundColor: 'transparent',
     borderRadius: 0,
@@ -2847,7 +2953,7 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
   },
   storeHomeSheetDesktop: {
-    marginTop: 8,
+    marginTop: 0,
     borderRadius: 0,
     paddingBottom: 24,
   },
@@ -2901,13 +3007,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   storeTxHeaderRow: {
-    position: 'relative',
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 28,
-    paddingLeft: 32,
-    paddingRight: 24,
+    minHeight: 34,
+    maxHeight: undefined,
+    height: undefined,
+    paddingVertical: 6,
     backgroundColor: CANVAS,
+    ...Platform.select({
+      web: { cursor: 'default' },
+      default: {},
+    }),
   },
   storeTxHeader: {
     fontFamily,
@@ -2926,31 +3034,43 @@ const styles = StyleSheet.create({
     position: 'relative',
     flexDirection: 'row',
     alignItems: 'center',
-    height: 40,
-    minHeight: 40,
-    maxHeight: 40,
-    paddingVertical: 0,
-    paddingLeft: 32,
-    paddingRight: 24,
+    minHeight: 46,
+    paddingVertical: 6,
+    paddingLeft: 0,
     overflow: 'visible',
     backgroundColor: 'transparent',
     ...Platform.select({
-      web: { cursor: 'pointer' },
+      web: {
+        cursor: 'pointer',
+        transitionProperty: 'background-color',
+        transitionDuration: '120ms',
+        transitionTimingFunction: 'ease',
+      },
       default: {},
     }),
   },
-  storeTxRowHovered: {
+  storeTxRowHit: {
     position: 'absolute',
     top: 0,
     bottom: 0,
-    left: 26,
-    right: 16,
-    borderRadius: 6,
-    backgroundColor: NAV_TAB_ACTIVE_BG,
+    left: -6,
+    right: 0,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  storeTxRowHovered: {
+    borderColor: '#d0d0d0',
+    backgroundColor: 'rgba(60, 60, 67, 0.045)',
   },
   storeTxRowHoveredNative: {
-    backgroundColor: NAV_TAB_ACTIVE_BG,
-    borderRadius: 6,
+    marginLeft: -6,
+    marginRight: 8,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    backgroundColor: 'rgba(60, 60, 67, 0.045)',
+    borderWidth: 1,
+    borderColor: '#d0d0d0',
   },
   storeTxRowForeground: {
     flex: 1,
@@ -2962,15 +3082,17 @@ const styles = StyleSheet.create({
   storeTxRowBody: {
     flex: 1,
     minWidth: 0,
+    alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 28,
     marginLeft: 10,
+    paddingRight: 28,
   },
   storeTxRowRule: {
     position: 'absolute',
     left: 32,
-    right: 24,
+    right: 10,
     bottom: 0,
     height: StyleSheet.hairlineWidth,
     backgroundColor: 'rgba(42,38,30,0.08)',
@@ -3055,14 +3177,19 @@ const styles = StyleSheet.create({
     ...Platform.select({ web: { pointerEvents: 'auto' }, default: {} }),
   },
   storeTxChevron: {
-    width: 14,
-    flexShrink: 0,
+    position: 'absolute',
+    right: 2,
+    top: 0,
+    bottom: 0,
+    width: 22,
     alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 3,
   },
   storeTxName: {
     fontFamily: titleFontFamily,
-    fontSize: 13,
-    lineHeight: 16,
+    fontSize: 14,
+    lineHeight: 18,
     fontWeight: '400',
     color: MOBILE.label,
     letterSpacing: -0.2,
@@ -3076,8 +3203,8 @@ const styles = StyleSheet.create({
   },
   storeTxAmount: {
     fontFamily,
-    fontSize: 13,
-    lineHeight: 16,
+    fontSize: 14,
+    lineHeight: 18,
     fontWeight: '600',
     color: MOBILE.label,
     letterSpacing: -0.2,
@@ -3091,7 +3218,7 @@ const styles = StyleSheet.create({
     paddingLeft: 32,
     paddingRight: 32,
     paddingVertical: 16,
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: 'rgba(60,60,67,0.14)',
     ...Platform.select({
@@ -3399,7 +3526,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 10,
     borderRadius: 6,
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: 'rgba(42,38,30,0.08)',
     gap: 6,
@@ -3672,7 +3799,7 @@ const styles = StyleSheet.create({
     borderBottomColor: 'rgba(60,60,67,0.24)',
   },
   heroCard: {
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
     borderRadius: 16,
     paddingHorizontal: 18,
     paddingTop: 18,
