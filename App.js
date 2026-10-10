@@ -1010,6 +1010,7 @@ const TRANSACTION_DETAIL_TABS = TRANSACTION_DETAIL_TAB_KEYS.map((key) =>
 ).filter(Boolean);
 
 const STORE_DRAWER_RAIL_WIDTH = 176;
+const APPS_LIBRARY_RAIL_WIDTH = 264;
 
 function displayName(session) {
   if (!session) return '';
@@ -1314,32 +1315,40 @@ function ToolsList({ tools, pinnedKeys, onOpen, onTogglePin }) {
           selected={false}
           onPress={() => onOpen(tool)}
           trailing={
-            <Pressable
-              style={styles.pinnedRemoveButton}
-              pointerEvents="auto"
-              onPress={(event) => {
-                event?.stopPropagation?.();
-                onTogglePin(tool.key);
-              }}
-              hitSlop={6}
-              accessibilityRole="button"
-              accessibilityLabel={
-                pinnedKeys.includes(tool.key) ? `Unpin ${tool.label}` : `Pin ${tool.label}`
-              }
-              {...(Platform.OS === 'web'
-                ? {
-                    className: pinnedKeys.includes(tool.key)
-                      ? 'cgold-apps-rail-pin cgold-apps-rail-pin-on'
-                      : 'cgold-apps-rail-pin',
-                  }
-                : null)}
-            >
+            <View style={styles.appsRailTrailing}>
+              <Pressable
+                style={styles.pinnedRemoveButton}
+                pointerEvents="auto"
+                onPress={(event) => {
+                  event?.stopPropagation?.();
+                  onTogglePin(tool.key);
+                }}
+                hitSlop={6}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  pinnedKeys.includes(tool.key) ? `Unpin ${tool.label}` : `Pin ${tool.label}`
+                }
+                {...(Platform.OS === 'web'
+                  ? {
+                      className: pinnedKeys.includes(tool.key)
+                        ? 'cgold-apps-rail-pin cgold-apps-rail-pin-on'
+                        : 'cgold-apps-rail-pin',
+                    }
+                  : null)}
+              >
+                <Ionicons
+                  name={pinnedKeys.includes(tool.key) ? 'pin' : 'pin-outline'}
+                  size={14}
+                  color={pinnedKeys.includes(tool.key) ? TAB_INK : MOBILE.secondary}
+                />
+              </Pressable>
               <Ionicons
-                name={pinnedKeys.includes(tool.key) ? 'pin' : 'pin-outline'}
-                size={14}
-                color={pinnedKeys.includes(tool.key) ? TAB_INK : MOBILE.secondary}
+                name="chevron-forward"
+                size={16}
+                color="#c7c7cc"
+                style={styles.appsRailChevron}
               />
-            </Pressable>
+            </View>
           }
         />
       ))}
@@ -12859,7 +12868,7 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
   },
   appsListInset: {
-    width: STORE_DRAWER_RAIL_WIDTH,
+    width: APPS_LIBRARY_RAIL_WIDTH,
     alignSelf: 'flex-start',
   },
   appsRailList: {
@@ -12872,11 +12881,21 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
+  appsRailTrailing: {
+    marginLeft: 'auto',
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 0,
+    gap: 2,
+  },
+  appsRailChevron: {
+    marginTop: 1,
+  },
   appsListEmpty: {
     alignSelf: 'flex-start',
     textAlign: 'left',
     marginTop: 24,
-    maxWidth: STORE_DRAWER_RAIL_WIDTH,
+    maxWidth: APPS_LIBRARY_RAIL_WIDTH,
   },
   screenReloadButton: {
     marginTop: 16,
