@@ -35,7 +35,7 @@ import {
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Feather, Ionicons, MaterialCommunityIcons, Octicons } from '@expo/vector-icons';
 import {
   accessiblePosSystems,
   hasStoredSession,
@@ -50,10 +50,7 @@ import {
   watchAureusToken,
 } from './lib/auth';
 import {
-  DEFAULT_APPS_VIEW,
-  loadAppsView,
   loadPinnedTools,
-  persistAppsView,
   persistPinnedTools,
   storeLocationFromSession,
   isRestrictedHomeEmployee,
@@ -122,7 +119,7 @@ import { useTxnCashBreakdowns } from './lib/txnCashBreakdowns';
 import { flushNow as flushActionLog, setActionLogActor, setActionLogContext } from './lib/actionLog';
 import { DISPLAY_CURRENCIES, DisplayCurrencyProvider, useDisplayCurrency } from './lib/displayCurrency';
 import { AppDateProvider, AppDateRouteReset, useAppDate } from './lib/appDate';
-import { SPOT_METALS } from './lib/spotPrices';
+import { SPOT_METALS, SPOT_REFRESH_MS } from './lib/spotPrices';
 import HomeDatePicker from './components/HomeDatePicker';
 import LoginScreen from './components/LoginScreen';
 import ProfileLoginSwitcher from './components/ProfileLoginSwitcher';
@@ -159,8 +156,10 @@ import {
 } from './lib/storeSettings';
 import {
   GOOGLE_STORE_PLACES,
-  fetchGoogleReviewsForStore,
+  getGooglePlaceForStore,
+  peekCachedGoogleReviews,
   peekHomeStoreReviews,
+  prefetchHomeStoreReviews,
   rememberHomeStoreReviews,
   reviewStatsFromReviews,
   reviewsForStoreName,
@@ -281,6 +280,32 @@ function scheduleWarmup(run, delayMs = 3500) {
     clearTimeout(timer);
     if (idleHandle != null && typeof cancelIdleCallback === 'function') cancelIdleCallback(idleHandle);
   };
+}
+
+/** Let the browser paint and handle input before more Home CPU work. */
+function yieldToMain() {
+  return new Promise((resolve) => {
+    if (typeof MessageChannel !== 'undefined') {
+      const { port1, port2 } = new MessageChannel();
+      port1.onmessage = () => resolve();
+      port2.postMessage(null);
+      return;
+    }
+    setTimeout(resolve, 0);
+  });
+}
+
+function emptyPinnedHomeRows() {
+  return HOME_PINNED_STORES.map((store) => ({
+    store,
+    saleCount: 0,
+    purchaseCount: 0,
+    soAmount: 0,
+    poAmount: 0,
+    txCount: 0,
+    totalAmount: 0,
+    transactions: [],
+  }));
 }
 
 /** Inventory + till + triage caches, after the first screen is on-screen. */
@@ -440,6 +465,7 @@ const WEB_SHELL_FONTS = {
 const WEB_DEFERRED_FONTS = {
   'material-community': '/fonts/MaterialCommunityIcons.ttf',
   feather: '/fonts/Feather.ttf',
+  octicons: '/fonts/Octicons.ttf',
 };
 const NATIVE_FONTS =
   Platform.OS === 'web'
@@ -449,6 +475,7 @@ const NATIVE_FONTS =
         ...Ionicons.font,
         ...MaterialCommunityIcons.font,
         ...Feather.font,
+        ...Octicons.font,
       };
 
 if (Platform.OS === 'web' && typeof document !== 'undefined') {
@@ -469,11 +496,9 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-home-row-inert,.cgold-home-row-inert *{pointer-events:none!important;}',
     '.cgold-home-row-inert .cgold-store-closed-hit{pointer-events:auto!important;}',
     '.cgold-home-row{cursor:pointer;background-color:transparent!important;overflow:visible!important;position:relative;}',
-    '.cgold-home-row::before{content:"";position:absolute;top:0;bottom:0;left:-6px;right:8px;border-radius:6px;background:transparent;pointer-events:none;z-index:0;}',
-    `.cgold-home-row:hover::before,.cgold-home-row-selected::before{background-color:${NAV_TAB_ACTIVE_BG};}`,
+    '.cgold-home-row-hit{position:absolute;top:0;bottom:0;left:-6px;right:0;border-radius:6px;border:1px solid transparent;background:transparent!important;box-sizing:border-box;}',
+    '.cgold-home-row:hover .cgold-home-row-hit,.cgold-home-row-selected .cgold-home-row-hit{border-color:#d0d0d0!important;background:rgba(60,60,67,0.045)!important;}',
     '.cgold-store-tx-row{cursor:pointer;background-color:transparent!important;overflow:visible!important;position:relative;}',
-    '.cgold-store-tx-row::before{content:"";position:absolute;inset:0 16px 0 26px;border-radius:6px;background:transparent;pointer-events:none;z-index:0;}',
-    `.cgold-store-tx-row:hover::before{background-color:${NAV_TAB_ACTIVE_BG};}`,
     '.cgold-store-tx-row:hover .cgold-store-tx-rule,.cgold-store-tx-row:has(+ .cgold-store-tx-row:hover) .cgold-store-tx-rule{opacity:0!important;}',
     '.cgold-home-row:hover .cgold-home-row-rule,.cgold-home-row:has(+ .cgold-home-row:hover) .cgold-home-row-rule{opacity:0!important;}',
     '.cgold-home-header-row:has(+ .cgold-home-row:hover) .cgold-home-row-rule{opacity:0!important;}',
@@ -492,6 +517,8 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-floating-tip{position:fixed;z-index:100000;pointer-events:none;max-width:280px;min-width:160px;padding:8px 10px;border-radius:6px;background:#1a1a1a;box-shadow:0 4px 16px rgba(0,0,0,0.18);font:12px/16px Sohne,sans-serif;color:#fff;white-space:pre-wrap;}',
     '.cgold-sidebar-item .cgold-sidebar-unpin{opacity:0;transition:opacity 120ms;}',
     '.cgold-sidebar-item:hover .cgold-sidebar-unpin,.cgold-sidebar-item:focus-within .cgold-sidebar-unpin{opacity:1;}',
+    '.cgold-apps-rail-item .cgold-apps-rail-pin{opacity:0;transition:opacity 120ms;}',
+    '.cgold-apps-rail-item:hover .cgold-apps-rail-pin,.cgold-apps-rail-item:focus-within .cgold-apps-rail-pin,.cgold-apps-rail-item .cgold-apps-rail-pin-on{opacity:1!important;}',
     '@media (prefers-reduced-motion:reduce){#cgold-sidebar,[data-testid="cgold-sidebar"]{transition:none!important;}}',
     '.cgold-top-bar-blur{-webkit-backdrop-filter:saturate(180%) blur(22px);backdrop-filter:saturate(180%) blur(22px);background-color:rgba(252,252,251,0.72)!important;}',
     '.cgold-apps-toolbar-blur{-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);background-color:rgba(255,255,255,0.62)!important;}',
@@ -500,7 +527,7 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-home-overlay-scroll{position:relative;z-index:4;}',
     '.cgold-home-overlay-scroll,.cgold-home-overlay-scroll>div{background:transparent!important;overscroll-behavior:none;}',
     '@media (max-width:767px){.cgold-home-overlay-scroll{-webkit-overflow-scrolling:touch;touch-action:pan-y;overflow-y:auto!important;pointer-events:auto!important;}}',
-    '@media (min-width:768px){.cgold-store-overlay-scroll,.cgold-store-overlay-scroll *{pointer-events:none!important;}.cgold-store-sheet,.cgold-store-sheet *{pointer-events:auto!important;}}',
+    '@media (min-width:768px){.cgold-store-sheet,.cgold-store-sheet *{pointer-events:auto!important;}}',
     '.cgold-home-chip-blur{-webkit-backdrop-filter:saturate(140%) blur(10px);backdrop-filter:saturate(140%) blur(10px);background-color:rgba(255,255,255,0.56)!important;border-radius:999px;}',
     '.cgold-apps-view-blur{-webkit-backdrop-filter:saturate(140%) blur(10px);backdrop-filter:saturate(140%) blur(10px);background-color:rgba(255,255,255,0.56)!important;border-radius:20px;}',
     '.cgold-app-icon .cgold-app-pin{opacity:0;transition:opacity 120ms;}',
@@ -780,13 +807,6 @@ function TxTableHeader({
 }
 
 const APP_GRID_MAX_WIDTH = 880;
-const APP_COLUMNS = 6;
-const APP_COLUMNS_MOBILE = 4;
-const APP_ICON_SIZE = 64;
-const APP_GAP = 18;
-const MOBILE_APP_GAP = 12;
-const MOBILE_APP_ICON_MAX = 84;
-const MOBILE_APP_ICON_SCALE = 0.94;
 const MOBILE_BREAKPOINT = 768;
 
 function useIsMobile() {
@@ -843,7 +863,7 @@ const TAB_INK = '#1a1a1a';
 const TAB_BORDER = '#d0d0d0';
 const TAB_ICON_SIZE = 17;
 const TOP_BAR_HEIGHT = DESKTOP_TOP_BAR_HEIGHT;
-const SIDEBAR_EXPANDED_WIDTH = 252;
+const SIDEBAR_EXPANDED_WIDTH = 216;
 const SIDEBAR_COLLAPSED_WIDTH = 72;
 const SIDEBAR_EXPANDED_PAD = 16;
 const SIDEBAR_COLLAPSED_PAD = 10;
@@ -989,7 +1009,7 @@ const TRANSACTION_DETAIL_TABS = TRANSACTION_DETAIL_TAB_KEYS.map((key) =>
   TOOL_CARDS.find((tool) => tool.key === key),
 ).filter(Boolean);
 
-const STORE_DRAWER_RAIL_WIDTH = 68;
+const STORE_DRAWER_RAIL_WIDTH = 176;
 
 function displayName(session) {
   if (!session) return '';
@@ -1284,389 +1304,45 @@ function ProfileAvatar({ uri, name, size = 24, style, showClock = true, clockMar
   );
 }
 
-function useAppGridLayout() {
-  const { width } = useWindowDimensions();
-  const isMobile = width < MOBILE_BREAKPOINT;
-  if (isMobile) {
-    const gap = MOBILE_APP_GAP;
-    const pagePad = MOBILE_FILTER_INSET;
-    const gridWidth = Math.max(0, width - pagePad * 2);
-    const cell = (gridWidth - gap * (APP_COLUMNS_MOBILE - 1)) / APP_COLUMNS_MOBILE;
-    const iconSize = Math.floor(
-      Math.min(MOBILE_APP_ICON_MAX, Math.max(56, cell)) * MOBILE_APP_ICON_SCALE,
-    );
-    return {
-      isMobile: true,
-      columns: APP_COLUMNS_MOBILE,
-      iconSize,
-      radius: Math.round(iconSize * 0.223),
-      glyph: Math.round(iconSize * 0.44),
-      gap,
-      rowGap: 24,
-      maxWidth: undefined,
-      labelBleed: gap / 2,
-    };
-  }
-  if (width < 1240) {
-    const iconSize = 52;
-    const gap = 14;
-    return {
-      isMobile: false,
-      columns: 5,
-      iconSize,
-      radius: Math.round(iconSize * 0.223),
-      glyph: Math.round(iconSize * 0.44),
-      gap,
-      rowGap: 22,
-      maxWidth: 740,
-      labelBleed: gap / 2,
-    };
-  }
-  const iconSize = APP_ICON_SIZE;
-  const gap = APP_GAP;
-  return {
-    isMobile: false,
-    columns: APP_COLUMNS,
-    iconSize,
-    radius: Math.round(iconSize * 0.223),
-    glyph: Math.round(iconSize * 0.44),
-    gap,
-    rowGap: 26,
-    maxWidth: APP_GRID_MAX_WIDTH,
-    labelBleed: gap / 2,
-  };
-}
-
-function ToolCard({ tool, pinned, onPress, onTogglePin, layout, wrapStyle }) {
-  const { iconSize, radius, glyph, isMobile, labelBleed } = layout;
-
+function ToolsList({ tools, pinnedKeys, onOpen, onTogglePin }) {
   return (
-    <View
-      style={[styles.toolCardWrap, wrapStyle]}
-      {...(Platform.OS === 'web' ? { className: 'cgold-app-icon' } : null)}
-    >
-      <Pressable
-        onPress={onPress}
-        onLongPress={onTogglePin}
-        delayLongPress={420}
-        style={({ pressed }) => [
-          styles.toolCard,
-          isMobile && styles.toolCardMobile,
-          pressed && styles.toolCardPressed,
-        ]}
-        accessibilityRole="button"
-        accessibilityLabel={tool.label}
-      >
-        <View style={styles.toolIconStack}>
-          <View
-            style={[
-              styles.appsGridIcon,
-              {
-                width: iconSize,
-                height: iconSize,
-                borderRadius: radius,
-                backgroundColor: tool.accent,
-              },
-            ]}
-          >
-            <Ionicons name={filledIonicon(tool.icon)} size={glyph} color="#fff" />
-          </View>
-          <Pressable
-            style={[
-              styles.appsGridPin,
-              pinned && styles.appsGridPinActive,
-            ]}
-            {...(Platform.OS === 'web' ? { className: 'cgold-app-pin' } : null)}
-            onPress={(event) => {
-              event?.stopPropagation?.();
-              onTogglePin();
-            }}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel={pinned ? `Unpin ${tool.label}` : `Pin ${tool.label}`}
-          >
-            <Ionicons
-              name={pinned ? 'pin' : 'pin-outline'}
-              size={13}
-              color={pinned ? TAB_INK : MOBILE.secondary}
-            />
-          </Pressable>
-        </View>
-        <Text
-          style={[
-            styles.appsGridLabel,
-            isMobile && styles.toolCardLabelMobile,
-            pinned && styles.appsGridLabelPinned,
-            labelBleed
-              ? { marginHorizontal: -labelBleed, alignSelf: 'stretch' }
-              : null,
-          ]}
-          numberOfLines={2}
-          ellipsizeMode="tail"
-          selectable={false}
-        >
-          {tool.label}
-        </Text>
-      </Pressable>
-    </View>
-  );
-}
-
-function ToolsGrid({ tools, pinnedKeys, onOpen, onTogglePin, layout }) {
-  const { columns, gap, rowGap } = layout;
-  // Web uses CSS grid tracks for column width. Percentage width/maxWidth here
-  // would be relative to the cell, not the row, and crush the labels.
-  const wrapStyle = Platform.select({
-    web: {
-      width: '100%',
-      maxWidth: '100%',
-      minWidth: 0,
-      boxSizing: 'border-box',
-      paddingHorizontal: gap / 2,
-    },
-    default: {
-      width: `${100 / columns}%`,
-      maxWidth: `${100 / columns}%`,
-      flexBasis: `${100 / columns}%`,
-      flexGrow: 0,
-      flexShrink: 0,
-      paddingHorizontal: gap / 2,
-    },
-  });
-
-  return (
-    <View
-      style={[
-        styles.toolsGrid,
-        { marginHorizontal: -(gap / 2), rowGap },
-        Platform.OS === 'web'
-          ? {
-              display: 'grid',
-              gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-              justifyItems: 'stretch',
-            }
-          : null,
-      ]}
-    >
+    <View style={styles.appsRailList}>
       {tools.map((tool) => (
-        <ToolCard
+        <StoreAppsRailItem
           key={tool.key}
-          tool={tool}
-          pinned={pinnedKeys.includes(tool.key)}
+          tab={tool}
+          selected={false}
           onPress={() => onOpen(tool)}
-          onTogglePin={() => onTogglePin(tool.key)}
-          layout={layout}
-          wrapStyle={wrapStyle}
-        />
-      ))}
-    </View>
-  );
-}
-
-function ToolListRow({ tool, pinned, onPress, onTogglePin, last, compact = false }) {
-  const iconSize = compact ? 46 : 28;
-  const radius = compact ? 13 : 7;
-  const glyphSize = compact ? 22 : 15;
-  const pinControl = (
-    <Pressable
-      style={compact ? styles.toolListPin : styles.appsRowPin}
-      pointerEvents="auto"
-      onPress={(event) => {
-        event?.stopPropagation?.();
-        onTogglePin();
-      }}
-      hitSlop={10}
-      accessibilityRole="button"
-      accessibilityLabel={pinned ? `Unpin ${tool.label}` : `Pin ${tool.label}`}
-    >
-      <Ionicons
-        name={pinned ? 'pin' : 'pin-outline'}
-        size={compact ? 18 : 16}
-        color={pinned ? TAB_INK : '#C7C7CC'}
-      />
-    </Pressable>
-  );
-
-  if (compact) {
-    return (
-      <Pressable
-        onPress={onPress}
-        style={({ hovered, pressed }) => [
-          styles.igStoreCard,
-          (hovered || pressed) && styles.igStoreCardPressed,
-        ]}
-        accessibilityRole="button"
-        accessibilityLabel={tool.label}
-      >
-        <View
-          style={[
-            styles.igStoreIcon,
-            {
-              width: iconSize,
-              height: iconSize,
-              borderRadius: radius,
-              backgroundColor: tool.accent,
-            },
-          ]}
-        >
-          <Ionicons name={filledIonicon(tool.icon)} size={glyphSize} color="#fff" />
-        </View>
-        <View style={[styles.igStoreBody, !last && styles.igStoreBodyDivider]}>
-          <View style={styles.igStoreBodyMain}>
-            <View style={styles.igStoreCopy}>
-              <Text style={styles.igStoreName} numberOfLines={1} selectable={false}>
-                {tool.label}
-              </Text>
-              <Text style={styles.igStoreMeta} numberOfLines={1}>
-                {pinned ? 'Pinned' : 'App'}
-              </Text>
-            </View>
-            {pinControl}
-            <Ionicons name="chevron-forward" size={18} color="#c7c7cc" style={styles.igStoreChevron} />
-          </View>
-        </View>
-      </Pressable>
-    );
-  }
-
-  // The hover fill is an overlay. Applying it to the row itself sets
-  // position:absolute and pulls the row out of the list, so the pointer
-  // leaves it and the highlight flickers.
-  return (
-    <View
-      style={styles.homeStoreRow}
-      {...(Platform.OS === 'web' ? { className: 'cgold-home-row' } : null)}
-    >
-      <Pressable
-        onPress={onPress}
-        style={({ hovered, pressed }) => [
-          StyleSheet.absoluteFill,
-          Platform.OS !== 'web' && (hovered || pressed) ? styles.homeStoreRowHovered : null,
-        ]}
-        accessibilityRole="button"
-        accessibilityLabel={tool.label}
-      />
-      <View pointerEvents="none" style={styles.homeStoreRowForeground}>
-        <View style={styles.homeStoreIconWrap}>
-          <View style={[styles.homeStoreIconTile, { backgroundColor: tool.accent }]}>
-            <Ionicons name={filledIonicon(tool.icon)} size={glyphSize} color="#fff" />
-          </View>
-        </View>
-        <View style={styles.homeStoreRowBody}>
-          <View style={styles.appsRowName}>
-            <Text style={styles.homeStoreName} numberOfLines={1} selectable={false}>
-              {tool.label}
-            </Text>
-            <Text style={styles.homeStoreMeta} numberOfLines={1}>
-              {pinned ? 'Pinned to sidebar' : 'Available'}
-            </Text>
-          </View>
-          <View style={styles.appsRowStatus}>
-            <Text
-              style={[styles.homeStoreMeta, pinned && styles.appsRowStatusPinned]}
-              numberOfLines={1}
+          trailing={
+            <Pressable
+              style={styles.pinnedRemoveButton}
+              pointerEvents="auto"
+              onPress={(event) => {
+                event?.stopPropagation?.();
+                onTogglePin(tool.key);
+              }}
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel={
+                pinnedKeys.includes(tool.key) ? `Unpin ${tool.label}` : `Pin ${tool.label}`
+              }
+              {...(Platform.OS === 'web'
+                ? {
+                    className: pinnedKeys.includes(tool.key)
+                      ? 'cgold-apps-rail-pin cgold-apps-rail-pin-on'
+                      : 'cgold-apps-rail-pin',
+                  }
+                : null)}
             >
-              {pinned ? 'Pinned' : ''}
-            </Text>
-          </View>
-          <View pointerEvents="auto" style={styles.appsRowPinSlot}>
-            {pinControl}
-          </View>
-          <View style={styles.homeStoreChevron}>
-            <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
-          </View>
-        </View>
-      </View>
-      <HomeStoreRowRule last={last} />
-    </View>
-  );
-}
-
-function ToolsList({ tools, pinnedKeys, onOpen, onTogglePin, compact = false }) {
-  if (compact) {
-    return (
-      <View style={styles.igStoreList}>
-        {tools.map((tool, index) => (
-          <ToolListRow
-            key={tool.key}
-            tool={tool}
-            pinned={pinnedKeys.includes(tool.key)}
-            onPress={() => onOpen(tool)}
-            onTogglePin={() => onTogglePin(tool.key)}
-            last={index === tools.length - 1}
-            compact
-          />
-        ))}
-      </View>
-    );
-  }
-
-  return (
-    <View style={styles.homeStoreTableCard}>
-      <View
-        style={[styles.homeStoreRow, styles.homeStoreHeaderRow]}
-        {...(Platform.OS === 'web' ? { className: 'cgold-home-header-row' } : null)}
-      >
-        <View style={styles.homeStoreIconSpacer} />
-        <View style={styles.homeStoreRowBody}>
-          <View style={styles.appsRowName}>
-            <Text style={styles.homeStoreHeader}>App</Text>
-          </View>
-          <View style={styles.appsRowStatus}>
-            <Text style={styles.homeStoreHeader}>Status</Text>
-          </View>
-          <View style={styles.appsRowPinSpacer} />
-          <View style={styles.homeStoreChevron} />
-        </View>
-        <HomeStoreRowRule header />
-      </View>
-      {tools.map((tool, index) => (
-        <ToolListRow
-          key={tool.key}
-          tool={tool}
-          pinned={pinnedKeys.includes(tool.key)}
-          onPress={() => onOpen(tool)}
-          onTogglePin={() => onTogglePin(tool.key)}
-          last={index === tools.length - 1}
+              <Ionicons
+                name={pinnedKeys.includes(tool.key) ? 'pin' : 'pin-outline'}
+                size={14}
+                color={pinnedKeys.includes(tool.key) ? TAB_INK : MOBILE.secondary}
+              />
+            </Pressable>
+          }
         />
       ))}
-    </View>
-  );
-}
-
-function AppsViewToggle({ appsView, onSelectView, sheet = false, compact = false }) {
-  return (
-    <View
-      style={[
-        styles.appsViewToggle,
-        sheet && styles.appsViewToggleSheet,
-        compact && styles.appsViewToggleCompact,
-      ]}
-      accessibilityRole="tablist"
-    >
-      {[
-        { key: 'list', icon: 'list', label: 'List' },
-        { key: 'grid', icon: 'grid', label: 'Grid' },
-      ].map((option) => {
-        const selected = appsView === option.key;
-        return (
-          <Pressable
-            key={option.key}
-            style={[
-              styles.appsViewToggleButton,
-              sheet && styles.appsViewToggleButtonSheet,
-              compact && styles.appsViewToggleButtonCompact,
-              selected && styles.appsViewToggleButtonActive,
-            ]}
-            onPress={() => onSelectView(option.key)}
-            accessibilityRole="tab"
-            accessibilityLabel={option.label}
-            accessibilityState={{ selected }}
-          >
-            <Ionicons name={option.icon} size={16} color={selected ? TAB_INK : MOBILE.secondary} />
-          </Pressable>
-        );
-      })}
     </View>
   );
 }
@@ -1674,108 +1350,23 @@ function AppsViewToggle({ appsView, onSelectView, sheet = false, compact = false
 function AppsLibrary({
   tools,
   pinnedKeys,
-  appsView,
-  query,
-  onQueryChange,
-  onSelectView,
   onOpen,
   onTogglePin,
-  appGrid,
 }) {
-  const { isMobile, pagePad, contentMaxWidth } = useHomePageLayout();
+  const { isMobile, pagePad } = useHomePageLayout();
   const tabBarScroll = useMobileTabBarScrollProps();
-  const searching = Boolean(query.trim());
-  const emptyCopy = searching
-    ? `No apps match “${query.trim()}”.`
-    : 'No apps are available.';
-
-  const viewToggle = (
-    <AppsViewToggle
-      appsView={appsView}
-      onSelectView={onSelectView}
-      sheet={isMobile}
-      compact={isMobile}
-    />
-  );
-
-  const searchField = isMobile ? (
-    <View style={styles.igHomeMobileAppsSearch}>
-      <Ionicons name="search" size={15} color={MOBILE.secondary} />
-      <TextInput
-        style={styles.igHomeMobileAppsSearchInput}
-        value={query}
-        onChangeText={onQueryChange}
-        placeholder="Search apps"
-        placeholderTextColor={MOBILE.secondary}
-        autoCapitalize="none"
-        autoCorrect={false}
-        clearButtonMode="while-editing"
-        returnKeyType="search"
-      />
-      {query ? (
-        <Pressable onPress={() => onQueryChange('')} hitSlop={8} accessibilityLabel="Clear search">
-          <Ionicons name="close-circle" size={16} color="#c7c7cc" />
-        </Pressable>
-      ) : null}
-    </View>
-  ) : (
-    <View style={[styles.igHomeChromeChip, styles.igHomeChromeSearchDesktop, styles.appsChromeSearch]}>
-      <BlurView
-        intensity={32}
-        tint="light"
-        style={styles.igHomeChromeSearch}
-        {...(Platform.OS === 'web' ? { className: 'cgold-home-chip-blur' } : null)}
-      >
-        <Ionicons name="search" size={16} color={MOBILE.secondary} />
-        <TextInput
-          style={styles.igHomeChromeSearchInput}
-          value={query}
-          onChangeText={onQueryChange}
-          placeholder="Search apps"
-          placeholderTextColor={MOBILE.secondary}
-          autoCapitalize="none"
-          autoCorrect={false}
-          clearButtonMode="while-editing"
-          returnKeyType="search"
-        />
-        {query ? (
-          <Pressable onPress={() => onQueryChange('')} hitSlop={8} accessibilityLabel="Clear search">
-            <Ionicons name="close-circle" size={18} color="#c7c7cc" />
-          </Pressable>
-        ) : null}
-      </BlurView>
-    </View>
-  );
 
   const appsBody =
     tools.length === 0 ? (
-      <Text style={[styles.toolsEmpty, isMobile ? { paddingTop: 20 } : { paddingTop: 28 }]}>
-        {emptyCopy}
+      <Text style={[styles.toolsEmpty, styles.appsListEmpty, isMobile ? { paddingTop: 20 } : { paddingTop: 12 }]}>
+        No apps are available.
       </Text>
-    ) : appsView === 'grid' ? (
-      <View
-        style={[
-          styles.toolsSection,
-          styles.toolsSectionMobile,
-          isMobile && { marginTop: 0, maxWidth: '100%' },
-          !isMobile && appGrid.maxWidth ? { maxWidth: appGrid.maxWidth } : null,
-        ]}
-      >
-        <ToolsGrid
-          tools={tools}
-          pinnedKeys={pinnedKeys}
-          onOpen={onOpen}
-          onTogglePin={onTogglePin}
-          layout={appGrid}
-        />
-      </View>
     ) : (
       <ToolsList
         tools={tools}
         pinnedKeys={pinnedKeys}
         onOpen={onOpen}
         onTogglePin={onTogglePin}
-        compact={isMobile}
       />
     );
 
@@ -1810,40 +1401,19 @@ function AppsLibrary({
                 <View style={styles.igHomeMobileBrand} accessibilityLabel="Canada Gold">
                   <HomeGlyph size={22} />
                 </View>
-                <View style={styles.igHomeMobileTopBarTrailing}>
-                  {searchField}
-                  {viewToggle}
-                </View>
               </View>
             </View>
           </View>
-        ) : (
-          <View
-            pointerEvents="box-none"
-            style={[styles.igHomeChromeRow, styles.igHomeChromeRowDesktop, styles.appsChromeRow]}
-          >
-            <View style={styles.appsViewChrome}>
-              <BlurView
-                intensity={32}
-                tint="light"
-                style={styles.appsViewChromeBlur}
-                {...(Platform.OS === 'web' ? { className: 'cgold-apps-view-blur' } : null)}
-              >
-                <AppsViewToggle appsView={appsView} onSelectView={onSelectView} />
-              </BlurView>
-            </View>
-            {searchField}
-          </View>
-        )}
+        ) : null}
         <View style={styles.igHomeStage}>
           <ScrollView
             style={[styles.toolsScroll, styles.igHomeOverlayScroll]}
             contentContainerStyle={[
               styles.igHomeScroll,
-              styles.igHomeScrollContent,
+              styles.appsListScroll,
               {
                 flexGrow: 1,
-                paddingTop: isMobile ? MOBILE_FEED_TOP_BAR_HEIGHT : 16,
+                paddingTop: isMobile ? MOBILE_FEED_TOP_BAR_HEIGHT : TOP_BAR_HEIGHT + 16,
                 paddingBottom: isMobile ? mobileTabBarReserve() + 24 : 36,
               },
             ]}
@@ -1856,15 +1426,8 @@ function AppsLibrary({
           >
             <View
               style={[
-                styles.igHomeContentInset,
-                isMobile
-                  ? { paddingHorizontal: pagePad, width: '100%' }
-                  : {
-                      paddingLeft: pagePad,
-                      paddingRight: pagePad,
-                      width: '100%',
-                      ...(contentMaxWidth ? { maxWidth: contentMaxWidth } : null),
-                    },
+                styles.appsListInset,
+                isMobile ? { paddingHorizontal: pagePad, maxWidth: '100%' } : null,
               ]}
             >
               {appsBody}
@@ -2198,37 +1761,45 @@ function FloatingTooltip({ visible, text, anchorEl, align = 'start', placement =
   );
 }
 
-function StoreAppsRailItem({ tab, selected, onPress }) {
-  const [anchor, setAnchor] = useState(null);
+function StoreAppsRailItem({ tab, selected, onPress, trailing }) {
+  const [hovered, setHovered] = useState(false);
   return (
-    <>
-      <Pressable
-        onPress={onPress}
-        onHoverIn={(event) => setAnchor(event?.currentTarget || null)}
-        onHoverOut={() => setAnchor(null)}
-        style={({ hovered, pressed }) => [
-          styles.storeRailTab,
-          (hovered || pressed) && !selected && styles.tabHover,
-          selected && styles.tabActive,
-        ]}
-        accessibilityLabel={tab.label}
-        accessibilityRole="button"
-        accessibilityState={{ selected }}
-      >
+    <Pressable
+      onPress={onPress}
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
+      style={({ hovered: pressHovered, pressed }) => [
+        styles.tab,
+        styles.tabGrouped,
+        styles.tabGroupedExpanded,
+        (hovered || pressHovered || pressed) && !selected && styles.tabHover,
+        selected && styles.tabActive,
+      ]}
+      accessibilityLabel={tab.label}
+      accessibilityRole="button"
+      accessibilityState={{ selected }}
+      {...(Platform.OS === 'web' && trailing ? { className: 'cgold-apps-rail-item' } : null)}
+    >
+      <View style={[styles.tabGlyph, styles.tabGlyphExpanded]}>
         <Ionicons
           name={selected ? filledIonicon(tab.icon) : tab.icon}
           size={TAB_ICON_SIZE}
           color={selected ? NAV_ICON_ACTIVE : NAV_ICON_INACTIVE}
         />
-      </Pressable>
-      <FloatingTooltip
-        visible={Boolean(anchor)}
-        text={tab.label}
-        anchorEl={anchor}
-        placement="right"
-        compact
-      />
-    </>
+      </View>
+      <Text
+        style={[
+          styles.tabLabel,
+          trailing ? styles.appsRailLabel : null,
+          hovered && !selected && styles.tabLabelHover,
+          selected && styles.tabLabelActive,
+        ]}
+        numberOfLines={1}
+      >
+        {tab.label}
+      </Text>
+      {trailing}
+    </Pressable>
   );
 }
 
@@ -3611,10 +3182,9 @@ function HomeStoreDrawer({
     if (!Number.isFinite(top)) return;
     onMobileFilterTopRef.current?.(top);
   }, []);
-  const panelWidth = windowWidth;
-  const slideDistance = panelWidth;
-  const { mounted, slide, settled } = useRightDrawerAnimation(visible, slideDistance);
+  const slideDistance = windowWidth;
   const heldStore = useHeldValue(store);
+  const mounted = Boolean(visible && heldStore);
   const [activeTab, setActiveTab] = useState('overview');
   const [txRows, setTxRows] = useState([]);
   const [selectedRow, setSelectedRow] = useState(null);
@@ -3691,13 +3261,11 @@ function HomeStoreDrawer({
       return;
     }
 
-    if (!mounted) {
-      setSelectedRow(null);
-      setDetail(null);
-      setDetailError('');
-      setDetailLoading(false);
-    }
-  }, [visible, mounted, store?.store]);
+    setSelectedRow(null);
+    setDetail(null);
+    setDetailError('');
+    setDetailLoading(false);
+  }, [visible, store?.store]);
 
   useEffect(() => {
     if (!visible || !session) return undefined;
@@ -3832,15 +3400,9 @@ function HomeStoreDrawer({
 
   if (!mounted || !heldStore) return null;
 
-  const drawerTree = (
-        <View style={[styles.drawerRoot, styles.storeDrawerRoot]}>
-          <Animated.View
-            style={[
-              styles.storeDrawerShell,
-              styles.storeDrawerShellFill,
-              { transform: [{ translateX: slide }] },
-            ]}
-          >
+  return (
+        <View style={styles.storeDrawerRootInPlace}>
+          <View style={[styles.storeDrawerShell, styles.storeDrawerShellFill]}>
             {!isMobile ? (
               <View style={[styles.storeDrawerAppsRail, { paddingTop: TOP_BAR_HEIGHT + 12 }]}>
                 {tabStrip.map((tab) => (
@@ -3876,7 +3438,7 @@ function HomeStoreDrawer({
                   onFilterTop={alignFilter}
                   filterSlotWidth={mobileChromeWidth}
                   topInset={contentPadTop || topInset}
-                  ready={settled}
+                  ready={mounted}
                   desktopHeader={desktopHeader}
                   dateHero={dateHero}
                   heroFocus={txFocus}
@@ -4008,18 +3570,9 @@ function HomeStoreDrawer({
                 />
               </Animated.View>
             ) : null}
-          </Animated.View>
+          </View>
         </View>
   );
-
-  const overlayHost =
-    Platform.OS === 'web' && typeof document !== 'undefined'
-      ? document.getElementById('cgold-app-shell')
-      : null;
-  const hostedDrawer =
-    overlayHost ? createPortal(drawerTree, overlayHost) : drawerTree;
-
-  return hostedDrawer;
 }
 
 const STORE_ACCENTS = {
@@ -4394,20 +3947,48 @@ function homeMetricFormat(stats) {
   return stats?.format === 'count' ? formatHomeCountTick : formatHomePercentTick;
 }
 
-function HomeStoreMetric({ icon, stats, label, stretch = false }) {
-  const empty = stats?.rate == null;
-  const low = !empty && stats.rate < 80;
+function HomeMetricPending({ compact = false }) {
+  const pulse = useRef(new Animated.Value(0.28)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 0.72, duration: 720, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 0.28, duration: 720, useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [pulse]);
+  return (
+    <Animated.View
+      style={[compact ? styles.homeMetricPendingCompact : styles.homeMetricPending, { opacity: pulse }]}
+      accessibilityLabel="Loading"
+    />
+  );
+}
+
+function HomeStoreMetric({ icon, stats, label, stretch = false, loading = false }) {
+  const empty = !loading && stats?.rate == null;
+  const low = !loading && !empty && stats.rate < 80;
   const detail =
-    !empty && Number(stats.average) > 0 ? `${Number(stats.average).toFixed(1)} average` : '';
+    !loading && !empty && Number(stats.average) > 0 ? `${Number(stats.average).toFixed(1)} average` : '';
   return (
     <View
       style={[styles.igStoreMetric, stretch && styles.igHomeStoreMetric]}
       accessibilityLabel={
-        empty ? `${label}, no activity` : `${label} ${stats.ratio}${detail ? `, ${detail}` : ''}`
+        loading
+          ? `${label}, loading`
+          : empty
+            ? `${label}, no activity`
+            : `${label} ${stats.ratio}${detail ? `, ${detail}` : ''}`
       }
     >
-      <Ionicons name={icon} size={14} color={homeRateIconColor(stats)} />
-      {empty ? (
+      <Ionicons name={icon} size={14} color={loading ? HOME_RATE_EMPTY : homeRateIconColor(stats)} />
+      {loading ? (
+        <View style={[styles.igStoreMetricText, stretch && styles.igHomeStoreMetricText]}>
+          <HomeMetricPending compact />
+        </View>
+      ) : empty ? (
         <View style={[styles.igStoreMetricText, stretch && styles.igHomeStoreMetricText]} />
       ) : (
         <HomeLiveValue
@@ -4432,6 +4013,9 @@ const HomeStoreCard = memo(function HomeStoreCard({
   emailStats,
   phoneStats,
   reviewStats,
+  emailLoading = false,
+  phoneLoading = false,
+  reviewLoading = false,
   selected,
   last,
   onOpenStore,
@@ -4446,7 +4030,6 @@ const HomeStoreCard = memo(function HomeStoreCard({
 }) {
   const accent = storeAccent(row.store);
   const focused = homeAmountForFocus(row, amountFocus);
-  const hasActivity = focused.count > 0;
   const closed = open === false;
   const cardStyle = [
     styles.igStoreCard,
@@ -4457,35 +4040,25 @@ const HomeStoreCard = memo(function HomeStoreCard({
   ];
   const rateMetrics = (
     <View
-      style={[styles.igStoreMetrics, closed && styles.igStoreSlotHidden]}
+      style={styles.igStoreMetrics}
       pointerEvents="none"
-      accessibilityElementsHidden={closed}
-      importantForAccessibility={closed ? 'no-hide-descendants' : 'auto'}
     >
-      <HomeStoreMetric icon="mail" stats={emailStats} label="Email capture" />
-      <HomeStoreMetric icon="call" stats={phoneStats} label="Phone answer rate" />
-      <HomeStoreMetric icon="star" stats={reviewStats} label="Reviews" />
+      <HomeStoreMetric icon="mail" stats={emailStats} label="Email capture" loading={emailLoading} />
+      <HomeStoreMetric icon="call" stats={phoneStats} label="Phone answer rate" loading={phoneLoading} />
+      <HomeStoreMetric icon="star" stats={reviewStats} label="Reviews" loading={reviewLoading} />
     </View>
   );
   const nameBlock = (
     <View style={styles.igStoreCopy}>
       <Text style={styles.igStoreName} numberOfLines={1}>
         {row.store}
+        {closed ? <Text style={styles.homeStoreClosedMark}> (closed)</Text> : null}
       </Text>
-      <HomeLiveValue
-        style={[styles.igStoreMeta, closed && styles.igStoreSlotHidden]}
-        numeric={focused.count}
-        numberOfLines={1}
-      >
-        {hasActivity ? homeCountLabel(focused.count, amountFocus) : amountFocus === 'sales' ? 'No sales' : amountFocus === 'purchases' ? 'No purchases' : 'No transactions'}
-      </HomeLiveValue>
     </View>
   );
   const trailingBlock = (
     <View style={styles.igStoreTrailing}>
-      {closed ? (
-        <Text style={styles.igStoreClosedLabel}>Closed</Text>
-      ) : canOpen && showAmounts ? (
+      {canOpen && showAmounts ? (
         <HomeStoreAmount
           amount={focused.amount}
           count={focused.count}
@@ -4493,7 +4066,7 @@ const HomeStoreCard = memo(function HomeStoreCard({
           compact
         />
       ) : null}
-      {!closed && people.length > 0 ? (
+      {people.length > 0 ? (
         <HomePeopleStack
           people={people}
           compact
@@ -4511,23 +4084,12 @@ const HomeStoreCard = memo(function HomeStoreCard({
         <View style={styles.igHomeStoreCopy}>
           <Text style={styles.igHomeStoreName} numberOfLines={1}>
             {row.store}
+            {closed ? <Text style={styles.homeStoreClosedMark}> (closed)</Text> : null}
           </Text>
-          <HomeLiveValue style={styles.igHomeStoreMeta} numeric={focused.count} numberOfLines={1}>
-            {hasActivity
-              ? homeCountLabel(focused.count, amountFocus)
-              : amountFocus === 'sales'
-                ? 'No sales'
-                : amountFocus === 'purchases'
-                  ? 'No purchases'
-                  : 'No transactions'}
-          </HomeLiveValue>
         </View>
+        <HomeStoreTxCount count={focused.count} compact />
         <View style={styles.igHomeStoreTrailing}>
-          {closed ? (
-            <Text style={styles.igHomeStoreClosed} numberOfLines={1}>
-              Closed
-            </Text>
-          ) : canOpen && showAmounts ? (
+          {canOpen && showAmounts ? (
             <HomeStoreAmount
               amount={focused.amount}
               count={focused.count}
@@ -4535,7 +4097,7 @@ const HomeStoreCard = memo(function HomeStoreCard({
               compact
             />
           ) : null}
-          {!closed && people.length > 0 ? (
+          {people.length > 0 ? (
             <HomePeopleStack
               people={people}
               compact
@@ -4548,39 +4110,17 @@ const HomeStoreCard = memo(function HomeStoreCard({
           {canOpen ? <Ionicons name="chevron-forward" size={18} color="#c7c7cc" /> : null}
         </View>
       </View>
-      {closed && canOpen && showAmounts ? (
-        <View style={styles.igHomeStoreMetricsRow}>
-          <View
-            style={styles.igHomeStoreMetrics}
-            pointerEvents="none"
-            accessibilityElementsHidden={false}
-          >
-            <HomeStoreMetric icon="mail" stats={emailStats} label="Email capture" stretch />
-            <View style={styles.igHomeStoreMetricRule} />
-            <HomeStoreMetric icon="call" stats={phoneStats} label="Phone answer rate" stretch />
-            <View style={styles.igHomeStoreMetricRule} />
-            <HomeStoreMetric icon="star" stats={reviewStats} label="Reviews" stretch />
-          </View>
-          <HomeStoreAmount
-            amount={focused.amount}
-            count={focused.count}
-            breakdown={amountFocus === 'all' ? row : null}
-            compact
-          />
-        </View>
-      ) : (
-        <View
-          style={styles.igHomeStoreMetrics}
-          pointerEvents="none"
-          accessibilityElementsHidden={false}
-        >
-          <HomeStoreMetric icon="mail" stats={emailStats} label="Email capture" stretch />
-          <View style={styles.igHomeStoreMetricRule} />
-          <HomeStoreMetric icon="call" stats={phoneStats} label="Phone answer rate" stretch />
-          <View style={styles.igHomeStoreMetricRule} />
-          <HomeStoreMetric icon="star" stats={reviewStats} label="Reviews" stretch />
-        </View>
-      )}
+      <View
+        style={styles.igHomeStoreMetrics}
+        pointerEvents="none"
+        accessibilityElementsHidden={false}
+      >
+        <HomeStoreMetric icon="mail" stats={emailStats} label="Email capture" stretch loading={emailLoading} />
+        <View style={styles.igHomeStoreMetricRule} />
+        <HomeStoreMetric icon="call" stats={phoneStats} label="Phone answer rate" stretch loading={phoneLoading} />
+        <View style={styles.igHomeStoreMetricRule} />
+        <HomeStoreMetric icon="star" stats={reviewStats} label="Reviews" stretch loading={reviewLoading} />
+      </View>
     </View>
   );
 
@@ -4589,9 +4129,7 @@ const HomeStoreCard = memo(function HomeStoreCard({
       <View style={styles.igStoreTileTop}>
         <HomeStoreStatusIcon accent={accent} open={open} compact onPress={canOpen ? () => onOpenStore(row) : undefined} />
         {nameBlock}
-        {closed ? (
-          <Text style={styles.igStoreClosedLabel}>Closed</Text>
-        ) : canOpen && showAmounts ? (
+        {canOpen && showAmounts ? (
           <HomeStoreAmount
             amount={focused.amount}
             count={focused.count}
@@ -4602,7 +4140,7 @@ const HomeStoreCard = memo(function HomeStoreCard({
       </View>
       <View style={styles.igStoreTileFoot}>
         {rateMetrics}
-        {!closed && people.length > 0 ? (
+        {people.length > 0 ? (
           <HomePeopleStack
             people={people}
             compact
@@ -4652,6 +4190,7 @@ const HomeStoreCard = memo(function HomeStoreCard({
             ]}
           >
             {nameBlock}
+            <HomeStoreTxCount count={focused.count} compact />
             {rateMetrics}
             {trailingBlock}
             <View style={styles.igStoreChevron} />
@@ -4693,6 +4232,7 @@ const HomeStoreCard = memo(function HomeStoreCard({
           ]}
         >
           {nameBlock}
+          <HomeStoreTxCount count={focused.count} compact />
           {rateMetrics}
           {trailingBlock}
           <Ionicons name="chevron-forward" size={18} color="#c7c7cc" style={styles.igStoreChevron} />
@@ -4779,12 +4319,21 @@ function HomeStoreTableIconHeader({ toolKey, style, accessibilityLabel, rowIcon 
   );
 }
 
-function HomePercentRate({ stats, compact = false, columnStyle, emptyLabel, noun, tip, icon }) {
+function HomePercentRate({
+  stats,
+  compact = false,
+  columnStyle,
+  emptyLabel,
+  noun,
+  tip,
+  icon,
+  loading = false,
+}) {
   const [anchor, setAnchor] = useState(null);
-  const empty = stats?.rate == null;
-  const low = !empty && stats.rate < 80;
+  const empty = !loading && stats?.rate == null;
+  const low = !loading && !empty && stats.rate < 80;
   const hover =
-    Platform.OS === 'web' && tip
+    Platform.OS === 'web' && tip && !loading
       ? {
           onMouseEnter: (event) => setAnchor(event?.currentTarget || null),
           onMouseLeave: () => setAnchor(null),
@@ -4795,14 +4344,18 @@ function HomePercentRate({ stats, compact = false, columnStyle, emptyLabel, noun
     <View
       style={[compact ? styles.igStorePhoneWrap : columnStyle, hover && styles.homeStoreAmountHover]}
       {...hover}
-      accessibilityLabel={empty ? emptyLabel : `${noun} ${stats.ratio}. ${tip}`}
+      accessibilityLabel={loading ? `${noun}, loading` : empty ? emptyLabel : `${noun} ${stats.ratio}. ${tip}`}
     >
       {icon ? (
         <View style={compact ? null : styles.homeStoreRateIcon}>
-          <Ionicons name={icon} size={13} color={homeRateIconColor(stats)} />
+          <Ionicons name={icon} size={13} color={loading ? HOME_RATE_EMPTY : homeRateIconColor(stats)} />
         </View>
       ) : null}
-      {empty ? (
+      {loading ? (
+        <View style={compact ? null : styles.homeStoreRateValue}>
+          <HomeMetricPending compact={compact} />
+        </View>
+      ) : empty ? (
         compact ? null : <View style={styles.homeStoreRateValue} />
       ) : (
         <View style={compact ? null : styles.homeStoreRateValue}>
@@ -4825,8 +4378,8 @@ function HomePercentRate({ stats, compact = false, columnStyle, emptyLabel, noun
   );
 }
 
-function HomeEmailRate({ stats, compact = false, showIcon = true }) {
-  const empty = stats?.rate == null;
+function HomeEmailRate({ stats, compact = false, showIcon = true, loading = false }) {
+  const empty = !loading && stats?.rate == null;
   const tip = empty
     ? ''
     : `${stats.withEmail} of ${stats.customerCount} named with email${
@@ -4841,12 +4394,13 @@ function HomeEmailRate({ stats, compact = false, showIcon = true }) {
       noun="Email capture rate"
       tip={tip}
       icon={showIcon ? 'mail' : null}
+      loading={loading}
     />
   );
 }
 
-function HomePhoneRate({ stats, compact = false, showIcon = true }) {
-  const empty = stats?.rate == null;
+function HomePhoneRate({ stats, compact = false, showIcon = true, loading = false }) {
+  const empty = !loading && stats?.rate == null;
   const tip = empty
     ? ''
     : `${stats.answered} of ${stats.total} inbound answered${stats.missed ? ` · ${stats.missed} missed` : ''}`;
@@ -4859,12 +4413,13 @@ function HomePhoneRate({ stats, compact = false, showIcon = true }) {
       noun="Phone answer rate"
       tip={tip}
       icon={showIcon ? 'call' : null}
+      loading={loading}
     />
   );
 }
 
-function HomeReviewRate({ stats, compact = false, showIcon = true }) {
-  const empty = stats?.rate == null;
+function HomeReviewRate({ stats, compact = false, showIcon = true, loading = false }) {
+  const empty = !loading && stats?.rate == null;
   const tip = empty
     ? ''
     : `${stats.count} review${stats.count === 1 ? '' : 's'} · ${Number(stats.average).toFixed(1)} average${
@@ -4879,6 +4434,7 @@ function HomeReviewRate({ stats, compact = false, showIcon = true }) {
       noun="Reviews"
       tip={tip}
       icon={showIcon ? 'star' : null}
+      loading={loading}
     />
   );
 }
@@ -5063,6 +4619,21 @@ function HomePeopleStack({
   );
 }
 
+function HomeStoreTxCount({ count, compact = false }) {
+  const n = Number(count) || 0;
+  return (
+    <View style={compact ? styles.igHomeStoreTx : styles.homeStoreColTx}>
+      <HomeLiveValue
+        style={compact ? styles.igHomeStoreMeta : styles.homeStoreTx}
+        numeric={n}
+        numberOfLines={1}
+      >
+        {n ? String(n) : '—'}
+      </HomeLiveValue>
+    </View>
+  );
+}
+
 function HomeStoreAmount({ amount, count, strong = false, breakdown = null, compact = false }) {
   const { currency, fromCad, money } = useDisplayCurrency();
   const [anchor, setAnchor] = useState(null);
@@ -5098,7 +4669,6 @@ function HomeStoreAmount({ amount, count, strong = false, breakdown = null, comp
           ]}
           numeric={shown}
           format={(value) => formatAmount(value, currency)}
-          origin="end"
           numberOfLines={1}
         >
           {empty ? '—' : money(amount)}
@@ -5122,6 +4692,9 @@ const HomeStoreTableRow = memo(function HomeStoreTableRow({
   emailStats,
   phoneStats,
   reviewStats,
+  emailLoading = false,
+  phoneLoading = false,
+  reviewLoading = false,
   selected,
   last,
   onOpenStore,
@@ -5137,31 +4710,22 @@ const HomeStoreTableRow = memo(function HomeStoreTableRow({
   const accent = storeAccent(row.store);
   const closed = open === false;
   const focused = homeAmountForFocus(row, amountFocus);
-  const hasActivity = focused.count > 0;
   const peopleColumn = (
     <View style={[styles.homeStoreColPeople, !showAmounts && styles.homeStoreColPeopleTrailing]}>
-      {closed ? null : (
-        <HomePeopleStack
-          people={people}
-          compact
-          onOpenPerson={onOpenPerson}
-          trailing={!showAmounts}
-          interactive={peopleInteractive}
-        />
-      )}
+      <HomePeopleStack
+        people={people}
+        compact
+        onOpenPerson={onOpenPerson}
+        trailing={!showAmounts}
+        interactive={peopleInteractive}
+      />
     </View>
   );
-  const metricCells = closed ? (
+  const metricCells = (
     <>
-      <View style={styles.homeStoreColEmail} />
-      <View style={styles.homeStoreColPhone} />
-      <View style={styles.homeStoreColReview} />
-    </>
-  ) : (
-    <>
-      <HomeEmailRate stats={emailStats} />
-      <HomePhoneRate stats={phoneStats} />
-      <HomeReviewRate stats={reviewStats} />
+      <HomeEmailRate stats={emailStats} loading={emailLoading} />
+      <HomePhoneRate stats={phoneStats} loading={phoneLoading} />
+      <HomeReviewRate stats={reviewStats} loading={reviewLoading} />
     </>
   );
   const rowBody = (
@@ -5169,42 +4733,22 @@ const HomeStoreTableRow = memo(function HomeStoreTableRow({
       <View style={styles.homeStoreColStore}>
         <Text style={styles.homeStoreName} numberOfLines={1}>
           {row.store}
+          {closed ? <Text style={styles.homeStoreClosedMark}> (closed)</Text> : null}
         </Text>
-        {closed ? (
-          <Text style={styles.homeStoreMeta}>Closed</Text>
-        ) : (
-          <HomeLiveValue style={styles.homeStoreMeta} numeric={focused.count} numberOfLines={1}>
-            {hasActivity
-              ? homeCountLabel(focused.count, amountFocus)
-              : amountFocus === 'sales'
-                ? 'No sales'
-                : amountFocus === 'purchases'
-                  ? 'No purchases'
-                  : 'No transactions'}
-          </HomeLiveValue>
-        )}
       </View>
-      <View style={styles.homeStoreRateSpacer} />
+      <HomeStoreTxCount count={focused.count} />
       {metricCells}
-      <View style={styles.homeStoreTrailingGap} />
       {showAmounts ? peopleColumn : null}
       {showAmounts ? (
-        closed ? (
-          <View style={styles.homeStoreColMoney} />
-        ) : (
-          <HomeStoreAmount
-            amount={focused.amount}
-            count={focused.count}
-            breakdown={amountFocus === 'all' ? row : null}
-            strong
-          />
-        )
+        <HomeStoreAmount
+          amount={focused.amount}
+          count={focused.count}
+          breakdown={amountFocus === 'all' ? row : null}
+          strong
+        />
       ) : (
         peopleColumn
       )}
-      <View style={styles.homeStoreChevron}>
-        {canOpen ? <Ionicons name="chevron-forward" size={14} color="#c7c7cc" /> : null}
-      </View>
     </View>
   );
 
@@ -5218,6 +4762,7 @@ const HomeStoreTableRow = memo(function HomeStoreTableRow({
       >
         <HomeStoreStatusIcon accent={accent} open={open} />
         {rowBody}
+        <HomeStoreRowChevron />
         <HomeStoreRowRule last={last} hidden={hideRule} />
       </View>
     );
@@ -5240,8 +4785,9 @@ const HomeStoreTableRow = memo(function HomeStoreTableRow({
       >
         <Pressable
           onPress={() => onOpenStore(row)}
+          className="cgold-home-row-hit"
           style={({ hovered, pressed }) => [
-            StyleSheet.absoluteFill,
+            styles.homeStoreRowHit,
             (hovered || pressed || selected) && styles.homeStoreRowHovered,
           ]}
           accessibilityRole="button"
@@ -5255,6 +4801,7 @@ const HomeStoreTableRow = memo(function HomeStoreTableRow({
           />
           {rowBody}
         </View>
+        <HomeStoreRowChevron />
         <HomeStoreRowRule last={last} hidden={hideRule} />
       </View>
     );
@@ -5274,6 +4821,7 @@ const HomeStoreTableRow = memo(function HomeStoreTableRow({
     >
       <HomeStoreStatusIcon accent={accent} open={open} />
       {rowBody}
+      <HomeStoreRowChevron />
       <HomeStoreRowRule last={last} hidden={hideRule} />
     </Pressable>
   );
@@ -5281,6 +4829,14 @@ const HomeStoreTableRow = memo(function HomeStoreTableRow({
 
 const HOME_PHONE_STORES = [...HOME_PINNED_STORES];
 const HOME_EMAIL_REFRESH_MS = 15_000;
+
+function HomeStoreRowChevron() {
+  return (
+    <View style={styles.homeStoreChevron} pointerEvents="none" accessibilityElementsHidden>
+      <Ionicons name="chevron-forward" size={18} color="#8e8e93" />
+    </View>
+  );
+}
 
 function HomeStoreRowRule({ last = false, header = false, total = false, hidden = false }) {
   if (last && !header && !total) return null;
@@ -5364,7 +4920,14 @@ function HomeStoresTableHeader({ showAmounts, sortKey, sortDir, onSort, hideRule
           onSort={onSort}
           style={styles.homeStoreColStore}
         />
-        <View style={styles.homeStoreRateSpacer} />
+        <HomeStoreHeaderCell
+          label="Transactions"
+          column="count"
+          sortKey={sortKey}
+          sortDir={sortDir}
+          onSort={onSort}
+          style={styles.homeStoreColTx}
+        />
         <HomeStoreHeaderCell
           label="Email"
           column="email"
@@ -5372,7 +4935,6 @@ function HomeStoresTableHeader({ showAmounts, sortKey, sortDir, onSort, hideRule
           sortDir={sortDir}
           onSort={onSort}
           style={styles.homeStoreColEmail}
-          align="center"
         />
         <HomeStoreHeaderCell
           label="Phone"
@@ -5381,7 +4943,6 @@ function HomeStoresTableHeader({ showAmounts, sortKey, sortDir, onSort, hideRule
           sortDir={sortDir}
           onSort={onSort}
           style={styles.homeStoreColPhone}
-          align="center"
         />
         <HomeStoreHeaderCell
           label="Reviews"
@@ -5390,9 +4951,7 @@ function HomeStoresTableHeader({ showAmounts, sortKey, sortDir, onSort, hideRule
           sortDir={sortDir}
           onSort={onSort}
           style={styles.homeStoreColReview}
-          align="center"
         />
-        <View style={styles.homeStoreTrailingGap} />
         {showAmounts ? (
           <HomeStoreHeaderCell
             label="Employees"
@@ -5411,7 +4970,6 @@ function HomeStoresTableHeader({ showAmounts, sortKey, sortDir, onSort, hideRule
             sortDir={sortDir}
             onSort={onSort}
             style={styles.homeStoreColMoney}
-            align="end"
           />
         ) : (
           <HomeStoreHeaderCell
@@ -5421,10 +4979,8 @@ function HomeStoresTableHeader({ showAmounts, sortKey, sortDir, onSort, hideRule
             sortDir={sortDir}
             onSort={onSort}
             style={[styles.homeStoreColPeople, styles.homeStoreColPeopleTrailing]}
-            align="end"
           />
         )}
-        <View style={styles.homeStoreChevron} />
       </View>
       <HomeStoreRowRule header hidden={hideRule} />
     </View>
@@ -5458,6 +5014,11 @@ function prefetchHomePhoneInboxes(refreshInbox, names) {
   );
 }
 
+function homeReviewsLoading(pending, storeName) {
+  const place = getGooglePlaceForStore(storeName);
+  return Boolean(place && pending?.has(place.storeName));
+}
+
 function HomeStoresTable({
   rows,
   selectedStore,
@@ -5472,55 +5033,71 @@ function HomeStoresTable({
   canOpenStore,
   peopleInteractive = false,
   amountFocus = 'all',
+  emailReady = true,
 }) {
   const phone = usePhoneCalls();
   const [hoursByKey, setHoursByKey] = useState(() => new Map());
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [callHistoryByStore, setCallHistoryByStore] = useState({});
   const [reviewsByStore, setReviewsByStore] = useState(() => new Map());
+  const [reviewsPending, setReviewsPending] = useState(
+    () => new Set(GOOGLE_STORE_PLACES.map((place) => place.storeName)),
+  );
+  const [phonePending, setPhonePending] = useState(true);
+  const [reviewEmployeesByStore, setReviewEmployeesByStore] = useState(() => new Map());
+  const reviewAttrCacheRef = useRef(new Map());
   const [sort, setSort] = useState({ key: null, dir: 'default' });
   const [hoveredStore, setHoveredStore] = useState(null);
   const cycleSort = useCallback((column) => {
     setSort((current) => nextHomeStoreSort(current, column));
   }, []);
-  const reviewEmployeesByStore = useMemo(() => {
-    const next = new Map();
-    for (const row of rows) {
-      next.set(
-        row.store,
-        attributedReviewEmployeeNames({
-          reviews: reviewsForStoreName(reviewsByStore, row.store),
-          transactionRows: row.transactions,
-          storeName: row.store,
-          staffProfiles: staff,
-        }),
-      );
-    }
-    return next;
-  }, [reviewsByStore, rows, staff]);
+  const basePeopleByStore = useMemo(
+    () => new Map(rows.map((row) => [row.store, peopleInStore(row.store, row.transactions, staff)])),
+    [rows, staff],
+  );
   const peopleByStore = useMemo(
     () =>
       new Map(
         rows.map((row) => {
           const attributed = reviewEmployeesByStore.get(row.store) || [];
-          const people = peopleInStore(row.store, row.transactions, staff).map((person) => ({
+          const people = (basePeopleByStore.get(row.store) || []).map((person) => ({
             ...person,
-            reviewStar: employeeNameMatchesAny(person.name, attributed),
+            reviewStar: attributed.length ? employeeNameMatchesAny(person.name, attributed) : false,
           }));
           return [row.store, people];
         }),
       ),
-    [reviewEmployeesByStore, rows, staff],
+    [basePeopleByStore, reviewEmployeesByStore, rows],
   );
   const totalPeople = useMemo(() => {
-    const people = uniqueStorePeople(rows, staff);
-    return people.map((person) => ({
-      ...person,
-      reviewStar: rows.some((row) =>
-        employeeNameMatchesAny(person.name, reviewEmployeesByStore.get(row.store) || []),
-      ),
-    }));
-  }, [reviewEmployeesByStore, rows, staff]);
+    const byKey = new Map();
+    for (const people of basePeopleByStore.values()) {
+      for (const person of people) {
+        const key = person.name.toLowerCase();
+        const current = byKey.get(key);
+        if (!current) {
+          byKey.set(key, { ...person });
+          continue;
+        }
+        current.txCount += person.txCount;
+        current.photoUrl = current.photoUrl || person.photoUrl;
+        current.profileId = current.profileId || person.profileId;
+        current.locationName = current.locationName || person.locationName;
+      }
+    }
+    return Array.from(byKey.values())
+      .sort((a, b) => {
+        if (Boolean(b.photoUrl) !== Boolean(a.photoUrl)) return b.photoUrl ? 1 : -1;
+        if (b.txCount !== a.txCount) return b.txCount - a.txCount;
+        return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+      })
+      .map((person) => ({
+        ...person,
+        reviewStar: rows.some((row) =>
+          employeeNameMatchesAny(person.name, reviewEmployeesByStore.get(row.store) || []),
+        ),
+      }));
+  }, [basePeopleByStore, reviewEmployeesByStore, rows]);
   const storeNamesKey = useMemo(() => rows.map((row) => row.store).filter(Boolean).join('\n'), [rows]);
   const phoneByStore = useMemo(() => {
     const next = new Map();
@@ -5574,6 +5151,7 @@ function HomeStoresTable({
   useEffect(() => {
     if (!startKey || !endKey || !storeNamesKey) {
       setCallHistoryByStore({});
+      setPhonePending(false);
       return undefined;
     }
     const names = storeNamesKey.split('\n').filter(Boolean);
@@ -5589,68 +5167,155 @@ function HomeStoresTable({
       if (peeked?.calls) seeded[key] = peeked.calls;
     }
     setCallHistoryByStore(seeded);
-    prefetchHomePhoneInboxes(phone.refreshInbox, names);
-    if (!needHistory) return undefined;
+    setPhonePending(!Object.keys(seeded).length);
     let cancelled = false;
-    let historyNext = 0;
-    const historyWorkers = Math.min(4, names.length);
-    Promise.all(
-      Array.from({ length: historyWorkers }, async () => {
-        while (historyNext < names.length && !cancelled) {
-          const name = names[historyNext];
-          historyNext += 1;
-          try {
-            const payload = await fetchPhoneHistory(name, { dateFrom, dateTo });
-            const key = storeKeyFromName(name);
-            if (cancelled || !key) continue;
-            setCallHistoryByStore((current) => ({ ...current, [key]: payload.calls || [] }));
-          } catch {
-            // The live inbox still covers this store.
-          }
-        }
-      }),
-    );
+    const historyDone = !needHistory
+      ? Promise.resolve()
+      : Promise.all(
+          Array.from({ length: Math.min(6, names.length) }, async (_, worker) => {
+            let historyNext = worker;
+            const stride = Math.min(6, names.length);
+            while (historyNext < names.length && !cancelled) {
+              const name = names[historyNext];
+              historyNext += stride;
+              try {
+                const payload = await fetchPhoneHistory(name, { dateFrom, dateTo });
+                const key = storeKeyFromName(name);
+                if (cancelled || !key) continue;
+                startTransition(() => {
+                  setCallHistoryByStore((current) => ({ ...current, [key]: payload.calls || [] }));
+                });
+              } catch {
+                // The live inbox still covers this store.
+              }
+            }
+          }),
+        );
+    historyDone.finally(() => {
+      if (!cancelled) setPhonePending(false);
+    });
     return () => {
       cancelled = true;
     };
-  }, [endKey, phone.refreshInbox, startKey, storeNamesKey]);
+  }, [endKey, startKey, storeNamesKey]);
 
   useEffect(() => {
     if (!startKey || !endKey) {
       setReviewsByStore(new Map());
+      setReviewsPending(new Set());
       return undefined;
     }
     const seeded = new Map();
+    const pending = new Set();
     for (const place of GOOGLE_STORE_PLACES) {
-      const cached = peekHomeStoreReviews(place.storeName, startKey, endKey);
-      if (cached) seeded.set(place.storeName, cached);
+      const cached =
+        peekHomeStoreReviews(place.storeName, startKey, endKey) ||
+        peekCachedGoogleReviews(place.storeName, startKey, endKey, 'home');
+      if (cached) {
+        seeded.set(place.storeName, cached);
+        if (!peekHomeStoreReviews(place.storeName, startKey, endKey)) {
+          rememberHomeStoreReviews(place.storeName, startKey, endKey, cached);
+        }
+      } else {
+        pending.add(place.storeName);
+      }
     }
     setReviewsByStore(seeded);
+    setReviewsPending(pending);
     let cancelled = false;
-    Promise.all(
-      GOOGLE_STORE_PLACES.map(async (place) => {
-        try {
-          const fetched = await fetchGoogleReviewsForStore(place.storeName, {
-            startDate: startKey,
-            endDate: endKey,
-          });
-          if (cancelled) return;
-          const reviews = fetched.reviews || [];
-          rememberHomeStoreReviews(place.storeName, startKey, endKey, reviews);
-          setReviewsByStore((current) => {
+    const applyStore = (name, reviews) => {
+      if (cancelled) return;
+      startTransition(() => {
+        setReviewsByStore((current) => {
+          const next = new Map(current);
+          next.set(name, reviews);
+          return next;
+        });
+        setReviewsPending((current) => {
+          if (!current.has(name)) return current;
+          const next = new Set(current);
+          next.delete(name);
+          return next;
+        });
+      });
+    };
+    const cancelPrefetch = prefetchHomeStoreReviews(startKey, endKey, applyStore);
+    return () => {
+      cancelled = true;
+      cancelPrefetch();
+    };
+  }, [endKey, startKey]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const cache = reviewAttrCacheRef.current;
+    const dirty = [];
+    const liveStores = new Set(rows.map((row) => row.store));
+    for (const key of [...cache.keys()]) {
+      if (!liveStores.has(key)) cache.delete(key);
+    }
+    const cachedHits = [];
+    for (const row of rows) {
+      const reviews = reviewsForStoreName(reviewsByStore, row.store);
+      const prev = cache.get(row.store);
+      if (prev && prev.row === row && prev.reviews === reviews) {
+        cachedHits.push([row.store, prev.names]);
+        continue;
+      }
+      dirty.push({ row, reviews });
+    }
+    if (cachedHits.length) {
+      setReviewEmployeesByStore((current) => {
+        let changed = false;
+        const next = new Map(current);
+        for (const [store, names] of cachedHits) {
+          if (next.get(store) === names) continue;
+          next.set(store, names);
+          changed = true;
+        }
+        return changed ? next : current;
+      });
+    }
+    if (!dirty.length) return undefined;
+    (async () => {
+      let pendingNames = [];
+      const flushNames = () => {
+        if (!pendingNames.length) return;
+        const batch = pendingNames;
+        pendingNames = [];
+        startTransition(() => {
+          setReviewEmployeesByStore((current) => {
             const next = new Map(current);
-            next.set(place.storeName, reviews);
+            for (const [store, names] of batch) next.set(store, names);
             return next;
           });
-        } catch {
-          // Email and phone stay visible if Google is slow or down.
+        });
+      };
+      let slice = 0;
+      for (const item of dirty) {
+        if (cancelled) return;
+        const names = attributedReviewEmployeeNames({
+          reviews: item.reviews,
+          transactionRows: item.row.transactions,
+          storeName: item.row.store,
+          staffProfiles: staff,
+        });
+        if (cancelled) return;
+        cache.set(item.row.store, { row: item.row, reviews: item.reviews, names });
+        pendingNames.push([item.row.store, names]);
+        slice += 1;
+        if (slice >= 4) {
+          flushNames();
+          slice = 0;
+          await yieldToMain();
         }
-      }),
-    );
+      }
+      if (!cancelled) flushNames();
+    })();
     return () => {
       cancelled = true;
     };
-  }, [endKey, startKey]);
+  }, [reviewsByStore, rows, staff]);
 
   useEffect(() => {
     let cancelled = false;
@@ -5679,42 +5344,14 @@ function HomeStoresTable({
     }
     return next;
   }, [hoursByKey, nowTick, rows]);
-
-  if (compact) {
-    return (
-      <View style={styles.homeStoreTableWrap}>
-        <View style={styles.igStoreList}>
-          {rows.map((row, index) => (
-            <HomeStoreCard
-              key={row.store}
-              row={row}
-              people={peopleByStore.get(row.store) || []}
-              emailStats={emailByStore.get(row.store)}
-              phoneStats={phoneByStore.get(row.store)}
-              reviewStats={reviewByStore.get(row.store)}
-              selected={selectedStore?.store === row.store}
-              last={index === rows.length - 1}
-              onOpenStore={onOpenStore}
-              onOpenPerson={onOpenPerson}
-              open={openByStore.get(row.store) === true}
-              showAmounts={showAmounts}
-              canOpen={canOpenStore ? canOpenStore(row) : true}
-              peopleInteractive={peopleInteractive}
-              amountFocus={amountFocus}
-            />
-          ))}
-        </View>
-      </View>
-    );
-  }
-
-  const tableMinStyle = [styles.homeStoreTable, !showAmounts && styles.homeStoreTableNoAmounts];
-  const focusedTotals = totals ? homeAmountForFocus(totals, amountFocus) : null;
+  const emailLoading = !emailReady;
+  const anyReviewLoading = rows.some((row) => homeReviewsLoading(reviewsPending, row.store));
   const sortedRows = useMemo(() => {
     if (!sort.key || sort.dir === 'default') return rows;
     const dir = sort.dir === 'asc' ? 1 : -1;
     const valueOf = (row) => {
       if (sort.key === 'store') return String(row.store || '');
+      if (sort.key === 'count') return homeAmountForFocus(row, amountFocus).count;
       if (sort.key === 'email') return Number(emailByStore.get(row.store)?.rate);
       if (sort.key === 'phone') return Number(phoneByStore.get(row.store)?.rate);
       if (sort.key === 'review') return Number(reviewByStore.get(row.store)?.count);
@@ -5733,6 +5370,43 @@ function HomeStoresTable({
       return String(a.store || '').localeCompare(String(b.store || ''), undefined, { sensitivity: 'base' });
     });
   }, [amountFocus, emailByStore, peopleByStore, phoneByStore, reviewByStore, rows, sort.dir, sort.key]);
+
+  if (compact) {
+    return (
+      <View style={styles.homeStoreTableWrap}>
+        <View style={styles.igStoreList}>
+          {rows.map((row, index) => (
+            <HomeStoreCard
+              key={row.store}
+              row={row}
+              people={peopleByStore.get(row.store) || []}
+              emailStats={emailByStore.get(row.store)}
+              phoneStats={phoneByStore.get(row.store)}
+              reviewStats={reviewByStore.get(row.store)}
+              emailLoading={emailLoading && emailByStore.get(row.store)?.rate == null}
+              phoneLoading={phonePending && phoneByStore.get(row.store)?.rate == null}
+              reviewLoading={
+                homeReviewsLoading(reviewsPending, row.store) &&
+                reviewByStore.get(row.store)?.rate == null
+              }
+              selected={selectedStore?.store === row.store}
+              last={index === rows.length - 1}
+              onOpenStore={onOpenStore}
+              onOpenPerson={onOpenPerson}
+              open={openByStore.get(row.store) === true}
+              showAmounts={showAmounts}
+              canOpen={canOpenStore ? canOpenStore(row) : true}
+              peopleInteractive={peopleInteractive}
+              amountFocus={amountFocus}
+            />
+          ))}
+        </View>
+      </View>
+    );
+  }
+
+  const tableMinStyle = [styles.homeStoreTable, !showAmounts && styles.homeStoreTableNoAmounts];
+  const focusedTotals = totals ? homeAmountForFocus(totals, amountFocus) : null;
   const tableContent = (
     <>
       <HomeStoresTableHeader
@@ -5750,6 +5424,12 @@ function HomeStoresTable({
           emailStats={emailByStore.get(row.store)}
           phoneStats={phoneByStore.get(row.store)}
           reviewStats={reviewByStore.get(row.store)}
+          emailLoading={emailLoading && emailByStore.get(row.store)?.rate == null}
+          phoneLoading={phonePending && phoneByStore.get(row.store)?.rate == null}
+          reviewLoading={
+            homeReviewsLoading(reviewsPending, row.store) &&
+            reviewByStore.get(row.store)?.rate == null
+          }
           selected={selectedStore?.store === row.store}
           last={index === sortedRows.length - 1 && !totals}
           onOpenStore={onOpenStore}
@@ -5774,15 +5454,11 @@ function HomeStoresTable({
           <View style={styles.homeStoreRowBody}>
             <View style={styles.homeStoreColStore}>
               <Text style={styles.homeStoreTotalLabel}>Total</Text>
-              <HomeLiveValue style={styles.homeStoreMeta} numeric={focusedTotals.count} numberOfLines={1}>
-                {homeCountLabel(focusedTotals.count, amountFocus)}
-              </HomeLiveValue>
             </View>
-            <View style={styles.homeStoreRateSpacer} />
-            <HomeEmailRate stats={totalEmailStats} />
-            <HomePhoneRate stats={totalPhoneStats} />
-            <HomeReviewRate stats={totalReviewStats} />
-            <View style={styles.homeStoreTrailingGap} />
+            <HomeStoreTxCount count={focusedTotals.count} />
+            <HomeEmailRate stats={totalEmailStats} loading={emailLoading && totalEmailStats?.rate == null} />
+            <HomePhoneRate stats={totalPhoneStats} loading={phonePending && totalPhoneStats?.rate == null} />
+            <HomeReviewRate stats={totalReviewStats} loading={anyReviewLoading && totalReviewStats?.rate == null} />
             {showAmounts ? (
               <View style={styles.homeStoreColPeople}>
                 {totalPeople.length > 0 ? (
@@ -5815,7 +5491,6 @@ function HomeStoresTable({
                 ) : null}
               </View>
             )}
-            <View style={styles.homeStoreChevron} />
           </View>
           <HomeStoreRowRule
             total
@@ -5942,9 +5617,10 @@ function HomeScreen({
   const heroDateAnchorRef = useRef(null);
   const storeDateOpenRef = useRef(null);
   const storeDateAnchorRef = useRef(null);
-  const [storeRows, setStoreRows] = useState([]);
+  const [storeRows, setStoreRows] = useState(emptyPinnedHomeRows);
   const [selectedStore, setSelectedStore] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [emailReady, setEmailReady] = useState(false);
   const [error, setError] = useState('');
   const [staff, setStaff] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -5997,14 +5673,37 @@ function HomeScreen({
       }
 
       try {
+        const cached = peekHomeEmailRows(startKey, endKey);
         const needEmail = !silent || Date.now() - emailFetchedAt.current > HOME_EMAIL_REFRESH_MS;
-        const emailPromise = needEmail
-          ? fetchHomeStoreSummaries(posSession, {
+
+        if (cached?.length && !silent) {
+          setStoreRows((current) => reconcileHomeRows(current, cached));
+          setEmailReady(true);
+          setLoading(false);
+        }
+
+        if (needEmail && cached?.length) {
+          try {
+            const rich = await fetchHomeStoreSummaries(posSession, {
               startDate: startKey,
               endDate: endKey,
               extras: HOME_SUMMARY_EXTRAS,
-            })
-          : null;
+            });
+            if (id !== requestId.current) return;
+            emailFetchedAt.current = Date.now();
+            rememberHomeEmailRows(startKey, endKey, rich.rows);
+            startTransition(() => {
+              setStoreRows((current) => reconcileHomeRows(current, rich.rows));
+              setEmailReady(true);
+              setError(rich.warning || '');
+            });
+          } catch {
+            if (id === requestId.current) setEmailReady(true);
+          }
+          if (!silent) setLoading(false);
+          return;
+        }
+
         const fast = await fetchHomeStoreSummaries(posSession, {
           startDate: startKey,
           endDate: endKey,
@@ -6012,22 +5711,29 @@ function HomeScreen({
         });
         if (id !== requestId.current) return;
         setStoreRows((current) => {
-          const seeded = current.length ? current : peekHomeEmailRows(startKey, endKey) || [];
+          const seeded = current.length ? current : cached || [];
           return reconcileHomeRows(current, mergeHomeSummaryEmails(fast.rows, seeded));
         });
         setError(fast.warning || '');
         if (!silent) setLoading(false);
 
-        if (!emailPromise) return;
+        if (!needEmail) return;
         try {
-          const rich = await emailPromise;
+          const rich = await fetchHomeStoreSummaries(posSession, {
+            startDate: startKey,
+            endDate: endKey,
+            extras: HOME_SUMMARY_EXTRAS,
+          });
           if (id !== requestId.current) return;
           emailFetchedAt.current = Date.now();
           rememberHomeEmailRows(startKey, endKey, rich.rows);
-          setStoreRows((current) => reconcileHomeRows(current, rich.rows));
-          setError(rich.warning || '');
+          startTransition(() => {
+            setStoreRows((current) => reconcileHomeRows(current, rich.rows));
+            setEmailReady(true);
+            setError(rich.warning || '');
+          });
         } catch {
-          // Totals already painted; email rates retry on the next pass.
+          if (id === requestId.current) setEmailReady(true);
         }
       } catch (err) {
         if (id !== requestId.current) return;
@@ -6056,9 +5762,15 @@ function HomeScreen({
   useEffect(() => {
     emailFetchedAt.current = 0;
     const cached = peekHomeEmailRows(startKey, endKey);
+    setEmailReady(Boolean(cached?.length));
     if (cached?.length) {
-      setStoreRows((current) => (current.length ? current : cached));
+      setStoreRows(cached);
     }
+  }, [endKey, startKey]);
+
+  useEffect(() => {
+    if (!startKey || !endKey) return undefined;
+    return prefetchHomeStoreReviews(startKey, endKey);
   }, [endKey, startKey]);
 
   useEffect(() => {
@@ -6480,6 +6192,27 @@ function HomeScreen({
           setStageHeight((current) => (Math.abs(current - height) < 0.5 ? current : height));
         }}
       >
+      {selectedStore ? (
+      <HomeStoreDrawer
+        visible
+        store={selectedStore}
+        session={session}
+        onOpenCustomer={onOpenCustomer}
+        periodLabel={periodLabel}
+        date={startDate}
+        startKey={startKey}
+        endKey={endKey}
+        onClose={closeStore}
+        appsOpen={storeAppsOpen}
+        onAppsOpenChange={setStoreAppsOpen}
+        txFocus={heroFocus}
+        mobileChromeWidth={0}
+        dateHero={!isMobile && !hideHomeAmounts ? renderDateHero(storeDateOpenRef, storeDateAnchorRef, false) : null}
+        contentPadTop={isMobile ? HOME_MOBILE_TOP_BAR_HEIGHT : TOP_BAR_HEIGHT + 12}
+        onSelectedDocumentChange={setHomeDocRef}
+        documentCloseRef={closeHomeDocRef}
+      />
+      ) : (
       <ScrollView
         style={[styles.toolsScroll, styles.igHomeOverlayScroll]}
         contentContainerStyle={[
@@ -6487,7 +6220,7 @@ function HomeScreen({
           styles.igHomeScrollContent,
           {
             flexGrow: 1,
-            paddingTop: isMobile ? HOME_MOBILE_TOP_BAR_HEIGHT : TOP_BAR_HEIGHT + homeHeroPad - 10,
+            paddingTop: isMobile ? HOME_MOBILE_TOP_BAR_HEIGHT : TOP_BAR_HEIGHT + 12,
             paddingBottom: isMobile ? mobileTabBarReserve() + 8 : 24,
           },
         ]}
@@ -6543,6 +6276,7 @@ function HomeScreen({
                     showAmounts={!hideHomeAmounts}
                     canOpenStore={canOpenHomeStore}
                     amountFocus={heroFocus}
+                    emailReady={emailReady}
                   />
                 </View>
               ) : null}
@@ -6550,6 +6284,7 @@ function HomeScreen({
           </View>
         ) : null}
       </ScrollView>
+      )}
       </View>
 
       {isMobile && !selectedStore && filtersOpen ? (
@@ -6611,26 +6346,6 @@ function HomeScreen({
           </View>
         </View>
       ) : null}
-
-      <HomeStoreDrawer
-        visible={Boolean(selectedStore)}
-        store={selectedStore}
-        session={session}
-        onOpenCustomer={onOpenCustomer}
-        periodLabel={periodLabel}
-        date={startDate}
-        startKey={startKey}
-        endKey={endKey}
-        onClose={closeStore}
-        appsOpen={storeAppsOpen}
-        onAppsOpenChange={setStoreAppsOpen}
-        txFocus={heroFocus}
-        mobileChromeWidth={0}
-        dateHero={!isMobile && !hideHomeAmounts ? renderDateHero(storeDateOpenRef, storeDateAnchorRef, false) : null}
-        contentPadTop={isMobile ? HOME_MOBILE_TOP_BAR_HEIGHT : TOP_BAR_HEIGHT + homeHeroPad - 10}
-        onSelectedDocumentChange={setHomeDocRef}
-        documentCloseRef={closeHomeDocRef}
-      />
 
       </View>
     </View>
@@ -8004,8 +7719,176 @@ function formatSpotMoney(value) {
   }).format(Number(value) || 0)}`;
 }
 
+function useSpotRefreshProgress() {
+  const { spotFetchedAt } = useDisplayCurrency();
+  const [progress, setProgress] = useState(1);
+
+  useEffect(() => {
+    if (!spotFetchedAt) {
+      setProgress(1);
+      return undefined;
+    }
+    const tick = () => {
+      const next = 1 - (Date.now() - spotFetchedAt) / SPOT_REFRESH_MS;
+      setProgress(Math.max(0, Math.min(1, next)));
+    };
+    tick();
+    const id = setInterval(tick, 200);
+    return () => clearInterval(id);
+  }, [spotFetchedAt]);
+
+  return progress;
+}
+
+const SPOT_PIE_RED = '#C14A42';
+const SPOT_PIE_TRACK = 'rgba(193, 74, 66, 0.16)';
+
+function useSpotPieBreathe() {
+  const breath = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(breath, {
+          toValue: 1,
+          duration: 1600,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+        Animated.timing(breath, {
+          toValue: 0,
+          duration: 1600,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [breath]);
+
+  return breath;
+}
+
+function useSpotRefreshFlash() {
+  const { spotFetchedAt } = useDisplayCurrency();
+  const pulse = useRef(new Animated.Value(0)).current;
+  const seen = useRef(null);
+
+  useEffect(() => {
+    if (!spotFetchedAt) return;
+    if (seen.current == null) {
+      seen.current = spotFetchedAt;
+      return;
+    }
+    if (seen.current === spotFetchedAt) return;
+    seen.current = spotFetchedAt;
+    pulse.setValue(0);
+    Animated.sequence([
+      Animated.timing(pulse, {
+        toValue: 1,
+        duration: 160,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: false,
+      }),
+      Animated.timing(pulse, {
+        toValue: 0,
+        duration: 720,
+        easing: Easing.inOut(Easing.cubic),
+        useNativeDriver: false,
+      }),
+    ]).start();
+  }, [pulse, spotFetchedAt]);
+
+  return pulse;
+}
+
+function SpotRefreshPie({ compact = false, flash }) {
+  const progress = useSpotRefreshProgress();
+  const breath = useSpotPieBreathe();
+  const size = compact ? 18 : 16;
+  const remainingMs = Math.max(0, Math.round(progress * SPOT_REFRESH_MS));
+  const remainingSec = Math.ceil(remainingMs / 1000);
+  const deg = progress * 360;
+  const label =
+    remainingSec > 0 ? `Spot refreshes in ${remainingSec} seconds` : 'Refreshing spot';
+  const overlay = flash.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 0.38],
+  });
+
+  const pie =
+    Platform.OS === 'web'
+      ? createElement('div', {
+          'aria-label': label,
+          role: 'timer',
+          style: {
+            width: size,
+            height: size,
+            borderRadius: '50%',
+            background: `conic-gradient(from -90deg, ${SPOT_PIE_RED} ${deg}deg, ${SPOT_PIE_TRACK} 0)`,
+            boxShadow: `inset 0 0 0 0.5px rgba(193, 74, 66, 0.28)`,
+          },
+        })
+      : (
+        <View
+          accessible
+          accessibilityRole="timer"
+          accessibilityLabel={label}
+          style={[
+            styles.topSpotPie,
+            {
+              width: size,
+              height: size,
+              borderRadius: size / 2,
+              backgroundColor: SPOT_PIE_RED,
+              opacity: 0.28 + progress * 0.72,
+            },
+          ]}
+        />
+      );
+
+  return (
+    <Animated.View
+      style={[
+        styles.topSpotPie,
+        {
+          width: size,
+          height: size,
+          opacity: breath.interpolate({
+            inputRange: [0, 1],
+            outputRange: [0.72, 1],
+          }),
+          transform: [
+            {
+              scale: breath.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0.96, 1.04],
+              }),
+            },
+          ],
+        },
+      ]}
+    >
+      {pie}
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          StyleSheet.absoluteFill,
+          {
+            borderRadius: size / 2,
+            backgroundColor: '#E36A62',
+            opacity: overlay,
+          },
+        ]}
+      />
+    </Animated.View>
+  );
+}
+
 function SpotMetalToggle({ compact = false }) {
   const { currency, fromCad, quotes, spotSymbol, setSpotSymbol } = useDisplayCurrency();
+  const flash = useSpotRefreshFlash();
   const [open, setOpen] = useState(false);
   const fieldRef = useRef(null);
   const [anchor, setAnchor] = useState(null);
@@ -8055,12 +7938,27 @@ function SpotMetalToggle({ compact = false }) {
           accessibilityState={{ expanded: open }}
           accessibilityLabel={`${label} spot ${empty ? 'unavailable' : `${formatSpotMoney(shown)} ${currency}`}`}
         >
-          <Text style={[styles.topSpotPrice, compact && styles.topSpotPriceCompact]} numberOfLines={1}>
+          <Animated.Text
+            style={[
+              styles.topSpotPrice,
+              compact && styles.topSpotPriceCompact,
+              {
+                color: flash.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: ['#1a1a1a', '#5C5340'],
+                }),
+              },
+            ]}
+            numberOfLines={1}
+          >
             {empty ? '—' : formatSpotMoney(shown)}
-          </Text>
-          <View style={styles.topSpotChevrons}>
-            <Ionicons name="chevron-up" size={compact ? 10 : 9} color="#8e8e93" />
-            <Ionicons name="chevron-down" size={compact ? 10 : 9} color="#8e8e93" style={styles.topSpotChevronDown} />
+          </Animated.Text>
+          <View style={styles.topSpotTrailing}>
+            <SpotRefreshPie compact={compact} flash={flash} />
+            <View style={styles.topSpotChevrons}>
+              <Ionicons name="chevron-up" size={compact ? 10 : 9} color="#8e8e93" />
+              <Ionicons name="chevron-down" size={compact ? 10 : 9} color="#8e8e93" style={styles.topSpotChevronDown} />
+            </View>
           </View>
         </Pressable>
       </View>
@@ -8293,9 +8191,16 @@ function SidebarNavGroup({
     {
       key: 'home',
       label: 'Home',
-      icon: 'home-outline',
+      icon: 'home',
       active: homeActive,
       onPress: onSelectHome,
+      leading: (
+        <Octicons
+          name={homeActive ? 'home-fill' : 'home'}
+          size={TAB_ICON_SIZE}
+          color={homeActive ? MOBILE.label : MOBILE.secondary}
+        />
+      ),
     },
     { key: 'tools', label: 'Apps', icon: 'apps-outline', active: appsActive, onPress: onSelectApps },
     showMessages
@@ -8612,9 +8517,6 @@ export default function App() {
   const [triageMobileOverlay, setTriageMobileOverlay] = useState(false);
   const [settingsPanel, setSettingsPanel] = useState(null);
   const [pinnedKeys, setPinnedKeys] = useState([]);
-  const [toolsQuery, setToolsQuery] = useState('');
-  const [appsView, setAppsView] = useState(DEFAULT_APPS_VIEW);
-  const appGrid = useAppGridLayout();
   const [searchQuery, setSearchQuery] = useState('');
   const searchEnterRef = useRef(null);
   const [searchDoc, setSearchDoc] = useState(null);
@@ -8800,10 +8702,7 @@ export default function App() {
   const pinnedTools = pinnedKeys
     .map((key) => TOOL_CARDS.find((tool) => tool.key === key))
     .filter((tool) => tool && hasApp(tool.key));
-  const normalizedToolsQuery = toolsQuery.trim().toLowerCase();
-  const matchesToolsQuery = (tool) =>
-    !normalizedToolsQuery || tool.label.toLowerCase().includes(normalizedToolsQuery);
-  const filteredTools = TOOL_CARDS.filter((tool) => hasApp(tool.key) && matchesToolsQuery(tool));
+  const filteredTools = TOOL_CARDS.filter((tool) => hasApp(tool.key));
 
   const resetToSignedOut = useCallback(() => {
     clearInventoryCache();
@@ -8812,8 +8711,6 @@ export default function App() {
     clearPhoneHistoryCache();
     setSession(null);
     setPinnedKeys([]);
-    setToolsQuery('');
-    setAppsView(DEFAULT_APPS_VIEW);
     setAccessByRole(null);
     setOwnUserAccess(null);
     setLoginId('');
@@ -8885,9 +8782,8 @@ export default function App() {
       if (cancelled) return;
 
       if (restored?.token) {
-        const [pins, view, [access, userAccessMap]] = await Promise.all([
+        const [pins, [access, userAccessMap]] = await Promise.all([
           loadPinnedTools(restored, TOOL_KEYS),
-          loadAppsView(restored),
           accessPromise ||
             Promise.all([loadRoleAppAccess(ACCESS_CATALOG_KEYS), loadUserAppAccessMap(ACCESS_CATALOG_KEYS)]),
         ]);
@@ -8896,7 +8792,6 @@ export default function App() {
         const userAccess = (ownUserId && userAccessMap.byUser[ownUserId]) || null;
         setSession(restored);
         setPinnedKeys(pins);
-        setAppsView(view);
         setAccessByRole(access.byRole);
         setOwnUserAccess(userAccess);
         cancelWarmup = warmSessionCaches(restored);
@@ -8909,7 +8804,6 @@ export default function App() {
       } else {
         setSession(null);
         setPinnedKeys([]);
-        setAppsView(DEFAULT_APPS_VIEW);
         setAccessByRole(null);
         setOwnUserAccess(null);
       }
@@ -9228,18 +9122,6 @@ export default function App() {
     setSettingsPanel(null);
   }, [hasApp]);
 
-  const selectAppsView = (view) => {
-    if (view === appsView) return;
-    setAppsView(view);
-    if (session?.token) {
-      persistAppsView(session, view).catch(() => {});
-      setSession((current) => {
-        if (!current?.profile) return current;
-        return { ...current, profile: { ...current.profile, appsView: view } };
-      });
-    }
-  };
-
   const togglePin = (toolKey) => {
     setPinnedKeys((current) => {
       const next = current.includes(toolKey)
@@ -9286,15 +9168,13 @@ export default function App() {
 
     try {
       const next = await loginRequest(loginId, password);
-      const [pins, view, access, userAccess] = await Promise.all([
+      const [pins, access, userAccess] = await Promise.all([
         loadPinnedTools(next, TOOL_KEYS),
-        loadAppsView(next),
         loadRoleAppAccess(ACCESS_CATALOG_KEYS),
         loadOwnUserAppAccess(next.supabaseUserId || next.profile?.id, ACCESS_CATALOG_KEYS),
       ]);
       setSession(next);
       setPinnedKeys(pins);
-      setAppsView(view);
       setAccessByRole(access.byRole);
       setOwnUserAccess(userAccess);
       warmSessionCaches(next);
@@ -9728,13 +9608,8 @@ export default function App() {
         <AppsLibrary
           tools={filteredTools}
           pinnedKeys={pinnedKeys}
-          appsView={appsView}
-          query={toolsQuery}
-          onQueryChange={setToolsQuery}
-          onSelectView={selectAppsView}
           onOpen={openTool}
           onTogglePin={togglePin}
-          appGrid={appGrid}
         />
       );
     }
@@ -10449,6 +10324,16 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
     flexShrink: 0,
   },
+  topSpotTrailing: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginLeft: 'auto',
+    gap: 8,
+    flexShrink: 0,
+  },
+  topSpotPie: {
+    flexShrink: 0,
+  },
   topSpotPriceCompact: {
     fontSize: 16,
     flex: 1,
@@ -10456,7 +10341,6 @@ const styles = StyleSheet.create({
   topSpotChevrons: {
     alignItems: 'center',
     justifyContent: 'center',
-    marginLeft: 'auto',
     marginTop: 1,
     flexShrink: 0,
   },
@@ -10976,8 +10860,7 @@ const styles = StyleSheet.create({
     color: MOBILE.label,
   },
   tabLabelActive: {
-    color: MOBILE.label,
-    fontWeight: '600',
+    color: '#3A3A3C',
   },
   profileStoreButton: {
     width: SIDEBAR_TAB_ICON_SLOT,
@@ -11231,10 +11114,10 @@ const styles = StyleSheet.create({
   },
   homeStoreTable: {
     flexGrow: 1,
-    minWidth: 860,
+    minWidth: 1080,
   },
   homeStoreTableNoAmounts: {
-    minWidth: 680,
+    minWidth: 860,
   },
   homeStoreRow: {
     position: 'relative',
@@ -11254,21 +11137,28 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  homeStoreRowHovered: {
+  homeStoreRowHit: {
     position: 'absolute',
     top: 0,
     bottom: 0,
     left: -6,
-    right: 8,
+    right: 0,
     borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
-    backgroundColor: NAV_TAB_ACTIVE_BG,
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  homeStoreRowHovered: {
+    borderColor: TAB_BORDER,
+    backgroundColor: 'rgba(60, 60, 67, 0.045)',
   },
   homeStoreRowHoveredNative: {
     marginLeft: -6,
     marginRight: 8,
     borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
-    backgroundColor: NAV_TAB_ACTIVE_BG,
-    borderBottomColor: 'transparent',
+    backgroundColor: 'rgba(60, 60, 67, 0.045)',
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
   },
   homeStoreRowStatic: {
     ...Platform.select({
@@ -11292,9 +11182,9 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 28,
     marginLeft: 10,
-    paddingRight: 10,
+    paddingRight: 28,
   },
   homeStoreRowRule: {
     position: 'absolute',
@@ -11429,6 +11319,11 @@ const styles = StyleSheet.create({
     flexShrink: 1,
     minWidth: 0,
   },
+  homeStoreClosedMark: {
+    fontFamily,
+    fontWeight: '400',
+    color: MOBILE.secondary,
+  },
   homeStoreMeta: {
     fontFamily,
     fontSize: 12,
@@ -11462,45 +11357,59 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   homeStoreColStore: {
-    flexGrow: 0,
+    flexGrow: 1,
     flexShrink: 1,
-    minWidth: 160,
-    maxWidth: 240,
+    flexBasis: 200,
+    minWidth: 168,
+    maxWidth: 280,
     flexDirection: 'column',
     alignItems: 'flex-start',
     justifyContent: 'center',
     gap: 1,
   },
-  homeStoreColMoney: {
-    width: 112,
+  homeStoreColTx: {
+    width: 124,
     flexShrink: 0,
-    alignItems: 'flex-end',
+    alignItems: 'flex-start',
     justifyContent: 'center',
-    textAlign: 'right',
+  },
+  homeStoreTx: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: MOBILE.label,
+    letterSpacing: -0.2,
+    fontVariant: ['tabular-nums'],
+  },
+  homeStoreColMoney: {
+    width: 136,
+    flexShrink: 0,
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+    textAlign: 'left',
     ...Platform.select({
       web: { whiteSpace: 'nowrap' },
       default: {},
     }),
   },
   homeStoreColPeople: {
-    width: 148,
+    width: 156,
     flexShrink: 0,
-    paddingLeft: 12,
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'center',
   },
   homeStoreColPeopleTrailing: {
-    marginLeft: 'auto',
+    marginLeft: 0,
     paddingLeft: 0,
-    textAlign: 'right',
+    textAlign: 'left',
   },
   homeStoreColEmail: {
-    width: 76,
-    minWidth: 76,
+    width: 96,
+    minWidth: 96,
     flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
     gap: 3,
     ...Platform.select({
       web: { whiteSpace: 'nowrap' },
@@ -11508,12 +11417,12 @@ const styles = StyleSheet.create({
     }),
   },
   homeStoreColPhone: {
-    width: 76,
-    minWidth: 76,
+    width: 96,
+    minWidth: 96,
     flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
     gap: 3,
     ...Platform.select({
       web: { whiteSpace: 'nowrap' },
@@ -11521,12 +11430,12 @@ const styles = StyleSheet.create({
     }),
   },
   homeStoreColReview: {
-    width: 76,
-    minWidth: 76,
+    width: 108,
+    minWidth: 108,
     flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
     gap: 3,
     ...Platform.select({
       web: { whiteSpace: 'nowrap' },
@@ -11544,14 +11453,24 @@ const styles = StyleSheet.create({
     flexShrink: 0,
     alignItems: 'flex-start',
   },
+  homeMetricPending: {
+    width: 28,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#d8d8dc',
+    marginTop: 3,
+  },
+  homeMetricPendingCompact: {
+    width: 22,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: '#d8d8dc',
+    marginTop: 4,
+  },
   homeStoreRateSpacer: {
     flexGrow: 1,
     flexShrink: 1,
     minWidth: 28,
-  },
-  homeStoreTrailingGap: {
-    width: 36,
-    flexShrink: 0,
   },
   homeStorePhone: {
     fontFamily,
@@ -11662,13 +11581,18 @@ const styles = StyleSheet.create({
   },
   igStoreAmountWrap: {
     flexShrink: 0,
-    alignItems: 'flex-end',
+    alignItems: 'flex-start',
     justifyContent: 'center',
   },
   homeStoreChevron: {
-    width: 14,
+    position: 'absolute',
+    right: 2,
+    top: 0,
+    bottom: 0,
+    width: 22,
     alignItems: 'center',
-    flexShrink: 0,
+    justifyContent: 'center',
+    zIndex: 3,
   },
   appsRowName: {
     flex: 1,
@@ -11913,10 +11837,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'stretch',
     overflow: 'visible',
-    ...Platform.select({
-      web: { willChange: 'transform' },
-      default: {},
-    }),
   },
   storeDrawerShellFill: {
     width: '100%',
@@ -11934,16 +11854,13 @@ const styles = StyleSheet.create({
     height: '100%',
     zIndex: 35,
   },
-  storeRailTab: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: 44,
-    height: 36,
-    borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
+  storeDrawerRootInPlace: {
+    position: 'relative',
+    flex: 1,
+    minHeight: 0,
+    width: '100%',
+    height: '100%',
+    zIndex: 1,
   },
   storeAppsLayer: {
     ...StyleSheet.absoluteFillObject,
@@ -12014,10 +11931,10 @@ const styles = StyleSheet.create({
     width: STORE_DRAWER_RAIL_WIDTH,
     flexShrink: 0,
     justifyContent: 'flex-start',
-    alignItems: 'center',
+    alignItems: 'stretch',
     paddingTop: 16,
     paddingBottom: 16,
-    paddingHorizontal: 10,
+    paddingHorizontal: 0,
     gap: 2,
     backgroundColor: CANVAS,
     borderRightWidth: StyleSheet.hairlineWidth,
@@ -12937,6 +12854,29 @@ const styles = StyleSheet.create({
     width: '100%',
     alignSelf: 'center',
     textAlign: 'center',
+  },
+  appsListScroll: {
+    alignItems: 'flex-start',
+  },
+  appsListInset: {
+    width: STORE_DRAWER_RAIL_WIDTH,
+    alignSelf: 'flex-start',
+  },
+  appsRailList: {
+    alignSelf: 'stretch',
+    justifyContent: 'flex-start',
+    alignItems: 'stretch',
+    gap: 2,
+  },
+  appsRailLabel: {
+    flex: 1,
+    minWidth: 0,
+  },
+  appsListEmpty: {
+    alignSelf: 'flex-start',
+    textAlign: 'left',
+    marginTop: 24,
+    maxWidth: STORE_DRAWER_RAIL_WIDTH,
   },
   screenReloadButton: {
     marginTop: 16,
@@ -14346,7 +14286,7 @@ const styles = StyleSheet.create({
     ...Platform.select({
       web: {
         display: 'grid',
-        gridTemplateColumns: 'minmax(160px, 1fr) 216px 148px 18px',
+        gridTemplateColumns: 'minmax(200px, 1.2fr) 124px 216px minmax(148px, 1fr) 18px',
         alignItems: 'center',
         columnGap: 24,
       },
@@ -14968,7 +14908,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   igHomeSection: {
-    marginTop: 16,
+    marginTop: 0,
     paddingHorizontal: 0,
     alignSelf: 'stretch',
     width: '100%',
@@ -14979,7 +14919,7 @@ const styles = StyleSheet.create({
   },
   igHomeTableSection: {
     paddingHorizontal: 0,
-    marginTop: 8,
+    marginTop: 0,
   },
   homeFocusStage: {
     position: 'relative',
@@ -15053,11 +14993,17 @@ const styles = StyleSheet.create({
     color: MOBILE.secondary,
     letterSpacing: 0,
   },
+  igHomeStoreTx: {
+    width: 72,
+    flexShrink: 0,
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+  },
   igHomeStoreTrailing: {
     width: 108,
     maxWidth: '46%',
     flexShrink: 0,
-    alignItems: 'flex-end',
+    alignItems: 'flex-start',
     justifyContent: 'center',
     gap: 4,
   },
@@ -15098,7 +15044,7 @@ const styles = StyleSheet.create({
   },
   igHomeStoreMetric: {
     flex: 1,
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'flex-start',
     minWidth: 0,
     gap: 4,
@@ -15215,7 +15161,7 @@ const styles = StyleSheet.create({
   },
   igStoreTrailing: {
     width: 148,
-    alignItems: 'flex-end',
+    alignItems: 'flex-start',
     justifyContent: 'center',
     flexShrink: 0,
     gap: 2,

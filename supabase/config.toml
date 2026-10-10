@@ -5,12 +5,15 @@
 project_id = "cgold"
 
 [api]
+# config push writes this to the hosted project. `enabled = false` clears the
+# exposed schemas there, PostgREST then answers PGRST002, and aureus-login
+# fails with "Could not prepare your staff account."
 enabled = true
 # Port to use for the API URL.
 port = 54321
 # Schemas to expose in your API. Tables, views and stored procedures in this schema will get API
 # endpoints. `public` and `graphql_public` schemas are included by default.
-schemas = ["public"]
+schemas = ["public", "graphql_public"]
 # Extra schemas to add to the search_path of every request.
 extra_search_path = ["public", "extensions"]
 # The maximum number of rows returns from a view, table, or stored procedure. Limits payload size
@@ -57,14 +60,14 @@ max_client_conn = 100
 
 [db.migrations]
 # If disabled, migrations will be skipped during a db push or reset.
-enabled = true
+enabled = false
 # Specifies an ordered list of schema files, directories, or glob patterns that describe your database.
 # Supports paths relative to supabase directory: "./schemas/*.sql", "./database".
 schema_paths = []
 
 [db.seed]
 # If enabled, seeds the database after migrations during a db reset.
-enabled = true
+enabled = false
 # Specifies an ordered list of seed files to load during db reset.
 # Supports glob patterns relative to supabase directory: "./seeds/*.sql"
 sql_paths = ["./seed.sql"]
@@ -84,14 +87,14 @@ allowed_cidrs_v6 = ["::/0"]
 # enabled = true
 
 [realtime]
-enabled = true
+enabled = false
 # Bind realtime via either IPv4 or IPv6. (default: IPv4)
 # ip_version = "IPv6"
 # The maximum length in bytes of HTTP request headers. (default: 4096)
 # max_header_length = 4096
 
 [studio]
-enabled = true
+enabled = false
 # Port to use for Supabase Studio.
 port = 54323
 # External URL of the API server that frontend connects to.
@@ -102,7 +105,7 @@ openai_api_key = "env(OPENAI_API_KEY)"
 # Email testing server. Emails sent with the local dev setup are not actually sent - rather, they
 # are monitored, and you can view the emails that would have been sent from the web interface.
 [local_smtp]
-enabled = true
+enabled = false
 # Port to use for the email testing server web interface.
 port = 54324
 # Uncomment to expose additional ports for testing user applications that send emails.
@@ -112,7 +115,7 @@ port = 54324
 # sender_name = "Admin"
 
 [storage]
-enabled = true
+enabled = false
 # The maximum file size allowed (e.g. "5MB", "500KB").
 file_size_limit = "50MiB"
 
@@ -133,7 +136,7 @@ allowed_mime_types = ["image/png", "image/jpeg", "image/jpg", "image/webp"]
 
 # Allow connections via S3 compatible clients
 [storage.s3_protocol]
-enabled = true
+enabled = false
 
 # Image transformation API is available to Supabase Pro plan.
 # [storage.image_transformation]
@@ -152,7 +155,7 @@ max_catalogs = 2
 
 # Store vector embeddings in S3 for large and durable datasets
 [storage.vector]
-enabled = true
+enabled = false
 max_buckets = 10
 max_indexes = 5
 
@@ -160,7 +163,7 @@ max_indexes = 5
 # [storage.vector.buckets.documents-openai]
 
 [auth]
-enabled = true
+enabled = false
 # The base URL of your website. Used as an allow-list for redirects and for constructing URLs used
 # in emails.
 site_url = "http://127.0.0.1:3000"
@@ -228,6 +231,10 @@ web3 = 30
 # secret = ""
 
 [auth.email]
+# The email provider must stay on: aureus-login mints every staff session with
+# a password grant (no mail is ever sent). A fresh project has it off, and
+# sign-in then fails with "Could not start your session."
+enabled = true
 # Allow/disallow new user signups via email to your project.
 enable_signup = false
 # If enabled, a user will be required to confirm any email change on both the old, and new email
@@ -386,25 +393,25 @@ allow_dynamic_registration = false
 # Sign-in gateway. Callers are not signed in yet, so the platform JWT check is
 # off and the function validates everything itself (see functions/aureus-login).
 [functions.aureus-login]
-enabled = true
+enabled = false
 verify_jwt = false
 entrypoint = "./functions/aureus-login/index.ts"
 
 # Authenticated proxy for third-party APIs (AI models, FINTRAC, Rippling, Google).
 # Requires a valid staff JWT; vendor secrets live in Edge Function secrets.
 [functions.proxy]
-enabled = true
+enabled = false
 verify_jwt = false
 entrypoint = "./functions/proxy/index.ts"
 
 # Phone QR capture for buy-ticket line photos. Token is the credential.
 [functions.trade-capture]
-enabled = true
+enabled = false
 verify_jwt = false
 entrypoint = "./functions/trade-capture/index.ts"
 
 [edge_runtime]
-enabled = true
+enabled = false
 # Supported request policies: `oneshot`, `per_worker`.
 # `per_worker` (default) — enables hot reload during local development.
 # `oneshot` — fallback mode if hot reload causes issues (e.g. in large repos or with symlinks).
@@ -418,7 +425,7 @@ deno_version = 2
 # secret_key = "env(SECRET_VALUE)"
 
 [analytics]
-enabled = true
+enabled = false
 port = 54327
 # Configure one of the supported backends: `postgres`, `bigquery`.
 backend = "postgres"
@@ -439,7 +446,7 @@ s3_secret_key = "env(S3_SECRET_KEY)"
 # pg-delta is the schema diff engine for db diff / db pull / db remote commit.
 # Set enabled = false to fall back to the legacy migra engine.
 [experimental.pgdelta]
-enabled = true
+enabled = false
 # Directory under `supabase/` where declarative files are written.
 # declarative_schema_path = "./schemas"
 # JSON string passed through to pg-delta SQL formatting.
