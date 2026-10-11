@@ -16,7 +16,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppAccess } from '../lib/permissions';
-import { CANVAS, MOBILE_BREAKPOINT, mobileSafeBottom, useIsMobile } from '../lib/mobileUi';
+import { CANVAS, MOBILE, MOBILE_BREAKPOINT, NAV_TAB_ACTIVE_RADIUS, mobileSafeBottom, useIsMobile } from '../lib/mobileUi';
 import { useHeldValue, useRightDrawerAnimation } from './TriageKit';
 import { BONUS_ACCESS_DENIED } from '../lib/auth';
 import {
@@ -252,10 +252,10 @@ function Avatar({ uri, name }) {
   );
 }
 
-function RatingBreakdown({ breakdown, total }) {
+function RatingBreakdown({ breakdown, total, boxed = false }) {
   const max = Math.max(1, ...[5, 4, 3, 2, 1].map((star) => breakdown?.[star] || 0));
   return (
-    <View style={styles.ratingBreakdown}>
+    <View style={[styles.ratingBreakdown, boxed && styles.overviewBox]}>
       {[5, 4, 3, 2, 1].map((star) => {
         const count = breakdown?.[star] || 0;
         const widthPct = total > 0 ? (count / max) * 100 : 0;
@@ -266,7 +266,7 @@ function RatingBreakdown({ breakdown, total }) {
               <View
                 style={[
                   styles.ratingBarFill,
-                  star <= 2 ? styles.ratingBarNeg : styles.ratingBarPos,
+                  star <= 2 ? styles.ratingBarNeg : boxed ? styles.ratingBarPosBoxed : styles.ratingBarPos,
                   { width: `${widthPct}%` },
                 ]}
               />
@@ -416,10 +416,10 @@ function StoreCardGrid({ stores, selectedStore, onOpenStore, totals, compact }) 
   );
 }
 
-function PayoutMatrix({ matrix, activeTierId, activeColumnId }) {
+function PayoutMatrix({ matrix, activeTierId, activeColumnId, boxed = false }) {
   return (
-    <View style={styles.matrixWrap}>
-      <Text style={styles.sectionTitle}>Payout grid</Text>
+    <View style={[styles.matrixWrap, boxed && styles.overviewBox]}>
+      <Text style={[styles.sectionTitle, boxed && styles.overviewSectionTitle]}>Payout grid</Text>
       <Text style={styles.sectionHint}>
         Email collection sets the base. Live 1–2★ reviews adjust it for the period.
       </Text>
@@ -433,7 +433,7 @@ function PayoutMatrix({ matrix, activeTierId, activeColumnId }) {
                 style={[
                   styles.matrixHead,
                   styles.matrixCell,
-                  activeColumnId === column.id && styles.matrixHeadActive,
+                  activeColumnId === column.id && (boxed ? styles.matrixHeadActiveBoxed : styles.matrixHeadActive),
                 ]}
               >
                 {column.label}
@@ -446,7 +446,7 @@ function PayoutMatrix({ matrix, activeTierId, activeColumnId }) {
                 style={[
                   styles.matrixCorner,
                   styles.matrixLabel,
-                  activeTierId === row.tier.id && styles.matrixLabelActive,
+                  activeTierId === row.tier.id && (boxed ? styles.matrixLabelActiveBoxed : styles.matrixLabelActive),
                 ]}
               >
                 {row.tier.label}
@@ -457,9 +457,9 @@ function PayoutMatrix({ matrix, activeTierId, activeColumnId }) {
                 return (
                   <View
                     key={cell.column.id}
-                    style={[styles.matrixCell, active && styles.matrixCellActive]}
+                    style={[styles.matrixCell, active && (boxed ? styles.matrixCellActiveBoxed : styles.matrixCellActive)]}
                   >
-                    <Text style={[styles.matrixValue, active && styles.matrixValueActive]}>
+                    <Text style={[styles.matrixValue, active && (boxed ? styles.matrixValueActiveBoxed : styles.matrixValueActive)]}>
                       {formatMoney(cell.amount)}
                     </Text>
                   </View>
@@ -473,10 +473,10 @@ function PayoutMatrix({ matrix, activeTierId, activeColumnId }) {
   );
 }
 
-function EmployeeList({ employees, selfOnly, onOpenEmployee }) {
+function EmployeeList({ employees, selfOnly, onOpenEmployee, boxed = false }) {
   if (!employees.length) {
     return (
-      <View style={styles.emptyBlock}>
+      <View style={[styles.emptyBlock, boxed && styles.overviewBox]}>
         <Text style={styles.emptyText}>
           {selfOnly
             ? 'No eligible reviews for you in this period yet.'
@@ -487,7 +487,7 @@ function EmployeeList({ employees, selfOnly, onOpenEmployee }) {
   }
 
   return (
-    <View style={styles.employeeList}>
+    <View style={[styles.employeeList, boxed && styles.overviewBox]}>
       {employees.map((row, index) => {
         const inactive = Boolean(row.zeroPayout) || (Number(row.total) || 0) === 0;
         return (
@@ -496,9 +496,10 @@ function EmployeeList({ employees, selfOnly, onOpenEmployee }) {
             onPress={() => onOpenEmployee?.(row)}
             style={({ hovered, pressed }) => [
               styles.employeeRow,
+              boxed && styles.overviewRow,
               index === employees.length - 1 && styles.employeeRowLast,
-              inactive && styles.employeeRowInactive,
-              (hovered || pressed) && styles.employeeRowPressed,
+              inactive && !boxed && styles.employeeRowInactive,
+              (hovered || pressed) && (boxed ? styles.overviewRowHover : styles.employeeRowPressed),
             ]}
             accessibilityRole="button"
             accessibilityLabel={`${row.employeeName}, ${formatMoney(row.total)}`}
@@ -506,6 +507,7 @@ function EmployeeList({ employees, selfOnly, onOpenEmployee }) {
             <View
               style={[
                 styles.employeeAvatar,
+                boxed && styles.employeeAvatarBoxed,
                 { backgroundColor: inactive ? '#c7c7cc' : storeAccent(row.employeeName) },
               ]}
             >
@@ -513,7 +515,11 @@ function EmployeeList({ employees, selfOnly, onOpenEmployee }) {
             </View>
             <View style={styles.employeeCopy}>
               <Text
-                style={[styles.employeeName, inactive && styles.employeeNameInactive]}
+                style={[
+                  styles.employeeName,
+                  boxed && styles.overviewRowTitle,
+                  inactive && styles.employeeNameInactive,
+                ]}
                 numberOfLines={1}
               >
                 {row.employeeName}
@@ -529,7 +535,13 @@ function EmployeeList({ employees, selfOnly, onOpenEmployee }) {
               </Text>
             </View>
             <View style={styles.employeeTrailing}>
-              <Text style={[styles.employeeTotal, inactive && styles.employeeTotalInactive]}>
+              <Text
+                style={[
+                  styles.employeeTotal,
+                  boxed && styles.overviewRowValue,
+                  inactive && styles.employeeTotalInactive,
+                ]}
+              >
                 {formatMoney(row.total)}
               </Text>
               <Text style={[styles.employeeBreakdown, inactive && styles.employeeMetaInactive]}>
@@ -555,16 +567,18 @@ function shareLabel(share) {
   return `Split ${Math.round(value * 100)}%`;
 }
 
-function ReviewCard({ review, showCount = false, session, onOpenCustomer }) {
+function ReviewCard({ review, showCount = false, session, onOpenCustomer, boxed = false, last = false }) {
   const counted = showCount && review.eligible;
   const split = shareLabel(review.share);
   return (
     <View
       style={[
         styles.reviewRow,
-        review.eligible && styles.reviewRowEligible,
-        review.rating <= 2 && styles.reviewRowNegative,
-        showCount && !review.eligible && styles.reviewRowSkipped,
+        boxed && styles.overviewReviewRow,
+        boxed && last && styles.overviewReviewRowLast,
+        !boxed && review.eligible && styles.reviewRowEligible,
+        !boxed && review.rating <= 2 && styles.reviewRowNegative,
+        !boxed && showCount && !review.eligible && styles.reviewRowSkipped,
       ]}
     >
       <View style={styles.reviewTop}>
@@ -1211,7 +1225,7 @@ export default function BonusesScreen({
   );
 
   const periodBar = (
-    <View style={[styles.periodBar, isMobile && styles.periodBarMobile]}>
+    <View style={[styles.periodBar, isMobile && styles.periodBarMobile, embedded && styles.periodBarEmbedded]}>
       <View style={styles.monthNav}>
         <Pressable
           style={styles.monthBtn}
@@ -1320,8 +1334,12 @@ export default function BonusesScreen({
           <Text style={styles.backText}>Stores</Text>
         </Pressable>
       ) : null}
-      <Text style={styles.heroLabel}>{activeStore.storeName}</Text>
-      <Text style={styles.heroAmount} numberOfLines={1} adjustsFontSizeToFit>
+      {embedded ? (
+        <Text style={styles.heroLabel}>{periodLabel}</Text>
+      ) : (
+        <Text style={styles.heroLabel}>{activeStore.storeName}</Text>
+      )}
+      <Text style={[styles.heroAmount, embedded && styles.heroAmountEmbedded]} numberOfLines={1} adjustsFontSizeToFit>
         {formatMoney(activeStore.totalPayout)}
       </Text>
       <View style={styles.heroStats}>
@@ -1372,18 +1390,19 @@ export default function BonusesScreen({
   ) : null;
 
   const detail = activeStore ? (
-    <View style={styles.detail}>
+    <View style={[styles.detail, embedded && styles.detailEmbedded]}>
       {displayBoard?.matrix ? (
         <PayoutMatrix
           matrix={displayBoard.matrix}
           activeTierId={activeStore.payout?.tier?.id}
           activeColumnId={activeStore.payout?.column?.id}
+          boxed={embedded}
         />
       ) : null}
 
       {viewAllCounts ? (
         <Pressable
-          style={styles.emailJump}
+          style={[styles.emailJump, embedded && styles.overviewJump]}
           onPress={() =>
             onOpenEmails?.({
               storeName: activeStore.storeName,
@@ -1392,16 +1411,18 @@ export default function BonusesScreen({
             })
           }
         >
-          <Ionicons name="mail-outline" size={16} color={ACCENT} />
-          <Text style={styles.emailJumpText}>
+          <Ionicons name="mail-outline" size={16} color={embedded ? MOBILE.secondary : ACCENT} />
+          <Text style={[styles.emailJumpText, embedded && styles.overviewJumpText]}>
             {activeStore.withEmail}/{activeStore.customerCount} named emails · {activeStore.emailRateLabel}
           </Text>
-          <Ionicons name="chevron-forward" size={16} color={ACCENT} />
+          <Ionicons name="chevron-forward" size={16} color={embedded ? MOBILE.secondary : ACCENT} />
         </Pressable>
       ) : null}
 
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>{viewAllCounts ? 'Employees' : 'Your payout'}</Text>
+      <View style={[styles.sectionHeader, embedded && styles.overviewSectionHead]}>
+        <Text style={[styles.sectionTitle, embedded && styles.overviewSectionTitle]}>
+          {viewAllCounts ? 'Employees' : 'Your payout'}
+        </Text>
         <Text style={styles.sectionHint}>
           {formatMoney(activeStore.perReviewBonus)} / eligible 5★
           {activeStore.photoReviewCount
@@ -1421,10 +1442,13 @@ export default function BonusesScreen({
         employees={activeStore.employees}
         selfOnly={!viewAllCounts}
         onOpenEmployee={(row) => setSelectedEmployeeName(row.employeeName)}
+        boxed={embedded}
       />
 
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>{viewAllCounts ? 'Reviews' : 'Your reviews'}</Text>
+      <View style={[styles.sectionHeader, embedded && styles.overviewSectionHead]}>
+        <Text style={[styles.sectionTitle, embedded && styles.overviewSectionTitle]}>
+          {viewAllCounts ? 'Reviews' : 'Your reviews'}
+        </Text>
         <Text style={styles.sectionHint}>
           {activeStore.reviews.length} in {periodLabel}
           {activeStore.reviewsLoading ? ' · loading…' : ''}
@@ -1438,30 +1462,36 @@ export default function BonusesScreen({
       </View>
       {viewAllCounts ? (
         <Pressable
-          style={styles.emailJump}
+          style={[styles.emailJump, embedded && styles.overviewJump]}
           onPress={() => setUnassignedOpen(true)}
           accessibilityRole="button"
           accessibilityLabel="Reviews with no allocation"
         >
-          <Ionicons name="help-circle-outline" size={16} color={ACCENT} />
-          <Text style={styles.emailJumpText}>
+          <Ionicons name="help-circle-outline" size={16} color={embedded ? MOBILE.secondary : ACCENT} />
+          <Text style={[styles.emailJumpText, embedded && styles.overviewJumpText]}>
             {(activeStore.reviews || []).filter(isUnallocatedReview).length} reviews with no
             allocation
           </Text>
-          <Ionicons name="chevron-forward" size={16} color={ACCENT} />
+          <Ionicons name="chevron-forward" size={16} color={embedded ? MOBILE.secondary : ACCENT} />
         </Pressable>
       ) : null}
-      <RatingBreakdown breakdown={activeStore.ratingBreakdown} total={activeStore.reviewCount} />
+      <RatingBreakdown
+        breakdown={activeStore.ratingBreakdown}
+        total={activeStore.reviewCount}
+        boxed={embedded}
+      />
       {activeStore.reviewsError && !activeStore.reviews.length ? (
         <Text style={styles.storeError}>{activeStore.reviewsError}</Text>
       ) : null}
-      <View style={styles.reviewList}>
-        {activeStore.reviews.map((review) => (
+      <View style={[styles.reviewList, embedded && styles.overviewReviewList]}>
+        {activeStore.reviews.map((review, index) => (
           <ReviewCard
             key={review.id}
             review={review}
             session={session}
             onOpenCustomer={onOpenCustomer}
+            boxed={embedded}
+            last={index === activeStore.reviews.length - 1}
           />
         ))}
       </View>
@@ -1511,6 +1541,7 @@ export default function BonusesScreen({
           styles.scrollContent,
           isMobile && !embedded && styles.scrollContentMobile,
           embedded && styles.scrollContentEmbedded,
+          embedded && !isMobile && styles.scrollContentEmbeddedDesktop,
         ]}
         showsVerticalScrollIndicator={false}
         refreshControl={
@@ -1582,8 +1613,118 @@ const styles = StyleSheet.create({
   scrollContentEmbedded: {
     paddingBottom: 24,
   },
-  heroEmbedded: {
+  scrollContentEmbeddedDesktop: {
+    paddingHorizontal: 48,
     paddingTop: 8,
+  },
+  heroEmbedded: {
+    paddingTop: 4,
+    paddingHorizontal: 0,
+    paddingBottom: 8,
+  },
+  heroAmountEmbedded: {
+    fontFamily: FONT_LIGHT,
+    fontSize: 36,
+    lineHeight: 40,
+    fontWeight: '300',
+    letterSpacing: -0.8,
+    color: MOBILE.label,
+  },
+  periodBarEmbedded: {
+    paddingHorizontal: 0,
+    paddingBottom: 8,
+  },
+  detailEmbedded: {
+    paddingHorizontal: 0,
+    paddingTop: 12,
+    gap: 16,
+  },
+  overviewBox: {
+    backgroundColor: CANVAS,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    overflow: 'hidden',
+  },
+  overviewSectionHead: {
+    marginTop: 8,
+    gap: 4,
+  },
+  overviewSectionTitle: {
+    fontFamily: FONT_LIGHT,
+    fontSize: 16,
+    fontWeight: '300',
+    letterSpacing: -0.2,
+    color: MOBILE.label,
+  },
+  overviewRow: {
+    backgroundColor: CANVAS,
+    borderBottomColor: 'rgba(42,38,30,0.08)',
+    minHeight: 46,
+    paddingVertical: 8,
+  },
+  overviewRowHover: {
+    backgroundColor: 'rgba(42,38,30,0.04)',
+  },
+  overviewRowTitle: {
+    fontWeight: '500',
+    color: MOBILE.label,
+  },
+  overviewRowValue: {
+    fontFamily: FONT,
+    fontWeight: '400',
+    fontSize: 15,
+    color: MOBILE.label,
+  },
+  employeeAvatarBoxed: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+  },
+  overviewJump: {
+    backgroundColor: CANVAS,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    paddingVertical: 10,
+  },
+  overviewJumpText: {
+    color: MOBILE.label,
+    fontWeight: '500',
+  },
+  overviewReviewList: {
+    gap: 0,
+    backgroundColor: CANVAS,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    overflow: 'hidden',
+  },
+  overviewReviewRow: {
+    borderRadius: 0,
+    backgroundColor: CANVAS,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(42,38,30,0.08)',
+  },
+  overviewReviewRowLast: {
+    borderBottomWidth: 0,
+  },
+  matrixHeadActiveBoxed: {
+    color: MOBILE.label,
+  },
+  matrixLabelActiveBoxed: {
+    color: MOBILE.label,
+  },
+  matrixCellActiveBoxed: {
+    backgroundColor: 'rgba(42,38,30,0.06)',
+  },
+  matrixValueActiveBoxed: {
+    color: MOBILE.label,
+  },
+  ratingBarPosBoxed: {
+    backgroundColor: MOBILE.label,
   },
   loginWrap: {
     flex: 1,

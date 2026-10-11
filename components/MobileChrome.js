@@ -24,8 +24,20 @@ import {
   mobileSafeBottom,
   mobileSafeTop,
 } from '../lib/mobileUi';
+import { FONT, FONT_EXTRALIGHT } from '../lib/typography';
 
-const fontFamily = 'Sohne';
+const fontFamily = FONT;
+const TAB_BORDER = '#d0d0d0';
+const CHIP_SHADOW = Platform.select({
+  web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
+  default: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+});
 
 function initialsFromName(name) {
   const parts = String(name || '')
@@ -226,11 +238,19 @@ function FeedCrumbTrail({ segments, brand, interactive = true }) {
       {brand}
       {segments.map((segment, index) => {
         const last = index === segments.length - 1;
-        const labelStyle = [
-          styles.mobileFeedCrumbLabel,
-          segment.isEllipsis && styles.mobileFeedCrumbEllipsis,
-          last && !segment.isEllipsis && styles.mobileFeedCrumbCurrent,
-        ];
+        const current = last && !segment.isEllipsis;
+        const label = (
+          <Text
+            style={[
+              styles.mobileFeedCrumbLabel,
+              segment.isEllipsis && styles.mobileFeedCrumbEllipsis,
+              current && styles.mobileFeedCrumbCurrent,
+            ]}
+            numberOfLines={1}
+          >
+            {segment.label}
+          </Text>
+        );
         return (
           <Fragment key={`${segment.label}-${index}`}>
             <Text style={styles.mobileFeedCrumbSep} accessible={false}>
@@ -239,18 +259,22 @@ function FeedCrumbTrail({ segments, brand, interactive = true }) {
             {interactive && segment.onPress ? (
               <Pressable
                 onPress={segment.onPress}
-                style={[styles.mobileFeedCrumbPress, segment.isEllipsis && styles.mobileFeedCrumbFixed]}
+                style={[
+                  styles.mobileFeedCrumbPress,
+                  segment.isEllipsis && styles.mobileFeedCrumbFixed,
+                  current && styles.mobileFeedPageChip,
+                ]}
                 accessibilityRole="button"
                 accessibilityLabel={segment.accessibilityLabel || segment.label}
               >
-                <Text style={labelStyle} numberOfLines={1}>
-                  {segment.label}
-                </Text>
+                {label}
               </Pressable>
+            ) : current ? (
+              <View style={styles.mobileFeedPageChip} accessibilityLabel={segment.label}>
+                {label}
+              </View>
             ) : (
-              <Text style={labelStyle} numberOfLines={1}>
-                {segment.label}
-              </Text>
+              label
             )}
           </Fragment>
         );
@@ -991,21 +1015,40 @@ const styles = StyleSheet.create({
   mobileFeedCrumbFixed: {
     flexShrink: 0,
   },
+  mobileFeedPageChip: {
+    flexShrink: 1,
+    minWidth: 0,
+    maxWidth: 220,
+    height: 32,
+    paddingHorizontal: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
+    ...CHIP_SHADOW,
+  },
   mobileFeedCrumbLabel: {
     flexShrink: 1,
     minWidth: 0,
-    fontFamily,
-    fontSize: 17,
-    fontWeight: '600',
-    color: MOBILE.label,
-    letterSpacing: -0.3,
+    fontFamily: FONT_EXTRALIGHT,
+    fontSize: 14,
+    fontWeight: '200',
+    color: NAV_ICON_ACTIVE,
+    letterSpacing: -0.2,
   },
   mobileFeedCrumbEllipsis: {
     flexShrink: 0,
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '400',
+    color: '#c7c7cc',
   },
   mobileFeedCrumbCurrent: {
     flexShrink: 1,
     minWidth: 44,
+    color: NAV_ICON_ACTIVE,
   },
   mobileFeedTopBarTrailing: {
     flexDirection: 'row',

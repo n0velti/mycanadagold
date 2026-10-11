@@ -10,6 +10,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -28,6 +29,7 @@ import {
 } from '../lib/priceCheckSettings';
 import { AUREUS_CASH_LIVE_MS, INVENTORY_LIVE_MS, useLiveRefresh } from '../lib/liveRefresh';
 import { fetchInventoryMatrix, formatQty, peekInventoryMatrix } from '../lib/inventory';
+import { inventoryDisplayName, inventoryPriceSpreads, inventoryRowWebsitePrice } from '../lib/inventoryPrices';
 import { textMatchesQuery } from '../lib/itemSearch';
 import { findStaffByEmployeeName, listStaffProfiles, useAppAccess } from '../lib/permissions';
 import { initialsFor } from '../lib/rippling';
@@ -49,12 +51,10 @@ import {
   phoneHistoryNeeded,
   resultLabel,
 } from '../lib/phoneCalls';
-import {
-  defaultWeeklyHours,
-  loadStoreSettings,
-  storeKeyFromName,
-  summarizeHours,
-} from '../lib/storeSettings';
+import { fetchTransferStores, preferStoreByName } from '../lib/locations';
+import { formatPhoneNumber } from '../lib/ringcentral';
+import { storeKeyFromName } from '../lib/storeSettings';
+import { fetchWebsitePrices } from '../lib/websitePrices';
 import {
   fetchGoogleReviewsForStore,
   peekHomeStoreReviews,
@@ -78,6 +78,17 @@ const LABEL = '#1a1a1a';
 const SECONDARY = '#8e8e93';
 const FILL = 'rgba(118, 118, 128, 0.12)';
 const SEPARATOR = '#d0d0d0';
+const TAB_BORDER = '#d0d0d0';
+const CHIP_SHADOW = Platform.select({
+  web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
+  default: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+});
 const BLUE = '#007AFF';
 const GREEN = '#34C759';
 const RED = '#FF3B30';
@@ -128,7 +139,7 @@ const SNAPSHOT_APPS = {
   employees: { key: 'employees', label: 'Employees', icon: 'people-outline', accent: '#1D4ED8' },
   phone: { key: 'phone', label: 'Phone', icon: 'call-outline', accent: '#15803D' },
   emails: { key: 'emails', label: 'Emails', icon: 'mail-outline', accent: '#4338CA' },
-  reviews: { key: 'reviews', label: 'Reviews', icon: 'star-outline', accent: '#A16207' },
+  bonuses: { key: 'bonuses', label: 'Bonuses', icon: 'gift-outline', accent: '#A16207' },
   transactions: { key: 'transactions', label: 'Transactions', icon: 'swap-horizontal-outline', accent: '#2F6FED' },
   preorders: { key: 'preorders', label: 'Preorders', icon: 'cart-outline', accent: '#EA580C' },
   audit: { key: 'audit', label: 'Audit', icon: 'clipboard-outline', accent: '#2F8A4E' },
@@ -136,6 +147,41 @@ const SNAPSHOT_APPS = {
   supplies: { key: 'supplies', label: 'Supplies', icon: 'bag-handle-outline', accent: '#BE123C' },
   settings: { key: 'settings', label: 'Settings', icon: 'settings-outline', accent: '#52525B' },
 };
+
+const PHONE_TABLE_COLS = [
+  { key: 'party', label: 'Party', colStyle: 'appColMain' },
+  { key: 'dir', label: 'Direction', colStyle: 'appColMid' },
+  { key: 'result', label: 'Result', colStyle: 'appColMid' },
+  { key: 'when', label: 'Time', colStyle: 'appColMid' },
+  { key: 'dur', label: 'Duration', colStyle: 'appColEnd', end: true },
+];
+const EMPLOYEE_TABLE_COLS = [
+  { key: 'name', label: 'Employee', colStyle: 'appColMain' },
+  { key: 'role', label: 'Role', colStyle: 'appColMid' },
+  { key: 'tx', label: 'Transactions', colStyle: 'appColEnd', end: true },
+];
+const EMAIL_TABLE_COLS = [
+  { key: 'person', label: 'Person', colStyle: 'appColMain' },
+  { key: 'email', label: 'Email', colStyle: 'appColWide' },
+  { key: 'employee', label: 'Employee', colStyle: 'appColMid' },
+];
+const CASH_TABLE_COLS = [
+  { key: 'kind', label: 'Type', colStyle: 'appColMid' },
+  { key: 'who', label: 'Customer', colStyle: 'appColMain' },
+  { key: 'ref', label: 'Reference', colStyle: 'appColMid' },
+  { key: 'amount', label: 'Amount', colStyle: 'appColEnd', end: true },
+];
+const SUPPLY_TABLE_COLS = [
+  { key: 'item', label: 'Item', colStyle: 'appColMain' },
+  { key: 'qty', label: 'Qty', colStyle: 'appColMid' },
+  { key: 'status', label: 'Status', colStyle: 'appColEnd', end: true },
+];
+const PREORDER_TABLE_COLS = [
+  { key: 'customer', label: 'Customer', colStyle: 'appColMain' },
+  { key: 'item', label: 'Item', colStyle: 'appColWide' },
+  { key: 'status', label: 'Status', colStyle: 'appColMid' },
+  { key: 'amount', label: 'Amount', colStyle: 'appColEnd', end: true },
+];
 
 function filledIonicon(name) {
   return typeof name === 'string' && name.endsWith('-outline') ? name.slice(0, -8) : name;
@@ -193,6 +239,273 @@ function itemMatches(row, query) {
   return textMatchesQuery(row?.name, q) || textMatchesQuery(row?.sku, q);
 }
 
+function productKey(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\bgrams?\b/g, 'g')
+    .replace(/\bounces?\b/g, 'oz')
+    .replace(/[^a-z0-9]+/g, '');
+}
+
+/**
+ * Exact match only: the POS product id when the ticket line carries one,
+ * otherwise the full product name / SKU. No fuzzy search, so "SML 1oz" does
+ * not pull in "SML 1oz DNA" tickets.
+ */
+function transactionHasItem(tx, item) {
+  if (!tx || !item?.id) return false;
+  const lines = Array.isArray(tx.pricedLines) ? tx.pricedLines : [];
+  const id = String(item.id);
+  if (lines.some((line) => line?.productId && String(line.productId) === id)) return true;
+  if (lines.some((line) => line?.productId)) {
+    // Every line is identified; the id simply is not this product.
+    if (lines.every((line) => line?.productId)) return false;
+  }
+  const keys = new Set([productKey(item.name), productKey(item.sku)].filter(Boolean));
+  if (!keys.size) return false;
+  const candidates = [
+    ...lines.flatMap((line) => [line?.productName, line?.sku, line?.name]),
+    ...(Array.isArray(tx.itemNames) ? tx.itemNames : []),
+  ];
+  return candidates.some((value) => {
+    const key = productKey(value);
+    return key && keys.has(key);
+  });
+}
+
+function txMatches(row, query) {
+  const q = String(query || '').trim();
+  if (!q) return true;
+  return (
+    textMatchesQuery(row?.customerName, q) ||
+    textMatchesQuery(row?.reference, q) ||
+    textMatchesQuery(row?.employeeName, q) ||
+    textMatchesQuery(row?.amountLabel, q) ||
+    textMatchesQuery(row?.paymentMethodLabel, q) ||
+    textMatchesQuery(itemSummaryLabel(row), q) ||
+    textMatchesQuery(firstItemLineLabel(row), q) ||
+    textMatchesQuery(row?.type === 'purchase' ? 'PO purchase' : 'SO sale', q)
+  );
+}
+
+function txRefLabel(row) {
+  const kind = txKindLabel(row);
+  const number = txNumberLabel(row);
+  if (number === '—') return kind;
+  return `${kind} ${number}`;
+}
+
+function txKindLabel(row) {
+  const reference = String(row?.reference || '').trim();
+  const match = reference.match(/\b(SO|PO)\b/i);
+  if (match) return match[1].toUpperCase();
+  return row?.type === 'purchase' ? 'PO' : 'SO';
+}
+
+function txNumberLabel(row) {
+  const reference = String(row?.reference || '').trim();
+  const numbered = reference.match(/(?:SO|PO)\s*#?\s*([A-Za-z0-9-]+)/i);
+  if (numbered?.[1]) return numbered[1];
+  const stripped = reference.replace(/^(SO|PO)\s*#?\s*/i, '').trim();
+  return stripped || '—';
+}
+
+function txItemLabel(row) {
+  return itemSummaryLabel(row) || firstItemLineLabel(row) || row?.paymentMethodLabel || '—';
+}
+
+function txEmployeeLabel(row) {
+  return String(row?.employeeName || '').trim() || '—';
+}
+
+const OVERVIEW_TX_FILTERS = [
+  { key: 'customerName', label: 'Customer', colStyle: 'storeTxColCustomer', value: (row) => row?.customerName || '—' },
+  { key: 'kind', label: 'PO/SO', colStyle: 'storeTxColKind', value: txKindLabel },
+  { key: 'number', label: 'Order', colStyle: 'storeTxColNumber', value: txNumberLabel },
+  { key: 'timeLabel', label: 'Time', colStyle: 'storeTxColTime', value: (row) => row?.timeLabel || '—' },
+  { key: 'item', label: 'Item', colStyle: 'storeTxColItem', value: txItemLabel },
+  { key: 'employeeName', label: 'Employee', colStyle: 'storeTxColEmployee', value: txEmployeeLabel },
+  { key: 'amountLabel', label: 'Amount', colStyle: 'storeTxColAmount', value: (row) => row?.amountLabel || '—', end: true },
+];
+
+function buildOverviewTxOptions(rows) {
+  const options = {};
+  for (const col of OVERVIEW_TX_FILTERS) {
+    const seen = new Set();
+    for (const row of rows || []) seen.add(col.value(row));
+    options[col.key] = Array.from(seen).sort((a, b) =>
+      String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' }),
+    );
+  }
+  return options;
+}
+
+const TX_FILTER_MENU_WIDTH = 220;
+const TX_FILTER_MENU_MAX_HEIGHT = 280;
+
+function measurePressable(event, onMeasure) {
+  const node = event?.currentTarget;
+  if (node?.measureInWindow) {
+    node.measureInWindow((x, y, width, height) => {
+      if (Number.isFinite(x) && Number.isFinite(y)) onMeasure({ x, y, width, height });
+    });
+    return;
+  }
+  if (Platform.OS === 'web' && node?.getBoundingClientRect) {
+    const rect = node.getBoundingClientRect();
+    onMeasure({ x: rect.left, y: rect.top, width: rect.width, height: rect.height });
+  }
+}
+
+function OverviewTxHeaderCell({ label, colStyle, active, onPress, end = false, iconOnly = false }) {
+  return (
+    <Pressable
+      onPress={(event) => measurePressable(event, (anchor) => onPress?.(anchor))}
+      style={({ hovered, pressed }) => [
+        styles.overviewTxFilterCell,
+        colStyle,
+        (hovered || pressed) && styles.overviewTxFilterCellHover,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={`Filter ${label}`}
+    >
+      {iconOnly ? null : (
+        <Text
+          style={[styles.storeTxHeader, styles.overviewTxFilterLabel, active && styles.overviewTxFilterLabelActive]}
+        >
+          {label}
+        </Text>
+      )}
+      <Ionicons
+        name={active ? 'filter' : 'filter-outline'}
+        size={12}
+        color={active ? MOBILE.label : '#aeaeb2'}
+      />
+    </Pressable>
+  );
+}
+
+function TxColumnFilterMenu({ label, options, filter, onChange, onClose, anchor, alignEnd = false }) {
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const [search, setSearch] = useState('');
+  const allValues = options || [];
+  const selectedCount = filter == null ? allValues.length : Object.keys(filter).length;
+  const allSelected = filter == null;
+  const noneSelected = filter != null && selectedCount === 0;
+  const visibleOptions = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return allValues;
+    return allValues.filter((value) => String(value).toLowerCase().includes(q));
+  }, [allValues, search]);
+  const isChecked = (value) => (filter == null ? true : Boolean(filter[value]));
+  const toggleValue = (value) => {
+    const nextSelected = new Set(filter == null ? allValues : Object.keys(filter));
+    if (nextSelected.has(value)) nextSelected.delete(value);
+    else nextSelected.add(value);
+    if (nextSelected.size === allValues.length) {
+      onChange(null);
+      return;
+    }
+    const next = {};
+    nextSelected.forEach((item) => {
+      next[item] = true;
+    });
+    onChange(next);
+  };
+
+  const preferredLeft =
+    alignEnd && anchor
+      ? Number(anchor.x) + Number(anchor.width) - TX_FILTER_MENU_WIDTH
+      : Number(anchor?.x) || 8;
+  const left = Math.min(
+    Math.max(8, preferredLeft),
+    Math.max(8, windowWidth - TX_FILTER_MENU_WIDTH - 8),
+  );
+  const below = (Number(anchor?.y) || 0) + (Number(anchor?.height) || 0) + 4;
+  const top =
+    below + TX_FILTER_MENU_MAX_HEIGHT > windowHeight - 8
+      ? Math.max(8, (Number(anchor?.y) || 0) - TX_FILTER_MENU_MAX_HEIGHT - 4)
+      : below;
+
+  const menu = (
+    <View
+      style={[styles.txFilterMenu, { top, left }]}
+      accessibilityLabel={`${label} filter`}
+    >
+      <View style={styles.txFilterField}>
+        <Ionicons name="search-outline" size={14} color="#8e8e93" />
+        <TextInput
+          style={styles.txFilterFieldInput}
+          value={search}
+          onChangeText={setSearch}
+          placeholder="Search"
+          placeholderTextColor="#999"
+          autoCapitalize="none"
+          autoCorrect={false}
+          autoFocus={Platform.OS === 'web'}
+        />
+        {search ? (
+          <Pressable onPress={() => setSearch('')} hitSlop={8}>
+            <Ionicons name="close-circle" size={13} color="#b0b0b0" />
+          </Pressable>
+        ) : null}
+      </View>
+      <View style={styles.txFilterActions}>
+        <Pressable onPress={() => onChange(null)} disabled={allSelected}>
+          <Text style={[styles.txFilterActionText, allSelected && styles.txFilterActionDisabled]}>
+            Select all
+          </Text>
+        </Pressable>
+        <Text style={styles.txFilterActionSep}>·</Text>
+        <Pressable onPress={() => onChange({})} disabled={noneSelected}>
+          <Text style={[styles.txFilterActionText, noneSelected && styles.txFilterActionDisabled]}>
+            Clear
+          </Text>
+        </Pressable>
+      </View>
+      <ScrollView style={styles.txFilterList} keyboardShouldPersistTaps="handled">
+        {visibleOptions.length === 0 ? (
+          <Text style={styles.txFilterEmpty}>No matching values</Text>
+        ) : (
+          visibleOptions.map((item) => {
+            const checked = isChecked(item);
+            return (
+              <Pressable
+                key={String(item)}
+                onPress={() => toggleValue(item)}
+                style={({ hovered, pressed }) => [
+                  styles.txFilterOption,
+                  (hovered || pressed) && styles.overviewStatsRowHover,
+                ]}
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked }}
+              >
+                <Ionicons
+                  name={checked ? 'checkbox' : 'square-outline'}
+                  size={16}
+                  color={checked ? '#1d1d1f' : '#c7c7cc'}
+                />
+                <Text style={styles.txFilterOptionText} numberOfLines={1}>
+                  {item}
+                </Text>
+              </Pressable>
+            );
+          })
+        )}
+      </ScrollView>
+    </View>
+  );
+
+  return (
+    <Modal visible transparent animationType="none" onRequestClose={onClose}>
+      <View style={styles.txFilterModalRoot} pointerEvents="box-none">
+        <Pressable style={styles.txFilterBackdrop} onPress={onClose} />
+        {menu}
+      </View>
+    </Modal>
+  );
+}
+
 function pickStoreColumns(stores, storeName) {
   const matches = (stores || []).filter((store) => namesMatch(store.name, storeName));
   if (matches.length <= 1) return matches;
@@ -200,27 +513,53 @@ function pickStoreColumns(stores, storeName) {
   return [linked || matches[0]];
 }
 
-function InventorySearch({ value, onChangeText }) {
+function InventoryPriceRefresh({ onPress, loading = false, compact = false }) {
   return (
-    <View style={styles.searchField}>
-      <Ionicons name="search-outline" size={16} color={SECONDARY} />
-      <TextInput
-        style={styles.searchInput}
-        value={value}
-        onChangeText={onChangeText}
-        placeholder="Search inventory"
-        placeholderTextColor={SECONDARY}
-        autoCorrect={false}
-        autoCapitalize="none"
-        clearButtonMode="while-editing"
-        returnKeyType="search"
-        accessibilityLabel="Search inventory"
-      />
-      {value ? (
-        <Pressable onPress={() => onChangeText('')} hitSlop={8} accessibilityLabel="Clear">
-          <Ionicons name="close-circle" size={16} color={SECONDARY} />
-        </Pressable>
-      ) : null}
+    <Pressable
+      onPress={onPress}
+      disabled={loading}
+      hitSlop={8}
+      style={({ hovered, pressed }) => [
+        styles.inventoryRefresh,
+        compact && styles.inventoryRefreshCompact,
+        (hovered || pressed) && styles.inventoryRefreshHover,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel="Refresh prices"
+    >
+      {loading ? (
+        <ActivityIndicator size="small" color={BLUE} />
+      ) : (
+        <Ionicons name="refresh" size={16} color={SECONDARY} />
+      )}
+    </Pressable>
+  );
+}
+
+function InventorySearch({ value, onChangeText, onRefresh, refreshing = false }) {
+  return (
+    <View style={styles.inventorySearchRow}>
+      <View style={[styles.searchField, styles.inventorySearchField]}>
+        <Ionicons name="search-outline" size={16} color={SECONDARY} />
+        <TextInput
+          style={styles.searchInput}
+          value={value}
+          onChangeText={onChangeText}
+          placeholder="Search inventory"
+          placeholderTextColor={SECONDARY}
+          autoCorrect={false}
+          autoCapitalize="none"
+          clearButtonMode="while-editing"
+          returnKeyType="search"
+          accessibilityLabel="Search inventory"
+        />
+        {value ? (
+          <Pressable onPress={() => onChangeText('')} hitSlop={8} accessibilityLabel="Clear">
+            <Ionicons name="close-circle" size={16} color={SECONDARY} />
+          </Pressable>
+        ) : null}
+      </View>
+      {onRefresh ? <InventoryPriceRefresh onPress={onRefresh} loading={refreshing} /> : null}
     </View>
   );
 }
@@ -428,7 +767,7 @@ function StoreHomeHero({
   const cashValue = cashCad?.amount;
   const cashEmpty = !Number.isFinite(Number(cashValue));
   const opsApp =
-    opsFocus === 'phone' ? 'phone' : opsFocus === 'bonus' ? 'reviews' : 'emails';
+    opsFocus === 'phone' ? 'phone' : opsFocus === 'bonus' ? 'bonuses' : 'emails';
   const opsValue =
     opsFocus === 'phone'
       ? phoneEmpty
@@ -702,68 +1041,141 @@ function OverviewHero({
   );
 }
 
-function StoreOverviewStats({
-  cashLabel,
-  emailLabel,
-  phoneLabel,
-  bonusLabel,
-  emailTone,
-  phoneTone,
-  bonusTone,
-  onOpenCash,
-  onOpenEmail,
-  onOpenPhone,
-  onOpenBonus,
-}) {
-  const cols = [
-    { key: 'cash', label: 'Cash till', value: cashLabel, onPress: onOpenCash },
-    { key: 'email', label: 'Email', value: emailLabel, tone: emailTone, onPress: onOpenEmail },
-    { key: 'phone', label: 'Phone', value: phoneLabel, tone: phoneTone, onPress: onOpenPhone },
-    { key: 'bonus', label: 'Bonus', value: bonusLabel, tone: bonusTone, onPress: onOpenBonus },
-  ];
+function cleanStoreContact(value) {
+  const text = String(value || '').trim();
+  return !text || text === '—' ? '' : text;
+}
+
+function OverviewContactLine({ icon, children }) {
+  if (!children) return null;
   return (
-    <View style={styles.overviewStats}>
-      <View
-        style={[styles.storeTxRow, styles.storeTxHeaderRow]}
-        {...(Platform.OS === 'web' ? { className: 'cgold-home-header-row' } : null)}
-      >
-        <View style={styles.overviewStatsBody}>
-          {cols.map((col) => (
-            <Text key={col.key} style={[styles.storeTxHeader, styles.overviewStatsCol]} numberOfLines={1}>
-              {col.label}
+    <View style={styles.overviewContactLine}>
+      <Ionicons name={icon} size={13} color={SECONDARY} />
+      <Text style={styles.overviewStoreContact} numberOfLines={2}>
+        {children}
+      </Text>
+    </View>
+  );
+}
+
+function OverviewStatsTable({ rows = [] }) {
+  if (!rows.length) return null;
+  return (
+    <View style={styles.overviewStatsBox}>
+      {rows.map((row, index) => {
+        const last = index === rows.length - 1;
+        const value = (
+          <Text
+            style={[
+              styles.overviewStatsValue,
+              row.muted && styles.rowValueMuted,
+              row.tone === 'low' && styles.storeHomeHeroStatLow,
+              row.tone === 'ok' && styles.storeHomeHeroStatOk,
+            ]}
+            numberOfLines={1}
+          >
+            {row.value}
+          </Text>
+        );
+        const lead = (
+          <View style={styles.overviewStatsLead}>
+            <Ionicons name={row.icon} size={15} color={SECONDARY} />
+            <Text style={styles.overviewStatsLabel} numberOfLines={1}>
+              {row.label}
             </Text>
-          ))}
-        </View>
-        <View
-          style={[styles.storeTxRowRule, styles.storeTxHeaderRule]}
-          {...(Platform.OS === 'web' ? { className: 'cgold-home-row-rule' } : null)}
-        />
-      </View>
-      <View style={styles.storeTxRow}>
-        <View style={styles.overviewStatsBody}>
-          {cols.map((col) => (
+          </View>
+        );
+        if (row.onPress) {
+          return (
             <Pressable
-              key={col.key}
-              onPress={col.onPress}
-              style={styles.overviewStatsCol}
+              key={row.key}
+              onPress={row.onPress}
+              style={({ hovered, pressed }) => [
+                styles.overviewStatsRow,
+                last && styles.overviewStatsRowLast,
+                (hovered || pressed) && styles.overviewStatsRowHover,
+              ]}
               accessibilityRole="button"
-              accessibilityLabel={`${col.label} ${col.value}`}
+              accessibilityLabel={`${row.label} ${row.value}`}
             >
+              {lead}
+              {value}
+            </Pressable>
+          );
+        }
+        return (
+          <View
+            key={row.key}
+            style={[styles.overviewStatsRow, styles.itemStatsRow, last && styles.overviewStatsRowLast]}
+            accessibilityLabel={`${row.label} ${row.value}`}
+          >
+            {lead}
+            {value}
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+function SnapshotTable({ columns = [], children }) {
+  return (
+    <View style={styles.overviewListWrap}>
+      <View style={styles.overviewListBox}>
+        <View style={[styles.overviewTxRow, styles.overviewTxHeader]}>
+          <View style={styles.storeTxRowBody}>
+            {columns.map((col) => (
               <Text
-                style={[
-                  styles.overviewStatsValue,
-                  col.tone === 'low' && styles.storeHomeHeroStatLow,
-                  col.tone === 'ok' && styles.storeHomeHeroStatOk,
-                ]}
+                key={col.key}
+                style={[styles.storeTxHeader, styles[col.colStyle], col.end && styles.storeTxHeaderEnd]}
                 numberOfLines={1}
               >
-                {col.value}
+                {col.label}
               </Text>
-            </Pressable>
-          ))}
+            ))}
+          </View>
         </View>
-        <View style={styles.storeTxRowRule} />
+        {children}
       </View>
+    </View>
+  );
+}
+
+function SnapshotTableRow({ cells, last = false, onPress }) {
+  const inner = (
+    <View style={styles.storeTxRowBody}>
+      {cells.map((cell) => (
+        <Text
+          key={cell.key}
+          style={[
+            cell.end ? styles.storeTxAmount : styles.storeTxName,
+            styles[cell.style],
+            cell.muted && styles.rowValueMuted,
+          ]}
+          numberOfLines={1}
+        >
+          {cell.text}
+        </Text>
+      ))}
+    </View>
+  );
+  if (onPress) {
+    return (
+      <Pressable
+        onPress={onPress}
+        style={({ hovered, pressed }) => [
+          styles.overviewTxRow,
+          last && styles.overviewTxRowLast,
+          (hovered || pressed) && styles.overviewStatsRowHover,
+        ]}
+      >
+        {inner}
+      </Pressable>
+    );
+  }
+  return (
+    <View style={[styles.overviewTxRow, styles.itemStaticRow, last && styles.overviewTxRowLast]}>
+      {inner}
     </View>
   );
 }
@@ -1217,6 +1629,7 @@ const TransactionRow = memo(function TransactionRow({
   employeePerson,
   onAmountHover,
   stacked = false,
+  boxed = false,
 }) {
   const [splitTip, setSplitTip] = useState('');
   const [splitAnchor, setSplitAnchor] = useState(null);
@@ -1225,10 +1638,7 @@ const TransactionRow = memo(function TransactionRow({
   const employee = String(item.employeeName || employeePerson?.name || '').trim();
   const hoverPerson = employeePerson || { name: employee || '—', photoUrl: '' };
   const photos = Array.isArray(item.imageUrls) ? item.imageUrls.filter(Boolean) : [];
-  const reference = String(item.reference || '').trim();
-  const refLabel = /\b(SO|PO)\b/i.test(reference)
-    ? reference
-    : `${isBuy ? 'PO' : 'SO'}${reference ? ` ${reference}` : ''}`;
+  const refLabel = txRefLabel(item);
 
   const handleSplitEnter = async (event) => {
     setSplitAnchor(event?.currentTarget || null);
@@ -1311,23 +1721,18 @@ const TransactionRow = memo(function TransactionRow({
   ) : (
     <View style={styles.storeTxPhotoEmpty} />
   );
-  const kindTile = (
-    <View style={[styles.storeTxKind, isBuy && styles.storeTxKindBuy]}>
-      <Text style={[styles.storeTxKindText, isBuy && styles.storeTxKindTextBuy]}>
-        {isBuy ? 'PO' : 'SO'}
-      </Text>
-    </View>
-  );
   const rowLabel = `${isBuy ? 'PO' : 'SO'} ${item.customerName || ''} ${item.amountLabel || ''}`;
   const cells = (
     <View style={styles.storeTxRowBody}>
       <View style={styles.storeTxColPhoto}>{photo}</View>
-      <View style={styles.storeTxColKind}>{kindTile}</View>
       <Text style={[styles.storeTxName, styles.storeTxColCustomer]} numberOfLines={1}>
         {item.customerName || '—'}
       </Text>
-      <Text style={[styles.storeTxMeta, styles.storeTxColRef]} numberOfLines={1}>
-        {refLabel || '—'}
+      <Text style={[styles.storeTxMeta, styles.storeTxColKind]} numberOfLines={1}>
+        {txKindLabel(item)}
+      </Text>
+      <Text style={[styles.storeTxMeta, styles.storeTxColNumber]} numberOfLines={1}>
+        {txNumberLabel(item)}
       </Text>
       <Text style={[styles.storeTxMeta, styles.storeTxColTime]} numberOfLines={1}>
         {item.timeLabel || '—'}
@@ -1340,7 +1745,10 @@ const TransactionRow = memo(function TransactionRow({
         accessibilityLabel={employee || 'Employee'}
         {...(Platform.OS === 'web' ? { title: employee || undefined } : null)}
       >
-        <EmployeeAvatar person={hoverPerson} size={24} />
+        <EmployeeAvatar person={hoverPerson} size={20} />
+        <Text style={styles.storeTxMeta} numberOfLines={1}>
+          {employee || '—'}
+        </Text>
       </View>
       <View style={styles.storeTxColAmount} {...splitHover}>
         <Text style={styles.storeTxAmount} numberOfLines={1}>
@@ -1355,6 +1763,30 @@ const TransactionRow = memo(function TransactionRow({
       <Ionicons name="chevron-forward" size={18} color="#8e8e93" />
     </View>
   );
+
+  if (boxed) {
+    return (
+      <Pressable
+        onPress={() => onPress?.(item)}
+        style={({ hovered, pressed }) => [
+          styles.overviewTxRow,
+          last && styles.overviewTxRowLast,
+          (hovered || pressed) && styles.overviewStatsRowHover,
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel={rowLabel}
+      >
+        {cells}
+        {chevron}
+        <FloatingTooltip
+          visible={Boolean(splitAnchor && splitTip)}
+          text={splitTip}
+          anchorEl={splitAnchor}
+          align="end"
+        />
+      </Pressable>
+    );
+  }
 
   if (Platform.OS === 'web') {
     return (
@@ -1404,9 +1836,386 @@ const TransactionRow = memo(function TransactionRow({
   );
 });
 
-const InventoryRow = memo(function InventoryRow({ row, qty, last, dashboard = false }) {
+function itemStatGroups({ item, storeId, storeName, prices, spreads }) {
+  const storeQty = item.quantities?.[storeId] || 0;
+  const storePreorder = item.preorders?.[storeId] || 0;
+  const companyQty = item.total || 0;
+  const companyPreorder = item.preorderTotal || 0;
+  const qty = (value) => (value ? formatQty(value) : '—');
+  const pricing = [
+    {
+      key: 'buy',
+      icon: 'arrow-down-circle-outline',
+      label: 'What we buy',
+      value: prices?.buyLabel || '—',
+      sub: spreads.buy.label ? `${spreads.buy.label} vs spot` : '',
+      muted: !prices?.buyLabel,
+    },
+    {
+      key: 'sell',
+      icon: 'arrow-up-circle-outline',
+      label: 'What we sell',
+      value: prices?.sellLabel || '—',
+      sub: spreads.sell.label ? `${spreads.sell.label} vs spot` : '',
+      muted: !prices?.sellLabel,
+    },
+    {
+      key: 'spread',
+      icon: 'swap-vertical-outline',
+      label: 'Buy/sell spread',
+      value: spreads.spread.dollarLabel || '—',
+      sub: spreads.spread.percentLabel,
+      muted: !spreads.spread.dollarLabel,
+    },
+    {
+      key: 'spot',
+      icon: 'pulse-outline',
+      label: 'Spot',
+      value: spreads.spotLabel || '—',
+      muted: !spreads.spotLabel,
+    },
+  ];
+  const stock = [
+    {
+      key: 'qty',
+      icon: 'cube-outline',
+      label: storeName || 'This store',
+      value: qty(storeQty),
+      muted: !storeQty,
+    },
+    {
+      key: 'preorder',
+      icon: 'cart-outline',
+      label: 'Preorder here',
+      value: qty(storePreorder),
+      muted: !storePreorder,
+      tone: storePreorder > storeQty ? 'over' : undefined,
+    },
+    {
+      key: 'all',
+      icon: 'business-outline',
+      label: 'All stores',
+      value: qty(companyQty),
+      muted: !companyQty,
+    },
+    {
+      key: 'preorderAll',
+      icon: 'cart-outline',
+      label: 'Preorder all',
+      value: qty(companyPreorder),
+      muted: !companyPreorder,
+      tone: companyPreorder > companyQty ? 'over' : undefined,
+    },
+  ];
+  return [pricing, stock];
+}
+
+function ItemStatsBox({ rows, isMobile = false }) {
   return (
-    <View style={[dashboard ? styles.dashPersonRow : styles.row, styles.rowStatic, last && styles.rowLast]}>
+    <View style={[styles.overviewStatsBox, styles.itemStatsBox, isMobile && styles.itemStatsBoxMobile]}>
+      {rows.map((row, index) => (
+        <View
+          key={row.key}
+          style={[styles.overviewStatsRow, styles.itemStatsRow, index === rows.length - 1 && styles.overviewStatsRowLast]}
+          accessibilityLabel={`${row.label} ${row.value}${row.sub ? ` ${row.sub}` : ''}`}
+        >
+          <View style={[styles.overviewStatsLead, styles.itemStatsLead]}>
+            <Ionicons name={row.icon} size={15} color={SECONDARY} />
+            <Text style={[styles.overviewStatsLabel, styles.itemStatsLabel]}>{row.label}</Text>
+          </View>
+          <View style={styles.itemStatsTrail}>
+            <Text
+              style={[
+                styles.overviewStatsValue,
+                row.muted && styles.rowValueMuted,
+                row.tone === 'over' && styles.invPreorderOver,
+              ]}
+            >
+              {row.value}
+            </Text>
+            {row.sub ? <Text style={styles.itemStatsSub}>{row.sub}</Text> : null}
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+/** Item title block + stats box, laid out like the store overview head. */
+function InventoryItemHead({
+  item,
+  storeId,
+  storeName,
+  prices = null,
+  priceCatalog = null,
+  isMobile = false,
+  onBackToList,
+}) {
+  const { quotes, usdCadRate } = useDisplayCurrency();
+  const spreads = inventoryPriceSpreads(prices, priceCatalog, { quotes, usdCadRate });
+  const [pricingRows, stockRows] = itemStatGroups({ item, storeId, storeName, prices, spreads });
+  const title = inventoryDisplayName(item.name) || item.name;
+  const metaLines = [
+    { icon: 'pricetag-outline', text: title !== item.name ? item.name : '' },
+    { icon: 'barcode-outline', text: item.sku && item.sku !== item.name ? item.sku : '' },
+    { icon: 'diamond-outline', text: item.metal || '' },
+    { icon: 'globe-outline', text: prices?.websiteName || '' },
+  ].filter((line) => line.text);
+
+  return (
+    <View style={[styles.overviewHeadRow, isMobile && styles.itemHeadRowMobile]}>
+      <View style={styles.overviewTitleBlock}>
+        <Pressable
+          onPress={onBackToList}
+          hitSlop={6}
+          style={styles.itemKicker}
+          accessibilityRole="link"
+          accessibilityLabel="All inventory"
+        >
+          <Text style={styles.itemKickerText}>Inventory</Text>
+        </Pressable>
+        <Text style={styles.overviewStoreName}>{title}</Text>
+        <View style={styles.overviewContactBlock}>
+          {metaLines.map((line) => (
+            <OverviewContactLine key={line.icon} icon={line.icon}>
+              {line.text}
+            </OverviewContactLine>
+          ))}
+        </View>
+      </View>
+      <View style={[styles.itemStatsPair, isMobile && styles.itemStatsPairMobile]}>
+        <ItemStatsBox rows={pricingRows} isMobile={isMobile} />
+        <ItemStatsBox rows={stockRows} isMobile={isMobile} />
+      </View>
+    </View>
+  );
+}
+
+function InventoryItemBody({
+  item,
+  storeId,
+  stores = [],
+  periodLabel = 'Today',
+  transactions = [],
+  pending = false,
+  boxed = false,
+  isMobile = false,
+  employeesByName,
+  staff,
+  onOpenTransaction,
+  onAmountHover,
+  onPricePress,
+  priceChecks,
+}) {
+  const storeLines = (stores || [])
+    .map((store) => ({
+      id: store.id,
+      name: store.name,
+      qty: item.quantities?.[store.id] || 0,
+      preorder: item.preorders?.[store.id] || 0,
+    }))
+    .filter((line) => line.qty || line.preorder)
+    .sort((a, b) => {
+      if (a.id === storeId) return -1;
+      if (b.id === storeId) return 1;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    });
+  const periodText = periodLabel === 'Today' ? 'today' : 'in this period';
+  const countLabel = transactions.length === 1 ? '1 ticket' : `${transactions.length} tickets`;
+
+  return (
+    <View style={styles.itemBody}>
+      {storeLines.length > 1 ? (
+        <>
+          <View style={[styles.overviewListHead, isMobile && styles.itemListHeadMobile]}>
+            <Text style={styles.overviewListTitle}>Stores</Text>
+            <Text style={styles.itemListMeta}>{`${storeLines.length} locations`}</Text>
+          </View>
+          <View style={boxed ? styles.overviewListBox : styles.itemStoreList}>
+            <View style={[styles.overviewTxRow, styles.overviewTxHeader]}>
+              <View style={styles.storeTxRowBody}>
+                <Text style={[styles.storeTxHeader, styles.invColItem]}>Store</Text>
+                <Text style={[styles.storeTxHeader, styles.invColPreorder, styles.storeTxHeaderEnd]}>
+                  Preorder
+                </Text>
+                <Text style={[styles.storeTxHeader, styles.invColQty, styles.storeTxHeaderEnd]}>Qty</Text>
+              </View>
+            </View>
+            {storeLines.map((line, index) => {
+              const last = index === storeLines.length - 1;
+              const here = line.id === storeId;
+              return (
+                <View
+                  key={line.id}
+                  style={[styles.overviewTxRow, last && styles.overviewTxRowLast, styles.itemStaticRow]}
+                >
+                  <View style={styles.storeTxRowBody}>
+                    <Text
+                      style={[styles.storeTxName, styles.invColItem, here && styles.itemStoreHere]}
+                      numberOfLines={1}
+                    >
+                      {line.name}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.storeTxAmount,
+                        styles.invColPreorder,
+                        !line.preorder && styles.rowValueMuted,
+                        line.preorder > line.qty && styles.invPreorderOver,
+                      ]}
+                    >
+                      {line.preorder ? formatQty(line.preorder) : '—'}
+                    </Text>
+                    <Text
+                      style={[styles.storeTxAmount, styles.invColQty, !line.qty && styles.rowValueMuted]}
+                    >
+                      {line.qty ? formatQty(line.qty) : '—'}
+                    </Text>
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        </>
+      ) : null}
+      <View style={[styles.overviewListHead, isMobile && styles.itemListHeadMobile]}>
+        <Text style={styles.overviewListTitle}>Transactions</Text>
+        <View style={styles.itemListMetaRow}>
+          {pending ? <ActivityIndicator size="small" color={SECONDARY} /> : null}
+          <Text style={styles.itemListMeta}>{countLabel}</Text>
+        </View>
+      </View>
+      <View style={boxed ? styles.overviewListBox : null}>
+        {transactions.length === 0 ? (
+          <EmptyRow
+            boxed={boxed}
+            text={pending ? 'Checking tickets for this item…' : `No tickets with this item ${periodText}.`}
+          />
+        ) : (
+          <>
+            {boxed ? (
+              <View style={[styles.overviewTxRow, styles.overviewTxHeader]}>
+                <View style={styles.storeTxRowBody}>
+                  <Text style={[styles.storeTxHeader, styles.storeTxColPhoto]}>Photo</Text>
+                  <Text style={[styles.storeTxHeader, styles.storeTxColCustomer]}>Customer</Text>
+                  <Text style={[styles.storeTxHeader, styles.storeTxColKind]}>PO/SO</Text>
+                  <Text style={[styles.storeTxHeader, styles.storeTxColNumber]}>Order</Text>
+                  <Text style={[styles.storeTxHeader, styles.storeTxColTime]}>Time</Text>
+                  <Text style={[styles.storeTxHeader, styles.storeTxColItem]}>Item</Text>
+                  <Text style={[styles.storeTxHeader, styles.storeTxColEmployee]}>Employee</Text>
+                  <Text style={[styles.storeTxHeader, styles.storeTxColAmount, styles.storeTxHeaderEnd]}>
+                    Amount
+                  </Text>
+                </View>
+                <View style={styles.storeTxChevron} />
+              </View>
+            ) : null}
+            {transactions.map((entry, index) => (
+              <TransactionRow
+                key={entry.id}
+                item={entry}
+                last={index === transactions.length - 1}
+                onPress={onOpenTransaction}
+                priceCheck={priceChecks?.get(entry.id)}
+                onPricePress={onPricePress}
+                employeePerson={employeePersonForTx(entry, employeesByName, staff)}
+                onAmountHover={onAmountHover}
+                stacked={isMobile}
+                boxed={boxed}
+              />
+            ))}
+          </>
+        )}
+      </View>
+    </View>
+  );
+}
+
+const InventoryRow = memo(function InventoryRow({
+  row,
+  qty,
+  preorder = 0,
+  last,
+  dashboard = false,
+  boxed = false,
+  prices = null,
+  onPress,
+}) {
+  const qtyLabel = qty === 0 ? '—' : formatQty(qty);
+  const preorderLabel = preorder === 0 ? '—' : formatQty(preorder);
+  const preorderOverQty = preorder > qty;
+  const buyLabel = prices?.buyLabel || '—';
+  const sellLabel = prices?.sellLabel || '—';
+  const rowLabel = `${row.name} quantity ${qtyLabel} preorder ${preorderLabel}`;
+
+  if (boxed) {
+    return (
+      <Pressable
+        onPress={() => onPress?.(row)}
+        style={({ hovered, pressed }) => [
+          styles.overviewTxRow,
+          last && styles.overviewTxRowLast,
+          styles.inventoryTxRow,
+          (hovered || pressed) && styles.overviewStatsRowHover,
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel={rowLabel}
+      >
+        <View style={styles.storeTxRowBody}>
+          <View style={styles.invColItem}>
+            <Text style={styles.storeTxName} numberOfLines={1}>
+              {row.name}
+            </Text>
+          </View>
+          <Text
+            style={[styles.storeTxAmount, styles.invColBuy, !prices?.buyLabel && styles.rowValueMuted]}
+            numberOfLines={1}
+          >
+            {buyLabel}
+          </Text>
+          <Text
+            style={[styles.storeTxAmount, styles.invColSell, !prices?.sellLabel && styles.rowValueMuted]}
+            numberOfLines={1}
+          >
+            {sellLabel}
+          </Text>
+          <Text
+            style={[
+              styles.storeTxAmount,
+              styles.invColPreorder,
+              preorder === 0 && styles.rowValueMuted,
+              preorderOverQty && styles.invPreorderOver,
+            ]}
+            numberOfLines={1}
+          >
+            {preorderLabel}
+          </Text>
+          <Text
+            style={[
+              styles.storeTxAmount,
+              styles.invColQty,
+              qty === 0 && styles.rowValueMuted,
+            ]}
+            numberOfLines={1}
+          >
+            {qtyLabel}
+          </Text>
+        </View>
+      </Pressable>
+    );
+  }
+
+  return (
+    <Pressable
+      onPress={() => onPress?.(row)}
+      style={({ hovered, pressed }) => [
+        dashboard ? styles.dashPersonRow : styles.row,
+        last && styles.rowLast,
+        (hovered || pressed) && styles.rowHovered,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={rowLabel}
+    >
       {row.priority ? (
         <View style={[styles.priorityDot, { backgroundColor: PRIORITY_COLORS[row.priority] }]} />
       ) : (
@@ -1416,49 +2225,81 @@ const InventoryRow = memo(function InventoryRow({ row, qty, last, dashboard = fa
         <Text style={dashboard ? styles.dashTitle : styles.rowTitle} numberOfLines={1}>
           {row.name}
         </Text>
-        {row.sku ? (
-          <Text style={dashboard ? styles.dashMeta : styles.rowSubtitle} numberOfLines={1}>
-            {row.sku}
-          </Text>
-        ) : null}
+        <Text style={dashboard ? styles.dashMeta : styles.rowSubtitle} numberOfLines={1}>
+          {[
+            row.sku,
+            buyLabel !== '—' ? `Buy ${buyLabel}` : '',
+            sellLabel !== '—' ? `Sell ${sellLabel}` : '',
+          ]
+            .filter(Boolean)
+            .join(' · ') || '—'}
+        </Text>
       </View>
+      {preorder ? (
+        <Text
+          style={[
+            dashboard ? styles.dashValue : styles.rowValue,
+            styles.invMobilePreorder,
+            preorderOverQty && styles.invPreorderOver,
+          ]}
+        >
+          {preorderLabel}
+        </Text>
+      ) : null}
       <Text style={[dashboard ? styles.dashValue : styles.rowValue, qty === 0 && styles.rowValueMuted]}>
-        {qty === 0 ? '—' : formatQty(qty)}
+        {qtyLabel}
       </Text>
-    </View>
+      <Ionicons name="chevron-forward" size={16} color="#c7c7cc" />
+    </Pressable>
   );
 });
 
-function ShowMoreRow({ remaining, onPress }) {
+function ShowMoreRow({ remaining, onPress, boxed = false }) {
   return (
     <Pressable
       onPress={onPress}
       style={({ hovered, pressed }) => [
-        styles.row,
-        styles.rowLast,
-        styles.showMoreRow,
-        (hovered || pressed) && styles.rowHovered,
+        boxed
+          ? [styles.overviewTxRow, styles.overviewTxRowLast]
+          : [styles.row, styles.rowLast, styles.showMoreRow],
+        (hovered || pressed) && (boxed ? styles.overviewStatsRowHover : styles.rowHovered),
       ]}
       accessibilityRole="button"
       accessibilityLabel={`Show ${remaining} more items`}
     >
-      <Text style={styles.showMoreText}>Show {remaining} more</Text>
-      <Ionicons name="chevron-down" size={14} color={BLUE} />
+      <View style={boxed ? styles.storeTxRowBody : null}>
+        <Text style={boxed ? styles.storeTxMeta : styles.showMoreText}>Show {remaining} more</Text>
+      </View>
+      {boxed ? null : <Ionicons name="chevron-down" size={14} color={BLUE} />}
     </Pressable>
   );
 }
 
-function EmptyRow({ text }) {
+function EmptyRow({ text, boxed = false }) {
   return (
-    <View style={[styles.row, styles.rowStatic, styles.rowLast]}>
-      <Text style={styles.emptyText}>{text}</Text>
+    <View
+      style={
+        boxed
+          ? [styles.overviewTxRow, styles.overviewTxRowLast, styles.inventoryTxRow]
+          : [styles.row, styles.rowStatic, styles.rowLast]
+      }
+    >
+      <View style={boxed ? styles.storeTxRowBody : null}>
+        <Text style={styles.emptyText}>{text}</Text>
+      </View>
     </View>
   );
 }
 
-function LoadingRow() {
+function LoadingRow({ boxed = false }) {
   return (
-    <View style={[styles.row, styles.rowLast, styles.loadingRow]}>
+    <View
+      style={
+        boxed
+          ? [styles.overviewTxRow, styles.overviewTxRowLast, styles.inventoryTxRow, styles.loadingRow]
+          : [styles.row, styles.rowLast, styles.loadingRow]
+      }
+    >
       <ActivityIndicator size="small" color={BLUE} />
     </View>
   );
@@ -1481,10 +2322,72 @@ function phonePartyLabel(call) {
   return [name, number].filter(Boolean).join(' · ') || 'Unknown';
 }
 
-function PhoneSnapshotBody({ calls = [], periodLabel, ratio }) {
+function PhoneSnapshotBody({ calls = [], periodLabel, ratio, boxed = false }) {
   const periodText = periodLabel === 'Today' ? 'today' : 'in this period';
   if (!calls.length) {
-    return <EmptyRow text={`No calls ${periodText}.`} />;
+    return boxed ? (
+      <SnapshotTable columns={PHONE_TABLE_COLS}>
+        <EmptyRow boxed text={`No calls ${periodText}.`} />
+      </SnapshotTable>
+    ) : (
+      <EmptyRow text={`No calls ${periodText}.`} />
+    );
+  }
+  const rows = calls.map((call, index) => {
+    const inbound = String(call.direction || '') !== 'Outbound';
+    const missed = inbound && String(call.result || call.status || '') === 'Missed';
+    const last = index === calls.length - 1;
+    if (boxed) {
+      return (
+        <SnapshotTableRow
+          key={call.id || `${call.startTime}-${index}`}
+          last={last}
+          cells={[
+            { key: 'party', text: phonePartyLabel(call), style: 'appColMain' },
+            { key: 'dir', text: inbound ? 'Inbound' : 'Outbound', style: 'appColMid' },
+            { key: 'result', text: resultLabel(call.result || call.status) || '—', style: 'appColMid' },
+            { key: 'when', text: formatCallWhen(call.startTime) || '—', style: 'appColMid' },
+            {
+              key: 'dur',
+              text: call.duration ? formatDuration(call.duration) : '—',
+              style: 'appColEnd',
+              end: true,
+              muted: !call.duration,
+            },
+          ]}
+        />
+      );
+    }
+    return (
+      <View
+        key={call.id || `${call.startTime}-${index}`}
+        style={[styles.row, styles.rowStatic, last && styles.rowLast]}
+      >
+        <Ionicons
+          name={!inbound ? 'arrow-up' : missed ? 'call-outline' : 'arrow-down'}
+          size={16}
+          color={missed ? RED : GREEN}
+        />
+        <View style={styles.rowCopy}>
+          <Text style={styles.rowTitle} numberOfLines={1}>
+            {phonePartyLabel(call)}
+          </Text>
+          <Text style={styles.rowSubtitle} numberOfLines={1}>
+            {[
+              inbound ? 'Inbound' : 'Outbound',
+              resultLabel(call.result || call.status),
+              formatCallWhen(call.startTime),
+              call.duration ? formatDuration(call.duration) : '',
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+          </Text>
+        </View>
+      </View>
+    );
+  });
+  if (boxed) {
+    return <SnapshotTable columns={PHONE_TABLE_COLS}>{rows}</SnapshotTable>;
   }
   return (
     <>
@@ -1495,37 +2398,7 @@ function PhoneSnapshotBody({ calls = [], periodLabel, ratio }) {
           {ratio.missed != null ? ` · ${ratio.missed} missed` : ''}
         </Text>
       ) : null}
-      {calls.map((call, index) => {
-        const inbound = String(call.direction || '') !== 'Outbound';
-        const missed = inbound && String(call.result || call.status || '') === 'Missed';
-        return (
-          <View
-            key={call.id || `${call.startTime}-${index}`}
-            style={[styles.row, styles.rowStatic, index === calls.length - 1 && styles.rowLast]}
-          >
-            <Ionicons
-              name={!inbound ? 'arrow-up' : missed ? 'call-outline' : 'arrow-down'}
-              size={16}
-              color={missed ? RED : GREEN}
-            />
-            <View style={styles.rowCopy}>
-              <Text style={styles.rowTitle} numberOfLines={1}>
-                {phonePartyLabel(call)}
-              </Text>
-              <Text style={styles.rowSubtitle} numberOfLines={1}>
-                {[
-                  inbound ? 'Inbound' : 'Outbound',
-                  resultLabel(call.result || call.status),
-                  formatCallWhen(call.startTime),
-                  call.duration ? formatDuration(call.duration) : '',
-                ]
-                  .filter(Boolean)
-                  .join(' · ')}
-              </Text>
-            </View>
-          </View>
-        );
-      })}
+      {rows}
     </>
   );
 }
@@ -1536,7 +2409,7 @@ function storeEmailCapture(txRows, storeName) {
   return rows.find((row) => namesMatch(row.store, storeName)) || (rows.length === 1 ? rows[0] : null);
 }
 
-function EmailsSnapshotBody({ storeName, txRows, periodLabel, ready, full = false }) {
+function EmailsSnapshotBody({ storeName, txRows, periodLabel, ready, full = false, boxed = false }) {
   const capture = useMemo(() => storeEmailCapture(txRows, storeName), [storeName, txRows]);
   const people = useMemo(() => capture?.people || [], [capture]);
   const missing = useMemo(
@@ -1545,10 +2418,14 @@ function EmailsSnapshotBody({ storeName, txRows, periodLabel, ready, full = fals
   );
   const periodText = periodLabel === 'Today' ? 'today' : 'in this period';
 
-  if (!ready && !capture) return <LoadingRow />;
+  if (!ready && !capture) return boxed ? <LoadingRow boxed /> : <LoadingRow />;
 
   if (!capture || capture.totalTransactions === 0) {
-    return full ? (
+    return boxed ? (
+      <SnapshotTable columns={EMAIL_TABLE_COLS}>
+        <EmptyRow boxed text={`No customers ${periodText}.`} />
+      </SnapshotTable>
+    ) : full ? (
       <Text style={styles.homeTxEmpty}>{`No customers ${periodText}.`}</Text>
     ) : (
       <EmptyRow text={`No customers ${periodText}.`} />
@@ -1568,6 +2445,36 @@ function EmailsSnapshotBody({ storeName, txRows, periodLabel, ready, full = fals
       </Text>
     </View>
   );
+
+  if (boxed) {
+    if (people.length === 0) {
+      return (
+        <SnapshotTable columns={EMAIL_TABLE_COLS}>
+          <EmptyRow boxed text={`No named customers ${periodText}.`} />
+        </SnapshotTable>
+      );
+    }
+    return (
+      <SnapshotTable columns={EMAIL_TABLE_COLS}>
+        {people.map((person, index) => (
+          <SnapshotTableRow
+            key={person.id || `${person.customerName}-${index}`}
+            last={index === people.length - 1}
+            cells={[
+              { key: 'person', text: person.customerName || '—', style: 'appColMain' },
+              {
+                key: 'email',
+                text: person.emailLabel || '—',
+                style: 'appColWide',
+                muted: !person.hasEmail,
+              },
+              { key: 'employee', text: person.employeeName || '—', style: 'appColMid' },
+            ]}
+          />
+        ))}
+      </SnapshotTable>
+    );
+  }
 
   if (full) {
     if (people.length === 0) {
@@ -1692,6 +2599,8 @@ function StoreSnapshotPanel({
   onAppsOpenChange,
   embeddedApp = null,
   transactionTicket = null,
+  onSelectedItemChange,
+  inventoryCloseRef,
 }) {
   const storeName = store?.store || '';
   const isMobile = useIsMobile();
@@ -1703,7 +2612,11 @@ function StoreSnapshotPanel({
   const showFinancials = hasApp('financials');
   const showInventory = hasApp('inventory');
   const [inventoryQuery, setInventoryQuery] = useState('');
+  const [selectedItemId, setSelectedItemId] = useState(null);
   const [inventoryLimit, setInventoryLimit] = useState(INVENTORY_PAGE);
+  const [txQuery, setTxQuery] = useState('');
+  const [txColumnFilters, setTxColumnFilters] = useState({});
+  const [openTxFilter, setOpenTxFilter] = useState(null);
   const [cash, setCash] = useState(() => peekStoreCashPosition(session, { storeName: store?.store || '' }));
   const [cashLoading, setCashLoading] = useState(() => !peekStoreCashPosition(session, { storeName: store?.store || '' }));
   const [cashError, setCashError] = useState('');
@@ -1711,6 +2624,8 @@ function StoreSnapshotPanel({
   const [inventoryRows, setInventoryRows] = useState([]);
   const [inventoryLoading, setInventoryLoading] = useState(false);
   const [inventoryError, setInventoryError] = useState('');
+  const [priceCatalog, setPriceCatalog] = useState(null);
+  const [priceRefreshing, setPriceRefreshing] = useState(false);
   const [staff, setStaff] = useState([]);
   const [staffLoading, setStaffLoading] = useState(false);
   const [txCatalogs, setTxCatalogs] = useState(() => new Map());
@@ -1719,27 +2634,34 @@ function StoreSnapshotPanel({
   const [reviewStats, setReviewStats] = useState(() =>
     reviewStatsFromReviews(peekHomeStoreReviews(storeName, startKey, endKey) || []),
   );
-  const [hoursSummary, setHoursSummary] = useState('');
+  const [storeContact, setStoreContact] = useState({ address: '', phone: '', email: '' });
   useEffect(() => {
     setHeroFocus(heroFocusProp || 'all');
   }, [heroFocusProp, storeName]);
   useEffect(() => {
-    if (!storeName) {
-      setHoursSummary('');
+    if (!session?.token || !storeName) {
+      setStoreContact({ address: '', phone: '', email: '' });
       return undefined;
     }
     let cancelled = false;
-    setHoursSummary(summarizeHours(defaultWeeklyHours(storeName), storeName));
-    loadStoreSettings(storeName)
-      .then((settings) => {
+    fetchTransferStores(session)
+      .then(({ stores }) => {
         if (cancelled) return;
-        setHoursSummary(summarizeHours(settings?.hours, storeName));
+        const match = preferStoreByName(stores, storeName);
+        const phone = cleanStoreContact(match?.phone);
+        setStoreContact({
+          address: cleanStoreContact(match?.address),
+          phone: phone ? formatPhoneNumber(phone) : '',
+          email: cleanStoreContact(match?.email),
+        });
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) setStoreContact({ address: '', phone: '', email: '' });
+      });
     return () => {
       cancelled = true;
     };
-  }, [storeName]);
+  }, [session, storeName]);
   useEffect(() => {
     const cached = peekHomeStoreReviews(storeName, startKey, endKey);
     setReviewStats(reviewStatsFromReviews(cached || []));
@@ -1854,6 +2776,10 @@ function StoreSnapshotPanel({
 
   useEffect(() => {
     setInventoryQuery('');
+    setSelectedItemId(null);
+    setTxQuery('');
+    setTxColumnFilters({});
+    setOpenTxFilter(null);
     const cached = peekStoreCashPosition(session, { storeName });
     setCash(cached);
     setCashError('');
@@ -1867,6 +2793,23 @@ function StoreSnapshotPanel({
   useEffect(() => {
     loadInventory();
   }, [loadInventory]);
+
+  const loadPrices = useCallback(async ({ force = false, silent = true } = {}) => {
+    if (!showInventory) return;
+    if (!silent) setPriceRefreshing(true);
+    try {
+      const catalog = await fetchWebsitePrices({ force });
+      setPriceCatalog(keepIfSame(catalog));
+    } catch {
+      // Keep the last catalog; quantities keep updating on their own.
+    } finally {
+      if (!silent) setPriceRefreshing(false);
+    }
+  }, [showInventory]);
+
+  useEffect(() => {
+    loadPrices();
+  }, [loadPrices]);
 
   useEffect(() => {
     loadStaff();
@@ -1889,6 +2832,15 @@ function StoreSnapshotPanel({
   useEffect(() => {
     setInventoryLimit(focusTab === 'inventory' ? 80 : INVENTORY_PAGE);
   }, [focusTab, inventoryQuery, storeName]);
+
+  useEffect(() => {
+    setSelectedItemId(null);
+  }, [focusTab, storeName]);
+
+  // Typing in the inventory search returns to the filtered list.
+  useEffect(() => {
+    if (inventoryQuery.trim()) setSelectedItemId(null);
+  }, [inventoryQuery]);
 
   const txIdKey = txRows.map((row) => row.id).join('\n');
   const pricedKey = txRows
@@ -1979,8 +2931,16 @@ function StoreSnapshotPanel({
   const allItems = useMemo(() => {
     if (!storeId) return [];
     return inventoryRows
-      .map((row) => ({ row, qty: row.quantities[storeId] || 0 }))
-      .filter(({ row, qty }) => (searching ? itemMatches(row, inventoryQuery) : qty !== 0));
+      .map((row) => ({
+        row,
+        storeQty: row.quantities[storeId] || 0,
+        storePreorder: row.preorders?.[storeId] || 0,
+        qty: row.total || 0,
+        preorder: row.preorderTotal || 0,
+      }))
+      .filter(({ row, storeQty, storePreorder }) =>
+        searching ? itemMatches(row, inventoryQuery) : storeQty !== 0 || storePreorder !== 0,
+      );
   }, [inventoryRows, storeId, inventoryQuery, searching]);
   const visibleItems = useMemo(
     () => (allItems.length > inventoryLimit ? allItems.slice(0, inventoryLimit) : allItems),
@@ -1990,13 +2950,66 @@ function StoreSnapshotPanel({
   const showMoreItems = useCallback(() => {
     setInventoryLimit((current) => current + INVENTORY_PAGE);
   }, []);
+  const selectedItem = useMemo(
+    () => inventoryRows.find((row) => row.id === selectedItemId) || null,
+    [inventoryRows, selectedItemId],
+  );
+  const selectedItemTxRows = useMemo(
+    () => (selectedItem ? txRows.filter((row) => transactionHasItem(row, selectedItem)) : []),
+    [selectedItem, txRows],
+  );
+  const selectedItemTxPending = useMemo(
+    () => (selectedItem ? txRows.some((row) => !row.lineItemsLoaded && !(row.pricedLines || []).length) : false),
+    [selectedItem, txRows],
+  );
+  const openInventoryItem = useCallback((row) => {
+    if (row?.id) setSelectedItemId(row.id);
+  }, []);
+  const closeInventoryItem = useCallback(() => {
+    setSelectedItemId(null);
+  }, []);
+
+  useEffect(() => {
+    if (inventoryCloseRef) inventoryCloseRef.current = closeInventoryItem;
+    return () => {
+      if (inventoryCloseRef) inventoryCloseRef.current = null;
+    };
+  }, [closeInventoryItem, inventoryCloseRef]);
+
+  useEffect(() => {
+    onSelectedItemChange?.(selectedItem?.name || '');
+    return () => onSelectedItemChange?.('');
+  }, [onSelectedItemChange, selectedItem?.name]);
+  const inventoryPrices = useMemo(() => {
+    const map = new Map();
+    if (!priceCatalog) return map;
+    for (const row of inventoryRows) {
+      map.set(row.id, inventoryRowWebsitePrice(row, priceCatalog));
+    }
+    return map;
+  }, [inventoryRows, priceCatalog]);
 
   const cashSlips = useTxnCashBreakdowns(txRows);
-  const visibleTxRows = useMemo(() => {
+  const focusedTxRows = useMemo(() => {
     if (heroFocus === 'sales') return txRows.filter((row) => row.type !== 'purchase');
     if (heroFocus === 'purchases') return txRows.filter((row) => row.type === 'purchase');
     return txRows;
   }, [heroFocus, txRows]);
+  const txColumnOptions = useMemo(() => buildOverviewTxOptions(focusedTxRows), [focusedTxRows]);
+  const visibleTxRows = useMemo(() => {
+    let rows = focusedTxRows;
+    if (txQuery.trim()) rows = rows.filter((row) => txMatches(row, txQuery));
+    for (const col of OVERVIEW_TX_FILTERS) {
+      const filter = txColumnFilters[col.key];
+      if (filter == null) continue;
+      rows = rows.filter((row) => Boolean(filter[col.value(row)]));
+    }
+    return rows;
+  }, [focusedTxRows, txColumnFilters, txQuery]);
+  const txFilterCount = useMemo(
+    () => OVERVIEW_TX_FILTERS.reduce((count, col) => count + (txColumnFilters[col.key] != null ? 1 : 0), 0),
+    [txColumnFilters],
+  );
   const txMeta = String(visibleTxRows.length);
   const itemMeta = searching
     ? `${allItems.length} match${allItems.length === 1 ? '' : 'es'}`
@@ -2107,39 +3120,158 @@ function StoreSnapshotPanel({
       }
     : null;
 
-  const inventoryBody = inventoryError && !hasInventoryRef.current ? (
-    <Pressable onPress={loadInventory}>
-      <EmptyRow text={`${inventoryError} · Tap to retry`} />
-    </Pressable>
-  ) : (inventoryLoading && inventoryRows.length === 0) || !ready ? (
-    <LoadingRow />
-  ) : !storeId ? (
-    <EmptyRow text={`No inventory data for ${storeName || 'this store'}.`} />
-  ) : visibleItems.length === 0 ? (
-    <EmptyRow text={searching ? 'No matching items.' : 'No stocked items.'} />
-  ) : (
+  const useOverviewInvTable =
+    !isMobile && !embeddedApp && !ticketOpen && focusTab === 'inventory';
+  const selectedItemHead = selectedItem ? (
+    <InventoryItemHead
+      item={selectedItem}
+      storeId={storeId}
+      storeName={storeName}
+      prices={inventoryPrices.get(selectedItem.id)}
+      priceCatalog={priceCatalog}
+      isMobile={isMobile}
+      onBackToList={closeInventoryItem}
+    />
+  ) : null;
+  const inventoryRowsBody = selectedItem ? (
     <>
-      {visibleItems.map(({ row, qty }, index) => (
-        <InventoryRow
-          key={row.id}
-          row={row}
-          qty={qty}
-          dashboard
-          last={hiddenItemCount === 0 && index === visibleItems.length - 1}
-        />
-      ))}
-      {hiddenItemCount > 0 ? (
-        <ShowMoreRow remaining={hiddenItemCount} onPress={showMoreItems} />
-      ) : null}
+      {useOverviewInvTable ? null : <View style={styles.itemHeadMobileWrap}>{selectedItemHead}</View>}
+      <InventoryItemBody
+        item={selectedItem}
+        storeId={storeId}
+        stores={inventoryStores}
+        periodLabel={periodLabel}
+        transactions={selectedItemTxRows}
+        pending={selectedItemTxPending}
+        boxed={useOverviewInvTable}
+        isMobile={isMobile}
+        employeesByName={employeesByName}
+        staff={staff}
+        onOpenTransaction={onOpenTransaction}
+        onAmountHover={onAmountHover}
+        onPricePress={setPriceReview}
+        priceChecks={priceChecks}
+      />
     </>
-  );
+  ) : inventoryError && !hasInventoryRef.current ? (
+      <Pressable onPress={loadInventory}>
+        <EmptyRow boxed={useOverviewInvTable} text={`${inventoryError} · Tap to retry`} />
+      </Pressable>
+    ) : (inventoryLoading && inventoryRows.length === 0) || !ready ? (
+      <LoadingRow boxed={useOverviewInvTable} />
+    ) : !storeId ? (
+      <EmptyRow boxed={useOverviewInvTable} text={`No inventory data for ${storeName || 'this store'}.`} />
+    ) : visibleItems.length === 0 ? (
+      <EmptyRow boxed={useOverviewInvTable} text={searching ? 'No matching items.' : 'No stocked items.'} />
+    ) : (
+      <>
+        {useOverviewInvTable ? (
+          <View style={[styles.overviewTxRow, styles.overviewTxHeader]}>
+            <View style={styles.storeTxRowBody}>
+              <Text style={[styles.storeTxHeader, styles.invColItem]}>Item</Text>
+              <Text style={[styles.storeTxHeader, styles.invColBuy]}>What we buy</Text>
+              <Text style={[styles.storeTxHeader, styles.invColSell]}>What we sell</Text>
+              <Text style={[styles.storeTxHeader, styles.invColPreorder, styles.storeTxHeaderEnd]}>Preorder</Text>
+              <Text style={[styles.storeTxHeader, styles.invColQty, styles.storeTxHeaderEnd]}>Qty</Text>
+            </View>
+          </View>
+        ) : null}
+        {visibleItems.map(({ row, qty, preorder }, index) => (
+          <InventoryRow
+            key={row.id}
+            row={row}
+            qty={qty}
+            preorder={preorder}
+            dashboard
+            boxed={useOverviewInvTable}
+            prices={inventoryPrices.get(row.id)}
+            last={hiddenItemCount === 0 && index === visibleItems.length - 1}
+            onPress={openInventoryItem}
+          />
+        ))}
+        {hiddenItemCount > 0 ? (
+          <ShowMoreRow remaining={hiddenItemCount} onPress={showMoreItems} boxed={useOverviewInvTable} />
+        ) : null}
+      </>
+    );
+  const inventoryBody =
+    selectedItem || !useOverviewInvTable ? (
+      <View style={useOverviewInvTable ? styles.overviewListWrap : null}>{inventoryRowsBody}</View>
+    ) : (
+      <View style={styles.overviewListWrap}>
+        <View style={styles.overviewListBox}>{inventoryRowsBody}</View>
+      </View>
+    );
+
+  const useDesktopAppTable = !isMobile && !ticketOpen;
+  const cashLedgerRows = useMemo(() => {
+    const payments = cash?.paymentRows || [];
+    const txns = cash?.cashTransactions || [];
+    return [...payments, ...txns];
+  }, [cash]);
+  const inventoryTotals = useMemo(() => {
+    let qty = 0;
+    let preorder = 0;
+    let company = 0;
+    for (const item of allItems) {
+      qty += Number(item.storeQty) || 0;
+      preorder += Number(item.storePreorder) || 0;
+      company += Number(item.qty) || 0;
+    }
+    return { skus: allItems.length, qty, preorder, company };
+  }, [allItems]);
 
   const financialsBody = cashError ? (
     <Pressable onPress={loadCash}>
-      <EmptyRow text={`${cashError} · Tap to retry`} />
+      {useDesktopAppTable ? (
+        <SnapshotTable columns={CASH_TABLE_COLS}>
+          <EmptyRow boxed text={`${cashError} · Tap to retry`} />
+        </SnapshotTable>
+      ) : (
+        <EmptyRow text={`${cashError} · Tap to retry`} />
+      )}
     </Pressable>
   ) : cashLoading && !cash ? (
-    <LoadingRow />
+    useDesktopAppTable ? (
+      <SnapshotTable columns={CASH_TABLE_COLS}>
+        <LoadingRow boxed />
+      </SnapshotTable>
+    ) : (
+      <LoadingRow />
+    )
+  ) : useDesktopAppTable ? (
+    <SnapshotTable columns={CASH_TABLE_COLS}>
+      {cashLedgerRows.length ? (
+        cashLedgerRows.map((row, index) => (
+          <SnapshotTableRow
+            key={row.id || `${row.directionLabel}-${index}`}
+            last={index === cashLedgerRows.length - 1}
+            cells={[
+              { key: 'kind', text: row.directionLabel || row.type || '—', style: 'appColMid' },
+              {
+                key: 'who',
+                text: row.customerName || row.category || '—',
+                style: 'appColMain',
+              },
+              {
+                key: 'ref',
+                text: row.reference || row.comments || '—',
+                style: 'appColMid',
+                muted: !(row.reference || row.comments),
+              },
+              {
+                key: 'amount',
+                text: row.amountLabel || '—',
+                style: 'appColEnd',
+                end: true,
+              },
+            ]}
+          />
+        ))
+      ) : (
+        <EmptyRow boxed text="No till movement for this store." />
+      )}
+    </SnapshotTable>
   ) : cash ? (
     <View style={styles.cashHeroStack}>
       <ExpectedCash cad={cash.cad} usd={cash.usd} />
@@ -2149,9 +3281,41 @@ function StoreSnapshotPanel({
   );
 
   const employeesBody = staffLoading && presentEmployees.length === 0 ? (
-    <LoadingRow />
+    useDesktopAppTable ? (
+      <SnapshotTable columns={EMPLOYEE_TABLE_COLS}>
+        <LoadingRow boxed />
+      </SnapshotTable>
+    ) : (
+      <LoadingRow />
+    )
   ) : presentEmployees.length === 0 ? (
-    <EmptyRow text="No employees at this store right now." />
+    useDesktopAppTable ? (
+      <SnapshotTable columns={EMPLOYEE_TABLE_COLS}>
+        <EmptyRow boxed text="No employees at this store right now." />
+      </SnapshotTable>
+    ) : (
+      <EmptyRow text="No employees at this store right now." />
+    )
+  ) : useDesktopAppTable ? (
+    <SnapshotTable columns={EMPLOYEE_TABLE_COLS}>
+      {presentEmployees.map((person, index) => (
+        <SnapshotTableRow
+          key={`${person.name}-${index}`}
+          last={index === presentEmployees.length - 1}
+          cells={[
+            { key: 'name', text: person.name, style: 'appColMain' },
+            { key: 'role', text: person.role || '—', style: 'appColMid', muted: !person.role },
+            {
+              key: 'tx',
+              text: String(person.txCount || 0),
+              style: 'appColEnd',
+              end: true,
+              muted: !person.txCount,
+            },
+          ]}
+        />
+      ))}
+    </SnapshotTable>
   ) : (
     <View style={styles.employeeCardGrid}>
       {presentEmployees.map((person, index) => (
@@ -2160,12 +3324,18 @@ function StoreSnapshotPanel({
     </View>
   );
 
-  const emptyTxCopy =
-    heroFocus === 'sales'
+  const emptyTxCopy = txQuery.trim() || txFilterCount
+    ? 'No matching transactions.'
+    : heroFocus === 'sales'
       ? `No sales ${periodLabel === 'Today' ? 'today' : 'in this period'}.`
       : heroFocus === 'purchases'
         ? `No purchases ${periodLabel === 'Today' ? 'today' : 'in this period'}.`
         : `No transactions ${periodLabel === 'Today' ? 'today' : 'in this period'}.`;
+  const useOverviewTxTable =
+    !isMobile &&
+    !embeddedApp &&
+    !ticketOpen &&
+    (focusTab === 'overview' || focusTab === 'transactions');
   const mappedTxRows =
     visibleTxRows.length === 0 ? (
       <EmptyRow text={emptyTxCopy} />
@@ -2173,24 +3343,48 @@ function StoreSnapshotPanel({
       <>
         {isMobile ? null : (
           <View
-            style={[styles.storeTxRow, styles.storeTxHeaderRow]}
-            {...(Platform.OS === 'web' ? { className: 'cgold-home-header-row' } : null)}
+            style={
+              useOverviewTxTable
+                ? [styles.overviewTxRow, styles.overviewTxHeader]
+                : [styles.storeTxRow, styles.storeTxHeaderRow]
+            }
+            {...(Platform.OS === 'web' && !useOverviewTxTable
+              ? { className: 'cgold-home-header-row' }
+              : null)}
           >
             <View style={styles.storeTxRowBody}>
               <Text style={[styles.storeTxHeader, styles.storeTxColPhoto]}>Photo</Text>
-              <Text style={[styles.storeTxHeader, styles.storeTxColKind]}>Type</Text>
-              <Text style={[styles.storeTxHeader, styles.storeTxColCustomer]}>Customer</Text>
-              <Text style={[styles.storeTxHeader, styles.storeTxColRef]}>PO/SO #</Text>
-              <Text style={[styles.storeTxHeader, styles.storeTxColTime]}>Time</Text>
-              <Text style={[styles.storeTxHeader, styles.storeTxColItem]}>Item</Text>
-              <View style={styles.storeTxColEmployee} />
-              <Text style={[styles.storeTxHeader, styles.storeTxColAmount, styles.storeTxHeaderEnd]}>Amount</Text>
+              {useOverviewTxTable ? (
+                OVERVIEW_TX_FILTERS.map((col) => (
+                  <OverviewTxHeaderCell
+                    key={col.key}
+                    label={col.label}
+                    colStyle={styles[col.colStyle]}
+                    active={txColumnFilters[col.key] != null}
+                    end={col.end}
+                    iconOnly={col.iconOnly}
+                    onPress={(anchor) => setOpenTxFilter({ ...col, anchor })}
+                  />
+                ))
+              ) : (
+                <>
+                  <Text style={[styles.storeTxHeader, styles.storeTxColCustomer]}>Customer</Text>
+                  <Text style={[styles.storeTxHeader, styles.storeTxColKind]}>PO/SO</Text>
+                  <Text style={[styles.storeTxHeader, styles.storeTxColNumber]}>Order</Text>
+                  <Text style={[styles.storeTxHeader, styles.storeTxColTime]}>Time</Text>
+                  <Text style={[styles.storeTxHeader, styles.storeTxColItem]}>Item</Text>
+                  <Text style={[styles.storeTxHeader, styles.storeTxColEmployee]}>Employee</Text>
+                  <Text style={[styles.storeTxHeader, styles.storeTxColAmount]}>Amount</Text>
+                </>
+              )}
             </View>
             <View style={styles.storeTxChevron} />
-            <View
-              style={[styles.storeTxRowRule, styles.storeTxHeaderRule]}
-              {...(Platform.OS === 'web' ? { className: 'cgold-home-row-rule' } : null)}
-            />
+            {useOverviewTxTable ? null : (
+              <View
+                style={[styles.storeTxRowRule, styles.storeTxHeaderRule]}
+                {...(Platform.OS === 'web' ? { className: 'cgold-home-row-rule' } : null)}
+              />
+            )}
           </View>
         )}
         {visibleTxRows.map((item, index) => (
@@ -2204,6 +3398,7 @@ function StoreSnapshotPanel({
             employeePerson={employeePersonForTx(item, employeesByName, staff)}
             onAmountHover={onAmountHover}
             stacked={isMobile}
+            boxed={useOverviewTxTable}
           />
         ))}
       </>
@@ -2213,25 +3408,291 @@ function StoreSnapshotPanel({
     !emailCapture || !emailCapture.customerCount ? null : Math.round(Number(emailCapture.rate));
   const phoneRate = phoneRatio?.rate == null ? null : Math.round(Number(phoneRatio.rate));
   const rateToneFor = (rate) => (rate == null ? undefined : rate < 80 ? 'low' : 'ok');
-  const overviewStats = !isMobile ? (
-    <StoreOverviewStats
-      cashLabel={cashLoading && !cashCad ? '…' : cashCad ? formatAmount(cashCad.amount, 'CAD') : '—'}
-      emailLabel={emailRate == null ? '—' : `${emailRate}%`}
-      phoneLabel={phoneRate == null ? '—' : `${phoneRate}%`}
-      bonusLabel={reviewStats?.count == null ? '—' : String(reviewStats.count)}
-      emailTone={rateToneFor(emailRate)}
-      phoneTone={rateToneFor(phoneRate)}
-      onOpenCash={() => onOpenApp?.('financials')}
-      onOpenEmail={() => onOpenApp?.('emails')}
-      onOpenPhone={() => onOpenApp?.('phone')}
-      onOpenBonus={() => onOpenApp?.('reviews')}
+  const dash = (value) => (value == null || value === '' ? '—' : value);
+  const tillLabel = cashLoading && !cashCad ? '…' : cashCad ? formatAmount(cashCad.amount, 'CAD') : '—';
+  const appStatsRows = !isMobile
+    ? focusTab === 'overview'
+      ? [
+          { key: 'cash', icon: 'wallet-outline', label: 'Till', value: tillLabel, onPress: () => onOpenApp?.('financials') },
+          {
+            key: 'email',
+            icon: 'mail-outline',
+            label: 'Email',
+            value: emailRate == null ? '—' : `${emailRate}%`,
+            tone: rateToneFor(emailRate),
+            onPress: () => onOpenApp?.('emails'),
+          },
+          {
+            key: 'phone',
+            icon: 'call-outline',
+            label: 'Phone',
+            value: phoneRate == null ? '—' : `${phoneRate}%`,
+            tone: rateToneFor(phoneRate),
+            onPress: () => onOpenApp?.('phone'),
+          },
+          {
+            key: 'bonus',
+            icon: 'gift-outline',
+            label: 'Bonus',
+            value: reviewStats?.count == null ? '—' : String(reviewStats.count),
+            onPress: () => onOpenApp?.('bonuses'),
+          },
+        ]
+      : focusTab === 'transactions'
+        ? [
+            { key: 'tx', icon: 'swap-horizontal-outline', label: 'Transactions', value: String(store?.txCount || 0) },
+            { key: 'sales', icon: 'arrow-up-outline', label: 'Sales', value: formatAmount(store?.soAmount, 'CAD') },
+            { key: 'purchases', icon: 'arrow-down-outline', label: 'Purchases', value: formatAmount(store?.poAmount, 'CAD') },
+            { key: 'total', icon: 'cash-outline', label: 'Total', value: formatAmount(store?.totalAmount, 'CAD') },
+          ]
+        : focusTab === 'inventory'
+          ? [
+              { key: 'skus', icon: 'cube-outline', label: 'In stock', value: String(inventoryTotals.skus) },
+              { key: 'qty', icon: 'layers-outline', label: 'Quantity', value: inventoryTotals.qty ? formatQty(inventoryTotals.qty) : '—' },
+              {
+                key: 'preorder',
+                icon: 'cart-outline',
+                label: 'Preorder',
+                value: inventoryTotals.preorder ? formatQty(inventoryTotals.preorder) : '—',
+              },
+              {
+                key: 'company',
+                icon: 'business-outline',
+                label: 'All stores',
+                value: inventoryTotals.company ? formatQty(inventoryTotals.company) : '—',
+              },
+            ]
+          : focusTab === 'financials'
+            ? [
+                { key: 'till', icon: 'wallet-outline', label: 'CAD till', value: tillLabel },
+                {
+                  key: 'open',
+                  icon: 'log-in-outline',
+                  label: 'Open',
+                  value: cashCad?.opening == null ? '—' : formatAmount(cashCad.opening, 'CAD'),
+                },
+                {
+                  key: 'today',
+                  icon: 'today-outline',
+                  label: 'Today',
+                  value: cashCad?.moved == null ? '—' : formatAmount(cashCad.moved, 'CAD'),
+                },
+                {
+                  key: 'usd',
+                  icon: 'cash-outline',
+                  label: 'USD till',
+                  value: cash?.usd
+                    ? formatAmount(cash.usd.aureusOnHand ?? cash.usd.expectedOnHand, 'USD')
+                    : '—',
+                },
+              ]
+            : focusTab === 'employees'
+              ? [
+                  { key: 'present', icon: 'people-outline', label: 'On floor', value: String(presentEmployees.length) },
+                  {
+                    key: 'active',
+                    icon: 'swap-horizontal-outline',
+                    label: 'With transactions',
+                    value: String(presentEmployees.filter((person) => person.txCount).length),
+                  },
+                  {
+                    key: 'tickets',
+                    icon: 'receipt-outline',
+                    label: 'Transactions',
+                    value: String(presentEmployees.reduce((sum, person) => sum + (person.txCount || 0), 0)),
+                  },
+                ]
+              : focusTab === 'phone'
+                ? [
+                    { key: 'calls', icon: 'call-outline', label: 'Calls', value: String(phoneCalls.length) },
+                    { key: 'answered', icon: 'checkmark-outline', label: 'Answered', value: dash(phoneRatio?.answered) },
+                    { key: 'missed', icon: 'close-outline', label: 'Missed', value: dash(phoneRatio?.missed) },
+                    {
+                      key: 'rate',
+                      icon: 'trending-up-outline',
+                      label: 'Answer rate',
+                      value: phoneRatio?.ratio || '—',
+                      tone: rateToneFor(phoneRate),
+                    },
+                  ]
+                : focusTab === 'emails'
+                  ? [
+                      {
+                        key: 'rate',
+                        icon: 'mail-outline',
+                        label: 'Capture',
+                        value: emailRate == null ? '—' : `${emailRate}%`,
+                        tone: rateToneFor(emailRate),
+                      },
+                      { key: 'named', icon: 'people-outline', label: 'Customers', value: String(emailCapture?.customerCount || 0) },
+                      { key: 'with', icon: 'checkmark-outline', label: 'With email', value: String(emailCapture?.withEmail || 0) },
+                      { key: 'walk', icon: 'walk-outline', label: 'Walk-in', value: String(emailCapture?.walkInCount || 0) },
+                    ]
+                  : focusTab === 'bonuses'
+                    ? [
+                        { key: 'count', icon: 'gift-outline', label: 'Reviews', value: String(reviewStats?.count || 0) },
+                        {
+                          key: 'avg',
+                          icon: 'star-half-outline',
+                          label: 'Average',
+                          value: reviewStats?.count ? Number(reviewStats.average).toFixed(1) : '—',
+                        },
+                        { key: 'five', icon: 'thumbs-up-outline', label: '5-star', value: String(reviewStats?.fiveStar || 0) },
+                        { key: 'neg', icon: 'thumbs-down-outline', label: 'Negative', value: String(reviewStats?.negative || 0) },
+                      ]
+                    : focusTab === 'preorders'
+                      ? [
+                          { key: 'open', icon: 'cart-outline', label: 'Open', value: '—' },
+                          { key: 'arrived', icon: 'cube-outline', label: 'Arrived', value: '—' },
+                          { key: 'done', icon: 'checkmark-done-outline', label: 'Fulfilled', value: '—' },
+                        ]
+                      : focusTab === 'audit' || focusTab === 'triage'
+                        ? [
+                            { key: 'tx', icon: 'swap-horizontal-outline', label: 'Transactions', value: String(store?.txCount || 0) },
+                            { key: 'sales', icon: 'arrow-up-outline', label: 'Sales', value: formatAmount(store?.soAmount, 'CAD') },
+                            { key: 'purchases', icon: 'arrow-down-outline', label: 'Purchases', value: formatAmount(store?.poAmount, 'CAD') },
+                            { key: 'till', icon: 'wallet-outline', label: 'Till', value: tillLabel },
+                          ]
+                        : focusTab === 'supplies'
+                          ? [
+                              { key: 'recorded', icon: 'bag-handle-outline', label: 'Recorded', value: '0' },
+                              { key: 'open', icon: 'time-outline', label: 'Open', value: '—' },
+                              { key: 'done', icon: 'checkmark-outline', label: 'Received', value: '—' },
+                            ]
+                          : focusTab === 'settings'
+                            ? [
+                                { key: 'phone', icon: 'call-outline', label: 'Phone', value: storeContact.phone || '—' },
+                                { key: 'email', icon: 'mail-outline', label: 'Email', value: storeContact.email || '—' },
+                                { key: 'addr', icon: 'location-outline', label: 'Address', value: storeContact.address || '—' },
+                              ]
+                            : []
+    : [];
+  const overviewStats = appStatsRows.length ? <OverviewStatsTable rows={appStatsRows} /> : null;
+  const transactionsBody = useOverviewTxTable ? (
+    <View style={styles.overviewListWrap}>
+      <View style={styles.overviewListBox}>{mappedTxRows}</View>
+    </View>
+  ) : (
+    mappedTxRows
+  );
+  const storeAppLabel =
+    focusTab === 'overview'
+      ? 'Overview'
+      : SNAPSHOT_APPS[focusTab]?.label || '';
+  const txListToolbar = useOverviewTxTable ? (
+    <View style={styles.overviewListHead}>
+      {focusTab === 'overview' ? (
+        <Text style={styles.overviewListTitle}>Transactions</Text>
+      ) : (
+        <View />
+      )}
+      <View style={styles.overviewSearchField}>
+        <Ionicons name="search-outline" size={17} color={MOBILE.secondary} />
+        <TextInput
+          style={styles.overviewSearchInput}
+          value={txQuery}
+          onChangeText={setTxQuery}
+          placeholder="Search"
+          placeholderTextColor={MOBILE.secondary}
+          autoCapitalize="none"
+          autoCorrect={false}
+          returnKeyType="search"
+          clearButtonMode="while-editing"
+          accessibilityLabel="Search transactions"
+        />
+        {txQuery ? (
+          <Pressable onPress={() => setTxQuery('')} hitSlop={8} accessibilityLabel="Clear search">
+            <Ionicons name="close-circle" size={16} color="#c7c7cc" />
+          </Pressable>
+        ) : null}
+      </View>
+    </View>
+  ) : null;
+  const txFilterMenu = openTxFilter ? (
+    <TxColumnFilterMenu
+      label={openTxFilter.label}
+      options={txColumnOptions[openTxFilter.key] || []}
+      filter={txColumnFilters[openTxFilter.key] ?? null}
+      onChange={(next) => {
+        setTxColumnFilters((current) => ({
+          ...current,
+          [openTxFilter.key]: next,
+        }));
+      }}
+      onClose={() => setOpenTxFilter(null)}
+      anchor={openTxFilter.anchor}
+      alignEnd={openTxFilter.end}
     />
   ) : null;
-  const transactionsBody = (
-    <>
-      {overviewStats}
-      {mappedTxRows}
-    </>
+  const inventoryListToolbar = useOverviewInvTable ? (
+    <View style={styles.overviewListHead}>
+      <View />
+      <View style={styles.overviewSearchCluster}>
+        <View style={styles.overviewSearchField}>
+          <Ionicons name="search-outline" size={17} color={MOBILE.secondary} />
+          <TextInput
+            style={styles.overviewSearchInput}
+            value={inventoryQuery}
+            onChangeText={setInventoryQuery}
+            placeholder="Search"
+            placeholderTextColor={MOBILE.secondary}
+            autoCapitalize="none"
+            autoCorrect={false}
+            returnKeyType="search"
+            clearButtonMode="while-editing"
+            accessibilityLabel="Search inventory"
+          />
+          {inventoryQuery ? (
+            <Pressable onPress={() => setInventoryQuery('')} hitSlop={8} accessibilityLabel="Clear search">
+              <Ionicons name="close-circle" size={16} color="#c7c7cc" />
+            </Pressable>
+          ) : null}
+        </View>
+        <InventoryPriceRefresh
+          compact
+          loading={priceRefreshing}
+          onPress={() => loadPrices({ force: true, silent: false })}
+        />
+      </View>
+    </View>
+  ) : null;
+  const showDesktopStoreHead = !isMobile && !ticketOpen;
+  const overviewHead = !showDesktopStoreHead ? null : selectedItem && useOverviewInvTable ? (
+    <View style={styles.overviewHead}>
+      {selectedItemHead}
+      <View
+        style={styles.overviewHeadRule}
+        {...(Platform.OS === 'web' ? { className: 'cgold-home-row-rule' } : null)}
+      />
+      {inventoryListToolbar}
+    </View>
+  ) : (
+    <View style={styles.overviewHead}>
+      <View style={styles.overviewHeadRow}>
+        <View style={styles.overviewTitleBlock}>
+          <Text style={styles.overviewStoreName} numberOfLines={2}>
+            {storeName}
+          </Text>
+          {focusTab === 'overview' ? (
+            <View style={styles.overviewContactBlock}>
+              <OverviewContactLine icon="location-outline">{storeContact.address}</OverviewContactLine>
+              <OverviewContactLine icon="call-outline">{storeContact.phone}</OverviewContactLine>
+              <OverviewContactLine icon="mail-outline">{storeContact.email}</OverviewContactLine>
+            </View>
+          ) : storeAppLabel ? (
+            <Text style={styles.overviewStoreContact}>{storeAppLabel}</Text>
+          ) : null}
+        </View>
+        {overviewStats}
+      </View>
+      <View
+        style={styles.overviewHeadRule}
+        {...(Platform.OS === 'web' ? { className: 'cgold-home-row-rule' } : null)}
+      />
+      {txListToolbar}
+      {txFilterMenu}
+      {inventoryListToolbar}
+    </View>
   );
 
   const openSnapshot = useCallback(
@@ -2270,10 +3731,19 @@ function StoreSnapshotPanel({
   const listBody = embeddedApp ? (
     <View style={styles.dashSheetApp}>{embeddedApp}</View>
   ) : listTab === 'inventory' ? (
-    <>
-      <InventorySearch value={inventoryQuery} onChangeText={setInventoryQuery} />
-      {inventoryBody}
-    </>
+    useOverviewInvTable ? (
+      inventoryBody
+    ) : (
+      <>
+        <InventorySearch
+          value={inventoryQuery}
+          onChangeText={setInventoryQuery}
+          refreshing={priceRefreshing}
+          onRefresh={() => loadPrices({ force: true, silent: false })}
+        />
+        {inventoryBody}
+      </>
+    )
   ) : listTab === 'financials' ? (
     financialsBody
   ) : listTab === 'employees' ? (
@@ -2285,11 +3755,23 @@ function StoreSnapshotPanel({
       periodLabel={periodLabel}
       ready={ready}
       full
+      boxed={useDesktopAppTable}
     />
   ) : listTab === 'phone' ? (
-    <PhoneSnapshotBody calls={phoneCalls} periodLabel={periodLabel} ratio={phoneRatio} />
+    <PhoneSnapshotBody
+      calls={phoneCalls}
+      periodLabel={periodLabel}
+      ratio={phoneRatio}
+      boxed={useDesktopAppTable}
+    />
   ) : listTab === 'supplies' ? (
-    <EmptyRow text={`No supplies recorded for ${storeName || 'this store'}.`} />
+    useDesktopAppTable ? (
+      <SnapshotTable columns={SUPPLY_TABLE_COLS}>
+        <EmptyRow boxed text={`No supplies recorded for ${storeName || 'this store'}.`} />
+      </SnapshotTable>
+    ) : (
+      <EmptyRow text={`No supplies recorded for ${storeName || 'this store'}.`} />
+    )
   ) : (
     transactionsBody
   );
@@ -2328,7 +3810,12 @@ function StoreSnapshotPanel({
           {transactionsBody}
         </View>
       ) : (
-        <DashSection title={listTitle} meta={listMeta} fill hideHead={!isMobile && listTab === 'transactions'}>
+        <DashSection
+          title={listTitle}
+          meta={listMeta}
+          fill
+          hideHead={Boolean(selectedItem) || !isMobile}
+        >
           {listBody}
         </DashSection>
       )}
@@ -2457,11 +3944,6 @@ function StoreSnapshotPanel({
           />
         ) : null}
         {desktopHeader}
-        {hoursSummary ? (
-          <Text style={styles.storeHoursLine} numberOfLines={2}>
-            {hoursSummary}
-          </Text>
-        ) : null}
         <View
           style={styles.storeHomeStage}
           onLayout={(event) => {
@@ -2486,7 +3968,10 @@ function StoreSnapshotPanel({
             {...tabBarScroll}
             {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll' } : null)}
           >
-            <View style={styles.storeHomeSheetPadDesktop}>{sheetLists}</View>
+            <View style={styles.storeHomeSheetPadDesktop}>
+              {overviewHead}
+              {sheetLists}
+            </View>
           </ScrollView>
         </View>
         <TxnCashBreakdownModal
@@ -2580,7 +4065,9 @@ export default memo(
     prev.appsOpen === next.appsOpen &&
     prev.onAppsOpenChange === next.onAppsOpenChange &&
     prev.embeddedApp === next.embeddedApp &&
-    prev.transactionTicket === next.transactionTicket,
+    prev.transactionTicket === next.transactionTicket &&
+    prev.onSelectedItemChange === next.onSelectedItemChange &&
+    prev.inventoryCloseRef === next.inventoryCloseRef,
 );
 
 const styles = StyleSheet.create({
@@ -2920,29 +4407,486 @@ const styles = StyleSheet.create({
   storeHomeHeroStatOk: {
     color: '#15803D',
   },
-  overviewStats: {
-    marginBottom: 20,
+  overviewHead: {
+    marginBottom: 8,
+    paddingTop: 20,
+    paddingHorizontal: 48,
   },
-  overviewStatsBody: {
+  overviewTxTabHead: {
+    marginBottom: 8,
+    paddingTop: 20,
+    paddingHorizontal: 48,
+  },
+  overviewHeadRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 24,
+    paddingBottom: 32,
+  },
+  overviewTitleBlock: {
     flex: 1,
     minWidth: 0,
+    paddingTop: 4,
+    gap: 10,
+  },
+  overviewStoreName: {
+    fontFamily: titleFontFamily,
+    fontSize: 22,
+    lineHeight: 26,
+    fontWeight: '300',
+    color: MOBILE.label,
+    letterSpacing: -0.3,
+    textAlign: 'left',
+  },
+  overviewContactBlock: {
+    gap: 6,
+  },
+  overviewContactLine: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    maxWidth: 420,
+  },
+  overviewStoreContact: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.15,
+  },
+  overviewHeadRule: {
+    alignSelf: 'stretch',
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(42,38,30,0.16)',
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  overviewListHead: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 28,
-    marginLeft: 10,
-    paddingRight: 28,
+    justifyContent: 'space-between',
+    gap: 16,
+    paddingTop: 32,
+    paddingBottom: 8,
   },
-  overviewStatsCol: {
+  overviewListTitle: {
+    flexShrink: 0,
+    fontFamily: titleFontFamily,
+    fontSize: 16,
+    fontWeight: '300',
+    color: MOBILE.label,
+    letterSpacing: -0.2,
+  },
+  overviewSearchCluster: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 0,
+  },
+  overviewSearchField: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    height: 32,
+    minHeight: 32,
+    width: 300,
+    maxWidth: 340,
+    paddingHorizontal: 10,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
+    ...CHIP_SHADOW,
+  },
+  overviewSearchInput: {
     flex: 1,
     minWidth: 0,
+    height: 30,
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: MOBILE.label,
+    paddingVertical: 0,
+    letterSpacing: -0.2,
+    ...Platform.select({
+      web: { outlineStyle: 'none' },
+      default: {},
+    }),
+  },
+  overviewListWrap: {
+    paddingHorizontal: 48,
+  },
+  overviewListBox: {
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
+    overflow: 'hidden',
+    ...CHIP_SHADOW,
+  },
+  overviewTxRow: {
+    position: 'relative',
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 46,
+    paddingVertical: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(42,38,30,0.08)',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  overviewTxHeader: {
+    minHeight: 34,
+    ...Platform.select({
+      web: { cursor: 'default' },
+      default: {},
+    }),
+  },
+  overviewTxRowLast: {
+    borderBottomWidth: 0,
+  },
+  inventoryTxRow: {
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  itemBody: {
+    paddingBottom: 24,
+  },
+  itemHeadMobileWrap: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
+  itemHeadRowMobile: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 16,
+    paddingBottom: 8,
+  },
+  itemKicker: {
+    alignSelf: 'flex-start',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  itemKickerText: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '500',
+    color: SECONDARY,
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+  },
+  itemStatsPair: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    flexShrink: 0,
+  },
+  itemStatsPairMobile: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+  },
+  itemStatsBox: {
+    width: 272,
+  },
+  itemStatsBoxMobile: {
+    width: '100%',
+  },
+  itemStatsRow: {
+    alignItems: 'flex-start',
+    ...Platform.select({
+      web: { cursor: 'default' },
+      default: {},
+    }),
+  },
+  itemStatsLead: {
+    flex: 1,
+    alignItems: 'flex-start',
+    paddingTop: 1,
+  },
+  itemStatsLabel: {
+    flexShrink: 1,
+  },
+  itemStatsTrail: {
+    flexShrink: 1,
+    maxWidth: '62%',
+    alignItems: 'flex-end',
+  },
+  itemStatsSub: {
+    fontFamily,
+    fontSize: 11,
+    lineHeight: 14,
+    color: SECONDARY,
+    letterSpacing: -0.1,
+    fontVariant: ['tabular-nums'],
+    textAlign: 'right',
+  },
+  itemStaticRow: {
+    ...Platform.select({
+      web: { cursor: 'default' },
+      default: {},
+    }),
+  },
+  itemStoreList: {
+    borderRadius: 12,
+    overflow: 'hidden',
+    backgroundColor: '#fff',
+  },
+  itemStoreHere: {
+    fontWeight: '600',
+  },
+  itemListHeadMobile: {
+    paddingHorizontal: 16,
+    paddingTop: 20,
+  },
+  itemListMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  itemListMeta: {
+    fontFamily,
+    fontSize: 13,
+    color: SECONDARY,
+    fontVariant: ['tabular-nums'],
+  },
+  appColMain: {
+    flex: 1.6,
+    minWidth: 120,
+    flexShrink: 1,
+  },
+  appColWide: {
+    flex: 1.8,
+    minWidth: 140,
+    flexShrink: 1,
+  },
+  appColMid: {
+    flex: 1,
+    minWidth: 88,
+    flexShrink: 1,
+  },
+  appColEnd: {
+    width: 96,
+    flexShrink: 0,
+    textAlign: 'right',
+  },
+  invColItem: {
+    flex: 1.6,
+    minWidth: 140,
+    flexShrink: 1,
+  },
+  invColBuy: {
+    width: 122,
+    flexShrink: 0,
+  },
+  invColSell: {
+    width: 122,
+    flexShrink: 0,
+  },
+  invColQty: {
+    width: 64,
+    flexShrink: 0,
+    textAlign: 'right',
+  },
+  invColPreorder: {
+    width: 80,
+    flexShrink: 0,
+    textAlign: 'right',
+  },
+  invPreorderOver: {
+    color: GREEN,
+    fontWeight: '600',
+  },
+  invMobilePreorder: {
+    marginRight: 4,
+  },
+  overviewTxFilterCell: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexShrink: 0,
+    paddingRight: 2,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  overviewTxFilterLabel: {
+    flexShrink: 0,
+  },
+  overviewTxFilterCellEnd: {
+    justifyContent: 'flex-end',
+  },
+  overviewTxFilterCellHover: {
+    opacity: 0.72,
+  },
+  overviewTxFilterLabelActive: {
+    color: MOBILE.label,
+    fontWeight: '600',
+  },
+  txFilterModalRoot: {
+    flex: 1,
+  },
+  txFilterBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'transparent',
+  },
+  txFilterMenu: {
+    position: 'absolute',
+    width: TX_FILTER_MENU_WIDTH,
+    maxHeight: TX_FILTER_MENU_MAX_HEIGHT,
+    backgroundColor: CANVAS,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    overflow: 'hidden',
+    zIndex: 40,
+    ...CHIP_SHADOW,
+    ...Platform.select({
+      web: { boxShadow: '0 8px 24px rgba(0,0,0,0.12)' },
+      default: { elevation: 8 },
+    }),
+  },
+  txFilterField: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    margin: 8,
+    height: 28,
+    paddingHorizontal: 8,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
+  },
+  txFilterFieldInput: {
+    flex: 1,
+    minWidth: 0,
+    height: 26,
+    fontFamily,
+    fontSize: 13,
+    color: '#1d1d1f',
+    paddingVertical: 0,
+    ...Platform.select({
+      web: { outlineStyle: 'none' },
+      default: {},
+    }),
+  },
+  txFilterActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingBottom: 6,
+    gap: 6,
+  },
+  txFilterActionText: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#1d1d1f',
+  },
+  txFilterActionDisabled: {
+    color: '#c0c0c0',
+  },
+  txFilterActionSep: {
+    fontFamily,
+    fontSize: 11,
+    color: '#d0d0d0',
+  },
+  txFilterList: {
+    maxHeight: 196,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(42,38,30,0.08)',
+  },
+  txFilterOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    minHeight: 28,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  txFilterOptionText: {
+    fontFamily,
+    fontSize: 13,
+    color: '#1d1d1f',
+    letterSpacing: -0.2,
+    flex: 1,
+  },
+  txFilterEmpty: {
+    fontFamily,
+    fontSize: 12,
+    color: '#8a8a8a',
+    textAlign: 'center',
+    paddingVertical: 16,
+  },
+  overviewStatsBox: {
+    width: 248,
+    flexShrink: 0,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
+    overflow: 'hidden',
+    ...CHIP_SHADOW,
+  },
+  overviewStatsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    minHeight: 32,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(42,38,30,0.08)',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  overviewStatsRowLast: {
+    borderBottomWidth: 0,
+  },
+  overviewStatsRowHover: {
+    backgroundColor: '#f5f5f5',
+  },
+  overviewStatsLead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minWidth: 0,
+    flexShrink: 1,
+  },
+  overviewStatsLabel: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.2,
   },
   overviewStatsValue: {
-    fontFamily: titleFontFamily,
+    fontFamily,
     fontSize: 14,
     lineHeight: 18,
     fontWeight: '400',
     color: MOBILE.label,
     letterSpacing: -0.2,
+    fontVariant: ['tabular-nums'],
+    textAlign: 'right',
   },
   storeHomeSheet: {
     backgroundColor: 'transparent',
@@ -3085,7 +5029,7 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 28,
+    gap: 20,
     marginLeft: 10,
     paddingRight: 28,
   },
@@ -3101,9 +5045,9 @@ const styles = StyleSheet.create({
     opacity: 0,
   },
   storeTxColPhoto: {
-    width: 36,
+    width: 48,
     flexShrink: 0,
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'center',
     zIndex: 2,
     ...Platform.select({ web: { pointerEvents: 'auto' }, default: {} }),
@@ -3114,64 +5058,41 @@ const styles = StyleSheet.create({
     borderRadius: 7,
     backgroundColor: 'rgba(42,38,30,0.06)',
   },
-  storeTxColKind: {
-    width: 28,
-    flexShrink: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  storeTxKind: {
-    width: 22,
-    height: 18,
-    borderRadius: 4,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#2F6FED',
-  },
-  storeTxKindBuy: {
-    backgroundColor: '#C47A12',
-  },
-  storeTxKindText: {
-    fontFamily,
-    fontSize: 8,
-    fontWeight: '700',
-    color: '#fff',
-    letterSpacing: 0.2,
-  },
-  storeTxKindTextBuy: {
-    color: '#fff',
-  },
   storeTxColCustomer: {
-    flexGrow: 1,
+    flex: 1.2,
+    minWidth: 108,
     flexShrink: 1,
-    minWidth: 120,
-    maxWidth: 220,
   },
-  storeTxColRef: {
+  storeTxColKind: {
+    width: 78,
+    flexShrink: 0,
+  },
+  storeTxColNumber: {
     width: 88,
-    flexShrink: 1,
-    minWidth: 72,
+    flexShrink: 0,
   },
   storeTxColTime: {
-    width: 76,
+    width: 72,
     flexShrink: 0,
   },
   storeTxColEmployee: {
-    width: 32,
-    flexShrink: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  storeTxColItem: {
-    flex: 1.2,
-    minWidth: 100,
-  },
-  storeTxColAmount: {
-    width: 120,
+    width: 128,
     flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'flex-end',
+    justifyContent: 'flex-start',
+    gap: 8,
+  },
+  storeTxColItem: {
+    flex: 1,
+    minWidth: 72,
+  },
+  storeTxColAmount: {
+    width: 96,
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
     gap: 6,
     zIndex: 2,
     ...Platform.select({ web: { pointerEvents: 'auto' }, default: {} }),
@@ -3202,13 +5123,14 @@ const styles = StyleSheet.create({
     letterSpacing: -0.1,
   },
   storeTxAmount: {
-    fontFamily,
+    fontFamily: titleFontFamily,
     fontSize: 14,
     lineHeight: 18,
-    fontWeight: '600',
+    fontWeight: '300',
     color: MOBILE.label,
     letterSpacing: -0.2,
     fontVariant: ['tabular-nums'],
+    textAlign: 'left',
   },
   desktopTxRow: {
     flexDirection: 'row',
@@ -3336,15 +5258,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontFamily,
     fontSize: 12,
-    fontWeight: '500',
-    color: SECONDARY,
-    letterSpacing: 0,
-  },
-  storeHoursLine: {
-    paddingHorizontal: 48,
-    paddingBottom: 8,
-    fontFamily,
-    fontSize: 13,
     fontWeight: '500',
     color: SECONDARY,
     letterSpacing: 0,
@@ -4173,6 +6086,40 @@ const styles = StyleSheet.create({
     fontFamily,
     fontWeight: '700',
     color: '#1D4ED8',
+  },
+  inventorySearchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginRight: 12,
+  },
+  inventorySearchField: {
+    flex: 1,
+    marginHorizontal: 0,
+    marginLeft: 12,
+  },
+  inventoryRefresh: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: SEPARATOR,
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  inventoryRefreshCompact: {
+    width: 32,
+    height: 32,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
+    ...CHIP_SHADOW,
+  },
+  inventoryRefreshHover: {
+    opacity: 0.72,
   },
   searchField: {
     flexDirection: 'row',
