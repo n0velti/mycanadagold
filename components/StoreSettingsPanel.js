@@ -12,7 +12,8 @@ import {
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
-import { useIsMobile } from '../lib/mobileUi';
+import { CANVAS, MOBILE, NAV_TAB_ACTIVE_RADIUS, useIsMobile } from '../lib/mobileUi';
+import { FONT_LIGHT } from '../lib/typography';
 import { IosActionRow, IosGroup, IosPage, IosRow, IosSwitch } from './IosSettings';
 import {
   canManageStoreSettings,
@@ -33,6 +34,22 @@ const fontFamily = Platform.select({
   default: 'Sohne',
 });
 
+const LABEL = MOBILE.label;
+const SECONDARY = '#8e8e93';
+const TAB_BORDER = '#d0d0d0';
+const ROW_RULE = 'rgba(42,38,30,0.08)';
+const BLUE = '#007AFF';
+const CHIP_SHADOW = Platform.select({
+  web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
+  default: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+});
+
 function timeToDate(value) {
   const match = String(value || '10:00').match(/^(\d{1,2}):(\d{2})/);
   const date = new Date();
@@ -45,9 +62,50 @@ function dateToTime(date) {
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
 
-function AccessToggle({ on, disabled, onPress }) {
-  const isMobile = useIsMobile();
+function webFieldStyle(isMobile, quiet) {
+  if (quiet) {
+    return {
+      fontFamily,
+      fontSize: 14,
+      color: LABEL,
+      border: 'none',
+      borderRadius: 0,
+      padding: 0,
+      background: 'transparent',
+      minWidth: isMobile ? 78 : 86,
+      outline: 'none',
+      letterSpacing: '-0.2px',
+    };
+  }
   if (isMobile) {
+    return {
+      fontFamily,
+      fontSize: 17,
+      color: BLUE,
+      border: 'none',
+      borderRadius: 0,
+      padding: 0,
+      background: 'transparent',
+      minWidth: 86,
+      outline: 'none',
+    };
+  }
+  return {
+    fontFamily,
+    fontSize: 13,
+    color: '#1a1a1a',
+    border: '1px solid #d0d0d0',
+    borderRadius: 6,
+    padding: '6px 8px',
+    background: '#fff',
+    minWidth: 108,
+    outline: 'none',
+  };
+}
+
+function AccessToggle({ on, disabled, onPress, quiet = false }) {
+  const isMobile = useIsMobile();
+  if (isMobile && !quiet) {
     return <IosSwitch on={on} disabled={disabled} onPress={onPress} />;
   }
 
@@ -56,21 +114,36 @@ function AccessToggle({ on, disabled, onPress }) {
       onPress={onPress}
       disabled={disabled}
       hitSlop={6}
-      style={[styles.toggleTrack, on && styles.toggleTrackOn, disabled && styles.toggleDisabled]}
+      style={[
+        styles.toggleTrack,
+        quiet && styles.toggleTrackQuiet,
+        on && (quiet ? styles.toggleTrackQuietOn : styles.toggleTrackOn),
+        disabled && styles.toggleDisabled,
+      ]}
       accessibilityRole="switch"
       accessibilityState={{ checked: on, disabled }}
     >
-      <View style={[styles.toggleThumb, on && styles.toggleThumbOn]} />
+      <View
+        style={[
+          styles.toggleThumb,
+          quiet && styles.toggleThumbQuiet,
+          on && styles.toggleThumbOn,
+        ]}
+      />
     </Pressable>
   );
 }
 
-function TimeField({ value, onChange, disabled }) {
+function TimeField({ value, onChange, disabled, quiet = false }) {
   const isMobile = useIsMobile();
   const [open, setOpen] = useState(false);
 
   if (disabled) {
-    return <Text style={[styles.timeDisabled, isMobile && styles.iosTimeSep]}>{formatClock(value)}</Text>;
+    return (
+      <Text style={[quiet ? styles.quietValue : styles.timeDisabled, isMobile && !quiet && styles.iosTimeSep]}>
+        {formatClock(value)}
+      </Text>
+    );
   }
 
   if (Platform.OS === 'web') {
@@ -81,24 +154,14 @@ function TimeField({ value, onChange, disabled }) {
       onChange: (event) => {
         if (event.target.value) onChange(event.target.value.slice(0, 5));
       },
-      style: {
-        fontFamily,
-        fontSize: isMobile ? 17 : 13,
-        color: isMobile ? '#007AFF' : '#1a1a1a',
-        border: isMobile ? 'none' : '1px solid #d0d0d0',
-        borderRadius: isMobile ? 0 : 6,
-        padding: isMobile ? '0' : '6px 8px',
-        background: isMobile ? 'transparent' : '#fff',
-        minWidth: isMobile ? 86 : 108,
-        outline: 'none',
-      },
+      style: webFieldStyle(isMobile, quiet),
     });
   }
 
   return (
     <>
-      <Pressable style={styles.timeChip} onPress={() => setOpen(true)}>
-        <Text style={styles.timeChipText}>{formatClock(value)}</Text>
+      <Pressable style={quiet ? styles.quietChip : styles.timeChip} onPress={() => setOpen(true)}>
+        <Text style={quiet ? styles.quietValue : styles.timeChipText}>{formatClock(value)}</Text>
       </Pressable>
       {Platform.OS === 'android' && open ? (
         <DateTimePicker
@@ -138,12 +201,12 @@ function TimeField({ value, onChange, disabled }) {
   );
 }
 
-function DateField({ value, onChange, disabled }) {
+function DateField({ value, onChange, disabled, quiet = false }) {
   const [open, setOpen] = useState(false);
   const dateValue = parseDateParam(value || new Date());
 
   if (disabled) {
-    return <Text style={styles.timeDisabled}>{value ? formatPickerDate(dateValue) : '—'}</Text>;
+    return <Text style={quiet ? styles.quietValue : styles.timeDisabled}>{value ? formatPickerDate(dateValue) : '—'}</Text>;
   }
 
   if (Platform.OS === 'web') {
@@ -151,24 +214,28 @@ function DateField({ value, onChange, disabled }) {
       type: 'date',
       value: value || '',
       onChange: (event) => onChange(event.target.value),
-      style: {
-        fontFamily,
-        fontSize: 13,
-        color: '#1a1a1a',
-        border: '1px solid #d0d0d0',
-        borderRadius: 6,
-        padding: '6px 8px',
-        background: '#fff',
-        minWidth: 140,
-      },
+      style: quiet
+        ? { ...webFieldStyle(false, true), minWidth: 128, textAlign: 'right' }
+        : {
+            fontFamily,
+            fontSize: 13,
+            color: '#1a1a1a',
+            border: '1px solid #d0d0d0',
+            borderRadius: 6,
+            padding: '6px 8px',
+            background: '#fff',
+            minWidth: 140,
+          },
     });
   }
 
   return (
     <>
-      <Pressable style={styles.timeChip} onPress={() => setOpen(true)}>
-        <Ionicons name="calendar-outline" size={14} color="#6b6b6b" />
-        <Text style={styles.timeChipText}>{value ? formatPickerDate(dateValue) : 'Date'}</Text>
+      <Pressable style={quiet ? styles.quietChip : styles.timeChip} onPress={() => setOpen(true)}>
+        {quiet ? null : <Ionicons name="calendar-outline" size={14} color="#6b6b6b" />}
+        <Text style={quiet ? styles.quietValue : styles.timeChipText}>
+          {value ? formatPickerDate(dateValue) : 'Date'}
+        </Text>
       </Pressable>
       {Platform.OS === 'android' && open ? (
         <DateTimePicker
@@ -205,6 +272,226 @@ function DateField({ value, onChange, disabled }) {
         </Modal>
       ) : null}
     </>
+  );
+}
+
+function SectionHead({ title, meta, action, actionDisabled, onAction, first = false }) {
+  return (
+    <View style={[styles.sectionHead, first && styles.sectionHeadFirst]}>
+      <Text style={styles.sectionTitle}>{title}</Text>
+      <View style={styles.sectionTrail}>
+        {meta ? (
+          <Text style={styles.sectionMeta} numberOfLines={1}>
+            {meta}
+          </Text>
+        ) : null}
+        {onAction ? (
+          <Pressable
+            onPress={onAction}
+            disabled={actionDisabled}
+            hitSlop={8}
+            style={({ hovered, pressed }) => [
+              styles.sectionAction,
+              (hovered || pressed) && styles.sectionActionHover,
+              actionDisabled && styles.sectionActionDisabled,
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={action}
+          >
+            <Text style={styles.sectionActionText}>{action}</Text>
+          </Pressable>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
+function SettingsBox({ children }) {
+  return <View style={styles.listBox}>{children}</View>;
+}
+
+function SettingsRow({ last, children, onPress }) {
+  const inner = (
+    <View style={[styles.listRow, last && styles.listRowLast]}>
+      {children}
+    </View>
+  );
+  if (!onPress) return inner;
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ hovered, pressed }) => [
+        styles.listRow,
+        last && styles.listRowLast,
+        (hovered || pressed) && styles.listRowHover,
+      ]}
+      accessibilityRole="button"
+    >
+      {children}
+    </Pressable>
+  );
+}
+
+function StoreHoursOverview({
+  storeName,
+  hours,
+  holidays,
+  draftHoliday,
+  setDraftHoliday,
+  canEdit,
+  saving,
+  unavailable,
+  error,
+  message,
+  onBack,
+  onUpdateDay,
+  onAddHoliday,
+  onRemoveHoliday,
+  onSave,
+}) {
+  const isMobile = useIsMobile();
+  const hoursSummary = summarizeHours(hours, storeName);
+
+  return (
+    <ScrollView
+      style={styles.overviewBody}
+      contentContainerStyle={[styles.overviewContent, isMobile && styles.overviewContentMobile]}
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
+    >
+      {onBack ? (
+        <Pressable style={styles.backRow} onPress={onBack} accessibilityRole="button" accessibilityLabel="All stores">
+          <Ionicons name="chevron-back" size={16} color={LABEL} />
+          <Text style={styles.backText}>All stores</Text>
+        </Pressable>
+      ) : null}
+
+      <SectionHead
+        first
+        title="Hours"
+        meta={!canEdit ? hoursSummary : undefined}
+        action={canEdit && !unavailable ? (saving ? 'Saving…' : 'Save') : undefined}
+        actionDisabled={saving}
+        onAction={canEdit && !unavailable ? onSave : undefined}
+      />
+      {canEdit && hoursSummary ? <Text style={styles.sectionHint}>{hoursSummary}</Text> : null}
+      <SettingsBox>
+        {hours.map((row, index) => (
+          <SettingsRow key={row.day} last={index === hours.length - 1}>
+            <Text style={styles.rowLabel}>{WEEKDAY_LABELS[row.day]}</Text>
+            <View style={styles.rowTrail}>
+              {row.closed ? (
+                <Text style={styles.rowMuted}>Closed</Text>
+              ) : (
+                <View style={styles.timePair}>
+                  <TimeField
+                    value={row.open}
+                    disabled={!canEdit}
+                    quiet
+                    onChange={(open) => onUpdateDay(row.day, { open })}
+                  />
+                  <Text style={styles.timeSep}>–</Text>
+                  <TimeField
+                    value={row.close}
+                    disabled={!canEdit}
+                    quiet
+                    onChange={(close) => onUpdateDay(row.day, { close })}
+                  />
+                </View>
+              )}
+              {canEdit ? (
+                <AccessToggle
+                  quiet
+                  on={!row.closed}
+                  onPress={() => onUpdateDay(row.day, { closed: !row.closed })}
+                />
+              ) : null}
+            </View>
+          </SettingsRow>
+        ))}
+      </SettingsBox>
+
+      <SectionHead title="Holidays" />
+      <SettingsBox>
+        {holidays.length === 0 && !canEdit ? (
+          <SettingsRow last>
+            <Text style={styles.rowMuted}>No holidays</Text>
+          </SettingsRow>
+        ) : null}
+        {holidays.map((row, index) => (
+          <SettingsRow key={row.id} last={!canEdit && index === holidays.length - 1}>
+            <View style={styles.rowTextWrap}>
+              <Text style={styles.rowLabel}>{row.name}</Text>
+              <Text style={styles.rowSub}>
+                {formatPickerDate(row.date)}
+                {row.closed ? ' · Closed' : ` · ${formatClock(row.open)}–${formatClock(row.close)}`}
+              </Text>
+            </View>
+            {canEdit ? (
+              <Pressable onPress={() => onRemoveHoliday(row.id)} hitSlop={8} accessibilityLabel="Remove holiday">
+                <Ionicons name="trash-outline" size={16} color={SECONDARY} />
+              </Pressable>
+            ) : null}
+          </SettingsRow>
+        ))}
+        {canEdit ? (
+          <>
+            <View style={[styles.listRow, styles.addNameRow]}>
+              <TextInput
+                style={styles.addNameInput}
+                value={draftHoliday.name}
+                onChangeText={(name) => setDraftHoliday((current) => ({ ...current, name }))}
+                placeholder="Holiday name"
+                placeholderTextColor={SECONDARY}
+              />
+            </View>
+            <SettingsRow>
+              <Text style={styles.rowMuted}>Date</Text>
+              <DateField
+                value={draftHoliday.date}
+                quiet
+                onChange={(date) => setDraftHoliday((current) => ({ ...current, date }))}
+              />
+            </SettingsRow>
+            <SettingsRow
+              onPress={() => setDraftHoliday((current) => ({ ...current, closed: !current.closed }))}
+            >
+              <Text style={styles.rowMuted}>Closed</Text>
+              <AccessToggle
+                quiet
+                on={draftHoliday.closed}
+                onPress={() => setDraftHoliday((current) => ({ ...current, closed: !current.closed }))}
+              />
+            </SettingsRow>
+            {draftHoliday.closed ? null : (
+              <SettingsRow>
+                <Text style={styles.rowMuted}>Hours</Text>
+                <View style={styles.timePair}>
+                  <TimeField
+                    value={draftHoliday.open}
+                    quiet
+                    onChange={(open) => setDraftHoliday((current) => ({ ...current, open }))}
+                  />
+                  <Text style={styles.timeSep}>–</Text>
+                  <TimeField
+                    value={draftHoliday.close}
+                    quiet
+                    onChange={(close) => setDraftHoliday((current) => ({ ...current, close }))}
+                  />
+                </View>
+              </SettingsRow>
+            )}
+            <SettingsRow last onPress={onAddHoliday}>
+              <Text style={styles.addAction}>Add to list</Text>
+            </SettingsRow>
+          </>
+        ) : null}
+      </SettingsBox>
+
+      {!canEdit ? <Text style={styles.sectionHint}>A branch manager or admin can change hours for this store.</Text> : null}
+      {error ? <Text style={styles.errorText}>{error}</Text> : null}
+      {message ? <Text style={styles.savedText}>{message}</Text> : null}
+    </ScrollView>
   );
 }
 
@@ -303,12 +590,12 @@ function StoreHoursEditor({ session, storeName, onBack, embedded = false }) {
   if (loading) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator color="#1a1a1a" />
+        <ActivityIndicator color={LABEL} />
       </View>
     );
   }
 
-  if (isMobile) {
+  if (isMobile && !embedded) {
     return (
       <IosPage>
         {onBack ? (
@@ -454,140 +741,23 @@ function StoreHoursEditor({ session, storeName, onBack, embedded = false }) {
   }
 
   return (
-    <ScrollView
-      style={[styles.body, embedded && styles.bodyEmbedded]}
-      contentContainerStyle={[styles.content, embedded && styles.contentEmbedded]}
-    >
-      {onBack ? (
-        <Pressable style={styles.backRow} onPress={onBack}>
-          <Ionicons name="chevron-back" size={16} color="#1a1a1a" />
-          <Text style={styles.backText}>All stores</Text>
-        </Pressable>
-      ) : null}
-
-      <Text style={styles.storeTitle}>{storeName}</Text>
-      <Text style={styles.intro}>
-        {summarizeHours(hours, storeName) ||
-          'Regular weekly hours, then dates the store is closed or on a shortened schedule.'}
-      </Text>
-
-      <Text style={styles.sectionTitle}>Hours</Text>
-      <View style={styles.hoursCard}>
-        {hours.map((row) => (
-          <View key={row.day} style={styles.hourRow}>
-            <Text style={styles.dayLabel}>{WEEKDAY_LABELS[row.day]}</Text>
-            <View style={styles.hourControls}>
-              <Text style={[styles.closedLabel, !row.closed && styles.closedLabelOn]}>Open</Text>
-              <AccessToggle
-                on={!row.closed}
-                disabled={!canEdit}
-                onPress={() => updateDay(row.day, { closed: !row.closed })}
-              />
-              {row.closed ? (
-                <Text style={styles.closedHint}>Closed all day</Text>
-              ) : (
-                <View style={styles.timePair}>
-                  <TimeField
-                    value={row.open}
-                    disabled={!canEdit}
-                    onChange={(open) => updateDay(row.day, { open })}
-                  />
-                  <Text style={styles.timeSep}>–</Text>
-                  <TimeField
-                    value={row.close}
-                    disabled={!canEdit}
-                    onChange={(close) => updateDay(row.day, { close })}
-                  />
-                </View>
-              )}
-            </View>
-          </View>
-        ))}
-      </View>
-
-      <Text style={[styles.sectionTitle, styles.sectionSpaced]}>Holidays</Text>
-      {holidays.length === 0 ? (
-        <Text style={styles.hint}>No holidays yet. Add statutory days or company closures.</Text>
-      ) : (
-        holidays.map((row) => (
-          <View key={row.id} style={styles.holidayRow}>
-            <View style={styles.menuTextWrap}>
-              <Text style={styles.menuLabel}>{row.name}</Text>
-              <Text style={styles.hint}>
-                {formatPickerDate(row.date)}
-                {row.closed
-                  ? ' · Closed'
-                  : ` · ${formatClock(row.open)}–${formatClock(row.close)}`}
-              </Text>
-            </View>
-            {canEdit ? (
-              <Pressable onPress={() => removeHoliday(row.id)} hitSlop={8} accessibilityLabel="Remove holiday">
-                <Ionicons name="trash-outline" size={16} color="#8a8a8a" />
-              </Pressable>
-            ) : null}
-          </View>
-        ))
-      )}
-
-      {canEdit ? (
-        <View style={styles.addHoliday}>
-          <Text style={styles.addHolidayLabel}>Add holiday</Text>
-          <TextInput
-            style={styles.nameInput}
-            value={draftHoliday.name}
-            onChangeText={(name) => setDraftHoliday((current) => ({ ...current, name }))}
-            placeholder="Christmas Day"
-            placeholderTextColor="#999"
-          />
-          <View style={styles.addHolidayMeta}>
-            <DateField
-              value={draftHoliday.date}
-              onChange={(date) => setDraftHoliday((current) => ({ ...current, date }))}
-            />
-            <View style={styles.holidayClosed}>
-              <Text style={styles.closedLabel}>Closed</Text>
-              <AccessToggle
-                on={draftHoliday.closed}
-                onPress={() =>
-                  setDraftHoliday((current) => ({ ...current, closed: !current.closed }))
-                }
-              />
-            </View>
-            {draftHoliday.closed ? null : (
-              <View style={styles.timePair}>
-                <TimeField
-                  value={draftHoliday.open}
-                  onChange={(open) => setDraftHoliday((current) => ({ ...current, open }))}
-                />
-                <Text style={styles.timeSep}>–</Text>
-                <TimeField
-                  value={draftHoliday.close}
-                  onChange={(close) => setDraftHoliday((current) => ({ ...current, close }))}
-                />
-              </View>
-            )}
-          </View>
-          <Pressable style={styles.secondaryButton} onPress={addHoliday}>
-            <Text style={styles.secondaryButtonText}>Add to list</Text>
-          </Pressable>
-        </View>
-      ) : (
-        <Text style={styles.hint}>A branch manager or admin can change hours for this store.</Text>
-      )}
-
-      {error ? <Text style={styles.errorText}>{error}</Text> : null}
-      {message ? <Text style={styles.savedText}>{message}</Text> : null}
-
-      {canEdit && !unavailable ? (
-        <Pressable
-          style={[styles.saveButton, saving && styles.saveButtonDisabled]}
-          onPress={handleSave}
-          disabled={saving}
-        >
-          {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveButtonText}>Save</Text>}
-        </Pressable>
-      ) : null}
-    </ScrollView>
+    <StoreHoursOverview
+      storeName={storeName}
+      hours={hours}
+      holidays={holidays}
+      draftHoliday={draftHoliday}
+      setDraftHoliday={setDraftHoliday}
+      canEdit={canEdit}
+      saving={saving}
+      unavailable={unavailable}
+      error={error}
+      message={message}
+      onBack={onBack}
+      onUpdateDay={updateDay}
+      onAddHoliday={addHoliday}
+      onRemoveHoliday={removeHoliday}
+      onSave={handleSave}
+    />
   );
 }
 
@@ -653,12 +823,12 @@ export default function StoreSettingsPanel({ session, storeName, embedded = fals
   if (loading) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator color="#1a1a1a" />
+        <ActivityIndicator color={LABEL} />
       </View>
     );
   }
 
-  if (isMobile) {
+  if (isMobile && !embedded) {
     return (
       <IosPage>
         <IosGroup
@@ -690,71 +860,72 @@ export default function StoreSettingsPanel({ session, storeName, embedded = fals
   }
 
   return (
-    <ScrollView style={[styles.body, embedded && styles.bodyEmbedded]} contentContainerStyle={styles.content}>
-      <Text style={styles.intro}>Choose a store to set weekly hours and holidays.</Text>
-      {stores.length === 0 ? (
-        <Text style={styles.hint}>No stores found. Sign in and confirm locations are loading.</Text>
-      ) : (
-        <View style={styles.menuList}>
-          {stores.map((store) => (
-            <Pressable
+    <ScrollView
+      style={styles.overviewBody}
+      contentContainerStyle={[styles.overviewContent, isMobile && styles.overviewContentMobile]}
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
+    >
+      <SectionHead first title="Stores" />
+      <Text style={styles.sectionHint}>Choose a store to set weekly hours and holidays.</Text>
+      <SettingsBox>
+        {stores.length === 0 ? (
+          <SettingsRow last>
+            <Text style={styles.rowMuted}>No stores found. Sign in and confirm locations are loading.</Text>
+          </SettingsRow>
+        ) : (
+          stores.map((store, index) => (
+            <SettingsRow
               key={store.storeKey}
-              style={styles.menuRow}
+              last={index === stores.length - 1}
               onPress={() => setSelectedName(store.storeName)}
             >
-              <View style={[styles.menuIcon, { backgroundColor: '#FFF4E5' }]}>
-                <Ionicons name="storefront-outline" size={16} color="#C47A12" />
-              </View>
-              <View style={styles.menuTextWrap}>
-                <Text style={styles.menuLabel}>{store.storeName}</Text>
-                <Text style={styles.hint}>
+              <View style={styles.rowTextWrap}>
+                <Text style={styles.rowLabel}>{store.storeName}</Text>
+                <Text style={styles.rowSub}>
                   {[store.systemLabel, summarizeHours(store.hours, store.storeName) || (store.exists ? '' : 'Hours not set')]
                     .filter(Boolean)
                     .join(' · ')}
                 </Text>
               </View>
-              <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
-            </Pressable>
-          ))}
-        </View>
-      )}
+              <Ionicons name="chevron-forward" size={16} color={SECONDARY} />
+            </SettingsRow>
+          ))
+        )}
+      </SettingsBox>
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
-      {unavailable ? <Text style={styles.hint}>Hours will save after the database migration is applied.</Text> : null}
+      {unavailable ? <Text style={styles.sectionHint}>Hours will save after the database migration is applied.</Text> : null}
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  body: {
+  overviewBody: {
     flex: 1,
     minHeight: 0,
-    marginTop: 20,
     alignSelf: 'stretch',
   },
-  bodyEmbedded: {
-    marginTop: 0,
-  },
-  content: {
+  overviewContent: {
+    paddingTop: 20,
+    paddingHorizontal: 48,
     paddingBottom: 40,
-    maxWidth: 640,
   },
-  contentEmbedded: {
+  overviewContentMobile: {
     paddingTop: 8,
+    paddingHorizontal: 16,
     paddingBottom: 28,
-    maxWidth: '100%',
   },
   centered: {
     flex: 1,
     minHeight: 120,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 20,
   },
   backRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 2,
-    marginBottom: 12,
+    marginBottom: 8,
     alignSelf: 'flex-start',
     ...Platform.select({
       web: { cursor: 'pointer' },
@@ -763,80 +934,139 @@ const styles = StyleSheet.create({
   },
   backText: {
     fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#1a1a1a',
+    fontSize: 14,
+    fontWeight: '400',
+    color: LABEL,
+    letterSpacing: -0.2,
   },
-  storeTitle: {
-    fontFamily,
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#1a1a1a',
-    marginBottom: 6,
+  sectionHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 16,
+    paddingTop: 32,
+    paddingBottom: 8,
   },
-  intro: {
-    fontFamily,
-    fontSize: 13,
-    color: '#6b6b6b',
-    marginBottom: 20,
-    lineHeight: 18,
+  sectionHeadFirst: {
+    paddingTop: 12,
   },
   sectionTitle: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#1a1a1a',
-    marginBottom: 8,
+    flexShrink: 0,
+    fontFamily: FONT_LIGHT,
+    fontSize: 16,
+    fontWeight: '300',
+    color: LABEL,
+    letterSpacing: -0.2,
   },
-  sectionSpaced: {
-    marginTop: 28,
+  sectionTrail: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    minWidth: 0,
+    flexShrink: 1,
   },
-  hint: {
-    fontFamily,
-    fontSize: 12,
-    color: '#8a8a8a',
-    marginTop: 2,
-    lineHeight: 17,
-  },
-  hoursCard: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e5e5e5',
-    borderRadius: 8,
-    backgroundColor: '#fff',
-    overflow: 'hidden',
-  },
-  hourRow: {
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#efefef',
-    gap: 8,
-  },
-  dayLabel: {
+  sectionMeta: {
+    flexShrink: 1,
+    minWidth: 0,
     fontFamily,
     fontSize: 13,
-    fontWeight: '600',
-    color: '#1a1a1a',
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.15,
   },
-  hourControls: {
+  sectionAction: {
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  sectionActionHover: {
+    opacity: 0.7,
+  },
+  sectionActionDisabled: {
+    opacity: 0.45,
+  },
+  sectionActionText: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: BLUE,
+    letterSpacing: -0.2,
+  },
+  sectionHint: {
+    fontFamily,
+    fontSize: 13,
+    lineHeight: 18,
+    color: SECONDARY,
+    letterSpacing: -0.15,
+    marginBottom: 10,
+  },
+  listBox: {
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
+    overflow: 'hidden',
+    ...CHIP_SHADOW,
+  },
+  listRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
     alignItems: 'center',
-    gap: 10,
+    justifyContent: 'space-between',
+    gap: 12,
+    minHeight: 46,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: ROW_RULE,
+    ...Platform.select({
+      web: { cursor: 'default' },
+      default: {},
+    }),
   },
-  closedLabel: {
+  listRowLast: {
+    borderBottomWidth: 0,
+  },
+  listRowHover: {
+    backgroundColor: '#f5f5f5',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  rowLabel: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: LABEL,
+    letterSpacing: -0.2,
+  },
+  rowMuted: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.2,
+  },
+  rowSub: {
     fontFamily,
     fontSize: 12,
-    color: '#6b6b6b',
+    lineHeight: 16,
+    color: SECONDARY,
+    letterSpacing: -0.1,
+    marginTop: 2,
   },
-  closedLabelOn: {
-    color: '#1a1a1a',
-    fontWeight: '600',
+  rowTextWrap: {
+    flex: 1,
+    minWidth: 0,
   },
-  closedHint: {
-    fontFamily,
-    fontSize: 12,
-    color: '#8a8a8a',
+  rowTrail: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flexShrink: 0,
   },
   timePair: {
     flexDirection: 'row',
@@ -845,8 +1075,61 @@ const styles = StyleSheet.create({
   },
   timeSep: {
     fontFamily,
+    fontSize: 14,
+    color: SECONDARY,
+  },
+  quietValue: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: LABEL,
+    letterSpacing: -0.2,
+    fontVariant: ['tabular-nums'],
+  },
+  quietChip: {
+    paddingVertical: 2,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  addNameRow: {
+    ...Platform.select({
+      web: { cursor: 'text' },
+      default: {},
+    }),
+  },
+  addNameInput: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: LABEL,
+    paddingVertical: 0,
+    letterSpacing: -0.2,
+    outlineStyle: 'none',
+  },
+  addAction: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: BLUE,
+    letterSpacing: -0.2,
+  },
+  errorText: {
+    fontFamily,
     fontSize: 13,
-    color: '#8a8a8a',
+    color: '#B91C1C',
+    marginTop: 12,
+    letterSpacing: -0.15,
+  },
+  savedText: {
+    fontFamily,
+    fontSize: 13,
+    color: '#15803D',
+    marginTop: 12,
+    letterSpacing: -0.15,
   },
   timeChip: {
     flexDirection: 'row',
@@ -868,145 +1151,6 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 13,
     color: '#6b6b6b',
-  },
-  holidayRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e5e5e5',
-    borderRadius: 8,
-    padding: 12,
-    backgroundColor: '#fff',
-    marginBottom: 8,
-    gap: 10,
-  },
-  addHoliday: {
-    marginTop: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e5e5e5',
-    borderRadius: 8,
-    padding: 12,
-    backgroundColor: '#fafafa',
-    gap: 10,
-  },
-  addHolidayLabel: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#1a1a1a',
-  },
-  nameInput: {
-    fontFamily,
-    fontSize: 13,
-    color: '#1a1a1a',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#d0d0d0',
-    borderRadius: 6,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    backgroundColor: '#fff',
-    outlineStyle: 'none',
-  },
-  addHolidayMeta: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    alignItems: 'center',
-    gap: 10,
-  },
-  holidayClosed: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  menuList: {
-    gap: 10,
-  },
-  menuRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e5e5e5',
-    borderRadius: 8,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    backgroundColor: '#fff',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  menuIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  menuTextWrap: {
-    flex: 1,
-    minWidth: 0,
-  },
-  menuLabel: {
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1a1a1a',
-  },
-  secondaryButton: {
-    alignSelf: 'flex-start',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#d0d0d0',
-    borderRadius: 6,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    backgroundColor: '#fff',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  secondaryButtonText: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#1a1a1a',
-  },
-  errorText: {
-    fontFamily,
-    fontSize: 12,
-    color: '#b42318',
-    marginTop: 12,
-  },
-  savedText: {
-    fontFamily,
-    fontSize: 12,
-    color: '#2F8A4E',
-    marginTop: 12,
-  },
-  saveButton: {
-    marginTop: 16,
-    backgroundColor: '#1a1a1a',
-    borderRadius: 6,
-    paddingVertical: 10,
-    alignItems: 'center',
-    minHeight: 40,
-    justifyContent: 'center',
-    alignSelf: 'flex-start',
-    paddingHorizontal: 24,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  saveButtonDisabled: {
-    opacity: 0.7,
-  },
-  saveButtonText: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#fff',
   },
   iosTimePair: {
     flexDirection: 'row',
@@ -1047,8 +1191,17 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
+  toggleTrackQuiet: {
+    width: 36,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: 'rgba(118, 118, 128, 0.24)',
+  },
   toggleTrackOn: {
     backgroundColor: '#1a1a1a',
+  },
+  toggleTrackQuietOn: {
+    backgroundColor: LABEL,
   },
   toggleThumb: {
     width: 20,
@@ -1056,6 +1209,11 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     backgroundColor: '#fff',
     alignSelf: 'flex-start',
+  },
+  toggleThumbQuiet: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
   },
   toggleThumbOn: {
     alignSelf: 'flex-end',

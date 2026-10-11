@@ -8,7 +8,7 @@ import TriageDashboardPanel, { ERROR_LIST_SORTS } from './TriageDashboardPanel';
 import TriageDeletedPanel from './TriageDeletedPanel';
 import TriageInsightsPanel from './TriageInsightsPanel';
 import { canViewTriageInsights } from '../lib/permissions';
-import { BarButton, ChromeBackRow, FONT, SearchField, SegmentedSlider, T, TriageErrorBoundary } from './TriageKit';
+import { BarButton, FONT, SearchField, SegmentedSlider, T, TriageErrorBoundary } from './TriageKit';
 import {
   MobileFeedAddButton,
   MobileFeedOutlineButton,
@@ -17,7 +17,17 @@ import {
 import { ensureLinkedPosSessions } from '../lib/auth';
 import { fetchTransferStores } from '../lib/locations';
 import { expandMobileTabBar } from '../lib/mobileTabBar';
-import { CANVAS, DESKTOP_TOP_BAR_HEIGHT, useIsMobile } from '../lib/mobileUi';
+import {
+  CANVAS,
+  DESKTOP_TOP_BAR_HEIGHT,
+  MOBILE,
+  MOBILE_FEED_TOP_BAR_HEIGHT,
+  NAV_ICON_ACTIVE,
+  NAV_ICON_INACTIVE,
+  NAV_TAB_ACTIVE_BG,
+  NAV_TAB_ACTIVE_RADIUS,
+  useIsMobile,
+} from '../lib/mobileUi';
 import {
   buildDailyReceiptGrid,
   dailyReceiptStatus,
@@ -57,6 +67,56 @@ const DASH_PAGE_LABELS = {
   lots: 'Lots',
   return: 'Expected Return',
 };
+
+const TRIAGE_RAIL = [
+  { key: 'overview', label: 'Overview', icon: 'storefront-outline' },
+  { key: 'lots', label: 'Lots', icon: 'layers-outline' },
+  { key: 'errors', label: 'Errors', icon: 'alert-circle-outline' },
+  { key: 'analytics', label: 'Analytics', icon: 'analytics-outline' },
+];
+const RAIL_WIDTH = 176;
+const TAB_ICON_SIZE = 17;
+
+function filledIonicon(name) {
+  return typeof name === 'string' && name.endsWith('-outline') ? name.slice(0, -8) : name;
+}
+
+function TriageRailTab({ tab, selected, onPress }) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <Pressable
+      onPress={onPress}
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
+      style={({ hovered: pressHovered, pressed }) => [
+        styles.railTab,
+        (hovered || pressHovered || pressed) && !selected && styles.railTabHover,
+        selected && styles.railTabActive,
+      ]}
+      accessibilityRole="button"
+      accessibilityState={{ selected }}
+      accessibilityLabel={tab.label}
+    >
+      <View style={styles.railTabGlyph}>
+        <Ionicons
+          name={selected ? filledIonicon(tab.icon) : tab.icon}
+          size={TAB_ICON_SIZE}
+          color={selected ? NAV_ICON_ACTIVE : NAV_ICON_INACTIVE}
+        />
+      </View>
+      <Text
+        style={[
+          styles.railTabLabel,
+          hovered && !selected && styles.railTabLabelHover,
+          selected && styles.railTabLabelActive,
+        ]}
+        numberOfLines={1}
+      >
+        {tab.label}
+      </Text>
+    </Pressable>
+  );
+}
 
 function triagePageTitle({ dashPage, activeTab, resultsLotId, storesView }) {
   if (dashPage === 'errors') return 'Errors';
@@ -333,16 +393,7 @@ export default function TriageScreen({
   }, [batchContext]);
 
   const trailing =
-    session?.token && activeTab === 'transfers' && !inBatch && dashPage === 'stores' ? (
-      null
-    ) : session?.token && activeTab === 'transfers' && !inBatch && dashPage === 'errors' ? (
-      <>
-        <ErrorFilterButton value={errorSort} onChange={setErrorSort} />
-        {searchField}
-      </>
-    ) : session?.token && activeTab === 'transfers' && !inBatch && (dashPage === 'lots' || dashPage === 'analytics') ? (
-      searchField
-    ) : session?.token && activeTab === 'transfers' && !inBatch ? (
+    session?.token && activeTab === 'transfers' && !inBatch && (isMobile || embedded) && !dashPage ? (
       <>
         {searchField}
         {scanButton()}
@@ -438,19 +489,6 @@ export default function TriageScreen({
     storesNavRef.current?.closeRegion?.();
   }, [activeTab, dashPage, resultsLotId]);
 
-  const backLabel =
-    resultsLotId || activeTab === 'accuracy'
-      ? 'Lots'
-      : activeTab === 'deleted'
-        ? storesView.selectedStore || storesView.selectedRegionLabel || 'Triage'
-        : dashPage === 'stores' && storesView.selectedStore
-          ? 'Stores'
-          : dashPage
-            ? storesView.selectedStore || storesView.selectedRegionLabel || 'Stores'
-            : storesView.selectedStore || storesView.selectedRegion
-              ? 'Stores'
-              : 'Back';
-
   const goDashboard = useCallback(() => {
     storesNavRef.current?.closeRegion?.();
     leaveStoreRef.current?.();
@@ -461,6 +499,72 @@ export default function TriageScreen({
     setAccuracyBreakdownOpen(false);
     setDailyOpen(false);
   }, []);
+
+  const storeOpen = Boolean(storesView.selectedStore);
+  const showDesktopRail =
+    Boolean(session?.token) && !isMobile && !embedded && !inBatch && storeOpen && activeTab === 'transfers';
+  const railKey =
+    activeTab === 'accuracy' || resultsLotId
+      ? 'lots'
+      : dashPage === 'errors' || dashPage === 'analytics' || dashPage === 'lots'
+        ? dashPage
+        : 'overview';
+
+  const selectRail = useCallback((key) => {
+    setAccuracyBreakdownOpen(false);
+    setDailyOpen(false);
+    setListQuery('');
+    setResultsLotId('');
+    setAccuracyTab('all');
+    setActiveTab('transfers');
+    setDashPage(key === 'overview' ? '' : key);
+  }, []);
+
+  const contentInsetTop = embedded
+    ? 0
+    : isMobile
+      ? MOBILE_FEED_TOP_BAR_HEIGHT
+      : DESKTOP_TOP_BAR_HEIGHT + 12;
+
+  const desktopToolbar =
+    session?.token && !isMobile && !embedded && activeTab === 'transfers' && !inBatch && (!storeOpen || dashPage) ? (
+      <View style={[styles.tableToolbar, storeOpen && styles.overviewToolbar]}>
+        <SearchField
+          value={listQuery}
+          onChangeText={setListQuery}
+          placeholder={
+            dashPage === 'errors'
+              ? 'PO / person'
+              : dashPage === 'lots'
+                ? storesView.selectedLot
+                  ? 'PO / person'
+                  : 'Lot'
+                : dashPage === 'analytics'
+                  ? 'Search'
+                  : 'Store'
+          }
+          style={styles.tableSearch}
+        />
+        {dashPage === 'errors' ? (
+          <ErrorFilterButton value={errorSort} onChange={setErrorSort} />
+        ) : null}
+        <View style={styles.tableToolbarGrow} />
+        {!storeOpen && canAdd ? (
+          <Pressable
+            onPress={() => openScanRef.current()}
+            style={({ hovered, pressed }) => [
+              styles.tableAdd,
+              (hovered || pressed) && styles.tableAddHover,
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="Add a PO"
+          >
+            <Ionicons name="add-circle-outline" size={TAB_ICON_SIZE} color="#1F8A4E" />
+            <Text style={styles.tableAddLabel}>Add</Text>
+          </Pressable>
+        ) : null}
+      </View>
+    ) : null;
 
   useEffect(() => {
     if (!onCrumbsChange) return undefined;
@@ -489,7 +593,6 @@ export default function TriageScreen({
         onPress:
           dashPage || activeTab !== 'transfers' || resultsLotId
             ? () => {
-                storesNavRef.current?.closeStore?.();
                 setActiveTab('transfers');
                 setDashPage('');
                 setResultsLotId('');
@@ -523,15 +626,19 @@ export default function TriageScreen({
       return undefined;
     }
 
-    if (pageLabel) {
-      const storeOpen = dashPage === 'stores' && storesView.selectedStore;
+    if (pageLabel && dashPage !== 'stores') {
       crumbs.push({
         label: pageLabel,
-        onPress: storeOpen ? () => storesNavRef.current?.closeStore?.() : undefined,
+        onPress: storesView.selectedLot
+          ? () => {
+              storesNavRef.current?.closeLot?.();
+              setListQuery('');
+            }
+          : undefined,
       });
     }
-    if (dashPage === 'stores' && storesView.selectedStore) {
-      crumbs.push({ label: storesView.selectedStore });
+    if (storesView.selectedLotLabel) {
+      crumbs.push({ label: storesView.selectedLotLabel });
     }
 
     onCrumbsChange(crumbs);
@@ -548,6 +655,8 @@ export default function TriageScreen({
     storesView.selectedRegion,
     storesView.selectedRegionLabel,
     storesView.selectedStore,
+    storesView.selectedLot,
+    storesView.selectedLotLabel,
   ]);
 
   useEffect(() => () => onCrumbsChange?.([]), [onCrumbsChange]);
@@ -555,6 +664,10 @@ export default function TriageScreen({
   useEffect(() => {
     if (storesView.selectedStore) setListQuery('');
   }, [storesView.selectedStore]);
+
+  useEffect(() => {
+    if (storesView.selectedLot) setListQuery('');
+  }, [storesView.selectedLot]);
 
   useEffect(() => {
     if (dashPage && dashPage !== 'lots' && dashPage !== 'errors' && dashPage !== 'analytics') {
@@ -664,19 +777,46 @@ export default function TriageScreen({
         styles.body,
         embedded && styles.bodyEmbedded,
         isMobile && styles.bodyMobile,
-        !isMobile && !embedded && styles.bodyUnderTopBar,
+        showDesktopRail && styles.bodyDesktopRail,
       ]}
     >
-      <View style={styles.pageVisible}>
-      {isMobile ? null : leadTools || trailing ? (
-        <View style={styles.deskChrome}>
-          <View style={styles.deskChromeStart}>{leadTools}</View>
-          {trailing ? <View style={styles.deskChromeEnd}>{trailing}</View> : null}
+      {showDesktopRail ? (
+        <View style={[styles.rail, { paddingTop: DESKTOP_TOP_BAR_HEIGHT + 12 }]}>
+          {TRIAGE_RAIL.map((tab) => (
+            <TriageRailTab
+              key={tab.key}
+              tab={tab}
+              selected={railKey === tab.key}
+              onPress={() => selectRail(tab.key)}
+            />
+          ))}
+          <View style={styles.railGrow} />
+          {canAdd ? (
+            <View style={styles.railFooter}>
+              <Pressable
+                onPress={() => openScanRef.current()}
+                style={({ hovered, pressed }) => [
+                  styles.railAdd,
+                  (hovered || pressed) && styles.railAddHover,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Add a PO"
+              >
+                <Ionicons name="add-circle-outline" size={TAB_ICON_SIZE} color="#1F8A4E" />
+                <Text style={styles.railAddLabel}>Add</Text>
+              </Pressable>
+            </View>
+          ) : null}
         </View>
       ) : null}
 
-      {canGoBack && !inBatch && !isMobile ? (
-        <ChromeBackRow label={backLabel} onPress={goBack} />
+      <View style={styles.feed}>
+      <View style={styles.pageVisible}>
+      {isMobile ? null : leadTools || trailing ? (
+        <View style={[styles.deskChrome, !embedded && styles.deskChromeOverlay]} pointerEvents="box-none">
+          <View style={styles.deskChromeStart}>{leadTools}</View>
+          {trailing ? <View style={styles.deskChromeEnd}>{trailing}</View> : null}
+        </View>
       ) : null}
 
       <View style={activeTab === 'transfers' ? styles.pageVisible : styles.pageHidden}>
@@ -691,7 +831,7 @@ export default function TriageScreen({
           onStoresViewChange={setStoresView}
           storesNavRef={storesNavRef}
           onOpenLot={(lotId) => {
-            setDashPage('');
+            setDashPage('lots');
             setActiveTab('accuracy');
             setResultsLotId(lotId || '');
             setListQuery('');
@@ -699,6 +839,9 @@ export default function TriageScreen({
           }}
           onReviewOpenChange={isMobile ? setReviewOpen : undefined}
           errorSort={errorSort}
+          desktopRail={showDesktopRail}
+          insetTop={contentInsetTop}
+          toolbar={desktopToolbar}
         />
       </View>
 
@@ -719,6 +862,7 @@ export default function TriageScreen({
             setAccuracyTab('all');
           }}
           onBackChange={handleBackChange}
+          insetTop={contentInsetTop}
         />
       ) : activeTab === 'deleted' ? (
         <TriageDeletedPanel
@@ -728,6 +872,7 @@ export default function TriageScreen({
           storeName={storesView.selectedStore}
         />
       ) : null}
+      </View>
       </View>
 
       {session?.token ? (
@@ -768,12 +913,179 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: '100%',
   },
-  bodyUnderTopBar: {
-    paddingTop: DESKTOP_TOP_BAR_HEIGHT,
+  bodyDesktopRail: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+  rail: {
+    width: RAIL_WIDTH,
+    flexShrink: 0,
+    justifyContent: 'flex-start',
+    alignItems: 'stretch',
+    paddingBottom: 12,
+    gap: 2,
+    backgroundColor: CANVAS,
+    borderRightWidth: StyleSheet.hairlineWidth,
+    borderRightColor: 'rgba(42,38,30,0.08)',
+  },
+  railGrow: {
+    flex: 1,
+    minHeight: 12,
+  },
+  railFooter: {
+    paddingTop: 10,
+    paddingBottom: 4,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(42,38,30,0.08)',
+  },
+  railAdd: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    height: 32,
+    minHeight: 32,
+    marginHorizontal: 8,
+    paddingHorizontal: 12,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: '#d0d0d0',
+    backgroundColor: CANVAS,
+    ...Platform.select({
+      web: { cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.06,
+        shadowRadius: 2,
+        elevation: 1,
+      },
+    }),
+  },
+  railAddHover: {
+    backgroundColor: '#f5f5f5',
+  },
+  railAddLabel: {
+    fontFamily: FONT,
+    fontSize: 14,
+    fontWeight: '400',
+    color: '#1F8A4E',
+    letterSpacing: -0.2,
+  },
+  tableToolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'center',
+    width: '100%',
+    maxWidth: 960,
+    marginHorizontal: 16,
+    gap: 12,
+    paddingTop: 4,
+    paddingBottom: 14,
+  },
+  overviewToolbar: {
+    alignSelf: 'stretch',
+    maxWidth: '100%',
+    marginHorizontal: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
+  },
+  tableToolbarGrow: {
+    flex: 1,
+    minWidth: 0,
+  },
+  tableSearch: {
+    width: 320,
+    maxWidth: 400,
+    flexGrow: 0,
+  },
+  tableAdd: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    height: 32,
+    minHeight: 32,
+    paddingHorizontal: 18,
+    paddingVertical: 0,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: '#d0d0d0',
+    backgroundColor: CANVAS,
+    ...Platform.select({
+      web: { cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.06,
+        shadowRadius: 2,
+        elevation: 1,
+      },
+    }),
+  },
+  tableAddHover: {
+    backgroundColor: '#f5f5f5',
+  },
+  tableAddLabel: {
+    fontFamily: FONT,
+    fontSize: 14,
+    fontWeight: '400',
+    color: '#1F8A4E',
+    letterSpacing: -0.2,
+  },
+  railTab: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'stretch',
+    minHeight: 36,
+    marginHorizontal: 10,
+    paddingVertical: 7,
+    paddingHorizontal: 6,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    overflow: 'visible',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  railTabHover: {
+    backgroundColor: '#f5f5f5',
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+  },
+  railTabActive: {
+    borderWidth: 1,
+    borderColor: '#d0d0d0',
+    backgroundColor: NAV_TAB_ACTIVE_BG,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+  },
+  railTabGlyph: {
+    width: 26,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 8,
+    flexShrink: 0,
+  },
+  railTabLabel: {
+    fontFamily: FONT,
+    fontSize: 14,
+    fontWeight: '400',
+    color: MOBILE.secondary,
+    letterSpacing: -0.2,
+    flexShrink: 1,
+  },
+  railTabLabelHover: {
+    color: MOBILE.label,
+  },
+  railTabLabelActive: {
+    color: '#3A3A3C',
+  },
+  feed: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 0,
+    position: 'relative',
   },
   tabSearch: {
-    width: 220,
-    maxWidth: 220,
+    width: 280,
+    maxWidth: 320,
   },
   homeStoreSearch: {
     width: 148,
@@ -807,6 +1119,16 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
     backgroundColor: 'transparent',
   },
+  deskChromeOverlay: {
+    position: 'absolute',
+    top: DESKTOP_TOP_BAR_HEIGHT + 6,
+    right: 16,
+    left: 16,
+    paddingHorizontal: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
+    zIndex: 30,
+  },
   deskChromeStart: {
     flexShrink: 1,
     minWidth: 0,
@@ -831,16 +1153,16 @@ const styles = StyleSheet.create({
   },
   filterMenu: {
     position: 'absolute',
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
     borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: T.hairline,
+    borderWidth: 1,
+    borderColor: '#d0d0d0',
     paddingVertical: 4,
     shadowColor: '#000',
-    shadowOpacity: 0.12,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 8,
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
   },
   filterOption: {
     minHeight: 40,
@@ -890,17 +1212,17 @@ const styles = StyleSheet.create({
     maxWidth: 520,
   },
   chromeStatsHit: {
-    minHeight: 40,
+    minHeight: 32,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     maxWidth: 360,
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: '#fff',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: T.hairline,
+    borderRadius: 6,
+    backgroundColor: CANVAS,
+    borderWidth: 1,
+    borderColor: '#d0d0d0',
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},

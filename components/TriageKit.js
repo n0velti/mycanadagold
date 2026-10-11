@@ -31,6 +31,8 @@ import {
   MOBILE_ICON_COL_WIDTH,
   MOBILE_ROW_BODY_LEADING,
   MOBILE_TOP_FILTER_SIZE,
+  NAV_TAB_ACTIVE_BG,
+  NAV_TAB_ACTIVE_RADIUS,
   mobileSafeTop,
   useIsMobile,
 } from '../lib/mobileUi';
@@ -88,6 +90,17 @@ export const DRAWER_OPEN_MS = 280;
 export const DRAWER_CLOSE_MS = 220;
 
 const webCursor = Platform.select({ web: { cursor: 'pointer' }, default: {} });
+const CHIP_SHADOW = Platform.select({
+  web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
+  default: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+});
+const TAB_BORDER = '#d0d0d0';
 
 /** Ask before a destructive action; uses window.confirm on web, Alert elsewhere. */
 export function confirmDestructive(title, message, onConfirm, confirmLabel = 'Delete') {
@@ -967,7 +980,14 @@ export function ChromeHero({
 }) {
   const isMobile = useIsMobile();
   const body = (
-    <View style={[styles.chromeHeroHome, isMobile && styles.chromeHeroHomeMobile, wide && styles.chromeHeroHomeWide]}>
+    <View
+      style={[
+        styles.chromeHeroHome,
+        isMobile && styles.chromeHeroHomeMobile,
+        !isMobile && styles.chromeHeroHomeDesktop,
+        wide && styles.chromeHeroHomeWide,
+      ]}
+    >
       <View style={styles.chromeHeroHomeMain}>
         <Text
           style={[styles.chromeHeroHomeAmount, isMobile && styles.chromeHeroHomeAmountMobile]}
@@ -1060,24 +1080,18 @@ export const ChromeListRow = memo(function ChromeListRow({
   extra,
   loading = false,
 }) {
-  const isMobile = useIsMobile();
   const iconTile = leading || (
     <View style={[styles.chromeRowIcon, { backgroundColor: iconColor }]}>
-      <Ionicons name={icon} size={isMobile ? 21 : 22} color="#fff" />
+      <Ionicons name={icon} size={21} color="#fff" />
     </View>
-  );
-  const iconNode = isMobile ? (
-    <View style={styles.chromeRowIconWrap}>{iconTile}</View>
-  ) : (
-    iconTile
   );
   const chevronNode =
     onPress && chevron ? (
-      <View style={isMobile ? styles.chromeRowChevronMobile : null}>
+      <View style={styles.chromeRowChevron}>
         <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
       </View>
     ) : (
-      <View style={isMobile ? styles.chromeRowChevronMobile : styles.chromeRowChevron} />
+      <View style={styles.chromeRowChevron} />
     );
 
   return (
@@ -1086,80 +1100,41 @@ export const ChromeListRow = memo(function ChromeListRow({
       disabled={!onPress}
       style={({ hovered, pressed }) => [
         styles.chromeRow,
-        isMobile && styles.chromeRowMobile,
         (hovered || pressed) && onPress && styles.chromeRowHover,
       ]}
       accessibilityRole={onPress ? 'button' : undefined}
       accessibilityLabel={loading ? `${title}, loading` : value ? `${title}, ${value}` : title}
       {...(Platform.OS === 'web' && onPress ? { className: 'cgold-triage-btn' } : null)}
     >
-      {iconNode}
-      <View
-        style={[
-          styles.chromeRowBody,
-          isMobile && styles.chromeRowBodyMobile,
-          !isMobile && !last && styles.chromeRowDivider,
-        ]}
-      >
-        {isMobile ? (
-          <>
-            <View style={styles.chromeRowMain}>
-              <View style={styles.chromeRowCopyMobile}>
-                <Text style={styles.chromeRowTitleMobile} numberOfLines={1}>
-                  {title}
-                </Text>
-                {meta ? (
-                  <Text style={styles.chromeRowMetaMobile} numberOfLines={1}>
-                    {meta}
-                  </Text>
-                ) : null}
-              </View>
-              {loading || (value != null && value !== '') ? (
-                <View style={styles.chromeRowTrailingMobile}>
-                  {value != null && value !== '' ? (
-                    <Text style={styles.chromeRowValueMobile} numberOfLines={1}>
-                      {value}
-                    </Text>
-                  ) : null}
-                  {loading ? <ActivityIndicator size="small" color={T.secondary} /> : null}
-                </View>
-              ) : null}
-              {trailing}
-              {chevronNode}
-            </View>
-            {extra ? <View style={styles.chromeRowExtra}>{extra}</View> : null}
-          </>
-        ) : (
-          <>
-            <View style={styles.chromeRowCopy}>
-              <Text style={styles.chromeRowTitle} numberOfLines={1}>
-                {title}
+      <View style={styles.chromeRowIconWrap}>{iconTile}</View>
+      <View style={styles.chromeRowBody}>
+        <View style={styles.chromeRowMain}>
+          <View style={styles.chromeRowCopy}>
+            <Text style={styles.chromeRowTitle} numberOfLines={1}>
+              {title}
+            </Text>
+            {meta ? (
+              <Text style={styles.chromeRowMeta} numberOfLines={1}>
+                {meta}
               </Text>
-              {meta ? (
-                <Text style={styles.chromeRowMeta} numberOfLines={1}>
-                  {meta}
+            ) : null}
+          </View>
+          {loading || (value != null && value !== '') ? (
+            <View style={styles.chromeRowTrailing}>
+              {value != null && value !== '' ? (
+                <Text style={styles.chromeRowValue} numberOfLines={1}>
+                  {value}
                 </Text>
               ) : null}
-              {extra}
+              {loading ? <ActivityIndicator size="small" color={T.secondary} /> : null}
             </View>
-            {loading || (value != null && value !== '') ? (
-              <View style={styles.chromeRowTrailingLoad}>
-                {value != null && value !== '' ? (
-                  <Text style={styles.chromeRowValue} numberOfLines={1}>
-                    {value}
-                  </Text>
-                ) : null}
-                {loading ? (
-                  <ActivityIndicator size="small" color={T.secondary} style={styles.chromeRowValueSpinner} />
-                ) : null}
-              </View>
-            ) : null}
-            {trailing}
-            {chevronNode}
-          </>
-        )}
+          ) : null}
+          {trailing}
+          {chevronNode}
+        </View>
+        {extra ? <View style={styles.chromeRowExtra}>{extra}</View> : null}
       </View>
-      {isMobile && !last ? <View style={styles.chromeRowRule} pointerEvents="none" /> : null}
+      {!last ? <View style={styles.chromeRowRule} pointerEvents="none" /> : null}
     </Pressable>
   );
 });
@@ -1191,6 +1166,7 @@ export function ChromePage({
   footer,
   tableHeader,
   filterPad = false,
+  insetTop = 0,
   data,
   renderItem,
   keyExtractor,
@@ -1198,7 +1174,7 @@ export function ChromePage({
 }) {
   const isMobile = useIsMobile();
   const tabBarScroll = useMobileTabBarScrollProps();
-  const topPad = filterPad ? MOBILE_TOP_FILTER_SIZE + MOBILE_FILTER_INSET : 0;
+  const topPad = (filterPad ? MOBILE_TOP_FILTER_SIZE + MOBILE_FILTER_INSET : 0) + (Number(insetTop) || 0);
   const useVirtualList = isMobile && Array.isArray(data) && typeof renderItem === 'function';
   const list = Array.isArray(data) && typeof renderItem === 'function' ? data : null;
 
@@ -1279,7 +1255,7 @@ export function ChromePage({
     <View style={styles.chromePage}>
       <ScrollView
         style={styles.chromeOverlayScroll}
-        contentContainerStyle={[styles.chromePageContent, { flexGrow: 1 }]}
+        contentContainerStyle={[styles.chromePageContent, { flexGrow: 1, paddingTop: topPad }]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
         scrollEventThrottle={16}
@@ -1655,22 +1631,23 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
   },
   emptyIcon: {
-    width: 56,
-    height: 56,
-    borderRadius: 8,
+    width: 46,
+    height: 46,
+    borderRadius: 13,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#fff',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: T.hairline,
+    backgroundColor: CANVAS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
     marginBottom: 6,
+    ...CHIP_SHADOW,
   },
   emptyTitle: {
     fontFamily: FONT,
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '600',
-    color: T.text,
-    letterSpacing: -0.4,
+    color: MOBILE.label,
+    letterSpacing: -0.2,
   },
   emptyBody: {
     fontFamily: FONT,
@@ -1962,24 +1939,27 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   barButton: {
-    minHeight: 38,
+    height: 32,
+    minHeight: 32,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: T.hairline,
-    backgroundColor: T.card,
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 0,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
+    ...CHIP_SHADOW,
     ...webCursor,
   },
   barButtonLg: {
-    minHeight: 44,
+    height: 40,
+    minHeight: 40,
     flex: 1,
     justifyContent: 'center',
     borderRadius: 12,
-    paddingVertical: 10,
+    paddingVertical: 0,
   },
   barButtonFill: {
     backgroundColor: T.text,
@@ -1991,10 +1971,10 @@ const styles = StyleSheet.create({
   },
   barButtonLabel: {
     fontFamily: FONT,
-    fontSize: 13,
-    fontWeight: '500',
-    color: T.text,
-    letterSpacing: -0.15,
+    fontSize: 14,
+    fontWeight: '400',
+    color: MOBILE.label,
+    letterSpacing: -0.2,
   },
   barButtonLabelLg: {
     fontSize: 16,
@@ -2197,42 +2177,51 @@ const styles = StyleSheet.create({
   search: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    minHeight: 40,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: '#fff',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: T.hairline,
+    gap: 8,
+    height: 32,
+    minHeight: 32,
+    paddingHorizontal: 10,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    backgroundColor: CANVAS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    ...CHIP_SHADOW,
   },
   searchLg: {
+    height: 40,
     minHeight: 40,
     paddingHorizontal: 12,
-    borderRadius: 8,
+    borderRadius: 12,
     gap: 8,
   },
   searchSm: {
+    height: 32,
     minHeight: 32,
     paddingHorizontal: 10,
-    borderRadius: 8,
-    gap: 6,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    gap: 8,
   },
   searchInput: {
     flex: 1,
     minWidth: 0,
+    height: 30,
     fontFamily: FONT,
-    fontSize: 13,
-    color: T.text,
-    paddingVertical: 10,
+    fontSize: 14,
+    fontWeight: '400',
+    color: MOBILE.label,
+    letterSpacing: -0.2,
+    paddingVertical: 0,
     outlineStyle: 'none',
   },
   searchInputLg: {
+    height: 38,
     fontSize: 16,
-    paddingVertical: 10,
+    paddingVertical: 0,
   },
   searchInputSm: {
-    fontSize: 15,
-    paddingVertical: 4,
+    height: 30,
+    fontSize: 14,
+    paddingVertical: 0,
   },
   mobileCam: {
     width: 48,
@@ -2390,14 +2379,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'stretch',
     alignSelf: 'center',
-    height: 38,
+    height: 32,
     minWidth: 220,
     padding: 0,
-    borderRadius: 8,
-    backgroundColor: '#fff',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: T.hairline,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    backgroundColor: CANVAS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
     overflow: 'hidden',
+    ...CHIP_SHADOW,
   },
   segmentedSliderFill: {
     alignSelf: 'stretch',
@@ -2405,11 +2395,11 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   segmentedSliderMobile: {
-    height: 38,
-    borderRadius: 8,
+    height: 40,
+    borderRadius: 12,
   },
   segmentedSliderCompact: {
-    height: 34,
+    height: 32,
     minWidth: 0,
     alignSelf: 'auto',
   },
@@ -2425,8 +2415,8 @@ const styles = StyleSheet.create({
     top: 0,
     bottom: 0,
     left: 0,
-    borderRadius: 0,
-    backgroundColor: T.text,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    backgroundColor: NAV_TAB_ACTIVE_BG,
   },
   segmentedHit: {
     flex: 1,
@@ -2443,14 +2433,14 @@ const styles = StyleSheet.create({
   },
   segmentedLabel: {
     fontFamily: FONT,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '400',
-    color: T.secondary,
-    letterSpacing: 0,
+    color: MOBILE.secondary,
+    letterSpacing: -0.2,
   },
   segmentedLabelActive: {
-    fontWeight: '600',
-    color: '#fff',
+    fontWeight: '400',
+    color: MOBILE.label,
   },
   segmentedCount: {
     fontFamily: FONT,
@@ -2460,7 +2450,7 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
   },
   segmentedCountActive: {
-    color: 'rgba(255,255,255,0.78)',
+    color: MOBILE.label,
   },
   chromePage: {
     flex: 1,
@@ -2530,6 +2520,8 @@ const styles = StyleSheet.create({
   chromePageContent: {
     flexGrow: 1,
     paddingBottom: 24,
+    alignItems: 'stretch',
+    width: '100%',
   },
   chromePageContentMobile: {
     flexGrow: 1,
@@ -2546,8 +2538,8 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
   },
   chromeHeroPadDesktop: {
-    paddingHorizontal: 32,
-    paddingTop: 4,
+    paddingHorizontal: 16,
+    paddingTop: 8,
     paddingBottom: 18,
   },
   chromeHeroMobileHit: {
@@ -2644,7 +2636,7 @@ const styles = StyleSheet.create({
   },
   chromeListMobile: {
     flexGrow: 1,
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
     marginTop: 0,
     width: '100%',
     alignSelf: 'stretch',
@@ -2664,28 +2656,12 @@ const styles = StyleSheet.create({
   chromeSheetHeadMobile: {
     paddingTop: 12,
   },
-  chromeRowMobile: {
-    position: 'relative',
-    alignItems: 'center',
-    gap: MOBILE_ROW_BODY_LEADING,
-    minHeight: 72,
-    paddingLeft: MOBILE_FILTER_INSET,
-    paddingTop: 12,
-    paddingBottom: 12,
-  },
   chromeRowIconWrap: {
     width: MOBILE_ICON_COL_WIDTH,
     height: MOBILE_ICON_COL_WIDTH,
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
-  },
-  chromeRowBodyMobile: {
-    flexDirection: 'column',
-    alignItems: 'stretch',
-    gap: 12,
-    paddingVertical: 0,
-    paddingRight: MOBILE_FILTER_INSET,
   },
   chromeRowMain: {
     flexDirection: 'row',
@@ -2694,56 +2670,13 @@ const styles = StyleSheet.create({
     minWidth: 0,
     width: '100%',
   },
-  chromeRowCopyMobile: {
-    flex: 1,
-    minWidth: 0,
-    gap: 2,
-  },
-  chromeRowTitleMobile: {
-    fontFamily: FONT,
-    fontSize: 16,
-    fontWeight: '600',
-    color: MOBILE.label,
-    letterSpacing: -0.2,
-  },
-  chromeRowMetaMobile: {
-    fontFamily: FONT,
-    fontSize: 13,
-    fontWeight: '400',
-    color: MOBILE.secondary,
-    letterSpacing: 0,
-  },
-  chromeRowTrailingMobile: {
-    width: 108,
-    maxWidth: '46%',
-    flexShrink: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    gap: 8,
-  },
-  chromeRowValueMobile: {
-    fontFamily: FONT,
-    fontSize: 15,
-    fontWeight: '600',
-    color: MOBILE.label,
-    letterSpacing: 0,
-    fontVariant: ['tabular-nums'],
-    textAlign: 'right',
-  },
-  chromeRowChevronMobile: {
-    width: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
   chromeRowRule: {
     position: 'absolute',
     bottom: 0,
     left: MOBILE_FILTER_INSET + MOBILE_ICON_COL_WIDTH + MOBILE_ROW_BODY_LEADING,
     right: 0,
     height: StyleSheet.hairlineWidth,
-    backgroundColor: '#d0d0d0',
+    backgroundColor: TAB_BORDER,
   },
   chromeRowExtra: {
     alignSelf: 'flex-start',
@@ -2874,15 +2807,17 @@ const styles = StyleSheet.create({
   },
   chromeListFlat: {
     flexGrow: 1,
-    backgroundColor: '#fff',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(60, 60, 67, 0.12)',
+    backgroundColor: CANVAS,
+    width: '100%',
   },
   chromeHeroHome: {
     flexDirection: 'row',
     alignItems: 'stretch',
     alignSelf: 'stretch',
     gap: 10,
+  },
+  chromeHeroHomeDesktop: {
+    paddingLeft: 42,
   },
   chromeHeroHomeMobile: {
     width: '100%',
@@ -2897,11 +2832,11 @@ const styles = StyleSheet.create({
   },
   chromeHeroHomeAmount: {
     fontFamily: FONT,
-    fontSize: 28,
-    lineHeight: 32,
+    fontSize: 22,
+    lineHeight: 26,
     fontWeight: '400',
     color: '#1d1d1f',
-    letterSpacing: -0.6,
+    letterSpacing: -0.4,
     fontVariant: ['tabular-nums'],
   },
   chromeHeroHomeAmountMobile: {
@@ -2913,17 +2848,18 @@ const styles = StyleSheet.create({
     flexDirection: 'column',
     flexShrink: 0,
     justifyContent: 'flex-start',
-    gap: 2,
+    gap: 4,
     minWidth: 108,
     maxWidth: 132,
-    paddingTop: 4,
-    paddingLeft: 12,
+    paddingTop: 2,
+    paddingLeft: 10,
     borderLeftWidth: StyleSheet.hairlineWidth,
-    borderLeftColor: 'rgba(60, 60, 67, 0.12)',
+    borderLeftColor: 'rgba(42,38,30,0.08)',
   },
   chromeHeroHomeStatsDesktop: {
-    minWidth: 148,
-    maxWidth: 200,
+    minWidth: 156,
+    maxWidth: 220,
+    paddingTop: 0,
   },
   chromeHeroHomeStat: {
     flexDirection: 'row',
@@ -2951,7 +2887,7 @@ const styles = StyleSheet.create({
   },
   chromeSheet: {
     flexGrow: 1,
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
     overflow: 'hidden',
   },
   chromeSheetGrow: {
@@ -2982,18 +2918,21 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
   },
   chromeSheetBody: {
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
   },
   chromeSheetBodyMobile: {
     paddingBottom: mobileTabBarReserve() + 24,
   },
   chromeRow: {
+    position: 'relative',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    minHeight: 68,
-    paddingLeft: 16,
-    backgroundColor: '#fff',
+    gap: MOBILE_ROW_BODY_LEADING,
+    minHeight: 72,
+    paddingLeft: MOBILE_FILTER_INSET,
+    paddingTop: 12,
+    paddingBottom: 12,
+    backgroundColor: 'transparent',
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -3013,52 +2952,54 @@ const styles = StyleSheet.create({
   chromeRowBody: {
     flex: 1,
     minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'column',
+    alignItems: 'stretch',
     gap: 12,
-    paddingVertical: 14,
-    paddingRight: 16,
+    paddingVertical: 0,
+    paddingRight: MOBILE_FILTER_INSET,
     alignSelf: 'stretch',
-  },
-  chromeRowDivider: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(60,60,67,0.18)',
   },
   chromeRowCopy: {
     flex: 1,
     minWidth: 0,
-    gap: 3,
+    gap: 2,
   },
   chromeRowTitle: {
     fontFamily: FONT,
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '600',
-    color: '#1a1a1a',
+    color: MOBILE.label,
+    letterSpacing: -0.2,
   },
   chromeRowMeta: {
     fontFamily: FONT,
     fontSize: 13,
-    color: '#8e8e93',
+    fontWeight: '400',
+    color: MOBILE.secondary,
+    letterSpacing: 0,
   },
   chromeRowValue: {
     fontFamily: FONT,
     fontSize: 15,
     fontWeight: '600',
-    color: '#1a1a1a',
+    color: MOBILE.label,
+    letterSpacing: 0,
     fontVariant: ['tabular-nums'],
-    flexShrink: 0,
+    textAlign: 'right',
   },
-  chromeRowTrailingLoad: {
+  chromeRowTrailing: {
+    width: 108,
+    maxWidth: '46%',
+    flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'flex-end',
     gap: 8,
-    flexShrink: 0,
-  },
-  chromeRowValueSpinner: {
-    marginRight: 2,
   },
   chromeRowChevron: {
-    width: 18,
+    width: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
     flexShrink: 0,
   },
 });

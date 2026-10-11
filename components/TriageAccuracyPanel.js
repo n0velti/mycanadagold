@@ -60,7 +60,7 @@ import {
   TriageDrawer,
   confirmDestructive,
 } from './TriageKit';
-import { useIsMobile } from '../lib/mobileUi';
+import { CANVAS, useIsMobile } from '../lib/mobileUi';
 
 const fontFamily = FONT;
 
@@ -376,6 +376,7 @@ export default function TriageAccuracyPanel({
   onOpenLotChange,
   onAccuracyTabChange: _onAccuracyTabChange,
   onBackChange,
+  insetTop = 0,
 }) {
   const { triage } = useTransferWorkflow();
   const isMobile = useIsMobile();
@@ -689,13 +690,13 @@ export default function TriageAccuracyPanel({
   const wrapResults = (list, title, meta) => {
     if (isMobile) {
       return (
-        <ChromePage hero={heroCard} title={title} meta={meta}>
+        <ChromePage hero={heroCard} title={title} meta={meta} insetTop={insetTop}>
           {list}
         </ChromePage>
       );
     }
     return (
-      <View style={styles.body}>
+      <View style={[styles.body, insetTop ? { paddingTop: insetTop } : null]}>
         <View style={[styles.heroPad, styles.heroPadDesktop]}>{heroCard}</View>
         <ChromeSheet title={title} meta={meta} fill={false} style={styles.sheetFill}>
           {list}
@@ -1174,8 +1175,8 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
   },
   heroPadDesktop: {
-    paddingHorizontal: 32,
-    paddingTop: 4,
+    paddingHorizontal: 16,
+    paddingTop: 8,
     paddingBottom: 18,
   },
   lotFilterSlider: {
@@ -1206,7 +1207,7 @@ const styles = StyleSheet.create({
     paddingTop: 0,
     paddingBottom: 40,
     flexGrow: 1,
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
     paddingHorizontal: 0,
   },
   mobileHint: {
@@ -1220,7 +1221,7 @@ const styles = StyleSheet.create({
   mobileDetail: {
     paddingHorizontal: 16,
     paddingBottom: 12,
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
   },
   mobileDetailLast: {
     borderBottomLeftRadius: 8,
