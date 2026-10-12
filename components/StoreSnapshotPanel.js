@@ -14,6 +14,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import LowReviewMark from './LowReviewMark';
 import { fetchStoreCashPosition, peekStoreCashPosition } from '../lib/cashTill';
 import {
   checkTransactionPrices,
@@ -642,7 +643,7 @@ function storeAmountForFocus(store, focus) {
   return Number(store?.totalAmount) || 0;
 }
 
-function StoreHomeHeroStat({ value, label, selected = false, onPress, compact = false, tone }) {
+function StoreHomeHeroStat({ value, label, selected = false, onPress, compact = false, tone, mark = null, accessibilityLabel }) {
   const valueStyle = [
     compact ? styles.storeHomeHeroStatValueCompact : styles.storeHomeHeroStatValue,
     selected &&
@@ -655,17 +656,25 @@ function StoreHomeHeroStat({ value, label, selected = false, onPress, compact = 
     selected &&
       (compact ? styles.storeHomeHeroStatLabelCompactSelected : styles.storeHomeHeroStatLabelSelected),
   ];
+  const valueNode = mark ? (
+    <View style={styles.storeHomeHeroStatMarkRow}>
+      <Text style={valueStyle}>{value}</Text>
+      {mark}
+    </View>
+  ) : (
+    <Text style={valueStyle}>{value}</Text>
+  );
   const body = compact ? (
     <>
       <Text style={labelStyle} numberOfLines={1}>
         {label}
       </Text>
-      <Text style={valueStyle}>{value}</Text>
+      {valueNode}
     </>
   ) : (
     <>
       <Text style={labelStyle}>{label}</Text>
-      <Text style={valueStyle}>{value}</Text>
+      {valueNode}
     </>
   );
   const style = compact
@@ -680,30 +689,40 @@ function StoreHomeHeroStat({ value, label, selected = false, onPress, compact = 
       style={({ pressed }) => [...style, pressed && styles.storeHomeHeroStatPressed]}
       accessibilityRole="button"
       accessibilityState={{ selected }}
-      accessibilityLabel={label}
+      accessibilityLabel={accessibilityLabel || label}
     >
       {body}
     </Pressable>
   );
 }
 
-function StoreHeroBlock({ value, title, empty = false, onPress, children, tone }) {
+function StoreHeroBlock({ value, title, empty = false, onPress, children, tone, mark = null }) {
+  const amount = (
+    <Text
+      style={[
+        styles.storeHomeHeroAmount,
+        empty && styles.storeHomeHeroAmountEmpty,
+        !empty && tone === 'low' && styles.storeHomeHeroAmountLow,
+        !empty && tone === 'ok' && styles.storeHomeHeroAmountOk,
+      ]}
+      numberOfLines={1}
+      adjustsFontSizeToFit
+      minimumFontScale={0.55}
+    >
+      {empty ? '—' : value}
+    </Text>
+  );
   const pair = (
     <View style={styles.storeHomeHeroPair}>
       <View style={styles.storeHomeHeroMetricStack}>
-        <Text
-          style={[
-            styles.storeHomeHeroAmount,
-            empty && styles.storeHomeHeroAmountEmpty,
-            !empty && tone === 'low' && styles.storeHomeHeroAmountLow,
-            !empty && tone === 'ok' && styles.storeHomeHeroAmountOk,
-          ]}
-          numberOfLines={1}
-          adjustsFontSizeToFit
-          minimumFontScale={0.55}
-        >
-          {empty ? '—' : value}
-        </Text>
+        {mark ? (
+          <View style={styles.storeHomeHeroStatMarkRow}>
+            {amount}
+            {mark}
+          </View>
+        ) : (
+          amount
+        )}
         <Text style={styles.storeHomeHeroBlockTitle}>{title}</Text>
       </View>
       {children}
@@ -845,6 +864,11 @@ function StoreHomeHero({
         title={opsTitle}
         empty={opsEmpty}
         tone={opsTone}
+        mark={
+          opsFocus === 'bonus' && !bonusEmpty ? (
+            <LowReviewMark count={reviewStats.negative || 0} size={15} countSize={16} />
+          ) : null
+        }
         onPress={() => onOpenApp?.(opsApp)}
       >
         <StoreHeroSide>
@@ -870,6 +894,16 @@ function StoreHomeHero({
             label="Bonus"
             selected={opsFocus === 'bonus'}
             tone={bonusTone}
+            mark={
+              opsFocus === 'bonus' || bonusEmpty ? null : (
+                <LowReviewMark count={reviewStats.negative || 0} size={12} countSize={13} />
+              )
+            }
+            accessibilityLabel={
+              bonusEmpty
+                ? 'Bonus'
+                : `Bonus ${reviewStats.count}, ${reviewStats.negative || 0} at 1 or 2 stars`
+            }
             onPress={() => setOpsFocus('bonus')}
           />
         </StoreHeroSide>
@@ -1065,17 +1099,20 @@ function OverviewStatsTable({ rows = [] }) {
       {rows.map((row, index) => {
         const last = index === rows.length - 1;
         const value = (
-          <Text
-            style={[
-              styles.overviewStatsValue,
-              row.muted && styles.rowValueMuted,
-              row.tone === 'low' && styles.storeHomeHeroStatLow,
-              row.tone === 'ok' && styles.storeHomeHeroStatOk,
-            ]}
-            numberOfLines={1}
-          >
-            {row.value}
-          </Text>
+          <View style={styles.overviewStatsValueRow}>
+            <Text
+              style={[
+                styles.overviewStatsValue,
+                row.muted && styles.rowValueMuted,
+                row.tone === 'low' && styles.storeHomeHeroStatLow,
+                row.tone === 'ok' && styles.storeHomeHeroStatOk,
+              ]}
+              numberOfLines={1}
+            >
+              {row.value}
+            </Text>
+            {row.trailing || null}
+          </View>
         );
         const lead = (
           <View style={styles.overviewStatsLead}>
@@ -1096,7 +1133,7 @@ function OverviewStatsTable({ rows = [] }) {
                 (hovered || pressed) && styles.overviewStatsRowHover,
               ]}
               accessibilityRole="button"
-              accessibilityLabel={`${row.label} ${row.value}`}
+              accessibilityLabel={row.accessibilityLabel || `${row.label} ${row.value}`}
             >
               {lead}
               {value}
@@ -1107,7 +1144,7 @@ function OverviewStatsTable({ rows = [] }) {
           <View
             key={row.key}
             style={[styles.overviewStatsRow, styles.itemStatsRow, last && styles.overviewStatsRowLast]}
-            accessibilityLabel={`${row.label} ${row.value}`}
+            accessibilityLabel={row.accessibilityLabel || `${row.label} ${row.value}`}
           >
             {lead}
             {value}
@@ -3435,6 +3472,14 @@ function StoreSnapshotPanel({
             icon: 'gift-outline',
             label: 'Bonus',
             value: reviewStats?.count == null ? '—' : String(reviewStats.count),
+            trailing:
+              reviewStats?.rate == null ? null : (
+                <LowReviewMark count={reviewStats.negative || 0} size={13} countSize={14} />
+              ),
+            accessibilityLabel:
+              reviewStats?.rate == null
+                ? 'Bonus'
+                : `Bonus ${reviewStats.count}, ${reviewStats.negative || 0} at 1 or 2 stars`,
             onPress: () => onOpenApp?.('bonuses'),
           },
         ]
@@ -4360,6 +4405,12 @@ const styles = StyleSheet.create({
     color: '#1d1d1f',
     fontWeight: '600',
   },
+  storeHomeHeroStatMarkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 0,
+    gap: 4,
+  },
   storeHomeHeroStatCompact: {
     flexDirection: 'row',
     alignItems: 'baseline',
@@ -4877,6 +4928,12 @@ const styles = StyleSheet.create({
     fontWeight: '400',
     color: SECONDARY,
     letterSpacing: -0.2,
+  },
+  overviewStatsValueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 0,
+    gap: 2,
   },
   overviewStatsValue: {
     fontFamily,

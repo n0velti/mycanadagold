@@ -121,6 +121,7 @@ import { DISPLAY_CURRENCIES, DisplayCurrencyProvider, useDisplayCurrency } from 
 import { AppDateProvider, AppDateRouteReset, useAppDate } from './lib/appDate';
 import { SPOT_METALS, SPOT_REFRESH_MS } from './lib/spotPrices';
 import HomeDatePicker from './components/HomeDatePicker';
+import LowReviewMark from './components/LowReviewMark';
 import LoginScreen from './components/LoginScreen';
 import ProfileLoginSwitcher from './components/ProfileLoginSwitcher';
 import {
@@ -534,8 +535,8 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-app-icon:hover .cgold-app-pin,.cgold-app-icon:focus-within .cgold-app-pin{opacity:1!important;}',
     '.cgold-store-header-blur{-webkit-backdrop-filter:saturate(160%) blur(12px);backdrop-filter:saturate(160%) blur(12px);background-color:rgba(255,255,255,0.72)!important;transform:translateZ(0);}',
     '.cgold-dm-row{cursor:pointer;}',
-    '.cgold-dm-row:hover{background-color:#f5f5f7!important;}',
-    '.cgold-dm-row-active,.cgold-dm-row-active:hover{background-color:#ececef!important;}',
+    '.cgold-dm-row:hover{background-color:#f5f5f5!important;}',
+    '.cgold-dm-row-active,.cgold-dm-row-active:hover{background-color:#f0f0f2!important;}',
     '@media (max-width:767px){',
     `html,body,#root{background:${CANVAS};}`,
     '.cgold-mobile-inset-top{height:max(12px,env(safe-area-inset-top,0px))!important;}',
@@ -550,8 +551,6 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '}',
   ].join('');
 }
-
-const TX_ROW_HEIGHT = 44;
 
 /** `/c/<token>` opens the standalone photo-capture page. The path never changes after load. */
 const CAPTURE_TOKEN = captureTokenFromLocation();
@@ -819,8 +818,8 @@ function useIsMobile() {
   return width < MOBILE_BREAKPOINT;
 }
 
-const HOME_PAGE_MAX_WIDTH = 1480;
-const HOME_TABLE_MAX_WIDTH = 1980;
+const HOME_PAGE_MAX_WIDTH = 1360;
+const HOME_TABLE_MAX_WIDTH = 1680;
 /** Extra left inset on desktop so search / hero / table sit slightly right of viewport center. */
 const HOME_DESKTOP_LEADING_NUDGE = 28;
 const HOME_STORE_ROW_PAD = 8;
@@ -842,7 +841,7 @@ function useHomePageLayout() {
     };
   }
   const pagePad = width >= 1600 ? 24 : width >= 1200 ? 20 : 16;
-  const tablePagePad = width >= 1600 ? 8 : width >= 1200 ? 6 : 4;
+  const tablePagePad = width >= 1600 ? 36 : width >= 1200 ? 28 : 22;
   const contentMaxWidth = Math.min(HOME_PAGE_MAX_WIDTH, Math.max(720, width - pagePad * 2));
   const tableMaxWidth = Math.min(
     HOME_TABLE_MAX_WIDTH,
@@ -1564,8 +1563,8 @@ function DatePickerField({
     fill && styles.homeDateFieldFill,
   ];
   const iconColor = plain || compact ? '#8e8e93' : '#6b6b6b';
-  const valueSize = compact ? 13 : plain ? 16 : 13;
-  const calendarSize = compact ? 13 : plain ? 16 : 14;
+  const valueSize = compact ? 13 : plain ? 14 : 13;
+  const calendarSize = compact ? 13 : plain ? 14 : 14;
   const hideLabel = plain || compact;
 
   const commit = (next) => {
@@ -1719,7 +1718,7 @@ const TransactionListRow = memo(function TransactionListRow({
       onPress={() => onPress(item)}
       style={({ hovered, pressed }) => [
         styles.txTableRow,
-        (hovered || pressed) && styles.toolListRowHovered,
+        (hovered || pressed) && !selected && styles.txTableRowHover,
         selected && styles.txListRowSelected,
       ]}
       accessibilityRole="button"
@@ -4127,20 +4126,32 @@ function HomeMetricPending({ compact = false }) {
   );
 }
 
-function HomeStoreMetric({ icon, stats, label, stretch = false, loading = false }) {
+function homeLowReviewMark(stats, loading, size = 13, countSize = 14) {
+  if (loading || stats?.rate == null) return null;
+  return <LowReviewMark count={stats.negative || 0} size={size} countSize={countSize} />;
+}
+
+function HomeStoreMetric({ icon, stats, label, stretch = false, loading = false, trailing = null }) {
   const empty = !loading && stats?.rate == null;
   const low = !loading && !empty && stats.rate < 80;
   const detail =
     !loading && !empty && Number(stats.average) > 0 ? `${Number(stats.average).toFixed(1)} average` : '';
+  const lowCount = !loading && !empty ? Number(stats?.negative) || 0 : null;
   return (
     <View
-      style={[styles.igStoreMetric, stretch && styles.igHomeStoreMetric]}
+      style={[
+        styles.igStoreMetric,
+        stretch && styles.igHomeStoreMetric,
+        trailing && styles.igHomeStoreMetricReview,
+      ]}
       accessibilityLabel={
         loading
           ? `${label}, loading`
           : empty
             ? `${label}, no activity`
-            : `${label} ${stats.ratio}${detail ? `, ${detail}` : ''}`
+            : `${label} ${stats.ratio}${detail ? `, ${detail}` : ''}${
+                lowCount == null ? '' : `, ${lowCount} at 1 or 2 stars`
+              }`
       }
     >
       <Ionicons name={icon} size={14} color={loading ? HOME_RATE_EMPTY : homeRateIconColor(stats)} />
@@ -4163,6 +4174,7 @@ function HomeStoreMetric({ icon, stats, label, stretch = false, loading = false 
           {stats.ratio}
         </HomeLiveValue>
       )}
+      {trailing}
     </View>
   );
 }
@@ -4205,7 +4217,13 @@ const HomeStoreCard = memo(function HomeStoreCard({
     >
       <HomeStoreMetric icon="mail" stats={emailStats} label="Email capture" loading={emailLoading} />
       <HomeStoreMetric icon="call" stats={phoneStats} label="Phone answer rate" loading={phoneLoading} />
-      <HomeStoreMetric icon="star" stats={reviewStats} label="Reviews" loading={reviewLoading} />
+      <HomeStoreMetric
+        icon="star"
+        stats={reviewStats}
+        label="Reviews"
+        loading={reviewLoading}
+        trailing={homeLowReviewMark(reviewStats, reviewLoading, 13, 14)}
+      />
     </View>
   );
   const nameBlock = (
@@ -4279,7 +4297,14 @@ const HomeStoreCard = memo(function HomeStoreCard({
         <View style={styles.igHomeStoreMetricRule} />
         <HomeStoreMetric icon="call" stats={phoneStats} label="Phone answer rate" stretch loading={phoneLoading} />
         <View style={styles.igHomeStoreMetricRule} />
-        <HomeStoreMetric icon="star" stats={reviewStats} label="Reviews" stretch loading={reviewLoading} />
+        <HomeStoreMetric
+          icon="star"
+          stats={reviewStats}
+          label="Reviews"
+          stretch
+          loading={reviewLoading}
+          trailing={homeLowReviewMark(reviewStats, reviewLoading, 13, 14)}
+        />
       </View>
     </View>
   );
@@ -4488,6 +4513,7 @@ function HomePercentRate({
   tip,
   icon,
   loading = false,
+  trailing = null,
 }) {
   const [anchor, setAnchor] = useState(null);
   const empty = !loading && stats?.rate == null;
@@ -4533,6 +4559,7 @@ function HomePercentRate({
           </HomeLiveValue>
         </View>
       )}
+      {trailing}
       <FloatingTooltip visible={Boolean(anchor && tip)} text={tip} anchorEl={anchor} align="end" />
     </View>
   );
@@ -4580,11 +4607,10 @@ function HomePhoneRate({ stats, compact = false, showIcon = true, loading = fals
 
 function HomeReviewRate({ stats, compact = false, showIcon = true, loading = false }) {
   const empty = !loading && stats?.rate == null;
+  const lowCount = Number(stats?.negative) || 0;
   const tip = empty
     ? ''
-    : `${stats.count} review${stats.count === 1 ? '' : 's'} · ${Number(stats.average).toFixed(1)} average${
-        stats.negative ? ` · ${stats.negative} low` : ''
-      }`;
+    : `${stats.count} review${stats.count === 1 ? '' : 's'} · ${Number(stats.average).toFixed(1)} average · ${lowCount} at 1 or 2 stars`;
   return (
     <HomePercentRate
       stats={{ ...stats, ratio: empty ? '—' : String(stats.count) }}
@@ -4595,6 +4621,7 @@ function HomeReviewRate({ stats, compact = false, showIcon = true, loading = fal
       tip={tip}
       icon={showIcon ? 'star' : null}
       loading={loading}
+      trailing={homeLowReviewMark(stats, loading, 12, 12)}
     />
   );
 }
@@ -7353,7 +7380,7 @@ function TransactionsScreen({ session, onRequireLogin, storeFilter }) {
 
   if (!session?.token) {
     return (
-      <View style={styles.transactionsBody}>
+      <View style={[styles.transactionsBody, styles.transactionsPage]}>
         <View style={styles.homeInnerCentered}>
           <Text style={[styles.contentTitle, styles.homeTitle]}>Transactions</Text>
           <Text style={styles.homeSubtitle}>Log in to load Aureus POS transactions.</Text>
@@ -7366,10 +7393,10 @@ function TransactionsScreen({ session, onRequireLogin, storeFilter }) {
   }
 
   return (
-    <View style={styles.transactionsBody}>
-      <View style={[styles.txToolbar, isMobile && styles.igToolPad, isMobile && styles.toolsToolbarMobile]}>
-        <View style={[styles.toolsSearch, isMobile && styles.igSearchField]}>
-          <Ionicons name="search" size={16} color="#8e8e93" style={styles.toolsSearchIcon} />
+    <View style={[styles.transactionsBody, styles.transactionsPage]}>
+      <View style={[styles.txToolbar, isMobile && styles.toolsToolbarMobile]}>
+        <View style={styles.toolsSearch}>
+          <Ionicons name="search" size={15} color="#8e8e93" />
           <TextInput
             style={styles.toolsSearchInput}
             value={query}
@@ -7388,7 +7415,7 @@ function TransactionsScreen({ session, onRequireLogin, storeFilter }) {
         </View>
       </View>
 
-      <View style={[styles.homeControls, isMobile && styles.igToolPad, isMobile && styles.homeControlsMobile, styles.txControls]}>
+      <View style={[styles.homeControls, isMobile && styles.homeControlsMobile, styles.txControls]}>
         <View style={styles.homeSegment} accessibilityRole="tablist">
           <Pressable
             style={[
@@ -7458,7 +7485,7 @@ function TransactionsScreen({ session, onRequireLogin, storeFilter }) {
         )}
       </View>
 
-      <View style={[styles.homeMetaRow, styles.txMetaRow, isMobile && styles.igToolPad]}>
+      <View style={[styles.homeMetaRow, styles.txMetaRow]}>
         <Text style={styles.homeMeta} numberOfLines={1}>
           {loading && rows.length === 0
             ? 'Loading…'
@@ -7795,6 +7822,7 @@ function TopTradeButton({ kind, label, active, onPress }) {
         styles.topTradeButton,
         (hovered || pressed) && !active && styles.topTradeButtonHover,
         active && styles.tabActive,
+        active && styles.topTradeButtonActive,
       ]}
     >
       <Ionicons
@@ -8290,15 +8318,15 @@ function TopAppSwitcher({
     : 16;
   const menuTop = anchor ? anchor.y + anchor.height + 6 : 56;
 
+  const goToLabel = () => {
+    if (typeof onLabelPress === 'function') onLabelPress();
+  };
+
   return (
     <>
-      <View
-        ref={fieldRef}
-        collapsable={false}
-        style={[styles.topBarCrumbPress, current && styles.topBarPageChip, styles.topBarAppChip]}
-      >
+      <View style={[styles.topBarCrumbPress, styles.topBarAppChip]}>
         <Pressable
-          onPress={onLabelPress || (open ? close : openMenu)}
+          onPress={goToLabel}
           accessibilityRole="button"
           accessibilityLabel={label}
           style={styles.topBarAppNamePress}
@@ -8310,19 +8338,21 @@ function TopAppSwitcher({
             {label}
           </Text>
         </Pressable>
-        <Pressable
-          onPress={open ? close : openMenu}
-          hitSlop={6}
-          accessibilityRole="button"
-          accessibilityState={{ expanded: open }}
-          accessibilityLabel="Switch app"
-          style={styles.topBarAppChevronsBtn}
-        >
-          <View style={styles.topSpotChevrons}>
-            <Ionicons name="chevron-up" size={9} color="#8e8e93" />
-            <Ionicons name="chevron-down" size={9} color="#8e8e93" style={styles.topSpotChevronDown} />
-          </View>
-        </Pressable>
+        <View ref={fieldRef} collapsable={false}>
+          <Pressable
+            onPress={open ? close : openMenu}
+            hitSlop={4}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: open }}
+            accessibilityLabel="Switch app"
+            style={styles.topBarAppChevronsBtn}
+          >
+            <View style={styles.topSpotChevrons}>
+              <Ionicons name="chevron-up" size={9} color="#8e8e93" />
+              <Ionicons name="chevron-down" size={9} color="#8e8e93" style={styles.topSpotChevronDown} />
+            </View>
+          </Pressable>
+        </View>
       </View>
       <Modal visible={open} transparent animationType="fade" onRequestClose={close}>
         <View style={styles.topSpotOverlay}>
@@ -9575,7 +9605,11 @@ export default function App() {
     if (
       activeTool.key === 'employees' ||
       activeTool.key === 'customers' ||
-      activeTool.key === 'triage'
+      activeTool.key === 'triage' ||
+      activeTool.key === 'transactions' ||
+      activeTool.key === 'inventory' ||
+      activeTool.key === 'audit' ||
+      activeTool.key === 'analytics'
     ) {
       return null;
     }
@@ -9682,6 +9716,8 @@ export default function App() {
           <AnalyticsScreen
             session={session}
             storeFilter={scopedStore || undefined}
+            onOpenCustomer={openCustomerProfile}
+            onOpenDocument={openSearchDocument}
           />
         ) : activeTool.key === 'audit' ? (
           <AuditScreen
@@ -10895,6 +10931,17 @@ const styles = StyleSheet.create({
   topTradeButtonHover: {
     backgroundColor: '#f5f5f5',
   },
+  topTradeButtonActive: {
+    borderColor: 'transparent',
+    ...Platform.select({
+      web: { boxShadow: 'none' },
+      default: {
+        shadowOpacity: 0,
+        shadowRadius: 0,
+        elevation: 0,
+      },
+    }),
+  },
   topTradeLabel: {
     fontFamily,
     fontSize: 14,
@@ -11469,57 +11516,59 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     flexShrink: 0,
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: TAB_BORDER,
-    padding: 0,
-    overflow: 'hidden',
+    gap: 8,
+    backgroundColor: 'transparent',
   },
   homeSegmentButton: {
-    paddingHorizontal: 14,
-    height: 38,
-    borderRadius: 0,
+    paddingHorizontal: 10,
+    height: 32,
+    borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
     alignItems: 'center',
     justifyContent: 'center',
+    ...CHIP_SHADOW,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
   homeSegmentButtonActive: {
-    backgroundColor: '#1a1a1a',
+    backgroundColor: NAV_TAB_ACTIVE_BG,
   },
   homeSegmentText: {
     fontFamily,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '400',
-    color: '#8e8e93',
-    letterSpacing: 0,
+    color: '#1a1a1a',
+    letterSpacing: -0.2,
   },
   homeSegmentTextActive: {
-    color: '#fff',
-    fontWeight: '600',
+    color: '#1a1a1a',
+    fontWeight: '400',
   },
   homeDateField: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
+    backgroundColor: CANVAS,
+    borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
     borderColor: TAB_BORDER,
-    paddingHorizontal: 12,
-    minHeight: 40,
+    paddingHorizontal: 10,
+    height: 32,
+    minHeight: 32,
     justifyContent: 'center',
+    ...CHIP_SHADOW,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
   homeDateFieldValue: {
-    fontSize: 13,
+    fontSize: 14,
     color: '#1a1a1a',
-    letterSpacing: 0,
+    letterSpacing: -0.2,
   },
   homeDateSep: {
     fontFamily,
@@ -11541,10 +11590,10 @@ const styles = StyleSheet.create({
   },
   homeStoreTable: {
     flexGrow: 1,
-    minWidth: 1080,
+    minWidth: 1140,
   },
   homeStoreTableNoAmounts: {
-    minWidth: 860,
+    minWidth: 920,
   },
   homeStoreRow: {
     position: 'relative',
@@ -11809,8 +11858,8 @@ const styles = StyleSheet.create({
     }),
   },
   homeStoreColReview: {
-    width: 108,
-    minWidth: 108,
+    width: 156,
+    minWidth: 156,
     flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'center',
@@ -13140,10 +13189,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     minWidth: 0,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    backgroundColor: '#e8e8ed',
-    minHeight: 42,
+    maxWidth: 420,
+    gap: 8,
+    height: 32,
+    minHeight: 32,
+    paddingHorizontal: 10,
+    borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
+    ...CHIP_SHADOW,
   },
   appsViewToggle: {
     flexDirection: 'row',
@@ -13221,14 +13276,18 @@ const styles = StyleSheet.create({
     maxWidth: '100%',
   },
   toolsSearchIcon: {
-    marginRight: 8,
+    marginRight: 0,
   },
   toolsSearchInput: {
     flex: 1,
+    minWidth: 0,
+    height: 30,
     fontFamily,
-    fontSize: 16,
-    color: '#1d1d1f',
-    paddingVertical: 10,
+    fontSize: 14,
+    fontWeight: '400',
+    color: '#1a1a1a',
+    paddingVertical: 0,
+    letterSpacing: -0.2,
     outlineStyle: 'none',
   },
   homeTxEmpty: {
@@ -13484,12 +13543,17 @@ const styles = StyleSheet.create({
     width: '100%',
     marginTop: 8,
   },
+  transactionsPage: {
+    marginTop: 0,
+    paddingHorizontal: 16,
+    backgroundColor: CANVAS,
+  },
   txToolbar: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
     marginTop: 4,
-    marginBottom: 8,
+    marginBottom: 10,
     width: '100%',
   },
   txControls: {
@@ -13505,11 +13569,14 @@ const styles = StyleSheet.create({
   txListWrap: {
     flex: 1,
     minHeight: 0,
-    backgroundColor: '#f2f2f7',
-    borderRadius: 14,
+    backgroundColor: CANVAS,
+    borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
     overflow: 'hidden',
-    marginTop: 8,
+    marginTop: 12,
     position: 'relative',
+    ...CHIP_SHADOW,
   },
   txListContent: {
     paddingBottom: 24,
@@ -13517,11 +13584,11 @@ const styles = StyleSheet.create({
   txTableHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 36,
-    paddingHorizontal: 16,
-    backgroundColor: '#ebebf0',
+    minHeight: 34,
+    paddingHorizontal: 12,
+    backgroundColor: CANVAS,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#d1d1d6',
+    borderBottomColor: 'rgba(42,38,30,0.16)',
   },
   txTableHeaderCell: {
     flexDirection: 'row',
@@ -13539,9 +13606,9 @@ const styles = StyleSheet.create({
   txTableHeaderLabel: {
     fontFamily,
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '500',
     color: '#8e8e93',
-    letterSpacing: -0.08,
+    letterSpacing: -0.15,
     flexShrink: 1,
   },
   txTableHeaderLabelActive: {
@@ -13550,30 +13617,38 @@ const styles = StyleSheet.create({
   txTableRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: TX_ROW_HEIGHT,
-    paddingHorizontal: 16,
+    minHeight: 46,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e5e5ea',
+    borderBottomColor: 'rgba(42,38,30,0.08)',
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
+  txTableRowHover: {
+    backgroundColor: '#f5f5f5',
+  },
   txListRowSelected: {
-    backgroundColor: '#e8e8ed',
+    backgroundColor: NAV_TAB_ACTIVE_BG,
   },
   txTableCell: {
     fontFamily,
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: '400',
-    color: '#1d1d1f',
-    letterSpacing: -0.2,
+    color: '#1a1a1a',
+    letterSpacing: -0.1,
   },
   txTableCellPrimary: {
-    fontWeight: '500',
+    fontFamily: FONT_LIGHT,
+    fontSize: 14,
+    fontWeight: '400',
+    color: '#1a1a1a',
+    letterSpacing: -0.2,
   },
   txTableCellSecondary: {
-    color: '#6e6e73',
+    color: '#8e8e93',
   },
   txTableRef: {
     flexDirection: 'row',
@@ -13583,10 +13658,10 @@ const styles = StyleSheet.create({
   },
   txTableKind: {
     fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
+    fontSize: 13,
+    fontWeight: '500',
     color: '#2F6FED',
-    letterSpacing: -0.08,
+    letterSpacing: -0.1,
     width: 22,
     flexShrink: 0,
   },
@@ -13600,10 +13675,10 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   txTableAmountText: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '400',
-    color: '#1d1d1f',
+    fontFamily: FONT_LIGHT,
+    fontSize: 14,
+    fontWeight: '300',
+    color: '#1a1a1a',
     letterSpacing: -0.2,
     fontVariant: ['tabular-nums'],
     textAlign: 'right',
@@ -13940,8 +14015,10 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 340,
     maxHeight: '80%',
-    backgroundColor: '#fff',
-    borderRadius: 14,
+    backgroundColor: CANVAS,
+    borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
     overflow: 'hidden',
     ...Platform.select({
       web: {
@@ -13961,9 +14038,9 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   filterMenuTitle: {
-    fontFamily,
-    fontSize: 17,
-    fontWeight: '600',
+    fontFamily: FONT_LIGHT,
+    fontSize: 16,
+    fontWeight: '300',
     color: '#1d1d1f',
     letterSpacing: -0.4,
   },
@@ -15414,7 +15491,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     alignSelf: 'flex-start',
-    width: 252,
+    width: 328,
+    maxWidth: '100%',
     gap: 0,
     paddingVertical: 3,
     paddingHorizontal: 2,
@@ -15450,6 +15528,13 @@ const styles = StyleSheet.create({
     width: undefined,
     flexShrink: 0,
     minWidth: 0,
+  },
+  igHomeStoreMetricReview: {
+    flexGrow: 1.4,
+    flexShrink: 1,
+    flexBasis: 120,
+    minWidth: 112,
+    width: 120,
   },
   igStoreCard: {
     position: 'relative',

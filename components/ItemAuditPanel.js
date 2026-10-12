@@ -28,7 +28,8 @@ import {
   formatPickerDate,
   parseDateParam,
 } from '../lib/transactions';
-import { MOBILE, mobileSafeBottom } from '../lib/mobileUi';
+import { CANVAS, MOBILE, NAV_TAB_ACTIVE_RADIUS, mobileSafeBottom } from '../lib/mobileUi';
+import { FONT_LIGHT } from '../lib/typography';
 import { AuditTxnDrawer, useAuditTxnDrawer } from './AuditAiOutput';
 
 const fontFamily = Platform.select({
@@ -40,19 +41,25 @@ const fontFamily = Platform.select({
 const ACCENT = '#1F8A4E';
 const TINT = '#EAF6EE';
 const BLUE = MOBILE.blue;
-const TEXT = '#1d1d1f';
-const SECONDARY = '#6e6e73';
-const FILL = 'rgba(118, 118, 128, 0.12)';
-const PAGE = '#fff';
-const CARD = '#fff';
-const HAIRLINE = '#e5e5ea';
+const TEXT = '#1a1a1a';
+const SECONDARY = '#8e8e93';
+const TAB_BORDER = '#d0d0d0';
+const PAGE = CANVAS;
+const CARD = CANVAS;
+const HAIRLINE = 'rgba(42,38,30,0.08)';
 const CHEVRON = '#c7c7cc';
 const MOBILE_BREAKPOINT = 768;
 const AMBER = '#FF9500';
 const RED = '#FF3B30';
 const TICKET_SHADOW = Platform.select({
-  web: { boxShadow: '0 8px 24px rgba(0,0,0,0.04)' },
-  default: {},
+  web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
+  default: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 2,
+    elevation: 1,
+  },
 });
 
 function useIsMobile() {
@@ -839,12 +846,12 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     alignItems: 'center',
     gap: 8,
-    paddingTop: 18,
+    paddingTop: 4,
     paddingBottom: 12,
     marginBottom: 4,
     width: '100%',
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
+    borderBottomColor: 'rgba(42,38,30,0.16)',
   },
   toolbarMobile: {
     marginTop: 0,
@@ -853,10 +860,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: FILL,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    height: 36,
+    backgroundColor: PAGE,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    paddingHorizontal: 10,
+    height: 32,
+    ...TICKET_SHADOW,
     minWidth: 120,
     maxWidth: 220,
     ...Platform.select({
@@ -888,8 +898,8 @@ const styles = StyleSheet.create({
   },
   chipValue: {
     fontFamily,
-    fontSize: 15,
-    fontWeight: '500',
+    fontSize: 14,
+    fontWeight: '400',
     color: TEXT,
     letterSpacing: -0.2,
   },
@@ -897,12 +907,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: FILL,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    height: 36,
+    backgroundColor: PAGE,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    paddingHorizontal: 10,
+    height: 32,
     justifyContent: 'center',
     flexShrink: 0,
+    ...TICKET_SHADOW,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -1013,19 +1026,19 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   groupSectionTitle: {
-    fontFamily,
-    fontSize: 13,
-    color: SECONDARY,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    paddingHorizontal: 4,
+    fontFamily: FONT_LIGHT,
+    fontSize: 16,
+    fontWeight: '300',
+    color: TEXT,
+    letterSpacing: -0.2,
+    paddingHorizontal: 0,
   },
   group: {
-    backgroundColor: CARD,
-    borderRadius: 12,
+    backgroundColor: PAGE,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
     overflow: 'hidden',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: HAIRLINE,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
     ...TICKET_SHADOW,
   },
   storeHeader: {
@@ -1229,15 +1242,17 @@ const styles = StyleSheet.create({
     marginHorizontal: 16,
     marginTop: 12,
     marginBottom: 8,
-    backgroundColor: FILL,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    height: 36,
+    backgroundColor: PAGE,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    paddingHorizontal: 10,
+    height: 32,
   },
   searchInput: {
     flex: 1,
     fontFamily,
-    fontSize: 16,
+    fontSize: 14,
     color: TEXT,
     paddingVertical: 0,
     ...Platform.select({

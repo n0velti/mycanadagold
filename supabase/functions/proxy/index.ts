@@ -7,6 +7,7 @@
  *   /proxy/anthropic/v1/messages           POST  → api.anthropic.com
  *   /proxy/openai/v1/chat/completions      POST  → api.openai.com
  *   /proxy/openrouter/v1/chat/completions  POST  → openrouter.ai
+ *   /proxy/openrouter/v1/models            GET   → openrouter.ai model catalog + prices
  *   /proxy/avatars/inspect                 POST  → OpenAI vision (is there exactly one clear face? describe them)
  *   /proxy/triage/read-po                  POST  → OpenAI vision (read the PO number off a purchase ticket)
  *   /proxy/avatars/stylize                 POST  → OpenAI images/edits (Disney cartoon of the person in the photo) + likeness check
@@ -33,6 +34,7 @@
  *   /proxy/bonus/roster                    POST  → legacy no-op (bonuses use the in-app HR roster)
  *   /proxy/canadagold/page                 GET   → canadagold.ca buy/sell price pages
  *   /proxy/spot-prices                     GET   → api.gold-api.com XAU/XAG/XPT/XPD CAD spots
+ *   /proxy/geo/area                        GET   → OpenStreetMap Nominatim boundary polygon for a place name
  *   /proxy/moneris/cloud                   POST  → Moneris Cloud (Move 5000 / Go)
  *   /proxy/moneris/poll                    POST  → poll a Moneris receipt URL
  *   /proxy/ringcentral/stores              GET   → per-store RingCentral connection status
@@ -735,6 +737,32 @@ async function handleAvatarStylize(req: Request, body: ArrayBuffer | null, staff
   });
 
   return json(req, 200, { image: cartoon, verified, issues, model: usedModel, attempt, subject });
+}
+
+async function handleOpenRouterModels(req: Request, search: string): Promise<Response> {
+  const key = await resolveAiApiKey('openrouter', 'OPENROUTER_API_KEY');
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    'HTTP-Referer': Deno.env.get('CGOLD_APP_URL') || 'https://mycanadagold.app',
+    'X-Title': 'MyCanadaGold',
+  };
+  if (key) headers.Authorization = `Bearer ${key}`;
+  const upstream = await forward('https://openrouter.ai/api/v1/models', { method: 'GET', headers });
+  if (!upstream.ok) return passthroughResponse(req, upstream);
+  const payload = await upstream.json().catch(() => null);
+  const wanted = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search).get('ids');
+  const ids = wanted
+    ? new Set(wanted.split(',').map((item) => item.trim()).filter(Boolean))
+    : null;
+  const data = (Array.isArray(payload?.data) ? payload.data : [])
+    .filter((row: { id?: string }) => !ids || ids.has(String(row?.id || '')))
+    .map((row: { id?: string; name?: string; pricing?: unknown }) => ({
+      id: String(row?.id || ''),
+      name: String(row?.name || row?.id || ''),
+      pricing: row?.pricing && typeof row.pricing === 'object' ? row.pricing : null,
+    }))
+    .filter((row: { id: string }) => row.id);
+  return json(req, 200, { data });
 }
 
 async function handleOpenRouter(req: Request, body: ArrayBuffer | null): Promise<Response> {
@@ -3892,6 +3920,70 @@ async function loadSpotPrices(): Promise<SpotPayload> {
   const payload = { metals, usdCadRate };
   spotCache = { expires: Date.now() + ttlMs, payload };
   return payload;
+}
+
+// Neighbourhood / city outlines for the Analytics area map. Nominatim asks
+// for an identifying User-Agent and at most one request per second; results
+// are cached here for a day because boundaries do not move.
+const GEO_AREA_CACHE = new Map<string, { expires: number; payload: unknown }>();
+const GEO_AREA_TTL_MS = 24 * 60 * 60 * 1000;
+let geoAreaLastCall = 0;
+
+async function handleGeoArea(req: Request, query: URLSearchParams): Promise<Response> {
+  const q = String(query.get('q') || '').trim().slice(0, 120);
+  if (q.length < 2) return error(req, 400, 'Give a place name.', 'bad_request');
+  const key = q.toLowerCase();
+  const hit = GEO_AREA_CACHE.get(key);
+  if (hit && hit.expires > Date.now()) return json(req, 200, hit.payload);
+
+  const wait = geoAreaLastCall + 1100 - Date.now();
+  if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+  geoAreaLastCall = Date.now();
+
+  const params = new URLSearchParams({
+    q,
+    format: 'jsonv2',
+    polygon_geojson: '1',
+    limit: '8',
+    countrycodes: 'ca',
+    'accept-language': 'en',
+  });
+  const upstream = await forward(
+    `https://nominatim.openstreetmap.org/search?${params.toString()}`,
+    {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': `MyCanadaGold/1.0 (${Deno.env.get('CGOLD_APP_URL') || 'https://www.mycanadagold.ca'})`,
+      },
+    },
+    15_000,
+  );
+  if (!upstream.ok) return error(req, 502, 'The map boundary service did not answer.', 'bad_request');
+  const rows = (await upstream.json().catch(() => [])) as Array<Record<string, unknown>>;
+  // Prefer a real boundary polygon (borough, city, historic district) over a
+  // business that happens to share the name, then a named place point.
+  const isArea = (row: Record<string, unknown>) => ['boundary', 'place'].includes(String(row.category || row.class || ''));
+  const hasPolygon = (row: Record<string, unknown>) => {
+    const type = String((row.geojson as { type?: string } | undefined)?.type || '');
+    return type === 'Polygon' || type === 'MultiPolygon';
+  };
+  const list = Array.isArray(rows) ? rows : [];
+  const first = list.find((row) => isArea(row) && hasPolygon(row)) || list.find(isArea) || null;
+  if (!first) return json(req, 200, { found: false, query: q });
+  const box = Array.isArray(first.boundingbox) ? first.boundingbox.map(Number) : [];
+  const payload = {
+    found: true,
+    query: q,
+    name: String(first.display_name || q),
+    kind: String(first.type || first.class || ''),
+    lat: Number(first.lat),
+    lng: Number(first.lon),
+    bounds: box.length === 4 ? { south: box[0], north: box[1], west: box[2], east: box[3] } : null,
+    geojson: first.geojson && typeof first.geojson === 'object' ? first.geojson : null,
+  };
+  GEO_AREA_CACHE.set(key, { expires: Date.now() + GEO_AREA_TTL_MS, payload });
+  return json(req, 200, payload);
 }
 
 async function handleSpotPrices(req: Request): Promise<Response> {
@@ -8220,6 +8312,9 @@ Deno.serve(async (req) => {
     if (path === '/openai/v1/chat/completions' && req.method === 'POST') {
       return await handleOpenAI(req, await readBody(req));
     }
+    if (path === '/openrouter/v1/models' && req.method === 'GET') {
+      return await handleOpenRouterModels(req, search);
+    }
     if (path === '/openrouter/v1/chat/completions' && req.method === 'POST') {
       return await handleOpenRouter(req, await readBody(req));
     }
@@ -8300,6 +8395,9 @@ Deno.serve(async (req) => {
     }
     if (path === '/spot-prices' && req.method === 'GET') {
       return await handleSpotPrices(req);
+    }
+    if (path === '/geo/area' && req.method === 'GET') {
+      return await handleGeoArea(req, query);
     }
     if (path === '/moneris/cloud') {
       return await handleMonerisCloud(req, staff.userId);

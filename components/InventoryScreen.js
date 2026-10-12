@@ -7,7 +7,6 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  useWindowDimensions,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -15,7 +14,9 @@ import { FlashList } from '@shopify/flash-list';
 import { fetchInventoryMatrix, formatQty, peekInventoryMatrix } from '../lib/inventory';
 import { INVENTORY_LIVE_MS, useLiveRefresh } from '../lib/liveRefresh';
 import { textMatchesQuery } from '../lib/itemSearch';
+import { CANVAS, NAV_TAB_ACTIVE_BG, NAV_TAB_ACTIVE_RADIUS, useIsMobile } from '../lib/mobileUi';
 import { useAppAccess } from '../lib/permissions';
+import { FONT_LIGHT } from '../lib/typography';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -23,11 +24,21 @@ const fontFamily = Platform.select({
   default: 'Sohne',
 });
 
-const LABEL = '#1d1d1f';
+const LABEL = '#1a1a1a';
 const SECONDARY = '#8e8e93';
-const FILL = 'rgba(118, 118, 128, 0.12)';
-const SEPARATOR = '#e5e5ea';
+const TAB_BORDER = '#d0d0d0';
+const RULE = 'rgba(42,38,30,0.08)';
 const BLUE = '#007AFF';
+const CHIP_SHADOW = Platform.select({
+  web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
+  default: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+});
 
 const PRIORITY_COLORS = {
   green: '#34C759',
@@ -157,8 +168,7 @@ export default function InventoryScreen({
   storeFilter,
   embedded = false,
 }) {
-  const { width: windowWidth } = useWindowDimensions();
-  const isMobile = windowWidth < 768;
+  const isMobile = useIsMobile();
   const { canFilter } = useAppAccess();
   const allowFilters = canFilter('inventory');
   const lockedStore = Boolean(storeFilter);
@@ -507,7 +517,7 @@ const styles = StyleSheet.create({
   body: {
     flex: 1,
     minHeight: 0,
-    backgroundColor: '#f2f2f7',
+    backgroundColor: CANVAS,
     paddingHorizontal: 16,
     paddingTop: 8,
   },
@@ -535,18 +545,25 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    minHeight: 36,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: FILL,
+    height: 32,
+    minHeight: 32,
+    paddingHorizontal: 10,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
+    ...CHIP_SHADOW,
   },
   searchInput: {
     flex: 1,
+    minWidth: 0,
+    height: 30,
     fontFamily,
-    fontSize: 17,
+    fontSize: 14,
     fontWeight: '400',
     color: LABEL,
-    paddingVertical: 8,
+    paddingVertical: 0,
+    letterSpacing: -0.2,
     ...Platform.select({
       web: { outlineStyle: 'none' },
       default: {},
@@ -559,26 +576,32 @@ const styles = StyleSheet.create({
     paddingRight: 8,
   },
   chip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 16,
-    backgroundColor: FILL,
+    height: 32,
+    paddingHorizontal: 10,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...CHIP_SHADOW,
   },
   chipActive: {
-    backgroundColor: LABEL,
+    backgroundColor: NAV_TAB_ACTIVE_BG,
   },
   chipPressed: {
     opacity: 0.72,
   },
   chipText: {
     fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
+    fontSize: 14,
+    fontWeight: '400',
     color: LABEL,
-    letterSpacing: -0.08,
+    letterSpacing: -0.2,
   },
   chipTextActive: {
-    color: '#fff',
+    color: LABEL,
+    fontWeight: '400',
   },
   toolbar: {
     flexDirection: 'row',
@@ -589,11 +612,11 @@ const styles = StyleSheet.create({
   scopeLabel: {
     flex: 1,
     minWidth: 0,
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: SECONDARY,
-    letterSpacing: -0.08,
+    fontFamily: FONT_LIGHT,
+    fontSize: 16,
+    fontWeight: '300',
+    color: LABEL,
+    letterSpacing: -0.2,
   },
   toolbarActions: {
     flexDirection: 'row',
@@ -603,45 +626,44 @@ const styles = StyleSheet.create({
   segment: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: FILL,
-    borderRadius: 9,
-    padding: 2,
+    height: 32,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
+    overflow: 'hidden',
+    ...CHIP_SHADOW,
   },
   segmentItem: {
+    height: 30,
     paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 7,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   segmentItemActive: {
-    backgroundColor: '#fff',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOpacity: 0.08,
-        shadowRadius: 2,
-        shadowOffset: { width: 0, height: 1 },
-      },
-      android: { elevation: 1 },
-      default: {},
-    }),
+    backgroundColor: NAV_TAB_ACTIVE_BG,
   },
   segmentText: {
     fontFamily,
-    fontSize: 13,
-    fontWeight: '500',
+    fontSize: 14,
+    fontWeight: '400',
     color: SECONDARY,
+    letterSpacing: -0.2,
   },
   segmentTextActive: {
     color: LABEL,
-    fontWeight: '600',
+    fontWeight: '400',
   },
   refresh: {
     width: 32,
     height: 32,
-    borderRadius: 16,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: FILL,
+    backgroundColor: CANVAS,
+    ...CHIP_SHADOW,
   },
   banner: {
     paddingVertical: 2,
@@ -695,9 +717,12 @@ const styles = StyleSheet.create({
   listCard: {
     flex: 1,
     minHeight: 0,
-    backgroundColor: '#fff',
-    borderRadius: 14,
+    backgroundColor: CANVAS,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
     overflow: 'hidden',
+    ...CHIP_SHADOW,
   },
   listCardEmbedded: {
     width: '100%',
@@ -712,12 +737,12 @@ const styles = StyleSheet.create({
   itemRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 56,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    minHeight: 46,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     gap: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: SEPARATOR,
+    borderBottomColor: RULE,
   },
   itemCopy: {
     flex: 1,
@@ -725,31 +750,31 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   itemName: {
-    fontFamily,
-    fontSize: 17,
+    fontFamily: FONT_LIGHT,
+    fontSize: 14,
     fontWeight: '400',
     color: LABEL,
-    letterSpacing: -0.4,
+    letterSpacing: -0.2,
   },
   itemSubtitle: {
     fontFamily,
     fontSize: 13,
     color: SECONDARY,
-    letterSpacing: -0.08,
+    letterSpacing: -0.1,
   },
   itemQty: {
-    fontFamily,
-    fontSize: 17,
-    fontWeight: '600',
+    fontFamily: FONT_LIGHT,
+    fontSize: 14,
+    fontWeight: '300',
     color: LABEL,
-    letterSpacing: -0.4,
+    letterSpacing: -0.2,
     fontVariant: ['tabular-nums'],
     minWidth: 36,
     textAlign: 'right',
   },
   itemQtyZero: {
     color: SECONDARY,
-    fontWeight: '400',
+    fontWeight: '300',
   },
   centered: {
     flex: 1,
