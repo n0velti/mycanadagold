@@ -74,11 +74,12 @@ import {
   getModelMeta,
   OPENROUTER_MODELS,
 } from '../lib/openrouter';
-import { mobileSafeBottom, useIsMobile } from '../lib/mobileUi';
+import { mobileSafeBottom, NAV_TAB_ACTIVE_BG, NAV_TAB_ACTIVE_RADIUS, useIsMobile } from '../lib/mobileUi';
+import { FONT_LIGHT } from '../lib/typography';
 import { AUREUS_CASH_LIVE_MS, useLiveRefresh } from '../lib/liveRefresh';
 import { AuditAiChat, AuditTxnDrawer, useAuditTxnDrawer } from './AuditAiOutput';
 import ItemAuditPanel from './ItemAuditPanel';
-import { BarButton, IconAction, SearchField, SegmentedSlider, T, TextTabs } from './TriageKit';
+import { BarButton, IconAction, SearchField, SegmentedSlider, T } from './TriageKit';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -104,10 +105,19 @@ const AUDIT_TABS = [
   { key: 'cash', label: 'Cash' },
   { key: 'item', label: 'Audit by Item', shortLabel: 'Item' },
 ];
-const TICKET_SHADOW = Platform.select({
-  web: { boxShadow: '0 8px 24px rgba(0,0,0,0.04)' },
-  default: {},
+const CHIP_SHADOW = Platform.select({
+  web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
+  default: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 2,
+    elevation: 1,
+  },
 });
+const TICKET_SHADOW = CHIP_SHADOW;
+const TAB_BORDER = '#d0d0d0';
+const HEAD_RULE = 'rgba(42,38,30,0.16)';
 const METAL_ACCENTS = {
   Gold: '#D4A017',
   Silver: '#7A8494',
@@ -3566,6 +3576,29 @@ function CashAuditPanel({
 }
 
 
+function AuditTabs({ value, onChange, compact = false }) {
+  return (
+    <View style={styles.auditTabs} accessibilityRole="tablist">
+      {AUDIT_TABS.map((tab) => {
+        const active = tab.key === value;
+        const label = compact ? tab.shortLabel || tab.label : tab.label;
+        return (
+          <Pressable
+            key={tab.key}
+            onPress={() => onChange(tab.key)}
+            style={[styles.auditTab, active && styles.auditTabActive]}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: active }}
+            accessibilityLabel={tab.label}
+          >
+            <Text style={styles.auditTabText}>{label}</Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
 export default function AuditScreen({
   session,
   onRequireLogin,
@@ -3577,29 +3610,11 @@ export default function AuditScreen({
   const isMobile = useIsMobile();
   const [activeTab, setActiveTab] = useState('bullion');
 
-  const navTabs = useMemo(
-    () => (
-      <TextTabs
-        options={AUDIT_TABS.map((tab) => ({
-          key: tab.key,
-          label: isMobile ? tab.shortLabel || tab.label : tab.label,
-        }))}
-        value={activeTab}
-        onChange={setActiveTab}
-        size="lg"
-        layout="inline"
-      />
-    ),
-    [activeTab, isMobile],
-  );
-
-  const portalNav = Boolean(onNavTabs) && !isMobile;
-
   useLayoutEffect(() => {
-    if (!portalNav) return undefined;
-    onNavTabs(navTabs);
+    if (!onNavTabs) return undefined;
+    onNavTabs(null);
     return () => onNavTabs(null);
-  }, [navTabs, onNavTabs, portalNav]);
+  }, [onNavTabs]);
 
   return (
     <View
@@ -3609,9 +3624,9 @@ export default function AuditScreen({
         isMobile && (embedded ? styles.panelBodyMobile : styles.auditPageMobile),
       ]}
     >
-      {portalNav ? null : (
-        <View style={[styles.localNavRow, isMobile && styles.localNavRowMobile]}>{navTabs}</View>
-      )}
+      <View style={[styles.localNavRow, isMobile && styles.localNavRowMobile]}>
+        <AuditTabs value={activeTab} onChange={setActiveTab} compact={isMobile} />
+      </View>
 
       {activeTab === 'bullion' ? (
         <BullionAuditPanel
@@ -3651,6 +3666,7 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
     backgroundColor: PAGE,
+    paddingHorizontal: 16,
   },
   bodyEmbedded: {
     flex: 1,
@@ -3658,28 +3674,61 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: '100%',
     backgroundColor: 'transparent',
+    paddingHorizontal: 0,
   },
   localNavRow: {
     flexShrink: 0,
     flexDirection: 'row',
-    justifyContent: 'flex-end',
-    alignItems: 'flex-end',
-    paddingBottom: 2,
+    justifyContent: 'flex-start',
+    alignItems: 'center',
+    paddingTop: 4,
+    paddingBottom: 12,
   },
   localNavRowMobile: {
-    justifyContent: 'flex-start',
-    paddingBottom: 0,
+    paddingTop: 8,
+    paddingBottom: 10,
+  },
+  auditTabs: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  auditTab: {
+    height: 32,
+    paddingHorizontal: 10,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: PAGE,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...CHIP_SHADOW,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  auditTabActive: {
+    backgroundColor: NAV_TAB_ACTIVE_BG,
+  },
+  auditTabText: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: TEXT,
+    letterSpacing: -0.2,
   },
   pageChrome: {
     flexShrink: 0,
     flexDirection: 'row',
     flexWrap: 'wrap',
     alignItems: 'center',
-    gap: 12,
-    paddingTop: 18,
+    gap: 8,
+    paddingTop: 4,
     paddingBottom: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: T.hairline,
+    borderBottomColor: HEAD_RULE,
   },
   pageChromeStart: {
     flexShrink: 1,
@@ -3740,17 +3789,18 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 44,
     minHeight: 44,
-    borderRadius: 12,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
   },
   fillButtonMobileFlex: {
     flex: 1,
     minWidth: 0,
     height: 44,
     minHeight: 44,
-    borderRadius: 12,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
   },
   fillButtonSave: {
     backgroundColor: ACCENT,
+    borderColor: ACCENT,
   },
   fillButtonSaveText: {
     fontFamily,
@@ -3763,12 +3813,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: FILL,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    height: 36,
+    backgroundColor: PAGE,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    paddingHorizontal: 10,
+    height: 32,
     justifyContent: 'center',
     flexShrink: 0,
+    ...CHIP_SHADOW,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -3776,7 +3829,7 @@ const styles = StyleSheet.create({
   },
   appleDateValue: {
     fontFamily,
-    fontSize: 16,
+    fontSize: 14,
     color: TEXT,
     letterSpacing: -0.2,
   },
@@ -3796,26 +3849,32 @@ const styles = StyleSheet.create({
     gap: 16,
   },
   iconToggle: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
+    width: 32,
+    height: 32,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: FILL,
+    backgroundColor: PAGE,
+    ...CHIP_SHADOW,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
   fillButton: {
-    height: 36,
-    minHeight: 36,
-    paddingHorizontal: 14,
-    borderRadius: 10,
-    backgroundColor: TEXT,
+    height: 32,
+    minHeight: 32,
+    paddingHorizontal: 10,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: PAGE,
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
+    ...CHIP_SHADOW,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -3826,19 +3885,19 @@ const styles = StyleSheet.create({
   },
   fillButtonText: {
     fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#fff',
+    fontSize: 14,
+    fontWeight: '400',
+    color: TEXT,
     letterSpacing: -0.2,
   },
   storeTitle: {
-    fontFamily,
+    fontFamily: FONT_LIGHT,
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '300',
     color: TEXT,
     letterSpacing: -0.2,
     flexShrink: 1,
-    maxWidth: 140,
+    maxWidth: 180,
     lineHeight: 20,
   },
   storeSelect: {
@@ -3873,20 +3932,19 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   groupSectionTitle: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '400',
-    color: SECONDARY,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    paddingHorizontal: 4,
+    fontFamily: FONT_LIGHT,
+    fontSize: 16,
+    fontWeight: '300',
+    color: TEXT,
+    letterSpacing: -0.2,
+    paddingHorizontal: 0,
   },
   group: {
-    backgroundColor: CARD,
-    borderRadius: 12,
+    backgroundColor: PAGE,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
     overflow: 'hidden',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: HAIRLINE,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
     ...TICKET_SHADOW,
   },
   rowActionDisabled: {
@@ -3895,21 +3953,21 @@ const styles = StyleSheet.create({
   statRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 44,
-    paddingLeft: 16,
-    paddingRight: 14,
+    minHeight: 46,
+    paddingLeft: 12,
+    paddingRight: 12,
     gap: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HAIRLINE,
+    borderBottomColor: 'rgba(42,38,30,0.08)',
   },
   statRowLast: {
     borderBottomWidth: 0,
   },
   statLabel: {
-    fontFamily,
+    fontFamily: FONT_LIGHT,
     flex: 1,
     minWidth: 0,
-    fontSize: 17,
+    fontSize: 14,
     fontWeight: '400',
     color: TEXT,
     letterSpacing: -0.2,
@@ -3918,9 +3976,9 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   statValue: {
-    fontFamily,
-    fontSize: 17,
-    fontWeight: '400',
+    fontFamily: FONT_LIGHT,
+    fontSize: 14,
+    fontWeight: '300',
     color: TEXT,
     letterSpacing: -0.2,
     fontVariant: ['tabular-nums'],
@@ -4022,10 +4080,10 @@ const styles = StyleSheet.create({
     flexBasis: 118,
     maxWidth: 168,
     minWidth: 110,
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: HAIRLINE,
+    backgroundColor: PAGE,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
     paddingTop: 12,
     paddingBottom: 12,
     paddingHorizontal: 10,
@@ -4181,8 +4239,10 @@ const styles = StyleSheet.create({
     width: 0,
     minWidth: 44,
     minHeight: 44,
-    backgroundColor: '#fff',
-    borderRadius: 12,
+    backgroundColor: PAGE,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
     fontSize: 22,
   },
   strapAmountCompact: {
@@ -4228,10 +4288,12 @@ const styles = StyleSheet.create({
     flexShrink: 1,
     width: 0,
     minWidth: 44,
-    minHeight: 36,
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    fontSize: 17,
+    minHeight: 32,
+    backgroundColor: PAGE,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    fontSize: 14,
   },
   strapAmount: {
     fontFamily,
@@ -4293,15 +4355,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    minHeight: 36,
+    minHeight: 32,
     paddingHorizontal: 10,
-    borderRadius: 10,
-    backgroundColor: '#fff',
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: PAGE,
   },
   countFooterFieldMobile: {
     minHeight: 48,
-    borderRadius: 12,
-    backgroundColor: FILL,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    backgroundColor: PAGE,
   },
   countFooterPrefix: {
     fontFamily,
@@ -4402,9 +4466,11 @@ const styles = StyleSheet.create({
   },
   cashCountInput: {
     width: '100%',
-    minHeight: 34,
-    borderRadius: 8,
-    backgroundColor: '#fff',
+    minHeight: 32,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: PAGE,
     fontFamily,
     fontSize: 16,
     fontWeight: '600',
@@ -4645,11 +4711,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: FILL,
-    minHeight: 48,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: PAGE,
+    minHeight: 32,
+    ...CHIP_SHADOW,
   },
   modelDropdownOpen: {
     backgroundColor: '#fff',
@@ -4673,10 +4742,10 @@ const styles = StyleSheet.create({
   modelMenu: {
     marginTop: 6,
     maxHeight: 260,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e0e0e0',
-    borderRadius: 10,
-    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    backgroundColor: PAGE,
     ...Platform.select({
       web: { boxShadow: '0 8px 24px rgba(0,0,0,0.08)' },
       default: {
@@ -4730,10 +4799,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 8,
     backgroundColor: ACCENT,
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    minHeight: 44,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    minHeight: 32,
     minWidth: 140,
     ...Platform.select({
       web: { cursor: 'pointer' },
@@ -4758,10 +4827,13 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   bullionTableCard: {
-    backgroundColor: CARD,
-    borderRadius: 12,
+    backgroundColor: PAGE,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
     overflow: 'hidden',
     width: '100%',
+    ...TICKET_SHADOW,
   },
   bullionTableScroll: {
     width: '100%',
@@ -4789,9 +4861,9 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,59,48,0.08)',
   },
   bullionHeaderRow: {
-    backgroundColor: FILL,
-    borderBottomColor: HAIRLINE,
-    minHeight: 30,
+    backgroundColor: PAGE,
+    borderBottomColor: HEAD_RULE,
+    minHeight: 34,
     paddingVertical: 4,
     flexShrink: 0,
     ...Platform.select({
@@ -4801,10 +4873,10 @@ const styles = StyleSheet.create({
   },
   bullionH: {
     fontFamily,
-    fontSize: 11,
-    fontWeight: '600',
+    fontSize: 13,
+    fontWeight: '500',
     color: SECONDARY,
-    letterSpacing: -0.08,
+    letterSpacing: -0.15,
   },
   bullionHFill: {
     color: TEXT,
@@ -4896,15 +4968,16 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   bInput: {
-    borderWidth: 0,
-    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
     paddingHorizontal: 6,
     paddingVertical: 4,
     fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
+    fontSize: 14,
+    fontWeight: '400',
     color: TEXT,
-    backgroundColor: FILL,
+    backgroundColor: PAGE,
     fontVariant: ['tabular-nums'],
     textAlign: 'right',
     minHeight: 34,
@@ -5156,11 +5229,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    height: 36,
-    minHeight: 36,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: FILL,
+    height: 32,
+    minHeight: 32,
+    paddingHorizontal: 10,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: PAGE,
+    ...CHIP_SHADOW,
     maxWidth: 160,
     flexShrink: 1,
     ...Platform.select({
@@ -5272,10 +5348,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   ticketCard: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: HAIRLINE,
-    borderRadius: 12,
-    backgroundColor: CARD,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    backgroundColor: PAGE,
     overflow: 'hidden',
     width: '100%',
     ...TICKET_SHADOW,

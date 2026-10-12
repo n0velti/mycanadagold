@@ -26,7 +26,8 @@
         base-uri 'self';
         object-src 'none';
         form-action 'self' https://app.rippling.com;
-        script-src 'self' 'unsafe-eval' http://localhost:* http://127.0.0.1:*;
+        script-src 'self' 'unsafe-eval' http://localhost:* http://127.0.0.1:*
+          https://maps.googleapis.com https://maps.gstatic.com;
         style-src 'self' 'unsafe-inline';
         font-src 'self' data:;
         img-src 'self' data: blob: https:;
@@ -37,7 +38,9 @@
           https://mrvyckltclmcwshnnqfu.supabase.co wss://mrvyckltclmcwshnnqfu.supabase.co
           https://canadagoldeast.aureuspos.com https://gta.aureuspos.com https://canadianpmx.com
           wss://*.ringcentral.com wss://*.ringcentral.com:8083 https://*.ringcentral.com
-          http://localhost:* ws://localhost:* http://127.0.0.1:* ws://127.0.0.1:*;"
+          http://localhost:* ws://localhost:* http://127.0.0.1:* ws://127.0.0.1:*
+          https://maps.googleapis.com https://maps.gstatic.com;
+        frame-src https://maps.googleapis.com;"
     />
     <meta name="referrer" content="strict-origin-when-cross-origin" />
     <meta name="robots" content="noindex, nofollow" />

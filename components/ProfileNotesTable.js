@@ -24,7 +24,6 @@ import {
 import { MOBILE, useIsMobile } from '../lib/mobileUi';
 
 const fontFamily = 'Sohne';
-const GOLD = '#E8C36A';
 const WEEKDAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 
 const IMPORTANCE_COLOR = {
@@ -238,7 +237,7 @@ function ComposerRow({ draft, onChange, onSave, onCancel, saving, canSave }) {
         accessibilityRole="button"
         accessibilityLabel={draft.dueOn ? `Due ${formatNoteDate(draft.dueOn)}` : 'Set due date'}
       >
-        <Ionicons name="calendar-outline" size={14} color={draft.dueOn ? GOLD : '#8e8e93'} />
+        <Ionicons name="calendar-outline" size={14} color={draft.dueOn ? '#1a1a1a' : '#8e8e93'} />
         <Text style={[styles.cell, styles.inlinePickText, !draft.dueOn && styles.placeholder]} numberOfLines={1}>
           {draft.dueOn ? formatNoteDate(draft.dueOn) : 'Due'}
         </Text>
@@ -278,9 +277,9 @@ function ComposerRow({ draft, onChange, onSave, onCancel, saving, canSave }) {
           style={styles.rowAction}
         >
           {saving ? (
-            <ActivityIndicator size="small" color={GOLD} />
+            <ActivityIndicator size="small" color="#1a1a1a" />
           ) : (
-            <Ionicons name="checkmark" size={16} color={canSave ? GOLD : '#5c5c5c'} />
+            <Ionicons name="checkmark" size={16} color={canSave ? '#1a1a1a' : '#c7c7cc'} />
           )}
         </Pressable>
         <Pressable
@@ -391,7 +390,7 @@ function MobileComposer({ draft, onChange, onSave, onCancel, saving, canSave }) 
           accessibilityRole="button"
           accessibilityLabel={draft.dueOn ? `Due ${formatNoteDate(draft.dueOn)}` : 'Set due date'}
         >
-          <Ionicons name="calendar-outline" size={15} color={draft.dueOn ? GOLD : MOBILE.secondary} />
+          <Ionicons name="calendar-outline" size={15} color={draft.dueOn ? '#1a1a1a' : MOBILE.secondary} />
           <Text style={[styles.mobileChipText, !draft.dueOn && styles.mobilePlaceholder]} numberOfLines={1}>
             {draft.dueOn ? formatNoteDate(draft.dueOn) : 'Due'}
           </Text>
@@ -590,7 +589,7 @@ export default function ProfileNotesTable({ profileId, myId }) {
             accessibilityRole="button"
             accessibilityLabel="Add note"
           >
-            <Ionicons name="add" size={16} color="#111" />
+            <Ionicons name="add" size={16} color="#1a1a1a" />
             <Text style={styles.addButtonText}>Add</Text>
           </Pressable>
         </View>
@@ -619,7 +618,7 @@ export default function ProfileNotesTable({ profileId, myId }) {
         ) : null}
         {loading ? (
           <View style={styles.empty}>
-            <ActivityIndicator color={GOLD} />
+            <ActivityIndicator color="#1d1d1f" />
           </View>
         ) : notes.length === 0 && !draft ? (
           <View style={styles.empty}>
@@ -663,7 +662,7 @@ export default function ProfileNotesTable({ profileId, myId }) {
             accessibilityRole="button"
             accessibilityLabel="Add note"
           >
-            <Ionicons name="add" size={20} color="#007AFF" />
+            <Ionicons name="add" size={16} color="#1a1a1a" />
             <Text style={styles.mobileAddText}>Add</Text>
           </Pressable>
         </View>
@@ -722,35 +721,39 @@ const styles = StyleSheet.create({
     marginTop: 0,
   },
   table: {
-    backgroundColor: '#111',
-    borderRadius: 14,
+    backgroundColor: 'transparent',
+    borderRadius: 0,
     overflow: 'hidden',
     width: '100%',
     minWidth: 0,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(42,38,30,0.08)',
   },
   tableHead: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: 4,
+    paddingVertical: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(255,255,255,0.08)',
+    borderBottomColor: '#e8e8e8',
   },
   tableTitle: {
     fontFamily,
-    fontSize: 15,
+    fontSize: 11,
     fontWeight: '600',
-    color: '#fff',
-    letterSpacing: -0.2,
+    color: '#9a9a9a',
+    letterSpacing: 0.2,
   },
   addButton: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: GOLD,
-    borderRadius: 8,
-    paddingVertical: 6,
+    height: 32,
+    backgroundColor: 'rgb(252, 252, 251)',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#d0d0d0',
     paddingHorizontal: 10,
     ...Platform.select({
       web: { cursor: 'pointer' },
@@ -765,45 +768,46 @@ const styles = StyleSheet.create({
   },
   addButtonText: {
     fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#111',
-    letterSpacing: -0.1,
+    fontSize: 14,
+    fontWeight: '400',
+    color: '#1a1a1a',
+    letterSpacing: -0.2,
   },
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 34,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
+    minHeight: 28,
+    paddingHorizontal: 4,
+    paddingVertical: 6,
     gap: 8,
-    backgroundColor: '#1a1a1a',
+    backgroundColor: 'transparent',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e8e8e8',
   },
   headerCell: {
     fontFamily,
     fontSize: 11,
     fontWeight: '600',
-    color: GOLD,
-    letterSpacing: 0.3,
-    textTransform: 'uppercase',
+    color: '#9a9a9a',
+    letterSpacing: 0.2,
   },
   tableRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingHorizontal: 4,
+    paddingVertical: 8,
     gap: 8,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(255,255,255,0.06)',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#f2f2f2',
   },
   composerRow: {
     alignItems: 'center',
-    backgroundColor: '#1c1c1e',
+    backgroundColor: 'transparent',
   },
   cell: {
     fontFamily,
     fontSize: 13,
-    color: '#f2f2f7',
+    color: '#1a1a1a',
     letterSpacing: -0.1,
   },
   colDate: { width: 76, flexShrink: 1, minWidth: 56 },
@@ -832,9 +836,11 @@ const styles = StyleSheet.create({
     maxHeight: 72,
     paddingVertical: 6,
     paddingHorizontal: 8,
-    borderRadius: 8,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    color: '#f2f2f7',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#d0d0d0',
+    backgroundColor: 'rgb(252, 252, 251)',
+    color: '#1a1a1a',
     textAlignVertical: 'top',
     ...Platform.select({
       web: { outlineStyle: 'none' },
@@ -930,17 +936,19 @@ const styles = StyleSheet.create({
   },
   mobileAddText: {
     fontFamily,
-    fontSize: 17,
+    fontSize: 14,
     fontWeight: '400',
-    color: '#007AFF',
+    color: '#1a1a1a',
     letterSpacing: -0.2,
   },
   mobileCard: {
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    backgroundColor: 'transparent',
+    borderRadius: 0,
+    paddingHorizontal: 4,
+    paddingVertical: 10,
     gap: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#f2f2f2',
   },
   mobileField: {
     fontFamily,
@@ -998,8 +1006,8 @@ const styles = StyleSheet.create({
     minWidth: 72,
     minHeight: 32,
     paddingHorizontal: 14,
-    borderRadius: 8,
-    backgroundColor: '#007AFF',
+    borderRadius: 6,
+    backgroundColor: '#1a1a1a',
     alignItems: 'center',
     justifyContent: 'center',
     ...Platform.select({
@@ -1059,9 +1067,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   mobileEmptyCard: {
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    paddingHorizontal: 16,
+    backgroundColor: 'transparent',
+    paddingHorizontal: 4,
     paddingVertical: 22,
   },
   mobileEmptyText: {
@@ -1154,10 +1161,10 @@ const styles = StyleSheet.create({
   },
   calDayToday: {
     borderWidth: 1,
-    borderColor: GOLD,
+    borderColor: '#1a1a1a',
   },
   calDaySelected: {
-    backgroundColor: GOLD,
+    backgroundColor: '#1a1a1a',
     borderWidth: 0,
   },
   calDayText: {
@@ -1170,7 +1177,7 @@ const styles = StyleSheet.create({
   },
   calDayTextSelected: {
     fontWeight: '700',
-    color: '#111',
+    color: '#fff',
   },
   calFooter: {
     flexDirection: 'row',

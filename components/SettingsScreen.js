@@ -426,7 +426,7 @@ function AiModelsPanel() {
             <IosRow icon="checkmark-circle" iconColor="#34C759" label="Saved" value="Everyone" />
           </IosGroup>
         ) : null}
-        <IosGroup footer="These keys are shared with every signed-in employee. Only a System Admin or General Manager can open this screen.">
+        <IosGroup footer="These keys are shared with every signed-in employee. Analytics chat uses OpenRouter. The Google Maps key loads customer maps. Only a System Admin or General Manager can open this screen.">
           <IosActionRow label={saving ? 'Saving…' : 'Save'} onPress={handleSave} disabled={saving} />
         </IosGroup>
       </IosPage>
@@ -436,9 +436,10 @@ function AiModelsPanel() {
   return (
     <ScrollView style={styles.body} contentContainerStyle={styles.aiContent}>
       <Text style={styles.aiIntro}>
-        These keys are shared with every signed-in employee. Analysts can run AI chat and
-        generate portraits without pasting a key. Only a System Admin or General Manager can
-        open this screen or see the values.
+        These keys are shared with every signed-in employee. Analytics chat uses the
+        OpenRouter key so you can switch models. The Google Maps key is a browser key for
+        customer maps. Only a System Admin or General Manager can open this screen or see
+        the values.
       </Text>
       {unavailable ? (
         <Text style={styles.errorText}>

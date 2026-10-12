@@ -377,13 +377,38 @@ export default function CustomersScreen({ session, focusCustomer, onFocusConsume
 
   useEffect(() => {
     if (!focusCustomer) return;
+    let cancelled = false;
     setSelected(focusCustomer);
     if (focusCustomer.label) {
       setMode('search');
       setQuery(focusCustomer.label);
     }
     onFocusConsumed?.();
-  }, [focusCustomer, onFocusConsumed]);
+    // Rows from search carry their POS login; rows from a map dot or a review
+    // only carry id + system. Fill the login in so the profile can load.
+    if (focusCustomer.id && !focusCustomer.token) {
+      (async () => {
+        try {
+          const authed = await ensureLinkedPosSessions(session);
+          const source = posSourcesFromSession(authed).find(
+            (entry) => !focusCustomer.systemKey || entry.key === focusCustomer.systemKey,
+          );
+          if (!cancelled && source) {
+            setSelected((current) =>
+              current && current.id === focusCustomer.id && !current.token
+                ? { ...current, token: source.token, baseUrl: source.baseUrl, systemKey: source.key, systemLabel: source.label }
+                : current,
+            );
+          }
+        } catch {
+          // The profile shows what it can without the login.
+        }
+      })();
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [focusCustomer, onFocusConsumed, session]);
 
   useEffect(() => {
     if (!allowFilters && assignedStore) setStoreName(assignedStore);

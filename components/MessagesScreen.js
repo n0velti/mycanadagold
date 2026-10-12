@@ -1,5 +1,4 @@
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BlurView } from 'expo-blur';
 import {
   ActivityIndicator,
   Alert,
@@ -100,7 +99,10 @@ const fontFamily = Platform.select({
 });
 
 
-const BLUE = '#0A84FF';
+const BLUE = '#1a1a1a';
+const INK = '#1a1a1a';
+const CHIP_BORDER = '#d0d0d0';
+const CHIP_RADIUS = 6;
 const AI_PURPLE = '#6B4DE6';
 const INBOX_WIDTH = 340;
 const AGENT_BACKGROUNDS = [
@@ -637,7 +639,7 @@ function MessageBubble({
   const lastTap = useRef(0);
   const [burst, setBurst] = useState(0);
   const [hovered, setHovered] = useState(false);
-  const radius = 18;
+  const radius = 12;
   const cluster = {
     borderTopLeftRadius: !mine && groupedWithPrev ? 6 : radius,
     borderBottomLeftRadius: !mine && groupedWithNext ? 6 : radius,
@@ -2153,10 +2155,17 @@ export default function MessagesScreen({
           ]}
           accessibilityLabel={`Conversation with ${conversationTitle(row)}`}
         >
-          <ConversationAvatar conversation={row} size={52} />
+          <ConversationAvatar conversation={row} size={28} />
           <View style={styles.personCopy}>
             <View style={styles.personTop}>
-              <Text style={[styles.personName, unread && styles.personNameUnread]} numberOfLines={1}>
+              <Text
+                style={[
+                  styles.personName,
+                  (selected || unread) && styles.personNameActive,
+                  unread && styles.personNameUnread,
+                ]}
+                numberOfLines={1}
+              >
                 {conversationTitle(row)}
               </Text>
               <Text style={[styles.personTime, unread && styles.personTimeUnread]}>
@@ -2185,51 +2194,24 @@ export default function MessagesScreen({
   };
 
   const searchField = (
-    <View style={isMobile ? styles.searchWrap : styles.chromeSearchChip}>
-      {isMobile ? (
-        <>
-          <Ionicons name="search" size={16} color="#8e8e93" />
-          <TextInput
-            style={styles.searchInput}
-            value={query}
-            onChangeText={setQuery}
-            placeholder={composeOpen ? 'Search people' : 'Search'}
-            placeholderTextColor="#8e8e93"
-            autoCapitalize="none"
-            autoCorrect={false}
-            clearButtonMode="while-editing"
-            returnKeyType="search"
-          />
-          {query ? (
-            <Pressable onPress={() => setQuery('')} hitSlop={8} accessibilityLabel="Clear search">
-              <Ionicons name="close-circle" size={18} color="#c7c7cc" />
-            </Pressable>
-          ) : null}
-        </>
-      ) : (
-        <BlurView
-          intensity={32}
-          tint="light"
-          style={styles.chromeSearchBlur}
-          {...(Platform.OS === 'web' ? { className: 'cgold-home-chip-blur' } : null)}
-        >
-          <Ionicons name="search" size={16} color="#8e8e93" />
-          <TextInput
-            style={styles.chromeSearchInput}
-            value={query}
-            onChangeText={setQuery}
-            placeholder={composeOpen ? 'Search people' : 'Search messages'}
-            placeholderTextColor="#8e8e93"
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-          {query ? (
-            <Pressable onPress={() => setQuery('')} hitSlop={8}>
-              <Ionicons name="close-circle" size={16} color="#c7c7cc" />
-            </Pressable>
-          ) : null}
-        </BlurView>
-      )}
+    <View style={styles.searchWrap}>
+      <Ionicons name="search" size={15} color="#8e8e93" />
+      <TextInput
+        style={styles.searchInput}
+        value={query}
+        onChangeText={setQuery}
+        placeholder={composeOpen ? 'Search people' : 'Search'}
+        placeholderTextColor="#8e8e93"
+        autoCapitalize="none"
+        autoCorrect={false}
+        clearButtonMode="while-editing"
+        returnKeyType="search"
+      />
+      {query ? (
+        <Pressable onPress={() => setQuery('')} hitSlop={8} accessibilityLabel="Clear search">
+          <Ionicons name="close-circle" size={16} color="#c7c7cc" />
+        </Pressable>
+      ) : null}
     </View>
   );
 
@@ -2302,7 +2284,7 @@ export default function MessagesScreen({
         },
         !isMobile && {
           flexGrow: 1,
-          paddingTop: DESKTOP_TOP_BAR_HEIGHT + 76,
+          paddingTop: DESKTOP_TOP_BAR_HEIGHT + 64,
         },
       ]}
       keyboardShouldPersistTaps="handled"
@@ -2330,14 +2312,7 @@ export default function MessagesScreen({
                 style={styles.chromeCircle}
                 accessibilityLabel="Message the agent"
               >
-                <BlurView
-                  intensity={32}
-                  tint="light"
-                  style={styles.chromeCircleBlur}
-                  {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-bar' } : null)}
-                >
-                  <Ionicons name="construct-outline" size={22} color="#1d1d1f" />
-                </BlurView>
+                <Ionicons name="construct-outline" size={16} color={INK} />
               </Pressable>
               <Pressable
                 onPress={() => {
@@ -2350,18 +2325,11 @@ export default function MessagesScreen({
                 style={styles.chromeCircle}
                 accessibilityLabel={composeOpen ? 'Close compose' : 'Start a conversation'}
               >
-                <BlurView
-                  intensity={32}
-                  tint="light"
-                  style={styles.chromeCircleBlur}
-                  {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-bar' } : null)}
-                >
-                  {composeOpen ? (
-                    <Ionicons name="close" size={22} color="#1d1d1f" />
-                  ) : (
-                    <ComposeIcon size={22} color="#1d1d1f" />
-                  )}
-                </BlurView>
+                {composeOpen ? (
+                  <Ionicons name="close" size={16} color={INK} />
+                ) : (
+                  <ComposeIcon size={16} color={INK} />
+                )}
               </Pressable>
             </View>
           ) : (
@@ -2369,17 +2337,10 @@ export default function MessagesScreen({
               {searchField}
               <Pressable
                 onPress={openAgentConversation}
-                style={styles.chromeCompose}
+                style={styles.chromeCircle}
                 accessibilityLabel="Message the agent"
               >
-                <BlurView
-                  intensity={32}
-                  tint="light"
-                  style={styles.chromeComposeBlur}
-                  {...(Platform.OS === 'web' ? { className: 'cgold-home-chip-blur' } : null)}
-                >
-                  <Ionicons name="construct-outline" size={18} color="#1d1d1f" />
-                </BlurView>
+                <Ionicons name="construct-outline" size={16} color={INK} />
               </Pressable>
               <Pressable
                 onPress={() => {
@@ -2388,21 +2349,14 @@ export default function MessagesScreen({
                   setGroupName('');
                   setQuery('');
                 }}
-                style={styles.chromeCompose}
+                style={styles.chromeCircle}
                 accessibilityLabel={composeOpen ? 'Close compose' : 'Start a conversation'}
               >
-                <BlurView
-                  intensity={32}
-                  tint="light"
-                  style={styles.chromeComposeBlur}
-                  {...(Platform.OS === 'web' ? { className: 'cgold-home-chip-blur' } : null)}
-                >
-                  {composeOpen ? (
-                    <Ionicons name="close" size={18} color="#1d1d1f" />
-                  ) : (
-                    <ComposeIcon size={18} color="#1d1d1f" />
-                  )}
-                </BlurView>
+                {composeOpen ? (
+                  <Ionicons name="close" size={16} color={INK} />
+                ) : (
+                  <ComposeIcon size={16} color={INK} />
+                )}
               </Pressable>
             </View>
           )}
@@ -2425,18 +2379,11 @@ export default function MessagesScreen({
                       setDetailsOpen(false);
                       setAddingMembers(false);
                     }}
-                    style={styles.threadBackCircle}
+                    style={styles.chromeCircle}
                     hitSlop={8}
                     accessibilityLabel="Back to messages"
                   >
-                    <BlurView
-                      intensity={32}
-                      tint="light"
-                      style={styles.chromeCircleBlur}
-                      {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-bar' } : null)}
-                    >
-                      <Ionicons name="chevron-back" size={22} color="#1d1d1f" />
-                    </BlurView>
+                    <Ionicons name="chevron-back" size={16} color={INK} />
                   </Pressable>
                 ) : null}
                 <View style={styles.threadHeaderMain}>
@@ -2989,10 +2936,12 @@ const styles = StyleSheet.create({
     minHeight: 0,
   },
   inboxDesktop: {
-    width: 380,
-    maxWidth: 420,
+    width: 320,
+    maxWidth: 360,
     flexShrink: 0,
     position: 'relative',
+    borderRightWidth: StyleSheet.hairlineWidth,
+    borderRightColor: 'rgba(42,38,30,0.08)',
   },
   inboxMobile: {
     width: '100%',
@@ -3010,10 +2959,10 @@ const styles = StyleSheet.create({
     zIndex: 24,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 12,
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 8,
   },
   chromeRowDesktop: {
     position: 'absolute',
@@ -3021,18 +2970,20 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     flexWrap: 'nowrap',
-    paddingHorizontal: 16,
-    paddingTop: DESKTOP_TOP_BAR_HEIGHT + 16,
+    paddingHorizontal: 12,
+    paddingTop: DESKTOP_TOP_BAR_HEIGHT + 12,
   },
   chromeRowMobile: {
     zIndex: 24,
     flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
     paddingHorizontal: 16,
     paddingTop: 8,
     paddingBottom: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(42,38,30,0.08)',
   },
   chromeSearchChip: {
     flex: 1,
@@ -3106,14 +3057,27 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   chromeCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    overflow: 'hidden',
+    width: 32,
+    height: 32,
+    borderRadius: CHIP_RADIUS,
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
+    backgroundColor: CANVAS,
+    alignItems: 'center',
+    justifyContent: 'center',
     flexShrink: 0,
     ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
+      web: {
+        cursor: 'pointer',
+        boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.06,
+        shadowRadius: 2,
+        elevation: 1,
+      },
     }),
   },
   chromeCircleBlur: {
@@ -3151,10 +3115,8 @@ const styles = StyleSheet.create({
     gap: 8,
     marginHorizontal: 12,
     marginBottom: 8,
-    paddingHorizontal: 10,
+    paddingHorizontal: 4,
     paddingVertical: 6,
-    borderRadius: 12,
-    backgroundColor: '#f2f2f7',
     flexGrow: 0,
     flexShrink: 0,
   },
@@ -3187,10 +3149,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 4,
+    height: 32,
     paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 999,
-    backgroundColor: BLUE,
+    borderRadius: CHIP_RADIUS,
+    backgroundColor: INK,
     alignSelf: 'flex-start',
     ...Platform.select({
       web: { cursor: 'pointer' },
@@ -3198,7 +3160,7 @@ const styles = StyleSheet.create({
     }),
   },
   createChatButtonHover: {
-    backgroundColor: '#0077ed',
+    backgroundColor: '#3a3a3c',
   },
   createChatButtonText: {
     fontFamily,
@@ -3210,11 +3172,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    backgroundColor: '#fff',
-    borderRadius: 999,
+    height: 28,
+    backgroundColor: CANVAS,
+    borderRadius: CHIP_RADIUS,
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
     paddingLeft: 2,
     paddingRight: 8,
-    paddingVertical: 2,
     alignSelf: 'flex-start',
     ...Platform.select({
       web: { cursor: 'pointer' },
@@ -3222,21 +3186,23 @@ const styles = StyleSheet.create({
     }),
   },
   chipHover: {
-    backgroundColor: '#eef4ff',
+    backgroundColor: '#f0f0f2',
   },
   chipText: {
     fontFamily,
     fontSize: 13,
-    fontWeight: '600',
-    color: BLUE,
+    fontWeight: '400',
+    color: INK,
   },
   groupNameWrap: {
     marginHorizontal: 12,
     marginBottom: 8,
-    backgroundColor: '#f2f2f7',
-    borderRadius: 10,
+    backgroundColor: CANVAS,
+    borderRadius: CHIP_RADIUS,
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
     paddingHorizontal: 10,
-    height: 36,
+    height: 32,
     justifyContent: 'center',
   },
   groupNameInput: {
@@ -3252,21 +3218,28 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingHorizontal: 12,
-    height: 40,
-    minHeight: 40,
-    borderRadius: 10,
-    backgroundColor: '#fff',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(60, 60, 67, 0.18)',
+    paddingHorizontal: 10,
+    height: 32,
+    minHeight: 32,
+    borderRadius: CHIP_RADIUS,
+    backgroundColor: CANVAS,
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
+    ...Platform.select({
+      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
+      default: {},
+    }),
   },
   searchInput: {
     flex: 1,
     minWidth: 0,
+    height: 30,
     fontFamily,
-    fontSize: 16,
-    color: '#1d1d1f',
+    fontSize: 14,
+    fontWeight: '400',
+    color: INK,
     paddingVertical: 0,
+    letterSpacing: -0.2,
     outlineStyle: 'none',
   },
   errorText: {
@@ -3324,11 +3297,14 @@ const styles = StyleSheet.create({
   personRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    minHeight: 68,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: '#fff',
+    gap: 10,
+    minHeight: 44,
+    marginHorizontal: 8,
+    marginVertical: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: CHIP_RADIUS,
+    backgroundColor: 'transparent',
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -3339,10 +3315,10 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   personRowSelected: {
-    backgroundColor: '#ececef',
+    backgroundColor: '#f0f0f2',
   },
   rowPressed: {
-    backgroundColor: '#f5f5f7',
+    backgroundColor: '#f5f5f5',
   },
   personCopy: {
     flex: 1,
@@ -3362,12 +3338,17 @@ const styles = StyleSheet.create({
   personName: {
     flex: 1,
     fontFamily,
-    fontSize: 16,
-    color: '#1d1d1f',
+    fontSize: 14,
+    color: '#1a1a1a',
     fontWeight: '500',
+    letterSpacing: -0.2,
+  },
+  personNameActive: {
+    color: '#3A3A3C',
   },
   personNameUnread: {
-    fontWeight: '700',
+    color: INK,
+    fontWeight: '600',
   },
   personTime: {
     fontFamily,
@@ -3375,27 +3356,28 @@ const styles = StyleSheet.create({
     color: '#8e8e93',
   },
   personTimeUnread: {
-    color: BLUE,
+    color: '#FF3B30',
     fontWeight: '600',
   },
   personSub: {
     flex: 1,
     fontFamily,
-    fontSize: 14,
+    fontSize: 12,
     color: '#8e8e93',
+    letterSpacing: -0.1,
   },
   personPreviewUnread: {
     color: '#1d1d1f',
     fontWeight: '600',
   },
   unreadPill: {
-    minWidth: 20,
-    height: 20,
-    borderRadius: 10,
-    paddingHorizontal: 6,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    paddingHorizontal: 4,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: BLUE,
+    backgroundColor: '#FF3B30',
   },
   unreadPillText: {
     fontFamily,
@@ -3436,38 +3418,25 @@ const styles = StyleSheet.create({
     backgroundColor: CANVAS,
   },
   threadDesktop: {
-    marginTop: 16,
-    marginRight: 16,
-    marginBottom: 16,
-    backgroundColor: '#fff',
-    borderRadius: 24,
-    overflow: 'hidden',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(0,0,0,0.08)',
-    ...Platform.select({
-      web: {
-        boxShadow: '0 8px 24px rgba(18,16,12,0.08)',
-      },
-      default: {},
-    }),
+    backgroundColor: CANVAS,
   },
   threadHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
+    minHeight: 48,
     paddingHorizontal: 16,
-    paddingVertical: 14,
+    paddingVertical: 8,
     backgroundColor: 'transparent',
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(0,0,0,0.08)',
+    borderBottomColor: 'rgba(42,38,30,0.08)',
   },
   threadHeaderDesktop: {
-    paddingTop: DESKTOP_TOP_BAR_HEIGHT + 14,
+    paddingTop: DESKTOP_TOP_BAR_HEIGHT + 8,
   },
   threadHeaderMobile: {
     paddingTop: 8,
     backgroundColor: CANVAS,
-    borderBottomWidth: 0,
   },
   threadHeaderMain: {
     flex: 1,
@@ -3488,9 +3457,10 @@ const styles = StyleSheet.create({
   },
   threadName: {
     fontFamily,
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1d1d1f',
+    fontSize: 14,
+    fontWeight: '200',
+    color: INK,
+    letterSpacing: -0.2,
   },
   threadSeen: {
     fontFamily,
@@ -3593,7 +3563,7 @@ const styles = StyleSheet.create({
   detailsPanel: {
     flex: 1,
     minHeight: 0,
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
   },
   detailsContent: {
     paddingHorizontal: 16,
@@ -3615,13 +3585,15 @@ const styles = StyleSheet.create({
   },
   detailsNameInput: {
     fontFamily,
-    fontSize: 17,
-    fontWeight: '600',
-    color: '#1d1d1f',
-    backgroundColor: '#f2f2f7',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    fontSize: 14,
+    fontWeight: '400',
+    color: INK,
+    backgroundColor: CANVAS,
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
+    borderRadius: CHIP_RADIUS,
+    paddingHorizontal: 10,
+    height: 32,
     outlineStyle: 'none',
   },
   detailsTeamName: {
@@ -3752,16 +3724,16 @@ const styles = StyleSheet.create({
     maxWidth: '100%',
   },
   bubbleMine: {
-    backgroundColor: BLUE,
+    backgroundColor: INK,
   },
   bubbleTheirs: {
-    backgroundColor: '#e9e9eb',
+    backgroundColor: '#f0f0f2',
   },
   bubbleHoverMine: {
-    backgroundColor: '#0077ed',
+    backgroundColor: '#3a3a3c',
   },
   bubbleHoverTheirs: {
-    backgroundColor: '#dedee2',
+    backgroundColor: '#e8e8ed',
   },
   bubbleText: {
     fontFamily,
@@ -3830,8 +3802,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: '#e9e9eb',
-    borderRadius: 16,
+    backgroundColor: '#f0f0f2',
+    borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
@@ -3937,12 +3909,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingTop: 8,
     paddingBottom: Platform.OS === 'web' ? 12 : 10,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#e5e5ea',
-    backgroundColor: '#fff',
+    borderTopColor: 'rgba(42,38,30,0.08)',
+    backgroundColor: CANVAS,
   },
   emojiToggle: {
     width: 34,
@@ -3955,13 +3927,14 @@ const styles = StyleSheet.create({
   },
   composerField: {
     flex: 1,
-    height: 36,
-    minHeight: 36,
-    maxHeight: 36,
+    height: 32,
+    minHeight: 32,
+    maxHeight: 32,
     borderWidth: 1,
-    borderColor: '#d1d1d6',
-    borderRadius: 18,
-    paddingHorizontal: 14,
+    borderColor: CHIP_BORDER,
+    borderRadius: CHIP_RADIUS,
+    backgroundColor: CANVAS,
+    paddingHorizontal: 10,
     paddingVertical: 0,
     justifyContent: 'center',
     overflow: 'hidden',
@@ -3981,7 +3954,7 @@ const styles = StyleSheet.create({
   sendButton: {
     width: 32,
     height: 32,
-    borderRadius: 16,
+    borderRadius: CHIP_RADIUS,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -3997,9 +3970,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   composerFieldMobile: {
-    height: 34,
-    minHeight: 34,
-    maxHeight: 34,
+    height: 32,
+    minHeight: 32,
+    maxHeight: 32,
     paddingVertical: 0,
   },
   composerInputMobile: {

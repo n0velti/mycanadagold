@@ -1,4 +1,4 @@
-import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createElement, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Modal,
@@ -28,7 +28,8 @@ import {
 } from '../lib/employeeMetrics';
 import { findStaffByEmployeeName, listStaffProfiles, staffDisplayName } from '../lib/permissions';
 import { storeMarkColor, storeShortCode } from '../lib/storeMarks';
-import { MOBILE, useIsMobile } from '../lib/mobileUi';
+import { CANVAS, MOBILE, NAV_TAB_ACTIVE_RADIUS, useIsMobile } from '../lib/mobileUi';
+import { FONT_EXTRALIGHT } from '../lib/typography';
 import {
   defaultDateRange,
   fetchTransactionsAcrossPos,
@@ -39,6 +40,8 @@ import {
 import { useIsClockedIn } from '../lib/clockedIn';
 import { fetchTimeEntriesBetween } from '../lib/ripplingTime';
 import { EmptyState, FONT, SegmentedSlider, StaffAvatar, TriageDrawer } from './TriageKit';
+
+const AnalyticsAiPanel = lazy(() => import('./AnalyticsAiPanel'));
 
 const ACCENT = '#4F46E5';
 const TINT = '#EEF2FF';
@@ -680,6 +683,25 @@ function EmployeeDrawer({ visible, name, facts, staff, onClose, onOpenEmployee }
   );
 }
 
+function AiButton({ active, onPress }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityState={{ selected: active }}
+      accessibilityLabel={active ? 'Back to analytics' : 'Analyze with AI'}
+      style={({ hovered, pressed }) => [
+        styles.aiButton,
+        active && styles.aiButtonOn,
+        (hovered || pressed) && styles.aiButtonHover,
+      ]}
+    >
+      <Ionicons name="sparkles" size={14} color={active ? '#fff' : '#1a1a1a'} />
+      <Text style={[styles.aiButtonText, active && styles.aiButtonTextOn]}>AI</Text>
+    </Pressable>
+  );
+}
+
 function PhoneField({ label, value, last, onPress, children }) {
   const inner = (
     <>
@@ -825,6 +847,7 @@ function PhoneAnalytics({
   openEmployee,
   employeeRows,
   showRoleCol,
+  onOpenAi,
 }) {
   const [picker, setPicker] = useState('');
   const groupLabel = DIMENSIONS.find((item) => item.key === groupBy)?.label || 'Employee';
@@ -836,6 +859,10 @@ function PhoneAnalytics({
 
   return (
     <View style={styles.screenPhone}>
+      <View style={styles.phoneTopBar}>
+        <Text style={styles.phoneTitle}>Analytics</Text>
+        <AiButton active={false} onPress={onOpenAi} />
+      </View>
       <ScrollView
         style={styles.bodyScroll}
         contentContainerStyle={styles.phoneScroll}
@@ -1031,7 +1058,7 @@ function PhoneAnalytics({
   );
 }
 
-function EmployeesAnalytics({ session, storeFilter }) {
+function EmployeesAnalytics({ session, storeFilter, onOpenCustomer, onOpenDocument }) {
   const compact = useIsMobile();
   const range = defaultDateRange(7);
   const [startDate, setStartDate] = useState(range.startDate);
@@ -1048,6 +1075,8 @@ function EmployeesAnalytics({ session, storeFilter }) {
   const [warning, setWarning] = useState('');
   const [savedViews, setSavedViews] = useState([]);
   const [savingView, setSavingView] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiMounted, setAiMounted] = useState(false);
   const requestId = useRef(0);
   const userKey = session?.supabaseUserId || session?.profile?.id || '';
 
@@ -1224,6 +1253,46 @@ function EmployeesAnalytics({ session, storeFilter }) {
     else applyRange({ startDate: today, endDate: today });
   };
 
+  const openAi = () => {
+    setSelectedEmployee('');
+    setAiMounted(true);
+    setAiOpen(true);
+  };
+  const toggleAi = () => {
+    setSelectedEmployee('');
+    setAiMounted(true);
+    setAiOpen((open) => !open);
+  };
+  const aiPanel = aiMounted ? (
+    <Suspense
+      fallback={
+        <View style={styles.aiFallback}>
+          <ActivityIndicator color="#1a1a1a" />
+        </View>
+      }
+    >
+      <AnalyticsAiPanel
+        session={session}
+        compact={compact}
+        active={aiOpen}
+        onOpenCustomer={onOpenCustomer}
+        onOpenDocument={onOpenDocument}
+        onClose={() => setAiOpen(false)}
+        startDate={startDate}
+        endDate={endDate}
+        groupBy={groupBy}
+        measure={measure}
+        storeFilter={storeFilter}
+        pivot={pivot}
+        rows={rows}
+        eventCount={facts.length}
+        loading={loading}
+        dataError={error}
+        warning={warning}
+      />
+    </Suspense>
+  ) : null;
+
   if (!session?.token) {
     return (
       <View style={[styles.screen, compact && styles.screenPhone]}>
@@ -1234,7 +1303,13 @@ function EmployeesAnalytics({ session, storeFilter }) {
 
   if (compact) {
     return (
-      <View style={styles.screenPhone}>
+      <View style={[styles.screenPhone, aiOpen && styles.screenAi]}>
+        <View
+          style={aiOpen ? styles.aiHostHidden : styles.aiHost}
+          pointerEvents={aiOpen ? 'none' : 'auto'}
+          accessibilityElementsHidden={aiOpen}
+          importantForAccessibility={aiOpen ? 'no-hide-descendants' : 'auto'}
+        >
         <PhoneAnalytics
           loading={loading}
           error={error}
@@ -1262,7 +1337,17 @@ function EmployeesAnalytics({ session, storeFilter }) {
           openEmployee={openEmployee}
           employeeRows={employeeRows}
           showRoleCol={showRoleCol}
+          onOpenAi={openAi}
         />
+        </View>
+        <View
+          style={aiOpen ? styles.aiHost : styles.aiHostHidden}
+          pointerEvents={aiOpen ? 'auto' : 'none'}
+          accessibilityElementsHidden={!aiOpen}
+          importantForAccessibility={aiOpen ? 'auto' : 'no-hide-descendants'}
+        >
+          {aiPanel}
+        </View>
         <EmployeeDrawer
           visible={Boolean(selectedEmployee)}
           name={selectedEmployee}
@@ -1282,18 +1367,22 @@ function EmployeesAnalytics({ session, storeFilter }) {
   }
 
   return (
-    <View style={[styles.screen, compact && styles.screenCompact]}>
+    <View style={[styles.screen, compact && styles.screenCompact, aiOpen && styles.screenAi]}>
       {compact ? null : (
-        <View style={styles.header}>
+        <View style={[styles.header, aiOpen && styles.headerAi]}>
           <View style={styles.headerTitle}>
-            <View style={styles.mark}>
-              <Ionicons name="people" size={18} color={ACCENT} />
-            </View>
-            <Text style={styles.title}>Analytics</Text>
+            {aiOpen ? null : (
+              <View style={styles.mark}>
+                <Ionicons name="people" size={18} color={ACCENT} />
+              </View>
+            )}
+            <Text style={[styles.title, aiOpen && styles.titleAi]}>Analytics</Text>
           </View>
+          <AiButton active={aiOpen} onPress={toggleAi} />
         </View>
       )}
 
+      {aiOpen ? null : (
       <ScrollView
         style={[styles.bodyScroll, compact && styles.bodyScrollCompact]}
         contentContainerStyle={[styles.bodyContent, compact && styles.bodyContentCompact]}
@@ -1543,6 +1632,15 @@ function EmployeesAnalytics({ session, storeFilter }) {
           )}
         </View>
       </ScrollView>
+      )}
+      <View
+        style={aiOpen ? styles.aiHost : styles.aiHostHidden}
+        pointerEvents={aiOpen ? 'auto' : 'none'}
+        accessibilityElementsHidden={!aiOpen}
+        importantForAccessibility={aiOpen ? 'auto' : 'no-hide-descendants'}
+      >
+        {aiPanel}
+      </View>
       <EmployeeDrawer
         visible={Boolean(selectedEmployee)}
         name={selectedEmployee}
@@ -1561,8 +1659,15 @@ function EmployeesAnalytics({ session, storeFilter }) {
   );
 }
 
-export default function AnalyticsScreen({ session, storeFilter }) {
-  return <EmployeesAnalytics session={session} storeFilter={storeFilter} />;
+export default function AnalyticsScreen({ session, storeFilter, onOpenCustomer, onOpenDocument }) {
+  return (
+    <EmployeesAnalytics
+      session={session}
+      storeFilter={storeFilter}
+      onOpenCustomer={onOpenCustomer}
+      onOpenDocument={onOpenDocument}
+    />
+  );
 }
 
 const styles = StyleSheet.create({
@@ -1584,6 +1689,7 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     marginBottom: 24,
     marginTop: 8,
   },
@@ -1606,6 +1712,77 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#1d1d1f',
     letterSpacing: -0.4,
+  },
+  titleAi: {
+    fontFamily: FONT_EXTRALIGHT,
+    fontSize: 14,
+    fontWeight: '200',
+    color: '#1a1a1a',
+    letterSpacing: -0.2,
+  },
+  headerAi: {
+    width: '100%',
+    maxWidth: '100%',
+    marginTop: 0,
+    marginBottom: 0,
+    paddingHorizontal: 16,
+    minHeight: 48,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(42,38,30,0.08)',
+    backgroundColor: CANVAS,
+  },
+  aiButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    height: 32,
+    paddingHorizontal: 10,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: '#d0d0d0',
+    backgroundColor: CANVAS,
+    flexShrink: 0,
+    ...Platform.select({
+      web: { cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.06,
+        shadowRadius: 2,
+        elevation: 1,
+      },
+    }),
+  },
+  aiButtonOn: {
+    backgroundColor: '#1a1a1a',
+    borderColor: '#1a1a1a',
+  },
+  aiButtonHover: {
+    opacity: 0.72,
+  },
+  aiButtonText: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#1a1a1a',
+  },
+  aiButtonTextOn: {
+    color: '#fff',
+  },
+  screenAi: {
+    backgroundColor: CANVAS,
+  },
+  aiHost: {
+    flex: 1,
+    minHeight: 0,
+  },
+  aiHostHidden: {
+    display: 'none',
+  },
+  aiFallback: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   bodyScroll: {
     flex: 1,
@@ -2656,8 +2833,25 @@ const styles = StyleSheet.create({
     }),
   },
   phoneScroll: {
-    paddingTop: 8,
+    paddingTop: 0,
     paddingBottom: 48,
+  },
+  phoneTopBar: {
+    width: '88%',
+    maxWidth: 980,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 8,
+    paddingBottom: 12,
+  },
+  phoneTitle: {
+    fontFamily: FONT,
+    fontSize: 22,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    letterSpacing: -0.4,
   },
   phoneColumn: {
     width: '88%',
