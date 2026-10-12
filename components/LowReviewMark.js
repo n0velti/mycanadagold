@@ -6,6 +6,7 @@ const INK = '#B91C1C';
 /** Red star with a line through it, plus the 1- and 2-star review count. */
 export default function LowReviewMark({ count = 0, size = 13, countSize = 13 }) {
   const n = Number(count) || 0;
+  if (n <= 0) return null;
   const icon = Math.max(11, size);
   return (
     <View style={styles.row} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">

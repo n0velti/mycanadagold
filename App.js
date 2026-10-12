@@ -4128,7 +4128,9 @@ function HomeMetricPending({ compact = false }) {
 
 function homeLowReviewMark(stats, loading, size = 13, countSize = 14) {
   if (loading || stats?.rate == null) return null;
-  return <LowReviewMark count={stats.negative || 0} size={size} countSize={countSize} />;
+  const lowCount = Number(stats?.negative) || 0;
+  if (lowCount <= 0) return null;
+  return <LowReviewMark count={lowCount} size={size} countSize={countSize} />;
 }
 
 function HomeStoreMetric({ icon, stats, label, stretch = false, loading = false, trailing = null }) {
@@ -10136,7 +10138,10 @@ export default function App() {
     !isMobile && (activeTab === 'home' || activeTab === 'search' || activeTab === 'profile' || activeTab === 'messages') && styles.contentAppsLibrary,
     !isMobile &&
       activeTab === 'tools' &&
-      (activeTool?.key === 'employees' || activeTool?.key === 'customers' || activeTool?.key === 'triage') &&
+      (activeTool?.key === 'employees' ||
+        activeTool?.key === 'customers' ||
+        activeTool?.key === 'triage' ||
+        activeTool?.key === 'analytics') &&
       styles.contentAppsLibrary,
     !isMobile && isFullBleedTool && activeTool?.key !== 'triage' && styles.contentUnderTopBar,
     (groupedMobileTab || showingSettings) && styles.contentMobileGrouped,
