@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
+  Easing,
   Image,
   Modal,
   Platform,
@@ -26,17 +28,12 @@ import {
   priceUsage,
   storedUsage,
 } from '../lib/openrouterPricing';
-import {
-  DIMENSIONS,
-  MEASURES,
-  formatMeasure,
-  measureMeta,
-} from '../lib/employeeMetrics';
-import { formatDateParam, parseDateParam, parseDocReference } from '../lib/transactions';
+import { parseDocReference } from '../lib/transactions';
 import AnalyticsChartCard from './AnalyticsChartCard';
 import AnalyticsMapCard from './AnalyticsMapCard';
 import AnalyticsTableCard from './AnalyticsTableCard';
 import AnalyticsFileCard from './AnalyticsFileCard';
+import SendFromInput from './SendFromInput';
 import {
   MAX_ATTACHMENTS,
   attachmentLabel,
@@ -45,21 +42,25 @@ import {
   prepareAttachment,
   storableAttachment,
 } from '../lib/aiAttachments';
-import { CANVAS, NAV_TAB_ACTIVE_BG, NAV_TAB_ACTIVE_RADIUS } from '../lib/mobileUi';
-import { FONT } from '../lib/typography';
+import { CANVAS, MOBILE, NAV_TAB_ACTIVE_BG, NAV_TAB_ACTIVE_RADIUS } from '../lib/mobileUi';
+import { FONT, FONT_LIGHT } from '../lib/typography';
 
 const MODEL_KEY = 'cgold.analytics.aiModel';
 
 const INK = '#1a1a1a';
 const CHIP_BORDER = '#d0d0d0';
 const CHIP_RADIUS = 6;
-const BUBBLE_RADIUS = 18;
+const BUBBLE_RADIUS = 20;
+const BUBBLE_TAIL = 5;
 const RULE = 'rgba(42,38,30,0.08)';
 const SECONDARY = '#8e8e93';
-const BUBBLE_THEM_BG = '#ffffff';
-const BUBBLE_THEM_BORDER = 'rgba(60, 60, 67, 0.12)';
+const BUBBLE_MINE = MOBILE.blue;
+const BUBBLE_THEM_BG = '#e9e9eb';
+const BUBBLE_THEM_BORDER = 'rgba(60, 60, 67, 0.08)';
 const COMPOSER_LINE_HEIGHT = 22;
 const COMPOSER_MAX_LINES = 4;
+const SIDEBAR_WIDTH = 320;
+const SIDEBAR_COLLAPSED = Math.round(SIDEBAR_WIDTH / 4);
 
 /** Friendly copy for the model sheet — keys match ANALYTICS_CHAT_MODELS. */
 const MODEL_META = {
@@ -99,23 +100,40 @@ const CHIP_SHADOW = Platform.select({
     elevation: 1,
   },
 });
+const COMPOSER_PILL_IDLE_SHADOW = Platform.select({
+  web: { boxShadow: '0 1px 2px rgba(0,0,0,0.03)' },
+  default: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.03,
+    shadowRadius: 2,
+    elevation: 0,
+  },
+});
+const COMPOSER_PILL_ACTIVE_SHADOW = Platform.select({
+  web: { boxShadow: '0 2px 8px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)' },
+  default: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 5,
+    elevation: 1,
+  },
+});
 const CHATS_KEY = 'cgold.analytics.aiChats';
+const PROMPTS_KEY = 'cgold.analytics.savedPrompts';
 const MAX_CHATS = 20;
 const MAX_TURNS = 20;
 const MAX_TURN_CHARS = 6000;
-const MAX_ROWS = 80;
-
-const ROW_NOTE = {
-  employee: 'Each row is one employee. store is their home store when known.',
-  store: 'Each row is one store.',
-  role: 'Each row is one job role.',
-  weekday: 'Each row is a day of the week across this range.',
-  date: 'Each row is a calendar date.',
-  txType: 'Each row is Buy or Sell.',
-};
+const MAX_PROMPTS = 40;
+const MAX_PROMPT_CHARS = 4000;
 
 function storageKey(userKey) {
   return `${CHATS_KEY}.${userKey || 'local'}`;
+}
+
+function promptsStorageKey(userKey) {
+  return `${PROMPTS_KEY}.${userKey || 'local'}`;
 }
 
 function chatId() {
@@ -127,20 +145,6 @@ function fallbackTitle(question) {
   if (!cleaned) return 'New analysis';
   if (cleaned.length <= 42) return cleaned;
   return `${cleaned.slice(0, 41).trim()}…`;
-}
-
-function shortRange(start, end) {
-  const from = parseDateParam(start);
-  const to = parseDateParam(end);
-  const sameDay = formatDateParam(from) === formatDateParam(end);
-  const endLabel = to.toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' });
-  if (sameDay) return endLabel;
-  const startLabel = from.toLocaleDateString('en-CA', {
-    month: 'short',
-    day: 'numeric',
-    year: from.getFullYear() === to.getFullYear() ? undefined : 'numeric',
-  });
-  return `${startLabel} – ${endLabel}`;
 }
 
 function byChatOrder(a, b) {
@@ -360,6 +364,72 @@ async function loadChats(userKey) {
   }
 }
 
+function parsePrompts(raw) {
+  try {
+    const list = JSON.parse(raw);
+    if (!Array.isArray(list)) return [];
+    return list
+      .map((item) => ({
+        id: String(item?.id || ''),
+        text: String(item?.text || '').trim().slice(0, MAX_PROMPT_CHARS),
+        createdAt: String(item?.createdAt || ''),
+      }))
+      .filter((item) => item.id && item.text);
+  } catch {
+    return [];
+  }
+}
+
+async function loadPrompts(userKey) {
+  try {
+    return parsePrompts(await AsyncStorage.getItem(promptsStorageKey(userKey)));
+  } catch {
+    return [];
+  }
+}
+
+async function writePrompts(userKey, rows) {
+  const slim = (Array.isArray(rows) ? rows : [])
+    .map((item) => ({
+      id: String(item?.id || ''),
+      text: String(item?.text || '').trim().slice(0, MAX_PROMPT_CHARS),
+      createdAt: String(item?.createdAt || ''),
+    }))
+    .filter((item) => item.id && item.text)
+    .slice(0, MAX_PROMPTS);
+  await AsyncStorage.setItem(promptsStorageKey(userKey), JSON.stringify(slim));
+}
+
+async function copyToClipboard(text) {
+  const value = String(text || '');
+  if (!value) return false;
+  if (Platform.OS === 'web' && typeof navigator !== 'undefined') {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+    } catch {
+      // Fall through to the document copy path.
+    }
+    try {
+      const field = document.createElement('textarea');
+      field.value = value;
+      field.setAttribute('readonly', '');
+      field.style.position = 'fixed';
+      field.style.left = '-9999px';
+      document.body.appendChild(field);
+      field.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(field);
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 async function writeChats(userKey, chats) {
   const slim = (Array.isArray(chats) ? chats : [])
     .map((chat) => ({
@@ -376,53 +446,6 @@ async function writeChats(userKey, chats) {
     .sort(byChatOrder)
     .slice(0, MAX_CHATS);
   await AsyncStorage.setItem(storageKey(userKey), JSON.stringify(slim));
-}
-
-function measureMap(bucket) {
-  return Object.fromEntries(
-    MEASURES.map((item) => [item.label, formatMeasure(bucket?.[item.key], item.format)]),
-  );
-}
-
-// The reply stays on the breakdown in front of them. Search still does company-wide lookup.
-function buildBrief({ pivot, measure, groupBy, startDate, endDate, storeFilter, eventCount, warning }) {
-  const measureInfo = measureMeta(measure);
-  const groupLabel = DIMENSIONS.find((item) => item.key === groupBy)?.label || 'Employee';
-  const chronological = groupBy === 'date' || groupBy === 'weekday';
-  const all = Array.isArray(pivot?.rows) ? pivot.rows : [];
-  const shown = chronological ? all.slice(-MAX_ROWS) : all.slice(0, MAX_ROWS);
-  const omitted = all.length - shown.length;
-  const rows = shown.map((row, index) => {
-    const entry = {
-      name: row.key,
-      ...measureMap(row.total),
-    };
-    if (!chronological) entry.rank = index + 1;
-    if (row.role) entry.role = row.role;
-    if (row.store) entry.store = row.store;
-    return entry;
-  });
-  const definitions = Object.fromEntries(
-    MEASURES.filter((item) => item.hint).map((item) => [item.label, item.hint]),
-  );
-  return {
-    view: {
-      from: startDate,
-      to: endDate,
-      store: storeFilter || 'All stores',
-      groupedBy: groupLabel,
-      highlightedMeasure: measureInfo.label,
-      order: chronological ? 'chronological' : `highest ${measureInfo.label} first`,
-      events: eventCount,
-      rowMeans: ROW_NOTE[groupBy] || '',
-      warning: warning || undefined,
-    },
-    definitions,
-    grand: measureMap(pivot?.grand),
-    rows,
-    omittedEarlierRows: chronological && omitted > 0 ? omitted : undefined,
-    omittedLowerRows: !chronological && omitted > 0 ? omitted : undefined,
-  };
 }
 
 function isAbort(error) {
@@ -472,7 +495,7 @@ const DOC_REF_SPLIT = /(\b(?:SO|PO)\s*#?\s*\d+\b)/gi;
 const DOC_REF_ANY = /\b(?:SO|PO)\s*#?\s*\d+\b/i;
 
 /** PO#/SO# mentions become taps that open the ticket drawer. */
-function TicketText({ text, style, resolveTicket, onOpenDocument }) {
+function TicketText({ text, style, linkStyle, resolveTicket, onOpenDocument }) {
   if (!onOpenDocument || !DOC_REF_ANY.test(String(text || ''))) {
     return (
       <Text selectable style={style}>
@@ -491,7 +514,7 @@ function TicketText({ text, style, resolveTicket, onOpenDocument }) {
             key={`${parsed.key}-${index}`}
             accessibilityRole="link"
             onPress={() => onOpenDocument(resolveTicket(parsed))}
-            style={styles.ticketLink}
+            style={[styles.ticketLink, linkStyle]}
           >
             {part}
           </Text>
@@ -585,26 +608,32 @@ function turnCostLine(turn, side) {
   return '';
 }
 
+function firstNameOfSession(session) {
+  const first = String(session?.profile?.firstName || '').trim();
+  if (first) return first;
+  const full = String(session?.profile?.fullName || '').trim();
+  return full.split(/\s+/)[0] || '';
+}
+
+/**
+ * `embedded`: hosted inside another screen (Direct Messages). Opens straight
+ * into the conversation; the back chevron hands control to `onClose`. Saved
+ * Analytics threads stay in the Analytics app — Messages has its own AI DMs.
+ * `title` names the assistant in the header, the bubble label, and the placeholder.
+ */
 export default function AnalyticsAiPanel({
   session,
   compact = false,
   active = true,
   onClose = null,
-  startDate,
-  endDate,
-  groupBy,
-  measure,
   storeFilter,
-  pivot,
-  rows = [],
-  eventCount = 0,
-  loading = false,
-  dataError = '',
-  warning = '',
   onOpenCustomer,
   onOpenDocument,
+  embedded = false,
+  title = 'Analytics',
 }) {
   const userKey = session?.supabaseUserId || session?.profile?.id || '';
+  const firstName = firstNameOfSession(session);
   const [chats, setChats] = useState([]);
   const [ready, setReady] = useState(false);
   const [activeId, setActiveId] = useState(null);
@@ -614,11 +643,18 @@ export default function AnalyticsAiPanel({
   const [busyId, setBusyId] = useState('');
   const [busyNote, setBusyNote] = useState('');
   const [error, setError] = useState('');
-  const [mobileList, setMobileList] = useState(true);
+  const [mobileList, setMobileList] = useState(!embedded);
   const [model, setModel] = useState(ANALYTICS_CHAT_MODELS[0].key);
   const [modelOpen, setModelOpen] = useState(false);
+  const [savedPrompts, setSavedPrompts] = useState([]);
+  const [promptsOpen, setPromptsOpen] = useState(false);
+  const [copiedKey, setCopiedKey] = useState('');
+  const [savedKey, setSavedKey] = useState('');
   const [menuChatId, setMenuChatId] = useState(null);
   const [hoverChatId, setHoverChatId] = useState(null);
+  const [listOpen, setListOpen] = useState(false);
+  const listHoverRef = useRef(false);
+  const listWidth = useRef(new Animated.Value(SIDEBAR_COLLAPSED)).current;
   const [mapsKey, setMapsKey] = useState('');
   const [prices, setPrices] = useState(() => cachedOpenRouterPrices());
   const pricesRef = useRef(prices);
@@ -633,15 +669,18 @@ export default function AnalyticsAiPanel({
   const openedEmptyRef = useRef(false);
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
+  const composerPillRef = useRef(null);
+  const sendPop = useRef(new Animated.Value(1)).current;
   const [inputHeight, setInputHeight] = useState(COMPOSER_LINE_HEIGHT);
+  const [composerHover, setComposerHover] = useState(false);
+  const [composerFocus, setComposerFocus] = useState(false);
+  const [sentAnim, setSentAnim] = useState(null);
+  const composerActive = composerHover || composerFocus;
   const composerMaxHeight = COMPOSER_LINE_HEIGHT * COMPOSER_MAX_LINES;
 
-  const measureInfo = measureMeta(measure);
-  const scopeLabel = useMemo(() => {
-    const groupLabel = DIMENSIONS.find((item) => item.key === groupBy)?.label || 'Employee';
-    const store = storeFilter ? ` · ${storeFilter}` : '';
-    return `${measureInfo.label} by ${groupLabel} · ${shortRange(startDate, endDate)}${store}`;
-  }, [measureInfo.label, groupBy, startDate, endDate, storeFilter]);
+  // Kept on each saved chat for older entries that recorded one; new chats
+  // start from nothing but the store lock.
+  const scopeLabel = storeFilter ? String(storeFilter) : '';
   const suggestions = useMemo(
     () => [
       'Transactions per employee at Montreal over the past month',
@@ -651,8 +690,7 @@ export default function AnalyticsAiPanel({
     ],
     [],
   );
-  const waiting = loading && !eventCount;
-  const blocked = !ready || waiting || (Boolean(dataError) && !eventCount);
+  const blocked = !ready;
   const history = useMemo(
     () =>
       chats
@@ -662,14 +700,35 @@ export default function AnalyticsAiPanel({
   );
   const activeChat = history.find((chat) => chat.id === activeId) || null;
   const turns = (activeChat?.turns || []).filter((turn) => turn.role === 'user' || turn.role === 'assistant');
-  const showList = compact && mobileList;
+  const showList = compact && mobileList && !embedded;
+  const listHide = listWidth.interpolate({
+    inputRange: [SIDEBAR_COLLAPSED, SIDEBAR_WIDTH],
+    outputRange: [1, 0],
+    extrapolate: 'clamp',
+  });
+  const animateList = (open) => {
+    setListOpen(open);
+    listWidth.stopAnimation();
+    Animated.timing(listWidth, {
+      toValue: open ? SIDEBAR_WIDTH : SIDEBAR_COLLAPSED,
+      duration: open ? 280 : 220,
+      easing: open ? Easing.out(Easing.cubic) : Easing.inOut(Easing.quad),
+      useNativeDriver: false,
+    }).start();
+  };
+  const openList = () => {
+    listHoverRef.current = true;
+    animateList(true);
+  };
+  const closeList = () => {
+    listHoverRef.current = false;
+    setMenuChatId(null);
+    animateList(false);
+  };
   const tail = turns[turns.length - 1]?.content || '';
   // After a reload a file card only has its sheet specs; run them again to get the rows.
   const rebuildFile = async (chart) => {
     const context = {
-      rows,
-      startDate,
-      endDate,
       storeFilter,
       session,
       mapsKey,
@@ -786,7 +845,7 @@ export default function AnalyticsAiPanel({
     setReady(false);
     activeIdRef.current = null;
     setActiveId(null);
-    setMobileList(true);
+    setMobileList(!embedded);
     setError('');
     loadChats(userKey).then((rows) => {
       if (!alive) return;
@@ -794,11 +853,22 @@ export default function AnalyticsAiPanel({
       if (revisionRef.current !== seen) return;
       chatsRef.current = rows;
       setChats(rows);
+      // Inside Messages the row the user tapped is "the AI chat": land on the latest one.
+      if (embedded && rows.length) {
+        const latest = rows.slice().sort(byChatOrder)[0];
+        if (latest) {
+          activeIdRef.current = latest.id;
+          setActiveId(latest.id);
+        }
+      }
+    });
+    loadPrompts(userKey).then((rows) => {
+      if (alive) setSavedPrompts(rows);
     });
     return () => {
       alive = false;
     };
-  }, [userKey]);
+  }, [userKey, embedded]);
 
   useEffect(() => {
     if (!ready || openedEmptyRef.current) return;
@@ -815,9 +885,11 @@ export default function AnalyticsAiPanel({
 
   useEffect(() => {
     if (!active || showList) return undefined;
-    const frame = requestAnimationFrame(() => scrollRef.current?.scrollToEnd?.({ animated: true }));
+    const frame = requestAnimationFrame(() =>
+      scrollRef.current?.scrollToEnd?.({ animated: !sentAnim }),
+    );
     return () => cancelAnimationFrame(frame);
-  }, [active, showList, activeId, turns.length, tail]);
+  }, [active, showList, activeId, turns.length, tail, sentAnim]);
 
   useEffect(() => {
     if (!draft) setInputHeight(COMPOSER_LINE_HEIGHT);
@@ -854,6 +926,7 @@ export default function AnalyticsAiPanel({
     setError('');
     setMenuChatId(null);
     setMobileList(false);
+    setSentAnim(null);
   };
 
   const openChat = (id) => {
@@ -861,6 +934,7 @@ export default function AnalyticsAiPanel({
     setDraft('');
     setError('');
     setMobileList(false);
+    setSentAnim(null);
   };
 
   const removeChat = (id) => {
@@ -920,6 +994,48 @@ export default function AnalyticsAiPanel({
 
   const removePending = (id) => setPending((current) => current.filter((item) => item.id !== id));
 
+  const persistPrompts = (rows) => {
+    setSavedPrompts(rows);
+    writePrompts(userKey, rows).catch(() => {
+      if (mountedRef.current) setError('Could not save that prompt on this device.');
+    });
+  };
+
+  const savePrompt = (text) => {
+    const cleaned = String(text || '').trim().slice(0, MAX_PROMPT_CHARS);
+    if (!cleaned) return false;
+    if (savedPrompts.some((item) => item.text === cleaned)) return 'exists';
+    persistPrompts([
+      { id: chatId(), text: cleaned, createdAt: new Date().toISOString() },
+      ...savedPrompts,
+    ].slice(0, MAX_PROMPTS));
+    return true;
+  };
+
+  const removePrompt = (id) => {
+    persistPrompts(savedPrompts.filter((item) => item.id !== id));
+  };
+
+  const flashKey = (setter, key) => {
+    setter(key);
+    setTimeout(() => {
+      if (!mountedRef.current) return;
+      setter((current) => (current === key ? '' : current));
+    }, 1400);
+  };
+
+  const copyTurn = async (key, text) => {
+    const ok = await copyToClipboard(text);
+    if (ok) flashKey(setCopiedKey, key);
+    else if (mountedRef.current) setError('Could not copy to the clipboard.');
+  };
+
+  const saveTurn = (key, text) => {
+    const result = savePrompt(text);
+    if (!result) return;
+    flashKey(setSavedKey, key);
+  };
+
   const send = async (raw) => {
     const attachments = raw == null ? pending : [];
     const typed = String(raw ?? draft).trim();
@@ -935,10 +1051,6 @@ export default function AnalyticsAiPanel({
     }
     if (!ready) {
       setError('Chats are still loading.');
-      return;
-    }
-    if (waiting || (Boolean(dataError) && !eventCount)) {
-      setError(dataError || 'This breakdown is still loading.');
       return;
     }
 
@@ -961,6 +1073,14 @@ export default function AnalyticsAiPanel({
     if (attachments.length) setPending([]);
     selectChat(id);
     setMobileList(false);
+    setSentAnim({ chatId: id, content: text });
+    sendPop.setValue(0.86);
+    Animated.spring(sendPop, {
+      toValue: 1,
+      friction: 5,
+      tension: 180,
+      useNativeDriver: true,
+    }).start();
 
     const stored = attachments.map(storableAttachment).filter(Boolean);
     const userTurnBase = stored.length ? { role: 'user', content: text, attachments: stored } : { role: 'user', content: text };
@@ -980,26 +1100,11 @@ export default function AnalyticsAiPanel({
     }, { persist: true });
 
     try {
-      const brief = buildBrief({
-        pivot,
-        measure,
-        groupBy,
-        startDate,
-        endDate,
-        storeFilter,
-        eventCount,
-        warning,
-      });
       const result = await askAnalytics({
         model,
         history,
         question: text,
         attachments,
-        scopeLabel,
-        brief,
-        rows,
-        startDate,
-        endDate,
         storeFilter,
         session,
         mapsKey,
@@ -1070,6 +1175,7 @@ export default function AnalyticsAiPanel({
         if (!keptQuestion) {
           setDraft(typed);
           if (attachments.length) setPending(attachments);
+          setSentAnim((current) => (current?.chatId === id ? null : current));
         }
         setError(err?.message || 'Could not get an answer.');
       }
@@ -1091,11 +1197,7 @@ export default function AnalyticsAiPanel({
     if (!id) return;
     abortsRef.current.get(id)?.abort();
   };
-  const composerPlaceholder = waiting
-    ? 'Loading this breakdown…'
-    : turns.length
-      ? 'Send follow-up'
-      : 'Message Analytics…';
+  const composerPlaceholder = turns.length ? 'Send follow-up' : `Message ${title}…`;
   const composerMeta =
     chatCost > 0
       ? `${formatUsd(chatCost)} this chat · ${formatTokenCount(chatTokens)} tokens`
@@ -1208,21 +1310,126 @@ export default function AnalyticsAiPanel({
     </Modal>
   );
 
-  const list = (
-    <View style={[styles.sidebar, compact && styles.sidebarPhone]}>
-      <View style={styles.listHead}>
-        {compact && onClose ? (
+  const promptsSheet = (
+    <Modal
+      visible={promptsOpen}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setPromptsOpen(false)}
+    >
+      <View style={styles.modelSheetRoot}>
+        <Pressable
+          style={styles.modelSheetBackdrop}
+          accessibilityRole="button"
+          accessibilityLabel="Close saved prompts"
+          onPress={() => setPromptsOpen(false)}
+        />
+        <View style={[styles.modelSheetCard, compact && styles.modelSheetCardPhone]}>
+          <View style={styles.modelSheetHead}>
+            <Text style={styles.modelSheetTitle}>Saved prompts</Text>
+            <Text style={styles.modelSheetSubtitle}>
+              Pick one to send it now, or save what you have typed.
+            </Text>
+          </View>
+          <ScrollView
+            style={styles.modelSheetScroll}
+            contentContainerStyle={styles.modelSheetScrollContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {draft.trim() ? (
+              <Pressable
+                onPress={() => {
+                  const result = savePrompt(draft);
+                  if (result) flashKey(setSavedKey, 'draft');
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Save the message in the input"
+                style={({ hovered, pressed }) => [
+                  styles.promptSaveDraft,
+                  (hovered || pressed) && styles.promptSaveDraftHover,
+                ]}
+              >
+                <Ionicons
+                  name={savedKey === 'draft' ? 'bookmark' : 'bookmark-outline'}
+                  size={15}
+                  color={INK}
+                />
+                <Text style={styles.promptSaveDraftText}>
+                  {savedKey === 'draft' ? 'Saved' : "Save what's typed"}
+                </Text>
+              </Pressable>
+            ) : null}
+            {savedPrompts.length ? (
+              savedPrompts.map((item) => (
+                <View key={item.id} style={styles.promptRow}>
+                  <Pressable
+                    onPress={() => {
+                      setPromptsOpen(false);
+                      void send(item.text);
+                    }}
+                    disabled={Boolean(busyId) || blocked}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Send saved prompt: ${item.text}`}
+                    style={({ hovered, pressed }) => [
+                      styles.promptPick,
+                      (hovered || pressed) && styles.promptPickHover,
+                      (busyId || blocked) && styles.promptPickOff,
+                    ]}
+                  >
+                    <Text style={styles.promptPickText} numberOfLines={3}>
+                      {item.text}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => removePrompt(item.id)}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Remove saved prompt"
+                    style={({ hovered, pressed }) => [
+                      styles.promptDelete,
+                      (hovered || pressed) && styles.promptDeleteHover,
+                    ]}
+                  >
+                    <Ionicons name="trash-outline" size={15} color="#b91c1c" />
+                  </Pressable>
+                </View>
+              ))
+            ) : (
+              <Text style={styles.promptEmpty}>
+                Nothing saved yet. Use the bookmark under a message, or save what you type.
+              </Text>
+            )}
+          </ScrollView>
           <Pressable
-            onPress={onClose}
+            onPress={() => setPromptsOpen(false)}
+            accessibilityRole="button"
+            style={({ hovered, pressed }) => [
+              styles.modelSheetDone,
+              (hovered || pressed) && styles.modelSheetDoneHover,
+            ]}
+          >
+            <Text style={styles.modelSheetDoneText}>Done</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+  );
+
+  const listBody = (
+    <>
+      <View style={styles.listHead}>
+        {compact && (onClose || embedded) ? (
+          <Pressable
+            onPress={() => (embedded ? setMobileList(false) : onClose?.())}
             hitSlop={8}
             style={styles.chromeCircle}
             accessibilityRole="button"
-            accessibilityLabel="Close"
+            accessibilityLabel={embedded ? 'Back to the chat' : 'Close'}
           >
-            <Ionicons name="close" size={16} color={INK} />
+            <Ionicons name={embedded ? 'chevron-back' : 'close'} size={16} color={INK} />
           </Pressable>
         ) : null}
-        <View style={styles.listHeadSpacer} />
         <Pressable
           onPress={startNew}
           hitSlop={8}
@@ -1254,7 +1461,7 @@ export default function AnalyticsAiPanel({
             const busy = busyId === chat.id;
             const pinned = Boolean(chat.pinned);
             const menuOpen = menuChatId === chat.id;
-            const showMore = menuOpen || hoverChatId === chat.id || Platform.OS !== 'web';
+            const showMore = (compact || listOpen) && (menuOpen || hoverChatId === chat.id || Platform.OS !== 'web');
             return (
               <View
                 key={chat.id}
@@ -1353,6 +1560,28 @@ export default function AnalyticsAiPanel({
           </View>
         )}
       </ScrollView>
+    </>
+  );
+
+  const list = compact ? (
+    <View style={[styles.sidebar, styles.sidebarPhone]}>{listBody}</View>
+  ) : (
+    <View style={styles.sidebarSlot}>
+      <Animated.View
+        style={[
+          styles.sidebar,
+          styles.sidebarFlyout,
+          { width: listWidth },
+        ]}
+        {...(Platform.OS === 'web'
+          ? { onMouseEnter: openList, onMouseLeave: closeList }
+          : null)}
+      >
+        <View style={styles.sidebarInner}>
+          {listBody}
+        </View>
+        <Animated.View pointerEvents="none" style={[styles.sidebarHideEdge, { opacity: listHide }]} />
+      </Animated.View>
     </View>
   );
 
@@ -1361,16 +1590,27 @@ export default function AnalyticsAiPanel({
       {compact ? (
         <View style={styles.nav}>
           <Pressable
-            onPress={() => setMobileList(true)}
+            onPress={() => (embedded && onClose ? onClose() : setMobileList(true))}
             hitSlop={8}
             style={styles.chromeCircle}
             accessibilityRole="button"
-            accessibilityLabel="Chats"
+            accessibilityLabel={embedded ? 'Back to messages' : 'Chats'}
           >
             <Ionicons name="chevron-back" size={16} color={INK} />
           </Pressable>
-          <View style={styles.listHeadSpacer} />
-          {onClose ? (
+          <View style={styles.navTitleWrap}>
+            <Text style={styles.navTitle} numberOfLines={1}>
+              {activeChat && !activeChat.placeholder ? activeChat.title : title}
+            </Text>
+            {streaming ? (
+              <Text style={styles.navSubtitle} numberOfLines={1}>
+                {busyNote || 'Thinking…'}
+              </Text>
+            ) : null}
+          </View>
+          {embedded ? (
+            <View style={styles.chromeCircleGhost} />
+          ) : onClose ? (
             <Pressable
               onPress={onClose}
               hitSlop={8}
@@ -1390,6 +1630,7 @@ export default function AnalyticsAiPanel({
         style={styles.threadScroll}
         contentContainerStyle={[
           styles.threadContent,
+          compact && styles.threadContentPhone,
           !turns.length && styles.threadEmpty,
           !turns.length && (compact ? styles.threadEmptyPhone : styles.threadEmptyDesktop),
         ]}
@@ -1402,107 +1643,163 @@ export default function AnalyticsAiPanel({
             const streaming = !mine && busyId === activeId && index === turns.length - 1 && !String(turn.content || '').trim();
             if (!mine && !String(turn.content || '').trim() && !streaming) return null;
             const costLine = streaming ? '' : turnCostLine(turn, turn.role);
-            return (
-              <View
-                key={`${turn.role}-${index}`}
-                style={[styles.turnRow, mine ? styles.turnRowMine : styles.turnRowTheirs]}
-              >
-                {!mine ? (
-                  <View style={styles.turnAvatar}>
-                    <Ionicons name="sparkles" size={14} color={INK} />
+            const flying = Boolean(
+              mine
+              && sentAnim
+              && sentAnim.chatId === activeId
+              && sentAnim.content === turn.content
+              && !turns.slice(index + 1).some((later) => later.role === 'user' && later.content === turn.content),
+            );
+            const bubble = (
+              <View style={[styles.bubble, mine ? styles.bubbleMine : styles.bubbleTheirs]}>
+                {streaming ? (
+                  <View style={styles.busyRow}>
+                    <ActivityIndicator size="small" color={SECONDARY} />
+                    {busyNote ? <Text style={styles.busyNote}>{busyNote}</Text> : null}
                   </View>
-                ) : null}
-                <View style={[styles.turnBody, mine && styles.turnBodyMine]}>
-                  {!mine ? <Text style={styles.turnLabel}>Analytics</Text> : null}
-                  {mine ? <AttachmentChips items={turn.attachments} mine /> : null}
-                  <View style={[styles.bubble, mine ? styles.bubbleMine : styles.bubbleTheirs]}>
-                    {streaming ? (
-                      <View style={styles.busyRow}>
-                        <ActivityIndicator size="small" color={SECONDARY} />
-                        {busyNote ? <Text style={styles.busyNote}>{busyNote}</Text> : null}
+                ) : (
+                  <TicketText
+                    text={turn.content}
+                    style={[styles.bubbleText, mine && styles.bubbleTextMine]}
+                    linkStyle={mine ? styles.ticketLinkMine : null}
+                    resolveTicket={resolveTicket}
+                    onOpenDocument={onOpenDocument}
+                  />
+                )}
+              </View>
+            );
+            const charts = mine ? [] : turn.charts || [];
+            return (
+              <View key={`${turn.role}-${index}`} style={styles.turnGroup}>
+                <View style={[styles.turnRow, mine ? styles.turnRowMine : styles.turnRowTheirs]}>
+                  {!mine ? (
+                    <View style={styles.turnAvatar}>
+                      <Ionicons name="sparkles" size={14} color={BUBBLE_MINE} />
+                    </View>
+                  ) : null}
+                  <View style={[styles.turnBody, mine && styles.turnBodyMine]}>
+                    {!mine ? <Text style={styles.turnLabel}>{title}</Text> : null}
+                    {mine ? <AttachmentChips items={turn.attachments} mine /> : null}
+                    {mine ? (
+                      <SendFromInput
+                        active={flying}
+                        originRef={composerPillRef}
+                        onSettled={() => setSentAnim((current) => (
+                          current?.chatId === activeId && current?.content === turn.content ? null : current
+                        ))}
+                      >
+                        {bubble}
+                      </SendFromInput>
+                    ) : bubble}
+                    {!streaming && String(turn.content || '').trim() ? (
+                      <View style={[styles.bubbleActions, mine && styles.bubbleActionsMine]}>
+                        <Pressable
+                          onPress={() => copyTurn(`${activeId}-${index}`, turn.content)}
+                          hitSlop={6}
+                          accessibilityRole="button"
+                          accessibilityLabel="Copy message"
+                          style={({ hovered, pressed }) => [
+                            styles.bubbleAction,
+                            (hovered || pressed) && styles.bubbleActionHover,
+                          ]}
+                        >
+                          <Ionicons
+                            name={copiedKey === `${activeId}-${index}` ? 'checkmark' : 'copy-outline'}
+                            size={13}
+                            color={SECONDARY}
+                          />
+                        </Pressable>
+                        <Pressable
+                          onPress={() => saveTurn(`${activeId}-${index}`, turn.content)}
+                          hitSlop={6}
+                          accessibilityRole="button"
+                          accessibilityLabel="Save as prompt"
+                          style={({ hovered, pressed }) => [
+                            styles.bubbleAction,
+                            (hovered || pressed) && styles.bubbleActionHover,
+                          ]}
+                        >
+                          <Ionicons
+                            name={
+                              savedKey === `${activeId}-${index}`
+                              || savedPrompts.some((item) => item.text === String(turn.content || '').trim())
+                                ? 'bookmark'
+                                : 'bookmark-outline'
+                            }
+                            size={13}
+                            color={SECONDARY}
+                          />
+                        </Pressable>
                       </View>
-                    ) : (
-                      <TicketText
-                        text={turn.content}
-                        style={[styles.bubbleText, mine && styles.bubbleTextMine]}
-                        resolveTicket={resolveTicket}
-                        onOpenDocument={onOpenDocument}
-                      />
+                    ) : null}
+                    {costLine ? (
+                      <Text style={[styles.costMeta, mine && styles.costMetaMine]}>{costLine}</Text>
+                    ) : null}
+                  </View>
+                </View>
+                {charts.length ? (
+                  // Charts, maps, and tables sit under the bubble at full thread
+                  // width rather than inside the 88% bubble column, so a phone
+                  // gets the whole screen width for the plot.
+                  <View style={[styles.vizBlock, compact && styles.vizBlockPhone]}>
+                    {charts.map((chart, chartIndex) =>
+                      chart.type === 'map' ? (
+                        <AnalyticsMapCard
+                          key={`${chart.type}-${chartIndex}`}
+                          chart={chart}
+                          apiKey={mapsKey}
+                          onOpenCustomer={onOpenCustomer}
+                        />
+                      ) : chart.type === 'table' ? (
+                        <AnalyticsTableCard
+                          key={`${chart.type}-${chartIndex}`}
+                          chart={chart}
+                          onOpenTicket={onOpenDocument ? (ref) => onOpenDocument(resolveTicket(ref)) : null}
+                        />
+                      ) : chart.type === 'file' ? (
+                        <AnalyticsFileCard key={`${chart.type}-${chartIndex}`} chart={chart} onRebuild={rebuildFile} />
+                      ) : (
+                        <AnalyticsChartCard key={`${chart.type}-${chartIndex}`} chart={chart} />
+                      ),
                     )}
                   </View>
-                  {costLine ? (
-                    <Text style={[styles.costMeta, mine && styles.costMetaMine]}>{costLine}</Text>
-                  ) : null}
-                  {mine
-                    ? null
-                    : (turn.charts || []).map((chart, chartIndex) =>
-                        chart.type === 'map' ? (
-                          <AnalyticsMapCard
-                            key={`${chart.type}-${chartIndex}`}
-                            chart={chart}
-                            apiKey={mapsKey}
-                            onOpenCustomer={onOpenCustomer}
-                          />
-                        ) : chart.type === 'table' ? (
-                          <AnalyticsTableCard
-                            key={`${chart.type}-${chartIndex}`}
-                            chart={chart}
-                            onOpenTicket={onOpenDocument ? (ref) => onOpenDocument(resolveTicket(ref)) : null}
-                          />
-                        ) : chart.type === 'file' ? (
-                          <AnalyticsFileCard key={`${chart.type}-${chartIndex}`} chart={chart} onRebuild={rebuildFile} />
-                        ) : (
-                          <AnalyticsChartCard key={`${chart.type}-${chartIndex}`} chart={chart} />
-                        ),
-                      )}
-                </View>
+                ) : null}
               </View>
             );
           })
-        ) : waiting ? (
-          <View style={styles.empty}>
-            <ActivityIndicator color="#8e8e93" />
-            <Text style={styles.emptyBody}>Loading this breakdown…</Text>
-          </View>
-        ) : dataError && !eventCount ? (
-          <View style={styles.empty}>
-            <Text style={styles.emptyTitle}>Could not load</Text>
-            <Text style={styles.emptyBody}>{dataError}</Text>
-          </View>
         ) : (
           <View style={styles.empty}>
             <View style={styles.emptyMark}>
               <Ionicons name="sparkles" size={18} color={INK} />
             </View>
-            <Text style={styles.emptyTitle}>Ask about the stores</Text>
-            <Text style={styles.emptyBody}>
-              Chart questions start from the last 7 days of transactions by employee. Live stock, tills, hours, reviews, and other company data can span any period you ask for.
+            <Text style={styles.emptyGreeting}>
+              {firstName ? `Hi ${firstName} 👋` : 'Hi 👋'}
             </Text>
-            <View style={styles.suggestRow}>
-              {suggestions.map((item) => (
-                <Pressable
-                  key={item}
-                  onPress={() => send(item)}
-                  disabled={Boolean(busyId) || blocked}
-                  accessibilityRole="button"
-                  style={({ hovered, pressed }) => [
-                    styles.suggest,
-                    (hovered || pressed) && styles.suggestHover,
-                  ]}
-                >
-                  <Text style={styles.suggestText}>{item}</Text>
-                </Pressable>
-              ))}
-            </View>
           </View>
         )}
       </ScrollView>
-      <View style={styles.composerWrap}>
-        {composerMeta ? (
-          <Text style={styles.composerMeta} numberOfLines={1}>
-            {composerMeta}
-          </Text>
-        ) : null}
+      <View style={[styles.composerWrap, compact && styles.composerWrapPhone]}>
+        <View style={styles.composerToolbar}>
+          <View style={styles.composerToolbarLead}>
+            {composerMeta ? (
+              <Text style={styles.composerMeta} numberOfLines={1}>
+                {composerMeta}
+              </Text>
+            ) : null}
+          </View>
+          <Pressable
+            onPress={() => setPromptsOpen(true)}
+            accessibilityRole="button"
+            accessibilityLabel="Saved prompts"
+            style={({ hovered, pressed }) => [
+              styles.promptsHit,
+              (hovered || pressed) && styles.promptsHitHover,
+            ]}
+          >
+            <Ionicons name="bookmark-outline" size={13} color={INK} />
+            <Text style={styles.promptsHitText}>Saved</Text>
+          </Pressable>
+        </View>
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
         {attaching ? (
           <View style={styles.attachBusy}>
@@ -1513,9 +1810,40 @@ export default function AnalyticsAiPanel({
           </View>
         ) : null}
         <AttachmentChips items={pending} onRemove={removePending} />
-        <View
+        {!turns.length ? (
+          <ScrollView
+            horizontal
+            style={styles.suggestScroll}
+            showsHorizontalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={styles.suggestRow}
+          >
+            {suggestions.map((item) => (
+              <Pressable
+                key={item}
+                onPress={() => send(item)}
+                disabled={Boolean(busyId) || blocked}
+                accessibilityRole="button"
+                style={({ hovered, pressed }) => [
+                  styles.suggest,
+                  (hovered || pressed) && styles.suggestHover,
+                ]}
+              >
+                <Text style={styles.suggestText} numberOfLines={1}>
+                  {item}
+                </Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        ) : null}
+        <View ref={composerPillRef} collapsable={false} style={styles.composerPillAnchor}>
+        <Pressable
+          onHoverIn={() => setComposerHover(true)}
+          onHoverOut={() => setComposerHover(false)}
+          onPress={() => inputRef.current?.focus?.()}
           style={[
             styles.composerPill,
+            composerActive && styles.composerPillActive,
             inputHeight > COMPOSER_LINE_HEIGHT && styles.composerPillMultiline,
           ]}
         >
@@ -1543,6 +1871,8 @@ export default function AnalyticsAiPanel({
             blurOnSubmit={false}
             scrollEnabled={inputHeight >= composerMaxHeight}
             style={[styles.composerInput, { height: inputHeight, maxHeight: composerMaxHeight }]}
+            onFocus={() => setComposerFocus(true)}
+            onBlur={() => setComposerFocus(false)}
             onContentSizeChange={syncInputHeight}
             {...Platform.select({
               ios: { textAlignVertical: inputHeight > COMPOSER_LINE_HEIGHT ? 'top' : 'center' },
@@ -1575,32 +1905,37 @@ export default function AnalyticsAiPanel({
               </Text>
               <Ionicons name="chevron-down" size={12} color={SECONDARY} />
             </Pressable>
-            <Pressable
-              disabled
-              accessibilityRole="button"
-              accessibilityLabel="Voice input not available"
-              accessibilityState={{ disabled: true }}
-              style={styles.composerMic}
-            >
-              <Ionicons name="mic-outline" size={18} color={SECONDARY} />
-            </Pressable>
-            <Pressable
-              onPress={() => (streaming ? stopStreaming() : send())}
-              disabled={!streaming && !canSend}
-              accessibilityRole="button"
-              accessibilityLabel={streaming ? 'Stop' : 'Send'}
-              style={[
-                styles.composerAction,
-                streaming || canSend ? styles.composerActionOn : styles.composerActionOff,
-              ]}
-            >
-              {streaming ? (
-                <View style={styles.composerStopMark} />
-              ) : (
-                <Ionicons name="arrow-up" size={16} color="#fff" />
-              )}
-            </Pressable>
+            {compact ? null : (
+              <Pressable
+                disabled
+                accessibilityRole="button"
+                accessibilityLabel="Voice input not available"
+                accessibilityState={{ disabled: true }}
+                style={styles.composerMic}
+              >
+                <Ionicons name="mic-outline" size={18} color={SECONDARY} />
+              </Pressable>
+            )}
+            <Animated.View style={{ transform: [{ scale: sendPop }] }}>
+              <Pressable
+                onPress={() => (streaming ? stopStreaming() : send())}
+                disabled={!streaming && !canSend}
+                accessibilityRole="button"
+                accessibilityLabel={streaming ? 'Stop' : 'Send'}
+                style={[
+                  styles.composerAction,
+                  streaming || canSend ? styles.composerActionOn : styles.composerActionOff,
+                ]}
+              >
+                {streaming ? (
+                  <View style={styles.composerStopMark} />
+                ) : (
+                  <Ionicons name="arrow-up" size={16} color="#fff" />
+                )}
+              </Pressable>
+            </Animated.View>
           </View>
+        </Pressable>
         </View>
         <Text style={styles.composerHint}>Enter to send · Shift+Enter for a new line</Text>
       </View>
@@ -1610,7 +1945,8 @@ export default function AnalyticsAiPanel({
   return (
     <View style={[styles.root, compact && styles.rootPhone]}>
       {modelSheet}
-      {showList ? list : compact ? conversation : (
+      {promptsSheet}
+      {embedded ? conversation : showList ? list : compact ? conversation : (
         <>
           {list}
           {conversation}
@@ -1631,13 +1967,49 @@ const styles = StyleSheet.create({
     flexDirection: 'column',
   },
   sidebar: {
-    width: 320,
     flexShrink: 0,
     flexDirection: 'column',
     minHeight: 0,
     borderRightWidth: StyleSheet.hairlineWidth,
     borderRightColor: RULE,
     backgroundColor: CANVAS,
+  },
+  sidebarSlot: {
+    width: SIDEBAR_COLLAPSED,
+    flexShrink: 0,
+    position: 'relative',
+    zIndex: 4,
+    minHeight: 0,
+  },
+  sidebarFlyout: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    overflow: 'hidden',
+    zIndex: 5,
+  },
+  sidebarInner: {
+    width: SIDEBAR_WIDTH,
+    flex: 1,
+    minHeight: 0,
+    flexDirection: 'column',
+    backgroundColor: CANVAS,
+  },
+  sidebarHideEdge: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    width: 28,
+    ...Platform.select({
+      web: {
+        backgroundImage: 'linear-gradient(to right, rgba(0,0,0,0) 0%, rgba(0,0,0,0.03) 100%)',
+      },
+      default: {
+        backgroundColor: 'rgba(0,0,0,0.02)',
+      },
+    }),
   },
   sidebarPhone: {
     width: '100%',
@@ -1884,6 +2256,29 @@ const styles = StyleSheet.create({
     height: 32,
     flexShrink: 0,
   },
+  navTitleWrap: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  navTitle: {
+    fontFamily: FONT,
+    fontSize: 15,
+    lineHeight: 19,
+    fontWeight: '600',
+    color: INK,
+    letterSpacing: -0.2,
+    textAlign: 'center',
+  },
+  navSubtitle: {
+    fontFamily: FONT,
+    fontSize: 11,
+    lineHeight: 14,
+    color: SECONDARY,
+    textAlign: 'center',
+  },
   threadScroll: {
     flex: 1,
     minHeight: 0,
@@ -1896,6 +2291,12 @@ const styles = StyleSheet.create({
     paddingTop: 20,
     paddingBottom: 20,
     gap: 14,
+  },
+  threadContentPhone: {
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 14,
+    gap: 12,
   },
   threadEmpty: {
     flexGrow: 1,
@@ -1940,6 +2341,14 @@ const styles = StyleSheet.create({
     letterSpacing: -0.3,
     textAlign: 'center',
   },
+  emptyGreeting: {
+    fontFamily: FONT_LIGHT,
+    fontSize: 28,
+    fontWeight: '300',
+    color: SECONDARY,
+    letterSpacing: -0.4,
+    textAlign: 'center',
+  },
   emptyBody: {
     fontFamily: FONT,
     fontSize: 14,
@@ -1956,22 +2365,30 @@ const styles = StyleSheet.create({
     color: INK,
     textAlign: 'center',
   },
+  suggestScroll: {
+    width: '100%',
+    flexGrow: 0,
+    flexShrink: 0,
+    maxHeight: 34,
+    ...Platform.select({
+      web: { overflowX: 'auto', overflowY: 'hidden' },
+      default: {},
+    }),
+  },
   suggestRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-    gap: 10,
-    marginTop: 20,
-    maxWidth: 560,
+    alignItems: 'center',
+    gap: 8,
+    height: 34,
   },
   suggest: {
-    maxWidth: '100%',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: BUBBLE_RADIUS,
+    flexShrink: 0,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: BUBBLE_THEM_BORDER,
-    backgroundColor: BUBBLE_THEM_BG,
+    backgroundColor: '#fff',
     ...CHIP_SHADOW,
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
@@ -1981,22 +2398,38 @@ const styles = StyleSheet.create({
   suggestText: {
     fontFamily: FONT,
     fontSize: 13,
+    lineHeight: 18,
     fontWeight: '400',
     color: INK,
     letterSpacing: -0.1,
+    ...Platform.select({ web: { whiteSpace: 'nowrap' }, default: {} }),
+  },
+  turnGroup: {
+    alignSelf: 'stretch',
+    width: '100%',
+    gap: 4,
   },
   turnRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
+    alignSelf: 'stretch',
+    width: '100%',
     gap: 8,
-    maxWidth: '100%',
+  },
+  vizBlock: {
+    alignSelf: 'stretch',
+    width: '100%',
+    // Lines up with the bubble: avatar (28) + row gap (8).
+    paddingLeft: 36,
+  },
+  vizBlockPhone: {
+    paddingLeft: 0,
   },
   turnRowTheirs: {
-    alignSelf: 'flex-start',
+    justifyContent: 'flex-start',
   },
   turnRowMine: {
-    alignSelf: 'flex-end',
-    flexDirection: 'row-reverse',
+    justifyContent: 'flex-end',
   },
   turnAvatar: {
     width: 28,
@@ -2005,20 +2438,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 18,
-    backgroundColor: NAV_TAB_ACTIVE_BG,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: BUBBLE_THEM_BORDER,
+    backgroundColor: BUBBLE_THEM_BG,
     flexShrink: 0,
   },
   turnBody: {
-    flex: 1,
-    minWidth: 0,
     maxWidth: '88%',
+    flexShrink: 1,
     gap: 6,
   },
   turnBodyMine: {
-    alignItems: 'flex-end',
-    maxWidth: '84%',
+    maxWidth: '78%',
   },
   turnLabel: {
     fontFamily: FONT,
@@ -2030,8 +2459,12 @@ const styles = StyleSheet.create({
   bubble: {
     maxWidth: '100%',
     borderRadius: BUBBLE_RADIUS,
-    paddingHorizontal: 14,
-    paddingVertical: 9,
+    paddingHorizontal: 15,
+    paddingVertical: 10,
+    ...Platform.select({
+      web: { width: 'fit-content', maxWidth: '100%', overflow: 'visible' },
+      default: {},
+    }),
   },
   costMeta: {
     fontFamily: FONT,
@@ -2058,18 +2491,24 @@ const styles = StyleSheet.create({
     color: '#8e8e93',
   },
   bubbleMine: {
-    backgroundColor: INK,
+    alignSelf: 'flex-end',
+    backgroundColor: BUBBLE_MINE,
+    borderBottomRightRadius: BUBBLE_TAIL,
   },
   bubbleTheirs: {
+    alignSelf: 'flex-start',
     backgroundColor: BUBBLE_THEM_BG,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: BUBBLE_THEM_BORDER,
+    borderBottomLeftRadius: BUBBLE_TAIL,
   },
   bubbleText: {
     fontFamily: FONT,
     fontSize: 16,
     lineHeight: 22,
-    color: '#1d1d1f',
+    color: '#1c1c1e',
+    ...Platform.select({
+      web: { display: 'block', overflow: 'visible' },
+      default: {},
+    }),
   },
   bubbleTextMine: {
     color: '#fff',
@@ -2078,6 +2517,9 @@ const styles = StyleSheet.create({
     textDecorationLine: 'underline',
     fontWeight: '500',
     ...Platform.select({ web: { cursor: 'pointer', textUnderlineOffset: 2 }, default: {} }),
+  },
+  ticketLinkMine: {
+    color: '#fff',
   },
   composerWrap: {
     width: '100%',
@@ -2090,13 +2532,142 @@ const styles = StyleSheet.create({
     gap: 8,
     backgroundColor: CANVAS,
   },
+  composerWrapPhone: {
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: Platform.select({ web: 12, ios: 10, default: 10 }),
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: RULE,
+  },
+  composerToolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minHeight: 24,
+  },
+  composerToolbarLead: {
+    flex: 1,
+    minWidth: 0,
+  },
   composerMeta: {
     fontFamily: FONT,
     fontSize: 11,
     lineHeight: 14,
     color: SECONDARY,
-    textAlign: 'center',
+    textAlign: 'left',
     fontVariant: ['tabular-nums'],
+  },
+  promptsHit: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: CHIP_RADIUS,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: CHIP_BORDER,
+    backgroundColor: '#fff',
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  promptsHitHover: {
+    backgroundColor: NAV_TAB_ACTIVE_BG,
+  },
+  promptsHitText: {
+    fontFamily: FONT,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '500',
+    color: INK,
+  },
+  bubbleActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    marginLeft: 2,
+    marginTop: -2,
+  },
+  bubbleActionsMine: {
+    justifyContent: 'flex-end',
+    marginLeft: 0,
+    marginRight: 2,
+  },
+  bubbleAction: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  bubbleActionHover: {
+    backgroundColor: 'rgba(60, 60, 67, 0.08)',
+  },
+  promptSaveDraft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: NAV_TAB_ACTIVE_BG,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  promptSaveDraftHover: {
+    backgroundColor: '#ececef',
+  },
+  promptSaveDraftText: {
+    fontFamily: FONT,
+    fontSize: 14,
+    fontWeight: '500',
+    color: INK,
+  },
+  promptRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 4,
+  },
+  promptPick: {
+    flex: 1,
+    minWidth: 0,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderRadius: 12,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  promptPickHover: {
+    backgroundColor: '#f5f5f7',
+  },
+  promptPickOff: {
+    opacity: 0.45,
+  },
+  promptPickText: {
+    fontFamily: FONT,
+    fontSize: 14,
+    lineHeight: 20,
+    color: INK,
+  },
+  promptDelete: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  promptDeleteHover: {
+    backgroundColor: '#fef2f2',
+  },
+  promptEmpty: {
+    fontFamily: FONT,
+    fontSize: 13,
+    lineHeight: 18,
+    color: SECONDARY,
+    paddingHorizontal: 8,
+    paddingVertical: 12,
+  },
+  composerPillAnchor: {
+    width: '100%',
   },
   composerPill: {
     flexDirection: 'row',
@@ -2105,12 +2676,19 @@ const styles = StyleSheet.create({
     paddingLeft: 8,
     paddingRight: 8,
     paddingVertical: 4,
-    gap: 6,
+    gap: 4,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: CHIP_BORDER,
     backgroundColor: BUBBLE_THEM_BG,
-    ...CHIP_SHADOW,
+    ...COMPOSER_PILL_IDLE_SHADOW,
+    ...Platform.select({
+      web: { transition: 'box-shadow 180ms ease' },
+      default: {},
+    }),
+  },
+  composerPillActive: {
+    ...COMPOSER_PILL_ACTIVE_SHADOW,
   },
   composerPillMultiline: {
     alignItems: 'flex-end',
@@ -2171,8 +2749,8 @@ const styles = StyleSheet.create({
     backgroundColor: CANVAS,
   },
   attachChipMine: {
-    borderColor: INK,
-    backgroundColor: INK,
+    borderColor: BUBBLE_MINE,
+    backgroundColor: BUBBLE_MINE,
   },
   attachThumb: {
     width: 32,
@@ -2279,7 +2857,7 @@ const styles = StyleSheet.create({
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
   composerActionOn: {
-    backgroundColor: INK,
+    backgroundColor: BUBBLE_MINE,
   },
   composerActionOff: {
     backgroundColor: '#c7c7cc',

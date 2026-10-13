@@ -27,7 +27,6 @@ import {
 import { FONT, FONT_EXTRALIGHT } from '../lib/typography';
 
 const fontFamily = FONT;
-const TAB_BORDER = '#d0d0d0';
 const CHIP_SHADOW = Platform.select({
   web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
   default: {
@@ -1024,8 +1023,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: NAV_TAB_ACTIVE_RADIUS,
-    borderWidth: 1,
-    borderColor: TAB_BORDER,
     backgroundColor: CANVAS,
     ...CHIP_SHADOW,
   },

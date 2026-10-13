@@ -44,13 +44,10 @@ import { useTxnCashBreakdowns } from '../lib/txnCashBreakdowns';
 import {
   callsForStore,
   fetchPhoneHistory,
-  formatCallWhen,
-  formatDuration,
   inboundCallRatio,
   mergeCallLog,
   peekPhoneHistory,
   phoneHistoryNeeded,
-  resultLabel,
 } from '../lib/phoneCalls';
 import { fetchTransferStores, preferStoreByName } from '../lib/locations';
 import { formatPhoneNumber } from '../lib/ringcentral';
@@ -149,13 +146,6 @@ const SNAPSHOT_APPS = {
   settings: { key: 'settings', label: 'Settings', icon: 'settings-outline', accent: '#52525B' },
 };
 
-const PHONE_TABLE_COLS = [
-  { key: 'party', label: 'Party', colStyle: 'appColMain' },
-  { key: 'dir', label: 'Direction', colStyle: 'appColMid' },
-  { key: 'result', label: 'Result', colStyle: 'appColMid' },
-  { key: 'when', label: 'Time', colStyle: 'appColMid' },
-  { key: 'dur', label: 'Duration', colStyle: 'appColEnd', end: true },
-];
 const EMPLOYEE_TABLE_COLS = [
   { key: 'name', label: 'Employee', colStyle: 'appColMain' },
   { key: 'role', label: 'Role', colStyle: 'appColMid' },
@@ -2352,94 +2342,6 @@ function callsInRange(calls, startKey, endKey) {
   });
 }
 
-function phonePartyLabel(call) {
-  const inbound = String(call?.direction || '') !== 'Outbound';
-  const name = inbound ? call?.fromName : call?.toName;
-  const number = inbound ? call?.from : call?.to;
-  return [name, number].filter(Boolean).join(' · ') || 'Unknown';
-}
-
-function PhoneSnapshotBody({ calls = [], periodLabel, ratio, boxed = false }) {
-  const periodText = periodLabel === 'Today' ? 'today' : 'in this period';
-  if (!calls.length) {
-    return boxed ? (
-      <SnapshotTable columns={PHONE_TABLE_COLS}>
-        <EmptyRow boxed text={`No calls ${periodText}.`} />
-      </SnapshotTable>
-    ) : (
-      <EmptyRow text={`No calls ${periodText}.`} />
-    );
-  }
-  const rows = calls.map((call, index) => {
-    const inbound = String(call.direction || '') !== 'Outbound';
-    const missed = inbound && String(call.result || call.status || '') === 'Missed';
-    const last = index === calls.length - 1;
-    if (boxed) {
-      return (
-        <SnapshotTableRow
-          key={call.id || `${call.startTime}-${index}`}
-          last={last}
-          cells={[
-            { key: 'party', text: phonePartyLabel(call), style: 'appColMain' },
-            { key: 'dir', text: inbound ? 'Inbound' : 'Outbound', style: 'appColMid' },
-            { key: 'result', text: resultLabel(call.result || call.status) || '—', style: 'appColMid' },
-            { key: 'when', text: formatCallWhen(call.startTime) || '—', style: 'appColMid' },
-            {
-              key: 'dur',
-              text: call.duration ? formatDuration(call.duration) : '—',
-              style: 'appColEnd',
-              end: true,
-              muted: !call.duration,
-            },
-          ]}
-        />
-      );
-    }
-    return (
-      <View
-        key={call.id || `${call.startTime}-${index}`}
-        style={[styles.row, styles.rowStatic, last && styles.rowLast]}
-      >
-        <Ionicons
-          name={!inbound ? 'arrow-up' : missed ? 'call-outline' : 'arrow-down'}
-          size={16}
-          color={missed ? RED : GREEN}
-        />
-        <View style={styles.rowCopy}>
-          <Text style={styles.rowTitle} numberOfLines={1}>
-            {phonePartyLabel(call)}
-          </Text>
-          <Text style={styles.rowSubtitle} numberOfLines={1}>
-            {[
-              inbound ? 'Inbound' : 'Outbound',
-              resultLabel(call.result || call.status),
-              formatCallWhen(call.startTime),
-              call.duration ? formatDuration(call.duration) : '',
-            ]
-              .filter(Boolean)
-              .join(' · ')}
-          </Text>
-        </View>
-      </View>
-    );
-  });
-  if (boxed) {
-    return <SnapshotTable columns={PHONE_TABLE_COLS}>{rows}</SnapshotTable>;
-  }
-  return (
-    <>
-      {ratio?.ratio && ratio.ratio !== '—' ? (
-        <Text style={styles.emailSectionLabel}>
-          Answer rate {ratio.ratio}
-          {ratio.answered != null ? ` · ${ratio.answered} answered` : ''}
-          {ratio.missed != null ? ` · ${ratio.missed} missed` : ''}
-        </Text>
-      ) : null}
-      {rows}
-    </>
-  );
-}
-
 function storeEmailCapture(txRows, storeName) {
   const rows = buildEmailCaptureByStore(Array.isArray(txRows) ? txRows : []);
   if (!rows.length) return null;
@@ -3802,13 +3704,6 @@ function StoreSnapshotPanel({
       full
       boxed={useDesktopAppTable}
     />
-  ) : listTab === 'phone' ? (
-    <PhoneSnapshotBody
-      calls={phoneCalls}
-      periodLabel={periodLabel}
-      ratio={phoneRatio}
-      boxed={useDesktopAppTable}
-    />
   ) : listTab === 'supplies' ? (
     useDesktopAppTable ? (
       <SnapshotTable columns={SUPPLY_TABLE_COLS}>
@@ -3859,7 +3754,7 @@ function StoreSnapshotPanel({
           title={listTitle}
           meta={listMeta}
           fill
-          hideHead={Boolean(selectedItem) || !isMobile}
+          hideHead={Boolean(selectedItem) || !isMobile || (listTab === 'phone' && Boolean(embeddedApp))}
         >
           {listBody}
         </DashSection>
@@ -3988,7 +3883,6 @@ function StoreSnapshotPanel({
             accessibilityLabel="Close apps"
           />
         ) : null}
-        {desktopHeader}
         <View
           style={styles.storeHomeStage}
           onLayout={(event) => {
@@ -4014,6 +3908,7 @@ function StoreSnapshotPanel({
             {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll' } : null)}
           >
             <View style={styles.storeHomeSheetPadDesktop}>
+              {desktopHeader}
               {overviewHead}
               {sheetLists}
             </View>

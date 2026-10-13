@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
+import { CANVAS, NAV_TAB_ACTIVE_BG, NAV_TAB_ACTIVE_RADIUS, useIsMobile } from '../lib/mobileUi';
 import { useAppAccess } from '../lib/permissions';
 import {
   fetchCashPayments,
@@ -19,6 +20,7 @@ import {
   summarizeCashByStore,
   summarizeCashTotals,
 } from '../lib/payments';
+import { FONT_LIGHT } from '../lib/typography';
 import {
   formatDateParam,
   formatPickerDate,
@@ -31,7 +33,23 @@ const fontFamily = Platform.select({
   default: 'Sohne',
 });
 
-const ACCENT = '#3D8B4F';
+const LABEL = '#1a1a1a';
+const SECONDARY = '#8e8e93';
+const TAB_BORDER = '#d0d0d0';
+const RULE = 'rgba(42,38,30,0.08)';
+const BLUE = '#007AFF';
+const GREEN = '#34C759';
+const AMBER = '#FF9F0A';
+const CHIP_SHADOW = Platform.select({
+  web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
+  default: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+});
 
 const STORE_SORT_KEYS = [
   { key: 'storeName', label: 'Store' },
@@ -65,42 +83,42 @@ function DateChip({ label, value, onChange, maximumDate }) {
   if (Platform.OS === 'web') {
     return (
       <View style={styles.dateChip}>
-        <Text style={styles.dateChipLabel}>{label}</Text>
-        <View style={styles.dateChipControl}>
-          <Ionicons name="calendar-outline" size={14} color="#6b6b6b" />
-          {createElement('input', {
-            type: 'date',
-            value: formatDateParam(dateValue),
-            max: maximumDate ? formatDateParam(maximumDate) : undefined,
-            onChange: (event) => {
-              if (event.target.value) commit(event.target.value);
-            },
-            style: {
-              border: 'none',
-              background: 'transparent',
-              fontFamily,
-              fontSize: 13,
-              color: '#1a1a1a',
-              padding: 0,
-              margin: 0,
-              outline: 'none',
-              cursor: 'pointer',
-              minWidth: 118,
-            },
-          })}
-        </View>
+        <Ionicons name="calendar-outline" size={14} color={SECONDARY} />
+        {createElement('input', {
+          type: 'date',
+          value: formatDateParam(dateValue),
+          max: maximumDate ? formatDateParam(maximumDate) : undefined,
+          'aria-label': label,
+          onChange: (event) => {
+            if (event.target.value) commit(event.target.value);
+          },
+          style: {
+            border: 'none',
+            background: 'transparent',
+            fontFamily,
+            fontSize: 14,
+            color: LABEL,
+            padding: 0,
+            margin: 0,
+            outline: 'none',
+            cursor: 'pointer',
+            minWidth: 118,
+            letterSpacing: '-0.2px',
+          },
+        })}
       </View>
     );
   }
 
   return (
     <>
-      <Pressable style={styles.dateChip} onPress={() => setOpen(true)}>
-        <Text style={styles.dateChipLabel}>{label}</Text>
-        <View style={styles.dateChipControl}>
-          <Ionicons name="calendar-outline" size={14} color="#6b6b6b" />
-          <Text style={styles.dateChipValue}>{formatPickerDate(dateValue)}</Text>
-        </View>
+      <Pressable
+        style={({ pressed }) => [styles.dateChip, pressed && styles.chipPressed]}
+        onPress={() => setOpen(true)}
+        accessibilityLabel={label}
+      >
+        <Ionicons name="calendar-outline" size={14} color={SECONDARY} />
+        <Text style={styles.dateChipValue}>{formatPickerDate(dateValue)}</Text>
       </Pressable>
 
       {Platform.OS === 'android' && open ? (
@@ -177,12 +195,38 @@ function compareValues(a, b, key, direction) {
   );
 }
 
+function SearchField({ value, onChangeText }) {
+  return (
+    <View style={styles.searchField}>
+      <Ionicons name="search" size={16} color={SECONDARY} />
+      <TextInput
+        style={styles.searchInput}
+        value={value}
+        onChangeText={onChangeText}
+        placeholder="Search cash…"
+        placeholderTextColor={SECONDARY}
+        autoCorrect={false}
+        autoCapitalize="none"
+        clearButtonMode="while-editing"
+        returnKeyType="search"
+        accessibilityLabel="Search cash payments"
+      />
+      {value ? (
+        <Pressable onPress={() => onChangeText('')} hitSlop={8} accessibilityLabel="Clear">
+          <Ionicons name="close-circle" size={16} color={SECONDARY} />
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
 export default function FinancialsScreen({
   session,
   onRequireLogin,
   storeFilter,
   embedded = false,
 }) {
+  const isMobile = useIsMobile();
   const { canFilter } = useAppAccess();
   const allowFilters = canFilter('financials');
   const [date, setDate] = useState(() => parseDateParam(new Date()));
@@ -237,7 +281,7 @@ export default function FinancialsScreen({
       setError(err?.message || 'Failed to load cash payments.');
       setWarning('');
     } finally {
-      if (id === requestId.current) setLoading(false);
+      if (id !== requestId.current) setLoading(false);
     }
   }, [session, dateKey, storeFilter]);
 
@@ -305,7 +349,7 @@ export default function FinancialsScreen({
 
   if (!session?.token) {
     return (
-      <View style={styles.body}>
+      <View style={[styles.body, embedded && styles.bodyEmbedded]}>
         <Text style={styles.hint}>
           Sign in to view financials.{' '}
           {onRequireLogin ? (
@@ -318,64 +362,105 @@ export default function FinancialsScreen({
     );
   }
 
+  const scopeLabel = [
+    selectedStore && !singleStore ? selectedStore : singleStore ? storeFilter : 'All stores',
+    isToday ? 'Today' : formatPickerDate(date),
+    loading && rows.length === 0
+      ? 'Loading…'
+      : `${totals.count} payment${totals.count === 1 ? '' : 's'}`,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
   return (
     <View style={[styles.body, embedded && styles.bodyEmbedded]}>
-      <View style={styles.toolbar}>
-        {!embedded ? (
-          <View style={styles.search}>
-            <Ionicons name="search-outline" size={14} color="#8a8a8a" />
-            <TextInput
-              style={styles.searchInput}
-              value={query}
-              onChangeText={setQuery}
-              placeholder="Search cash…"
-              placeholderTextColor="#9a9a9a"
-              autoCorrect={false}
-              autoCapitalize="none"
-              clearButtonMode="while-editing"
-            />
+      <View style={styles.filters}>
+        <View style={[styles.searchPair, !isMobile && styles.searchPairWide]}>
+          {!embedded ? (
+            <SearchField value={query} onChangeText={setQuery} />
+          ) : null}
+          <View style={styles.dateFilters}>
+            <Pressable
+              style={({ pressed }) => [
+                styles.chip,
+                isToday && styles.chipActive,
+                pressed && styles.chipPressed,
+              ]}
+              onPress={() => setDate(parseDateParam(new Date()))}
+              accessibilityRole="button"
+              accessibilityState={{ selected: isToday }}
+            >
+              <Text style={[styles.chipText, isToday && styles.chipTextActive]}>Today</Text>
+            </Pressable>
+            <DateChip label="Date" value={date} onChange={setDate} maximumDate={new Date()} />
+            <Pressable
+              style={({ pressed }) => [styles.refresh, pressed && styles.chipPressed]}
+              onPress={load}
+              hitSlop={8}
+              accessibilityLabel="Refresh financials"
+            >
+              {loading ? (
+                <ActivityIndicator size="small" color={BLUE} />
+              ) : (
+                <Ionicons name="refresh" size={16} color={SECONDARY} />
+              )}
+            </Pressable>
           </View>
+        </View>
+
+        {allowFilters && !singleStore && storeNames.length > 0 ? (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.chipRow}
+          >
+            <Pressable
+              style={({ pressed }) => [
+                styles.chip,
+                !selectedStore && styles.chipActive,
+                pressed && styles.chipPressed,
+              ]}
+              onPress={() => setSelectedStore(null)}
+            >
+              <Text style={[styles.chipText, !selectedStore && styles.chipTextActive]}>All</Text>
+            </Pressable>
+            {storeNames.map((name) => (
+              <Pressable
+                key={name}
+                style={({ pressed }) => [
+                  styles.chip,
+                  selectedStore === name && styles.chipActive,
+                  pressed && styles.chipPressed,
+                ]}
+                onPress={() =>
+                  setSelectedStore((current) => (current === name ? null : name))
+                }
+              >
+                <Text
+                  style={[styles.chipText, selectedStore === name && styles.chipTextActive]}
+                  numberOfLines={1}
+                >
+                  {name}
+                </Text>
+              </Pressable>
+            ))}
+          </ScrollView>
         ) : null}
 
-        <View style={styles.dateFilters}>
-          <Pressable
-            style={[styles.todayChip, isToday && styles.todayChipActive]}
-            onPress={() => setDate(parseDateParam(new Date()))}
-          >
-            <Text style={[styles.todayChipText, isToday && styles.todayChipTextActive]}>
-              Today
-            </Text>
+        <Text style={styles.scopeLabel} numberOfLines={1}>
+          {scopeLabel}
+        </Text>
+
+        {error ? (
+          <Pressable style={styles.banner} onPress={load}>
+            <Text style={styles.errorText}>{error} · Tap to retry</Text>
           </Pressable>
-          <DateChip label="Date" value={date} onChange={setDate} maximumDate={new Date()} />
-        </View>
-
-        <Pressable style={styles.refresh} onPress={load} hitSlop={8}>
-          {loading ? (
-            <ActivityIndicator size="small" color={ACCENT} />
-          ) : (
-            <Ionicons name="refresh" size={16} color="#8a8a8a" />
-          )}
-        </Pressable>
+        ) : null}
+        {warning && !error ? <Text style={styles.warningText}>{warning}</Text> : null}
       </View>
-
-      {error ? (
-        <View style={styles.errorBanner}>
-          <Text style={styles.errorText}>{error}</Text>
-        </View>
-      ) : null}
-      {warning ? <Text style={styles.warningText}>{warning}</Text> : null}
 
       <ListContainer {...listProps}>
         <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Cash</Text>
-            <Text style={styles.sectionMeta}>
-              {loading && rows.length === 0
-                ? 'Loading…'
-                : `${totals.count} payment${totals.count === 1 ? '' : 's'} · ${formatAmount(totals.cashIn)} in · ${formatAmount(totals.cashOut)} out`}
-            </Text>
-          </View>
-
           <View style={styles.summaryCards}>
             <View style={styles.summaryCard}>
               <Text style={styles.summaryLabel}>Cash in</Text>
@@ -407,47 +492,8 @@ export default function FinancialsScreen({
             </View>
           </View>
 
-          {allowFilters && !singleStore ? (
-            <View style={styles.storeFilterRow}>
-              <Pressable
-                style={[styles.storeChip, !selectedStore && styles.storeChipActive]}
-                onPress={() => setSelectedStore(null)}
-              >
-                <Text
-                  style={[
-                    styles.storeChipText,
-                    !selectedStore && styles.storeChipTextActive,
-                  ]}
-                >
-                  All stores
-                </Text>
-              </Pressable>
-              {storeNames.map((name) => (
-                <Pressable
-                  key={name}
-                  style={[
-                    styles.storeChip,
-                    selectedStore === name && styles.storeChipActive,
-                  ]}
-                  onPress={() =>
-                    setSelectedStore((current) => (current === name ? null : name))
-                  }
-                >
-                  <Text
-                    style={[
-                      styles.storeChipText,
-                      selectedStore === name && styles.storeChipTextActive,
-                    ]}
-                  >
-                    {name}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          ) : null}
-
           {!singleStore && storeSummaries.length > 0 ? (
-            <View style={styles.tableBlock}>
+            <View style={styles.tableCard}>
               <Text style={styles.tableBlockTitle}>By store</Text>
               <View style={[styles.row, styles.headerRow]}>
                 {STORE_SORT_KEYS.map((col) => (
@@ -471,9 +517,10 @@ export default function FinancialsScreen({
               {storeSummaries.map((entry) => (
                 <Pressable
                   key={entry.storeName}
-                  style={[
+                  style={({ pressed }) => [
                     styles.row,
                     selectedStore === entry.storeName && styles.rowSelected,
+                    pressed && styles.chipPressed,
                   ]}
                   onPress={() =>
                     setSelectedStore((current) =>
@@ -500,7 +547,7 @@ export default function FinancialsScreen({
                   >
                     {formatAmount(entry.net)}
                   </Text>
-                  <Text style={[styles.cell, styles.colCount]} numberOfLines={1}>
+                  <Text style={[styles.cellMuted, styles.colCount]} numberOfLines={1}>
                     {entry.count}
                   </Text>
                 </Pressable>
@@ -508,7 +555,7 @@ export default function FinancialsScreen({
             </View>
           ) : null}
 
-          <View style={styles.tableBlock}>
+          <View style={styles.tableCard}>
             <Text style={styles.tableBlockTitle}>Cash transactions</Text>
             <View style={[styles.row, styles.headerRow]}>
               {TX_SORT_KEYS.filter((col) => !(singleStore && col.key === 'storeName')).map(
@@ -538,7 +585,7 @@ export default function FinancialsScreen({
 
             {loading && rows.length === 0 ? (
               <View style={[styles.centered, embedded && styles.centeredEmbedded]}>
-                <ActivityIndicator color={ACCENT} />
+                <ActivityIndicator color={BLUE} />
               </View>
             ) : filteredRows.length === 0 ? (
               <Text style={styles.emptyText}>No cleared cash payments for this date.</Text>
@@ -573,7 +620,7 @@ export default function FinancialsScreen({
                   <Text style={[styles.cell, styles.colCustomer]} numberOfLines={1}>
                     {row.customerName}
                   </Text>
-                  <Text style={[styles.cell, styles.colRef]} numberOfLines={1}>
+                  <Text style={[styles.cellMuted, styles.colRef]} numberOfLines={1}>
                     {row.reference}
                   </Text>
                 </View>
@@ -590,38 +637,54 @@ const styles = StyleSheet.create({
   body: {
     flex: 1,
     minHeight: 0,
+    backgroundColor: CANVAS,
+    paddingHorizontal: 16,
+    paddingTop: 8,
   },
   bodyEmbedded: {
-    flex: 1,
-    minHeight: 0,
+    backgroundColor: 'transparent',
+    paddingHorizontal: 0,
+    paddingTop: 0,
     width: '100%',
     maxWidth: '100%',
   },
-  toolbar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 12,
+  filters: {
+    gap: 10,
     marginBottom: 12,
-    width: '100%',
+    flexShrink: 0,
   },
-  search: {
-    flex: 1,
-    minWidth: 160,
-    maxWidth: 280,
+  searchPair: {
+    gap: 8,
+  },
+  searchPairWide: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e0e0e0',
-    paddingBottom: 6,
+  },
+  searchField: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    height: 32,
+    minHeight: 32,
+    paddingHorizontal: 10,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
+    ...CHIP_SHADOW,
   },
   searchInput: {
     flex: 1,
+    minWidth: 0,
+    height: 30,
     fontFamily,
     fontSize: 14,
-    color: '#1a1a1a',
+    fontWeight: '400',
+    color: LABEL,
     paddingVertical: 0,
+    letterSpacing: -0.2,
     ...Platform.select({
       web: { outlineStyle: 'none' },
       default: {},
@@ -631,57 +694,59 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    flexShrink: 0,
   },
-  todayChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: '#f3f3f3',
-    minHeight: 34,
+  chipRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingRight: 8,
+  },
+  chip: {
+    height: 32,
+    paddingHorizontal: 10,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
+    alignItems: 'center',
     justifyContent: 'center',
+    ...CHIP_SHADOW,
   },
-  todayChipActive: {
-    backgroundColor: '#E8F5EA',
+  chipActive: {
+    backgroundColor: NAV_TAB_ACTIVE_BG,
   },
-  todayChipText: {
+  chipPressed: {
+    opacity: 0.72,
+  },
+  chipText: {
     fontFamily,
-    fontSize: 13,
-    fontWeight: '500',
-    color: '#6b6b6b',
+    fontSize: 14,
+    fontWeight: '400',
+    color: LABEL,
+    letterSpacing: -0.2,
   },
-  todayChipTextActive: {
-    color: ACCENT,
-    fontWeight: '600',
+  chipTextActive: {
+    color: LABEL,
+    fontWeight: '400',
   },
   dateChip: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e0e0e0',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    backgroundColor: '#fff',
-    minHeight: 40,
-    justifyContent: 'center',
-    gap: 2,
-  },
-  dateChipLabel: {
-    fontFamily,
-    fontSize: 10,
-    fontWeight: '600',
-    color: '#8a8a8a',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
-  dateChipControl: {
+    height: 32,
+    paddingHorizontal: 10,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+    ...CHIP_SHADOW,
   },
   dateChipValue: {
     fontFamily,
-    fontSize: 13,
-    color: '#1a1a1a',
-    fontWeight: '500',
+    fontSize: 14,
+    color: LABEL,
+    letterSpacing: -0.2,
   },
   dateModalBackdrop: {
     flex: 1,
@@ -689,7 +754,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   dateModalCard: {
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     paddingBottom: 24,
@@ -706,41 +771,52 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 15,
     fontWeight: '600',
-    color: '#1a1a1a',
+    color: LABEL,
   },
   dateModalDone: {
     fontFamily,
     fontSize: 15,
     fontWeight: '600',
-    color: ACCENT,
+    color: BLUE,
   },
   refresh: {
-    width: 28,
-    height: 28,
+    width: 32,
+    height: 32,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: CANVAS,
+    ...CHIP_SHADOW,
   },
-  errorBanner: {
-    marginBottom: 10,
+  scopeLabel: {
+    fontFamily: FONT_LIGHT,
+    fontSize: 16,
+    fontWeight: '300',
+    color: LABEL,
+    letterSpacing: -0.2,
+  },
+  banner: {
+    paddingVertical: 2,
   },
   errorText: {
     fontFamily,
     fontSize: 13,
-    color: '#991B1B',
+    color: '#FF3B30',
   },
   warningText: {
     fontFamily,
-    fontSize: 12,
-    color: '#9a6b2f',
-    marginBottom: 8,
+    fontSize: 13,
+    color: AMBER,
   },
   hint: {
     fontFamily,
-    fontSize: 14,
-    color: '#6b6b6b',
+    fontSize: 15,
+    color: SECONDARY,
   },
   link: {
-    color: ACCENT,
+    color: BLUE,
     fontWeight: '600',
   },
   list: {
@@ -756,116 +832,88 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
   },
   section: {
-    gap: 14,
-  },
-  sectionHeader: {
-    gap: 2,
-  },
-  sectionTitle: {
-    fontFamily,
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#1a1a1a',
-  },
-  sectionMeta: {
-    fontFamily,
-    fontSize: 12,
-    color: '#8a8a8a',
+    gap: 12,
   },
   summaryCards: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 10,
+    gap: 8,
   },
   summaryCard: {
     flexGrow: 1,
     flexBasis: 120,
     minWidth: 110,
     paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    backgroundColor: '#F7FAF7',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#E3EDE4',
+    paddingHorizontal: 12,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    backgroundColor: CANVAS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    ...CHIP_SHADOW,
   },
   summaryLabel: {
     fontFamily,
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#8a8a8a',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
+    fontSize: 12,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.1,
     marginBottom: 4,
   },
   summaryValue: {
-    fontFamily,
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#1a1a1a',
+    fontFamily: FONT_LIGHT,
+    fontSize: 22,
+    fontWeight: '300',
+    color: LABEL,
+    letterSpacing: -0.4,
     fontVariant: ['tabular-nums'],
   },
   summaryHint: {
     fontFamily,
     fontSize: 12,
-    color: '#8a8a8a',
-    marginTop: 2,
+    color: SECONDARY,
+    marginTop: 4,
+    letterSpacing: -0.1,
   },
   cashIn: {
-    color: '#2F8A4E',
+    color: GREEN,
   },
   cashOut: {
-    color: '#B45309',
+    color: AMBER,
   },
-  storeFilterRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
-  storeChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: '#f3f3f3',
-  },
-  storeChipActive: {
-    backgroundColor: '#E8F5EA',
-  },
-  storeChipText: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#6b6b6b',
-  },
-  storeChipTextActive: {
-    color: ACCENT,
-    fontWeight: '600',
-  },
-  tableBlock: {
-    marginTop: 4,
+  tableCard: {
+    backgroundColor: CANVAS,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    overflow: 'hidden',
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 4,
+    ...CHIP_SHADOW,
   },
   tableBlockTitle: {
     fontFamily,
     fontSize: 12,
-    fontWeight: '600',
-    color: '#8a8a8a',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.1,
     marginBottom: 6,
   },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     width: '100%',
-    minHeight: 36,
+    minHeight: 40,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: RULE,
   },
   rowSelected: {
-    backgroundColor: '#F0F8EE',
+    backgroundColor: NAV_TAB_ACTIVE_BG,
+    marginHorizontal: -12,
+    paddingHorizontal: 12,
   },
   headerRow: {
-    borderBottomColor: '#e5e5e5',
-    marginBottom: 2,
+    borderBottomColor: RULE,
     minHeight: 28,
   },
   sortHeader: {
@@ -874,22 +922,31 @@ const styles = StyleSheet.create({
   },
   headerText: {
     fontFamily,
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#9a9a9a',
-    letterSpacing: 0.2,
+    fontSize: 12,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.1,
   },
   headerTextRight: {
     textAlign: 'right',
   },
   headerTextActive: {
-    color: ACCENT,
+    color: LABEL,
   },
   cell: {
+    fontFamily: FONT_LIGHT,
+    fontSize: 14,
+    fontWeight: '400',
+    color: LABEL,
+    paddingRight: 8,
+    letterSpacing: -0.2,
+  },
+  cellMuted: {
     fontFamily,
     fontSize: 13,
-    color: '#1a1a1a',
+    color: SECONDARY,
     paddingRight: 8,
+    letterSpacing: -0.1,
   },
   colStore: {
     flex: 1.2,
@@ -929,9 +986,11 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     fontFamily,
-    fontSize: 13,
-    color: '#8a8a8a',
-    paddingTop: 16,
-    paddingBottom: 8,
+    fontSize: 15,
+    color: SECONDARY,
+    textAlign: 'center',
+    paddingHorizontal: 12,
+    paddingTop: 20,
+    paddingBottom: 16,
   },
 });

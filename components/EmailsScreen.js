@@ -12,6 +12,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import {
   avatarColorForId,
@@ -30,18 +31,20 @@ import {
   buildGmailAuthorizeUrl,
   clearGmailOAuthCallbackFromUrl,
   clearGmailOAuthState,
-  clearGmailSession,
+  clearLegacyGmailSession,
   createGmailOAuthState,
+  disconnectGmailAccount,
   exchangeGmailOAuthCode,
   getGmailMessage,
   getGmailRedirectUri,
-  readGmailOAuthRedirect,
+  isGmailNotConnected,
+  listGmailAccounts,
   listGmailMailbox,
   loadGmailOAuthApp,
-  loadGmailSession,
   mapGmailMail,
   persistGmailOAuthState,
   readGmailOAuthCallback,
+  readGmailOAuthRedirect,
   readGmailOAuthState,
 } from '../lib/gmail';
 import { useIsMobile } from '../lib/mobileUi';
@@ -170,6 +173,88 @@ function ProfileCard({ person, subtitle, onOpen, compact = false }) {
   );
 }
 
+const ACCOUNT_PREF_KEY = 'cgold.emails.account';
+
+function accountLabel(email) {
+  const text = String(email || '');
+  return text.split('@')[0] || text || 'Inbox';
+}
+
+function accountPerson(account) {
+  return {
+    id: account?.email || 'inbox',
+    fullName: account?.name || account?.email || 'Inbox',
+    avatarUrl: account?.picture || '',
+    email: account?.email || '',
+  };
+}
+
+function sortNewest(rows) {
+  const stamp = (row) => {
+    const at = new Date(row?.createdAt || 0).getTime();
+    return Number.isFinite(at) ? at : 0;
+  };
+  return [...rows].sort((a, b) => stamp(b) - stamp(a));
+}
+
+function AccountRow({ account, all = false, active, count, warning, onPress }) {
+  const label = all ? 'All inboxes' : accountLabel(account?.email);
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityState={{ selected: active }}
+      accessibilityLabel={all ? 'All inboxes' : account?.email}
+      style={({ hovered, pressed }) => [
+        styles.folderBtn,
+        active && styles.folderBtnActive,
+        (hovered || pressed) && !active && styles.folderBtnHover,
+      ]}
+    >
+      {all ? (
+        <View style={styles.allInboxesMark}>
+          <Ionicons name="albums-outline" size={14} color={active ? ACCENT : '#8e8e93'} />
+        </View>
+      ) : (
+        <PersonAvatar person={accountPerson(account)} size={22} />
+      )}
+      <Text style={[styles.folderLabel, styles.accountLabel, active && styles.folderLabelActive]} numberOfLines={1}>
+        {label}
+      </Text>
+      {warning ? (
+        <Ionicons name="alert-circle" size={16} color="#b91c1c" />
+      ) : count > 0 ? (
+        <View style={styles.folderBadge}>
+          <Text style={styles.folderBadgeText}>{count > 99 ? '99+' : count}</Text>
+        </View>
+      ) : null}
+    </Pressable>
+  );
+}
+
+function AccountChip({ account, all = false, active, count, warning, onPress }) {
+  const label = all ? 'All' : accountLabel(account?.email);
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityState={{ selected: active }}
+      accessibilityLabel={all ? 'All inboxes' : account?.email}
+      style={[styles.accountChip, active && styles.accountChipActive]}
+    >
+      {!all ? <PersonAvatar person={accountPerson(account)} size={18} /> : null}
+      <Text style={[styles.accountChipText, active && styles.accountChipTextActive]} numberOfLines={1}>
+        {label}
+      </Text>
+      {warning ? (
+        <Ionicons name="alert-circle" size={14} color="#b91c1c" />
+      ) : count > 0 ? (
+        <Text style={[styles.accountChipCount, active && styles.accountChipTextActive]}>{count > 99 ? '99+' : count}</Text>
+      ) : null}
+    </Pressable>
+  );
+}
+
 export default function EmailsScreen({
   session,
   onRequireLogin,
@@ -213,7 +298,7 @@ export default function EmailsScreen({
   const [sent, setSent] = useState([]);
   const [contacts, setContacts] = useState([]);
   const [query, setQuery] = useState('');
-  const [activeId, setActiveId] = useState(null);
+  const [activeKey, setActiveKey] = useState(null);
   const [activeMail, setActiveMail] = useState(null);
   const [composeOpen, setComposeOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
@@ -223,17 +308,43 @@ export default function EmailsScreen({
   const [loadingMail, setLoadingMail] = useState(false);
   const [error, setError] = useState('');
   const [photoPerson, setPhotoPerson] = useState(null);
-  const [gmailSession, setGmailSession] = useState(null);
-  const [gmailReady, setGmailReady] = useState(false);
+  // Connected inboxes live on the server (per signed-in person), so they are
+  // the same on every device and survive logouts. `selectedAccount` is '' for
+  // the merged "All inboxes" view and is remembered per person on this device.
+  const [accounts, setAccounts] = useState([]);
+  const [accountErrors, setAccountErrors] = useState({});
+  const [selectedAccount, setSelectedAccount] = useState('');
+  const [accountsReady, setAccountsReady] = useState(false);
   const [oauthApp, setOauthApp] = useState(null);
   const [oauthBusy, setOauthBusy] = useState(false);
   const appliedFocusKey = useRef(null);
-  const gmailSessionRef = useRef(null);
-  gmailSessionRef.current = gmailSession;
+  const accountsRef = useRef([]);
+  accountsRef.current = accounts;
+  const prefKey = `${ACCOUNT_PREF_KEY}.${myId || 'local'}`;
 
-  const list = folder === 'sent' ? sent : inbox;
-  const unreadCount = useMemo(() => inbox.filter((row) => row.unread).length, [inbox]);
-  const connectedEmail = gmailSession?.email || '';
+  const connectedEmails = useMemo(() => new Set(accounts.map((account) => account.email)), [accounts]);
+  const list = useMemo(() => {
+    const rows = folder === 'sent' ? sent : inbox;
+    return selectedAccount ? rows.filter((row) => row.account === selectedAccount) : rows;
+  }, [folder, inbox, sent, selectedAccount]);
+  const unreadByAccount = useMemo(() => {
+    const counts = {};
+    for (const row of inbox) {
+      if (row.unread) counts[row.account] = (counts[row.account] || 0) + 1;
+    }
+    return counts;
+  }, [inbox]);
+  const totalUnread = useMemo(
+    () => Object.values(unreadByAccount).reduce((sum, count) => sum + count, 0),
+    [unreadByAccount],
+  );
+  const unreadCount = selectedAccount ? unreadByAccount[selectedAccount] || 0 : totalUnread;
+  const focusAccount = selectedAccount
+    ? accounts.find((account) => account.email === selectedAccount) || null
+    : accounts.length === 1
+      ? accounts[0]
+      : null;
+  const multiAccount = accounts.length > 1;
 
   useEffect(() => {
     if (!focus?.key || focus.key === appliedFocusKey.current) return;
@@ -241,40 +352,63 @@ export default function EmailsScreen({
     if (capture) {
       setFolder('customers');
       setComposeOpen(false);
-      setActiveId(null);
+      setActiveKey(null);
       setActiveMail(null);
     }
   }, [focus, capture]);
 
-  const loginEmail = String(session?.profile?.email || session?.login || '').trim().toLowerCase();
+  const chooseAccount = useCallback(
+    (email) => {
+      const next = String(email || '').toLowerCase();
+      setSelectedAccount(next);
+      setActiveKey(null);
+      setActiveMail(null);
+      setComposeOpen(false);
+      AsyncStorage.setItem(prefKey, next).catch(() => {});
+    },
+    [prefKey],
+  );
+
+  const reloadAccounts = useCallback(async () => {
+    const rows = await listGmailAccounts();
+    setAccounts(rows);
+    return rows;
+  }, []);
 
   useEffect(() => {
+    if (!myId) return undefined;
     let cancelled = false;
+    setAccountsReady(false);
     (async () => {
+      clearLegacyGmailSession().catch(() => {});
+      const pendingOAuth = Boolean(readGmailOAuthCallback());
+      const [saved, app] = await Promise.all([
+        AsyncStorage.getItem(prefKey).catch(() => null),
+        loadGmailOAuthApp().catch(() => ({ clientId: '', configured: false, hostedDomain: 'canadagold.ca' })),
+      ]);
+      if (cancelled) return;
+      setOauthApp(app);
+      const remembered = String(saved || '').toLowerCase();
+      if (remembered) setSelectedAccount(remembered);
+      // The OAuth effect below finishes the connect and loads the list itself.
+      if (pendingOAuth) return;
       try {
-        const [mail, app] = await Promise.all([
-          loadGmailSession(),
-          loadGmailOAuthApp().catch(() => ({ clientId: '', configured: false, hostedDomain: 'canadagold.ca' })),
-        ]);
+        const rows = await reloadAccounts();
         if (cancelled) return;
-        if (mail?.email && loginEmail && mail.email !== loginEmail) {
-          await clearGmailSession();
-          setGmailSession(null);
-        } else {
-          setGmailSession(mail);
-        }
-        setOauthApp(app);
+        if (remembered && !rows.some((row) => row.email === remembered)) setSelectedAccount('');
+      } catch (err) {
+        if (!cancelled) setError(err?.message || 'Could not load your inboxes.');
       } finally {
-        if (!cancelled) setGmailReady(true);
+        if (!cancelled) setAccountsReady(true);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [loginEmail]);
+  }, [myId, prefKey, reloadAccounts]);
 
   useEffect(() => {
-    if (!loginEmail) return undefined;
+    if (!myId) return undefined;
     const callback = readGmailOAuthCallback();
     if (!callback) return undefined;
     let cancelled = false;
@@ -289,40 +423,41 @@ export default function EmailsScreen({
         if (!expected || !callback.state || expected !== callback.state) {
           throw new Error('Google sign-in state did not match. Try again.');
         }
-        const next = await exchangeGmailOAuthCode({
+        const result = await exchangeGmailOAuthCode({
           code: callback.code,
           redirectUri: readGmailOAuthRedirect() || getGmailRedirectUri(),
         });
-        const mine = loginEmail;
-        if (mine && next.email && next.email !== mine) {
-          await clearGmailSession();
-          throw new Error('Sign in with the Google account you use for this app.');
-        }
         clearGmailOAuthState();
         clearGmailOAuthCallbackFromUrl();
         if (!cancelled) {
-          setGmailSession(next);
+          setAccounts(result.accounts.length ? result.accounts : [result.account]);
+          setAccountErrors({});
+          chooseAccount(result.account.email);
           setFolder('inbox');
         }
       } catch (err) {
         clearGmailOAuthCallbackFromUrl();
         if (!cancelled) setError(err?.message || 'Google sign-in failed.');
+        await reloadAccounts().catch(() => {});
       } finally {
-        if (!cancelled) setOauthBusy(false);
+        if (!cancelled) {
+          setOauthBusy(false);
+          setAccountsReady(true);
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [loginEmail]);
+  }, [myId, chooseAccount, reloadAccounts]);
 
   const refreshList = useCallback(async () => {
-    const mailSession = gmailSessionRef.current;
-    if (!mailSession?.token) {
+    const connected = accountsRef.current.filter((account) => account.connected);
+    if (!connected.length) {
       setInbox([]);
       setSent([]);
       setLoadingList(false);
-      return [];
+      return;
     }
     setLoadingList(true);
     try {
@@ -331,52 +466,77 @@ export default function EmailsScreen({
         const mine = people.some((person) => person.id === myPerson.id);
         if (!mine) people.push(myPerson);
       }
-      const [inboxRes, sentRes] = await Promise.all([
-        listGmailMailbox(mailSession, 'inbox'),
-        listGmailMailbox(mailSession, 'sent'),
-      ]);
-      const latest = sentRes.session || inboxRes.session || mailSession;
-      setGmailSession(latest);
+      const results = await Promise.all(
+        connected.map(async (account) => {
+          try {
+            const [inboxRes, sentRes] = await Promise.all([
+              listGmailMailbox(account.email, 'inbox'),
+              listGmailMailbox(account.email, 'sent'),
+            ]);
+            return { account: account.email, inbox: inboxRes.messages || [], sent: sentRes.messages || [] };
+          } catch (err) {
+            return {
+              account: account.email,
+              error: isGmailNotConnected(err)
+                ? err?.message || 'Reconnect this inbox.'
+                : err?.message || 'Could not load mail.',
+            };
+          }
+        }),
+      );
+      const problems = {};
+      const inboxRows = [];
+      const sentRows = [];
+      for (const result of results) {
+        if (result.error) {
+          problems[result.account] = result.error;
+          continue;
+        }
+        inboxRows.push(...result.inbox.map((row) => mapGmailMail(row, people)));
+        sentRows.push(...result.sent.map((row) => mapGmailMail(row, people)));
+      }
       setContacts(people);
-      setInbox((inboxRes.messages || []).map((row) => mapGmailMail(row, people)));
-      setSent((sentRes.messages || []).map((row) => mapGmailMail(row, people)));
-      setError('');
-      return inboxRes.messages || [];
+      setInbox(sortNewest(inboxRows));
+      setSent(sortNewest(sentRows));
+      setAccountErrors(problems);
+      const failed = results.filter((result) => result.error);
+      setError(failed.length === results.length ? failed[0].error : '');
     } catch (err) {
       setError(err.message || 'Could not load mail.');
-      return [];
     } finally {
       setLoadingList(false);
     }
   }, [myPerson]);
 
-  const openMail = useCallback(async (emailId) => {
-    if (!emailId) return;
-    const mailSession = gmailSessionRef.current;
-    if (!mailSession?.token) return;
-    setActiveId(emailId);
-    setComposeOpen(false);
-    setLoadingMail(true);
-    try {
-      const result = await getGmailMessage(mailSession, emailId);
-      setGmailSession(result.session);
-      const mapped = mapGmailMail(result.message, contacts);
-      setActiveMail(mapped);
-      setInbox((current) =>
-        current.map((item) => (item.id === emailId ? { ...item, unread: false } : item)),
-      );
-      setError('');
-    } catch (err) {
-      setError(err.message || 'Could not open that email.');
-    } finally {
-      setLoadingMail(false);
-    }
-  }, [contacts]);
+  const openMail = useCallback(
+    async (row) => {
+      if (!row?.id || !row.account) return;
+      setActiveKey(`${row.account}|${row.id}`);
+      setComposeOpen(false);
+      setLoadingMail(true);
+      try {
+        const result = await getGmailMessage(row.account, row.id);
+        setActiveMail(mapGmailMail(result.message, contacts));
+        setInbox((current) =>
+          current.map((item) =>
+            item.id === row.id && item.account === row.account ? { ...item, unread: false } : item,
+          ),
+        );
+        setError('');
+      } catch (err) {
+        setError(err.message || 'Could not open that email.');
+      } finally {
+        setLoadingMail(false);
+      }
+    },
+    [contacts],
+  );
 
+  const accountsKey = accounts.map((account) => `${account.email}:${account.connected ? 1 : 0}`).join(',');
   useEffect(() => {
-    if (!gmailReady) return;
+    if (!accountsReady) return;
     refreshList();
-  }, [gmailReady, gmailSession?.token, refreshList]);
+  }, [accountsReady, accountsKey, refreshList]);
 
   const handleOpenProfile = (person) => {
     if (!person?.profileId) return;
@@ -387,7 +547,7 @@ export default function EmailsScreen({
     setPhotoPerson(person);
   };
 
-  const signInWithGoogle = async () => {
+  const signInWithGoogle = async ({ loginHint = '', selectAccount = false } = {}) => {
     const redirectUri = getGmailRedirectUri();
     if (!redirectUri) {
       setError('Google mail sign-in is available in the web app.');
@@ -409,7 +569,8 @@ export default function EmailsScreen({
         redirectUri,
         state,
         hostedDomain: oauthApp.hostedDomain,
-        loginHint: session?.profile?.email || session?.login || '',
+        loginHint,
+        selectAccount,
       });
       if (typeof window !== 'undefined') {
         window.location.assign(url);
@@ -422,14 +583,32 @@ export default function EmailsScreen({
     }
   };
 
-  const disconnectGoogle = async () => {
-    await clearGmailSession();
-    setGmailSession(null);
-    setInbox([]);
-    setSent([]);
-    setActiveId(null);
-    setActiveMail(null);
-    setError('');
+  const connectFirstInbox = () =>
+    signInWithGoogle({ loginHint: session?.profile?.email || session?.login || '' });
+  const addInbox = () => signInWithGoogle({ selectAccount: true });
+  const reconnectInbox = (email) => signInWithGoogle({ loginHint: email });
+
+  const disconnectInbox = async (email) => {
+    if (!email) return;
+    try {
+      const rows = await disconnectGmailAccount(email);
+      setAccounts(rows);
+      setInbox((current) => current.filter((row) => row.account !== email));
+      setSent((current) => current.filter((row) => row.account !== email));
+      setAccountErrors((current) => {
+        const next = { ...current };
+        delete next[email];
+        return next;
+      });
+      if (selectedAccount === email) chooseAccount('');
+      if (activeMail?.account === email) {
+        setActiveKey(null);
+        setActiveMail(null);
+      }
+      setError('');
+    } catch (err) {
+      setError(err?.message || 'Could not disconnect that inbox.');
+    }
   };
 
   const toggleSelected = (personId) => {
@@ -450,7 +629,7 @@ export default function EmailsScreen({
     const q = query.trim().toLowerCase();
     if (!q || composeOpen) return list;
     return list.filter((row) => {
-      const hay = `${emailSubject(row)} ${contactName(row.sender)} ${recipientNames(row.recipients)} ${row.preview}`.toLowerCase();
+      const hay = `${emailSubject(row)} ${contactName(row.sender)} ${recipientNames(row.recipients)} ${row.preview} ${row.account}`.toLowerCase();
       return hay.includes(q);
     });
   }, [composeOpen, list, query]);
@@ -484,10 +663,12 @@ export default function EmailsScreen({
     );
   }
 
-  const needsGoogle = gmailReady && !gmailSession && folder !== 'customers';
-  const showFolders = !isMobile || !activeId;
-  const showList = !needsGoogle && folder !== 'customers' && (!isMobile || !activeId);
-  const showReader = !needsGoogle && folder !== 'customers' && (!isMobile || Boolean(activeId)) && !(isMobile && composeOpen);
+  const needsGoogle = accountsReady && accounts.length === 0 && folder !== 'customers';
+  const showFolders = !isMobile || !activeKey;
+  const showList = !needsGoogle && folder !== 'customers' && (!isMobile || !activeKey);
+  const showReader = !needsGoogle && folder !== 'customers' && (!isMobile || Boolean(activeKey)) && !(isMobile && composeOpen);
+  const isMe = (person) =>
+    Boolean(person) && (person.profileId === myId || (person.email && connectedEmails.has(person.email)));
 
   const renderList = () => {
     if (composeOpen) {
@@ -535,27 +716,38 @@ export default function EmailsScreen({
     }
 
     if (filteredList.length === 0) {
+      const warning = focusAccount ? accountErrors[focusAccount.email] : '';
       return (
         <View style={styles.inboxCentered}>
           <Ionicons name={folder === 'sent' ? 'paper-plane-outline' : 'mail-outline'} size={36} color="#c7c7cc" />
-          <Text style={styles.emptyTitle}>{folder === 'sent' ? 'No sent mail' : 'Inbox zero'}</Text>
-          <Text style={styles.emptyHint}>
-            {folder === 'sent'
-              ? 'Mail you send from this Google account appears here.'
-              : 'New mail to this Google account appears here.'}
+          <Text style={styles.emptyTitle}>
+            {warning ? 'Inbox needs a reconnect' : folder === 'sent' ? 'No sent mail' : 'Inbox zero'}
           </Text>
+          <Text style={styles.emptyHint}>
+            {warning
+              ? warning
+              : folder === 'sent'
+                ? 'Mail you send from a connected inbox appears here.'
+                : 'New mail to your connected inboxes appears here.'}
+          </Text>
+          {warning && focusAccount ? (
+            <Pressable onPress={() => reconnectInbox(focusAccount.email)} style={styles.loginButton}>
+              <Text style={styles.loginButtonText}>Reconnect {accountLabel(focusAccount.email)}</Text>
+            </Pressable>
+          ) : null}
         </View>
       );
     }
 
     return filteredList.map((row) => {
-      const selected = row.id === activeId;
+      const key = `${row.account}|${row.id}`;
+      const selected = key === activeKey;
       const unread = folder === 'inbox' && row.unread;
       const who = folder === 'sent' ? recipientNames(row.recipients) : contactName(row.sender);
       return (
         <Pressable
-          key={row.id}
-          onPress={() => openMail(row.id)}
+          key={key}
+          onPress={() => openMail(row)}
           {...(Platform.OS === 'web'
             ? { className: selected ? 'cgold-dm-row cgold-dm-row-active' : 'cgold-dm-row' }
             : null)}
@@ -584,6 +776,11 @@ export default function EmailsScreen({
               <Text style={[styles.personName, unread && styles.personNameUnread]} numberOfLines={1}>
                 {who}
               </Text>
+              {multiAccount && !selectedAccount ? (
+                <Text style={styles.rowAccount} numberOfLines={1}>
+                  {accountLabel(row.account)}
+                </Text>
+              ) : null}
               <Text style={[styles.personTime, unread && styles.personTimeUnread]}>
                 {formatInboxTime(row.createdAt)}
               </Text>
@@ -683,9 +880,9 @@ export default function EmailsScreen({
       );
     }
 
-    if (isMobile && !activeId) return null;
+    if (isMobile && !activeKey) return null;
 
-    if (!activeId) {
+    if (!activeKey) {
       return (
         <View style={styles.threadPlaceholder}>
           <View style={styles.placeholderIcon}>
@@ -717,6 +914,7 @@ export default function EmailsScreen({
 
     const fromPerson = activeMail.sender;
     const toPeople = activeMail.recipients || [];
+    const stamp = formatThreadStamp(activeMail.createdAt);
 
     return (
       <View style={styles.thread}>
@@ -724,7 +922,7 @@ export default function EmailsScreen({
           {isMobile ? (
             <Pressable
               onPress={() => {
-                setActiveId(null);
+                setActiveKey(null);
                 setActiveMail(null);
               }}
               style={styles.backButton}
@@ -737,14 +935,16 @@ export default function EmailsScreen({
             <Text style={styles.threadName} numberOfLines={2}>
               {emailSubject(activeMail)}
             </Text>
-            <Text style={styles.threadSeen}>{formatThreadStamp(activeMail.createdAt)}</Text>
+            <Text style={styles.threadSeen}>
+              {multiAccount && activeMail.account ? `${stamp} · ${activeMail.account}` : stamp}
+            </Text>
           </View>
         </View>
         <ScrollView style={styles.threadList} contentContainerStyle={styles.mailBodyContent}>
           <Text style={styles.sectionLabel}>From</Text>
           <ProfileCard
             person={fromPerson}
-            subtitle={fromPerson?.profileId === myId || fromPerson?.email === connectedEmail ? 'You' : 'Sent this email'}
+            subtitle={isMe(fromPerson) ? 'You' : 'Sent this email'}
             onOpen={fromPerson?.profileId ? handleOpenProfile : null}
           />
           <Text style={styles.sectionLabel}>To</Text>
@@ -753,7 +953,7 @@ export default function EmailsScreen({
               key={person.id}
               person={person}
               compact
-              subtitle={person.profileId === myId || person.email === connectedEmail ? 'You' : 'Recipient'}
+              subtitle={isMe(person) ? 'You' : 'Recipient'}
               onOpen={person.profileId ? handleOpenProfile : null}
             />
           ))}
@@ -774,6 +974,102 @@ export default function EmailsScreen({
     );
   };
 
+  const renderAccountRail = () => {
+    if (!accounts.length) return null;
+    if (isMobile) {
+      return (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.accountChipsScroll}
+          contentContainerStyle={styles.accountChips}
+          keyboardShouldPersistTaps="handled"
+        >
+          {multiAccount ? (
+            <AccountChip all active={!selectedAccount} count={totalUnread} onPress={() => chooseAccount('')} />
+          ) : null}
+          {accounts.map((account) => (
+            <AccountChip
+              key={account.email}
+              account={account}
+              active={selectedAccount === account.email || (!multiAccount && !selectedAccount)}
+              count={unreadByAccount[account.email] || 0}
+              warning={Boolean(accountErrors[account.email]) || !account.connected}
+              onPress={() => chooseAccount(multiAccount ? account.email : '')}
+            />
+          ))}
+          <Pressable
+            onPress={addInbox}
+            disabled={oauthBusy}
+            accessibilityRole="button"
+            accessibilityLabel="Add an inbox"
+            style={styles.accountChip}
+          >
+            <Ionicons name="add" size={16} color={ACCENT} />
+            <Text style={[styles.accountChipText, { color: ACCENT }]}>Add inbox</Text>
+          </Pressable>
+        </ScrollView>
+      );
+    }
+    return (
+      <View style={styles.accountsSection}>
+        <Text style={styles.accountsTitle}>Inboxes</Text>
+        {multiAccount ? (
+          <AccountRow all active={!selectedAccount} count={totalUnread} onPress={() => chooseAccount('')} />
+        ) : null}
+        {accounts.map((account) => (
+          <AccountRow
+            key={account.email}
+            account={account}
+            active={selectedAccount === account.email || (!multiAccount && !selectedAccount)}
+            count={unreadByAccount[account.email] || 0}
+            warning={Boolean(accountErrors[account.email]) || !account.connected}
+            onPress={() => chooseAccount(multiAccount ? account.email : '')}
+          />
+        ))}
+        <Pressable
+          onPress={addInbox}
+          disabled={oauthBusy}
+          accessibilityRole="button"
+          accessibilityLabel="Add an inbox"
+          style={({ hovered, pressed }) => [styles.folderBtn, (hovered || pressed) && styles.folderBtnHover]}
+        >
+          <View style={styles.allInboxesMark}>
+            <Ionicons name="add" size={16} color={ACCENT} />
+          </View>
+          <Text style={[styles.folderLabel, styles.accountLabel, { color: ACCENT }]} numberOfLines={1}>
+            Add inbox
+          </Text>
+        </Pressable>
+      </View>
+    );
+  };
+
+  const renderAccountBlock = () => {
+    if (!focusAccount) return null;
+    const warning = accountErrors[focusAccount.email] || (!focusAccount.connected ? focusAccount.error || 'Reconnect this inbox.' : '');
+    return (
+      <View style={[styles.accountBlock, isMobile && styles.accountBlockMobile]}>
+        <Text style={styles.accountEmail} numberOfLines={1}>
+          {focusAccount.email}
+        </Text>
+        {warning ? (
+          <Pressable onPress={() => reconnectInbox(focusAccount.email)} style={styles.disconnectBtn}>
+            <Text style={styles.disconnectText}>Reconnect</Text>
+          </Pressable>
+        ) : null}
+        <Pressable
+          onPress={() => disconnectInbox(focusAccount.email)}
+          style={styles.disconnectBtn}
+          accessibilityRole="button"
+          accessibilityLabel={`Disconnect ${focusAccount.email}`}
+        >
+          <Text style={styles.disconnectText}>Disconnect</Text>
+        </Pressable>
+      </View>
+    );
+  };
+
   return (
     <View style={[styles.root, isMobile && styles.rootMobile, embedded && styles.rootEmbedded]}>
       {showFolders ? (
@@ -789,37 +1085,34 @@ export default function EmailsScreen({
                 onPress={() => {
                   setFolder(item.key);
                   setComposeOpen(false);
-                  setActiveId(null);
+                  setActiveKey(null);
                   setActiveMail(null);
                   setQuery('');
                 }}
               />
             ))}
           </View>
-          {gmailSession ? (
-            <View style={styles.accountBlock}>
-              <Text style={styles.accountEmail} numberOfLines={1}>
-                {connectedEmail || 'Connected'}
-              </Text>
-              <Pressable onPress={disconnectGoogle} style={styles.disconnectBtn}>
-                <Text style={styles.disconnectText}>Disconnect</Text>
-              </Pressable>
-            </View>
-          ) : null}
+          {renderAccountRail()}
+          {!isMobile ? renderAccountBlock() : null}
         </View>
       ) : null}
 
       {folder === 'customers' ? (
         <View style={styles.captureHost}>{capture}</View>
-      ) : needsGoogle || !gmailReady ? (
+      ) : !accountsReady ? (
+        <View style={styles.connectHost}>
+          <ActivityIndicator color="#1d1d1f" />
+        </View>
+      ) : needsGoogle ? (
         <View style={styles.connectHost}>
           <View style={styles.placeholderIcon}>
             <Ionicons name="logo-google" size={28} color={ACCENT} />
           </View>
-          <Text style={styles.emptyTitle}>Sign in to your Canada Gold email</Text>
+          <Text style={styles.emptyTitle}>Connect your Canada Gold email</Text>
           <Text style={styles.emptyHint}>
-            Connect the Google account for {oauthApp?.hostedDomain || 'canadagold.ca'} to load Inbox and
-            Sent. If the sender is on this app, their profile opens from the message.
+            Sign in with a {oauthApp?.hostedDomain || 'canadagold.ca'} Google account to load Inbox and
+            Sent. You can add more than one inbox, and they stay connected the next time you log in.
+            If the sender is on this app, their profile opens from the message.
           </Text>
           {error ? <Text style={styles.connectError}>{error}</Text> : null}
           {getGmailRedirectUri() ? (
@@ -835,7 +1128,7 @@ export default function EmailsScreen({
             </View>
           ) : null}
           <Pressable
-            onPress={signInWithGoogle}
+            onPress={connectFirstInbox}
             disabled={oauthBusy || (oauthApp && !oauthApp.configured)}
             style={({ hovered, pressed }) => [
               styles.googleButton,
@@ -843,7 +1136,7 @@ export default function EmailsScreen({
               (oauthBusy || (oauthApp && !oauthApp.configured)) && styles.googleButtonDisabled,
             ]}
           >
-            {oauthBusy || !gmailReady ? (
+            {oauthBusy ? (
               <ActivityIndicator color="#fff" />
             ) : (
               <>
@@ -866,6 +1159,7 @@ export default function EmailsScreen({
                 <Text style={styles.inboxTitle}>
                   {composeOpen ? (isMobile ? 'New message' : 'To') : folder === 'sent' ? 'Sent' : 'Inbox'}
                 </Text>
+                {isMobile && !composeOpen ? renderAccountBlock() : null}
               </View>
               {isMobile && composeOpen ? (
                 <View style={styles.composeFields}>
@@ -1011,7 +1305,89 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#e5e5ea',
     paddingTop: 8,
-    paddingBottom: 10,
+    paddingBottom: 8,
+    gap: 6,
+  },
+  accountsSection: {
+    marginTop: 18,
+    gap: 2,
+  },
+  accountsTitle: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#8e8e93',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    paddingHorizontal: 10,
+    marginBottom: 4,
+  },
+  accountLabel: {
+    fontSize: 14,
+  },
+  allInboxesMark: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#e5e5ea',
+  },
+  accountChipsScroll: {
+    flexGrow: 0,
+    flexShrink: 0,
+  },
+  accountChips: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingRight: 8,
+  },
+  accountChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingLeft: 6,
+    paddingRight: 10,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#e8e8ed',
+    maxWidth: 180,
+  },
+  accountChipActive: {
+    backgroundColor: '#e8e7ff',
+  },
+  accountChipText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    flexShrink: 1,
+  },
+  accountChipTextActive: {
+    color: ACCENT,
+  },
+  accountChipCount: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#8e8e93',
+  },
+  rowAccount: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: ACCENT,
+    backgroundColor: '#eef0ff',
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    overflow: 'hidden',
+    maxWidth: 96,
+  },
+  accountBlockMobile: {
+    marginTop: 4,
+    paddingTop: 0,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
@@ -1480,6 +1856,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#8e8e93',
     paddingHorizontal: 4,
+    flexShrink: 1,
   },
   disconnectBtn: {
     paddingVertical: 8,
