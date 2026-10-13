@@ -1,4 +1,4 @@
-import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -32,11 +32,11 @@ import {
   hideDmConversation,
   hideDmMessage,
   initialsFromName,
-  isDefaultAiTitle,
   leaveDmGroup,
   listDmContacts,
   listDmInbox,
   listDmMessages,
+  mapIncomingDmMessage,
   markDmRead,
   renameDmGroup,
   sendDmMessage,
@@ -69,8 +69,17 @@ import {
   subscribeAgentBuilds,
 } from '../lib/agentBuilds';
 import { fetchAureusEmployee } from '../lib/aureusEmployees';
-import { prepareAiChatSession, sendAiChatMessage, titleAiChat } from '../lib/aiChat';
-import { OPENROUTER_MODELS } from '../lib/openrouter';
+import { ANALYTICS_CHAT_MODELS, askAnalytics } from '../lib/analyticsChartTools';
+import { loadGoogleMapsBrowserKey } from '../lib/aiKeys';
+import {
+  MAX_ATTACHMENTS,
+  attachmentLabel,
+  formatBytes,
+  pickFiles,
+  prepareAttachment,
+} from '../lib/aiAttachments';
+import { uploadDmAttachments } from '../lib/dmAttachments';
+import { CANVAS, DESKTOP_TOP_BAR_HEIGHT, MOBILE, NAV_TAB_ACTIVE_BG, NAV_TAB_ACTIVE_RADIUS } from '../lib/mobileUi';
 import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
 import { useLiveRefresh } from '../lib/liveRefresh';
 import {
@@ -78,8 +87,9 @@ import {
   normalizeAgentRequestImages,
   uploadAgentRequestPhotos,
 } from '../lib/agentRequestPhotos';
-import { CANVAS, DESKTOP_TOP_BAR_HEIGHT } from '../lib/mobileUi';
+import { FONT } from '../lib/typography';
 import { MobileFeedTopBarActions } from './MobileChrome';
+import SendFromInput from './SendFromInput';
 import { pickTriagePhotos } from './TriageCorrectionImages';
 import { listStaffProfiles, useAppAccess } from '../lib/permissions';
 import ProfilePhotoModal from './ProfilePhotoModal';
@@ -92,18 +102,60 @@ import {
 } from './AgentPreviewTv';
 import { usePhoneCalls } from './PhoneCallProvider';
 
-const fontFamily = Platform.select({
-  ios: 'Sohne',
-  android: 'Sohne',
-  default: 'Sohne',
-});
+// The AI conversation is the Analytics panel itself, hosted in the thread pane.
+const AnalyticsAiPanel = lazy(() => import('./AnalyticsAiPanel'));
+const AnalyticsChartCard = lazy(() => import('./AnalyticsChartCard'));
+const AnalyticsMapCard = lazy(() => import('./AnalyticsMapCard'));
+const AnalyticsTableCard = lazy(() => import('./AnalyticsTableCard'));
+const AnalyticsFileCard = lazy(() => import('./AnalyticsFileCard'));
+const AI_TITLE = 'MyCanadaGold AI';
 
+const fontFamily = FONT;
 
+// Same visual tokens as AnalyticsAiPanel so both chats read as one product.
 const BLUE = '#1a1a1a';
 const INK = '#1a1a1a';
 const CHIP_BORDER = '#d0d0d0';
 const CHIP_RADIUS = 6;
-const AI_PURPLE = '#6B4DE6';
+const RULE = 'rgba(42,38,30,0.08)';
+const SECONDARY = '#8e8e93';
+const BUBBLE_RADIUS = 20;
+const BUBBLE_TAIL = 5;
+const BUBBLE_MINE = MOBILE.blue;
+const BUBBLE_THEM_BG = '#e9e9eb';
+const BUBBLE_THEM_BORDER = 'rgba(60, 60, 67, 0.08)';
+const COMPOSER_LINE_HEIGHT = 22;
+const COMPOSER_MAX_LINES = 4;
+const CHIP_SHADOW = Platform.select({
+  web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
+  default: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+});
+const COMPOSER_PILL_IDLE_SHADOW = Platform.select({
+  web: { boxShadow: '0 1px 2px rgba(0,0,0,0.03)' },
+  default: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.03,
+    shadowRadius: 2,
+    elevation: 0,
+  },
+});
+const COMPOSER_PILL_ACTIVE_SHADOW = Platform.select({
+  web: { boxShadow: '0 2px 8px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)' },
+  default: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 5,
+    elevation: 1,
+  },
+});
 const INBOX_WIDTH = 340;
 const AGENT_BACKGROUNDS = [
   '#000000',
@@ -172,10 +224,8 @@ function agentAvatarTheme(conversationId) {
   };
 }
 const MOBILE_BREAKPOINT = 768;
-const AI_MODEL =
-  OPENROUTER_MODELS.find((model) => model.key === 'anthropic/claude-sonnet-5')?.key ||
-  OPENROUTER_MODELS[0]?.key ||
-  '';
+// "@ai" inside a human chat answers with the same Analytics tools as the AI chat.
+const AI_MENTION_MODEL = ANALYTICS_CHAT_MODELS[0]?.key || '';
 
 const EMOJI_GROUPS = [
   {
@@ -271,23 +321,156 @@ function mentionsAi(text) {
   return AI_MENTION_RE.test(String(text || ''));
 }
 
+function mentionDraftQuery(text) {
+  const match = String(text || '').match(/(^|[\s([{<"'“‘])@([^\s]*)$/);
+  return match ? String(match[2] || '').toLowerCase() : null;
+}
+
+function insertAiMention(text) {
+  const source = String(text || '');
+  if (mentionDraftQuery(source) != null) {
+    return source.replace(/(^|[\s([{<"'“‘])@([^\s]*)$/, '$1@ai ');
+  }
+  if (mentionsAi(source)) return source.endsWith(' ') ? source : `${source} `;
+  return source ? `${source.replace(/\s+$/, '')} @ai ` : '@ai ';
+}
+
+function attachmentIcon(kind) {
+  if (kind === 'image') return 'image-outline';
+  if (kind === 'video') return 'videocam-outline';
+  if (kind === 'spreadsheet') return 'grid-outline';
+  if (kind === 'pdf') return 'document-text-outline';
+  if (kind === 'document') return 'document-outline';
+  return 'attach-outline';
+}
+
+function AttachmentChips({ items, onRemove, mine }) {
+  const list = (Array.isArray(items) ? items : []).filter((item) => item && item.kind !== 'image');
+  if (!list.length) return null;
+  return (
+    <View style={[styles.attachRow, mine && styles.attachRowMine]}>
+      {list.map((item) => (
+        <View key={item.id} style={[styles.attachChip, mine && styles.attachChipMine]}>
+          {item.thumb ? (
+            <Image source={{ uri: item.thumb }} style={styles.attachThumb} accessibilityIgnoresInvertColors />
+          ) : (
+            <View style={[styles.attachIcon, mine && styles.attachIconMine]}>
+              <Ionicons name={attachmentIcon(item.kind)} size={14} color={mine ? '#fff' : INK} />
+            </View>
+          )}
+          <View style={styles.attachCopy}>
+            <Text style={[styles.attachName, mine && styles.attachNameMine]} numberOfLines={1}>
+              {item.name}
+            </Text>
+            <Text style={[styles.attachMeta, mine && styles.attachMetaMine]} numberOfLines={1}>
+              {[attachmentLabel(item), item.summary || (item.size ? formatBytes(item.size) : '')].filter(Boolean).join(' · ')}
+            </Text>
+          </View>
+          {onRemove ? (
+            <Pressable
+              onPress={() => onRemove(item.id)}
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel={`Remove ${item.name}`}
+              style={styles.attachRemove}
+            >
+              <Ionicons name="close" size={14} color={SECONDARY} />
+            </Pressable>
+          ) : null}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function PendingAttachChips({ items, onRemove }) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return null;
+  return (
+    <View style={styles.attachRow}>
+      {list.map((item) => (
+        <View key={item.id} style={styles.attachChip}>
+          {item.thumb ? (
+            <Image source={{ uri: item.thumb }} style={styles.attachThumb} accessibilityIgnoresInvertColors />
+          ) : (
+            <View style={styles.attachIcon}>
+              <Ionicons name={attachmentIcon(item.kind)} size={14} color={INK} />
+            </View>
+          )}
+          <View style={styles.attachCopy}>
+            <Text style={styles.attachName} numberOfLines={1}>
+              {item.name}
+            </Text>
+            <Text style={styles.attachMeta} numberOfLines={1}>
+              {[attachmentLabel(item), item.summary || (item.size ? formatBytes(item.size) : '')].filter(Boolean).join(' · ')}
+            </Text>
+          </View>
+          <Pressable
+            onPress={() => onRemove(item.id)}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel={`Remove ${item.name}`}
+            style={styles.attachRemove}
+          >
+            <Ionicons name="close" size={14} color={SECONDARY} />
+          </Pressable>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function MessageViz({ charts, mapsKey, onOpenCustomer, onOpenDocument }) {
+  const list = (Array.isArray(charts) ? charts : []).filter((item) => item && item.type);
+  if (!list.length) return null;
+  return (
+    <View style={styles.vizBlock}>
+      <Suspense fallback={<ActivityIndicator color={INK} style={styles.vizSpinner} />}>
+        {list.map((chart, index) =>
+          chart.type === 'map' ? (
+            <AnalyticsMapCard
+              key={`${chart.type}-${index}`}
+              chart={chart}
+              apiKey={mapsKey}
+              onOpenCustomer={onOpenCustomer}
+            />
+          ) : chart.type === 'table' ? (
+            <AnalyticsTableCard
+              key={`${chart.type}-${index}`}
+              chart={chart}
+              onOpenTicket={onOpenDocument ? (ref) => onOpenDocument(ref) : null}
+            />
+          ) : chart.type === 'file' ? (
+            <AnalyticsFileCard key={`${chart.type}-${index}`} chart={chart} />
+          ) : (
+            <AnalyticsChartCard key={`${chart.type}-${index}`} chart={chart} />
+          ),
+        )}
+      </Suspense>
+    </View>
+  );
+}
+
 function formatDmThreadForAi({ messages, peopleById, myId, myName, thread }) {
   const title = conversationTitle(thread);
   const lines = (messages || [])
     .slice(-40)
     .map((item) => {
+      const files = (item.attachments || []).map((file) => file.name).filter(Boolean);
       const body = String(item.body || '').replace(/\s+/g, ' ').trim().slice(0, 400);
-      if (!body) return '';
+      if (!body && !files.length) return '';
+      const extra = files.length ? ` [${files.join(', ')}]` : '';
       const name = item.isAssistant
         ? 'MyCanadaGold AI'
         : item.senderId === myId
           ? myName || 'You'
           : contactName(peopleById?.get?.(item.senderId)) || 'Teammate';
-      return `${name}: ${body}`;
+      return `${name}: ${body || 'Attachment'}${extra}`;
     })
     .filter(Boolean);
   return [
     'You are MyCanadaGold AI answering inside a staff Direct Message. Everyone in this chat can see your reply.',
+    'You have the same tools and company data as Analytics: transactions, inventory, hours, charts, maps, documents, and the rest.',
     `Thread: ${title}`,
     'Use this conversation as context and answer the latest @AI request. Be concise and specific.',
     lines.length ? `Recent messages:\n${lines.join('\n')}` : 'No earlier messages.',
@@ -343,43 +526,6 @@ function firstNameOf(person) {
   return contactName(person).split(/\s+/)[0] || 'Teammate';
 }
 
-function ComposeIcon({ size = 24, color = '#1d1d1f' }) {
-  if (Platform.OS === 'web') {
-    return createElement(
-      'svg',
-      {
-        width: size,
-        height: size,
-        viewBox: '0 0 24 24',
-        fill: 'none',
-        'aria-hidden': true,
-      },
-      createElement('path', {
-        d: 'M12.2 3.2H5.25A3 3 0 0 0 2.25 6.2v12.55a3 3 0 0 0 3 3h12.55a3 3 0 0 0 3-3V11.8',
-        stroke: color,
-        strokeWidth: 2,
-        strokeLinecap: 'round',
-        strokeLinejoin: 'round',
-      }),
-      createElement('path', {
-        d: 'M10 17.23H6.77v-3.23L18.61 2.17a1.42 1.42 0 0 1 2 0l1.23 1.22a1.42 1.42 0 0 1 0 2.01z',
-        stroke: color,
-        strokeWidth: 2,
-        strokeLinecap: 'round',
-        strokeLinejoin: 'round',
-      }),
-      createElement('path', {
-        d: 'M10 13 18.83 4.17',
-        stroke: color,
-        strokeWidth: 2,
-        strokeLinecap: 'round',
-        strokeLinejoin: 'round',
-      }),
-    );
-  }
-  return <Ionicons name="create-outline" size={size} color={color} />;
-}
-
 function ConversationAvatar({ conversation, size = 52 }) {
   if (conversation?.isAgent) {
     const theme = agentAvatarTheme(conversation.conversationId || conversation.title || 'agent');
@@ -421,6 +567,7 @@ function ConversationAvatar({ conversation, size = 52 }) {
     );
   }
   if (conversation?.isAi) {
+    // Same mark Analytics puts beside its replies.
     return (
       <View
         style={[
@@ -429,11 +576,11 @@ function ConversationAvatar({ conversation, size = 52 }) {
             width: size,
             height: size,
             borderRadius: size / 2,
-            backgroundColor: AI_PURPLE,
+            backgroundColor: BUBBLE_THEM_BG,
           },
         ]}
       >
-        <Ionicons name="sparkles" size={Math.max(16, Math.round(size * 0.42))} color="#fff" />
+        <Ionicons name="sparkles" size={Math.max(14, Math.round(size * 0.5))} color={BUBBLE_MINE} />
       </View>
     );
   }
@@ -549,77 +696,27 @@ function mergeSentMessage(current, localKey, tempId, saved) {
   return next.filter((item, itemIndex) => item.id !== saved.id || itemIndex === index);
 }
 
-function AppleSend({ active, onSettled, children }) {
-  const progress = useRef(new Animated.Value(active ? 0 : 1)).current;
-  const sizeRef = useRef({ width: 0, height: 0 });
-  const onSettledRef = useRef(onSettled);
-  const [ready, setReady] = useState(false);
-  onSettledRef.current = onSettled;
-
-  useEffect(() => {
-    if (!active || !ready) return undefined;
-    progress.setValue(0);
-    const animation = Animated.spring(progress, {
-      toValue: 1,
-      stiffness: 340,
-      damping: 22,
-      mass: 0.65,
-      useNativeDriver: true,
-    });
-    animation.start(({ finished }) => {
-      if (finished) onSettledRef.current?.();
-    });
-    return () => animation.stop();
-  }, [active, ready, progress]);
-
-  if (!active) return children;
-
-  const { width, height } = sizeRef.current;
-  const scale = progress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.28, 1],
-  });
-  const lift = progress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [14, 0],
-  });
-  const opacity = progress.interpolate({
-    inputRange: [0, 0.12, 1],
-    outputRange: [0, 1, 1],
-  });
-
-  return (
-    <Animated.View
-      pointerEvents="box-none"
-      onLayout={(event) => {
-        const next = event.nativeEvent.layout;
-        if (next.width <= 0 || next.height <= 0) return;
-        sizeRef.current = { width: next.width, height: next.height };
-        if (!ready) setReady(true);
-      }}
-      style={{
-        alignSelf: 'stretch',
-        opacity: ready ? opacity : 0,
-        transform: [
-          { translateY: lift },
-          { translateX: width / 2 },
-          { translateY: height / 2 },
-          { scale },
-          { translateX: -width / 2 },
-          { translateY: -height / 2 },
-        ],
-      }}
-    >
-      {children}
-    </Animated.View>
-  );
-}
-
 function deliveryLabel(state) {
   if (state === 'sending') return 'Sending';
   if (state === 'sent') return 'Sent';
   if (state === 'received') return 'Received';
   return '';
+}
+
+/** The small circle beside a received cluster: the sender, or the AI mark for assistant replies. */
+function TurnAvatar({ message, sender, conversation }) {
+  if (message.isAssistant) {
+    if (conversation?.isAgent || message.isAgentAck) {
+      return <ConversationAvatar conversation={conversation} size={28} />;
+    }
+    return (
+      <View style={styles.turnAvatar}>
+        <Ionicons name="sparkles" size={14} color={BUBBLE_MINE} />
+      </View>
+    );
+  }
+  if (sender) return <PersonAvatar person={sender} size={28} />;
+  return <View style={styles.turnAvatar} />;
 }
 
 function MessageBubble({
@@ -628,23 +725,31 @@ function MessageBubble({
   groupedWithPrev,
   groupedWithNext,
   senderLabel,
+  sender,
+  conversation,
   menuOpen,
   onOpenMenu,
   onCloseMenu,
   onToggleLike,
   onDeleteForMe,
   onSendSettled,
+  composerRef,
   actionsDisabled = false,
+  mapsKey = '',
+  onOpenCustomer,
+  onOpenDocument,
 }) {
   const lastTap = useRef(0);
   const [burst, setBurst] = useState(0);
   const [hovered, setHovered] = useState(false);
-  const radius = 12;
+  const radius = BUBBLE_RADIUS;
+  // Same corners as Analytics: a short tail on the sender's bottom corner,
+  // tighter joins inside a cluster.
   const cluster = {
-    borderTopLeftRadius: !mine && groupedWithPrev ? 6 : radius,
-    borderBottomLeftRadius: !mine && groupedWithNext ? 6 : radius,
-    borderTopRightRadius: mine && groupedWithPrev ? 6 : radius,
-    borderBottomRightRadius: mine && groupedWithNext ? 6 : radius,
+    borderTopLeftRadius: !mine && groupedWithPrev ? BUBBLE_TAIL : radius,
+    borderBottomLeftRadius: !mine ? BUBBLE_TAIL : radius,
+    borderTopRightRadius: mine && groupedWithPrev ? BUBBLE_TAIL : radius,
+    borderBottomRightRadius: mine ? BUBBLE_TAIL : radius,
   };
   const showMore = !actionsDisabled && Platform.OS === 'web' && (hovered || menuOpen);
   const status = mine && !groupedWithNext ? deliveryLabel(message.deliveryState) : '';
@@ -672,8 +777,7 @@ function MessageBubble({
     onOpenMenu(message);
   };
 
-  return (
-    <AppleSend active={Boolean(message.justSent)} onSettled={() => onSendSettled?.(message)}>
+  const body = (
     <View
       style={[styles.bubbleRow, mine ? styles.bubbleRowMine : styles.bubbleRowTheirs, message.likeCount > 0 && styles.bubbleRowLiked]}
       {...(Platform.OS === 'web'
@@ -737,10 +841,14 @@ function MessageBubble({
             ]}
           >
             {message.body &&
-            !(message.imageUrls?.length && message.body === '(Photo attached)') ? (
+            !(
+              (message.imageUrls?.length || message.attachments?.length)
+              && (message.body === '(Photo attached)' || message.body === '(Attachment)')
+            ) ? (
               <MessageBody body={message.body} mine={mine} />
             ) : null}
             <MessageImages urls={message.imageUrls} mine={mine} />
+            <AttachmentChips items={message.attachments} mine={mine} />
             {mine && message.requestStatusLine ? (
               <Text style={[styles.requestStatusInBubble, mine && styles.requestStatusInBubbleMine]}>
                 {message.requestStatusLine}
@@ -771,7 +879,43 @@ function MessageBubble({
       ) : null}
       {status ? <Text style={styles.deliveryState}>{status}</Text> : null}
     </View>
-    </AppleSend>
+  );
+
+  const viz = (
+    <MessageViz
+      charts={message.charts}
+      mapsKey={mapsKey}
+      onOpenCustomer={onOpenCustomer}
+      onOpenDocument={onOpenDocument}
+    />
+  );
+
+  if (mine) {
+    return (
+      <View style={styles.turnBlock}>
+        <View style={[styles.turnRow, styles.turnRowMine]}>
+          <SendFromInput
+            active={Boolean(message.justSent)}
+            originRef={composerRef}
+            onSettled={() => onSendSettled?.(message)}
+          >
+            {body}
+          </SendFromInput>
+        </View>
+        {viz}
+      </View>
+    );
+  }
+  return (
+    <View style={styles.turnBlock}>
+      <View style={[styles.turnRow, styles.turnRowTheirs]}>
+        <View style={styles.turnAvatarSlot}>
+          {groupedWithNext ? null : <TurnAvatar message={message} sender={sender} conversation={conversation} />}
+        </View>
+        {body}
+      </View>
+      {viz}
+    </View>
   );
 }
 
@@ -846,9 +990,13 @@ export default function MessagesScreen({
   onUnreadChange,
   openUserId,
   onOpenedUser,
+  openAiKey,
+  onOpenedAi,
   onOpenProfile,
   onMobileHeader,
   onOpenThreadChange,
+  onOpenCustomer,
+  onOpenDocument,
 }) {
   const isMobile = useIsMobile();
   const tabBarScroll = useMobileTabBarScrollProps();
@@ -870,10 +1018,12 @@ export default function MessagesScreen({
   const [publishing, setPublishing] = useState(false);
   const [agentDraftImages, setAgentDraftImages] = useState([]);
   const [agentPhotoBusy, setAgentPhotoBusy] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState([]);
+  const [attaching, setAttaching] = useState('');
+  const [mapsKey, setMapsKey] = useState('');
   const [contacts, setContacts] = useState([]);
   const [query, setQuery] = useState('');
   const [composeOpen, setComposeOpen] = useState(false);
-  const aiSessionsRef = useRef(new Map());
   const [selectedIds, setSelectedIds] = useState([]);
   const [groupName, setGroupName] = useState('');
   const [titleDraft, setTitleDraft] = useState('');
@@ -894,11 +1044,16 @@ export default function MessagesScreen({
   const [menuMessageId, setMenuMessageId] = useState(null);
   const threadRef = useRef(null);
   const sendScale = useRef(new Animated.Value(1)).current;
+  const composerPillRef = useRef(null);
+  const composerInputRef = useRef(null);
+  const [inputHeight, setInputHeight] = useState(COMPOSER_LINE_HEIGHT);
+  const [composerHover, setComposerHover] = useState(false);
+  const [composerFocus, setComposerFocus] = useState(false);
+  const composerMaxHeight = COMPOSER_LINE_HEIGHT * COMPOSER_MAX_LINES;
   const draftRef = useRef('');
   const sendingRef = useRef(false);
   const typingRef = useRef(null);
   const activeIdRef = useRef(null);
-  const titledAiRef = useRef(new Set());
   const inboxRef = useRef(inbox);
   const agentInboxRef = useRef(agentInbox);
   const agentMessagesRef = useRef(agentMessages);
@@ -1001,6 +1156,8 @@ export default function MessagesScreen({
       setMenuMessageId(null);
       setQuery('');
       setTitleDraft('');
+      setPendingFiles([]);
+      setAttaching('');
       const agentThread = agentInboxRef.current.find((row) => row.conversationId === conversationId);
       if (agentThread) {
         setMessages(agentMessagesRef.current[conversationId] || []);
@@ -1127,35 +1284,30 @@ export default function MessagesScreen({
         const conversationId = row?.conversation_id;
         if (payload.eventType === 'INSERT' && row?.id) {
           if (conversationId === activeIdRef.current) {
-            setMessages((current) => {
-              if (current.some((item) => item.id === row.id)) return current;
-              const incoming = {
-                id: row.id,
-                conversationId: row.conversation_id,
-                senderId: row.sender_id,
-                body: row.body,
-                createdAt: row.created_at,
-                likedByMe: false,
-                likeCount: 0,
-                isAssistant: Boolean(row.is_assistant),
-              };
-              const tempIndex = current.findIndex(
-                (item) =>
-                  item.localKey &&
-                  String(item.id).startsWith('temp-') &&
-                  item.body === row.body &&
-                  item.senderId === row.sender_id,
-              );
-              if (tempIndex >= 0) {
-                const next = current.slice();
-                next[tempIndex] = {
-                  ...incoming,
-                  localKey: current[tempIndex].localKey,
-                  justSent: current[tempIndex].justSent,
-                };
-                return next;
-              }
-              return [...current, incoming];
+            void mapIncomingDmMessage(row, myId).then((incoming) => {
+              if (incoming.conversationId !== activeIdRef.current) return;
+              setMessages((current) => {
+                if (current.some((item) => item.id === incoming.id)) {
+                  return current.map((item) => (item.id === incoming.id ? { ...item, ...incoming, localKey: item.localKey, justSent: item.justSent } : item));
+                }
+                const tempIndex = current.findIndex(
+                  (item) =>
+                    item.localKey &&
+                    String(item.id).startsWith('temp-') &&
+                    item.body === incoming.body &&
+                    item.senderId === incoming.senderId,
+                );
+                if (tempIndex >= 0) {
+                  const next = current.slice();
+                  next[tempIndex] = {
+                    ...incoming,
+                    localKey: current[tempIndex].localKey,
+                    justSent: current[tempIndex].justSent,
+                  };
+                  return next;
+                }
+                return [...current, incoming];
+              });
             });
             markDmRead(conversationId)
               .then(() => onUnreadChangeRef.current?.())
@@ -1216,6 +1368,20 @@ export default function MessagesScreen({
     });
     return unsubscribe;
   }, [myId, refreshInbox]);
+
+  useEffect(() => {
+    let alive = true;
+    loadGoogleMapsBrowserKey()
+      .then((key) => {
+        if (alive) setMapsKey(key);
+      })
+      .catch(() => {
+        if (alive) setMapsKey('');
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     typingRef.current?.unsubscribe?.();
@@ -1367,15 +1533,47 @@ export default function MessagesScreen({
     }
   };
 
-  const ensureAiSession = (conversationId) => {
-    const existing = aiSessionsRef.current.get(conversationId);
-    if (existing) return existing;
-    const end = new Date();
-    const start = new Date();
-    start.setDate(end.getDate() - 6);
-    const prepared = prepareAiChatSession({ startDate: start, endDate: end });
-    aiSessionsRef.current.set(conversationId, prepared);
-    return prepared;
+  useEffect(() => {
+    if (!draft) setInputHeight(COMPOSER_LINE_HEIGHT);
+  }, [draft]);
+
+  const syncInputHeight = (event) => {
+    const raw = event?.nativeEvent?.contentSize?.height;
+    if (!Number.isFinite(raw) || raw <= 0) return;
+    setInputHeight(Math.min(composerMaxHeight, Math.max(COMPOSER_LINE_HEIGHT, Math.ceil(raw))));
+  };
+
+  const handleAttachFiles = async () => {
+    if (attaching || sending || activeThread?.isAgent) return;
+    let files = [];
+    try {
+      files = await pickFiles();
+    } catch (err) {
+      setError(err?.message || 'Could not open the file picker.');
+      return;
+    }
+    if (!files.length) return;
+    const room = MAX_ATTACHMENTS - pendingFiles.length;
+    if (room <= 0) {
+      setError(`Up to ${MAX_ATTACHMENTS} files per message.`);
+      return;
+    }
+    setError('');
+    const problems = [];
+    for (const file of files.slice(0, room)) {
+      setAttaching(`Reading ${file.name || 'file'}…`);
+      try {
+        const prepared = await prepareAttachment(file);
+        setPendingFiles((current) => (
+          current.length < MAX_ATTACHMENTS ? [...current, { ...prepared, file }] : current
+        ));
+      } catch (err) {
+        problems.push(err?.message || `Could not read ${file.name || 'that file'}.`);
+      }
+    }
+    if (files.length > room) problems.push(`Only ${MAX_ATTACHMENTS} files per message; the rest were skipped.`);
+    setAttaching('');
+    if (problems.length) setError(problems.join(' '));
   };
 
   const handleAttachAgentPhotos = async () => {
@@ -1402,7 +1600,8 @@ export default function MessagesScreen({
   const handleSend = async () => {
     const text = draft.trim();
     const pendingImages = activeThread?.isAgent ? normalizeAgentRequestImages(agentDraftImages) : [];
-    if ((!text && !pendingImages.length) || !activeId || sending || sendingRef.current) return;
+    const outgoingFiles = activeThread?.isAgent ? [] : pendingFiles;
+    if ((!text && !pendingImages.length && !outgoingFiles.length) || !activeId || sending || sendingRef.current) return;
     sendingRef.current = true;
     const localKey = `local-${Date.now()}`;
     const tempId = `temp-${localKey}`;
@@ -1553,95 +1752,12 @@ export default function MessagesScreen({
       }
       return;
     }
-    if (activeThread?.isAi) {
-      const conversationId = activeId;
-      const threadTitle = activeThread.title;
-      setDraft('');
-      setEmojiOpen(false);
-      setSending(true);
-      setAiThinkingId(conversationId);
-      const history = messages
-        .filter((item) => item.body && !String(item.id).startsWith('temp-'))
-        .map((item) => ({
-          role: item.isAssistant ? 'assistant' : 'user',
-          content: item.body,
-        }));
-      setMessages((current) => [
-        ...current,
-        {
-          id: tempId,
-          localKey,
-          justSent: true,
-          conversationId,
-          senderId: myId,
-          body: text,
-          createdAt: new Date().toISOString(),
-          likedByMe: false,
-          likeCount: 0,
-          isAssistant: false,
-          pending: true,
-        },
-      ]);
-      try {
-        const saved = await sendDmMessage(conversationId, text);
-        setMessages((current) => mergeSentMessage(current, localKey, tempId, saved));
-        const prepared = ensureAiSession(conversationId);
-        const result = await sendAiChatMessage({
-          seedMessages: prepared.seedMessages,
-          turns: history,
-          userMessage: text,
-          model: AI_MODEL,
-          session,
-          context: prepared.context,
-          startDate: prepared.context?.selection?.startDate,
-          endDate: prepared.context?.selection?.endDate,
-        });
-        if (result.sources?.length || result.scope) {
-          prepared.context = {
-            ...prepared.context,
-            lastSources: result.sources?.length ? result.sources : prepared.context.lastSources,
-            lastScope: result.scope || prepared.context.lastScope,
-          };
-        }
-        const reply = await sendDmMessage(conversationId, result.text || 'I could not answer that.', {
-          assistant: true,
-        });
-        setMessages((current) => (
-          current.some((item) => item.id === reply.id) ? current : [...current, reply]
-        ));
-        setAiThinkingId(null);
-        await refreshInbox();
-        if (isDefaultAiTitle(threadTitle) && !titledAiRef.current.has(conversationId)) {
-          titledAiRef.current.add(conversationId);
-          void titleAiChat(
-            [
-              ...history,
-              { role: 'user', content: text },
-              { role: 'assistant', content: result.text || '' },
-            ],
-            AI_MODEL,
-          )
-            .then(async (title) => {
-              if (!title) return;
-              await renameDmGroup(conversationId, title);
-              await refreshInbox();
-            })
-            .catch(() => {
-              titledAiRef.current.delete(conversationId);
-            });
-        }
-      } catch (err) {
-        setAiThinkingId(null);
-        setMessages((current) => current.filter((item) => item.id !== tempId));
-        setDraft(text);
-        setError(err.message || 'Could not get an answer.');
-      } finally {
-        sendingRef.current = false;
-        setSending(false);
-      }
-      return;
-    }
+    const preparedFiles = outgoingFiles;
+    const localImages = preparedFiles
+      .filter((item) => item.kind === 'image' && (item.thumb || item.images?.[0]))
+      .map((item) => item.thumb || item.images[0]);
     setDraft('');
+    setPendingFiles([]);
     setEmojiOpen(false);
     typingRef.current?.stop?.(myName);
     setSending(true);
@@ -1654,6 +1770,8 @@ export default function MessagesScreen({
         conversationId: activeId,
         senderId: myId,
         body: text,
+        attachments: preparedFiles,
+        imageUrls: localImages,
         createdAt: new Date().toISOString(),
         likedByMe: false,
         likeCount: 0,
@@ -1661,7 +1779,10 @@ export default function MessagesScreen({
       },
     ]);
     try {
-      const saved = await sendDmMessage(activeId, text);
+      const uploaded = preparedFiles.length
+        ? await uploadDmAttachments(activeId, preparedFiles)
+        : [];
+      const saved = await sendDmMessage(activeId, text, { attachments: uploaded });
       setMessages((current) => mergeSentMessage(current, localKey, tempId, saved));
       await refreshInbox();
       sendingRef.current = false;
@@ -1671,34 +1792,26 @@ export default function MessagesScreen({
       const thread = activeThread;
       setAiThinkingId(conversationId);
       try {
-        const prepared = ensureAiSession(conversationId);
         const prior = messages.filter((item) => item.body && !String(item.id).startsWith('temp-'));
-        const result = await sendAiChatMessage({
-          seedMessages: prepared.seedMessages,
-          turns: [],
-          userMessage: text,
-          extraContext: formatDmThreadForAi({
-            messages: [...prior, saved],
-            peopleById,
-            myId,
-            myName,
-            thread,
-          }),
-          model: AI_MODEL,
+        const question = text.replace(AI_MENTION_RE, '$1').trim()
+          || (preparedFiles.length ? 'Look at the attached files and answer in this chat.' : text);
+        const result = await askAnalytics({
+          model: AI_MENTION_MODEL,
+          history: [
+            {
+              role: 'user',
+              content: formatDmThreadForAi({ messages: prior, peopleById, myId, myName, thread }),
+            },
+            { role: 'assistant', content: 'Understood. I have the thread. What is the question?' },
+          ],
+          question,
+          attachments: preparedFiles,
           session,
-          context: prepared.context,
-          startDate: prepared.context?.selection?.startDate,
-          endDate: prepared.context?.selection?.endDate,
+          mapsKey,
         });
-        if (result.sources?.length || result.scope) {
-          prepared.context = {
-            ...prepared.context,
-            lastSources: result.sources?.length ? result.sources : prepared.context.lastSources,
-            lastScope: result.scope || prepared.context.lastScope,
-          };
-        }
         const reply = await sendDmMessage(conversationId, result.text || 'I could not answer that.', {
           assistant: true,
+          charts: result.charts || [],
         });
         setMessages((current) => (
           current.some((item) => item.id === reply.id) ? current : [...current, reply]
@@ -1713,6 +1826,7 @@ export default function MessagesScreen({
     } catch (err) {
       setMessages((current) => current.filter((item) => item.id !== tempId));
       setDraft(text);
+      setPendingFiles(preparedFiles);
       setError(err.message || 'Could not send that message.');
     } finally {
       sendingRef.current = false;
@@ -1723,6 +1837,7 @@ export default function MessagesScreen({
   const submitFromKeyboard = (event) => {
     const key = event?.nativeEvent?.key || event?.key;
     if (key !== 'Enter') return;
+    if (event?.nativeEvent?.shiftKey || event?.shiftKey) return;
     event?.preventDefault?.();
     void handleSend();
   };
@@ -1742,6 +1857,8 @@ export default function MessagesScreen({
     );
   };
 
+  const mentionQuery = mentionDraftQuery(draft);
+  const showAiMention = mentionQuery != null && 'ai'.startsWith(mentionQuery);
   const aiThinking = Boolean(aiThinkingId && aiThinkingId === activeId);
   const typingNames = Object.values(typingByUser).filter(Boolean);
   const typingLabel =
@@ -1765,6 +1882,17 @@ export default function MessagesScreen({
       setError(err.message || 'Could not open MyCanadaGold AI.');
     }
   }, [openConversation, refreshInbox]);
+
+  const openedAiRef = useRef(0);
+  useEffect(() => {
+    if (!openAiKey) {
+      openedAiRef.current = 0;
+      return;
+    }
+    if (openedAiRef.current === openAiKey) return;
+    openedAiRef.current = openAiKey;
+    void openAiConversation().finally(() => onOpenedAi?.());
+  }, [openAiKey, openAiConversation, onOpenedAi]);
 
   const openAgentConversation = useCallback(() => {
     const conversationId = newAgentConversationId();
@@ -2006,10 +2134,10 @@ export default function MessagesScreen({
           key="talk-to-ai"
           onPress={() => void openAiConversation()}
           {...(Platform.OS === 'web' ? { className: 'cgold-dm-row' } : null)}
-          style={({ pressed }) => [
+          style={({ hovered, pressed }) => [
             styles.personRow,
             isMobile && styles.personRowCompact,
-            pressed && styles.rowPressed,
+            (hovered || pressed) && styles.rowPressed,
           ]}
           accessibilityLabel="Talk to AI"
         >
@@ -2021,14 +2149,14 @@ export default function MessagesScreen({
               isMobile && styles.teamAvatarCompact,
             ]}
           >
-            <Ionicons name="sparkles" size={18} color="#fff" />
+            <Ionicons name="sparkles" size={isMobile ? 18 : 20} color={BUBBLE_MINE} />
           </View>
           <View style={styles.personCopy}>
             <Text style={styles.personName} numberOfLines={1}>
               Talk to AI
             </Text>
             <Text style={styles.personSub} numberOfLines={1}>
-              Start a new conversation
+              Charts, maps, stock, hours, and documents
             </Text>
           </View>
         </Pressable>
@@ -2041,10 +2169,10 @@ export default function MessagesScreen({
             key={person.id}
             onPress={() => toggleSelected(person.id)}
             {...(Platform.OS === 'web' ? { className: 'cgold-dm-row' } : null)}
-            style={({ pressed }) => [
+            style={({ hovered, pressed }) => [
               styles.personRow,
               isMobile && styles.personRowCompact,
-              pressed && styles.rowPressed,
+              (hovered || pressed) && styles.rowPressed,
             ]}
           >
             <PersonAvatar person={person} size={isMobile ? 36 : 44} showOnline />
@@ -2100,10 +2228,12 @@ export default function MessagesScreen({
 
     if (filteredInbox.length === 0) {
       return (
-        <View style={[styles.inboxCentered, isMobile && styles.inboxCenteredMobile]}>
-          <Ionicons name="chatbubbles-outline" size={36} color="#c7c7cc" />
-          <Text style={styles.emptyTitle}>No messages yet</Text>
-          <Text style={styles.emptyHint}>Tap the compose button to message a person.</Text>
+        <View style={[styles.sideEmptyWrap, isMobile && styles.inboxCenteredMobile]}>
+          <View style={styles.emptyMark}>
+            <Ionicons name="chatbubbles-outline" size={18} color={SECONDARY} />
+          </View>
+          <Text style={styles.sideEmptyTitle}>No messages yet</Text>
+          <Text style={styles.sideEmpty}>Tap compose to message a person.</Text>
         </View>
       );
     }
@@ -2120,12 +2250,12 @@ export default function MessagesScreen({
           : firstNameOf((row.members || []).find((person) => person.id === row.lastMessageSenderId));
       const preview = row.isAgent
         ? agentWorkPreview(agentBuilds[row.conversationId]) || 'New conversation'
-        : row.lastMessagePreview
-          ? row.isGroup || row.lastMessageSenderId === myId
-            ? `${senderName}: ${row.lastMessagePreview}`
-            : row.lastMessagePreview
-          : row.isAi
-            ? 'New AI chat'
+        : row.isAi
+          ? 'Charts, maps, stock, hours, and documents'
+          : row.lastMessagePreview
+            ? row.isGroup || row.lastMessageSenderId === myId
+              ? `${senderName}: ${row.lastMessagePreview}`
+              : row.lastMessagePreview
             : row.isTeam
               ? 'New team chat'
               : row.isGroup
@@ -2148,10 +2278,10 @@ export default function MessagesScreen({
                 onContextMenu: openMenu,
               }
             : null)}
-          style={({ pressed }) => [
+          style={({ hovered, pressed }) => [
             styles.personRow,
             selected && styles.personRowSelected,
-            pressed && styles.rowPressed,
+            (hovered || pressed) && styles.rowPressed,
           ]}
           accessibilityLabel={`Conversation with ${conversationTitle(row)}`}
         >
@@ -2194,10 +2324,10 @@ export default function MessagesScreen({
   };
 
   const searchField = (
-    <View style={styles.searchWrap}>
-      <Ionicons name="search" size={15} color="#8e8e93" />
+    <View style={[styles.searchWrap, !isMobile && styles.searchWrapDesktop]}>
+      <Ionicons name="search" size={isMobile ? 15 : 14} color="#8e8e93" />
       <TextInput
-        style={styles.searchInput}
+        style={[styles.searchInput, !isMobile && styles.searchInputDesktop]}
         value={query}
         onChangeText={setQuery}
         placeholder={composeOpen ? 'Search people' : 'Search'}
@@ -2284,7 +2414,6 @@ export default function MessagesScreen({
         },
         !isMobile && {
           flexGrow: 1,
-          paddingTop: DESKTOP_TOP_BAR_HEIGHT + 64,
         },
       ]}
       keyboardShouldPersistTaps="handled"
@@ -2304,62 +2433,39 @@ export default function MessagesScreen({
     >
       {showInbox ? (
         <View style={[styles.inbox, isMobile && styles.inboxMobile, !isMobile && styles.inboxDesktop]}>
-          {isMobile ? (
-            <View pointerEvents="box-none" style={styles.chromeRowMobile}>
-              {searchField}
-              <Pressable
-                onPress={openAgentConversation}
-                style={styles.chromeCircle}
-                accessibilityLabel="Message the agent"
-              >
-                <Ionicons name="construct-outline" size={16} color={INK} />
-              </Pressable>
-              <Pressable
-                onPress={() => {
-                  setComposeOpen((current) => !current);
-                  setSelectedIds([]);
-                  setGroupName('');
-                  setQuery('');
-                  if (!composeOpen) setActiveId(null);
-                }}
-                style={styles.chromeCircle}
-                accessibilityLabel={composeOpen ? 'Close compose' : 'Start a conversation'}
-              >
-                {composeOpen ? (
-                  <Ionicons name="close" size={16} color={INK} />
-                ) : (
-                  <ComposeIcon size={16} color={INK} />
-                )}
-              </Pressable>
-            </View>
-          ) : (
-            <View pointerEvents="box-none" style={[styles.chromeRow, styles.chromeRowDesktop]}>
-              {searchField}
-              <Pressable
-                onPress={openAgentConversation}
-                style={styles.chromeCircle}
-                accessibilityLabel="Message the agent"
-              >
-                <Ionicons name="construct-outline" size={16} color={INK} />
-              </Pressable>
-              <Pressable
-                onPress={() => {
-                  setComposeOpen((current) => !current);
-                  setSelectedIds([]);
-                  setGroupName('');
-                  setQuery('');
-                }}
-                style={styles.chromeCircle}
-                accessibilityLabel={composeOpen ? 'Close compose' : 'Start a conversation'}
-              >
-                {composeOpen ? (
-                  <Ionicons name="close" size={16} color={INK} />
-                ) : (
-                  <ComposeIcon size={16} color={INK} />
-                )}
-              </Pressable>
-            </View>
-          )}
+          <View style={[styles.listHead, !isMobile && styles.listHeadDesktop]}>
+            {searchField}
+            <Pressable
+              onPress={openAgentConversation}
+              style={({ hovered, pressed }) => [
+                isMobile ? styles.listIconHit : styles.chromeCircle,
+                (hovered || pressed) && (isMobile ? styles.listIconHitOn : styles.chromeCircleOn),
+              ]}
+              accessibilityLabel="Message the agent"
+            >
+              <Ionicons name="construct-outline" size={isMobile ? 20 : 16} color={INK} />
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                setComposeOpen((current) => !current);
+                setSelectedIds([]);
+                setGroupName('');
+                setQuery('');
+                if (isMobile && !composeOpen) setActiveId(null);
+              }}
+              style={({ hovered, pressed }) => [
+                isMobile ? styles.listIconHit : styles.chromeCircle,
+                (hovered || pressed || composeOpen) && (isMobile ? styles.listIconHitOn : styles.chromeCircleOn),
+              ]}
+              accessibilityLabel={composeOpen ? 'Close compose' : 'Start a conversation'}
+            >
+              {composeOpen ? (
+                <Ionicons name="close" size={isMobile ? 22 : 16} color={INK} />
+              ) : (
+                <Ionicons name="create-outline" size={isMobile ? 22 : 16} color={INK} />
+              )}
+            </Pressable>
+          </View>
           <View style={styles.stage}>
             {inboxList}
           </View>
@@ -2368,7 +2474,28 @@ export default function MessagesScreen({
 
       {showThread ? (
         <View style={[styles.thread, isMobile && styles.canvasMobile, !isMobile && styles.threadDesktop]}>
-          {threadLive ? (
+          {threadLive && activeThread.isAi ? (
+            // The tab bar floats over Messages on a phone; keep the AI composer above it.
+            <View style={[styles.aiHost, isMobile && styles.aiHostMobile, !isMobile && styles.aiHostDesktop]}>
+              <Suspense
+                fallback={
+                  <View style={styles.threadPlaceholder}>
+                    <ActivityIndicator color={INK} />
+                  </View>
+                }
+              >
+                <AnalyticsAiPanel
+                  embedded
+                  title={AI_TITLE}
+                  session={session}
+                  compact={isMobile}
+                  onClose={() => setActiveId(null)}
+                  onOpenCustomer={onOpenCustomer}
+                  onOpenDocument={onOpenDocument}
+                />
+              </Suspense>
+            </View>
+          ) : threadLive ? (
             <>
               <View style={[styles.threadHeader, isMobile && styles.threadHeaderMobile, !isMobile && styles.threadHeaderDesktop]}>
                 {isMobile && !activeThread.isAgent ? (
@@ -2386,7 +2513,7 @@ export default function MessagesScreen({
                     <Ionicons name="chevron-back" size={16} color={INK} />
                   </Pressable>
                 ) : null}
-                <View style={styles.threadHeaderMain}>
+                <View style={[styles.threadHeaderMain, !isMobile && styles.threadHeaderMainDesktop]}>
                   <Pressable
                     onPress={() => {
                       if (activeThread.isGroup || activeThread.isAi || activeThread.isAgent) {
@@ -2441,10 +2568,10 @@ export default function MessagesScreen({
                 ) : (
                 <Pressable
                   onPress={() => void handleCallThread()}
-                  style={styles.infoButton}
+                  style={styles.chromeCircle}
                   accessibilityLabel="Call"
                 >
-                  <Ionicons name="call-outline" size={20} color={BLUE} />
+                  <Ionicons name="call-outline" size={16} color={INK} />
                 </Pressable>
                 )}
                 <Pressable
@@ -2455,13 +2582,13 @@ export default function MessagesScreen({
                     });
                     setAddingMembers(false);
                   }}
-                  style={styles.infoButton}
+                  style={styles.chromeCircle}
                   accessibilityLabel="Chat details"
                 >
                   <Ionicons
-                    name={detailsOpen ? 'close-circle' : 'information-circle-outline'}
-                    size={22}
-                    color={BLUE}
+                    name={detailsOpen ? 'close' : 'information-circle-outline'}
+                    size={16}
+                    color={INK}
                   />
                 </Pressable>
                 {activeThread.isAgent && !isMobile ? (
@@ -2616,10 +2743,14 @@ export default function MessagesScreen({
                 </ScrollView>
               ) : (
                 <>
-                  <ScrollView
+                    <ScrollView
                     ref={threadRef}
                     style={styles.threadList}
-                    contentContainerStyle={styles.threadListContent}
+                    contentContainerStyle={[
+                      styles.threadListContent,
+                      isMobile && styles.threadListContentMobile,
+                      messages.length === 0 && styles.threadListEmpty,
+                    ]}
                     keyboardShouldPersistTaps="handled"
                     onContentSizeChange={() => threadRef.current?.scrollToEnd?.({ animated: true })}
                   >
@@ -2635,10 +2766,10 @@ export default function MessagesScreen({
                           }}
                           accessibilityLabel={`View ${conversationTitle(activeThread)}'s profile`}
                         >
-                          <ConversationAvatar conversation={activeThread} size={isMobile ? 52 : 72} />
+                          <ConversationAvatar conversation={activeThread} size={44} />
                         </Pressable>
-                        <Text style={styles.threadEmptyName}>{conversationTitle(activeThread)}</Text>
-                        <Text style={styles.emptyHint}>
+                        <Text style={styles.emptyTitle}>{conversationTitle(activeThread)}</Text>
+                        <Text style={styles.emptyBody}>
                           {activeThread.isAgent
                             ? 'Describe what you want changed, or attach a screenshot. The TV up top turns green when a preview is ready to open.'
                             : conversationSubtitle(activeThread)}
@@ -2665,11 +2796,14 @@ export default function MessagesScreen({
                               mine={mine}
                               groupedWithPrev={groupedWithPrev}
                               groupedWithNext={groupedWithNext}
+                              sender={sender}
+                              conversation={activeThread}
+                              composerRef={composerPillRef}
                               senderLabel={
                                 message.isAssistant
                                   ? activeThread.isAgent || message.isAgentAck
                                     ? AGENT_CONVERSATION_TITLE
-                                    : 'MyCanadaGold AI'
+                                    : AI_TITLE
                                   : activeThread.isGroup && !mine
                                     ? firstNameOf(sender)
                                     : null
@@ -2678,6 +2812,9 @@ export default function MessagesScreen({
                               menuOpen={menuMessageId === message.id}
                               onOpenMenu={(item) => setMenuMessageId(item.id)}
                               onCloseMenu={() => setMenuMessageId(null)}
+                              mapsKey={mapsKey}
+                              onOpenCustomer={onOpenCustomer}
+                              onOpenDocument={onOpenDocument}
                               onToggleLike={handleToggleLike}
                               onDeleteForMe={handleDeleteForMe}
                               onSendSettled={(item) => {
@@ -2695,15 +2832,25 @@ export default function MessagesScreen({
                       })
                     )}
                     {aiThinking ? (
-                      <View style={styles.msgGap}>
-                        <Text style={styles.senderLabel}>MyCanadaGold AI</Text>
-                        <View style={styles.typingRow}>
-                          <TypingDots />
+                      <View style={[styles.msgGap, styles.turnRow, styles.turnRowTheirs]}>
+                        <View style={styles.turnAvatarSlot}>
+                          <View style={styles.turnAvatar}>
+                            <Ionicons name="sparkles" size={14} color={BUBBLE_MINE} />
+                          </View>
+                        </View>
+                        <View>
+                          <Text style={styles.senderLabel}>{AI_TITLE}</Text>
+                          <View style={styles.typingRow}>
+                            <TypingDots />
+                          </View>
                         </View>
                       </View>
                     ) : typingNames.length > 0 ? (
-                      <View style={styles.typingRow}>
-                        <TypingDots />
+                      <View style={[styles.msgGap, styles.turnRow, styles.turnRowTheirs]}>
+                        <View style={styles.turnAvatarSlot} />
+                        <View style={styles.typingRow}>
+                          <TypingDots />
+                        </View>
                       </View>
                     ) : null}
                   </ScrollView>
@@ -2714,6 +2861,49 @@ export default function MessagesScreen({
                       onChangeDraft(`${draft}${emoji}`);
                     }}
                   />
+
+                  {!activeThread?.isAgent && showAiMention ? (
+                    <View style={styles.mentionSheet}>
+                      <Pressable
+                        onPress={() => {
+                          onChangeDraft(insertAiMention(draft));
+                          setEmojiOpen(false);
+                          requestAnimationFrame(() => composerInputRef.current?.focus?.());
+                        }}
+                        style={({ hovered, pressed }) => [
+                          styles.mentionRow,
+                          (hovered || pressed) && styles.mentionRowOn,
+                        ]}
+                        accessibilityLabel="Mention MyCanadaGold AI"
+                      >
+                        <View style={styles.mentionAvatar}>
+                          <Ionicons name="sparkles" size={14} color={BUBBLE_MINE} />
+                        </View>
+                        <View style={styles.mentionCopy}>
+                          <Text style={styles.mentionTitle}>MyCanadaGold AI</Text>
+                          <Text style={styles.mentionSub} numberOfLines={1}>
+                            Answers here so everyone in this chat can see
+                          </Text>
+                        </View>
+                        <Text style={styles.mentionToken}>@ai</Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
+
+                  {attaching && !activeThread?.isAgent ? (
+                    <View style={styles.attachBusy}>
+                      <ActivityIndicator size="small" color={SECONDARY} />
+                      <Text style={styles.attachBusyText} numberOfLines={1}>
+                        {attaching}
+                      </Text>
+                    </View>
+                  ) : null}
+                  {!activeThread?.isAgent ? (
+                    <PendingAttachChips
+                      items={pendingFiles}
+                      onRemove={(id) => setPendingFiles((current) => current.filter((item) => item.id !== id))}
+                    />
+                  ) : null}
 
                   {activeThread?.isAgent && agentDraftImages.length ? (
                     <ScrollView
@@ -2739,96 +2929,151 @@ export default function MessagesScreen({
                     </ScrollView>
                   ) : null}
 
-                  <View style={[styles.composer, isMobile && styles.composerMobile]}>
-                    {activeThread?.isAgent ? (
-                      <Pressable
-                        onPress={() => void handleAttachAgentPhotos()}
-                        disabled={agentPhotoBusy || agentDraftImages.length >= MAX_AGENT_REQUEST_IMAGES}
-                        style={({ hovered, pressed }) => [
-                          styles.emojiToggle,
-                          (hovered || pressed) && styles.emojiToggleActive,
-                          (agentPhotoBusy || agentDraftImages.length >= MAX_AGENT_REQUEST_IMAGES) &&
-                            styles.emojiToggleDisabled,
-                        ]}
-                        accessibilityLabel="Attach a photo"
-                      >
-                        {agentPhotoBusy ? (
-                          <ActivityIndicator size="small" color={BLUE} />
-                        ) : (
-                          <Ionicons name="image-outline" size={isMobile ? 22 : 26} color={BLUE} />
-                        )}
-                      </Pressable>
-                    ) : (
+                  <View style={[styles.composerWrap, isMobile && styles.composerWrapMobile]}>
+                    <View ref={composerPillRef} collapsable={false} style={styles.composerPillAnchor}>
                     <Pressable
-                      onPress={() => setEmojiOpen((current) => !current)}
-                      style={({ hovered, pressed }) => [
-                        styles.emojiToggle,
-                        (hovered || pressed || emojiOpen) && styles.emojiToggleActive,
-                      ]}
-                      accessibilityLabel="Emojis"
-                    >
-                      <Ionicons
-                        name={emojiOpen ? 'happy' : 'happy-outline'}
-                        size={isMobile ? 22 : 26}
-                        color={emojiOpen ? BLUE : '#8e8e93'}
-                      />
-                    </Pressable>
-                    )}
-                    <View
+                      onHoverIn={() => setComposerHover(true)}
+                      onHoverOut={() => setComposerHover(false)}
+                      onPress={() => composerInputRef.current?.focus?.()}
                       style={[
-                        styles.composerField,
-                        isMobile && styles.composerFieldMobile,
+                        styles.composerPill,
+                        (composerHover || composerFocus) && styles.composerPillActive,
+                        inputHeight > COMPOSER_LINE_HEIGHT && styles.composerPillMultiline,
                       ]}
                     >
+                      {activeThread?.isAgent ? (
+                        <Pressable
+                          onPress={() => void handleAttachAgentPhotos()}
+                          disabled={agentPhotoBusy || agentDraftImages.length >= MAX_AGENT_REQUEST_IMAGES}
+                          style={({ hovered, pressed }) => [
+                            styles.composerLead,
+                            (hovered || pressed) && styles.composerLeadHover,
+                            (agentPhotoBusy || agentDraftImages.length >= MAX_AGENT_REQUEST_IMAGES) &&
+                              styles.composerLeadOff,
+                          ]}
+                          accessibilityLabel="Attach a photo"
+                        >
+                          {agentPhotoBusy ? (
+                            <ActivityIndicator size="small" color={INK} />
+                          ) : (
+                            <Ionicons name="image-outline" size={18} color={INK} />
+                          )}
+                        </Pressable>
+                      ) : (
+                        <>
+                          <Pressable
+                            onPress={() => void handleAttachFiles()}
+                            disabled={Boolean(attaching) || pendingFiles.length >= MAX_ATTACHMENTS}
+                            style={({ hovered, pressed }) => [
+                              styles.composerLead,
+                              (hovered || pressed) && styles.composerLeadHover,
+                              (attaching || pendingFiles.length >= MAX_ATTACHMENTS) && styles.composerLeadOff,
+                            ]}
+                            accessibilityLabel="Attach a photo, video, spreadsheet, PDF, or document"
+                          >
+                            {attaching ? (
+                              <ActivityIndicator size="small" color={INK} />
+                            ) : (
+                              <Ionicons name="add" size={20} color={INK} />
+                            )}
+                          </Pressable>
+                          <Pressable
+                            onPress={() => {
+                              onChangeDraft(insertAiMention(draft));
+                              setEmojiOpen(false);
+                              requestAnimationFrame(() => composerInputRef.current?.focus?.());
+                            }}
+                            style={({ hovered, pressed }) => [
+                              styles.composerLead,
+                              (hovered || pressed || mentionsAi(draft)) && styles.composerLeadHover,
+                            ]}
+                            accessibilityLabel="Mention MyCanadaGold AI"
+                          >
+                            <Ionicons
+                              name="sparkles"
+                              size={16}
+                              color={mentionsAi(draft) ? BUBBLE_MINE : SECONDARY}
+                            />
+                          </Pressable>
+                          <Pressable
+                            onPress={() => setEmojiOpen((current) => !current)}
+                            style={({ hovered, pressed }) => [
+                              styles.composerLead,
+                              (hovered || pressed || emojiOpen) && styles.composerLeadHover,
+                            ]}
+                            accessibilityLabel="Emojis"
+                          >
+                            <Ionicons
+                              name={emojiOpen ? 'happy' : 'happy-outline'}
+                              size={18}
+                              color={emojiOpen ? INK : SECONDARY}
+                            />
+                          </Pressable>
+                        </>
+                      )}
                       <TextInput
-                        style={[styles.composerInput, isMobile && styles.composerInputMobile]}
+                        ref={composerInputRef}
+                        style={[styles.composerInput, { height: inputHeight, maxHeight: composerMaxHeight }]}
                         value={draft}
                         onChangeText={onChangeDraft}
                         placeholder={
                           activeThread?.isAgent
                             ? 'What do you want changed?'
-                            : activeThread?.isAi
-                              ? 'Message MyCanadaGold AI'
-                              : 'Message'
+                            : messages.length
+                              ? 'Reply'
+                              : `Message ${conversationTitle(activeThread)}…`
                         }
-                        placeholderTextColor="#8e8e93"
-                        multiline={false}
-                        numberOfLines={1}
-                        returnKeyType="send"
+                        placeholderTextColor={SECONDARY}
+                        multiline
                         maxLength={4000}
                         blurOnSubmit={false}
+                        scrollEnabled={inputHeight >= composerMaxHeight}
+                        onFocus={() => setComposerFocus(true)}
+                        onBlur={() => setComposerFocus(false)}
+                        onContentSizeChange={syncInputHeight}
+                        {...Platform.select({
+                          ios: { textAlignVertical: inputHeight > COMPOSER_LINE_HEIGHT ? 'top' : 'center' },
+                          android: { textAlignVertical: inputHeight > COMPOSER_LINE_HEIGHT ? 'top' : 'center' },
+                          default: {},
+                        })}
                         onSubmitEditing={() => void handleSend()}
                         onKeyPress={submitFromKeyboard}
                       />
+                      <Animated.View style={{ transform: [{ scale: sendScale }] }}>
+                        <Pressable
+                          onPress={handleSend}
+                          disabled={
+                            (!draft.trim() && !agentDraftImages.length && !pendingFiles.length) || sending
+                          }
+                          style={[
+                            styles.composerAction,
+                            draft.trim() || agentDraftImages.length || pendingFiles.length
+                              ? styles.composerActionOn
+                              : styles.composerActionOff,
+                          ]}
+                          accessibilityLabel="Send"
+                        >
+                          <Ionicons name="arrow-up" size={16} color="#fff" />
+                        </Pressable>
+                      </Animated.View>
+                    </Pressable>
                     </View>
-                    <Animated.View style={{ transform: [{ scale: sendScale }] }}>
-                      <Pressable
-                        onPress={handleSend}
-                        disabled={
-                          (!draft.trim() && !agentDraftImages.length) || sending
-                        }
-                        style={[
-                          styles.sendButton,
-                          draft.trim() || agentDraftImages.length
-                            ? styles.sendButtonOn
-                            : styles.sendButtonOff,
-                        ]}
-                        accessibilityLabel="Send"
-                      >
-                        <Ionicons name="arrow-up" size={18} color="#fff" />
-                      </Pressable>
-                    </Animated.View>
+                    <Text style={styles.composerHint}>
+                      {activeThread?.isAgent
+                        ? 'Enter to send · Shift+Enter for a new line'
+                        : 'Type @ai to ask MyCanadaGold AI · Enter to send'}
+                    </Text>
                   </View>
                 </>
               )}
             </>
           ) : (
             <View style={styles.threadPlaceholder}>
-              <View style={styles.placeholderIcon}>
-                <Ionicons name="chatbubbles-outline" size={36} color={BLUE} />
+              <View style={styles.emptyMark}>
+                <Ionicons name="chatbubbles-outline" size={18} color={INK} />
               </View>
               <Text style={styles.emptyTitle}>Direct Messages</Text>
-              <Text style={styles.emptyHint}>
+              <Text style={styles.emptyBody}>
                 Pick a conversation, or message a person.
               </Text>
             </View>
@@ -2941,7 +3186,7 @@ const styles = StyleSheet.create({
     flexShrink: 0,
     position: 'relative',
     borderRightWidth: StyleSheet.hairlineWidth,
-    borderRightColor: 'rgba(42,38,30,0.08)',
+    borderRightColor: RULE,
   },
   inboxMobile: {
     width: '100%',
@@ -2983,7 +3228,39 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(42,38,30,0.08)',
+    borderBottomColor: RULE,
+  },
+  listHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 52,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    gap: 4,
+    flexShrink: 0,
+    backgroundColor: CANVAS,
+  },
+  listHeadDesktop: {
+    height: DESKTOP_TOP_BAR_HEIGHT,
+    minHeight: DESKTOP_TOP_BAR_HEIGHT,
+    paddingTop: 0,
+    paddingBottom: 0,
+    paddingLeft: 56,
+    paddingRight: 12,
+    gap: 8,
+    backgroundColor: 'transparent',
+  },
+  listIconHit: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    borderRadius: 20,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  listIconHitOn: {
+    backgroundColor: 'rgba(0,0,0,0.05)',
   },
   chromeSearchChip: {
     flex: 1,
@@ -3066,19 +3343,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
+    ...CHIP_SHADOW,
     ...Platform.select({
-      web: {
-        cursor: 'pointer',
-        boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
-      },
-      default: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.06,
-        shadowRadius: 2,
-        elevation: 1,
-      },
+      web: { cursor: 'pointer' },
+      default: {},
     }),
+  },
+  chromeCircleOn: {
+    backgroundColor: NAV_TAB_ACTIVE_BG,
   },
   chromeCircleBlur: {
     flex: 1,
@@ -3218,22 +3490,26 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingHorizontal: 10,
-    height: 32,
-    minHeight: 32,
-    borderRadius: CHIP_RADIUS,
-    backgroundColor: CANVAS,
+    paddingHorizontal: 12,
+    height: 36,
+    minHeight: 36,
+    borderRadius: 999,
+    backgroundColor: BUBBLE_THEM_BG,
     borderWidth: 1,
     borderColor: CHIP_BORDER,
-    ...Platform.select({
-      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
-      default: {},
-    }),
+    ...CHIP_SHADOW,
+  },
+  searchWrapDesktop: {
+    height: 32,
+    minHeight: 32,
+    paddingHorizontal: 10,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    backgroundColor: CANVAS,
   },
   searchInput: {
     flex: 1,
     minWidth: 0,
-    height: 30,
+    height: 34,
     fontFamily,
     fontSize: 14,
     fontWeight: '400',
@@ -3241,6 +3517,9 @@ const styles = StyleSheet.create({
     paddingVertical: 0,
     letterSpacing: -0.2,
     outlineStyle: 'none',
+  },
+  searchInputDesktop: {
+    height: 30,
   },
   errorText: {
     fontFamily,
@@ -3259,16 +3538,16 @@ const styles = StyleSheet.create({
   composeSection: {
     fontFamily,
     fontSize: 12,
-    fontWeight: '700',
-    color: '#8e8e93',
+    fontWeight: '600',
+    color: SECONDARY,
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    letterSpacing: 0.4,
     paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingTop: 14,
     paddingBottom: 4,
   },
   aiPinAvatar: {
-    backgroundColor: AI_PURPLE,
+    backgroundColor: BUBBLE_THEM_BG,
   },
   teamAvatar: {
     width: 44,
@@ -3292,19 +3571,41 @@ const styles = StyleSheet.create({
   },
   inboxCenteredMobile: {
     flexGrow: 1,
-    paddingTop: 0,
+    paddingTop: 48,
+  },
+  sideEmptyWrap: {
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 48,
+  },
+  sideEmptyTitle: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '500',
+    color: INK,
+    letterSpacing: -0.2,
+    textAlign: 'center',
+  },
+  sideEmpty: {
+    fontFamily,
+    fontSize: 13,
+    lineHeight: 18,
+    color: SECONDARY,
+    textAlign: 'center',
   },
   personRow: {
+    width: '100%',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    minHeight: 44,
-    marginHorizontal: 8,
-    marginVertical: 1,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    borderRadius: CHIP_RADIUS,
-    backgroundColor: 'transparent',
+    minHeight: 56,
+    paddingVertical: 10,
+    paddingLeft: 16,
+    paddingRight: 12,
+    backgroundColor: CANVAS,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: RULE,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -3312,13 +3613,13 @@ const styles = StyleSheet.create({
   },
   personRowCompact: {
     gap: 10,
-    paddingVertical: 6,
+    paddingVertical: 10,
   },
   personRowSelected: {
-    backgroundColor: '#f0f0f2',
+    backgroundColor: '#f2f2f7',
   },
   rowPressed: {
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#f2f2f7',
   },
   personCopy: {
     flex: 1,
@@ -3338,32 +3639,34 @@ const styles = StyleSheet.create({
   personName: {
     flex: 1,
     fontFamily,
-    fontSize: 14,
-    color: '#1a1a1a',
-    fontWeight: '500',
+    fontSize: 16,
+    lineHeight: 21,
+    color: '#636366',
+    fontWeight: '400',
     letterSpacing: -0.2,
   },
   personNameActive: {
-    color: '#3A3A3C',
+    color: '#3a3a3c',
   },
   personNameUnread: {
     color: INK,
-    fontWeight: '600',
+    fontWeight: '500',
   },
   personTime: {
     fontFamily,
     fontSize: 12,
-    color: '#8e8e93',
+    color: SECONDARY,
   },
   personTimeUnread: {
-    color: '#FF3B30',
+    color: INK,
     fontWeight: '600',
   },
   personSub: {
     flex: 1,
     fontFamily,
-    fontSize: 12,
-    color: '#8e8e93',
+    fontSize: 13,
+    lineHeight: 18,
+    color: SECONDARY,
     letterSpacing: -0.1,
   },
   personPreviewUnread: {
@@ -3377,7 +3680,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#FF3B30',
+    backgroundColor: INK,
   },
   unreadPillText: {
     fontFamily,
@@ -3420,6 +3723,16 @@ const styles = StyleSheet.create({
   threadDesktop: {
     backgroundColor: CANVAS,
   },
+  aiHost: {
+    flex: 1,
+    minHeight: 0,
+  },
+  aiHostMobile: {
+    paddingBottom: mobileTabBarReserve(),
+  },
+  aiHostDesktop: {
+    paddingTop: DESKTOP_TOP_BAR_HEIGHT,
+  },
   threadHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3427,16 +3740,25 @@ const styles = StyleSheet.create({
     minHeight: 48,
     paddingHorizontal: 16,
     paddingVertical: 8,
-    backgroundColor: 'transparent',
+    backgroundColor: CANVAS,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(42,38,30,0.08)',
-  },
-  threadHeaderDesktop: {
-    paddingTop: DESKTOP_TOP_BAR_HEIGHT + 8,
+    borderBottomColor: RULE,
   },
   threadHeaderMobile: {
     paddingTop: 8,
     backgroundColor: CANVAS,
+  },
+  threadHeaderDesktop: {
+    height: DESKTOP_TOP_BAR_HEIGHT,
+    minHeight: DESKTOP_TOP_BAR_HEIGHT,
+    paddingVertical: 0,
+    paddingHorizontal: 16,
+    backgroundColor: 'transparent',
+    borderBottomColor: 'rgba(42,38,30,0.08)',
+  },
+  threadHeaderMainDesktop: {
+    flexGrow: 0,
+    flexShrink: 1,
   },
   threadHeaderMain: {
     flex: 1,
@@ -3457,15 +3779,15 @@ const styles = StyleSheet.create({
   },
   threadName: {
     fontFamily,
-    fontSize: 14,
-    fontWeight: '200',
+    fontSize: 16,
+    fontWeight: '500',
     color: INK,
     letterSpacing: -0.2,
   },
   threadSeen: {
     fontFamily,
     fontSize: 12,
-    color: '#8e8e93',
+    color: SECONDARY,
     marginTop: 1,
   },
   threadSeenLive: {
@@ -3476,56 +3798,74 @@ const styles = StyleSheet.create({
     minHeight: 0,
   },
   threadListContent: {
-    paddingHorizontal: 14,
-    paddingTop: 12,
-    paddingBottom: 10,
+    width: '100%',
+    maxWidth: 720,
+    alignSelf: 'center',
+    paddingHorizontal: 24,
+    paddingTop: 20,
+    paddingBottom: 20,
+  },
+  threadListContentMobile: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 12,
+  },
+  threadListEmpty: {
+    flexGrow: 1,
   },
   threadSpinner: {
     marginTop: 48,
   },
   threadEmpty: {
     alignItems: 'center',
-    paddingTop: 72,
-    gap: 8,
+    paddingTop: 56,
+    gap: 12,
+    paddingHorizontal: 8,
   },
   threadEmptyMobile: {
-    paddingTop: 24,
-    gap: 4,
-  },
-  threadEmptyName: {
-    fontFamily,
-    fontSize: 20,
-    fontWeight: '600',
-    color: '#1d1d1f',
-    marginTop: 8,
+    paddingTop: 28,
+    gap: 10,
   },
   threadPlaceholder: {
     flex: 1,
     alignItems: 'center',
-    justifyContent: 'center',
-    padding: 32,
-    gap: 8,
+    justifyContent: 'flex-start',
+    paddingTop: 56,
+    paddingHorizontal: 32,
+    gap: 12,
   },
-  placeholderIcon: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: '#eef4ff',
+  emptyMark: {
+    width: 44,
+    height: 44,
+    borderRadius: CHIP_RADIUS,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 8,
+    backgroundColor: CANVAS,
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
+    marginBottom: 4,
+    ...CHIP_SHADOW,
   },
   emptyTitle: {
     fontFamily,
-    fontSize: 20,
-    fontWeight: '600',
-    color: '#1d1d1f',
+    fontSize: 18,
+    fontWeight: '500',
+    color: INK,
+    letterSpacing: -0.3,
     textAlign: 'center',
+  },
+  emptyBody: {
+    fontFamily,
+    fontSize: 14,
+    lineHeight: 21,
+    color: SECONDARY,
+    textAlign: 'center',
+    maxWidth: 480,
   },
   emptyHint: {
     fontFamily,
     fontSize: 14,
-    color: '#8e8e93',
+    color: SECONDARY,
     textAlign: 'center',
     lineHeight: 20,
   },
@@ -3538,10 +3878,38 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   msgGap: {
-    marginTop: 10,
+    marginTop: 14,
   },
   msgTight: {
-    marginTop: 2,
+    marginTop: 3,
+  },
+  turnRow: {
+    flexDirection: 'row',
+    alignSelf: 'stretch',
+    width: '100%',
+    gap: 8,
+  },
+  turnRowTheirs: {
+    justifyContent: 'flex-start',
+    alignItems: 'flex-end',
+  },
+  turnRowMine: {
+    justifyContent: 'flex-end',
+    alignItems: 'flex-start',
+  },
+  turnAvatarSlot: {
+    width: 28,
+    flexShrink: 0,
+    // Sits under the last bubble of a cluster, so the delivery line never pushes it.
+    marginBottom: 2,
+  },
+  turnAvatar: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: BUBBLE_THEM_BG,
   },
   bubbleRow: {
     maxWidth: '78%',
@@ -3556,7 +3924,8 @@ const styles = StyleSheet.create({
   senderLabel: {
     fontFamily,
     fontSize: 11,
-    color: '#8e8e93',
+    lineHeight: 14,
+    color: SECONDARY,
     marginBottom: 3,
     marginLeft: 4,
   },
@@ -3719,27 +4088,35 @@ const styles = StyleSheet.create({
     color: '#ff453a',
   },
   bubble: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    paddingHorizontal: 15,
+    paddingVertical: 10,
     maxWidth: '100%',
+    ...Platform.select({
+      web: { width: 'fit-content', maxWidth: '100%', overflow: 'visible' },
+      default: {},
+    }),
   },
   bubbleMine: {
-    backgroundColor: INK,
+    backgroundColor: BUBBLE_MINE,
   },
   bubbleTheirs: {
-    backgroundColor: '#f0f0f2',
+    backgroundColor: BUBBLE_THEM_BG,
   },
   bubbleHoverMine: {
-    backgroundColor: '#3a3a3c',
+    backgroundColor: '#0a6fe8',
   },
   bubbleHoverTheirs: {
-    backgroundColor: '#e8e8ed',
+    backgroundColor: '#e0e0e3',
   },
   bubbleText: {
     fontFamily,
     fontSize: 16,
     lineHeight: 22,
-    color: '#1d1d1f',
+    color: '#1c1c1e',
+    ...Platform.select({
+      web: { display: 'block', overflow: 'visible' },
+      default: {},
+    }),
   },
   bubbleTextMine: {
     color: '#fff',
@@ -3755,7 +4132,7 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.78)',
   },
   aiMention: {
-    color: AI_PURPLE,
+    color: BUBBLE_MINE,
     fontWeight: '700',
   },
   aiMentionOnMine: {
@@ -3802,10 +4179,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: '#f0f0f2',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    backgroundColor: BUBBLE_THEM_BG,
+    borderRadius: BUBBLE_RADIUS,
+    borderBottomLeftRadius: BUBBLE_TAIL,
+    paddingHorizontal: 15,
+    paddingVertical: 12,
   },
   typingDot: {
     width: 7,
@@ -3902,176 +4280,257 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  emojiToggleDisabled: {
-    opacity: 0.45,
+  turnBlock: {
+    alignSelf: 'stretch',
+    width: '100%',
   },
-  composer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingTop: 8,
-    paddingBottom: Platform.OS === 'web' ? 12 : 10,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(42,38,30,0.08)',
-    backgroundColor: CANVAS,
+  vizBlock: {
+    alignSelf: 'stretch',
+    width: '100%',
+    marginTop: 8,
+    gap: 10,
   },
-  emojiToggle: {
-    width: 34,
-    height: 34,
-    alignItems: 'center',
-    justifyContent: 'center',
+  vizSpinner: {
+    marginVertical: 12,
   },
-  emojiToggleActive: {
-    opacity: 0.85,
-  },
-  composerField: {
-    flex: 1,
-    height: 32,
-    minHeight: 32,
-    maxHeight: 32,
-    borderWidth: 1,
-    borderColor: CHIP_BORDER,
-    borderRadius: CHIP_RADIUS,
-    backgroundColor: CANVAS,
-    paddingHorizontal: 10,
-    paddingVertical: 0,
-    justifyContent: 'center',
+  mentionSheet: {
+    marginHorizontal: 24,
+    marginBottom: 8,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: RULE,
+    backgroundColor: '#fff',
     overflow: 'hidden',
   },
-  composerInput: {
-    fontFamily,
-    fontSize: 16,
-    lineHeight: 20,
-    height: 22,
-    maxHeight: 22,
-    color: '#1d1d1f',
-    padding: 0,
-    paddingVertical: 0,
-    margin: 0,
-    outlineStyle: 'none',
-  },
-  sendButton: {
-    width: 32,
-    height: 32,
-    borderRadius: CHIP_RADIUS,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  sendButtonOn: {
-    backgroundColor: BLUE,
-  },
-  sendButtonOff: {
-    backgroundColor: '#c7c7cc',
-  },
-  composerMobile: {
-    paddingTop: 6,
-    paddingBottom: 8 + mobileTabBarReserve(),
-    alignItems: 'center',
-  },
-  composerFieldMobile: {
-    height: 32,
-    minHeight: 32,
-    maxHeight: 32,
-    paddingVertical: 0,
-  },
-  composerInputMobile: {
-    fontSize: 16,
-    lineHeight: 20,
-    height: 20,
-    maxHeight: 20,
-  },
-  aiComposerField: {
-    height: 36,
-    minHeight: 36,
-    maxHeight: 36,
-    paddingVertical: 0,
-    justifyContent: 'center',
-  },
-  aiComposerInput: {
-    height: 22,
-    maxHeight: 22,
-    fontSize: 16,
-    lineHeight: 20,
-    paddingVertical: 0,
-  },
-  aiPanel: {
-    flex: 1,
-    minHeight: 0,
-    backgroundColor: '#fff',
-  },
-  aiHeader: {
+  mentionRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e5e5ea',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
-  aiBack: {
-    width: 36,
-    height: 36,
+  mentionRowOn: {
+    backgroundColor: NAV_TAB_ACTIVE_BG,
+  },
+  mentionAvatar: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: BUBBLE_THEM_BG,
   },
-  aiHeaderCopy: {
+  mentionCopy: {
     flex: 1,
     minWidth: 0,
   },
-  aiTitle: {
+  mentionTitle: {
     fontFamily,
-    fontSize: 17,
+    fontSize: 14,
+    fontWeight: '500',
+    color: INK,
+  },
+  mentionSub: {
+    fontFamily,
+    fontSize: 12,
+    color: SECONDARY,
+    marginTop: 1,
+  },
+  mentionToken: {
+    fontFamily,
+    fontSize: 13,
     fontWeight: '600',
-    color: '#1d1d1f',
+    color: BUBBLE_MINE,
   },
-  aiList: {
-    flex: 1,
-    minHeight: 0,
-  },
-  aiListContent: {
-    paddingHorizontal: 14,
-    paddingTop: 16,
-    paddingBottom: 12,
-    gap: 8,
-  },
-  aiEmpty: {
+  attachBusy: {
+    flexDirection: 'row',
     alignItems: 'center',
-    paddingTop: 28,
+    gap: 8,
+    paddingHorizontal: 24,
+    paddingBottom: 6,
+  },
+  attachBusyText: {
+    fontFamily,
+    fontSize: 12,
+    color: SECONDARY,
+    flexShrink: 1,
+  },
+  attachRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 6,
+    paddingHorizontal: 24,
+    paddingBottom: 8,
   },
-  aiEmptyTitle: {
+  attachRowMine: {
+    justifyContent: 'flex-end',
+    paddingHorizontal: 0,
+    paddingBottom: 6,
+  },
+  attachChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    maxWidth: 260,
+    paddingLeft: 6,
+    paddingRight: 8,
+    paddingVertical: 5,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
+    backgroundColor: CANVAS,
+  },
+  attachChipMine: {
+    borderColor: BUBBLE_MINE,
+    backgroundColor: BUBBLE_MINE,
+  },
+  attachThumb: {
+    width: 32,
+    height: 32,
+    borderRadius: 4,
+    backgroundColor: NAV_TAB_ACTIVE_BG,
+  },
+  attachIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: NAV_TAB_ACTIVE_BG,
+  },
+  attachIconMine: {
+    backgroundColor: '#3a3a3c',
+  },
+  attachCopy: {
+    flexShrink: 1,
+    minWidth: 0,
+    gap: 1,
+  },
+  attachName: {
     fontFamily,
-    fontSize: 17,
-    fontWeight: '600',
-    color: '#1d1d1f',
+    fontSize: 12,
+    fontWeight: '500',
+    color: INK,
   },
-  aiBubble: {
-    maxWidth: '84%',
-    borderRadius: 18,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  aiBubbleMine: {
-    alignSelf: 'flex-end',
-    backgroundColor: BLUE,
-  },
-  aiBubbleThem: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#f2f2f7',
-  },
-  aiBubbleText: {
-    fontFamily,
-    fontSize: 16,
-    lineHeight: 21,
-    color: '#1d1d1f',
-  },
-  aiBubbleTextMine: {
+  attachNameMine: {
     color: '#fff',
   },
-  aiBusy: {
-    alignSelf: 'flex-start',
-    marginTop: 4,
+  attachMeta: {
+    fontFamily,
+    fontSize: 11,
+    color: SECONDARY,
+  },
+  attachMetaMine: {
+    color: 'rgba(255,255,255,0.72)',
+  },
+  attachRemove: {
+    marginLeft: 2,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  composerWrap: {
+    width: '100%',
+    maxWidth: 720,
+    alignSelf: 'center',
+    flexShrink: 0,
+    paddingHorizontal: 24,
+    paddingTop: 10,
+    paddingBottom: Platform.select({ web: 22, ios: 28, default: 18 }),
+    gap: 8,
+    backgroundColor: CANVAS,
+  },
+  composerWrapMobile: {
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 10 + mobileTabBarReserve(),
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: RULE,
+  },
+  composerPillAnchor: {
+    width: '100%',
+  },
+  composerPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 48,
+    paddingLeft: 8,
+    paddingRight: 8,
+    paddingVertical: 4,
+    gap: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
+    backgroundColor: BUBBLE_THEM_BG,
+    ...COMPOSER_PILL_IDLE_SHADOW,
+    ...Platform.select({
+      web: { transition: 'box-shadow 180ms ease' },
+      default: {},
+    }),
+  },
+  composerPillActive: {
+    ...COMPOSER_PILL_ACTIVE_SHADOW,
+  },
+  composerPillMultiline: {
+    alignItems: 'flex-end',
+    paddingVertical: 8,
+  },
+  composerHint: {
+    fontFamily,
+    fontSize: 11,
+    lineHeight: 14,
+    color: SECONDARY,
+    textAlign: 'center',
+    ...Platform.select({ web: { display: 'none' }, default: {} }),
+  },
+  composerLead: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: CANVAS,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: BUBBLE_THEM_BORDER,
+    flexShrink: 0,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  composerLeadHover: {
+    backgroundColor: NAV_TAB_ACTIVE_BG,
+  },
+  composerLeadOff: {
+    opacity: 0.4,
+  },
+  composerInput: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: COMPOSER_LINE_HEIGHT,
+    paddingVertical: 0,
+    paddingHorizontal: 4,
+    margin: 0,
+    backgroundColor: 'transparent',
+    fontFamily,
+    fontSize: 15,
+    lineHeight: COMPOSER_LINE_HEIGHT,
+    color: INK,
+    ...Platform.select({
+      web: { outlineStyle: 'none', lineHeight: `${COMPOSER_LINE_HEIGHT}px`, padding: 0, resize: 'none' },
+      default: {},
+    }),
+  },
+  composerAction: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  composerActionOn: {
+    backgroundColor: BUBBLE_MINE,
+  },
+  composerActionOff: {
+    backgroundColor: '#c7c7cc',
   },
   actionSheetRoot: {
     flex: 1,

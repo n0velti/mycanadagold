@@ -1,12 +1,12 @@
 import { useEffect, useRef } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { BarChart, LineChart, PieChart } from 'echarts/charts';
 import { GridComponent, LegendComponent, TooltipComponent, DataZoomComponent } from 'echarts/components';
 import * as echarts from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 import { formatMeasure } from '../lib/employeeMetrics';
-import { CANVAS, NAV_TAB_ACTIVE_RADIUS } from '../lib/mobileUi';
-import { FONT } from './TriageKit';
+import { useIsMobile } from '../lib/mobileUi';
+import AnalyticsVizExpand from './AnalyticsVizExpand';
 
 echarts.use([
   BarChart,
@@ -24,17 +24,37 @@ const MUTED = '#8e8e93';
 const LINE_COLORS = ['#1a1a1a', '#B8860B', '#0F766E', '#4F46E5', '#E11D48', '#0891B2', '#F59E0B', '#8e8e93'];
 const PIE_COLORS = ['#4F46E5', '#818CF8', '#0F766E', '#F59E0B', '#E11D48', '#0891B2', '#65A30D', '#7C3AED', '#A1A1AA'];
 
+// Axis ticks read as "$250K" / "1.2M"; tooltips keep the exact value.
+function axisLabel(value, format) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || Math.abs(number) < 1000) return formatMeasure(number, format);
+  const abs = Math.abs(number);
+  const unit = abs >= 1e9 ? [1e9, 'B'] : abs >= 1e6 ? [1e6, 'M'] : [1e3, 'K'];
+  const scaled = abs / unit[0];
+  const digits = scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2;
+  const body = `${scaled.toFixed(digits).replace(/\.0+$|(\.\d*[1-9])0+$/, '$1')}${unit[1]}`;
+  const sign = number < 0 ? '-' : '';
+  return format === 'money' ? `${sign}$${body}` : `${sign}${body}`;
+}
+
 function hostNode(ref) {
   const node = ref.current;
   if (!node) return null;
   return typeof node.getNode === 'function' ? node.getNode() : node;
 }
 
-function lineOption(chart) {
+function lineOption(chart, { compact, expanded }) {
   // A second axis only when exactly two measures use different units (count vs dollars).
   const dual = chart.series.length === 2 && chart.series[0].format !== chart.series[1].format;
   const bar = chart.type === 'bar';
   const longLabels = bar && chart.categories.some((label) => String(label).length > 9);
+  const many = chart.categories.length > 10;
+  const tight = compact && !expanded;
+  // Pinch/drag zoom inside the plot would swallow the page scroll on a phone;
+  // the slider stays, and the inside gesture comes back in the expanded view.
+  const dataZoom = many
+    ? [...(tight ? [] : [{ type: 'inside' }]), { type: 'slider', height: tight ? 16 : 18, bottom: 8 }]
+    : [];
   return {
     color: LINE_COLORS,
     textStyle: { fontFamily: 'Sohne, sans-serif', color: INK },
@@ -63,12 +83,12 @@ function lineOption(chart) {
       textStyle: { color: MUTED, fontSize: 12 },
     },
     grid: {
-      left: 56,
-      right: dual ? 64 : 18,
+      left: compact ? 48 : 56,
+      right: dual ? (compact ? 50 : 64) : compact ? 12 : 18,
       top: chart.series.length > 4 ? 48 : 36,
-      bottom: chart.categories.length > 10 ? 64 : longLabels ? 56 : 28,
+      bottom: many ? 64 : longLabels ? 56 : 28,
     },
-    dataZoom: chart.categories.length > 10 ? [{ type: 'inside' }, { type: 'slider', height: 18, bottom: 8 }] : [],
+    dataZoom,
     xAxis: {
       type: 'category',
       data: chart.categories,
@@ -76,15 +96,17 @@ function lineOption(chart) {
       axisTick: { show: false },
       axisLabel: {
         color: MUTED,
-        fontSize: 11,
+        fontSize: tight ? 10 : 11,
         hideOverlap: true,
-        interval: bar ? 0 : 'auto',
+        interval: bar && !tight ? 0 : 'auto',
         rotate: longLabels ? 30 : 0,
       },
     },
     yAxis: (dual ? chart.series : chart.series.slice(0, 1)).map((series, index) => ({
       type: 'value',
-      name: series.label,
+      // The legend already names each series; on a phone the axis titles only
+      // collide with it.
+      name: compact ? '' : series.label,
       nameTextStyle: { color: MUTED, fontSize: 11 },
       position: index === 0 ? 'left' : 'right',
       alignTicks: true,
@@ -94,7 +116,7 @@ function lineOption(chart) {
       axisLabel: {
         color: MUTED,
         fontSize: 11,
-        formatter: (value) => formatMeasure(value, series.format),
+        formatter: (value) => axisLabel(value, series.format),
       },
     })),
     series: chart.series.map((series) =>
@@ -121,7 +143,9 @@ function lineOption(chart) {
   };
 }
 
-function pieOption(chart) {
+function pieOption(chart, { compact, expanded }) {
+  // Slice labels crowd a phone-width pie; the legend carries the names there.
+  const tight = compact && !expanded;
   return {
     color: PIE_COLORS,
     textStyle: { fontFamily: 'Sohne, sans-serif', color: INK },
@@ -146,25 +170,37 @@ function pieOption(chart) {
     series: [
       {
         type: 'pie',
-        radius: ['0%', '68%'],
-        center: ['50%', '46%'],
+        // Outside labels need room on a phone, so the expanded pie there is
+        // smaller than the desktop one.
+        radius: ['0%', tight ? '62%' : compact ? '54%' : expanded ? '72%' : '68%'],
+        center: ['50%', tight ? '42%' : '46%'],
         avoidLabelOverlap: true,
-        label: { color: INK, fontSize: 12, formatter: '{b}' },
+        label: {
+          show: !tight,
+          color: INK,
+          fontSize: 12,
+          formatter: '{b}',
+          // Pinned to the container edge so long names wrap instead of clipping.
+          ...(compact ? { alignTo: 'edge', edgeDistance: 6, overflow: 'break', width: 84 } : {}),
+        },
+        labelLine: { show: !tight, ...(compact ? { length: 10, length2: 0, maxSurfaceAngle: 80 } : {}) },
         data: chart.slices.map((slice) => ({ name: slice.name, value: slice.value })),
       },
     ],
   };
 }
 
-export default function AnalyticsChartCard({ chart }) {
+function ChartPlot({ chart, expanded, compact }) {
   const ref = useRef(null);
 
   useEffect(() => {
     const node = hostNode(ref);
     if (!node || !chart) return undefined;
     const instance = echarts.init(node);
-    instance.setOption(chart.type === 'pie' ? pieOption(chart) : lineOption(chart), true);
+    const sizing = { compact, expanded };
+    instance.setOption(chart.type === 'pie' ? pieOption(chart, sizing) : lineOption(chart, sizing), true);
     const onResize = () => instance.resize();
+    requestAnimationFrame(onResize);
     window.addEventListener('resize', onResize);
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(onResize) : null;
     observer?.observe(node);
@@ -173,49 +209,38 @@ export default function AnalyticsChartCard({ chart }) {
       window.removeEventListener('resize', onResize);
       instance.dispose();
     };
-  }, [chart]);
+  }, [chart, expanded, compact]);
 
+  return <View ref={ref} style={expanded ? styles.plotExpanded : compact ? styles.plotPhone : styles.plot} />;
+}
+
+export default function AnalyticsChartCard({ chart }) {
+  const compact = useIsMobile();
   if (!chart) return null;
 
   return (
-    <View style={styles.card}>
-      <Text style={styles.title}>{chart.title}</Text>
-      {chart.subtitle ? <Text style={styles.subtitle}>{chart.subtitle}</Text> : null}
-      <View ref={ref} style={styles.plot} />
-    </View>
+    <AnalyticsVizExpand
+      title={chart.title}
+      subtitle={chart.subtitle}
+      inlinePlotStyle={compact ? styles.plotPhone : styles.plot}
+    >
+      {(open, phone) => <ChartPlot chart={chart} expanded={open} compact={phone} />}
+    </AnalyticsVizExpand>
   );
 }
 
 const styles = StyleSheet.create({
-  card: {
-    alignSelf: 'stretch',
-    marginTop: 8,
-    paddingTop: 12,
-    paddingHorizontal: 8,
-    paddingBottom: 8,
-    borderRadius: NAV_TAB_ACTIVE_RADIUS,
-    borderWidth: 1,
-    borderColor: '#d0d0d0',
-    backgroundColor: CANVAS,
-  },
-  title: {
-    fontFamily: FONT,
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#1a1a1a',
-    paddingHorizontal: 8,
-    marginBottom: 4,
-  },
-  subtitle: {
-    fontFamily: FONT,
-    fontSize: 12,
-    lineHeight: 16,
-    color: '#6e6e73',
-    paddingHorizontal: 8,
-    marginBottom: 4,
-  },
   plot: {
     height: 320,
     width: '100%',
+  },
+  plotPhone: {
+    height: 250,
+    width: '100%',
+  },
+  plotExpanded: {
+    flex: 1,
+    width: '100%',
+    minHeight: 240,
   },
 });

@@ -24,18 +24,11 @@ import {
   formatTransactionTime,
   posSourcesFromSession,
 } from '../lib/transactions';
-import { prepareAiChatSession, sendAiChatMessage } from '../lib/aiChat';
 import { enrichClientActivity, searchClients } from '../lib/triageLookups';
-import { OPENROUTER_MODELS } from '../lib/openrouter';
 import { FONT } from '../lib/typography';
 import { usePhoneCalls } from './PhoneCallProvider';
 
 const AI_PURPLE = '#6B4DE6';
-const AI_BLUE = '#0A84FF';
-const AI_MODEL =
-  OPENROUTER_MODELS.find((model) => model.key === 'anthropic/claude-sonnet-5')?.key ||
-  OPENROUTER_MODELS[0]?.key ||
-  '';
 
 function initialsFromName(name) {
   const parts = String(name || '')
@@ -334,10 +327,10 @@ export default function SearchScreen({
   onOpenDocument,
   onOpenCustomer,
   onMessage,
+  onOpenAi,
   query: queryProp,
   onQueryChange,
   hideSearchField = false,
-  enterRef,
 }) {
   const isMobile = useIsMobile();
   const { contentMaxWidth, searchMaxWidth } = useSearchPageLayout();
@@ -345,7 +338,6 @@ export default function SearchScreen({
   const { hasApp } = useAppAccess();
   const phone = usePhoneCalls();
   const inputRef = useRef(null);
-  const aiScrollRef = useRef(null);
   const searchGen = useRef(0);
   const myId = session?.supabaseUserId || session?.profile?.id || '';
   const canPhone = hasApp('phone');
@@ -372,28 +364,6 @@ export default function SearchScreen({
   const [callingId, setCallingId] = useState('');
   const [callingKind, setCallingKind] = useState('');
   const [actionError, setActionError] = useState('');
-  const [aiMode, setAiMode] = useState(false);
-  const [aiTurns, setAiTurns] = useState([]);
-  const [aiBusy, setAiBusy] = useState(false);
-  const [aiError, setAiError] = useState('');
-  const [aiProgress, setAiProgress] = useState('');
-  const [seedMessages, setSeedMessages] = useState([]);
-  const [chatContext, setChatContext] = useState(null);
-
-  useEffect(() => {
-    if (!session?.token) {
-      setSeedMessages([]);
-      setChatContext(null);
-      return undefined;
-    }
-    const end = new Date();
-    const start = new Date();
-    start.setDate(end.getDate() - 6);
-    const prepared = prepareAiChatSession({ startDate: start, endDate: end });
-    setSeedMessages(prepared.seedMessages);
-    setChatContext(prepared.context);
-    return undefined;
-  }, [session]);
 
   useEffect(() => {
     if (hideSearchField) return undefined;
@@ -419,20 +389,14 @@ export default function SearchScreen({
   }, []);
 
   const people = useMemo(
-    () => (aiMode ? [] : filterStaff(staff, query).slice(0, 25)),
-    [aiMode, staff, query],
+    () => filterStaff(staff, query).slice(0, 25),
+    [staff, query],
   );
   const trimmed = query.trim();
   const canLookupTickets = documentQueryCandidates(trimmed).length > 0;
   const canLookupCustomers = trimmed.length >= 2 && !documentQueryCandidates(trimmed).length;
 
   useEffect(() => {
-    if (aiMode) {
-      setTickets([]);
-      setTicketError('');
-      setTicketBusy(false);
-      return undefined;
-    }
     if (!canLookupTickets) {
       setTickets([]);
       setTicketError('');
@@ -468,15 +432,9 @@ export default function SearchScreen({
       clearTimeout(timer);
       searchGen.current += 1;
     };
-  }, [aiMode, canLookupTickets, session, trimmed]);
+  }, [canLookupTickets, session, trimmed]);
 
   useEffect(() => {
-    if (aiMode) {
-      setCustomers([]);
-      setCustomerError('');
-      setCustomerBusy(false);
-      return undefined;
-    }
     if (!canLookupCustomers) {
       setCustomers([]);
       setCustomerError('');
@@ -534,10 +492,9 @@ export default function SearchScreen({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [aiMode, canLookupCustomers, session, trimmed]);
+  }, [canLookupCustomers, session, trimmed]);
 
   const showNoMatches =
-    !aiMode &&
     trimmed &&
     !ticketBusy &&
     !customerBusy &&
@@ -551,87 +508,7 @@ export default function SearchScreen({
   const onChangeQuery = useCallback((next) => {
     setQuery(next);
     setActionError('');
-    setAiError('');
   }, []);
-
-  const scrollAiToEnd = useCallback(() => {
-    requestAnimationFrame(() => aiScrollRef.current?.scrollToEnd?.({ animated: true }));
-  }, []);
-
-  const sendAiQuestion = useCallback(async () => {
-    const text = query.trim();
-    if (!text || aiBusy || !aiMode) return;
-    if (!session?.token) {
-      setAiError('Sign in again to use AI search.');
-      return;
-    }
-    if (!seedMessages.length) {
-      setAiError('AI is still loading. Try again in a moment.');
-      return;
-    }
-    setQuery('');
-    setAiError('');
-    setAiBusy(true);
-    setAiProgress('Choosing data…');
-    const history = aiTurns.filter(
-      (turn) => (turn.role === 'user' || turn.role === 'assistant') && String(turn.content || '').trim(),
-    );
-    const nextTurns = [...history, { role: 'user', content: text }];
-    setAiTurns(nextTurns);
-    scrollAiToEnd();
-    try {
-      const result = await sendAiChatMessage({
-        seedMessages,
-        turns: history,
-        userMessage: text,
-        model: AI_MODEL,
-        session,
-        context: chatContext,
-        startDate: chatContext?.selection?.startDate,
-        endDate: chatContext?.selection?.endDate,
-        onLookup: (label) => setAiProgress(label || ''),
-        extraContext:
-          'The staff member is using global Search with AI enabled. Answer using company-wide data and relationships when relevant.',
-      });
-      if (result.sources?.length || result.scope) {
-        setChatContext((current) =>
-          current
-            ? {
-                ...current,
-                lastSources: result.sources?.length ? result.sources : current.lastSources,
-                lastScope: result.scope || current.lastScope,
-              }
-            : current,
-        );
-      }
-      setAiTurns(
-        result.turns || [...nextTurns, { role: 'assistant', content: result.text || '' }],
-      );
-    } catch (err) {
-      setAiTurns(history);
-      setQuery(text);
-      setAiError(err?.message || 'Could not get an AI answer.');
-    } finally {
-      setAiBusy(false);
-      setAiProgress('');
-      scrollAiToEnd();
-    }
-  }, [aiBusy, aiMode, aiTurns, chatContext, query, scrollAiToEnd, seedMessages, session]);
-
-  const toggleAiMode = useCallback(() => {
-    setAiMode((on) => !on);
-    setAiError('');
-  }, []);
-
-  useEffect(() => {
-    if (!enterRef) return undefined;
-    enterRef.current = () => {
-      if (aiMode) void sendAiQuestion();
-    };
-    return () => {
-      enterRef.current = null;
-    };
-  }, [aiMode, enterRef, sendAiQuestion]);
 
   const callStaff = useCallback(
     async (person, kind) => {
@@ -695,18 +572,7 @@ export default function SearchScreen({
               autoCorrect={false}
               autoFocus={!isMobile}
               clearButtonMode="while-editing"
-              returnKeyType={aiMode ? 'send' : 'search'}
-              editable={!aiBusy}
-              onSubmitEditing={() => {
-                if (aiMode) void sendAiQuestion();
-              }}
-              onKeyPress={(event) => {
-                if (!aiMode) return;
-                const key = event?.nativeEvent?.key || event?.key;
-                if (key !== 'Enter') return;
-                event.preventDefault?.();
-                if (query.trim() && !aiBusy) void sendAiQuestion();
-              }}
+              returnKeyType="search"
             />
             {query ? (
               <Pressable onPress={() => setQuery('')} hitSlop={8} accessibilityLabel="Clear search">
@@ -715,27 +581,24 @@ export default function SearchScreen({
             ) : null}
           </View>
           )}
+          {typeof onOpenAi === 'function' ? (
           <Pressable
-            onPress={toggleAiMode}
-            disabled={aiBusy}
+            onPress={onOpenAi}
             style={({ pressed, hovered }) => [
               styles.aiToggle,
-              aiMode && styles.aiToggleOn,
-              (pressed || hovered) && !aiBusy && styles.aiToggleHover,
-              aiBusy && styles.aiToggleDisabled,
+              (pressed || hovered) && styles.aiToggleHover,
             ]}
-            accessibilityRole="switch"
-            accessibilityState={{ checked: aiMode, disabled: aiBusy }}
-            accessibilityLabel="AI search"
+            accessibilityRole="button"
+            accessibilityLabel="Talk to AI"
           >
-            <Ionicons name="sparkles" size={14} color={aiMode ? '#fff' : AI_PURPLE} />
-            <Text style={[styles.aiToggleLabel, aiMode && styles.aiToggleLabelOn]}>AI</Text>
+            <Ionicons name="sparkles" size={14} color={AI_PURPLE} />
+            <Text style={styles.aiToggleLabel}>AI</Text>
           </Pressable>
+          ) : null}
         </View>
       </View>
 
       <ScrollView
-        ref={aiScrollRef}
         style={styles.scroll}
         contentContainerStyle={[
           styles.scrollContent,
@@ -745,36 +608,10 @@ export default function SearchScreen({
         ]}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
-        onContentSizeChange={() => {
-          if (aiMode && aiTurns.length) scrollAiToEnd();
-        }}
         {...(isMobile ? tabBarScroll : null)}
       >
         <View style={[styles.scrollColumn, columnStyle]}>
-        {aiMode && aiTurns.length ? (
-          <View style={styles.aiThread}>
-            {aiTurns.map((turn, index) => (
-              <View
-                key={`${turn.role}-${index}`}
-                style={[styles.aiBubble, turn.role === 'user' ? styles.aiBubbleMine : styles.aiBubbleThem]}
-              >
-                <Text style={[styles.aiBubbleText, turn.role === 'user' && styles.aiBubbleTextMine]}>
-                  {turn.content}
-                </Text>
-              </View>
-            ))}
-            {aiBusy ? (
-              <View style={styles.aiBusyRow}>
-                <ActivityIndicator size="small" color="#8e8e93" />
-                {aiProgress ? <Text style={styles.inlineStatusText}>{aiProgress}</Text> : null}
-              </View>
-            ) : null}
-          </View>
-        ) : null}
-
-        {aiError ? <Text style={styles.aiErrorText}>{aiError}</Text> : null}
-
-        {!aiMode && (ticketBusy || tickets.length || ticketError) ? (
+        {ticketBusy || tickets.length || ticketError ? (
           <Section title="PO / SO" plain={!isMobile}>
             {isMobile ? (
               tickets.map((row) => (
@@ -813,7 +650,7 @@ export default function SearchScreen({
           </Section>
         ) : null}
 
-        {!aiMode && (people.length || staffError) ? (
+        {people.length || staffError ? (
           <Section title="Employees" plain>
             <View style={styles.employeeGrid}>
               {people.map((person) => (
@@ -836,7 +673,7 @@ export default function SearchScreen({
           </Section>
         ) : null}
 
-        {!aiMode && (customerBusy || customers.length || customerError) ? (
+        {customerBusy || customers.length || customerError ? (
           <Section title="Customers" plain={!isMobile}>
             {isMobile ? (
               customers.map((row) => (
@@ -953,15 +790,8 @@ const styles = StyleSheet.create({
     minHeight: 40,
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
-  aiToggleOn: {
-    backgroundColor: AI_PURPLE,
-    borderColor: AI_PURPLE,
-  },
   aiToggleHover: {
     opacity: 0.92,
-  },
-  aiToggleDisabled: {
-    opacity: 0.45,
   },
   aiToggleLabel: {
     fontFamily: FONT,
@@ -969,52 +799,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#1d1d1f',
     letterSpacing: 0.2,
-  },
-  aiToggleLabelOn: {
-    color: '#fff',
-  },
-  aiThread: {
-    gap: 10,
-    paddingTop: 8,
-    paddingBottom: 8,
-  },
-  aiBubble: {
-    maxWidth: '92%',
-    borderRadius: 18,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  aiBubbleMine: {
-    alignSelf: 'flex-end',
-    backgroundColor: AI_BLUE,
-  },
-  aiBubbleThem: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#fff',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(60, 60, 67, 0.12)',
-  },
-  aiBubbleText: {
-    fontFamily: FONT,
-    fontSize: 16,
-    lineHeight: 21,
-    color: '#1d1d1f',
-  },
-  aiBubbleTextMine: {
-    color: '#fff',
-  },
-  aiBusyRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    alignSelf: 'flex-start',
-    paddingVertical: 4,
-  },
-  aiErrorText: {
-    fontFamily: FONT,
-    fontSize: 13,
-    color: '#b91c1c',
-    marginTop: 8,
   },
   searchInput: {
     flex: 1,

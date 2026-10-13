@@ -118,7 +118,7 @@ import { capturePurchasePriceCatalog } from './lib/priceCheckSettings';
 import { useTxnCashBreakdowns } from './lib/txnCashBreakdowns';
 import { flushNow as flushActionLog, setActionLogActor, setActionLogContext } from './lib/actionLog';
 import { DISPLAY_CURRENCIES, DisplayCurrencyProvider, useDisplayCurrency } from './lib/displayCurrency';
-import { AppDateProvider, AppDateRouteReset, useAppDate } from './lib/appDate';
+import { AppDateProvider, AppDateScope, useAppDate } from './lib/appDate';
 import { SPOT_METALS, SPOT_REFRESH_MS } from './lib/spotPrices';
 import HomeDatePicker from './components/HomeDatePicker';
 import LowReviewMark from './components/LowReviewMark';
@@ -195,6 +195,7 @@ const SCREEN_LOADERS = {
   calendar: () => import('./components/CalendarScreen'),
   customers: () => import('./components/CustomersScreen'),
   debit: () => import('./components/DebitScreen'),
+  documents: () => import('./components/DocumentsScreen'),
   emails: () => import('./components/EmailsScreen'),
   employees: () => import('./components/EmployeesScreen'),
   financials: () => import('./components/FinancialsScreen'),
@@ -228,6 +229,7 @@ const BonusesScreen = lazy(SCREEN_LOADERS.bonuses);
 const CalendarScreen = lazy(SCREEN_LOADERS.calendar);
 const CustomersScreen = lazy(SCREEN_LOADERS.customers);
 const DebitScreen = lazy(SCREEN_LOADERS.debit);
+const DocumentsScreen = lazy(SCREEN_LOADERS.documents);
 const EmailsScreen = lazy(SCREEN_LOADERS.emails);
 const EmployeesScreen = lazy(SCREEN_LOADERS.employees);
 const FinancialsScreen = lazy(SCREEN_LOADERS.financials);
@@ -373,17 +375,12 @@ function rememberOpenTool(key) {
 }
 
 function storedSidebarCollapsed() {
-  try {
-    return localStorage.getItem('cgold-sidebar-collapsed') === '1';
-  } catch {
-    return false;
-  }
+  return true;
 }
 
 function rememberSidebarCollapsed(collapsed) {
   try {
-    if (collapsed) localStorage.setItem('cgold-sidebar-collapsed', '1');
-    else localStorage.removeItem('cgold-sidebar-collapsed');
+    localStorage.setItem('cgold-sidebar-collapsed', collapsed ? '1' : '0');
   } catch {
     /* ignore */
   }
@@ -535,8 +532,8 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-app-icon:hover .cgold-app-pin,.cgold-app-icon:focus-within .cgold-app-pin{opacity:1!important;}',
     '.cgold-store-header-blur{-webkit-backdrop-filter:saturate(160%) blur(12px);backdrop-filter:saturate(160%) blur(12px);background-color:rgba(255,255,255,0.72)!important;transform:translateZ(0);}',
     '.cgold-dm-row{cursor:pointer;}',
-    '.cgold-dm-row:hover{background-color:#f5f5f5!important;}',
-    '.cgold-dm-row-active,.cgold-dm-row-active:hover{background-color:#f0f0f2!important;}',
+    '.cgold-dm-row:hover{background-color:#f2f2f7!important;}',
+    '.cgold-dm-row-active,.cgold-dm-row-active:hover{background-color:#f2f2f7!important;}',
     '@media (max-width:767px){',
     `html,body,#root{background:${CANVAS};}`,
     '.cgold-mobile-inset-top{height:max(12px,env(safe-area-inset-top,0px))!important;}',
@@ -819,7 +816,7 @@ function useIsMobile() {
 }
 
 const HOME_PAGE_MAX_WIDTH = 1360;
-const HOME_TABLE_MAX_WIDTH = 1680;
+const HOME_TABLE_MAX_WIDTH = 1200;
 /** Extra left inset on desktop so search / hero / table sit slightly right of viewport center. */
 const HOME_DESKTOP_LEADING_NUDGE = 28;
 const HOME_STORE_ROW_PAD = 8;
@@ -841,11 +838,11 @@ function useHomePageLayout() {
     };
   }
   const pagePad = width >= 1600 ? 24 : width >= 1200 ? 20 : 16;
-  const tablePagePad = width >= 1600 ? 36 : width >= 1200 ? 28 : 22;
+  const tablePagePad = width >= 1600 ? 72 : width >= 1200 ? 56 : 36;
   const contentMaxWidth = Math.min(HOME_PAGE_MAX_WIDTH, Math.max(720, width - pagePad * 2));
   const tableMaxWidth = Math.min(
     HOME_TABLE_MAX_WIDTH,
-    Math.max(1000, width - tablePagePad * 2),
+    Math.max(1050, width - tablePagePad * 2),
   );
   const searchLayoutCap = width < 1240 ? 740 : 880;
   const homeSearchMaxWidth = Math.min(560, Math.max(340, Math.round(searchLayoutCap * 0.62)));
@@ -1008,7 +1005,6 @@ const STORE_SNAPSHOT_TABS = new Set([
   'inventory',
   'financials',
   'employees',
-  'phone',
   'emails',
   'supplies',
 ]);
@@ -3262,6 +3258,7 @@ function HomeStoreDrawer({
   onSelectedDocumentChange,
   onCrumbsChange,
   documentCloseRef,
+  onActiveTabChange,
 }) {
   const { width: windowWidth } = useWindowDimensions();
   const isMobile = windowWidth < MOBILE_BREAKPOINT;
@@ -3295,6 +3292,9 @@ function HomeStoreDrawer({
   const heldStore = useHeldValue(store);
   const mounted = Boolean(visible && heldStore);
   const [activeTab, setActiveTab] = useState('overview');
+  useEffect(() => {
+    onActiveTabChange?.(activeTab);
+  }, [activeTab, onActiveTabChange]);
   const [txRows, setTxRows] = useState([]);
   const [selectedRow, setSelectedRow] = useState(null);
   const [detail, setDetail] = useState(null);
@@ -3597,7 +3597,9 @@ function HomeStoreDrawer({
                   filterSlotWidth={mobileChromeWidth}
                   topInset={contentPadTop || topInset}
                   ready={mounted}
-                  desktopHeader={desktopHeader}
+                  desktopHeader={
+                    activeTab === 'overview' || STORE_SNAPSHOT_TABS.has(activeTab) ? desktopHeader : null
+                  }
                   dateHero={dateHero}
                   heroFocus={txFocus}
                   focusTab={activeTab}
@@ -3610,12 +3612,14 @@ function HomeStoreDrawer({
                     STORE_SNAPSHOT_TABS.has(activeTab) ? null : (
                       <ScreenGate resetKey={activeTab}>
                         {activeTab === 'phone' ? (
-                          <PhoneScreen
-                            key={heldStore.store}
-                            session={session}
-                            storeFilter={heldStore.store}
-                            embedded
-                          />
+                          <AppDateScope id="tools:phone">
+                            <PhoneScreen
+                              key={heldStore.store}
+                              session={session}
+                              storeFilter={heldStore.store}
+                              embedded
+                            />
+                          </AppDateScope>
                         ) : activeTab === 'preorders' ? (
                           <PreordersScreen storeFilter={heldStore.store} embedded />
                         ) : activeTab === 'audit' ? (
@@ -3627,14 +3631,16 @@ function HomeStoreDrawer({
                             embedded
                           />
                         ) : activeTab === 'bonuses' ? (
-                          <BonusesScreen
-                            key={heldStore.store}
-                            session={session}
-                            storeFilter={heldStore.store}
-                            embedded
-                            onOpenEmails={() => openApp('emails')}
-                            onOpenCustomer={onOpenCustomer}
-                          />
+                          <AppDateScope id="tools:bonuses">
+                            <BonusesScreen
+                              key={heldStore.store}
+                              session={session}
+                              storeFilter={heldStore.store}
+                              embedded
+                              onOpenEmails={() => openApp('emails')}
+                              onOpenCustomer={onOpenCustomer}
+                            />
+                          </AppDateScope>
                         ) : activeTab === 'triage' ? (
                           <TriageScreen
                             key={heldStore.store}
@@ -5720,20 +5726,6 @@ function HomeScreen({
 }) {
   const { isMobile, tableMaxWidth, pagePad, tablePagePad } = useHomePageLayout();
   const homeHeroPad = pagePad + HOME_STORE_NAME_INSET;
-  const homeContentInset = useMemo(
-    () => [
-      styles.igHomeContentInset,
-      isMobile
-        ? { paddingHorizontal: pagePad }
-        : {
-            paddingLeft: pagePad,
-            paddingRight: pagePad,
-            width: '100%',
-            ...(tableMaxWidth ? { maxWidth: tableMaxWidth } : null),
-          },
-    ],
-    [isMobile, pagePad, tableMaxWidth],
-  );
   const homeTableInset = useMemo(
     () => [
       styles.igHomeContentInset,
@@ -5756,6 +5748,8 @@ function HomeScreen({
   const homeScrollYRef = useRef(0);
   const [stageHeight, setStageHeight] = useState(0);
   const [storeAppsOpen, setStoreAppsOpen] = useState(false);
+  const [storePage, setStorePage] = useState('overview');
+  const [storeQuery, setStoreQuery] = useState('');
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [filterAnchor, setFilterAnchor] = useState({
     top: HOME_TOP_FILTER_SIZE + MOBILE_FILTER_INSET,
@@ -5981,7 +5975,11 @@ function HomeScreen({
     }
   }, [load]);
 
-  const visibleRows = storeRows;
+  const visibleRows = useMemo(() => {
+    const q = storeQuery.trim().toLowerCase();
+    if (!q) return storeRows;
+    return storeRows.filter((row) => String(row.store || '').toLowerCase().includes(q));
+  }, [storeQuery, storeRows]);
 
   const hideHomeAmounts = !allowHomeFilters;
   const canOpenHomeStore = useCallback(
@@ -6319,6 +6317,7 @@ function HomeScreen({
                 </View>
               )}
               <View style={styles.igHomeMobileTopBarTrailing}>
+          {selectedStore && (storePage === 'overview' || STORE_SNAPSHOT_TABS.has(storePage)) ? (
           <View
             ref={heroDateAnchorRef}
             collapsable={false}
@@ -6354,6 +6353,7 @@ function HomeScreen({
             </Pressable>
             {renderHiddenDatePicker(heroDateOpenRef, heroDateAnchorRef)}
           </View>
+          ) : null}
           <Pressable
             ref={filterButtonRef}
             onLayout={placeFilterMenu}
@@ -6402,11 +6402,21 @@ function HomeScreen({
         onAppsOpenChange={setStoreAppsOpen}
         txFocus={heroFocus}
         mobileChromeWidth={0}
+        desktopHeader={
+          !isMobile ? (
+            <View style={styles.homeTableDateRow}>
+              <View style={styles.homeTableDateSlot}>
+                <TopDateToggle disabled={dateRestricted} />
+              </View>
+            </View>
+          ) : null
+        }
         dateHero={!isMobile && !hideHomeAmounts ? renderDateHero(storeDateOpenRef, storeDateAnchorRef, false) : null}
         contentPadTop={isMobile ? HOME_MOBILE_TOP_BAR_HEIGHT : TOP_BAR_HEIGHT + 12}
         onSelectedDocumentChange={setHomeDocRef}
         onCrumbsChange={reportCrumbs}
         documentCloseRef={closeHomeDocRef}
+        onActiveTabChange={setStorePage}
       />
       ) : (
       <ScrollView
@@ -6429,21 +6439,7 @@ function HomeScreen({
         onScroll={onHomeScroll}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor="#8e8e93" />}
       >
-        <View style={homeContentInset}>
-          {error ? <Text style={[styles.errorText, styles.homeError]}>{error}</Text> : null}
-
-          {loading && storeRows.length === 0 ? (
-            <View pointerEvents="auto" style={[styles.homeTableEmpty, styles.igHomeScrollEnd]}>
-              <ActivityIndicator color="#1d1d1f" />
-            </View>
-          ) : visibleRows.length === 0 ? (
-            <Text pointerEvents="auto" style={[styles.toolsEmpty, styles.igHomeScrollEnd]}>
-              No store activity in this period.
-            </Text>
-          ) : null}
-        </View>
-        {visibleRows.length > 0 ? (
-          <View style={homeTableInset}>
+        <View style={homeTableInset}>
             <View
               pointerEvents="auto"
               style={[
@@ -6457,7 +6453,47 @@ function HomeScreen({
                 stageHeight > 0 ? { minHeight: stageHeight } : null,
               ]}
             >
-              {visibleRows.length > 0 ? (
+              <View style={[styles.homeTableDateRow, isMobile && { paddingHorizontal: pagePad }]}>
+                <View style={styles.homeStoreSearch}>
+                  <Ionicons name="search-outline" size={16} color={MOBILE.secondary} />
+                  <TextInput
+                    style={styles.homeStoreSearchInput}
+                    value={storeQuery}
+                    onChangeText={setStoreQuery}
+                    placeholder="Search stores"
+                    placeholderTextColor={MOBILE.secondary}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    returnKeyType="search"
+                    clearButtonMode="while-editing"
+                    accessibilityLabel="Search stores"
+                  />
+                  {storeQuery ? (
+                    <Pressable
+                      onPress={() => setStoreQuery('')}
+                      hitSlop={8}
+                      accessibilityLabel="Clear store search"
+                    >
+                      <Ionicons name="close-circle" size={16} color="#c7c7cc" />
+                    </Pressable>
+                  ) : null}
+                </View>
+                <View style={styles.homeTableDateSlot}>
+                  <TopDateToggle disabled={dateRestricted} />
+                </View>
+              </View>
+              {error ? <Text style={[styles.errorText, styles.homeError]}>{error}</Text> : null}
+              {loading && storeRows.length === 0 ? (
+                <View pointerEvents="auto" style={[styles.homeTableEmpty, styles.igHomeScrollEnd]}>
+                  <ActivityIndicator color="#1d1d1f" />
+                </View>
+              ) : visibleRows.length === 0 ? (
+                <Text pointerEvents="auto" style={[styles.toolsEmpty, styles.igHomeScrollEnd]}>
+                  {storeQuery.trim()
+                    ? 'No stores match that search.'
+                    : 'No store activity in this period.'}
+                </Text>
+              ) : (
                 <View style={styles.homeFocusStage}>
                   <HomeStoresTable
                     rows={listedRows}
@@ -6475,10 +6511,9 @@ function HomeScreen({
                     emailReady={emailReady}
                   />
                 </View>
-              ) : null}
+              )}
             </View>
           </View>
-        ) : null}
       </ScrollView>
       )}
       </View>
@@ -7743,6 +7778,31 @@ function SidebarNavItem({
   );
 }
 
+function SidebarCollapsedTip({ collapsed, label, children, style }) {
+  const [hoverEl, setHoverEl] = useState(null);
+
+  return (
+    <View
+      style={style}
+      {...(Platform.OS === 'web' && collapsed
+        ? {
+            onMouseEnter: (event) => setHoverEl(event?.currentTarget || null),
+            onMouseLeave: () => setHoverEl(null),
+          }
+        : null)}
+    >
+      {children}
+      <FloatingTooltip
+        visible={collapsed && Boolean(hoverEl)}
+        text={label}
+        anchorEl={hoverEl}
+        placement="right"
+        compact
+      />
+    </View>
+  );
+}
+
 function locationShortLabel(name) {
   const cleaned = String(name || '')
     .replace(/^canada\s*gold(?:\s*[-–—:])?\s*/i, '')
@@ -7842,7 +7902,7 @@ function TopTradeButton({ kind, label, active, onPress }) {
   );
 }
 
-function TopDateToggle() {
+function TopDateToggle({ disabled = false }) {
   const { mode, startDate, endDate, label, applyPicker } = useAppDate();
   const fieldRef = useRef(null);
   const openRef = useRef(null);
@@ -7851,13 +7911,20 @@ function TopDateToggle() {
   return (
     <View ref={fieldRef} collapsable={false} style={styles.topSpotWrap}>
       <Pressable
+        disabled={disabled}
         onPress={() => {
+          if (disabled) return;
           if (open) openRef.current?.({ close: true });
           else openRef.current?.();
         }}
-        style={[styles.topSpot, styles.topDateField, mode === 'range' && styles.topDateFieldRange]}
+        style={[
+          styles.topSpot,
+          styles.topDateField,
+          mode === 'range' && styles.topDateFieldRange,
+          disabled && styles.topDateFieldDisabled,
+        ]}
         accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
+        accessibilityState={{ expanded: open, disabled }}
         accessibilityLabel={`Date ${label}`}
       >
         <Ionicons name="calendar-outline" size={14} color={MOBILE.secondary} />
@@ -7869,43 +7936,19 @@ function TopDateToggle() {
           <Ionicons name="chevron-down" size={9} color="#8e8e93" style={styles.topSpotChevronDown} />
         </View>
       </Pressable>
-      <HomeDatePicker
-        hideField
-        startDate={startDate}
-        endDate={endDate}
-        dateMode={mode}
-        onChange={applyPicker}
-        maximumDate={new Date()}
-        openRef={openRef}
-        anchorRef={fieldRef}
-        onOpenChange={setOpen}
-      />
-    </View>
-  );
-}
-
-function TopNavSearch({ value, onChangeText, onFocus, onSubmit, onClear }) {
-  return (
-    <View style={styles.topSearchField}>
-      <Ionicons name="search-outline" size={TAB_ICON_SIZE} color={MOBILE.secondary} />
-      <TextInput
-        style={styles.topSearchInput}
-        value={value}
-        onChangeText={onChangeText}
-        onFocus={onFocus}
-        onSubmitEditing={onSubmit}
-        placeholder="Search"
-        placeholderTextColor={MOBILE.secondary}
-        autoCapitalize="none"
-        autoCorrect={false}
-        returnKeyType="search"
-        clearButtonMode="while-editing"
-      />
-      {value ? (
-        <Pressable onPress={onClear} hitSlop={8} accessibilityLabel="Clear search">
-          <Ionicons name="close-circle" size={16} color="#c7c7cc" />
-        </Pressable>
-      ) : null}
+      {disabled ? null : (
+        <HomeDatePicker
+          hideField
+          startDate={startDate}
+          endDate={endDate}
+          dateMode={mode}
+          onChange={applyPicker}
+          maximumDate={new Date()}
+          openRef={openRef}
+          anchorRef={fieldRef}
+          onOpenChange={setOpen}
+        />
+      )}
     </View>
   );
 }
@@ -7919,43 +7962,46 @@ function formatSpotMoney(value) {
 
 function useSpotRefreshProgress() {
   const { spotFetchedAt } = useDisplayCurrency();
-  const [progress, setProgress] = useState(1);
+  const [progress, setProgress] = useState(0);
 
   useEffect(() => {
     if (!spotFetchedAt) {
-      setProgress(1);
+      setProgress(0);
       return undefined;
     }
     const tick = () => {
-      const next = 1 - (Date.now() - spotFetchedAt) / SPOT_REFRESH_MS;
+      const next = (Date.now() - spotFetchedAt) / SPOT_REFRESH_MS;
       setProgress(Math.max(0, Math.min(1, next)));
     };
     tick();
-    const id = setInterval(tick, 200);
+    const id = setInterval(tick, 80);
     return () => clearInterval(id);
   }, [spotFetchedAt]);
 
   return progress;
 }
 
-const SPOT_PIE_RED = '#C14A42';
-const SPOT_PIE_TRACK = 'rgba(193, 74, 66, 0.16)';
+const SPOT_BORDER_STROKE = 1.5;
 
-function useSpotPieBreathe() {
+function useSpotBorderPulse() {
   const breath = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
+    if (prefersReducedMotion()) {
+      breath.setValue(0.5);
+      return undefined;
+    }
     const loop = Animated.loop(
       Animated.sequence([
         Animated.timing(breath, {
           toValue: 1,
-          duration: 1600,
+          duration: 820,
           easing: Easing.inOut(Easing.sin),
           useNativeDriver: true,
         }),
         Animated.timing(breath, {
           toValue: 0,
-          duration: 1600,
+          duration: 820,
           easing: Easing.inOut(Easing.sin),
           useNativeDriver: true,
         }),
@@ -7966,6 +8012,66 @@ function useSpotPieBreathe() {
   }, [breath]);
 
   return breath;
+}
+
+function roundedSpotPath(width, height, radius, inset) {
+  const x = inset;
+  const y = inset;
+  const right = width - inset;
+  const bottom = height - inset;
+  const r = Math.max(0, Math.min(radius, (right - x) / 2, (bottom - y) / 2));
+  const cx = width / 2;
+  return [
+    `M ${cx} ${y}`,
+    `L ${right - r} ${y}`,
+    `A ${r} ${r} 0 0 1 ${right} ${y + r}`,
+    `L ${right} ${bottom - r}`,
+    `A ${r} ${r} 0 0 1 ${right - r} ${bottom}`,
+    `L ${x + r} ${bottom}`,
+    `A ${r} ${r} 0 0 1 ${x} ${bottom - r}`,
+    `L ${x} ${y + r}`,
+    `A ${r} ${r} 0 0 1 ${x + r} ${y}`,
+    `L ${cx} ${y}`,
+  ].join(' ');
+}
+
+function SpotRefreshEdges({ progress, width, height, radius }) {
+  const stroke = SPOT_BORDER_STROKE;
+  const topRightMax = width / 2;
+  const rightMax = height;
+  const bottomMax = width;
+  const leftMax = height;
+  const topLeftMax = width / 2;
+  let remaining = Math.max(0, Math.min(1, progress)) * (width * 2 + height * 2);
+  const topRight = Math.min(Math.max(0, remaining), topRightMax);
+  remaining -= topRightMax;
+  const right = remaining > 0 ? Math.min(remaining, rightMax) : 0;
+  remaining -= rightMax;
+  const bottom = remaining > 0 ? Math.min(remaining, bottomMax) : 0;
+  remaining -= bottomMax;
+  const left = remaining > 0 ? Math.min(remaining, leftMax) : 0;
+  remaining -= leftMax;
+  const topLeft = remaining > 0 ? Math.min(remaining, topLeftMax) : 0;
+
+  return (
+    <View pointerEvents="none" style={[StyleSheet.absoluteFill, { borderRadius: radius, overflow: 'hidden' }]}>
+      {topRight > 0 ? (
+        <View style={{ position: 'absolute', top: 0, left: width / 2, width: topRight, height: stroke, backgroundColor: TRADE_BUY.accent }} />
+      ) : null}
+      {right > 0 ? (
+        <View style={{ position: 'absolute', top: 0, right: 0, width: stroke, height: right, backgroundColor: TRADE_BUY.accent }} />
+      ) : null}
+      {bottom > 0 ? (
+        <View style={{ position: 'absolute', right: 0, bottom: 0, width: bottom, height: stroke, backgroundColor: TRADE_BUY.accent }} />
+      ) : null}
+      {left > 0 ? (
+        <View style={{ position: 'absolute', left: 0, bottom: 0, width: stroke, height: left, backgroundColor: TRADE_BUY.accent }} />
+      ) : null}
+      {topLeft > 0 ? (
+        <View style={{ position: 'absolute', top: 0, left: 0, width: topLeft, height: stroke, backgroundColor: TRADE_BUY.accent }} />
+      ) : null}
+    </View>
+  );
 }
 
 function useSpotRefreshFlash() {
@@ -8001,92 +8107,126 @@ function useSpotRefreshFlash() {
   return pulse;
 }
 
-function SpotRefreshPie({ compact = false, flash }) {
-  const progress = useSpotRefreshProgress();
-  const breath = useSpotPieBreathe();
-  const size = compact ? 18 : 16;
-  const remainingMs = Math.max(0, Math.round(progress * SPOT_REFRESH_MS));
-  const remainingSec = Math.ceil(remainingMs / 1000);
-  const deg = progress * 360;
+function spotLabelThrough(progress, chipW, chipH, labelX, labelW) {
+  if (!(chipW > 0) || !(chipH > 0) || !(labelW > 0)) return 0;
+  const perim = 2 * (chipW + chipH);
+  const lastLen = chipW / 2;
+  const start = Math.max(0, 1 - lastLen / perim);
+  if (progress <= start) return 0;
+  const traveled = ((progress - start) / Math.max(0.0001, 1 - start)) * lastLen;
+  return Math.max(0, Math.min(1, (traveled - labelX) / labelW));
+}
+
+function SpotMetalLegend({ label, compact = false, progress, breath, chip }) {
+  const [box, setBox] = useState({ x: 0, width: 0 });
+  const through = spotLabelThrough(progress, chip.width, chip.height, box.x, box.width);
+
+  return (
+    <View
+      pointerEvents="none"
+      onLayout={(event) => {
+        const { x, width } = event.nativeEvent.layout;
+        setBox((prev) => (prev.x === x && prev.width === width ? prev : { x, width }));
+      }}
+      style={[styles.topSpotMetalHost, compact && styles.topSpotMetalHostCompact]}
+    >
+      <Text style={[styles.topSpotMetalLabel, compact && styles.topSpotMetalLabelCompact]} numberOfLines={1}>
+        {label}
+      </Text>
+      {through > 0 ? (
+        <View style={[styles.topSpotMetalClip, { width: box.width * through }]}>
+          <Animated.Text
+            style={[
+              styles.topSpotMetalLabel,
+              compact && styles.topSpotMetalLabelCompact,
+              styles.topSpotMetalLive,
+              {
+                width: box.width,
+                opacity: breath.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0.52, 1],
+                }),
+              },
+            ]}
+            numberOfLines={1}
+          >
+            {label}
+          </Animated.Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function SpotRefreshBorder({ compact = false, progress, breath }) {
+  const [box, setBox] = useState({ width: 0, height: 0 });
+  const radius = compact ? 12 : SIDEBAR_TAB_ACTIVE_RADIUS;
+  const remainingSec = Math.ceil(Math.max(0, (1 - progress) * SPOT_REFRESH_MS) / 1000);
   const label =
     remainingSec > 0 ? `Spot refreshes in ${remainingSec} seconds` : 'Refreshing spot';
-  const overlay = flash.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, 0.38],
-  });
 
-  const pie =
-    Platform.OS === 'web'
-      ? createElement('div', {
-          'aria-label': label,
-          role: 'timer',
-          style: {
-            width: size,
-            height: size,
-            borderRadius: '50%',
-            background: `conic-gradient(from -90deg, ${SPOT_PIE_RED} ${deg}deg, ${SPOT_PIE_TRACK} 0)`,
-            boxShadow: `inset 0 0 0 0.5px rgba(193, 74, 66, 0.28)`,
-          },
-        })
-      : (
-        <View
-          accessible
-          accessibilityRole="timer"
-          accessibilityLabel={label}
-          style={[
-            styles.topSpotPie,
-            {
-              width: size,
-              height: size,
-              borderRadius: size / 2,
-              backgroundColor: SPOT_PIE_RED,
-              opacity: 0.28 + progress * 0.72,
-            },
-          ]}
-        />
-      );
+  const onLayout = (event) => {
+    const { width, height } = event.nativeEvent.layout;
+    setBox((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
+  };
+
+  const { width, height } = box;
+  const inset = SPOT_BORDER_STROKE / 2;
+  const dashOffset = Number((1 - progress).toFixed(4));
+  const path = width > 0 && height > 0
+    ? roundedSpotPath(width, height, Math.max(0, radius - inset), inset)
+    : '';
+  const ring =
+    Platform.OS === 'web' && path
+      ? createElement('svg', {
+          width,
+          height,
+          viewBox: `0 0 ${width} ${height}`,
+          style: { position: 'absolute', top: 0, left: 0, overflow: 'visible' },
+          'aria-hidden': true,
+        }, createElement('path', {
+          d: path,
+          fill: 'none',
+          stroke: TRADE_BUY.accent,
+          strokeWidth: SPOT_BORDER_STROKE,
+          strokeLinecap: 'round',
+          pathLength: 1,
+          strokeDasharray: 1,
+          strokeDashoffset: dashOffset,
+        }))
+      : path
+        ? <SpotRefreshEdges progress={progress} width={width} height={height} radius={radius} />
+        : null;
 
   return (
     <Animated.View
+      pointerEvents="none"
+      onLayout={onLayout}
+      accessible
+      accessibilityRole="timer"
+      accessibilityLabel={label}
       style={[
-        styles.topSpotPie,
+        styles.topSpotBorder,
         {
-          width: size,
-          height: size,
+          borderRadius: radius,
           opacity: breath.interpolate({
             inputRange: [0, 1],
-            outputRange: [0.72, 1],
+            outputRange: [0.52, 1],
           }),
-          transform: [
-            {
-              scale: breath.interpolate({
-                inputRange: [0, 1],
-                outputRange: [0.96, 1.04],
-              }),
-            },
-          ],
         },
       ]}
     >
-      {pie}
-      <Animated.View
-        pointerEvents="none"
-        style={[
-          StyleSheet.absoluteFill,
-          {
-            borderRadius: size / 2,
-            backgroundColor: '#E36A62',
-            opacity: overlay,
-          },
-        ]}
-      />
+      {ring}
     </Animated.View>
   );
 }
 
 function SpotMetalToggle({ compact = false }) {
   const { currency, fromCad, quotes, spotSymbol, setSpotSymbol } = useDisplayCurrency();
+  const progress = useSpotRefreshProgress();
+  const breath = useSpotBorderPulse();
   const flash = useSpotRefreshFlash();
+  const [chip, setChip] = useState({ width: 0, height: 0 });
   const [open, setOpen] = useState(false);
   const fieldRef = useRef(null);
   const [anchor, setAnchor] = useState(null);
@@ -8126,16 +8266,25 @@ function SpotMetalToggle({ compact = false }) {
   return (
     <>
       <View ref={fieldRef} collapsable={false} style={[styles.topSpotWrap, compact && styles.topSpotWrapCompact]}>
-        <Text style={[styles.topSpotMetal, compact && styles.topSpotMetalCompact]} numberOfLines={1}>
-          {label}
-        </Text>
+        <SpotMetalLegend
+          label={label}
+          compact={compact}
+          progress={progress}
+          breath={breath}
+          chip={chip}
+        />
         <Pressable
           onPress={open ? close : openMenu}
+          onLayout={(event) => {
+            const { width, height } = event.nativeEvent.layout;
+            setChip((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
+          }}
           style={[styles.topSpot, compact && styles.topSpotCompact]}
           accessibilityRole="button"
           accessibilityState={{ expanded: open }}
           accessibilityLabel={`${label} spot ${empty ? 'unavailable' : `${formatSpotMoney(shown)} ${currency}`}`}
         >
+          <SpotRefreshBorder compact={compact} progress={progress} breath={breath} />
           <Animated.Text
             style={[
               styles.topSpotPrice,
@@ -8151,12 +8300,9 @@ function SpotMetalToggle({ compact = false }) {
           >
             {empty ? '—' : formatSpotMoney(shown)}
           </Animated.Text>
-          <View style={styles.topSpotTrailing}>
-            <SpotRefreshPie compact={compact} flash={flash} />
-            <View style={styles.topSpotChevrons}>
-              <Ionicons name="chevron-up" size={compact ? 10 : 9} color="#8e8e93" />
-              <Ionicons name="chevron-down" size={compact ? 10 : 9} color="#8e8e93" style={styles.topSpotChevronDown} />
-            </View>
+          <View style={styles.topSpotChevrons}>
+            <Ionicons name="chevron-up" size={compact ? 10 : 9} color="#8e8e93" />
+            <Ionicons name="chevron-down" size={compact ? 10 : 9} color="#8e8e93" style={styles.topSpotChevronDown} />
           </View>
         </Pressable>
       </View>
@@ -8410,11 +8556,6 @@ function TopNavBar({
   onSelectSell,
   onSelectStore,
   onSelectApp,
-  searchValue,
-  onSearchChange,
-  onSearchFocus,
-  onSearchSubmit,
-  onSearchClear,
   storeName = '',
   documentRef = '',
   crumbs,
@@ -8440,6 +8581,7 @@ function TopNavBar({
       intensity={56}
       tint="light"
       style={styles.topBar}
+      pointerEvents="box-none"
       accessibilityRole="toolbar"
       accessibilityLabel="Canada Gold"
       {...(Platform.OS === 'web' ? { className: 'cgold-top-bar-blur' } : null)}
@@ -8501,14 +8643,6 @@ function TopNavBar({
         })}
       </View>
       <View style={styles.topBarRight}>
-        <TopNavSearch
-          value={searchValue}
-          onChangeText={onSearchChange}
-          onFocus={onSearchFocus}
-          onSubmit={onSearchSubmit}
-          onClear={onSearchClear}
-        />
-        <TopDateToggle />
         <SpotMetalToggle />
         <CurrencyToggle />
         <View style={styles.topBarTrades}>
@@ -8523,10 +8657,12 @@ function TopNavBar({
 function SidebarNavGroup({
   collapsed,
   homeActive,
+  searchActive,
   appsActive,
   messagesActive,
   profileActive,
   onSelectHome,
+  onSelectSearch,
   onSelectApps,
   onSelectMessages,
   onSelectProfile,
@@ -8552,6 +8688,7 @@ function SidebarNavGroup({
         />
       ),
     },
+    { key: 'search', label: 'Search', icon: 'search-outline', active: searchActive, onPress: onSelectSearch },
     { key: 'tools', label: 'Apps', icon: 'apps-outline', active: appsActive, onPress: onSelectApps },
     showMessages
       ? {
@@ -8600,7 +8737,7 @@ function SidebarNavGroup({
           const edge = tabGroupEdgeStyle(index, items.length);
           const showStore = item.key === 'profile' && !collapsed && item.trailing;
           return (
-            <View key={item.key} style={styles.sidebarNavRow}>
+            <SidebarCollapsedTip key={item.key} collapsed={collapsed} label={item.label} style={styles.sidebarNavRow}>
               <View
                 style={
                   showStore
@@ -8632,7 +8769,7 @@ function SidebarNavGroup({
                 />
                 {showStore ? item.trailing : null}
               </View>
-            </View>
+            </SidebarCollapsedTip>
           );
         })}
       </View>
@@ -8736,7 +8873,12 @@ function PinnedToolsList({
           const isActive = activeToolKey === tool.key;
           const isDragging = draggingKey === tool.key;
           return (
-            <View key={tool.key} style={styles.sidebarNavRow}>
+            <SidebarCollapsedTip
+              key={tool.key}
+              collapsed={sidebarCollapsed && !draggingKey}
+              label={tool.label}
+              style={styles.sidebarNavRow}
+            >
               <Pressable
                 onPress={() => {
                   if (suppressPressRef.current) {
@@ -8820,7 +8962,7 @@ function PinnedToolsList({
                   <Ionicons name="remove-circle-outline" size={16} color="#c7c7cc" />
                 </Pressable>
               </Pressable>
-            </View>
+            </SidebarCollapsedTip>
           );
         })}
       </View>
@@ -8870,8 +9012,6 @@ export default function App() {
   const [triageMobileOverlay, setTriageMobileOverlay] = useState(false);
   const [settingsPanel, setSettingsPanel] = useState(null);
   const [pinnedKeys, setPinnedKeys] = useState([]);
-  const [searchQuery, setSearchQuery] = useState('');
-  const searchEnterRef = useRef(null);
   const [searchDoc, setSearchDoc] = useState(null);
   const [customerFocus, setCustomerFocus] = useState(null);
   const [searchDocDetail, setSearchDocDetail] = useState(null);
@@ -8953,6 +9093,8 @@ export default function App() {
   const [ownUserAccess, setOwnUserAccess] = useState(null);
   const [viewedProfile, setViewedProfile] = useState(null);
   const [dmFocusUserId, setDmFocusUserId] = useState('');
+  const [dmOpenAiKey, setDmOpenAiKey] = useState(0);
+  const dmOpenAiSeq = useRef(0);
   const [dmMobileHeader, setDmMobileHeader] = useState(null);
   const handleDmMobileHeader = useCallback((next) => {
     setDmMobileHeader((prev) => {
@@ -9381,6 +9523,13 @@ export default function App() {
     selectTab('messages');
   };
 
+  const openAiMessages = () => {
+    if (!hasApp('messages')) return;
+    dmOpenAiSeq.current += 1;
+    setDmOpenAiKey(dmOpenAiSeq.current);
+    selectTab('messages');
+  };
+
   const openTeamsFromProfile = (teamId) => {
     if (!hasApp('teams')) return;
     setTeamsFocusId(teamId || '');
@@ -9610,6 +9759,7 @@ export default function App() {
       activeTool.key === 'triage' ||
       activeTool.key === 'transactions' ||
       activeTool.key === 'inventory' ||
+      activeTool.key === 'financials' ||
       activeTool.key === 'audit' ||
       activeTool.key === 'analytics'
     ) {
@@ -9683,6 +9833,7 @@ export default function App() {
     if (!activeTool) return null;
     if (isMobile && activeTool.key === 'messages') return null;
     return (
+      <AppDateScope id={`tools:${activeTool.key}`}>
       <View style={styles.toolsScreen}>
         {renderToolsHeader()}
         <ScreenGate resetKey={activeTool.key}>
@@ -9728,6 +9879,8 @@ export default function App() {
             storeFilter={scopedStore || undefined}
             onNavTabs={setTriageNav}
           />
+        ) : activeTool.key === 'documents' ? (
+          <DocumentsScreen session={session} />
         ) : activeTool.key === 'emails' ? (
           <View style={styles.messagesHost}>
             <EmailsScreen
@@ -9910,8 +10063,12 @@ export default function App() {
               onUnreadChange={refreshMessagesUnread}
               openUserId={dmFocusUserId}
               onOpenedUser={() => setDmFocusUserId('')}
+              openAiKey={dmOpenAiKey}
+              onOpenedAi={() => setDmOpenAiKey(0)}
                   onOpenProfile={openPersonProfile}
                   onMobileHeader={handleDmMobileHeader}
+                  onOpenCustomer={openCustomerProfile}
+                  onOpenDocument={openSearchDocument}
             />
           </View>
         ) : (
@@ -9919,6 +10076,7 @@ export default function App() {
         )}
         </ScreenGate>
       </View>
+      </AppDateScope>
     );
   };
 
@@ -9979,14 +10137,11 @@ export default function App() {
         <ScreenGate resetKey="search">
           <SearchScreen
             session={session}
-            query={isMobile ? undefined : searchQuery}
-            onQueryChange={isMobile ? undefined : setSearchQuery}
-            hideSearchField={!isMobile}
-            enterRef={isMobile ? undefined : searchEnterRef}
             onOpenPerson={openPersonProfile}
             onOpenDocument={openSearchDocument}
             onOpenCustomer={openCustomerProfile}
             onMessage={messagePerson}
+            onOpenAi={hasApp('messages') ? openAiMessages : undefined}
           />
         </ScreenGate>
       );
@@ -10009,8 +10164,12 @@ export default function App() {
               onUnreadChange={refreshMessagesUnread}
               openUserId={dmFocusUserId}
               onOpenedUser={() => setDmFocusUserId('')}
+              openAiKey={dmOpenAiKey}
+              onOpenedAi={() => setDmOpenAiKey(0)}
                   onOpenProfile={openPersonProfile}
                   onMobileHeader={handleDmMobileHeader}
+                  onOpenCustomer={openCustomerProfile}
+                  onOpenDocument={openSearchDocument}
             />
           </ScreenGate>
         </View>
@@ -10028,6 +10187,7 @@ export default function App() {
     if (activeTab === 'home') {
       if (isMobile) return null;
       return (
+        <AppDateScope id="home">
         <HomeScreen
           session={session}
           homeRootTick={homeRootTick}
@@ -10042,6 +10202,7 @@ export default function App() {
           onCrumbsChange={setHomeStoreCrumbs}
           documentCloseRef={homeDocumentCloseRef}
         />
+        </AppDateScope>
       );
     }
 
@@ -10195,8 +10356,6 @@ export default function App() {
     );
   }
 
-  const datePageKey = activeTab === 'tools' && activeTool?.key ? `tools:${activeTool.key}` : activeTab;
-
   if (isMobile) {
     if (activeTab === 'messages') messagesSeenRef.current = true;
     const mobileTabs = MOBILE_TABS.filter((tab) => tab.key !== 'messages' || hasApp('messages'));
@@ -10219,7 +10378,6 @@ export default function App() {
       <AppAccessContext.Provider value={appAccessValue}>
       <DisplayCurrencyProvider enabled={Boolean(session?.token)}>
       <AppDateProvider>
-      <AppDateRouteReset pageKey={datePageKey} />
       <PhoneCallProvider session={session} storeFilter={scopedStore || undefined} enabled={hasApp('phone')}>
         <View
           style={[
@@ -10276,6 +10434,7 @@ export default function App() {
               importantForAccessibility={activeTab === 'home' ? 'auto' : 'no-hide-descendants'}
               style={activeTab === 'home' ? styles.parkedToolLive : styles.parkedToolHidden}
             >
+              <AppDateScope id="home">
               <HomeScreen
                 session={session}
                 homeRootTick={homeRootTick}
@@ -10290,6 +10449,7 @@ export default function App() {
                 onCrumbsChange={setHomeStoreCrumbs}
                 documentCloseRef={homeDocumentCloseRef}
               />
+              </AppDateScope>
             </View>
             {hasApp('messages') && messagesSeenRef.current ? (
               <View
@@ -10305,9 +10465,13 @@ export default function App() {
                       onUnreadChange={refreshMessagesUnread}
                       openUserId={dmFocusUserId}
                       onOpenedUser={() => setDmFocusUserId('')}
+                      openAiKey={dmOpenAiKey}
+                      onOpenedAi={() => setDmOpenAiKey(0)}
                       onOpenProfile={openPersonProfile}
                       onMobileHeader={handleDmMobileHeader}
                       onOpenThreadChange={handleResumeThread}
+                      onOpenCustomer={openCustomerProfile}
+                      onOpenDocument={openSearchDocument}
                     />
                   </ScreenGate>
                 </View>
@@ -10362,7 +10526,6 @@ export default function App() {
     <AppAccessContext.Provider value={appAccessValue}>
     <DisplayCurrencyProvider enabled={Boolean(session?.token)}>
     <AppDateProvider>
-    <AppDateRouteReset pageKey={datePageKey} />
     <PhoneCallProvider session={session} storeFilter={scopedStore || undefined} enabled={hasApp('phone')}>
     <View nativeID="cgold-app-shell" style={styles.container}>
       <StatusBar style="auto" />
@@ -10380,6 +10543,7 @@ export default function App() {
           <SidebarNavGroup
             collapsed={sidebarCompact}
             homeActive={activeTab === 'home'}
+            searchActive={activeTab === 'search'}
             appsActive={
               activeTab === 'tools' &&
               activeTool?.key !== 'messages' &&
@@ -10393,6 +10557,7 @@ export default function App() {
             }
             profileActive={activeTab === PROFILE_TAB.key}
             onSelectHome={() => selectTab('home')}
+            onSelectSearch={() => selectTab('search')}
             onSelectApps={() => selectTab('tools')}
             onSelectMessages={() => selectTab('messages')}
             onSelectProfile={() => selectTab(PROFILE_TAB.key)}
@@ -10451,7 +10616,9 @@ export default function App() {
               : activeTab === 'tools'
                 ? 'Apps'
                 : activeTab === 'messages'
-                  ? 'Messages'
+                  ? isMobile
+                    ? 'Messages'
+                    : ''
                   : activeTab === 'profile'
                     ? PROFILE_TAB.label
                     : activeTab === 'search'
@@ -10476,19 +10643,6 @@ export default function App() {
         onSelectStore={homeDocRef ? () => homeDocumentCloseRef.current?.() : undefined}
         onSelectBuy={() => selectTab('buy')}
         onSelectSell={() => selectTab('sell')}
-        searchValue={searchQuery}
-        onSearchChange={(text) => {
-          setSearchQuery(text);
-          if (activeTab !== 'search') selectTab('search');
-        }}
-        onSearchFocus={() => {
-          if (activeTab !== 'search') selectTab('search');
-        }}
-        onSearchSubmit={() => {
-          if (activeTab !== 'search') selectTab('search');
-          searchEnterRef.current?.();
-        }}
-        onSearchClear={() => setSearchQuery('')}
       />
       <ProfileLoginSwitcher
         visible={loginSwitcherOpen}
@@ -10600,10 +10754,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
-    borderWidth: 1,
-    borderColor: TAB_BORDER,
     backgroundColor: CANVAS,
-    ...CHIP_SHADOW,
+    ...Platform.select({
+      web: { boxShadow: 'none' },
+      default: {
+        shadowOpacity: 0,
+        elevation: 0,
+      },
+    }),
   },
   topBarAppChip: {
     flexDirection: 'row',
@@ -10669,36 +10827,6 @@ const styles = StyleSheet.create({
     flexShrink: 1,
     minWidth: 0,
   },
-  topSearchField: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    height: 32,
-    minHeight: 32,
-    width: 300,
-    maxWidth: 340,
-    paddingHorizontal: 10,
-    borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
-    borderWidth: 1,
-    borderColor: TAB_BORDER,
-    backgroundColor: CANVAS,
-    ...CHIP_SHADOW,
-  },
-  topSearchInput: {
-    flex: 1,
-    minWidth: 0,
-    height: 30,
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '400',
-    color: MOBILE.label,
-    paddingVertical: 0,
-    letterSpacing: -0.2,
-    ...Platform.select({
-      web: { outlineStyle: 'none' },
-      default: {},
-    }),
-  },
   topSpotWrap: {
     position: 'relative',
     flexShrink: 0,
@@ -10718,7 +10846,53 @@ const styles = StyleSheet.create({
     minWidth: 168,
     maxWidth: 280,
   },
+  topDateFieldDisabled: {
+    opacity: 0.45,
+  },
+  homeTableDateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingBottom: 12,
+  },
+  homeTableDateSlot: {
+    marginLeft: 'auto',
+    flexShrink: 0,
+  },
+  homeStoreSearch: {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    height: 32,
+    minWidth: 0,
+    maxWidth: 300,
+    paddingHorizontal: 10,
+    borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
+    ...CHIP_SHADOW,
+  },
+  homeStoreSearchInput: {
+    flex: 1,
+    minWidth: 0,
+    height: 30,
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: MOBILE.label,
+    paddingVertical: 0,
+    letterSpacing: -0.2,
+    ...Platform.select({
+      web: { outlineStyle: 'none' },
+      default: {},
+    }),
+  },
   topSpot: {
+    position: 'relative',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -10766,6 +10940,43 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 13,
   },
+  topSpotMetalHost: {
+    position: 'absolute',
+    top: -6,
+    left: 10,
+    zIndex: 2,
+    backgroundColor: CANVAS,
+  },
+  topSpotMetalHostCompact: {
+    left: 12,
+    backgroundColor: '#fff',
+  },
+  topSpotMetalLabel: {
+    paddingHorizontal: 4,
+    fontFamily,
+    fontSize: 10,
+    fontWeight: '400',
+    lineHeight: 12,
+    color: '#8e8e93',
+    letterSpacing: -0.1,
+  },
+  topSpotMetalLabelCompact: {
+    fontSize: 11,
+    lineHeight: 13,
+  },
+  topSpotMetalClip: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    overflow: 'hidden',
+  },
+  topSpotMetalLive: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    color: TRADE_BUY.accent,
+  },
   topSpotPrice: {
     fontFamily,
     fontSize: 14,
@@ -10775,15 +10986,9 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
     flexShrink: 0,
   },
-  topSpotTrailing: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginLeft: 'auto',
-    gap: 8,
-    flexShrink: 0,
-  },
-  topSpotPie: {
-    flexShrink: 0,
+  topSpotBorder: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 1,
   },
   topSpotPriceCompact: {
     fontSize: 16,
@@ -11595,10 +11800,10 @@ const styles = StyleSheet.create({
   },
   homeStoreTable: {
     flexGrow: 1,
-    minWidth: 1140,
+    minWidth: 1050,
   },
   homeStoreTableNoAmounts: {
-    minWidth: 920,
+    minWidth: 930,
   },
   homeStoreRow: {
     position: 'relative',
@@ -11792,9 +11997,9 @@ const styles = StyleSheet.create({
   homeStoreColStore: {
     flexGrow: 1,
     flexShrink: 1,
-    flexBasis: 200,
-    minWidth: 168,
-    maxWidth: 280,
+    flexBasis: 148,
+    minWidth: 128,
+    maxWidth: 176,
     flexDirection: 'column',
     alignItems: 'flex-start',
     justifyContent: 'center',
@@ -11815,7 +12020,7 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
   },
   homeStoreColMoney: {
-    width: 136,
+    width: 104,
     flexShrink: 0,
     alignItems: 'flex-start',
     justifyContent: 'center',

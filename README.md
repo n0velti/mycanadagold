@@ -131,6 +131,7 @@ Connect the Git repo. `vercel.json` exports the web app into `dist/` and serves 
 - **Someone left Aureus**: their next sign-in fails at the POS step; nothing else to do. Optionally disable the profile so their existing session ends right away.
 - **Rotate a vendor key**: update the secret and redeploy (`npm run supabase:secrets && npm run supabase:deploy`). No app release needed.
 - **Login abuse**: `aureus-login` throttles per login (8 failures / 15 min) and per IP (40 / 15 min); attempts are hashed in `public.login_attempts` and pruned after two days.
+- **Emails inboxes**: each Google inbox a staff member connects in the Emails app is a row in `public.staff_gmail_accounts` (refresh token included, service role only, keyed by the staff user id). The proxy only ever reads rows for the signed-in user, so one person can never open another's inbox, and the AI's `emails` / `messages` datasets are that person's own mail and DMs. Any `canadagold.ca` Google account the person can sign in to can be added. *Disconnect* revokes the Google token and stamps `disconnected_at` (no delete). Migration `20261013165000_staff_gmail_accounts.sql` and the `proxy` deploy go out together; until both are live, the Emails app shows "Could not load your inboxes."
 
 ## Delete guardrails
 

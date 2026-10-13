@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import { CANVAS, NAV_TAB_ACTIVE_RADIUS } from '../lib/mobileUi';
+import { useIsMobile } from '../lib/mobileUi';
+import AnalyticsVizExpand from './AnalyticsVizExpand';
 import { FONT } from './TriageKit';
 
 const ACCENT = '#1a1a1a';
@@ -281,7 +282,7 @@ function drawAreas(maps, map, areas, bounds) {
   }
 }
 
-export default function AnalyticsMapCard({ chart, apiKey, onOpenCustomer }) {
+function MapPlot({ chart, apiKey, onOpenCustomer, expanded, compact }) {
   const ref = useRef(null);
   const [error, setError] = useState('');
   // Latest handler without rebuilding the map when the parent re-renders.
@@ -311,8 +312,13 @@ export default function AnalyticsMapCard({ chart, apiKey, onOpenCustomer }) {
           zoom: 11,
           mapTypeControl: false,
           streetViewControl: false,
-          fullscreenControl: true,
+          fullscreenControl: false,
           clickableIcons: false,
+          // Inline, a one-finger drag or plain wheel scrolls the conversation;
+          // the map takes every gesture only once it is expanded.
+          gestureHandling: expanded ? 'greedy' : 'cooperative',
+          zoomControl: expanded || !compact,
+          zoomControlOptions: { position: maps.ControlPosition.RIGHT_BOTTOM },
         });
         const bounds = new maps.LatLngBounds();
         markers.forEach((marker) => bounds.extend({ lat: marker.lat, lng: marker.lng }));
@@ -322,7 +328,7 @@ export default function AnalyticsMapCard({ chart, apiKey, onOpenCustomer }) {
           if (chart.style === 'heat') drawHeat(maps, map, markers, openCustomer);
           else drawDots(maps, map, markers, openCustomer);
         }
-        if (markers.length > 1 || areas.length) map.fitBounds(bounds, 48);
+        if (markers.length > 1 || areas.length) map.fitBounds(bounds, compact && !expanded ? 28 : 48);
         const onResize = () => maps.event.trigger(map, 'resize');
         const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(onResize) : null;
         observer?.observe(node);
@@ -336,61 +342,74 @@ export default function AnalyticsMapCard({ chart, apiKey, onOpenCustomer }) {
       map?.__cgoldResize?.disconnect();
       map?.__cgoldHeat?.setMap?.(null);
     };
-  }, [apiKey, chart]);
+  }, [apiKey, chart, expanded, compact]);
 
+  if (error) return <Text style={styles.error}>{error}</Text>;
+  return <View ref={ref} style={expanded ? styles.plotExpanded : compact ? styles.plotPhone : styles.plot} />;
+}
+
+export default function AnalyticsMapCard({ chart, apiKey, onOpenCustomer }) {
+  const compact = useIsMobile();
   if (!chart) return null;
+  const extra = () =>
+    chart.missingPostal || chart.unplaced ? (
+      <Text style={styles.note}>
+        {[
+          chart.missingPostal ? `${chart.missingPostal} with no address on file` : '',
+          chart.unplaced ? `${chart.unplaced} not placed` : '',
+        ]
+          .filter(Boolean)
+          .join(' · ')}
+      </Text>
+    ) : null;
 
   return (
-    <View style={styles.card}>
-      <Text style={styles.title}>{chart.title}</Text>
-      <Text style={styles.note}>{[chart.subtitle, chart.note].filter(Boolean).join(' · ')}</Text>
-      {error ? <Text style={styles.error}>{error}</Text> : <View ref={ref} style={styles.plot} />}
-      {chart.missingPostal || chart.unplaced ? (
-        <Text style={styles.note}>
-          {[
-            chart.missingPostal ? `${chart.missingPostal} with no address on file` : '',
-            chart.unplaced ? `${chart.unplaced} not placed` : '',
-          ]
-            .filter(Boolean)
-            .join(' · ')}
-        </Text>
-      ) : null}
-    </View>
+    <AnalyticsVizExpand
+      title={chart.title}
+      subtitle={[chart.subtitle, chart.note].filter(Boolean).join(' · ')}
+      extra={extra}
+      inlinePlotStyle={compact ? styles.plotPhone : styles.plot}
+    >
+      {(open, phone) => (
+        <MapPlot chart={chart} apiKey={apiKey} onOpenCustomer={onOpenCustomer} expanded={open} compact={phone} />
+      )}
+    </AnalyticsVizExpand>
   );
 }
 
 const styles = StyleSheet.create({
-  card: {
-    alignSelf: 'stretch',
-    marginTop: 8,
-    padding: 12,
-    borderRadius: NAV_TAB_ACTIVE_RADIUS,
-    borderWidth: 1,
-    borderColor: '#d0d0d0',
-    backgroundColor: CANVAS,
-    gap: 8,
-  },
-  title: {
-    fontFamily: FONT,
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#1a1a1a',
-  },
   note: {
     fontFamily: FONT,
     fontSize: 12,
     lineHeight: 16,
     color: '#6e6e73',
+    paddingHorizontal: 8,
   },
   error: {
     fontFamily: FONT,
     fontSize: 13,
     lineHeight: 18,
     color: '#b42318',
+    paddingHorizontal: 8,
   },
   plot: {
     height: 440,
     width: '100%',
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: '#f2f2f7',
+  },
+  plotPhone: {
+    height: 300,
+    width: '100%',
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: '#f2f2f7',
+  },
+  plotExpanded: {
+    flex: 1,
+    width: '100%',
+    minHeight: 240,
     borderRadius: 8,
     overflow: 'hidden',
     backgroundColor: '#f2f2f7',

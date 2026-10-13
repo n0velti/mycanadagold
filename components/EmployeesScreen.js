@@ -37,6 +37,7 @@ import {
   canManageHoursFeed,
   clearHoursOAuthCallbackFromUrl,
   clearHoursOAuthState,
+  collapseNestedShifts,
   connectHoursMailbox,
   disconnectHoursMailbox,
   fetchHoursSummary,
@@ -45,6 +46,7 @@ import {
   fetchShiftRoleIndex,
   fetchTimeEntries,
   formatClock,
+  formatDateTimeLabel,
   formatMinutes,
   formatRelativeTime,
   formatShiftDate,
@@ -52,12 +54,14 @@ import {
   HOURS_MAILBOX,
   RIPPLING_MAIL_CHECK_MS,
   hoursForPerson,
+  shiftCoversNow,
   shiftsForPerson,
   torontoToday,
   loadHoursFeedStatus,
   readHoursOAuthCallback,
   summarizeTimeEntries,
   syncHoursFeed,
+  syncShiftReport,
   uploadRipplingCsvFiles,
   setHoursFeedSource,
 } from '../lib/ripplingTime';
@@ -133,15 +137,37 @@ function useHoursSummary(enabled) {
   const [shifts, setShifts] = useState(null);
   const [loading, setLoading] = useState(false);
   const requestId = useRef(0);
+  const shiftFollowUp = useRef(null);
+
+  // The proxy imports the shift report in the background after the hours
+  // response. Read the schedule and its status again once that has had time to land.
+  const scheduleShiftFollowUp = useCallback(() => {
+    if (shiftFollowUp.current) clearTimeout(shiftFollowUp.current);
+    shiftFollowUp.current = setTimeout(async () => {
+      shiftFollowUp.current = null;
+      const id = requestId.current;
+      const [nextStatus, nextShifts] = await Promise.all([
+        loadHoursFeedStatus().catch(() => null),
+        fetchShiftRoleIndex().catch(() => null),
+      ]);
+      if (id !== requestId.current) return;
+      if (nextStatus) setStatus(nextStatus);
+      if (nextShifts) setShifts(nextShifts);
+    }, SHIFT_FOLLOW_UP_MS);
+  }, []);
+
+  useEffect(() => () => {
+    if (shiftFollowUp.current) clearTimeout(shiftFollowUp.current);
+  }, []);
 
   const refresh = useCallback(
-    async ({ force = false, sync = true, silent = false } = {}) => {
+    async ({ force = false, sync = true, silent = false, skipShifts = false } = {}) => {
       const id = ++requestId.current;
       if (!silent) setLoading(true);
       try {
         let nextStatus = null;
         if (sync) {
-          nextStatus = await syncHoursFeed({ force }).catch(() => null);
+          nextStatus = await syncHoursFeed({ force, skipShifts }).catch(() => null);
         }
         if (!nextStatus) nextStatus = await loadHoursFeedStatus().catch(() => null);
         const [nextSummary, nextReport, nextFiles, nextShifts] = await Promise.all([
@@ -157,12 +183,13 @@ function useHoursSummary(enabled) {
         setFiles(nextFiles);
         setShifts(nextShifts);
         await reloadClockedIn().catch(() => {});
+        if (sync && !skipShifts && nextStatus?.sync && !nextStatus.sync.skipped) scheduleShiftFollowUp();
         return nextStatus;
       } finally {
         if (id === requestId.current) setLoading(false);
       }
     },
-    [],
+    [scheduleShiftFollowUp],
   );
 
   useEffect(() => {
@@ -177,6 +204,8 @@ function useHoursSummary(enabled) {
   return { summary, status, report, files, shifts, loading, refresh, setStatus };
 }
 
+/** How long the proxy's background shift import is given before the calendar re-reads it. */
+const SHIFT_FOLLOW_UP_MS = 25_000;
 const HISTORY_DAY_LIMIT = 14;
 const REPORT_ROW_LIMIT = 80;
 
@@ -382,8 +411,8 @@ function gapPhrase(minutes) {
   return minutes < 0 ? `${abs}m early` : `${abs}m late`;
 }
 
-function ShiftScheduleSection({ personKey, shifts, status }) {
-  const list = useMemo(() => (Array.isArray(shifts) ? shifts : []), [shifts]);
+function ShiftScheduleSection({ personKey, shifts, status, coverage }) {
+  const list = useMemo(() => collapseNestedShifts(Array.isArray(shifts) ? shifts : []), [shifts]);
   const today = torontoToday();
   const [month, setMonth] = useState(() => monthStartKey(today));
   const [selected, setSelected] = useState(today);
@@ -424,10 +453,25 @@ function ShiftScheduleSection({ personKey, shifts, status }) {
   }, [personKey, status?.lastSyncedAt]);
 
   const reported = status?.shiftReportedAt;
-  const updated = reported ? formatRelativeTime(reported) : '';
+  const checked = status?.shiftCheckedAt;
+  const shiftError = status?.shiftError || '';
   if (!list.length && !reported && !status?.connected && !status?.lastSyncedAt) return null;
 
-  const updatedLabel = updated ? <Text style={styles.hoursUpdated}>{`Updated ${updated}`}</Text> : null;
+  const updatedLabel = reported ? (
+    <Text style={styles.hoursUpdated}>{`Updated ${formatDateTimeLabel(reported)}`}</Text>
+  ) : null;
+  // Where the schedule came from and when the mailbox was last looked at, so a
+  // stale calendar says so instead of looking empty.
+  const feedLine = [
+    reported ? `Rippling email received ${formatDateTimeLabel(reported)}` : 'No Rippling shift email imported yet',
+    checked ? `checked ${formatRelativeTime(checked)}` : '',
+  ].filter(Boolean).join(' · ');
+  const feedStatus = (
+    <View style={styles.calFeed}>
+      <Text style={styles.calCoverage}>{feedLine}</Text>
+      {shiftError ? <Text style={styles.calFeedError}>{shiftError}</Text> : null}
+    </View>
+  );
 
   if (!list.length) {
     return (
@@ -440,6 +484,7 @@ function ShiftScheduleSection({ personKey, shifts, status }) {
             last
           />
         </Group>
+        {feedStatus}
       </View>
     );
   }
@@ -455,9 +500,9 @@ function ShiftScheduleSection({ personKey, shifts, status }) {
     weekMinutes ? formatMinutes(weekMinutes) : '',
     weekRoles.join(', '),
   ].filter(Boolean).join(' · ');
-  const monthRoles = [...new Set(
-    list.filter((shift) => shift.date.slice(0, 7) === month.slice(0, 7)).map((shift) => shift.role).filter(Boolean),
-  )];
+  const monthShifts = list.filter((shift) => shift.date.slice(0, 7) === month.slice(0, 7));
+  const monthRoles = [...new Set(monthShifts.map((shift) => shift.role).filter(Boolean))];
+  const monthHasDraft = monthShifts.some((shift) => shift.draft);
   const selectedShifts = byDate.get(selected) || [];
   const selectedPunches = punchesByDate.get(selected) || [];
   const shiftStart = selectedShifts.map((shift) => shift.start).filter(Boolean).sort((a, b) => a - b)[0] || null;
@@ -466,7 +511,11 @@ function ShiftScheduleSection({ personKey, shifts, status }) {
   const punchEnd = selectedPunches.map((punch) => punch.end).filter(Boolean).sort((a, b) => b - a)[0] || null;
   const inGap = gapPhrase(minuteGap(punchStart, shiftStart));
   const outGap = gapPhrase(minuteGap(punchEnd, shiftEnd));
-  const next = list.find((shift) => shift.date >= today);
+  const now = Date.now();
+  const current = list.find((shift) => shiftCoversNow(shift, now));
+  const next = current || list.find((shift) => shift.date >= today);
+  const reportEnds = coverage?.lastDay || list[list.length - 1]?.date || '';
+  const reportStale = reportEnds && reportEnds < today;
 
   return (
     <View style={styles.cardBlock}>
@@ -474,12 +523,18 @@ function ShiftScheduleSection({ personKey, shifts, status }) {
       <View style={styles.calCard}>
         {next ? (
           <Text style={styles.calNext}>
-            {`${next.date === today ? 'Today' : formatShiftDate(next.date)}${formatShiftSpan(next) ? ` · ${formatShiftSpan(next)}` : ''}${next.role ? ` · ${next.role}` : ''}${next.location ? ` · ${next.location}` : ''}`}
+            {`${current ? 'Working now' : next.date === today ? 'Today' : formatShiftDate(next.date)}${formatShiftSpan(next) ? ` · ${formatShiftSpan(next)}` : ''}${next.role && next.role !== 'Shift' ? ` · ${next.role}` : ''}${next.location ? ` · ${next.location}` : ''}${next.draft ? ' · Draft' : ''}`}
           </Text>
         ) : (
           <Text style={styles.calNext}>No upcoming shift in this report</Text>
         )}
         <Text style={styles.calWeekLine}>{`This week · ${weekLine}`}</Text>
+        {feedStatus}
+        {reportStale ? (
+          <Text style={styles.calCoverage}>
+            {`The last report ends ${formatShiftDate(reportEnds)}. Upcoming days appear once a newer email arrives.`}
+          </Text>
+        ) : null}
         <View style={styles.calNavRow}>
           <Pressable
             onPress={() => setMonth((current) => addMonthsKey(current, -1))}
@@ -511,22 +566,42 @@ function ShiftScheduleSection({ personKey, shifts, status }) {
             const dayPunches = punchesByDate.get(date) || [];
             const isToday = date === today;
             const isSelected = date === selected;
+            // The whole day takes the first role's colour so a scheduled day reads at a glance.
+            const dayColor = dayShifts.length ? roleColor(dayShifts[0].role) : null;
+            const isPast = date < today;
+            const draftOnly = dayShifts.length > 0 && dayShifts.every((shift) => shift.draft);
             return (
               <Pressable
                 key={date}
                 onPress={() => setSelected(date)}
-                style={[styles.calCell, isSelected && styles.calCellSelected]}
+                style={[
+                  styles.calCell,
+                  dayColor && { backgroundColor: dayColor.bg },
+                  dayColor && draftOnly && [styles.calCellDraft, { borderColor: dayColor.fg }],
+                  dayColor && isPast && styles.calCellPast,
+                  isSelected && (dayColor ? styles.calCellSelectedScheduled : styles.calCellSelected),
+                ]}
                 accessibilityRole="button"
                 accessibilityState={{ selected: isSelected }}
-                accessibilityLabel={`${formatShiftDate(date)}${dayShifts.length ? `, ${dayShifts.length} ${dayShifts.length === 1 ? 'shift' : 'shifts'}` : ''}${dayPunches.length ? `, clocked ${formatClock(dayPunches[0].start)}` : ', no shift'}`}
+                accessibilityLabel={`${formatShiftDate(date)}${dayShifts.length ? `, scheduled ${dayShifts.map((shift) => formatShiftSpan(shift) || shift.role || 'shift').join(', ')}` : ', not scheduled'}${dayPunches.length ? `, clocked ${formatClock(dayPunches[0].start)}` : ''}`}
               >
-                <Text style={[styles.calDayNum, isToday && styles.calDayNumToday]}>{Number(date.slice(8))}</Text>
+                <Text style={[styles.calDayNum, dayColor && { color: dayColor.fg }, isToday && styles.calDayNumToday]}>
+                  {Number(date.slice(8))}
+                </Text>
                 {dayShifts.slice(0, 2).map((shift, shiftIndex) => {
                   const color = roleColor(shift.role);
                   const span = formatShiftSpan(shift);
+                  const live = shiftCoversNow(shift, now);
                   return (
-                    <View key={shift.key || `${date}-${shiftIndex}`} style={[styles.shiftChip, { backgroundColor: color.bg }]}>
-                      <Text style={[styles.shiftChipText, { color: color.fg }]} numberOfLines={1}>
+                    <View
+                      key={shift.key || `${date}-${shiftIndex}`}
+                      style={[
+                        styles.shiftChip,
+                        { backgroundColor: live ? color.fg : color.bg },
+                        shift.draft && !live && [styles.shiftChipDraft, { borderColor: color.fg }],
+                      ]}
+                    >
+                      <Text style={[styles.shiftChipText, { color: live ? '#FFFFFF' : color.fg }]} numberOfLines={1}>
                         {span || shift.role || 'Shift'}
                       </Text>
                     </View>
@@ -539,16 +614,28 @@ function ShiftScheduleSection({ personKey, shifts, status }) {
           })}
         </View>
         <View style={styles.roleLegend}>
+          {monthRoles.map((role) => (
+            <View key={role} style={styles.roleLegendItem}>
+              <View style={[styles.roleSwatch, { backgroundColor: roleColor(role).bg, borderColor: roleColor(role).fg }]} />
+              <Text style={styles.roleLegendText}>{role === 'Shift' ? 'Scheduled' : role}</Text>
+            </View>
+          ))}
+          {current ? (
+            <View style={styles.roleLegendItem}>
+              <View style={[styles.roleSwatch, { backgroundColor: roleColor(current.role).fg, borderColor: roleColor(current.role).fg }]} />
+              <Text style={styles.roleLegendText}>Working now</Text>
+            </View>
+          ) : null}
+          {monthHasDraft ? (
+            <View style={styles.roleLegendItem}>
+              <View style={[styles.roleSwatch, styles.roleSwatchDraft]} />
+              <Text style={styles.roleLegendText}>Draft (not published yet)</Text>
+            </View>
+          ) : null}
           <View style={styles.roleLegendItem}>
             <View style={[styles.roleDot, { backgroundColor: '#248A3D' }]} />
             <Text style={styles.roleLegendText}>Clock punch</Text>
           </View>
-          {monthRoles.map((role) => (
-            <View key={role} style={styles.roleLegendItem}>
-              <View style={[styles.roleDot, { backgroundColor: roleColor(role).fg }]} />
-              <Text style={styles.roleLegendText}>{role}</Text>
-            </View>
-          ))}
         </View>
       </View>
       <View style={styles.hoursDay}>
@@ -558,7 +645,7 @@ function ShiftScheduleSection({ personKey, shifts, status }) {
             {selectedShifts.map((shift, index) => (
               <GroupRow
                 key={shift.key || `${selected}-${index}`}
-                label={[shift.role || 'Shift', shift.location].filter(Boolean).join(' · ')}
+                label={[shift.role || 'Shift', shift.location, shift.draft ? 'Draft' : ''].filter(Boolean).join(' · ')}
                 value={formatShiftSpan(shift) || 'Scheduled'}
                 last={index === selectedShifts.length - 1}
               />
@@ -679,9 +766,19 @@ function HoursFeedCard({ status, onStatusChange, onRefresh, loading, owner }) {
     setError('');
     setNotice('');
     try {
-      const next = await onRefresh?.({ force: true });
+      // Hours and clock-in first, then the shift report on its own so its
+      // outcome is shown here rather than lost in the background.
+      const next = await onRefresh?.({ force: true, skipShifts: true });
       if (next?.syncError) setError(next.syncError);
-      else if (next?.sync?.message) setNotice(next.sync.message);
+      const shifts = await syncShiftReport().catch((err) => ({ syncError: err?.message || 'Could not check for the shift report.' }));
+      if (shifts?.syncError) setError((current) => [current, `Shift report: ${shifts.syncError}`].filter(Boolean).join('\n'));
+      const lines = [
+        next?.sync?.message ? `Hours: ${next.sync.message}` : '',
+        shifts?.sync?.message ? `Shift report: ${shifts.sync.message}` : '',
+      ].filter(Boolean);
+      if (lines.length) setNotice(lines.join('\n'));
+      if (shifts && !shifts.syncError) onStatusChange?.(shifts);
+      await onRefresh?.({ sync: false, silent: true });
     } catch (err) {
       setError(err?.message || 'Could not check the mailbox.');
     } finally {
@@ -711,12 +808,13 @@ function HoursFeedCard({ status, onStatusChange, onRefresh, loading, owner }) {
           ? `${status.clockedInCount} clocked in as of ${formatRelativeTime(status.clockReportedAt)}`
           : '',
         status.shiftReportedAt
-          ? `${status.shiftCount} shifts by role as of ${formatRelativeTime(status.shiftReportedAt)}`
-          : '',
+          ? `${status.shiftCount} shifts by role · email received ${formatDateTimeLabel(status.shiftReportedAt)}${status.shiftAttachmentName ? ` (${status.shiftAttachmentName})` : ''}${status.shiftCheckedAt ? ` · checked ${formatRelativeTime(status.shiftCheckedAt)}` : ''}`
+          : `Shift report by role: nothing imported yet${status.shiftCheckedAt ? ` · checked ${formatRelativeTime(status.shiftCheckedAt)}` : ''}`,
       ]
         .filter(Boolean)
         .join('\n')
     : 'Nothing imported yet';
+  const shiftError = status?.shiftError || '';
 
   const canConnect = Boolean(status?.canConnect || owner);
 
@@ -740,6 +838,7 @@ function HoursFeedCard({ status, onStatusChange, onRefresh, loading, owner }) {
                 : `CSV attachments are read from ${HOURS_MAILBOX}. That account connects Google once. Other people cannot open the mailbox.`}
           </Text>
           {error ? <Text style={styles.errorText}>{error}</Text> : status?.lastError ? <Text style={styles.errorText}>{status.lastError}</Text> : null}
+          {shiftError ? <Text style={styles.errorText}>{`Shift report: ${shiftError}`}</Text> : null}
           {notice ? <Text style={styles.noticeText}>{notice}</Text> : null}
         </View>
       </View>
@@ -871,7 +970,7 @@ function StaffEmployeeCard({ person, selected, onPress, hours, shifts }) {
   );
 }
 
-function StaffEmployeeDetail({ person, onClose, compact, onOpenPhoto, hours, hoursStatus, shifts }) {
+function StaffEmployeeDetail({ person, onClose, compact, onOpenPhoto, hours, hoursStatus, shifts, shiftCoverage }) {
   const name = staffDisplayName(person) || 'Employee';
   const liveClockedIn = useIsClockedIn(name);
   const clockedIn = Boolean(hours?.clockedIn) || liveClockedIn;
@@ -924,7 +1023,12 @@ function StaffEmployeeDetail({ person, onClose, compact, onOpenPhoto, hours, hou
           { label: 'Phone', value: person.phone },
         ]}
       />
-      <ShiftScheduleSection personKey={hours?.id || person.ripplingId || ''} shifts={shifts} status={hoursStatus} />
+      <ShiftScheduleSection
+        personKey={hours?.id || person.ripplingId || ''}
+        shifts={shifts}
+        status={hoursStatus}
+        coverage={shiftCoverage}
+      />
       <HoursSection hours={hours} status={hoursStatus} />
     </ScrollView>
   );
@@ -1251,6 +1355,7 @@ function AppEmployeesPanel({ session, onProfileUpdated, storeFilter, hours }) {
               person={selected}
               hours={hoursForStaff(hoursSummary, selected)}
               shifts={shiftsForStaff(hours?.shifts, selected)}
+              shiftCoverage={hours?.shifts}
               hoursStatus={hoursStatus}
               compact
               onClose={() => setSelectedId(null)}
@@ -1269,6 +1374,7 @@ function AppEmployeesPanel({ session, onProfileUpdated, storeFilter, hours }) {
                 person={selected}
                 hours={hoursForStaff(hoursSummary, selected)}
                 shifts={shiftsForStaff(hours?.shifts, selected)}
+                shiftCoverage={hours?.shifts}
                 hoursStatus={hoursStatus}
                 compact
                 onClose={() => setSelectedId(null)}
@@ -1375,7 +1481,7 @@ function ConnectModal({ visible, onClose, onSaved, canManage }) {
   );
 }
 
-function EmployeeDetail({ employee, onClose, compact, hours, hoursStatus, shifts, flow }) {
+function EmployeeDetail({ employee, onClose, compact, hours, hoursStatus, shifts, shiftCoverage, flow }) {
   const liveClockedIn = useIsClockedIn(employee?.name);
   const clockedIn = Boolean(hours?.clockedIn) || liveClockedIn;
   if (!employee) {
@@ -1443,7 +1549,7 @@ function EmployeeDetail({ employee, onClose, compact, hours, hoursStatus, shifts
           { label: 'Hourly', value: employee.hourlyWage },
         ]}
       />
-      <ShiftScheduleSection personKey={hours?.id || employee.id} shifts={shifts} status={hoursStatus} />
+      <ShiftScheduleSection personKey={hours?.id || employee.id} shifts={shifts} status={hoursStatus} coverage={shiftCoverage} />
       <HoursSection hours={hours} status={hoursStatus} />
     </Body>
   );
@@ -2115,6 +2221,7 @@ export function RipplingPanel({ profile, hours: hoursProp }) {
                 employee={selected}
                 hours={hoursFor(selected)}
                 shifts={shiftsFor(selected)}
+                shiftCoverage={hours?.shifts}
                 hoursStatus={hoursStatus}
               />
             </View>
@@ -2138,6 +2245,7 @@ export function RipplingPanel({ profile, hours: hoursProp }) {
             employee={selected}
             hours={hoursFor(selected)}
             shifts={shiftsFor(selected)}
+            shiftCoverage={hours?.shifts}
             hoursStatus={hoursStatus}
             compact
             onClose={() => setSelectedId(null)}
@@ -2781,6 +2889,21 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: T.secondary,
   },
+  calCoverage: {
+    fontFamily: FONT,
+    fontSize: 12,
+    color: T.secondary,
+    lineHeight: 16,
+  },
+  calFeed: {
+    gap: 2,
+  },
+  calFeedError: {
+    fontFamily: FONT,
+    fontSize: 12,
+    lineHeight: 16,
+    color: '#b42318',
+  },
   calNavRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2823,10 +2946,33 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
     paddingVertical: 4,
     borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: 'transparent',
     gap: 2,
+  },
+  calCellPast: {
+    opacity: 0.6,
+  },
+  calCellDraft: {
+    borderStyle: 'dashed',
+  },
+  shiftChipDraft: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    paddingVertical: 0,
+  },
+  roleSwatchDraft: {
+    backgroundColor: 'transparent',
+    borderColor: T.secondary,
+    borderStyle: 'dashed',
   },
   calCellSelected: {
     backgroundColor: T.fillSoft,
+  },
+  calCellSelectedScheduled: {
+    borderColor: T.text,
+    opacity: 1,
   },
   calDayNum: {
     fontFamily: FONT,
@@ -2874,6 +3020,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+  },
+  roleSwatch: {
+    width: 12,
+    height: 12,
+    borderRadius: 3,
+    borderWidth: 1,
   },
   roleDot: {
     width: 8,
