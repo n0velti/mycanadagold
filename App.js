@@ -1063,7 +1063,9 @@ const TRADE_SELL = {
 };
 
 const TROVE_LOGO = require('./assets/trove-logo.png');
+const TROVE_APP_ICON = require('./assets/trove-app-icon.jpg');
 const TROVE_LOGO_ASPECT = 3.85;
+const TROVE_APP_ICON_SCALE = 0.82;
 
 const PROFILE_TAB = { key: 'profile', label: 'Profile', icon: 'person-outline' };
 
@@ -1480,15 +1482,12 @@ function useAppGridLayout() {
       gap,
       rowGap: 24,
       maxWidth: undefined,
-      gridWidth,
       labelBleed: gap / 2,
     };
   }
   if (width < 1240) {
     const iconSize = 52;
     const gap = 14;
-    const maxWidth = 740;
-    const gridWidth = Math.min(maxWidth, Math.max(0, width - MOBILE_FILTER_INSET * 2));
     return {
       isMobile: false,
       columns: 5,
@@ -1497,15 +1496,12 @@ function useAppGridLayout() {
       glyph: Math.round(iconSize * 0.44),
       gap,
       rowGap: 22,
-      maxWidth,
-      gridWidth,
+      maxWidth: 740,
       labelBleed: gap / 2,
     };
   }
   const iconSize = APP_ICON_SIZE;
   const gap = APP_GAP;
-  const maxWidth = APP_GRID_MAX_WIDTH;
-  const gridWidth = Math.min(maxWidth, Math.max(0, width - MOBILE_FILTER_INSET * 2));
   return {
     isMobile: false,
     columns: APP_COLUMNS,
@@ -1514,44 +1510,15 @@ function useAppGridLayout() {
     glyph: Math.round(iconSize * 0.44),
     gap,
     rowGap: 26,
-    maxWidth,
-    gridWidth,
+    maxWidth: APP_GRID_MAX_WIDTH,
     labelBleed: gap / 2,
   };
 }
 
-function appGridCellWidth(layout) {
-  const { columns, gap, gridWidth } = layout;
-  return (gridWidth - gap * (columns - 1)) / columns;
-}
-
-/** Inner width of a grid item that spans `span` columns (gutter padding included). */
-function appGridSpanInnerWidth(layout, span) {
-  const cell = appGridCellWidth(layout);
-  const { gap } = layout;
-  return span * cell + Math.max(0, span - 2) * gap;
-}
-
-function troveColumnSpan(layout) {
-  const target = Math.round(layout.iconSize * TROVE_LOGO_ASPECT) + 8;
-  for (let span = 1; span <= layout.columns; span += 1) {
-    if (appGridSpanInnerWidth(layout, span) >= target) return span;
-  }
-  return layout.columns;
-}
-
-function troveIconWidthForSpan(layout, span) {
-  const ideal = Math.round(layout.iconSize * TROVE_LOGO_ASPECT);
-  const inner = Math.floor(appGridSpanInnerWidth(layout, span) - 16);
-  return Math.min(ideal, Math.max(layout.iconSize, inner));
-}
-
-function ToolCard({ tool, pinned, onPress, onTogglePin, layout, wrapStyle, columnSpan = 1 }) {
+function ToolCard({ tool, pinned, onPress, onTogglePin, layout, wrapStyle }) {
   const { iconSize, radius, glyph, isMobile, labelBleed } = layout;
   const isTrove = tool.key === 'trove';
-  const iconWidth = isTrove ? troveIconWidthForSpan(layout, columnSpan) : iconSize;
-  const iconHeight = iconSize;
-  const iconRadius = isTrove ? Math.round(iconSize * 0.223) : radius;
+  const troveLogoSize = Math.round(iconSize * TROVE_APP_ICON_SCALE);
 
   return (
     <View
@@ -1576,19 +1543,23 @@ function ToolCard({ tool, pinned, onPress, onTogglePin, layout, wrapStyle, colum
           <View
             style={[
               styles.appsGridIcon,
-              isTrove && styles.appsGridIconTrove,
-              {
-                width: iconWidth,
-                height: iconHeight,
-                borderRadius: iconRadius,
-                backgroundColor: isTrove ? '#000' : tool.accent,
+              isTrove ? styles.appsGridIconBare : null,
+              !isTrove && {
+                width: iconSize,
+                height: iconSize,
+                borderRadius: radius,
+                backgroundColor: tool.accent,
+              },
+              isTrove && {
+                width: iconSize,
+                height: iconSize,
               },
             ]}
           >
             {isTrove ? (
               <Image
-                source={TROVE_LOGO}
-                style={{ width: iconWidth - 16, height: iconSize - 12 }}
+                source={TROVE_APP_ICON}
+                style={{ width: troveLogoSize, height: troveLogoSize }}
                 resizeMode="contain"
                 accessibilityIgnoresInvertColors
               />
@@ -1649,33 +1620,25 @@ function filterToolCards(tools, query) {
   });
 }
 
-function toolsGridWrapStyle(layout, columnSpan) {
-  const { columns, gap } = layout;
-  const span = Math.max(1, Math.min(columnSpan, columns));
-  const widthPct = (100 / columns) * span;
-  return Platform.select({
+function ToolsGrid({ tools, pinnedKeys, onOpen, onTogglePin, layout }) {
+  const { columns, gap, rowGap } = layout;
+  const wrapStyle = Platform.select({
     web: {
       width: '100%',
       maxWidth: '100%',
       minWidth: 0,
       boxSizing: 'border-box',
       paddingHorizontal: gap / 2,
-      ...(span > 1 ? { gridColumn: `span ${span}` } : null),
     },
     default: {
-      width: `${widthPct}%`,
-      maxWidth: `${widthPct}%`,
-      flexBasis: `${widthPct}%`,
+      width: `${100 / columns}%`,
+      maxWidth: `${100 / columns}%`,
+      flexBasis: `${100 / columns}%`,
       flexGrow: 0,
       flexShrink: 0,
       paddingHorizontal: gap / 2,
     },
   });
-}
-
-function ToolsGrid({ tools, pinnedKeys, onOpen, onTogglePin, layout }) {
-  const { columns, gap, rowGap } = layout;
-  const troveSpan = troveColumnSpan(layout);
 
   return (
     <View
@@ -1691,21 +1654,17 @@ function ToolsGrid({ tools, pinnedKeys, onOpen, onTogglePin, layout }) {
           : null,
       ]}
     >
-      {tools.map((tool) => {
-        const columnSpan = tool.key === 'trove' ? troveSpan : 1;
-        return (
-          <ToolCard
-            key={tool.key}
-            tool={tool}
-            pinned={pinnedKeys.includes(tool.key)}
-            onPress={() => onOpen(tool)}
-            onTogglePin={() => onTogglePin(tool.key)}
-            layout={layout}
-            columnSpan={columnSpan}
-            wrapStyle={toolsGridWrapStyle(layout, columnSpan)}
-          />
-        );
-      })}
+      {tools.map((tool) => (
+        <ToolCard
+          key={tool.key}
+          tool={tool}
+          pinned={pinnedKeys.includes(tool.key)}
+          onPress={() => onOpen(tool)}
+          onTogglePin={() => onTogglePin(tool.key)}
+          layout={layout}
+          wrapStyle={wrapStyle}
+        />
+      ))}
     </View>
   );
 }
@@ -8219,7 +8178,6 @@ function TopTroveButton({ active, onPress }) {
       style={({ hovered, pressed }) => [
         styles.topTroveButton,
         (hovered || pressed) && !active && styles.topTroveButtonHover,
-        active && styles.tabActive,
         active && styles.topTroveButtonActive,
       ]}
     >
@@ -11490,6 +11448,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#141414',
   },
   topTroveButtonActive: {
+    backgroundColor: '#000',
     borderColor: '#B45309',
     ...Platform.select({
       web: { boxShadow: '0 0 0 1px rgba(180,83,9,0.35)' },
@@ -14001,8 +13960,16 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  appsGridIconTrove: {
-    overflow: 'hidden',
+  appsGridIconBare: {
+    backgroundColor: 'transparent',
+    overflow: 'visible',
+    ...Platform.select({
+      web: { boxShadow: 'none' },
+      default: {
+        elevation: 0,
+        shadowOpacity: 0,
+      },
+    }),
   },
   appsGridIcon: {
     alignItems: 'center',
