@@ -162,11 +162,6 @@ const CASH_TABLE_COLS = [
   { key: 'ref', label: 'Reference', colStyle: 'appColMid' },
   { key: 'amount', label: 'Amount', colStyle: 'appColEnd', end: true },
 ];
-const SUPPLY_TABLE_COLS = [
-  { key: 'item', label: 'Item', colStyle: 'appColMain' },
-  { key: 'qty', label: 'Qty', colStyle: 'appColMid' },
-  { key: 'status', label: 'Status', colStyle: 'appColEnd', end: true },
-];
 const PREORDER_TABLE_COLS = [
   { key: 'customer', label: 'Customer', colStyle: 'appColMain' },
   { key: 'item', label: 'Item', colStyle: 'appColWide' },
@@ -3500,12 +3495,6 @@ function StoreSnapshotPanel({
                             { key: 'purchases', icon: 'arrow-down-outline', label: 'Purchases', value: formatAmount(store?.poAmount, 'CAD') },
                             { key: 'till', icon: 'wallet-outline', label: 'Till', value: tillLabel },
                           ]
-                        : focusTab === 'supplies'
-                          ? [
-                              { key: 'recorded', icon: 'bag-handle-outline', label: 'Recorded', value: '0' },
-                              { key: 'open', icon: 'time-outline', label: 'Open', value: '—' },
-                              { key: 'done', icon: 'checkmark-outline', label: 'Received', value: '—' },
-                            ]
                           : focusTab === 'settings'
                             ? [
                                 { key: 'phone', icon: 'call-outline', label: 'Phone', value: storeContact.phone || '—' },
@@ -3704,14 +3693,6 @@ function StoreSnapshotPanel({
       full
       boxed={useDesktopAppTable}
     />
-  ) : listTab === 'supplies' ? (
-    useDesktopAppTable ? (
-      <SnapshotTable columns={SUPPLY_TABLE_COLS}>
-        <EmptyRow boxed text={`No supplies recorded for ${storeName || 'this store'}.`} />
-      </SnapshotTable>
-    ) : (
-      <EmptyRow text={`No supplies recorded for ${storeName || 'this store'}.`} />
-    )
   ) : (
     transactionsBody
   );
