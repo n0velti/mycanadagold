@@ -214,6 +214,7 @@ const SCREEN_LOADERS = {
   search: () => import('./components/SearchScreen'),
   serphint: () => import('./components/SerphintScreen'),
   settings: () => import('./components/SettingsScreen'),
+  supplies: () => import('./components/SuppliesScreen'),
   'shared-services': () => import('./components/SharedServicesScreen'),
   'store-settings': () => import('./components/StoreSettingsPanel'),
   teams: () => import('./components/TeamsScreen'),
@@ -250,6 +251,7 @@ const SerphintScreen = lazy(SCREEN_LOADERS.serphint);
 const SettingsScreen = lazy(SCREEN_LOADERS.settings);
 const SharedServicesScreen = lazy(SCREEN_LOADERS['shared-services']);
 const StoreSettingsPanel = lazy(SCREEN_LOADERS['store-settings']);
+const SuppliesScreen = lazy(SCREEN_LOADERS.supplies);
 const TeamsScreen = lazy(SCREEN_LOADERS.teams);
 const TradeScreen = lazy(SCREEN_LOADERS.trade);
 const TransferScreen = lazy(SCREEN_LOADERS.transfer);
@@ -530,6 +532,7 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-apps-view-blur{-webkit-backdrop-filter:saturate(140%) blur(10px);backdrop-filter:saturate(140%) blur(10px);background-color:rgba(255,255,255,0.56)!important;border-radius:20px;}',
     '.cgold-app-icon .cgold-app-pin{opacity:0;transition:opacity 120ms;}',
     '.cgold-app-icon:hover .cgold-app-pin,.cgold-app-icon:focus-within .cgold-app-pin{opacity:1!important;}',
+    '.cgold-app-icon{text-align:center;}',
     '.cgold-store-header-blur{-webkit-backdrop-filter:saturate(160%) blur(12px);backdrop-filter:saturate(160%) blur(12px);background-color:rgba(255,255,255,0.72)!important;transform:translateZ(0);}',
     '.cgold-dm-row{cursor:pointer;}',
     '.cgold-dm-row:hover{background-color:#f2f2f7!important;}',
@@ -802,12 +805,14 @@ function TxTableHeader({
   );
 }
 
-const APP_GRID_MAX_WIDTH = 1000;
-const APP_COLUMNS = 4;
-const APP_COLUMNS_MOBILE = 2;
-const APP_GAP = 10;
-const MOBILE_APP_GAP = 8;
-const APP_ICON_SIZE = 19;
+const APP_GRID_MAX_WIDTH = 880;
+const APP_COLUMNS = 6;
+const APP_COLUMNS_MOBILE = 4;
+const APP_ICON_SIZE = 64;
+const APP_GAP = 18;
+const MOBILE_APP_GAP = 12;
+const MOBILE_APP_ICON_MAX = 84;
+const MOBILE_APP_ICON_SCALE = 0.94;
 const MOBILE_BREAKPOINT = 768;
 
 function useIsMobile() {
@@ -1006,7 +1011,6 @@ const STORE_SNAPSHOT_TABS = new Set([
   'financials',
   'employees',
   'emails',
-  'supplies',
 ]);
 
 const STORE_DRAWER_TABS = STORE_DRAWER_TAB_KEYS.map((key) =>
@@ -1318,25 +1322,57 @@ function useAppGridLayout() {
   const { width } = useWindowDimensions();
   const isMobile = width < MOBILE_BREAKPOINT;
   if (isMobile) {
+    const gap = MOBILE_APP_GAP;
+    const pagePad = MOBILE_FILTER_INSET;
+    const gridWidth = Math.max(0, width - pagePad * 2);
+    const cell = (gridWidth - gap * (APP_COLUMNS_MOBILE - 1)) / APP_COLUMNS_MOBILE;
+    const iconSize = Math.floor(
+      Math.min(MOBILE_APP_ICON_MAX, Math.max(56, cell)) * MOBILE_APP_ICON_SCALE,
+    );
     return {
       isMobile: true,
       columns: APP_COLUMNS_MOBILE,
-      gap: MOBILE_APP_GAP,
-      rowGap: MOBILE_APP_GAP,
+      iconSize,
+      radius: Math.round(iconSize * 0.223),
+      glyph: Math.round(iconSize * 0.44),
+      gap,
+      rowGap: 24,
       maxWidth: undefined,
+      labelBleed: gap / 2,
     };
   }
+  if (width < 1240) {
+    const iconSize = 52;
+    const gap = 14;
+    return {
+      isMobile: false,
+      columns: 5,
+      iconSize,
+      radius: Math.round(iconSize * 0.223),
+      glyph: Math.round(iconSize * 0.44),
+      gap,
+      rowGap: 22,
+      maxWidth: 740,
+      labelBleed: gap / 2,
+    };
+  }
+  const iconSize = APP_ICON_SIZE;
+  const gap = APP_GAP;
   return {
     isMobile: false,
     columns: APP_COLUMNS,
-    gap: APP_GAP,
-    rowGap: APP_GAP,
+    iconSize,
+    radius: Math.round(iconSize * 0.223),
+    glyph: Math.round(iconSize * 0.44),
+    gap,
+    rowGap: 26,
     maxWidth: APP_GRID_MAX_WIDTH,
+    labelBleed: gap / 2,
   };
 }
 
-function ToolCard({ tool, pinned, onPress, onTogglePin, wrapStyle }) {
-  const labelColor = pinned ? MOBILE.label : MOBILE.secondary;
+function ToolCard({ tool, pinned, onPress, onTogglePin, layout, wrapStyle }) {
+  const { iconSize, radius, glyph, isMobile, labelBleed } = layout;
 
   return (
     <View
@@ -1347,45 +1383,65 @@ function ToolCard({ tool, pinned, onPress, onTogglePin, wrapStyle }) {
         onPress={onPress}
         onLongPress={onTogglePin}
         delayLongPress={420}
-        style={({ hovered, pressed }) => [
+        style={({ pressed }) => [
           styles.toolCard,
-          (hovered || pressed) && !pinned && styles.topTradeButtonHover,
-          pinned && styles.tabActive,
+          isMobile && styles.toolCardMobile,
+          pressed && styles.toolCardPressed,
         ]}
         accessibilityRole="button"
         accessibilityLabel={tool.label}
-        accessibilityState={{ selected: pinned }}
       >
-        <Ionicons
-          name={pinned ? filledIonicon(tool.icon) : tool.icon}
-          size={APP_ICON_SIZE}
-          color={pinned ? MOBILE.label : tool.accent}
-        />
-        <Text
-          style={[styles.appsGridLabel, { color: labelColor }, pinned && styles.appsGridLabelPinned]}
-          numberOfLines={1}
-          ellipsizeMode="tail"
-          selectable={false}
+        <View style={styles.toolIconStack}>
+          <View
+            style={[
+              styles.appsGridIcon,
+              {
+                width: iconSize,
+                height: iconSize,
+                borderRadius: radius,
+                backgroundColor: tool.accent,
+              },
+            ]}
+          >
+            <Ionicons name={filledIonicon(tool.icon)} size={glyph} color="#fff" />
+          </View>
+          <Pressable
+            style={[styles.appsGridPin, pinned && styles.appsGridPinActive]}
+            {...(Platform.OS === 'web' ? { className: 'cgold-app-pin' } : null)}
+            onPress={(event) => {
+              event?.stopPropagation?.();
+              onTogglePin();
+            }}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={pinned ? `Unpin ${tool.label}` : `Pin ${tool.label}`}
+          >
+            <Ionicons
+              name={pinned ? 'pin' : 'pin-outline'}
+              size={13}
+              color={pinned ? TAB_INK : MOBILE.secondary}
+            />
+          </Pressable>
+        </View>
+        <View
+          style={[
+            styles.appsGridLabelWrap,
+            labelBleed ? { marginHorizontal: -labelBleed } : null,
+          ]}
         >
-          {tool.label}
-        </Text>
-        <Pressable
-          style={[styles.appsGridPin, pinned && styles.appsGridPinActive]}
-          {...(Platform.OS === 'web' ? { className: 'cgold-app-pin' } : null)}
-          onPress={(event) => {
-            event?.stopPropagation?.();
-            onTogglePin();
-          }}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel={pinned ? `Unpin ${tool.label}` : `Pin ${tool.label}`}
-        >
-          <Ionicons
-            name={pinned ? 'pin' : 'pin-outline'}
-            size={14}
-            color={pinned ? MOBILE.label : MOBILE.secondary}
-          />
-        </Pressable>
+          <Text
+            style={[
+              styles.appsGridLabel,
+              isMobile && styles.toolCardLabelMobile,
+              pinned && styles.appsGridLabelPinned,
+            ]}
+            numberOfLines={2}
+            ellipsizeMode="tail"
+            selectable={false}
+          >
+            {tool.label}
+          </Text>
+        </View>
       </Pressable>
     </View>
   );
@@ -1432,6 +1488,7 @@ function ToolsGrid({ tools, pinnedKeys, onOpen, onTogglePin, layout }) {
           pinned={pinnedKeys.includes(tool.key)}
           onPress={() => onOpen(tool)}
           onTogglePin={() => onTogglePin(tool.key)}
+          layout={layout}
           wrapStyle={wrapStyle}
         />
       ))}
@@ -3648,6 +3705,13 @@ function HomeStoreDrawer({
                             storeFilter={heldStore.store}
                             embedded
                             onRequireLogin={() => {}}
+                          />
+                        ) : activeTab === 'supplies' ? (
+                          <SuppliesScreen
+                            key={heldStore.store}
+                            session={session}
+                            storeFilter={heldStore.store}
+                            embedded
                           />
                         ) : (
                           <StoreSettingsPanel
@@ -9761,7 +9825,8 @@ export default function App() {
       activeTool.key === 'inventory' ||
       activeTool.key === 'financials' ||
       activeTool.key === 'audit' ||
-      activeTool.key === 'analytics'
+      activeTool.key === 'analytics' ||
+      activeTool.key === 'supplies'
     ) {
       return null;
     }
@@ -10040,6 +10105,11 @@ export default function App() {
           <MarketingScreen />
         ) : activeTool.key === 'shared-services' ? (
           <SharedServicesScreen />
+        ) : activeTool.key === 'supplies' ? (
+          <SuppliesScreen
+            session={session}
+            storeFilter={scopedStore || undefined}
+          />
         ) : activeTool.key === 'logs' ? (
           <LogsScreen session={session} />
         ) : activeTool.key === 'triage' ? (
@@ -10231,7 +10301,8 @@ export default function App() {
       activeTool?.key === 'employees' ||
       activeTool?.key === 'customers' ||
       activeTool?.key === 'analytics' ||
-      activeTool?.key === 'triage'));
+      activeTool?.key === 'triage' ||
+      activeTool?.key === 'supplies'));
 
   const isAppsLibrary = activeTab === 'tools' && !activeTool;
   const settingsSubPanels = {
@@ -13553,12 +13624,15 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     width: '100%',
     alignSelf: 'center',
-    justifyContent: 'flex-start',
-    alignItems: 'stretch',
+    justifyContent: 'center',
+    alignItems: 'flex-start',
+  },
+  toolCardPressed: {
+    opacity: 0.7,
   },
   toolCardWrap: {
     position: 'relative',
-    alignItems: 'stretch',
+    alignItems: 'center',
     ...Platform.select({
       web: {
         boxSizing: 'border-box',
@@ -13568,19 +13642,11 @@ const styles = StyleSheet.create({
   },
   toolCard: {
     width: '100%',
-    flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    height: 38,
-    minHeight: 38,
-    paddingLeft: 12,
-    paddingRight: 6,
-    paddingVertical: 0,
-    borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
-    borderWidth: 1,
-    borderColor: TAB_BORDER,
-    backgroundColor: CANVAS,
-    ...CHIP_SHADOW,
+    gap: 7,
+    paddingTop: 4,
+    paddingBottom: 2,
+    paddingHorizontal: 0,
     ...Platform.select({
       web: {
         cursor: 'pointer',
@@ -13588,14 +13654,33 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
+  appsGridIcon: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    ...Platform.select({
+      web: {
+        boxShadow: '0 1px 1px rgba(0,0,0,0.06), 0 8px 18px rgba(0,0,0,0.12)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.14,
+        shadowRadius: 10,
+        elevation: 4,
+      },
+    }),
+  },
   appsGridPin: {
-    width: 24,
-    height: 24,
-    marginLeft: 2,
+    position: 'absolute',
+    top: -8,
+    right: -14,
+    width: 22,
+    height: 22,
     alignItems: 'center',
     justifyContent: 'center',
     opacity: 0,
-    flexShrink: 0,
+    zIndex: 2,
     ...Platform.select({
       web: {
         cursor: 'pointer',
@@ -13608,19 +13693,30 @@ const styles = StyleSheet.create({
   appsGridPinActive: {
     opacity: 1,
   },
+  appsGridLabelWrap: {
+    width: '100%',
+    alignSelf: 'stretch',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+  },
   appsGridLabel: {
     fontFamily,
-    flex: 1,
-    minWidth: 0,
-    fontSize: 15,
-    fontWeight: '400',
-    color: MOBILE.secondary,
-    letterSpacing: -0.2,
-    textAlign: 'left',
-    lineHeight: 19,
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#1d1d1f',
+    letterSpacing: -0.08,
+    textAlign: 'center',
+    lineHeight: 16,
+    minHeight: 32,
+    width: '100%',
+    alignSelf: 'stretch',
     ...Platform.select({
       web: {
-        whiteSpace: 'nowrap',
+        display: 'block',
+        overflow: 'visible',
+        overflowWrap: 'break-word',
+        wordBreak: 'normal',
+        hyphens: 'none',
       },
       default: {},
     }),
