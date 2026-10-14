@@ -1,10 +1,8 @@
 import {
-  Component,
   createElement,
   Fragment,
   lazy,
   memo,
-  Suspense,
   startTransition,
   useCallback,
   useEffect,
@@ -124,6 +122,9 @@ import HomeDatePicker from './components/HomeDatePicker';
 import LowReviewMark from './components/LowReviewMark';
 import LoginScreen from './components/LoginScreen';
 import ProfileLoginSwitcher from './components/ProfileLoginSwitcher';
+import KeptScreen, { touchKeptKey } from './components/KeptScreen';
+import ScreenGate from './components/ScreenGate';
+import { useStableCallback } from './lib/useStableCallback';
 import {
   MobileFeedTopBar,
   MobileNavHeader,
@@ -174,7 +175,6 @@ import {
   CANVAS,
   DESKTOP_TOP_BAR_HEIGHT,
   MOBILE,
-  MOBILE_FEED_TOP_BAR_HEIGHT,
   MOBILE_FILTER_INSET,
   MOBILE_FILTER_SIZE,
   NAV_ICON_ACTIVE,
@@ -224,6 +224,7 @@ const SCREEN_LOADERS = {
   trade: () => import('./components/TradeScreen'),
   transfer: () => import('./components/TransferScreen'),
   triage: () => import('./components/TriageScreen'),
+  trove: () => import('./components/TroveScreen'),
 };
 
 const AccountingScreen = lazy(SCREEN_LOADERS.accounting);
@@ -260,6 +261,7 @@ const TeamsScreen = lazy(SCREEN_LOADERS.teams);
 const TradeScreen = lazy(SCREEN_LOADERS.trade);
 const TransferScreen = lazy(SCREEN_LOADERS.transfer);
 const TriageScreen = lazy(SCREEN_LOADERS.triage);
+const TroveScreen = lazy(SCREEN_LOADERS.trove);
 
 /**
  * Runs a background warm-up (inventory matrix, till positions, triage cache)
@@ -342,25 +344,220 @@ function warmScreen(key) {
   });
 }
 
-/** Shown in place of a screen while its chunk is still downloading. */
-function ScreenFallback() {
-  return (
-    <View style={styles.centered}>
-      <ActivityIndicator color="#1a1a1a" />
-    </View>
-  );
+/** Catalog entries that have no screen yet. */
+function PlaceholderToolScreen({ label }) {
+  return <Text style={styles.toolPageBody}>{label} page</Text>;
 }
 
 /**
- * Catches a screen that failed to load or render. The usual cause is a chunk
- * that no longer exists because a new version was deployed while this tab
- * stayed open; reloading picks up the new build. Without this, the failure
- * would unmount the whole app.
+ * Which component each app key renders and which shell props it needs. The
+ * selector receives the shell context built in App and must return only what
+ * that screen uses: KeptScreen compares the result shallowly, so a value that
+ * changes for one app (Settings' panel, a customer focus) must not appear in
+ * another app's props or it would re-render for no reason.
  */
-function reloadFreshScreen() {
-  const url = new URL(window.location.href);
-  url.searchParams.set('screen', String(Date.now()));
-  window.location.replace(url.toString());
+const TOOL_SCREENS = {
+  transactions: {
+    Component: TransactionsScreen,
+    props: (c) => ({ session: c.session, onRequireLogin: c.requireLogin, storeFilter: c.storeFilter }),
+  },
+  inventory: {
+    Component: InventoryScreen,
+    props: (c) => ({ session: c.session, onRequireLogin: c.requireLogin, storeFilter: c.storeFilter }),
+  },
+  preorders: { Component: PreordersScreen, props: (c) => ({ storeFilter: c.storeFilter }) },
+  financials: {
+    Component: FinancialsScreen,
+    props: (c) => ({ session: c.session, onRequireLogin: c.requireLogin, storeFilter: c.storeFilter }),
+  },
+  debit: {
+    Component: DebitScreen,
+    props: (c) => ({ session: c.session, onRequireLogin: c.requireLogin, storeFilter: c.storeFilter }),
+  },
+  accounting: { Component: AccountingScreen, props: () => ({}) },
+  analytics: {
+    Component: AnalyticsScreen,
+    props: (c) => ({
+      session: c.session,
+      storeFilter: c.storeFilter,
+      onOpenCustomer: c.openCustomerProfile,
+      onOpenDocument: c.openSearchDocument,
+      onMobileHeader: c.chrome('analytics', 'mobileHeader'),
+      onOpenDashboard: c.openDashboardsApp,
+    }),
+  },
+  dashboards: {
+    Component: DashboardsScreen,
+    props: (c) => ({
+      session: c.session,
+      onOpenCustomer: c.openCustomerProfile,
+      onOpenDocument: c.openSearchDocument,
+      onOpenAnalytics: c.openAnalyticsApp,
+      focusId: c.dashboardFocusId,
+      onFocusConsumed: c.clearDashboardFocus,
+    }),
+  },
+  audit: {
+    Component: AuditScreen,
+    props: (c) => ({
+      session: c.session,
+      onRequireLogin: c.requireLogin,
+      storeFilter: c.storeFilter,
+      onNavTabs: c.chrome('audit', 'nav'),
+    }),
+  },
+  documents: { Component: DocumentsScreen, props: (c) => ({ session: c.session }) },
+  emails: {
+    Component: EmailsScreen,
+    props: (c) => ({
+      session: c.session,
+      onRequireLogin: c.requireLogin,
+      onOpenProfile: c.openPersonProfile,
+      focus: c.emailsFocus,
+      onFocusConsumed: c.clearEmailsFocus,
+      capture: c.emailsCapture,
+    }),
+  },
+  serphint: { Component: SerphintScreen, props: () => ({}) },
+  '100-ways': {
+    Component: HundredWaysScreen,
+    props: (c) => ({ session: c.session, onRequireLogin: c.requireLogin }),
+  },
+  settings: {
+    Component: SettingsScreen,
+    props: (c) => ({
+      panel: c.settingsPanel,
+      onOpenPanel: c.setSettingsPanel,
+      session: c.session,
+      apps: PERMISSION_APPS,
+      onAccessSaved: c.handleAccessSaved,
+      onStaffAccessSaved: c.handleStaffAccessSaved,
+      onUserAccessSaved: c.handleUserAccessSaved,
+    }),
+  },
+  transfer: {
+    Component: TransferScreen,
+    props: (c) => ({
+      session: c.session,
+      onRequireLogin: c.requireLogin,
+      onNavTabs: c.chrome('transfer', 'nav'),
+      onLocationChanged: c.applyOwnLocation,
+    }),
+  },
+  fintrac: {
+    Component: FintracScreen,
+    props: (c) => ({ session: c.session, onRequireLogin: c.requireLogin, storeFilter: c.storeFilter }),
+  },
+  pricing: { Component: PricingScreen, props: () => ({}) },
+  bonuses: {
+    Component: BonusesScreen,
+    props: (c) => ({
+      session: c.session,
+      onRequireLogin: c.requireLogin,
+      onOpenEmails: c.openEmailsFromBonuses,
+      onOpenCustomer: c.openCustomerProfile,
+      storeFilter: c.storeFilter,
+    }),
+  },
+  reviews: {
+    Component: ReviewsScreen,
+    props: (c) => ({
+      session: c.session,
+      onRequireLogin: c.requireLogin,
+      onOpenCustomer: c.openCustomerProfile,
+      storeFilter: c.storeFilter,
+    }),
+  },
+  calendar: { Component: CalendarScreen, props: (c) => ({ session: c.session, storeFilter: c.storeFilter }) },
+  phone: {
+    Component: PhoneScreen,
+    props: (c) => ({
+      session: c.session,
+      onRequireLogin: c.requireLogin,
+      storeFilter: c.storeFilter,
+      onStoreBackChange: c.chrome('phone', 'storeBack'),
+    }),
+  },
+  customers: {
+    Component: CustomersScreen,
+    props: (c) => ({
+      session: c.session,
+      focusCustomer: c.customerFocus,
+      onFocusConsumed: c.clearCustomerFocus,
+      onOpenDocument: c.openSearchDocument,
+    }),
+  },
+  employees: {
+    Component: EmployeesScreen,
+    props: (c) => ({ session: c.session, onProfileUpdated: c.applyProfileUpdate }),
+  },
+  teams: { Component: TeamsScreen, props: (c) => ({ focusTeamId: c.teamsFocusId }) },
+  marketing: { Component: MarketingScreen, props: () => ({}) },
+  'shared-services': { Component: SharedServicesScreen, props: () => ({}) },
+  supplies: { Component: SuppliesScreen, props: (c) => ({ session: c.session, storeFilter: c.storeFilter }) },
+  tasks: {
+    Component: TasksScreen,
+    props: (c) => ({
+      session: c.session,
+      onRequireLogin: c.requireLogin,
+      onOpenEmails: c.canOpenEmails ? c.openEmailsFromTasks : null,
+    }),
+  },
+  logs: { Component: LogsScreen, props: (c) => ({ session: c.session }) },
+  triage: {
+    Component: TriageScreen,
+    props: (c) => ({
+      session: c.session,
+      onRequireLogin: c.requireLogin,
+      storeFilter: undefined,
+      onStoreBackChange: c.chrome('triage', 'storeBack'),
+      onNavTabs: c.chrome('triage', 'nav'),
+      onMobileHeader: c.chrome('triage', 'mobileHeader'),
+      onMobileOverlayChange: c.chrome('triage', 'overlay'),
+      onCrumbsChange: c.chrome('triage', 'crumbs'),
+    }),
+  },
+  trove: { Component: TroveScreen, props: () => ({}) },
+};
+
+/** Apps the desktop shell keeps mounted at once (most recently used win). */
+const KEPT_TOOLS_DESKTOP = 4;
+/** Phones keep only the app that is open, as before. */
+const KEPT_TOOLS_MOBILE = 1;
+
+const EMPTY_CHROME = Object.freeze({});
+const EMPTY_LIST = Object.freeze([]);
+
+/**
+ * Per-app chrome a screen reports up to the shell (breadcrumbs, nav tabs,
+ * a "back to stores" handler, the mobile header). Keyed by app so two mounted
+ * apps never fight over one slot; the shell reads only the active app's entry.
+ */
+function mobileHeadersEqual(prev, next) {
+  if (prev === next) return true;
+  if (!prev || !next) return false;
+  return (
+    prev.trailing === next.trailing &&
+    prev.onBrandPress === next.onBrandPress &&
+    prev.segments?.length === next.segments?.length &&
+    prev.segments?.[0]?.label === next.segments?.[0]?.label
+  );
+}
+
+function chromeFieldEqual(field, prev, next) {
+  if (prev === next) return true;
+  if (field === 'mobileHeader') return mobileHeadersEqual(prev, next);
+  if (field === 'crumbs') return !prev?.length && !next?.length;
+  if (field === 'thread') {
+    if (!prev || !next) return false;
+    return (
+      prev.kind === next.kind &&
+      prev.label === next.label &&
+      prev.avatarUrl === next.avatarUrl &&
+      prev.name === next.name
+    );
+  }
+  return false;
 }
 
 function storedOpenTool() {
@@ -390,72 +587,6 @@ function rememberSidebarCollapsed(collapsed) {
   } catch {
     /* ignore */
   }
-}
-
-class ScreenBoundary extends Component {
-  state = { failed: false };
-
-  static getDerivedStateFromError() {
-    return { failed: true };
-  }
-
-  componentDidUpdate(prevProps) {
-    if (this.state.failed && prevProps.resetKey !== this.props.resetKey) {
-      this.setState({ failed: false });
-      return;
-    }
-    this.clearReloadFlag();
-  }
-
-  componentDidCatch() {
-    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
-    try {
-      if (sessionStorage.getItem('cgold-screen-reload')) return;
-      sessionStorage.setItem('cgold-screen-reload', '1');
-    } catch {
-      return;
-    }
-    reloadFreshScreen();
-  }
-
-  clearReloadFlag() {
-    // Only after a committed successful screen. Clearing on mount used to run
-    // while Suspense still showed the fallback; the lazy screen then threw,
-    // we reloaded, cgold-open-tool restored the same app, and the tab looped.
-    if (this.state.failed || Platform.OS !== 'web') return;
-    try {
-      sessionStorage.removeItem('cgold-screen-reload');
-    } catch {
-      /* ignore */
-    }
-  }
-
-  render() {
-    if (!this.state.failed) return this.props.children;
-    return (
-      <View style={styles.centered}>
-        <Text style={styles.toolsEmpty}>This screen could not be loaded.</Text>
-        {Platform.OS === 'web' ? (
-          <Pressable
-            accessibilityRole="button"
-            onPress={reloadFreshScreen}
-            style={styles.screenReloadButton}
-          >
-            <Text style={styles.screenReloadLabel}>Reload</Text>
-          </Pressable>
-        ) : null}
-      </View>
-    );
-  }
-}
-
-/** Suspense + error boundary for a lazily loaded screen. */
-function ScreenGate({ resetKey, children }) {
-  return (
-    <ScreenBoundary resetKey={resetKey}>
-      <Suspense fallback={<ScreenFallback />}>{children}</Suspense>
-    </ScreenBoundary>
-  );
 }
 
 // Web fonts. Only the text faces and the icon set used by the shell (tabs,
@@ -536,7 +667,8 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-apps-view-blur{-webkit-backdrop-filter:saturate(140%) blur(10px);backdrop-filter:saturate(140%) blur(10px);background-color:rgba(255,255,255,0.56)!important;border-radius:20px;}',
     '.cgold-app-icon .cgold-app-pin{opacity:0;transition:opacity 120ms;}',
     '.cgold-app-icon:hover .cgold-app-pin,.cgold-app-icon:focus-within .cgold-app-pin{opacity:1!important;}',
-    '.cgold-app-icon{text-align:center;}',
+    '.cgold-app-icon{display:flex;flex-direction:column;align-items:center;text-align:center;}',
+    '.cgold-app-icon,.cgold-app-icon *{text-align:center;}',
     '.cgold-store-header-blur{-webkit-backdrop-filter:saturate(160%) blur(12px);backdrop-filter:saturate(160%) blur(12px);background-color:rgba(255,255,255,0.72)!important;transform:translateZ(0);}',
     '.cgold-dm-row{cursor:pointer;}',
     '.cgold-dm-row:hover{background-color:#f2f2f7!important;}',
@@ -930,6 +1062,9 @@ const TRADE_SELL = {
   icon: 'arrow-up-circle-outline',
 };
 
+const TROVE_LOGO = require('./assets/trove-logo.png');
+const TROVE_LOGO_ASPECT = 3.85;
+
 const PROFILE_TAB = { key: 'profile', label: 'Profile', icon: 'person-outline' };
 
 const MOBILE_TABS = [
@@ -949,6 +1084,7 @@ const HOME_APP = {
 };
 
 const TOOL_CARDS = [
+  { key: 'trove', label: 'Trove', icon: 'file-tray-full-outline', tint: '#FFF7ED', accent: '#B45309' },
   { key: 'transactions', label: 'Transactions', icon: 'swap-horizontal-outline', tint: '#E8F1FF', accent: '#2F6FED' },
   { key: 'inventory', label: 'Inventory', icon: 'cube-outline', tint: '#FFF4E5', accent: '#C47A12' },
   { key: 'preorders', label: 'Preorders', icon: 'cart-outline', tint: '#FFF7ED', accent: '#EA580C' },
@@ -1344,12 +1480,15 @@ function useAppGridLayout() {
       gap,
       rowGap: 24,
       maxWidth: undefined,
+      gridWidth,
       labelBleed: gap / 2,
     };
   }
   if (width < 1240) {
     const iconSize = 52;
     const gap = 14;
+    const maxWidth = 740;
+    const gridWidth = Math.min(maxWidth, Math.max(0, width - MOBILE_FILTER_INSET * 2));
     return {
       isMobile: false,
       columns: 5,
@@ -1358,12 +1497,15 @@ function useAppGridLayout() {
       glyph: Math.round(iconSize * 0.44),
       gap,
       rowGap: 22,
-      maxWidth: 740,
+      maxWidth,
+      gridWidth,
       labelBleed: gap / 2,
     };
   }
   const iconSize = APP_ICON_SIZE;
   const gap = APP_GAP;
+  const maxWidth = APP_GRID_MAX_WIDTH;
+  const gridWidth = Math.min(maxWidth, Math.max(0, width - MOBILE_FILTER_INSET * 2));
   return {
     isMobile: false,
     columns: APP_COLUMNS,
@@ -1372,13 +1514,44 @@ function useAppGridLayout() {
     glyph: Math.round(iconSize * 0.44),
     gap,
     rowGap: 26,
-    maxWidth: APP_GRID_MAX_WIDTH,
+    maxWidth,
+    gridWidth,
     labelBleed: gap / 2,
   };
 }
 
-function ToolCard({ tool, pinned, onPress, onTogglePin, layout, wrapStyle }) {
+function appGridCellWidth(layout) {
+  const { columns, gap, gridWidth } = layout;
+  return (gridWidth - gap * (columns - 1)) / columns;
+}
+
+/** Inner width of a grid item that spans `span` columns (gutter padding included). */
+function appGridSpanInnerWidth(layout, span) {
+  const cell = appGridCellWidth(layout);
+  const { gap } = layout;
+  return span * cell + Math.max(0, span - 2) * gap;
+}
+
+function troveColumnSpan(layout) {
+  const target = Math.round(layout.iconSize * TROVE_LOGO_ASPECT) + 8;
+  for (let span = 1; span <= layout.columns; span += 1) {
+    if (appGridSpanInnerWidth(layout, span) >= target) return span;
+  }
+  return layout.columns;
+}
+
+function troveIconWidthForSpan(layout, span) {
+  const ideal = Math.round(layout.iconSize * TROVE_LOGO_ASPECT);
+  const inner = Math.floor(appGridSpanInnerWidth(layout, span) - 16);
+  return Math.min(ideal, Math.max(layout.iconSize, inner));
+}
+
+function ToolCard({ tool, pinned, onPress, onTogglePin, layout, wrapStyle, columnSpan = 1 }) {
   const { iconSize, radius, glyph, isMobile, labelBleed } = layout;
+  const isTrove = tool.key === 'trove';
+  const iconWidth = isTrove ? troveIconWidthForSpan(layout, columnSpan) : iconSize;
+  const iconHeight = iconSize;
+  const iconRadius = isTrove ? Math.round(iconSize * 0.223) : radius;
 
   return (
     <View
@@ -1389,6 +1562,8 @@ function ToolCard({ tool, pinned, onPress, onTogglePin, layout, wrapStyle }) {
         onPress={onPress}
         onLongPress={onTogglePin}
         delayLongPress={420}
+        onHoverIn={() => warmScreen(tool.key)}
+        onPressIn={() => warmScreen(tool.key)}
         style={({ pressed }) => [
           styles.toolCard,
           isMobile && styles.toolCardMobile,
@@ -1401,15 +1576,25 @@ function ToolCard({ tool, pinned, onPress, onTogglePin, layout, wrapStyle }) {
           <View
             style={[
               styles.appsGridIcon,
+              isTrove && styles.appsGridIconTrove,
               {
-                width: iconSize,
-                height: iconSize,
-                borderRadius: radius,
-                backgroundColor: tool.accent,
+                width: iconWidth,
+                height: iconHeight,
+                borderRadius: iconRadius,
+                backgroundColor: isTrove ? '#000' : tool.accent,
               },
             ]}
           >
-            <Ionicons name={filledIonicon(tool.icon)} size={glyph} color="#fff" />
+            {isTrove ? (
+              <Image
+                source={TROVE_LOGO}
+                style={{ width: iconWidth - 16, height: iconSize - 12 }}
+                resizeMode="contain"
+                accessibilityIgnoresInvertColors
+              />
+            ) : (
+              <Ionicons name={filledIonicon(tool.icon)} size={glyph} color="#fff" />
+            )}
           </View>
           <Pressable
             style={[styles.appsGridPin, pinned && styles.appsGridPinActive]}
@@ -1464,68 +1649,33 @@ function filterToolCards(tools, query) {
   });
 }
 
-function TopBarSearchField({
-  value,
-  onChange,
-  placeholder = 'Search',
-  desktop = false,
-  mobileApps = false,
-  accessibilityLabel = 'Search',
-}) {
-  const trimmed = String(value || '');
-  const fieldStyle = mobileApps
-    ? styles.igHomeMobileAppsSearch
-    : [
-        styles.homeTabSearchField,
-        desktop ? styles.homeTabSearchFieldDesktop : styles.homeTabSearchFieldMobile,
-      ];
-  const inputStyle = mobileApps ? styles.igHomeMobileAppsSearchInput : [
-    styles.homeTabSearchInput,
-    desktop && styles.homeTabSearchInputDesktop,
-  ];
-  return (
-    <View style={fieldStyle}>
-      <Ionicons name="search" size={mobileApps ? 14 : 16} color="#8e8e93" />
-      <TextInput
-        style={inputStyle}
-        value={value}
-        onChangeText={onChange}
-        placeholder={placeholder}
-        placeholderTextColor="#8e8e93"
-        autoCapitalize="none"
-        autoCorrect={false}
-        clearButtonMode="while-editing"
-        returnKeyType="search"
-        accessibilityLabel={accessibilityLabel}
-      />
-      {trimmed && Platform.OS !== 'ios' ? (
-        <Pressable onPress={() => onChange('')} hitSlop={8} accessibilityLabel="Clear search">
-          <Ionicons name="close-circle" size={mobileApps ? 16 : 18} color="#c7c7cc" />
-        </Pressable>
-      ) : null}
-    </View>
-  );
-}
-
-function ToolsGrid({ tools, pinnedKeys, onOpen, onTogglePin, layout }) {
-  const { columns, gap, rowGap } = layout;
-  const wrapStyle = Platform.select({
+function toolsGridWrapStyle(layout, columnSpan) {
+  const { columns, gap } = layout;
+  const span = Math.max(1, Math.min(columnSpan, columns));
+  const widthPct = (100 / columns) * span;
+  return Platform.select({
     web: {
       width: '100%',
       maxWidth: '100%',
       minWidth: 0,
       boxSizing: 'border-box',
       paddingHorizontal: gap / 2,
+      ...(span > 1 ? { gridColumn: `span ${span}` } : null),
     },
     default: {
-      width: `${100 / columns}%`,
-      maxWidth: `${100 / columns}%`,
-      flexBasis: `${100 / columns}%`,
+      width: `${widthPct}%`,
+      maxWidth: `${widthPct}%`,
+      flexBasis: `${widthPct}%`,
       flexGrow: 0,
       flexShrink: 0,
       paddingHorizontal: gap / 2,
     },
   });
+}
+
+function ToolsGrid({ tools, pinnedKeys, onOpen, onTogglePin, layout }) {
+  const { columns, gap, rowGap } = layout;
+  const troveSpan = troveColumnSpan(layout);
 
   return (
     <View
@@ -1541,17 +1691,21 @@ function ToolsGrid({ tools, pinnedKeys, onOpen, onTogglePin, layout }) {
           : null,
       ]}
     >
-      {tools.map((tool) => (
-        <ToolCard
-          key={tool.key}
-          tool={tool}
-          pinned={pinnedKeys.includes(tool.key)}
-          onPress={() => onOpen(tool)}
-          onTogglePin={() => onTogglePin(tool.key)}
-          layout={layout}
-          wrapStyle={wrapStyle}
-        />
-      ))}
+      {tools.map((tool) => {
+        const columnSpan = tool.key === 'trove' ? troveSpan : 1;
+        return (
+          <ToolCard
+            key={tool.key}
+            tool={tool}
+            pinned={pinnedKeys.includes(tool.key)}
+            onPress={() => onOpen(tool)}
+            onTogglePin={() => onTogglePin(tool.key)}
+            layout={layout}
+            columnSpan={columnSpan}
+            wrapStyle={toolsGridWrapStyle(layout, columnSpan)}
+          />
+        );
+      })}
     </View>
   );
 }
@@ -1646,33 +1800,6 @@ function AppsLibrary({
           !isMobile && styles.igHomeDesktopFeed,
         ]}
       >
-        {isMobile ? (
-          <View pointerEvents="box-none" style={styles.igHomeMobileTopBarShell}>
-            <View style={styles.igHomeMobileTopBarClip}>
-              <BlurView
-                intensity={32}
-                tint="light"
-                pointerEvents="none"
-                style={styles.igHomeMobileTopBarBlur}
-                {...(Platform.OS === 'web' ? { className: 'cgold-mobile-tab-bar' } : null)}
-              />
-              <View style={styles.igHomeMobileTopBarRow}>
-                <View style={styles.igHomeMobileBrand} accessibilityLabel="Canada Gold">
-                  <HomeGlyph size={22} />
-                </View>
-                {typeof onQueryChange === 'function' ? (
-                  <TopBarSearchField
-                    mobileApps
-                    value={query}
-                    onChange={onQueryChange}
-                    placeholder="Search apps"
-                    accessibilityLabel="Search apps"
-                  />
-                ) : null}
-              </View>
-            </View>
-          </View>
-        ) : null}
         <View style={styles.igHomeStage}>
           <ScrollView
             style={[styles.toolsScroll, styles.igHomeOverlayScroll]}
@@ -1681,7 +1808,7 @@ function AppsLibrary({
               styles.appsGridScroll,
               {
                 flexGrow: 1,
-                paddingTop: isMobile ? MOBILE_FEED_TOP_BAR_HEIGHT : TOP_BAR_HEIGHT + 16,
+                paddingTop: isMobile ? 12 : TOP_BAR_HEIGHT + 16,
                 paddingBottom: isMobile ? mobileTabBarReserve() + 24 : 36,
               },
             ]}
@@ -1698,6 +1825,31 @@ function AppsLibrary({
                 isMobile ? { paddingHorizontal: pagePad, maxWidth: '100%' } : null,
               ]}
             >
+              <Text style={styles.appsLibraryTitle}>Apps</Text>
+              {typeof onQueryChange === 'function' ? (
+                <View style={styles.appsLibrarySearchRow}>
+                  <View style={styles.toolsSearch}>
+                    <Ionicons name="search" size={15} color="#8e8e93" />
+                    <TextInput
+                      style={styles.toolsSearchInput}
+                      value={query}
+                      onChangeText={onQueryChange}
+                      placeholder="Search apps"
+                      placeholderTextColor="#8e8e93"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      clearButtonMode="while-editing"
+                      returnKeyType="search"
+                      accessibilityLabel="Search apps"
+                    />
+                    {String(query || '').trim() ? (
+                      <Pressable onPress={() => onQueryChange('')} hitSlop={8} accessibilityLabel="Clear search">
+                        <Ionicons name="close-circle" size={18} color="#c7c7cc" />
+                      </Pressable>
+                    ) : null}
+                  </View>
+                </View>
+              ) : null}
               {appsBody}
             </View>
           </ScrollView>
@@ -5900,8 +6052,7 @@ function HomeScreen({
   onRequireLogin,
   onOpenPerson,
   onOpenCustomer,
-  onBuy,
-  onSell,
+  onOpenTrove,
   onOpenAnalytics,
   homeRootTick = 0,
   onSelectedStoreChange,
@@ -6743,40 +6894,30 @@ function HomeScreen({
                 <CurrencyToggle compact />
                 <SpotMetalToggle compact />
               </View>
-              <View style={styles.igHomeFiltersTradeRow}>
-                <Pressable
-                  onPress={() => {
-                    closeFilters();
-                    onBuy?.();
-                  }}
-                  style={({ pressed }) => [
-                    styles.topTradeButton,
-                    styles.igHomeFiltersTradeBtn,
-                    pressed && styles.topTradeButtonHover,
-                  ]}
-                  accessibilityRole="button"
-                  accessibilityLabel="Buy"
-                >
-                  <Ionicons name="arrow-down" size={TAB_ICON_SIZE} color={TRADE_BUY.accent} />
-                  <Text style={styles.topTradeLabel}>Buy</Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => {
-                    closeFilters();
-                    onSell?.();
-                  }}
-                  style={({ pressed }) => [
-                    styles.topTradeButton,
-                    styles.igHomeFiltersTradeBtn,
-                    pressed && styles.topTradeButtonHover,
-                  ]}
-                  accessibilityRole="button"
-                  accessibilityLabel="Sell"
-                >
-                  <Ionicons name="arrow-up" size={TAB_ICON_SIZE} color={TRADE_SELL.accent} />
-                  <Text style={styles.topTradeLabel}>Sell</Text>
-                </Pressable>
-              </View>
+              {onOpenTrove ? (
+                <View style={styles.igHomeFiltersTradeRow}>
+                  <Pressable
+                    onPress={() => {
+                      closeFilters();
+                      onOpenTrove?.();
+                    }}
+                    style={({ pressed }) => [
+                      styles.topTroveButton,
+                      styles.igHomeFiltersTroveBtn,
+                      pressed && styles.topTroveButtonHover,
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Trove"
+                  >
+                    <Image
+                      source={TROVE_LOGO}
+                      style={styles.igHomeFiltersTroveLogo}
+                      resizeMode="contain"
+                      accessibilityIgnoresInvertColors
+                    />
+                  </Pressable>
+                </View>
+              ) : null}
             </View>
           </View>
         </View>
@@ -8063,38 +8204,31 @@ function ProfileStoreButton({ locationName, onPress }) {
   );
 }
 
-function TopTradeButton({ kind, label, active, onPress }) {
-  const palette = kind === 'sell' ? TRADE_SELL : TRADE_BUY;
-  const hint =
-    kind === 'sell' ? 'Sell metal to a customer' : 'Buy metal from a customer';
-  const labelColor = active ? MOBILE.label : MOBILE.secondary;
+function TopTroveButton({ active, onPress }) {
+  const logoHeight = 22;
+  const logoWidth = Math.round(logoHeight * TROVE_LOGO_ASPECT);
 
   return (
     <Pressable
       onPress={onPress}
       accessibilityRole="button"
-      accessibilityLabel={label}
-      accessibilityHint={hint}
+      accessibilityLabel="Trove"
+      accessibilityHint="Collections and saved finds"
       accessibilityState={{ selected: active }}
-      {...(Platform.OS === 'web' ? { title: `${label} — ${hint}` } : null)}
+      {...(Platform.OS === 'web' ? { title: 'Trove — collections and saved finds' } : null)}
       style={({ hovered, pressed }) => [
-        styles.topTradeButton,
-        (hovered || pressed) && !active && styles.topTradeButtonHover,
+        styles.topTroveButton,
+        (hovered || pressed) && !active && styles.topTroveButtonHover,
         active && styles.tabActive,
-        active && styles.topTradeButtonActive,
+        active && styles.topTroveButtonActive,
       ]}
     >
-      <Ionicons
-        name={active ? filledIonicon(palette.icon) : palette.icon}
-        size={TAB_ICON_SIZE}
-        color={active ? MOBILE.label : palette.accent}
+      <Image
+        source={TROVE_LOGO}
+        style={{ width: logoWidth, height: logoHeight }}
+        resizeMode="contain"
+        accessibilityIgnoresInvertColors
       />
-      <Text
-        style={[styles.topTradeLabel, { color: labelColor }, active && styles.tradeButtonLabelActive]}
-        numberOfLines={1}
-      >
-        {label}
-      </Text>
     </Pressable>
   );
 }
@@ -8164,6 +8298,13 @@ function formatSpotMoney(value) {
   }).format(Number(value) || 0)}`;
 }
 
+/**
+ * The refresh ring is at most a few hundred pixels around, so progress is
+ * quantised to that many steps: the chip re-renders only when the ring would
+ * actually move, not on every tick of the timer.
+ */
+const SPOT_PROGRESS_STEPS = 360;
+
 function useSpotRefreshProgress() {
   const { spotFetchedAt } = useDisplayCurrency();
   const [progress, setProgress] = useState(0);
@@ -8174,11 +8315,12 @@ function useSpotRefreshProgress() {
       return undefined;
     }
     const tick = () => {
-      const next = (Date.now() - spotFetchedAt) / SPOT_REFRESH_MS;
-      setProgress(Math.max(0, Math.min(1, next)));
+      const raw = (Date.now() - spotFetchedAt) / SPOT_REFRESH_MS;
+      const clamped = Math.max(0, Math.min(1, raw));
+      setProgress(Math.round(clamped * SPOT_PROGRESS_STEPS) / SPOT_PROGRESS_STEPS);
     };
     tick();
-    const id = setInterval(tick, 80);
+    const id = setInterval(tick, Math.max(80, Math.floor(SPOT_REFRESH_MS / SPOT_PROGRESS_STEPS)));
     return () => clearInterval(id);
   }, [spotFetchedAt]);
 
@@ -8720,6 +8862,7 @@ function TopAppSwitcher({
                   <Pressable
                     key={tool.key}
                     onPress={() => pick(tool)}
+                    onHoverIn={() => warmScreen(tool.key)}
                     style={[styles.topSpotOption, styles.topBarAppOption, active && styles.topSpotOptionActive]}
                     accessibilityRole="menuitem"
                     accessibilityState={{ selected: active }}
@@ -8751,12 +8894,11 @@ function TopAppSwitcher({
   );
 }
 
-function TopNavBar({
-  buyActive,
-  sellActive,
+const TopNavBar = memo(function TopNavBar({
+  troveActive,
+  onSelectTrove,
+  showTrove = true,
   onSelectHome,
-  onSelectBuy,
-  onSelectSell,
   onSelectStore,
   onSelectApp,
   storeName = '',
@@ -8765,11 +8907,7 @@ function TopNavBar({
   pageTitle = '',
   apps,
   activeAppKey = '',
-  searchValue = '',
-  onSearchChange,
-  searchPlaceholder = 'Search',
 }) {
-  const showTopBarSearch = typeof onSearchChange === 'function';
   const trail =
     Array.isArray(crumbs) && crumbs.length
       ? crumbs.filter((crumb) => crumb?.label)
@@ -8848,31 +8986,21 @@ function TopNavBar({
             </Fragment>
           );
         })}
-        {showTopBarSearch ? (
-          <View style={styles.topBarSearchWrap}>
-            <TopBarSearchField
-              desktop
-              value={searchValue}
-              onChange={onSearchChange}
-              placeholder={searchPlaceholder}
-              accessibilityLabel={searchPlaceholder}
-            />
-          </View>
-        ) : null}
       </View>
       <View style={styles.topBarRight}>
         <SpotMetalToggle />
         <CurrencyToggle />
-        <View style={styles.topBarTrades}>
-          <TopTradeButton kind="buy" label="Buy" active={buyActive} onPress={onSelectBuy} />
-          <TopTradeButton kind="sell" label="Sell" active={sellActive} onPress={onSelectSell} />
-        </View>
+        {showTrove ? (
+          <View style={styles.topBarTrades}>
+            <TopTroveButton active={troveActive} onPress={onSelectTrove} />
+          </View>
+        ) : null}
       </View>
     </BlurView>
   );
-}
+});
 
-function SidebarNavGroup({
+const SidebarNavGroup = memo(function SidebarNavGroup({
   collapsed,
   homeActive,
   searchActive,
@@ -8994,9 +9122,9 @@ function SidebarNavGroup({
       </View>
     </View>
   );
-}
+});
 
-function PinnedToolsList({
+const PinnedToolsList = memo(function PinnedToolsList({
   tools,
   activeToolKey,
   sidebarCollapsed,
@@ -9187,7 +9315,7 @@ function PinnedToolsList({
       </View>
     </View>
   );
-}
+});
 
 export default function App() {
   const isMobile = useIsMobile();
@@ -9196,47 +9324,51 @@ export default function App() {
   const [homeStoreName, setHomeStoreName] = useState('');
   const [homeDocRef, setHomeDocRef] = useState('');
   const [homeStoreCrumbs, setHomeStoreCrumbs] = useState([]);
-  const [resumeThread, setResumeThread] = useState(null);
-  const handleResumeThread = useCallback((next) => {
-    setResumeThread((prev) => {
-      if (!next && !prev) return prev;
-      if (
-        prev &&
-        next &&
-        prev.kind === next.kind &&
-        prev.label === next.label &&
-        prev.avatarUrl === next.avatarUrl &&
-        prev.name === next.name
-      ) {
-        return prev;
-      }
-      return next || null;
-    });
-  }, []);
   const homeDocumentCloseRef = useRef(null);
-  const messagesSeenRef = useRef(false);
   const [activeTool, setActiveTool] = useState(null);
-  const [triageStoreBack, setTriageStoreBack] = useState(null);
-  const [triageBatch, setTriageBatch] = useState(null);
-  const [triageNav, setTriageNav] = useState(null);
-  const [triageMobileHeader, setTriageMobileHeader] = useState(null);
-  const handleTriageMobileHeader = useCallback((next) => {
-    setTriageMobileHeader((prev) => {
-      if (!next && !prev) return prev;
-      if (prev?.trailing === next?.trailing) return prev;
-      return next;
-    });
+  // Screens the shell is holding mounted (see components/KeptScreen.js).
+  // Tools are a most-recently-used list; the others mount the first time they
+  // are shown and then stay.
+  const [keptToolKeys, setKeptToolKeys] = useState([]);
+  const [seenScreens, setSeenScreens] = useState(() => ({}));
+  const keptToolLimit = isMobile ? KEPT_TOOLS_MOBILE : KEPT_TOOLS_DESKTOP;
+  const activateTool = useCallback(
+    (tool) => {
+      setActiveTool(tool);
+      if (tool?.key) setKeptToolKeys((prev) => touchKeptKey(prev, tool.key, keptToolLimit));
+    },
+    [keptToolLimit],
+  );
+  useEffect(() => {
+    setKeptToolKeys((prev) => (prev.length > keptToolLimit ? prev.slice(prev.length - keptToolLimit) : prev));
+  }, [keptToolLimit]);
+
+  const [toolChrome, setToolChrome] = useState({});
+  const chromeSettersRef = useRef(new Map());
+  // One stable setter per (app, field), so screens can list it in effect deps.
+  const chrome = useCallback((toolKey, field) => {
+    const id = `${toolKey}\u0000${field}`;
+    let setter = chromeSettersRef.current.get(id);
+    if (setter) return setter;
+    const patch = (fields) =>
+      setToolChrome((prev) => {
+        const current = prev[toolKey] || EMPTY_CHROME;
+        let changed = false;
+        const nextEntry = { ...current };
+        for (const name of Object.keys(fields)) {
+          if (chromeFieldEqual(name, current[name], fields[name])) continue;
+          nextEntry[name] = fields[name];
+          changed = true;
+        }
+        return changed ? { ...prev, [toolKey]: nextEntry } : prev;
+      });
+    setter =
+      field === 'storeBack'
+        ? (fn, context) => patch({ storeBack: fn || null, batch: context || null })
+        : (value) => patch({ [field]: value ?? null });
+    chromeSettersRef.current.set(id, setter);
+    return setter;
   }, []);
-  const [analyticsMobileHeader, setAnalyticsMobileHeader] = useState(null);
-  const handleAnalyticsMobileHeader = useCallback((next) => {
-    setAnalyticsMobileHeader((prev) => {
-      if (!next && !prev) return prev;
-      if (prev?.trailing === next?.trailing) return prev;
-      return next;
-    });
-  }, []);
-  const [triageCrumbs, setTriageCrumbs] = useState([]);
-  const [triageMobileOverlay, setTriageMobileOverlay] = useState(false);
   const [settingsPanel, setSettingsPanel] = useState(null);
   const [pinnedKeys, setPinnedKeys] = useState([]);
   const [appsSearchQuery, setAppsSearchQuery] = useState('');
@@ -9325,21 +9457,6 @@ export default function App() {
   const [dmFocusConversationId, setDmFocusConversationId] = useState('');
   const [dmOpenAiKey, setDmOpenAiKey] = useState(0);
   const dmOpenAiSeq = useRef(0);
-  const [dmMobileHeader, setDmMobileHeader] = useState(null);
-  const handleDmMobileHeader = useCallback((next) => {
-    setDmMobileHeader((prev) => {
-      if (!next && !prev) return prev;
-      if (
-        prev?.trailing === next?.trailing &&
-        prev?.onBrandPress === next?.onBrandPress &&
-        prev?.segments?.length === next?.segments?.length &&
-        prev?.segments?.[0]?.label === next?.segments?.[0]?.label
-      ) {
-        return prev;
-      }
-      return next;
-    });
-  }, []);
   const [teamsFocusId, setTeamsFocusId] = useState('');
   const [profileReturnTo, setProfileReturnTo] = useState(null);
   const [locationPickerOpen, setLocationPickerOpen] = useState(false);
@@ -9367,6 +9484,19 @@ export default function App() {
   useEffect(() => {
     if (Platform.OS === 'web' && activeToolKey) rememberOpenTool(activeToolKey);
   }, [activeToolKey]);
+
+  // Chrome reported by the app on display; hidden apps keep theirs in toolChrome.
+  const activeChrome = (activeTab === 'tools' && toolChrome[activeToolKey]) || EMPTY_CHROME;
+  const triageStoreBack = activeChrome.storeBack || null;
+  const triageBatch = activeChrome.batch || null;
+  const triageNav = activeChrome.nav || null;
+  const triageMobileHeader = activeToolKey === 'triage' ? activeChrome.mobileHeader || null : null;
+  const analyticsMobileHeader = activeToolKey === 'analytics' ? activeChrome.mobileHeader || null : null;
+  const triageMobileOverlay = Boolean(activeChrome.overlay);
+  const triageCrumbs = activeChrome.crumbs || EMPTY_LIST;
+  const messagesChrome = toolChrome.messages || EMPTY_CHROME;
+  const dmMobileHeader = messagesChrome.mobileHeader || null;
+  const resumeThread = messagesChrome.thread || null;
   const userLabel = displayName(session) || PROFILE_TAB.label;
   const activeLabel =
     activeTab === 'profile'
@@ -9430,10 +9560,14 @@ export default function App() {
   } = useStaffNotifications(session, { enabled: isLoggedIn });
   const profileUnread = (Number(messagesUnread) || 0) + (Number(notifyUnread) || 0);
 
-  const pinnedTools = pinnedKeys
-    .map((key) => TOOL_CARDS.find((tool) => tool.key === key))
-    .filter((tool) => tool && hasApp(tool.key));
-  const filteredTools = TOOL_CARDS.filter((tool) => hasApp(tool.key));
+  const pinnedTools = useMemo(
+    () =>
+      pinnedKeys
+        .map((key) => TOOL_CARDS.find((tool) => tool.key === key))
+        .filter((tool) => tool && hasApp(tool.key)),
+    [pinnedKeys, hasApp],
+  );
+  const filteredTools = useMemo(() => TOOL_CARDS.filter((tool) => hasApp(tool.key)), [hasApp]);
 
   const resetToSignedOut = useCallback(() => {
     clearInventoryCache();
@@ -9449,10 +9583,12 @@ export default function App() {
     setLoginError('');
     setActiveTab('home');
     setActiveTool(null);
+    setKeptToolKeys([]);
+    setSeenScreens({});
+    setToolChrome({});
     setHomeStoreName('');
     setHomeDocRef('');
     setHomeStoreCrumbs([]);
-    setResumeThread(null);
     setSettingsPanel(null);
     setViewedProfile(null);
     setDmFocusUserId('');
@@ -9533,6 +9669,7 @@ export default function App() {
         if (reopen) {
           setActiveTab('tools');
           setActiveTool(reopen);
+          setKeptToolKeys([reopen.key]);
         }
       } else {
         setSession(null);
@@ -9653,7 +9790,7 @@ export default function App() {
     if (readGmailOAuthCallback() && hasApp('emails')) {
       const emailsTool = TOOL_CARDS.find((tool) => tool.key === 'emails');
       setActiveTab('tools');
-      setActiveTool(emailsTool || { key: 'emails', label: 'Emails' });
+      activateTool(emailsTool || { key: 'emails', label: 'Emails' });
       setSettingsPanel(null);
       return;
     }
@@ -9665,11 +9802,13 @@ export default function App() {
     if (!hasApp('settings')) return;
     const settingsTool = TOOL_CARDS.find((tool) => tool.key === 'settings');
     setActiveTab('tools');
-    setActiveTool(settingsTool || { key: 'settings', label: 'Settings' });
+    activateTool(settingsTool || { key: 'settings', label: 'Settings' });
     setSettingsPanel('rippling');
-  }, [bootstrapping, session?.token, hasApp]);
+  }, [bootstrapping, session?.token, hasApp, activateTool]);
 
-  const selectTab = (tabKey) => {
+  // Navigation handlers are identity-stable (useStableCallback) so the kept
+  // screens that receive them do not re-render when the shell's state moves.
+  const selectTab = useStableCallback((tabKey) => {
     if (tabKey === 'home' && activeTab === 'home') {
       setHomeRootTick((tick) => tick + 1);
     }
@@ -9710,7 +9849,17 @@ export default function App() {
     }
 
     if (leavingOpenApp || restoringApp) expandMobileTabBar();
-  };
+  });
+  const requireLogin = useCallback(() => selectTab('profile'), [selectTab]);
+  const selectHome = useCallback(() => selectTab('home'), [selectTab]);
+  const selectSearch = useCallback(() => selectTab('search'), [selectTab]);
+  const selectApps = useCallback(() => selectTab('tools'), [selectTab]);
+  const selectMessages = useCallback(() => selectTab('messages'), [selectTab]);
+  const selectProfile = useCallback(() => selectTab(PROFILE_TAB.key), [selectTab]);
+  const openLocationPicker = useCallback(() => setLocationPickerOpen(true), []);
+  const closeLocationPicker = useCallback(() => setLocationPickerOpen(false), []);
+  const closeLoginSwitcher = useCallback(() => setLoginSwitcherOpen(false), []);
+  const closeHomeDocument = useCallback(() => homeDocumentCloseRef.current?.(), []);
 
   const applyOwnLocation = useCallback(({ locationId, locationName }) => {
     setSession((current) => {
@@ -9734,10 +9883,10 @@ export default function App() {
     if (!tool || !hasApp('analytics')) return;
     startTransition(() => {
       setActiveTab('tools');
-      setActiveTool(tool);
+      activateTool(tool);
       setSettingsPanel(null);
     });
-  }, [hasApp]);
+  }, [hasApp, activateTool]);
 
   // From "+ Dashboard" in Analytics: open the Dashboards app on the new tab.
   const openDashboardsApp = useCallback((dashboardId) => {
@@ -9746,12 +9895,12 @@ export default function App() {
     setDashboardFocusId(String(dashboardId || ''));
     startTransition(() => {
       setActiveTab('tools');
-      setActiveTool(tool);
+      activateTool(tool);
       setSettingsPanel(null);
     });
-  }, [hasApp]);
+  }, [hasApp, activateTool]);
 
-  const openPersonProfile = (raw) => {
+  const openPersonProfile = useStableCallback((raw) => {
     const person = profileTargetFromPerson(raw);
     const myId = session?.supabaseUserId || session?.profile?.id || '';
     if (person?.profileId && myId && person.profileId === myId) {
@@ -9768,36 +9917,36 @@ export default function App() {
     } else if (activeTab === 'tools' && activeTool && Platform.OS === 'web' && typeof document !== 'undefined') {
       document.activeElement?.blur?.();
     }
-  };
+  });
 
-  const messagePerson = (profileId) => {
+  const messagePerson = useStableCallback((profileId) => {
     if (!profileId || !hasApp('messages')) return;
     setDmFocusUserId(profileId);
     selectTab('messages');
-  };
+  });
 
-  const openNotificationChat = (conversationId) => {
+  const openNotificationChat = useStableCallback((conversationId) => {
     if (!conversationId || !hasApp('messages')) return;
     setDmFocusConversationId(conversationId);
     void markNotificationsRead(conversationId);
     selectTab('messages');
-  };
+  });
 
-  const openAiMessages = () => {
+  const openAiMessages = useStableCallback(() => {
     if (!hasApp('messages')) return;
     dmOpenAiSeq.current += 1;
     setDmOpenAiKey(dmOpenAiSeq.current);
     selectTab('messages');
-  };
+  });
 
-  const openTeamsFromProfile = (teamId) => {
+  const openTeamsFromProfile = useStableCallback((teamId) => {
     if (!hasApp('teams')) return;
     setTeamsFocusId(teamId || '');
     const teamsTool = TOOL_CARDS.find((tool) => tool.key === 'teams');
     setActiveTab('tools');
-    setActiveTool(teamsTool || { key: 'teams', label: 'Teams' });
+    activateTool(teamsTool || { key: 'teams', label: 'Teams' });
     setSettingsPanel(null);
-  };
+  });
 
   const closeSearchDocument = useCallback(() => {
     setSearchDoc(null);
@@ -9812,53 +9961,50 @@ export default function App() {
       const customersTool = TOOL_CARDS.find((tool) => tool.key === 'customers');
       setCustomerFocus(row);
       setActiveTab('tools');
-      setActiveTool(customersTool || { key: 'customers', label: 'Customers' });
+      activateTool(customersTool || { key: 'customers', label: 'Customers' });
       setSettingsPanel(null);
     },
-    [hasApp],
+    [hasApp, activateTool],
   );
 
-  const openSearchDocument = useCallback(
-    async (row) => {
-      if (!row) return;
-      setSearchDoc(row);
-      setSearchDocDetail(null);
-      setSearchDocError('');
-      setSearchDocLoading(true);
-      const id = ++searchDocReq.current;
-      try {
-        const auth = resolvePosAuthForRow(session, row);
-        const next = await fetchTransactionDetail(auth.token, {
-          type: row.type,
-          sourceId: row.sourceId,
-          baseUrl: auth.baseUrl,
-        });
-        if (id !== searchDocReq.current) return;
-        const enriched = withPaymentBreakdown(row, next);
-        setSearchDocDetail(next);
-        setSearchDoc(enriched);
-      } catch (err) {
-        if (id !== searchDocReq.current) return;
-        setSearchDocError(err?.message || 'Failed to load that ticket.');
-      } finally {
-        if (id === searchDocReq.current) setSearchDocLoading(false);
-      }
-    },
-    [session],
-  );
+  const openSearchDocument = useStableCallback(async (row) => {
+    if (!row) return;
+    setSearchDoc(row);
+    setSearchDocDetail(null);
+    setSearchDocError('');
+    setSearchDocLoading(true);
+    const id = ++searchDocReq.current;
+    try {
+      const auth = resolvePosAuthForRow(session, row);
+      const next = await fetchTransactionDetail(auth.token, {
+        type: row.type,
+        sourceId: row.sourceId,
+        baseUrl: auth.baseUrl,
+      });
+      if (id !== searchDocReq.current) return;
+      const enriched = withPaymentBreakdown(row, next);
+      setSearchDocDetail(next);
+      setSearchDoc(enriched);
+    } catch (err) {
+      if (id !== searchDocReq.current) return;
+      setSearchDocError(err?.message || 'Failed to load that ticket.');
+    } finally {
+      if (id === searchDocReq.current) setSearchDocLoading(false);
+    }
+  });
 
-  const openTool = (tool) => {
+  const openTool = useStableCallback((tool) => {
     if (!hasApp(tool?.key)) return;
     expandMobileTabBar();
     if (isMobile && tool.key === 'messages') {
       selectTab('messages');
       return;
     }
-    setActiveTool(tool);
+    activateTool(tool);
     setSettingsPanel(null);
-  };
+  });
 
-  const openPinnedTool = (tool) => {
+  const openPinnedTool = useStableCallback((tool) => {
     if (!hasApp(tool?.key)) return;
     expandMobileTabBar();
     if (isMobile && tool.key === 'messages') {
@@ -9866,9 +10012,15 @@ export default function App() {
       return;
     }
     setActiveTab('tools');
-    setActiveTool(tool);
+    activateTool(tool);
     setSettingsPanel(null);
-  };
+  });
+
+  const selectTrove = useStableCallback(() => {
+    const tool = TOOL_CARDS.find((item) => item.key === 'trove');
+    if (!tool) return;
+    openPinnedTool(tool);
+  });
 
   const openEmailsFromBonuses = useCallback((focus) => {
     if (!hasApp('emails')) return;
@@ -9881,20 +10033,20 @@ export default function App() {
     });
     const emailsTool = TOOL_CARDS.find((tool) => tool.key === 'emails');
     setActiveTab('tools');
-    setActiveTool(emailsTool || { key: 'emails', label: 'Emails' });
+    activateTool(emailsTool || { key: 'emails', label: 'Emails' });
     setSettingsPanel(null);
-  }, [hasApp]);
+  }, [hasApp, activateTool]);
 
   // Tasks only needs the Emails app itself (to connect or read an inbox); no store focus.
   const openEmailsFromTasks = useCallback(() => {
     if (!hasApp('emails')) return;
     const emailsTool = TOOL_CARDS.find((tool) => tool.key === 'emails');
     setActiveTab('tools');
-    setActiveTool(emailsTool || { key: 'emails', label: 'Emails' });
+    activateTool(emailsTool || { key: 'emails', label: 'Emails' });
     setSettingsPanel(null);
-  }, [hasApp]);
+  }, [hasApp, activateTool]);
 
-  const togglePin = (toolKey) => {
+  const togglePin = useStableCallback((toolKey) => {
     setPinnedKeys((current) => {
       const next = current.includes(toolKey)
         ? current.filter((key) => key !== toolKey)
@@ -9904,7 +10056,61 @@ export default function App() {
       }
       return next;
     });
-  };
+  });
+
+  const clearCustomerFocus = useCallback(() => setCustomerFocus(null), []);
+  const clearEmailsFocus = useCallback(() => setEmailsFocus(null), []);
+  const clearDashboardFocus = useCallback(() => setDashboardFocusId(''), []);
+  const clearDmFocusUser = useCallback(() => setDmFocusUserId(''), []);
+  const clearDmFocusConversation = useCallback(() => setDmFocusConversationId(''), []);
+  const clearDmOpenAi = useCallback(() => setDmOpenAiKey(0), []);
+
+  // Employees → own row edited: mirror the fields the shell shows.
+  const applyProfileUpdate = useCallback((profile) => {
+    setSession((current) => {
+      if (!current?.profile || current.profile.id !== profile.id) return current;
+      if (
+        current.profile.appRole === (profile.appRole ?? current.profile.appRole) &&
+        current.profile.employeeType === (profile.employeeType ?? current.profile.employeeType) &&
+        current.profile.role === (profile.role ?? current.profile.role)
+      ) {
+        return current;
+      }
+      return {
+        ...current,
+        profile: {
+          ...current.profile,
+          role: profile.role ?? current.profile.role,
+          employeeType: profile.employeeType ?? current.profile.employeeType,
+          locationId: profile.locationId ?? current.profile.locationId,
+          locationName: profile.locationName ?? current.profile.locationName,
+          appRole: profile.appRole ?? current.profile.appRole,
+          isSystemAdmin: profile.isSystemAdmin ?? current.profile.isSystemAdmin,
+        },
+      };
+    });
+  }, []);
+
+  // Profile → own profile edited (avatar, role flags).
+  const applyProfilePatch = useCallback((patch) => {
+    setSession((current) => {
+      if (!current?.profile) return current;
+      const profile = { ...current.profile, ...patch };
+      if (shouldPrefetchTriage(profile)) {
+        import('./lib/transferWorkflow')
+          .then((mod) => mod.warmTriageWorkflow())
+          .catch(() => {});
+      }
+      return { ...current, profile };
+    });
+  }, []);
+
+  const backFromViewedProfile = useStableCallback(() => {
+    const next = profileReturnTo;
+    setViewedProfile(null);
+    setProfileReturnTo(null);
+    if (next && next !== 'profile') selectTab(next);
+  });
 
   const reorderPinned = useCallback((fromIndex, toIndex) => {
     setPinnedKeys((current) => {
@@ -9992,7 +10198,7 @@ export default function App() {
     }
   };
 
-  const handleLogout = async () => {
+  const handleLogout = useStableCallback(async () => {
     // Land the sign-out press (and anything else still queued) in the ledger
     // while this user's session can still vouch for it.
     await flushActionLog().catch(() => {});
@@ -10000,7 +10206,7 @@ export default function App() {
     resetToSignedOut();
     setSwitchError('');
     setLoginSwitcherOpen(false);
-  };
+  });
 
   const handleChangeLogin = async (systemKey) => {
     if (!session?.token || !systemKey) return;
@@ -10130,260 +10336,183 @@ export default function App() {
     );
   };
 
-  const renderActiveTool = () => {
-    if (!activeTool) return null;
-    if (isMobile && activeTool.key === 'messages') return null;
-    return (
-      <AppDateScope id={`tools:${activeTool.key}`}>
-      <View style={styles.toolsScreen}>
-        {renderToolsHeader()}
-        <ScreenGate resetKey={activeTool.key}>
-        {activeTool.key === 'transactions' ? (
-          <TransactionsScreen
-            session={session}
-            onRequireLogin={() => selectTab('profile')}
-            storeFilter={scopedStore || undefined}
-          />
-        ) : activeTool.key === 'inventory' ? (
-          <InventoryScreen
-            session={session}
-            onRequireLogin={() => selectTab('profile')}
-            storeFilter={scopedStore || undefined}
-          />
-        ) : activeTool.key === 'preorders' ? (
-          <PreordersScreen storeFilter={scopedStore || undefined} />
-        ) : activeTool.key === 'financials' ? (
-          <FinancialsScreen
-            session={session}
-            onRequireLogin={() => selectTab('profile')}
-            storeFilter={scopedStore || undefined}
-          />
-        ) : activeTool.key === 'debit' ? (
-          <DebitScreen
-            session={session}
-            onRequireLogin={() => selectTab('profile')}
-            storeFilter={scopedStore || undefined}
-          />
-        ) : activeTool.key === 'accounting' ? (
-          <AccountingScreen />
-        ) : activeTool.key === 'analytics' ? (
-          <AnalyticsScreen
-            session={session}
-            storeFilter={scopedStore || undefined}
-            onOpenCustomer={openCustomerProfile}
-            onOpenDocument={openSearchDocument}
-            onMobileHeader={handleAnalyticsMobileHeader}
-            onOpenDashboard={openDashboardsApp}
-          />
-        ) : activeTool.key === 'dashboards' ? (
-          <DashboardsScreen
-            session={session}
-            onOpenCustomer={openCustomerProfile}
-            onOpenDocument={openSearchDocument}
-            onOpenAnalytics={openAnalyticsApp}
-            focusId={dashboardFocusId}
-            onFocusConsumed={() => setDashboardFocusId('')}
-          />
-        ) : activeTool.key === 'audit' ? (
-          <AuditScreen
-            session={session}
-            onRequireLogin={() => selectTab('profile')}
-            storeFilter={scopedStore || undefined}
-            onNavTabs={setTriageNav}
-          />
-        ) : activeTool.key === 'documents' ? (
-          <DocumentsScreen session={session} />
-        ) : activeTool.key === 'emails' ? (
-          <View style={styles.messagesHost}>
-            <EmailsScreen
-              session={session}
-              onRequireLogin={() => selectTab('profile')}
-              onOpenProfile={openPersonProfile}
-              focus={emailsFocus}
-              onFocusConsumed={() => setEmailsFocus(null)}
-              capture={
-                <EmailCaptureScreen
-                  session={session}
-                  onRequireLogin={() => selectTab('profile')}
-                  focus={emailsFocus}
-                  onFocusConsumed={() => setEmailsFocus(null)}
-                />
-              }
-            />
-          </View>
-        ) : activeTool.key === 'serphint' ? (
-          <SerphintScreen />
-        ) : activeTool.key === '100-ways' ? (
-          <HundredWaysScreen
-            session={session}
-            onRequireLogin={() => selectTab('profile')}
-          />
-        ) : activeTool.key === 'settings' ? (
-          <SettingsScreen
-            panel={settingsPanel}
-            onOpenPanel={setSettingsPanel}
-            session={session}
-            apps={PERMISSION_APPS}
-            onAccessSaved={handleAccessSaved}
-            onStaffAccessSaved={handleStaffAccessSaved}
-            onUserAccessSaved={handleUserAccessSaved}
-          />
-        ) : activeTool.key === 'transfer' ? (
-          <TransferScreen
-            session={session}
-            onRequireLogin={() => selectTab('profile')}
-            onNavTabs={setTriageNav}
-            onLocationChanged={({ locationId, locationName }) => {
-              setSession((current) => {
-                if (!current?.profile) return current;
-                return {
-                  ...current,
-                  user: current.user
-                    ? { ...current.user, location_id: locationId || current.user.location_id }
-                    : current.user,
-                  profile: {
-                    ...current.profile,
-                    locationId: locationId || current.profile.locationId,
-                    locationName: locationName || current.profile.locationName,
-                  },
-                };
-              });
-            }}
-          />
-        ) : activeTool.key === 'fintrac' ? (
-          <FintracScreen
-            session={session}
-            onRequireLogin={() => selectTab('profile')}
-            storeFilter={scopedStore || undefined}
-          />
-        ) : activeTool.key === 'pricing' ? (
-          <PricingScreen />
-        ) : activeTool.key === 'bonuses' ? (
-          <BonusesScreen
-            session={session}
-            onRequireLogin={() => selectTab('profile')}
-            onOpenEmails={openEmailsFromBonuses}
-            onOpenCustomer={openCustomerProfile}
-            storeFilter={scopedStore || undefined}
-          />
-        ) : activeTool.key === 'reviews' ? (
-          <ReviewsScreen
-            session={session}
-            onRequireLogin={() => selectTab('profile')}
-            onOpenCustomer={openCustomerProfile}
-            storeFilter={scopedStore || undefined}
-          />
-        ) : activeTool.key === 'calendar' ? (
-          <CalendarScreen
-            session={session}
-            storeFilter={scopedStore || undefined}
-          />
-        ) : activeTool.key === 'phone' ? (
-          <PhoneScreen
-            session={session}
-            onRequireLogin={() => selectTab('profile')}
-            storeFilter={scopedStore || undefined}
-            onStoreBackChange={(fn, context) => {
-              setTriageStoreBack(() => fn || null);
-              setTriageBatch(context || null);
-            }}
-          />
-        ) : activeTool.key === 'customers' ? (
-          <CustomersScreen
-            session={session}
-            focusCustomer={customerFocus}
-            onFocusConsumed={() => setCustomerFocus(null)}
-            onOpenDocument={openSearchDocument}
-          />
-        ) : activeTool.key === 'employees' ? (
-          <EmployeesScreen
-            session={session}
-            onProfileUpdated={(profile) => {
-              setSession((current) => {
-                if (!current?.profile || current.profile.id !== profile.id) return current;
-                if (
-                  current.profile.appRole === (profile.appRole ?? current.profile.appRole) &&
-                  current.profile.employeeType ===
-                    (profile.employeeType ?? current.profile.employeeType) &&
-                  current.profile.role === (profile.role ?? current.profile.role)
-                ) {
-                  return current;
-                }
-                return {
-                  ...current,
-                  profile: {
-                    ...current.profile,
-                    role: profile.role ?? current.profile.role,
-                    employeeType: profile.employeeType ?? current.profile.employeeType,
-                    locationId: profile.locationId ?? current.profile.locationId,
-                    locationName: profile.locationName ?? current.profile.locationName,
-                    appRole: profile.appRole ?? current.profile.appRole,
-                    isSystemAdmin: profile.isSystemAdmin ?? current.profile.isSystemAdmin,
-                  },
-                };
-              });
-            }}
-          />
-        ) : activeTool.key === 'teams' ? (
-          <TeamsScreen focusTeamId={teamsFocusId} />
-        ) : activeTool.key === 'marketing' ? (
-          <MarketingScreen />
-        ) : activeTool.key === 'shared-services' ? (
-          <SharedServicesScreen />
-        ) : activeTool.key === 'supplies' ? (
-          <SuppliesScreen
-            session={session}
-            storeFilter={scopedStore || undefined}
-          />
-        ) : activeTool.key === 'tasks' ? (
-          <TasksScreen
-            session={session}
-            onRequireLogin={() => selectTab('profile')}
-            onOpenEmails={hasApp('emails') ? openEmailsFromTasks : null}
-          />
-        ) : activeTool.key === 'logs' ? (
-          <LogsScreen session={session} />
-        ) : activeTool.key === 'triage' ? (
-          <TriageScreen
-            session={session}
-            onRequireLogin={() => selectTab('profile')}
-            storeFilter={undefined}
-            onStoreBackChange={(fn, context) => {
-              setTriageStoreBack(() => fn || null);
-              setTriageBatch(context || null);
-            }}
-            onNavTabs={setTriageNav}
-            onMobileHeader={handleTriageMobileHeader}
-            onMobileOverlayChange={setTriageMobileOverlay}
-            onCrumbsChange={setTriageCrumbs}
-          />
-        ) : activeTool.key === 'messages' ? (
-          <View style={styles.messagesHost}>
-            <MessagesScreen
-              session={session}
-              onUnreadChange={refreshMessagesUnread}
-              openUserId={dmFocusUserId}
-              onOpenedUser={() => setDmFocusUserId('')}
-              openConversationId={dmFocusConversationId}
-              onOpenedConversation={() => setDmFocusConversationId('')}
-              onConversationSeen={markNotificationsRead}
-              openAiKey={dmOpenAiKey}
-              onOpenedAi={() => setDmOpenAiKey(0)}
-                  onOpenProfile={openPersonProfile}
-                  onMobileHeader={handleDmMobileHeader}
-                  onOpenCustomer={openCustomerProfile}
-                  onOpenDocument={openSearchDocument}
-            />
-          </View>
-        ) : (
-          <Text style={styles.toolPageBody}>{activeTool.label} page</Text>
-        )}
-        </ScreenGate>
-      </View>
-      </AppDateScope>
-    );
+  const showingMessages =
+    activeTab === 'messages' || (activeTab === 'tools' && activeTool?.key === 'messages');
+  const showingTrade = activeTab === 'buy' || activeTab === 'sell';
+  const canUseMessages = hasApp('messages');
+
+  // Screens mount the first time they are shown and then stay (hidden) so
+  // the tab bar is a switch, not a reload. Tools are a bounded MRU list.
+  const mountMessages = canUseMessages && (seenScreens.messages || showingMessages);
+  const mountSearch = seenScreens.search || activeTab === 'search';
+  const mountTrade = seenScreens.trade || showingTrade;
+  useEffect(() => {
+    const seen = {
+      messages: showingMessages && canUseMessages,
+      search: activeTab === 'search',
+      trade: showingTrade,
+    };
+    setSeenScreens((prev) => {
+      const missing = Object.keys(seen).filter((key) => seen[key] && !prev[key]);
+      if (!missing.length) return prev;
+      const next = { ...prev };
+      for (const key of missing) next[key] = true;
+      return next;
+    });
+  }, [activeTab, canUseMessages, showingMessages, showingTrade]);
+  const [lastTradeMode, setLastTradeMode] = useState('buy');
+  const tradeMode = showingTrade ? activeTab : lastTradeMode;
+  useEffect(() => {
+    if (showingTrade) setLastTradeMode(activeTab);
+  }, [activeTab, showingTrade]);
+
+  const emailsCapture = useMemo(
+    () => (
+      <EmailCaptureScreen
+        session={session}
+        onRequireLogin={requireLogin}
+        focus={emailsFocus}
+        onFocusConsumed={clearEmailsFocus}
+      />
+    ),
+    [session, requireLogin, emailsFocus, clearEmailsFocus],
+  );
+
+  // Everything a tool screen may receive from the shell. TOOL_SCREENS picks
+  // per app; see the note there about keeping each selection minimal.
+  const toolCtx = {
+    session,
+    storeFilter: scopedStore || undefined,
+    requireLogin,
+    chrome,
+    openCustomerProfile,
+    openSearchDocument,
+    openDashboardsApp,
+    openAnalyticsApp,
+    openPersonProfile,
+    dashboardFocusId,
+    clearDashboardFocus,
+    emailsFocus,
+    clearEmailsFocus,
+    emailsCapture,
+    settingsPanel,
+    setSettingsPanel,
+    handleAccessSaved,
+    handleStaffAccessSaved,
+    handleUserAccessSaved,
+    applyOwnLocation,
+    openEmailsFromBonuses,
+    openEmailsFromTasks,
+    canOpenEmails: hasApp('emails'),
+    customerFocus,
+    clearCustomerFocus,
+    applyProfileUpdate,
+    teamsFocusId,
   };
 
+  const homeScreenProps = {
+    session,
+    homeRootTick,
+    onRequireLogin: requireLogin,
+    onOpenPerson: openPersonProfile,
+    onOpenCustomer: openCustomerProfile,
+    onOpenTrove: hasApp('trove') ? selectTrove : undefined,
+    onOpenAnalytics: openAnalyticsApp,
+    onSelectedStoreChange: setHomeStoreName,
+    onSelectedDocumentChange: setHomeDocRef,
+    onCrumbsChange: setHomeStoreCrumbs,
+    documentCloseRef: homeDocumentCloseRef,
+    settingsApps: PERMISSION_APPS,
+    onAccessSaved: handleAccessSaved,
+    onStaffAccessSaved: handleStaffAccessSaved,
+    onUserAccessSaved: handleUserAccessSaved,
+  };
+
+  const messagesScreenProps = {
+    session,
+    onUnreadChange: refreshMessagesUnread,
+    openUserId: dmFocusUserId,
+    onOpenedUser: clearDmFocusUser,
+    openConversationId: dmFocusConversationId,
+    onOpenedConversation: clearDmFocusConversation,
+    onConversationSeen: markNotificationsRead,
+    openAiKey: dmOpenAiKey,
+    onOpenedAi: clearDmOpenAi,
+    onOpenProfile: openPersonProfile,
+    onMobileHeader: chrome('messages', 'mobileHeader'),
+    onOpenThreadChange: chrome('messages', 'thread'),
+    onOpenCustomer: openCustomerProfile,
+    onOpenDocument: openSearchDocument,
+  };
+
+  const searchScreenProps = {
+    session,
+    onOpenPerson: openPersonProfile,
+    onOpenDocument: openSearchDocument,
+    onOpenCustomer: openCustomerProfile,
+    onMessage: messagePerson,
+    onOpenAi: canUseMessages ? openAiMessages : undefined,
+  };
+
+  const tradeScreenProps = { mode: tradeMode, hideHeader: isMobile, session };
+
+  const keptScreens = [
+    <KeptScreen
+      key="home"
+      visible={activeTab === 'home'}
+      gateKey="home"
+      dateScope="home"
+      Component={HomeScreen}
+      screenProps={homeScreenProps}
+    />,
+    mountMessages ? (
+      <KeptScreen
+        key="messages"
+        visible={showingMessages}
+        gateKey="messages"
+        style={styles.messagesHost}
+        Component={MessagesScreen}
+        screenProps={messagesScreenProps}
+      />
+    ) : null,
+    mountSearch ? (
+      <KeptScreen
+        key="search"
+        visible={activeTab === 'search'}
+        gateKey="search"
+        Component={SearchScreen}
+        screenProps={searchScreenProps}
+      />
+    ) : null,
+    mountTrade ? (
+      <KeptScreen
+        key="trade"
+        visible={showingTrade}
+        gateKey="trade"
+        Component={TradeScreen}
+        screenProps={tradeScreenProps}
+      />
+    ) : null,
+    ...keptToolKeys
+      .filter((key) => key !== 'messages' && hasApp(key))
+      .map((key) => {
+        const entry = TOOL_SCREENS[key];
+        const tool = TOOL_CARDS.find((item) => item.key === key);
+        return (
+          <KeptScreen
+            key={`tool:${key}`}
+            visible={activeTab === 'tools' && activeToolKey === key}
+            gateKey={key}
+            dateScope={`tools:${key}`}
+            style={styles.toolsScreen}
+            Component={entry ? entry.Component : PlaceholderToolScreen}
+            screenProps={entry ? entry.props(toolCtx) : { label: tool?.label || key }}
+          />
+        );
+      }),
+  ];
+
+  /** Whatever is not a kept screen: Profile, the Apps library, access notices. */
   const renderContent = () => {
     if (activeTab === 'profile') {
       return (
@@ -10391,43 +10520,23 @@ export default function App() {
           <ProfileScreen
             session={session}
             person={viewedProfile}
-            canMessage={hasApp('messages')}
+            canMessage={canUseMessages}
             canPhone={hasApp('phone')}
             canTeams={hasApp('teams')}
             onMessage={messagePerson}
             onOpenNotification={openNotificationChat}
             notifications={notifyItems}
             onOpenTeams={openTeamsFromProfile}
-            onBack={() => {
-              const next = profileReturnTo;
-              setViewedProfile(null);
-              setProfileReturnTo(null);
-              if (next && next !== 'profile') selectTab(next);
-            }}
+            onBack={backFromViewedProfile}
             onLogout={handleLogout}
-            onProfileChange={(patch) => {
-              setSession((current) => {
-                if (!current?.profile) return current;
-                const profile = { ...current.profile, ...patch };
-                if (shouldPrefetchTriage(profile)) {
-                  import('./lib/transferWorkflow')
-                    .then((mod) => mod.warmTriageWorkflow())
-                    .catch(() => {});
-                }
-                return { ...current, profile };
-              });
-            }}
+            onProfileChange={applyProfilePatch}
           />
         </ScreenGate>
       );
     }
 
     if (activeTab === 'tools') {
-      if (activeTool) {
-        if (isMobile) return null;
-        return renderActiveTool();
-      }
-
+      if (activeTool) return null;
       return (
         <AppsLibrary
           tools={filteredTools}
@@ -10440,92 +10549,21 @@ export default function App() {
       );
     }
 
-    if (activeTab === 'search') {
+    if (activeTab === 'messages' && !canUseMessages) {
       return (
-        <ScreenGate resetKey="search">
-          <SearchScreen
-            session={session}
-            onOpenPerson={openPersonProfile}
-            onOpenDocument={openSearchDocument}
-            onOpenCustomer={openCustomerProfile}
-            onMessage={messagePerson}
-            onOpenAi={hasApp('messages') ? openAiMessages : undefined}
-          />
-        </ScreenGate>
-      );
-    }
-
-    if (activeTab === 'messages') {
-      if (isMobile && hasApp('messages')) return null;
-      if (!hasApp('messages')) {
-        return (
-          <View style={styles.centered}>
-            <Text style={styles.toolsEmpty}>You don’t have access to Direct Messages.</Text>
-          </View>
-        );
-      }
-      return (
-        <View style={styles.messagesHost}>
-          <ScreenGate resetKey="messages">
-            <MessagesScreen
-              session={session}
-              onUnreadChange={refreshMessagesUnread}
-              openUserId={dmFocusUserId}
-              onOpenedUser={() => setDmFocusUserId('')}
-              openConversationId={dmFocusConversationId}
-              onOpenedConversation={() => setDmFocusConversationId('')}
-              onConversationSeen={markNotificationsRead}
-              openAiKey={dmOpenAiKey}
-              onOpenedAi={() => setDmOpenAiKey(0)}
-                  onOpenProfile={openPersonProfile}
-                  onMobileHeader={handleDmMobileHeader}
-                  onOpenCustomer={openCustomerProfile}
-                  onOpenDocument={openSearchDocument}
-            />
-          </ScreenGate>
+        <View style={styles.centered}>
+          <Text style={styles.toolsEmpty}>You don’t have access to Direct Messages.</Text>
         </View>
       );
     }
 
-    if (activeTab === 'buy' || activeTab === 'sell') {
-      return (
-        <ScreenGate resetKey={activeTab}>
-          <TradeScreen mode={activeTab} hideHeader={isMobile} session={session} />
-        </ScreenGate>
-      );
-    }
-
-    if (activeTab === 'home') {
-      if (isMobile) return null;
-      return (
-        <AppDateScope id="home">
-        <HomeScreen
-          session={session}
-          homeRootTick={homeRootTick}
-          onRequireLogin={() => selectTab('profile')}
-          onOpenPerson={openPersonProfile}
-          onOpenCustomer={openCustomerProfile}
-          onBuy={() => selectTab('buy')}
-          onSell={() => selectTab('sell')}
-          onOpenAnalytics={openAnalyticsApp}
-          onSelectedStoreChange={setHomeStoreName}
-          onSelectedDocumentChange={setHomeDocRef}
-          onCrumbsChange={setHomeStoreCrumbs}
-          documentCloseRef={homeDocumentCloseRef}
-          settingsApps={PERMISSION_APPS}
-          onAccessSaved={handleAccessSaved}
-          onStaffAccessSaved={handleStaffAccessSaved}
-          onUserAccessSaved={handleUserAccessSaved}
-        />
-        </AppDateScope>
-      );
+    if (activeTab === 'home' || activeTab === 'search' || activeTab === 'messages' || showingTrade) {
+      return null;
     }
 
     return <Text style={styles.contentTitle}>{activeLabel}</Text>;
   };
 
-  const showingMessages =
-    activeTab === 'messages' || (activeTab === 'tools' && activeTool?.key === 'messages');
   const showingMail = activeTab === 'tools' && activeTool?.key === 'emails';
   const isFullBleedTool =
     showingMessages ||
@@ -10674,11 +10712,9 @@ export default function App() {
   }
 
   if (isMobile) {
-    if (activeTab === 'messages') messagesSeenRef.current = true;
-    const mobileTabs = MOBILE_TABS.filter((tab) => tab.key !== 'messages' || hasApp('messages'));
-    const keepAppMounted = Boolean(activeTool) && !(activeTab === 'messages' && activeTool.key === 'messages');
+    const mobileTabs = MOBILE_TABS.filter((tab) => tab.key !== 'messages' || canUseMessages);
     const resumeApp =
-      keepAppMounted && activeTab !== 'tools'
+      activeTool && activeTab !== 'tools' && !(activeTab === 'messages' && activeTool.key === 'messages')
         ? TOOL_CARDS.find((tool) => tool.key === activeTool.key) || null
         : null;
     const resumeHome =
@@ -10705,11 +10741,8 @@ export default function App() {
         >
           <StatusBar style="dark" />
           <MobileSafeTop />
-          {activeTab === 'buy' || activeTab === 'sell' ? (
-            <MobileNavHeader
-              title={activeTab === 'buy' ? 'Buy' : 'Sell'}
-              onBack={() => selectTab('home')}
-            />
+          {showingTrade ? (
+            <MobileNavHeader title={activeTab === 'buy' ? 'Buy' : 'Sell'} onBack={selectHome} />
           ) : null}
           {((activeTab === 'tools' && activeTool && !(activeTool.key === 'triage' && triageMobileOverlay)) ||
             (activeTab === 'messages' && dmMobileHeader)) ? (
@@ -10736,78 +10769,8 @@ export default function App() {
             />
           ) : null}
           <View style={contentStyle}>
-            {keepAppMounted ? (
-              <View
-                key="parked-tool"
-                pointerEvents={activeTab === 'tools' ? 'auto' : 'none'}
-                accessibilityElementsHidden={activeTab !== 'tools'}
-                importantForAccessibility={activeTab === 'tools' ? 'auto' : 'no-hide-descendants'}
-                style={activeTab === 'tools' ? styles.parkedToolLive : styles.parkedToolHidden}
-              >
-                {renderActiveTool()}
-              </View>
-            ) : null}
-            <View
-              pointerEvents={activeTab === 'home' ? 'auto' : 'none'}
-              accessibilityElementsHidden={activeTab !== 'home'}
-              importantForAccessibility={activeTab === 'home' ? 'auto' : 'no-hide-descendants'}
-              style={activeTab === 'home' ? styles.parkedToolLive : styles.parkedToolHidden}
-            >
-              <AppDateScope id="home">
-              <HomeScreen
-                session={session}
-                homeRootTick={homeRootTick}
-                onRequireLogin={() => selectTab('profile')}
-                onOpenPerson={openPersonProfile}
-                onOpenCustomer={openCustomerProfile}
-                onBuy={() => selectTab('buy')}
-                onSell={() => selectTab('sell')}
-                onOpenAnalytics={openAnalyticsApp}
-                onSelectedStoreChange={setHomeStoreName}
-                onSelectedDocumentChange={setHomeDocRef}
-                onCrumbsChange={setHomeStoreCrumbs}
-                documentCloseRef={homeDocumentCloseRef}
-                settingsApps={PERMISSION_APPS}
-                onAccessSaved={handleAccessSaved}
-                onStaffAccessSaved={handleStaffAccessSaved}
-                onUserAccessSaved={handleUserAccessSaved}
-              />
-              </AppDateScope>
-            </View>
-            {hasApp('messages') && messagesSeenRef.current ? (
-              <View
-                pointerEvents={activeTab === 'messages' ? 'auto' : 'none'}
-                accessibilityElementsHidden={activeTab !== 'messages'}
-                importantForAccessibility={activeTab === 'messages' ? 'auto' : 'no-hide-descendants'}
-                style={activeTab === 'messages' ? styles.parkedToolLive : styles.parkedToolHidden}
-              >
-                <View style={styles.messagesHost}>
-                  <ScreenGate resetKey="messages">
-                    <MessagesScreen
-                      session={session}
-                      onUnreadChange={refreshMessagesUnread}
-                      openUserId={dmFocusUserId}
-                      onOpenedUser={() => setDmFocusUserId('')}
-                      openConversationId={dmFocusConversationId}
-                      onOpenedConversation={() => setDmFocusConversationId('')}
-                      onConversationSeen={markNotificationsRead}
-                      openAiKey={dmOpenAiKey}
-                      onOpenedAi={() => setDmOpenAiKey(0)}
-                      onOpenProfile={openPersonProfile}
-                      onMobileHeader={handleDmMobileHeader}
-                      onOpenThreadChange={handleResumeThread}
-                      onOpenCustomer={openCustomerProfile}
-                      onOpenDocument={openSearchDocument}
-                    />
-                  </ScreenGate>
-                </View>
-              </View>
-            ) : null}
-            {activeTab === 'home' ||
-            (activeTab === 'messages' && hasApp('messages')) ||
-            (activeTab === 'tools' && activeTool)
-              ? null
-              : renderContent()}
+            {keptScreens}
+            {renderContent()}
           </View>
           <View pointerEvents="box-none" style={styles.mobilePhoneDockSlot}>
             <MobilePhoneDock />
@@ -10829,7 +10792,7 @@ export default function App() {
             session={session}
             switchError={switchError}
             switching={switchingPos}
-            onClose={() => setLoginSwitcherOpen(false)}
+            onClose={closeLoginSwitcher}
             onChangeLogin={handleChangeLogin}
             onLogout={handleLogout}
           />
@@ -10883,12 +10846,12 @@ export default function App() {
               (activeTab === 'tools' && activeTool?.key === 'messages')
             }
             profileActive={activeTab === PROFILE_TAB.key}
-            onSelectHome={() => selectTab('home')}
-            onSelectSearch={() => selectTab('search')}
-            onSelectApps={() => selectTab('tools')}
-            onSelectMessages={() => selectTab('messages')}
-            onSelectProfile={() => selectTab(PROFILE_TAB.key)}
-            onOpenLocation={() => setLocationPickerOpen(true)}
+            onSelectHome={selectHome}
+            onSelectSearch={selectSearch}
+            onSelectApps={selectApps}
+            onSelectMessages={selectMessages}
+            onSelectProfile={selectProfile}
+            onOpenLocation={openLocationPicker}
             profileLabel={userLabel}
             profileLocation={storeLocationFromSession(session)}
             profileAvatarUrl={session?.profile?.avatarUrl || ''}
@@ -10928,11 +10891,16 @@ export default function App() {
         </View>
       </Animated.View>
 
-      <View style={contentStyle}>{renderContent()}</View>
+      <View style={contentStyle}>
+        {activeTab === 'tools' && activeTool ? renderToolsHeader() : null}
+        {keptScreens}
+        {renderContent()}
+      </View>
       </View>
       <TopNavBar
-        buyActive={activeTab === 'buy'}
-        sellActive={activeTab === 'sell'}
+        troveActive={activeTab === 'tools' && activeTool?.key === 'trove'}
+        showTrove={hasApp('trove')}
+        onSelectTrove={selectTrove}
         storeName={activeTab === 'home' && !homeStoreCrumbs.length ? homeStoreName : ''}
         documentRef={activeTab === 'home' && !homeStoreCrumbs.length ? homeDocRef : ''}
         pageTitle={
@@ -10941,7 +10909,7 @@ export default function App() {
             : activeTab === 'tools' && activeTool
               ? activeTool.label
               : activeTab === 'tools'
-                ? 'Apps'
+                ? ''
                 : activeTab === 'messages'
                   ? isMobile
                     ? 'Messages'
@@ -10966,20 +10934,15 @@ export default function App() {
         apps={activeTab === 'tools' && activeTool ? filteredTools : undefined}
         activeAppKey={activeTool?.key || ''}
         onSelectApp={openPinnedTool}
-        onSelectHome={() => selectTab('home')}
-        onSelectStore={homeDocRef ? () => homeDocumentCloseRef.current?.() : undefined}
-        onSelectBuy={() => selectTab('buy')}
-        onSelectSell={() => selectTab('sell')}
-        searchValue={isAppsLibrary ? appsSearchQuery : ''}
-        onSearchChange={isAppsLibrary && !isMobile ? setAppsSearchQuery : undefined}
-        searchPlaceholder="Search apps"
+        onSelectHome={selectHome}
+        onSelectStore={homeDocRef ? closeHomeDocument : undefined}
       />
       <ProfileLoginSwitcher
         visible={loginSwitcherOpen}
         session={session}
         switchError={switchError}
         switching={switchingPos}
-        onClose={() => setLoginSwitcherOpen(false)}
+        onClose={closeLoginSwitcher}
         onChangeLogin={handleChangeLogin}
         onLogout={handleLogout}
       />
@@ -10997,7 +10960,7 @@ export default function App() {
         selectedId={session?.profile?.locationId}
         selectedName={storeLocationFromSession(session)}
         includeWorkshop={canUseWorkshopLocation(session?.profile)}
-        onClose={() => setLocationPickerOpen(false)}
+        onClose={closeLocationPicker}
         onChanged={applyOwnLocation}
       />
     </View>
@@ -11051,12 +11014,6 @@ const styles = StyleSheet.create({
     flex: 1,
     flexShrink: 1,
     paddingRight: 12,
-  },
-  topBarSearchWrap: {
-    flex: 1,
-    minWidth: 140,
-    maxWidth: 320,
-    marginLeft: 4,
   },
   topBarBrand: {
     height: 32,
@@ -11510,6 +11467,34 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     height: 32,
     gap: 4,
+  },
+  topTroveButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 32,
+    minHeight: 32,
+    paddingHorizontal: 14,
+    paddingVertical: 0,
+    borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: '#000',
+    ...CHIP_SHADOW,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  topTroveButtonHover: {
+    backgroundColor: '#141414',
+  },
+  topTroveButtonActive: {
+    borderColor: '#B45309',
+    ...Platform.select({
+      web: { boxShadow: '0 0 0 1px rgba(180,83,9,0.35)' },
+      default: {},
+    }),
   },
   topTradeButton: {
     flexDirection: 'row',
@@ -11998,14 +11983,6 @@ const styles = StyleSheet.create({
   },
   contentMobileApp: {
     paddingTop: 0,
-  },
-  parkedToolLive: {
-    flex: 1,
-    minHeight: 0,
-    alignSelf: 'stretch',
-  },
-  parkedToolHidden: {
-    display: 'none',
   },
   contentMobileGrouped: {
     backgroundColor: '#f2f2f7',
@@ -13821,6 +13798,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     minWidth: 0,
     maxWidth: 420,
+    width: '100%',
     gap: 8,
     height: 32,
     minHeight: 32,
@@ -13983,6 +13961,7 @@ const styles = StyleSheet.create({
   toolCardWrap: {
     position: 'relative',
     alignItems: 'center',
+    justifyContent: 'flex-start',
     ...Platform.select({
       web: {
         boxSizing: 'border-box',
@@ -13990,8 +13969,26 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
+  appsLibraryTitle: {
+    fontFamily: FONT_EXTRALIGHT,
+    fontSize: 22,
+    fontWeight: '200',
+    color: TAB_INK,
+    letterSpacing: -0.4,
+    textAlign: 'center',
+    alignSelf: 'center',
+    width: '100%',
+    marginTop: 8,
+    marginBottom: 12,
+  },
+  appsLibrarySearchRow: {
+    width: '100%',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
   toolCard: {
     width: '100%',
+    flexDirection: 'column',
     alignItems: 'center',
     gap: 7,
     paddingTop: 4,
@@ -14003,6 +14000,9 @@ const styles = StyleSheet.create({
       },
       default: {},
     }),
+  },
+  appsGridIconTrove: {
+    overflow: 'hidden',
   },
   appsGridIcon: {
     alignItems: 'center',
@@ -14045,7 +14045,7 @@ const styles = StyleSheet.create({
   },
   appsGridLabelWrap: {
     width: '100%',
-    alignSelf: 'stretch',
+    alignSelf: 'center',
     alignItems: 'center',
     justifyContent: 'flex-start',
   },
@@ -14059,7 +14059,7 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     minHeight: 32,
     width: '100%',
-    alignSelf: 'stretch',
+    alignSelf: 'center',
     ...Platform.select({
       web: {
         display: 'block',
@@ -15024,6 +15024,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: 'transparent',
   },
+  igHomeFiltersTroveBtn: {
+    flex: 1,
+    borderColor: 'rgba(0,0,0,0.12)',
+  },
+  igHomeFiltersTroveLogo: {
+    width: Math.round(20 * TROVE_LOGO_ASPECT),
+    height: 20,
+  },
   igFilterAction: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -15323,42 +15331,6 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     color: '#1a1a1a',
     outlineStyle: 'none',
-  },
-  homeTabSearchField: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    minHeight: 44,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    backgroundColor: '#fff',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(60, 60, 67, 0.18)',
-  },
-  homeTabSearchFieldMobile: {
-    minHeight: 40,
-    borderRadius: 10,
-  },
-  homeTabSearchFieldDesktop: {
-    borderRadius: 6,
-    minHeight: 40,
-    height: 40,
-    paddingHorizontal: 12,
-  },
-  homeTabSearchInput: {
-    flex: 1,
-    minWidth: 0,
-    fontFamily,
-    fontSize: 16,
-    color: '#1d1d1f',
-    paddingVertical: 8,
-    outlineStyle: 'none',
-  },
-  homeTabSearchInputDesktop: {
-    paddingVertical: 0,
-    height: 40,
-    lineHeight: 20,
-    fontSize: 16,
   },
   igHomePinnedTopDesktop: {
     paddingTop: 0,
@@ -15770,31 +15742,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginTop: 1,
     flexShrink: 0,
-  },
-  igHomeMobileAppsSearch: {
-    flex: 1,
-    flexShrink: 1,
-    minWidth: 64,
-    flexDirection: 'row',
-    alignItems: 'center',
-    height: 32,
-    paddingHorizontal: 10,
-    gap: 6,
-    borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
-    borderWidth: 1,
-    borderColor: TAB_BORDER,
-    backgroundColor: 'transparent',
-  },
-  igHomeMobileAppsSearchInput: {
-    flex: 1,
-    minWidth: 0,
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '400',
-    color: '#1a1a1a',
-    letterSpacing: -0.2,
-    paddingVertical: 0,
-    outlineStyle: 'none',
   },
   igHomeHeroShell: {
     alignSelf: 'stretch',

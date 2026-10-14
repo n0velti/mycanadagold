@@ -140,8 +140,9 @@ const COMPOSER_PILL_ACTIVE_SHADOW = Platform.select({
   },
 });
 const CHATS_KEY = 'cgold.analytics.aiChats';
+const ACTIVE_KEY = 'cgold.analytics.aiChat.active';
 const PROMPTS_KEY = 'cgold.analytics.savedPrompts';
-const MAX_CHATS = 20;
+const MAX_CHATS = 40;
 const MAX_TURNS = 20;
 const MAX_TURN_CHARS = 6000;
 const MAX_PROMPTS = 40;
@@ -149,6 +150,10 @@ const MAX_PROMPT_CHARS = 4000;
 
 function storageKey(userKey) {
   return `${CHATS_KEY}.${userKey || 'local'}`;
+}
+
+function activeStorageKey(userKey) {
+  return `${ACTIVE_KEY}.${userKey || 'local'}`;
 }
 
 function promptsStorageKey(userKey) {
@@ -172,9 +177,63 @@ function byChatOrder(a, b) {
   return String(b.updatedAt).localeCompare(String(a.updatedAt));
 }
 
+function hasUserMessage(chat) {
+  return (chat?.turns || []).some((turn) => turn.role === 'user' && String(turn.content || '').trim());
+}
+
 function isUnusedPlaceholder(chat) {
-  if (!chat?.placeholder) return false;
-  return !(chat.turns || []).some((turn) => turn.role === 'user' && String(turn.content || '').trim());
+  if (!chat) return false;
+  return Boolean(chat.placeholder) && !hasUserMessage(chat);
+}
+
+function chatPreview(chat) {
+  const last = [...(chat?.turns || [])].reverse().find((turn) => String(turn?.content || '').trim());
+  return last ? String(last.content).replace(/\s+/g, ' ').trim() : '';
+}
+
+function dayBucket(iso, now = new Date()) {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return 'Earlier';
+  const start = (value) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  const diff = Math.round((start(now) - start(date)) / 86400000);
+  if (diff <= 0) return 'Today';
+  if (diff === 1) return 'Yesterday';
+  if (diff < 7) return 'This week';
+  if (diff < 30) return 'This month';
+  return 'Earlier';
+}
+
+function groupedHistory(rows) {
+  const pinned = [];
+  const rest = [];
+  (Array.isArray(rows) ? rows : []).forEach((chat) => {
+    if (chat.pinned) pinned.push(chat);
+    else rest.push(chat);
+  });
+  const groups = [];
+  if (pinned.length) groups.push({ title: 'Pinned', items: pinned });
+  const order = ['Today', 'Yesterday', 'This week', 'This month', 'Earlier'];
+  const buckets = new Map(order.map((title) => [title, []]));
+  rest.forEach((chat) => {
+    buckets.get(dayBucket(chat.updatedAt))?.push(chat);
+  });
+  order.forEach((title) => {
+    const items = buckets.get(title);
+    if (items?.length) groups.push({ title, items });
+  });
+  return groups;
+}
+
+function mergeChatLists(...lists) {
+  const byId = new Map();
+  lists.flat().forEach((chat) => {
+    if (!chat?.id) return;
+    const prev = byId.get(chat.id);
+    if (!prev || String(chat.updatedAt || '') >= String(prev.updatedAt || '')) {
+      byId.set(chat.id, chat);
+    }
+  });
+  return [...byId.values()].sort(byChatOrder);
 }
 
 function storedTurns(turns) {
@@ -217,16 +276,25 @@ function parseChats(raw) {
         members: Array.isArray(item?.members) ? item.members : [],
         turns: storedTurns(item?.turns),
       }))
-      .filter((chat) => chat.id && (chat.placeholder || chat.turns.some((turn) => turn.role === 'user')));
+      .filter((chat) => chat.id && (chat.placeholder || hasUserMessage(chat)));
   } catch {
     return [];
   }
 }
 
-async function loadChats(userKey) {
+async function loadStoredChats(key) {
   try {
-    const rows = parseChats(await AsyncStorage.getItem(storageKey(userKey)));
-    return rows.sort(byChatOrder);
+    return parseChats(await AsyncStorage.getItem(key));
+  } catch {
+    return [];
+  }
+}
+
+async function loadChats(userKey, extraKeys = []) {
+  const keys = [...new Set([storageKey(userKey), ...extraKeys.filter(Boolean).map((key) => storageKey(key))])];
+  try {
+    const batches = await Promise.all(keys.map((key) => loadStoredChats(key)));
+    return mergeChatLists(...batches);
   } catch {
     return [];
   }
@@ -298,8 +366,8 @@ async function copyToClipboard(text) {
   return false;
 }
 
-async function writeChats(userKey, chats) {
-  const slim = (Array.isArray(chats) ? chats : [])
+function slimChats(chats, { stripCharts = false } = {}) {
+  const mapped = (Array.isArray(chats) ? chats : [])
     .map((chat) => ({
       id: chat.id,
       conversationId: chat.conversationId || '',
@@ -308,14 +376,25 @@ async function writeChats(userKey, chats) {
       createdAt: chat.createdAt,
       updatedAt: chat.updatedAt,
       pinned: Boolean(chat.pinned),
-      placeholder: Boolean(chat.placeholder),
+      placeholder: Boolean(chat.placeholder) && !hasUserMessage(chat),
       members: Array.isArray(chat.members) ? chat.members : [],
-      turns: storedTurns(chat.turns),
+      turns: storedTurns(chat.turns).map((turn) => (
+        stripCharts && turn.charts ? { ...turn, charts: [] } : turn
+      )),
     }))
-    .filter((chat) => chat.id && (chat.placeholder || chat.turns.some((turn) => turn.role === 'user')))
-    .sort(byChatOrder)
-    .slice(0, MAX_CHATS);
-  await AsyncStorage.setItem(storageKey(userKey), JSON.stringify(slim));
+    .filter((chat) => chat.id && (chat.placeholder || hasUserMessage(chat)));
+  const draft = mapped.find(isUnusedPlaceholder) || null;
+  const real = mapped.filter((chat) => !isUnusedPlaceholder(chat)).sort(byChatOrder).slice(0, MAX_CHATS);
+  return (draft ? [draft, ...real] : real).sort(byChatOrder);
+}
+
+async function writeChats(userKey, chats) {
+  const key = storageKey(userKey);
+  try {
+    await AsyncStorage.setItem(key, JSON.stringify(slimChats(chats)));
+  } catch {
+    await AsyncStorage.setItem(key, JSON.stringify(slimChats(chats, { stripCharts: true })));
+  }
 }
 
 function isAbort(error) {
@@ -562,6 +641,7 @@ export default function AnalyticsAiPanel({
   const [busyNote, setBusyNote] = useState('');
   const [error, setError] = useState('');
   const [mobileList, setMobileList] = useState(false);
+  const [listQuery, setListQuery] = useState('');
   const [model, setModel] = useState(ANALYTICS_CHAT_MODELS[0].key);
   const [modelOpen, setModelOpen] = useState(false);
   const [savedPrompts, setSavedPrompts] = useState([]);
@@ -627,13 +707,19 @@ export default function AnalyticsAiPanel({
   );
   const blocked = !ready;
   const history = useMemo(
-    () =>
-      chats
-        .filter((chat) => chat.placeholder || chat.turns.some((turn) => turn.role === 'user' && String(turn.content || '').trim()))
-        .sort(byChatOrder),
+    () => chats.filter(hasUserMessage).sort(byChatOrder),
     [chats],
   );
-  const activeChat = history.find((chat) => chat.id === activeId) || null;
+  const visibleHistory = useMemo(() => {
+    const query = listQuery.trim().toLowerCase();
+    if (!query) return history;
+    return history.filter((chat) => {
+      if (String(chat.title || '').toLowerCase().includes(query)) return true;
+      return String(chatPreview(chat) || '').toLowerCase().includes(query);
+    });
+  }, [history, listQuery]);
+  const historyGroups = useMemo(() => groupedHistory(visibleHistory), [visibleHistory]);
+  const activeChat = chats.find((chat) => chat.id === activeId) || null;
   const activeMembers = (Array.isArray(members) && members.length
     ? members
     : activeChat?.members) || [];
@@ -741,6 +827,9 @@ export default function AnalyticsAiPanel({
   const selectChat = (id) => {
     activeIdRef.current = id;
     setActiveId(id);
+    if (id) {
+      AsyncStorage.setItem(activeStorageKey(userKey), id).catch(() => {});
+    }
   };
 
   const scheduleWrite = () => {
@@ -819,12 +908,11 @@ export default function AnalyticsAiPanel({
     let alive = true;
     const seen = revisionRef.current;
     setReady(false);
-    activeIdRef.current = null;
-    setActiveId(null);
     setMobileList(false);
     setError('');
     const boot = async () => {
-      const local = await loadChats(userKey);
+      const profileKey = session?.profile?.id || '';
+      const local = await loadChats(userKey, [profileKey, 'local']);
       let shared = [];
       try {
         shared = await listSharedAiChats();
@@ -881,10 +969,19 @@ export default function AnalyticsAiPanel({
           ];
         }
       }
-      if (!alive || revisionRef.current !== seen) return;
+      if (!alive) return;
+      if (revisionRef.current !== seen) {
+        setReady(true);
+        return;
+      }
       chatsRef.current = rows;
       setChats(rows);
       setReady(true);
+      if (rows.some((chat) => hasUserMessage(chat) || chat.conversationId)) {
+        writeChainRef.current = writeChainRef.current
+          .then(() => writeChats(userKey, chatsRef.current))
+          .catch(() => {});
+      }
       if (boundId) {
         activeIdRef.current = boundId;
         setActiveId(boundId);
@@ -896,6 +993,23 @@ export default function AnalyticsAiPanel({
           activeIdRef.current = latest.id;
           setActiveId(latest.id);
         }
+        return;
+      }
+      if (embedded) return;
+      let lastId = '';
+      try {
+        lastId = (await AsyncStorage.getItem(activeStorageKey(userKey))) || '';
+      } catch {
+        lastId = '';
+      }
+      const match =
+        rows.find((chat) => chat.id === lastId)
+        || rows.find(hasUserMessage)
+        || rows.slice().sort(byChatOrder)[0]
+        || null;
+      if (match && !startBlankRef.current) {
+        activeIdRef.current = match.id;
+        setActiveId(match.id);
       }
     };
     boot();
@@ -905,7 +1019,7 @@ export default function AnalyticsAiPanel({
     return () => {
       alive = false;
     };
-  }, [userKey, embedded, conversationId, myId]);
+  }, [userKey, embedded, conversationId, myId, session?.profile?.id]);
 
   useEffect(() => {
     if (!active || showList || activeId) return undefined;
@@ -994,7 +1108,7 @@ export default function AnalyticsAiPanel({
     }
     if (!embedded && !didAutoBlankRef.current) {
       didAutoBlankRef.current = true;
-      startNew();
+      if (!activeIdRef.current && !chatsRef.current.some(hasUserMessage)) startNew();
     }
   }, [ready, startBlank, embedded, startNew]);
 
@@ -1772,6 +1886,140 @@ export default function AnalyticsAiPanel({
     </Modal>
   );
 
+  const renderChatRow = (chat) => {
+    const selected = chat.id === activeId;
+    const busy = busyId === chat.id;
+    const pinned = Boolean(chat.pinned);
+    const menuOpen = menuChatId === chat.id;
+    const showMore = menuOpen || hoverChatId === chat.id || Platform.OS !== 'web';
+    const lastTurn = [...(chat.turns || [])].reverse().find((turn) => String(turn?.content || '').trim());
+    const lastLine = lastTurn
+      ? `${
+          lastTurn.role === 'user'
+            ? lastTurn.senderId && lastTurn.senderId !== myId
+              ? `${firstNameOfPerson(
+                  (chat.members || []).find((person) => person.id === lastTurn.senderId)
+                    || people.find((person) => person.id === lastTurn.senderId),
+                )}: `
+              : 'You: '
+            : ''
+        }${String(lastTurn.content).replace(/\s+/g, ' ').trim()}`
+      : 'No messages yet';
+    const memberCount = (chat.members || []).length;
+    return (
+      <View
+        key={chat.id}
+        style={[styles.chatRowWrap, menuOpen && styles.chatRowMenuOpen]}
+        {...(Platform.OS === 'web'
+          ? {
+              onMouseEnter: () => setHoverChatId(chat.id),
+              onMouseLeave: () => setHoverChatId((current) => (current === chat.id ? null : current)),
+            }
+          : null)}
+      >
+        <Pressable
+          onPress={() => {
+            setMenuChatId(null);
+            openChat(chat.id);
+          }}
+          accessibilityRole="button"
+          accessibilityState={{ selected }}
+          accessibilityLabel={chat.title}
+          style={[
+            styles.chatRow,
+            selected && styles.chatRowOn,
+            hoverChatId === chat.id && !selected && styles.chatRowHover,
+          ]}
+        >
+          <View style={styles.chatRowCopy}>
+            <View style={styles.chatRowTitleLine}>
+              {pinned ? <Ionicons name="pin" size={11} color={SECONDARY} style={styles.chatRowPin} /> : null}
+              <Text style={[styles.chatRowTitle, selected && styles.chatRowTitleOn]} numberOfLines={1}>
+                {chat.title}
+              </Text>
+              {busy ? (
+                <ActivityIndicator size="small" color={SECONDARY} style={styles.chatRowSpinner} />
+              ) : (
+                <Text style={styles.chatRowTime}>{formatInboxTime(chat.updatedAt)}</Text>
+              )}
+            </View>
+            <Text style={styles.chatRowPreview} numberOfLines={2}>
+              {memberCount ? `${memberCount + 1} people · ${lastLine}` : lastLine}
+            </Text>
+          </View>
+        </Pressable>
+        {showMore ? (
+          <Pressable
+            onPress={(event) => {
+              event?.stopPropagation?.();
+              event?.preventDefault?.();
+              setMenuChatId(menuOpen ? null : chat.id);
+            }}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={`Options for ${chat.title}`}
+            style={({ hovered, pressed }) => [
+              styles.chatMoreHit,
+              (hovered || pressed || menuOpen) && styles.chatMoreHitOn,
+            ]}
+          >
+            <Ionicons name="ellipsis-horizontal" size={16} color={SECONDARY} />
+          </Pressable>
+        ) : null}
+        {menuOpen ? (
+          <View style={styles.chatMenu}>
+            <Pressable
+              onPress={(event) => {
+                event?.stopPropagation?.();
+                setMenuChatId(null);
+                selectChat(chat.id);
+                setShareOpen(true);
+              }}
+              accessibilityRole="button"
+              style={({ hovered: itemHovered, pressed }) => [
+                styles.chatMenuItem,
+                (itemHovered || pressed) && styles.chatMenuItemHover,
+              ]}
+            >
+              <Ionicons name="person-add-outline" size={15} color={INK} />
+              <Text style={styles.chatMenuText}>Add people</Text>
+            </Pressable>
+            <Pressable
+              onPress={(event) => {
+                event?.stopPropagation?.();
+                togglePin(chat.id);
+                setMenuChatId(null);
+              }}
+              accessibilityRole="button"
+              style={({ hovered: itemHovered, pressed }) => [
+                styles.chatMenuItem,
+                (itemHovered || pressed) && styles.chatMenuItemHover,
+              ]}
+            >
+              <Ionicons name={pinned ? 'pin' : 'pin-outline'} size={15} color={INK} />
+              <Text style={styles.chatMenuText}>{pinned ? 'Unpin' : 'Pin'}</Text>
+            </Pressable>
+            <Pressable
+              onPress={(event) => {
+                event?.stopPropagation?.();
+                setMenuChatId(null);
+                removeChat(chat.id);
+              }}
+              accessibilityRole="button"
+              style={({ hovered: itemHovered, pressed }) => [
+                styles.chatMenuItem,
+                (itemHovered || pressed) && styles.chatMenuItemHover,
+              ]}
+            >
+              <Ionicons name="trash-outline" size={15} color="#b91c1c" />
+              <Text style={styles.chatMenuDelete}>Delete</Text>
+            </Pressable>
+          </View>
+        ) : null}
+      </View>
+    );
+  };
+
   const listBody = (
     <>
       <View style={styles.listHead}>
@@ -1786,186 +2034,77 @@ export default function AnalyticsAiPanel({
             <Ionicons name={embedded ? 'chevron-back' : 'close'} size={16} color={INK} />
           </Pressable>
         ) : null}
+        <View style={styles.listHeadCopy}>
+          <Text style={styles.listHeadKicker}>Analytics</Text>
+          <Text style={styles.listHeadTitle}>Conversations</Text>
+        </View>
         <Pressable
           onPress={startNew}
           hitSlop={8}
           accessibilityRole="button"
-          accessibilityState={{ selected: !activeId }}
+          accessibilityState={{ selected: !activeId || Boolean(activeChat && !hasUserMessage(activeChat)) }}
           accessibilityLabel="New chat"
           style={({ hovered, pressed }) => [
-            styles.listNewChatHit,
-            (hovered || pressed) && styles.listNewChatHitOn,
+            styles.listNewBtn,
+            (hovered || pressed) && styles.listNewBtnOn,
           ]}
         >
-          <Ionicons name="create-outline" size={22} color={INK} />
+          <Ionicons name="add" size={16} color={INK} />
+          <Text style={styles.listNewBtnText}>New</Text>
         </Pressable>
+      </View>
+      <View style={styles.listSearchWrap}>
+        <Ionicons name="search" size={14} color={SECONDARY} />
+        <TextInput
+          value={listQuery}
+          onChangeText={setListQuery}
+          placeholder="Search conversations"
+          placeholderTextColor={SECONDARY}
+          style={styles.listSearch}
+          autoCorrect={false}
+          autoCapitalize="none"
+          returnKeyType="search"
+        />
+        {listQuery ? (
+          <Pressable
+            onPress={() => setListQuery('')}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Clear search"
+          >
+            <Ionicons name="close-circle" size={14} color={SECONDARY} />
+          </Pressable>
+        ) : null}
       </View>
       <ScrollView
         style={styles.sideScroll}
         contentContainerStyle={[
           styles.sideScrollContent,
-          ready && !history.length && styles.sideScrollEmpty,
+          ready && !visibleHistory.length && styles.sideScrollEmpty,
         ]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
         {!ready ? (
           <ActivityIndicator color="#8e8e93" style={styles.sideSpinner} />
-        ) : history.length ? (
-          history.map((chat) => {
-            const selected = chat.id === activeId;
-            const busy = busyId === chat.id;
-            const pinned = Boolean(chat.pinned);
-            const menuOpen = menuChatId === chat.id;
-            const showMore = menuOpen || hoverChatId === chat.id || Platform.OS !== 'web';
-            // Inbox-style row: title + time, a scope line, then the last thing said.
-            const lastTurn = [...(chat.turns || [])].reverse().find((turn) => String(turn?.content || '').trim());
-            const lastLine = lastTurn
-              ? `${
-                  lastTurn.role === 'user'
-                    ? lastTurn.senderId && lastTurn.senderId !== myId
-                      ? `${firstNameOfPerson(
-                          (chat.members || []).find((person) => person.id === lastTurn.senderId)
-                            || people.find((person) => person.id === lastTurn.senderId),
-                        )}: `
-                      : 'You: '
-                    : ''
-                }${String(lastTurn.content).replace(/\s+/g, ' ').trim()}`
-              : 'New analysis';
-            const memberCount = (chat.members || []).length;
-            const scopeLine = memberCount
-              ? `${memberCount + 1} people`
-              : chat.scopeLabel || (chat.placeholder ? 'Draft' : 'Analytics');
-            return (
-              <View
-                key={chat.id}
-                style={[styles.chatRowWrap, menuOpen && styles.chatRowMenuOpen]}
-                {...(Platform.OS === 'web'
-                  ? {
-                      onMouseEnter: () => setHoverChatId(chat.id),
-                      onMouseLeave: () => setHoverChatId((current) => (current === chat.id ? null : current)),
-                    }
-                  : null)}
-              >
-                <Pressable
-                  onPress={() => {
-                    setMenuChatId(null);
-                    openChat(chat.id);
-                  }}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected }}
-                  accessibilityLabel={chat.title}
-                  style={[
-                    styles.chatRow,
-                    selected && styles.chatRowOn,
-                    hoverChatId === chat.id && !selected && styles.chatRowHover,
-                  ]}
-                >
-                  <View style={[styles.chatAvatar, selected && styles.chatAvatarOn]}>
-                    <Ionicons name="sparkles" size={18} color={selected ? '#fff' : INK} />
-                    {pinned ? (
-                      <View style={styles.chatPinBadge}>
-                        <Ionicons name="pin" size={9} color="#fff" />
-                      </View>
-                    ) : null}
-                  </View>
-                  <View style={styles.chatRowCopy}>
-                    <View style={styles.chatRowTitleLine}>
-                      <Text style={[styles.chatRowTitle, selected && styles.chatRowTitleOn]} numberOfLines={1}>
-                        {chat.title}
-                      </Text>
-                      {busy ? (
-                        <ActivityIndicator size="small" color={SECONDARY} style={styles.chatRowSpinner} />
-                      ) : (
-                        <Text style={styles.chatRowTime}>{formatInboxTime(chat.updatedAt)}</Text>
-                      )}
-                    </View>
-                    <Text style={styles.chatRowScope} numberOfLines={1}>
-                      {scopeLine}
-                    </Text>
-                    <Text style={styles.chatRowPreview} numberOfLines={1}>
-                      {lastLine}
-                    </Text>
-                  </View>
-                </Pressable>
-                {showMore ? (
-                  <Pressable
-                    onPress={(event) => {
-                      event?.stopPropagation?.();
-                      event?.preventDefault?.();
-                      setMenuChatId(menuOpen ? null : chat.id);
-                    }}
-                    hitSlop={8}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Options for ${chat.title}`}
-                    style={({ hovered, pressed }) => [
-                      styles.chatMoreHit,
-                      (hovered || pressed || menuOpen) && styles.chatMoreHitOn,
-                    ]}
-                  >
-                    <Ionicons name="ellipsis-vertical" size={16} color={SECONDARY} />
-                  </Pressable>
-                ) : null}
-                    {menuOpen ? (
-                      <View style={styles.chatMenu}>
-                        <Pressable
-                          onPress={(event) => {
-                            event?.stopPropagation?.();
-                            setMenuChatId(null);
-                            selectChat(chat.id);
-                            setShareOpen(true);
-                          }}
-                          accessibilityRole="button"
-                          style={({ hovered: itemHovered, pressed }) => [
-                            styles.chatMenuItem,
-                            (itemHovered || pressed) && styles.chatMenuItemHover,
-                          ]}
-                        >
-                          <Ionicons name="person-add-outline" size={15} color={INK} />
-                          <Text style={styles.chatMenuText}>Add people</Text>
-                        </Pressable>
-                        <Pressable
-                          onPress={(event) => {
-                            event?.stopPropagation?.();
-                            togglePin(chat.id);
-                            setMenuChatId(null);
-                          }}
-                          accessibilityRole="button"
-                          style={({ hovered: itemHovered, pressed }) => [
-                            styles.chatMenuItem,
-                            (itemHovered || pressed) && styles.chatMenuItemHover,
-                          ]}
-                        >
-                          <Ionicons name={pinned ? 'pin' : 'pin-outline'} size={15} color={INK} />
-                          <Text style={styles.chatMenuText}>{pinned ? 'Unpin' : 'Pin'}</Text>
-                        </Pressable>
-                        <Pressable
-                          onPress={(event) => {
-                            event?.stopPropagation?.();
-                            setMenuChatId(null);
-                            removeChat(chat.id);
-                          }}
-                          accessibilityRole="button"
-                          style={({ hovered: itemHovered, pressed }) => [
-                            styles.chatMenuItem,
-                            (itemHovered || pressed) && styles.chatMenuItemHover,
-                          ]}
-                        >
-                          <Ionicons name="trash-outline" size={15} color="#b91c1c" />
-                          <Text style={styles.chatMenuDelete}>Delete</Text>
-                        </Pressable>
-                      </View>
-                    ) : null}
-              </View>
-            );
-          })
+        ) : visibleHistory.length ? (
+          historyGroups.map((group) => (
+            <View key={group.title} style={styles.listGroup}>
+              <Text style={styles.listGroupTitle}>{group.title}</Text>
+              {group.items.map(renderChatRow)}
+            </View>
+          ))
         ) : (
           <View style={styles.sideEmptyWrap}>
             <View style={styles.sideEmptyMark}>
               <Ionicons name="chatbubbles-outline" size={18} color={SECONDARY} />
             </View>
-            <Text style={styles.sideEmptyTitle}>No chats yet</Text>
-            <Text style={styles.sideEmpty}>Saved threads appear here after you send a message.</Text>
+            <Text style={styles.sideEmptyTitle}>{listQuery.trim() ? 'No matching chats' : 'No conversations yet'}</Text>
+            <Text style={styles.sideEmpty}>
+              {listQuery.trim()
+                ? 'Try a different search, or start a new analysis.'
+                : 'Ask a question and it will be saved here.'}
+            </Text>
           </View>
         )}
       </ScrollView>
@@ -2617,29 +2756,71 @@ const styles = StyleSheet.create({
     minHeight: 0,
     borderRightWidth: StyleSheet.hairlineWidth,
     borderRightColor: RULE,
-    backgroundColor: CANVAS,
+    backgroundColor: '#f7f7f5',
   },
   sidebarPhone: {
     width: '100%',
     flex: 1,
     borderRightWidth: 0,
-    backgroundColor: CANVAS,
+    backgroundColor: '#f7f7f5',
   },
   listHead: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'flex-start',
-    minHeight: 52,
+    justifyContent: 'space-between',
+    minHeight: 56,
     marginHorizontal: 0,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    gap: 4,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 8,
+    gap: 10,
     flexShrink: 0,
-    backgroundColor: CANVAS,
+  },
+  listHeadCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  listHeadKicker: {
+    fontFamily: FONT,
+    fontSize: 11,
+    fontWeight: '500',
+    color: SECONDARY,
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+  },
+  listHeadTitle: {
+    fontFamily: FONT,
+    fontSize: 18,
+    lineHeight: 22,
+    fontWeight: '600',
+    color: INK,
+    letterSpacing: -0.3,
   },
   listHeadSpacer: {
     flex: 1,
     minWidth: 0,
+  },
+  listNewBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    height: 32,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(42,38,30,0.14)',
+    flexShrink: 0,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  listNewBtnOn: {
+    backgroundColor: '#ecece8',
+  },
+  listNewBtnText: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '500',
+    color: INK,
   },
   listNewChatHit: {
     width: 40,
@@ -2653,14 +2834,51 @@ const styles = StyleSheet.create({
   listNewChatHitOn: {
     backgroundColor: 'rgba(0,0,0,0.05)',
   },
+  listSearchWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginHorizontal: 12,
+    marginBottom: 10,
+    paddingHorizontal: 10,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(42,38,30,0.12)',
+    flexShrink: 0,
+  },
+  listSearch: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: FONT,
+    fontSize: 13,
+    color: INK,
+    paddingVertical: 0,
+    ...Platform.select({ web: { outlineStyle: 'none' }, default: {} }),
+  },
+  listGroup: {
+    paddingBottom: 10,
+  },
+  listGroupTitle: {
+    fontFamily: FONT,
+    fontSize: 11,
+    fontWeight: '600',
+    color: SECONDARY,
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
   sideScroll: {
     flex: 1,
     minHeight: 0,
   },
   sideScrollContent: {
     marginHorizontal: 0,
-    paddingHorizontal: 0,
-    paddingBottom: 22,
+    paddingHorizontal: 8,
+    paddingBottom: 28,
   },
   sideScrollEmpty: {
     flexGrow: 1,
@@ -2683,7 +2901,7 @@ const styles = StyleSheet.create({
     borderRadius: NAV_TAB_ACTIVE_RADIUS,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: CANVAS,
+    backgroundColor: '#fff',
     borderWidth: 1,
     borderColor: CHIP_BORDER,
     marginBottom: 4,
@@ -2708,111 +2926,90 @@ const styles = StyleSheet.create({
     position: 'relative',
     width: '100%',
   },
-  // Same shape as the Emails inbox row: avatar, title + time, scope line, preview.
   chatRow: {
     width: '100%',
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    minHeight: 64,
-    paddingVertical: 10,
-    paddingLeft: 14,
-    paddingRight: 14,
-    backgroundColor: CANVAS,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: RULE,
+    alignItems: 'flex-start',
+    gap: 10,
+    minHeight: 56,
+    paddingVertical: 9,
+    paddingLeft: 10,
+    paddingRight: 28,
+    borderRadius: 8,
+    backgroundColor: 'transparent',
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
   chatRowMenuOpen: {
     zIndex: 4,
   },
-  chatAvatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#e8e8ed',
-    flexShrink: 0,
-  },
-  chatAvatarOn: {
-    backgroundColor: INK,
-  },
-  chatPinBadge: {
-    position: 'absolute',
-    right: -2,
-    bottom: -2,
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#8e8e93',
-    borderWidth: 2,
-    borderColor: CANVAS,
-  },
   chatRowCopy: {
     flex: 1,
     minWidth: 0,
-    paddingRight: 24,
   },
   chatRowTitleLine: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
+  },
+  chatRowPin: {
+    marginTop: 1,
   },
   chatRowOn: {
-    backgroundColor: '#ececef',
+    backgroundColor: '#fff',
+    ...Platform.select({
+      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.04)' },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.04,
+        shadowRadius: 2,
+        elevation: 1,
+      },
+    }),
   },
   chatRowHover: {
-    backgroundColor: '#f5f5f7',
+    backgroundColor: 'rgba(255,255,255,0.7)',
   },
   chatRowTitle: {
     flex: 1,
     minWidth: 0,
     fontFamily: FONT,
-    fontSize: 15,
-    lineHeight: 20,
-    fontWeight: '600',
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '500',
     color: '#1d1d1f',
     letterSpacing: -0.15,
   },
   chatRowTitleOn: {
     color: INK,
+    fontWeight: '600',
   },
   chatRowTime: {
     fontFamily: FONT,
-    fontSize: 12,
+    fontSize: 11,
     color: SECONDARY,
     flexShrink: 0,
   },
-  chatRowScope: {
-    fontFamily: FONT,
-    fontSize: 14,
-    lineHeight: 19,
-    color: '#1d1d1f',
-    marginTop: 1,
-  },
   chatRowPreview: {
-    fontFamily: FONT,
-    fontSize: 13,
-    lineHeight: 18,
+    fontFamily: FONT_LIGHT,
+    fontSize: 12,
+    lineHeight: 16,
     color: SECONDARY,
-    marginTop: 1,
+    marginTop: 3,
   },
   chatRowSpinner: {
     flexShrink: 0,
   },
   chatMoreHit: {
     position: 'absolute',
-    right: 8,
-    top: 0,
-    bottom: 0,
-    width: 32,
+    right: 4,
+    top: 6,
+    width: 28,
+    height: 28,
     zIndex: 3,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 14,
+    borderRadius: 8,
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
   chatMoreHitOn: {
