@@ -13,6 +13,7 @@ export default function AnalyticsScreen({
   onOpenCustomer,
   onOpenDocument,
   onMobileHeader,
+  onOpenDashboard,
 }) {
   const compact = useIsMobile();
 
@@ -40,6 +41,7 @@ export default function AnalyticsScreen({
           onOpenDocument={onOpenDocument}
           storeFilter={storeFilter}
           onMobileHeader={onMobileHeader}
+          onOpenDashboard={onOpenDashboard}
         />
       </Suspense>
     </View>
