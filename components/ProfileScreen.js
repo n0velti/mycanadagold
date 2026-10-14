@@ -37,6 +37,7 @@ import ProfileTeamPicker from './ProfileTeamPicker';
 import ProfileNotesTable from './ProfileNotesTable';
 import { usePhoneCalls } from './PhoneCallProvider';
 import { AvatarRing } from '../lib/clockedIn';
+import { formatInboxTime } from '../lib/messages';
 
 const fontFamily = 'Sohne';
 const LABEL = MOBILE.label;
@@ -331,6 +332,8 @@ export default function ProfileScreen({
   onBack,
   onLogout,
   onProfileChange,
+  onOpenNotification,
+  notifications = [],
   openSettings = false,
   onSettingsClose,
 }) {
@@ -650,8 +653,31 @@ export default function ProfileScreen({
     </View>
   );
 
+  const notifyCards = !viewingOther && Array.isArray(notifications) && notifications.length ? (
+    <>
+      <GroupLabel title="Notifications" />
+      <Group style={styles.mobileGroupSpaced}>
+        {notifications.slice(0, 12).map((item, index) => (
+          <ContactRow
+            key={item.id}
+            caption={item.title}
+            icon={item.readAt ? 'notifications-outline' : 'notifications'}
+            value={item.body || formatInboxTime(item.createdAt) || 'Open chat'}
+            onPress={
+              item.conversationId
+                ? () => onOpenNotification?.(item.conversationId)
+                : undefined
+            }
+            last={index === Math.min(notifications.length, 12) - 1}
+          />
+        ))}
+      </Group>
+    </>
+  ) : null;
+
   const infoCards = (
     <>
+      {notifyCards}
       <Group style={styles.mobileGroupSpaced}>
         <ContactRow
           caption="Phone"

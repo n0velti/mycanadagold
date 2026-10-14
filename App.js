@@ -169,6 +169,7 @@ import { attributedReviewEmployeeNames, employeeNameMatchesAny } from './lib/bon
 import { captureTokenFromLocation } from './lib/qrCode';
 import { fetchAureusEmployee } from './lib/aureusEmployees';
 import { useDirectMessages } from './lib/messages';
+import { notificationBadgeText, useStaffNotifications } from './lib/notifications';
 import {
   CANVAS,
   DESKTOP_TOP_BAR_HEIGHT,
@@ -7763,19 +7764,12 @@ function moveArrayItem(array, fromIndex, toIndex) {
   return next;
 }
 
-function unreadBadgeText(count) {
-  const n = Number(count) || 0;
-  if (n <= 0) return '';
-  if (n > 99) return '99+';
-  return String(n);
-}
-
-function MessagesUnreadBadge({ count }) {
-  const label = unreadBadgeText(count);
+function ProfileNotifyBadge({ count }) {
+  const label = notificationBadgeText(count);
   if (!label) return null;
   return (
-    <View style={styles.messagesUnreadBadge} pointerEvents="none">
-      <Text style={styles.messagesUnreadBadgeText}>{label}</Text>
+    <View style={styles.profileNotifyBadge} pointerEvents="none">
+      <Text style={styles.profileNotifyBadgeText}>{label}</Text>
     </View>
   );
 }
@@ -8786,7 +8780,7 @@ function SidebarNavGroup({
   profileLocation,
   profileAvatarUrl,
   showMessages = true,
-  messagesUnread = 0,
+  profileUnread = 0,
 }) {
   const items = [
     {
@@ -8812,19 +8806,13 @@ function SidebarNavGroup({
           icon: 'chatbubbles-outline',
           active: messagesActive,
           onPress: onSelectMessages,
-          accessibilityLabel:
-            messagesUnread > 0
-              ? `Direct Messages, ${messagesUnread} unread`
-              : 'Direct Messages',
+          accessibilityLabel: 'Direct Messages',
           leading: (
-            <View style={styles.sidebarMessagesIcon}>
-              <Ionicons
-                name={messagesActive ? 'chatbubbles' : 'chatbubbles-outline'}
-                size={TAB_ICON_SIZE}
-                color={messagesActive ? MOBILE.label : MOBILE.secondary}
-              />
-              <MessagesUnreadBadge count={messagesUnread} />
-            </View>
+            <Ionicons
+              name={messagesActive ? 'chatbubbles' : 'chatbubbles-outline'}
+              size={TAB_ICON_SIZE}
+              color={messagesActive ? MOBILE.label : MOBILE.secondary}
+            />
           ),
         }
       : null,
@@ -8834,12 +8822,19 @@ function SidebarNavGroup({
       icon: PROFILE_TAB.icon,
       active: profileActive,
       onPress: onSelectProfile,
+      accessibilityLabel:
+        profileUnread > 0
+          ? `${profileLabel || PROFILE_TAB.label}, ${profileUnread} notifications`
+          : profileLabel || PROFILE_TAB.label,
       leading: (
-        <ProfileAvatar
-          uri={profileAvatarUrl}
-          name={profileLabel}
-          size={TAB_ICON_SIZE}
-        />
+        <View style={styles.sidebarProfileIcon}>
+          <ProfileAvatar
+            uri={profileAvatarUrl}
+            name={profileLabel}
+            size={TAB_ICON_SIZE}
+          />
+          <ProfileNotifyBadge count={profileUnread} />
+        </View>
       ),
       trailing: <ProfileStoreButton locationName={profileLocation} onPress={onOpenLocation} />,
     },
@@ -9216,6 +9211,7 @@ export default function App() {
   const [ownUserAccess, setOwnUserAccess] = useState(null);
   const [viewedProfile, setViewedProfile] = useState(null);
   const [dmFocusUserId, setDmFocusUserId] = useState('');
+  const [dmFocusConversationId, setDmFocusConversationId] = useState('');
   const [dmOpenAiKey, setDmOpenAiKey] = useState(0);
   const dmOpenAiSeq = useRef(0);
   const [dmMobileHeader, setDmMobileHeader] = useState(null);
@@ -9316,6 +9312,12 @@ export default function App() {
       enabled: isLoggedIn && hasApp('messages'),
     },
   );
+  const {
+    unread: notifyUnread,
+    items: notifyItems,
+    markRead: markNotificationsRead,
+  } = useStaffNotifications(session, { enabled: isLoggedIn });
+  const profileUnread = (Number(messagesUnread) || 0) + (Number(notifyUnread) || 0);
 
   const pinnedTools = pinnedKeys
     .map((key) => TOOL_CARDS.find((tool) => tool.key === key))
@@ -9343,6 +9345,7 @@ export default function App() {
     setSettingsPanel(null);
     setViewedProfile(null);
     setDmFocusUserId('');
+    setDmFocusConversationId('');
     setTeamsFocusId('');
     setProfileReturnTo(null);
     setLocationPickerOpen(false);
@@ -9643,6 +9646,13 @@ export default function App() {
   const messagePerson = (profileId) => {
     if (!profileId || !hasApp('messages')) return;
     setDmFocusUserId(profileId);
+    selectTab('messages');
+  };
+
+  const openNotificationChat = (conversationId) => {
+    if (!conversationId || !hasApp('messages')) return;
+    setDmFocusConversationId(conversationId);
+    void markNotificationsRead(conversationId);
     selectTab('messages');
   };
 
@@ -10210,6 +10220,9 @@ export default function App() {
               onUnreadChange={refreshMessagesUnread}
               openUserId={dmFocusUserId}
               onOpenedUser={() => setDmFocusUserId('')}
+              openConversationId={dmFocusConversationId}
+              onOpenedConversation={() => setDmFocusConversationId('')}
+              onConversationSeen={markNotificationsRead}
               openAiKey={dmOpenAiKey}
               onOpenedAi={() => setDmOpenAiKey(0)}
                   onOpenProfile={openPersonProfile}
@@ -10238,6 +10251,8 @@ export default function App() {
             canPhone={hasApp('phone')}
             canTeams={hasApp('teams')}
             onMessage={messagePerson}
+            onOpenNotification={openNotificationChat}
+            notifications={notifyItems}
             onOpenTeams={openTeamsFromProfile}
             onBack={() => {
               const next = profileReturnTo;
@@ -10311,6 +10326,9 @@ export default function App() {
               onUnreadChange={refreshMessagesUnread}
               openUserId={dmFocusUserId}
               onOpenedUser={() => setDmFocusUserId('')}
+              openConversationId={dmFocusConversationId}
+              onOpenedConversation={() => setDmFocusConversationId('')}
+              onConversationSeen={markNotificationsRead}
               openAiKey={dmOpenAiKey}
               onOpenedAi={() => setDmOpenAiKey(0)}
                   onOpenProfile={openPersonProfile}
@@ -10616,6 +10634,9 @@ export default function App() {
                       onUnreadChange={refreshMessagesUnread}
                       openUserId={dmFocusUserId}
                       onOpenedUser={() => setDmFocusUserId('')}
+                      openConversationId={dmFocusConversationId}
+                      onOpenedConversation={() => setDmFocusConversationId('')}
+                      onConversationSeen={markNotificationsRead}
                       openAiKey={dmOpenAiKey}
                       onOpenedAi={() => setDmOpenAiKey(0)}
                       onOpenProfile={openPersonProfile}
@@ -10642,6 +10663,7 @@ export default function App() {
             activeKey={activeTab}
             onSelect={selectTab}
             messagesUnread={messagesUnread}
+            profileUnread={profileUnread}
             resumeApp={resumeApp}
             resumeThread={parkedThread}
             resumeHome={resumeHome}
@@ -10717,7 +10739,7 @@ export default function App() {
             profileLocation={storeLocationFromSession(session)}
             profileAvatarUrl={session?.profile?.avatarUrl || ''}
             showMessages={hasApp('messages')}
-            messagesUnread={messagesUnread}
+            profileUnread={profileUnread}
           />
 
           <PinnedToolsList
@@ -11464,6 +11486,10 @@ const styles = StyleSheet.create({
     position: 'relative',
     overflow: 'visible',
   },
+  sidebarProfileIcon: {
+    position: 'relative',
+    overflow: 'visible',
+  },
   messagesUnreadBadge: {
     position: 'absolute',
     right: -7,
@@ -11480,6 +11506,32 @@ const styles = StyleSheet.create({
     zIndex: 2,
   },
   messagesUnreadBadgeText: {
+    fontFamily,
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#fff',
+    lineHeight: 11,
+    ...Platform.select({
+      android: { includeFontPadding: false },
+      default: {},
+    }),
+  },
+  profileNotifyBadge: {
+    position: 'absolute',
+    top: -6,
+    right: -8,
+    minWidth: 16,
+    height: 16,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    backgroundColor: '#FF7A00',
+    borderWidth: 1.5,
+    borderColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 2,
+  },
+  profileNotifyBadgeText: {
     fontFamily,
     fontSize: 9,
     fontWeight: '700',

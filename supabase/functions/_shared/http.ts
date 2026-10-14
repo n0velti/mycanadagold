@@ -67,7 +67,7 @@ export function corsHeaders(req: Request): Record<string, string> {
     else allow = '';
   }
   const headers: Record<string, string> = {
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': DEFAULT_ALLOWED_HEADERS,
     'Access-Control-Max-Age': '600',
     Vary: 'Origin',
