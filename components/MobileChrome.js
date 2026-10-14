@@ -711,6 +711,7 @@ export function MobileTabBar({
   activeKey,
   onSelect,
   messagesUnread = 0,
+  profileUnread = 0,
   resumeApp = null,
   resumeThread = null,
   resumeHome = null,
@@ -881,7 +882,7 @@ export function MobileTabBar({
             />
             {tabs.map((tab) => {
               const isActive = previewKey === tab.key;
-              const unread = tab.key === 'messages' ? messagesUnread : 0;
+              const unread = tab.key === 'profile' ? profileUnread : 0;
               const badge = unread > 99 ? '99+' : unread > 0 ? String(unread) : '';
               const isProfile = tab.key === 'profile';
               const rememberLayout = (event) => {
@@ -939,8 +940,11 @@ export function MobileTabBar({
                       ) : tab.key === 'messages' && resumeThread ? (
                         <TabCornerMark thread={resumeThread} />
                       ) : null}
-                      {badge && !(tab.key === 'messages' && resumeThread) ? (
-                        <View style={styles.badge} pointerEvents="none">
+                      {badge ? (
+                        <View
+                          style={[styles.badge, isProfile && styles.profileBadge]}
+                          pointerEvents="none"
+                        >
                           <Text style={styles.badgeText}>{badge}</Text>
                         </View>
                       ) : null}
@@ -1697,6 +1701,11 @@ const styles = StyleSheet.create({
     borderColor: '#fff',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  profileBadge: {
+    top: -3,
+    right: -6,
+    backgroundColor: '#FF7A00',
   },
   badgeText: {
     fontFamily,

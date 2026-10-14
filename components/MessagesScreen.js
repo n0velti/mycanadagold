@@ -664,9 +664,9 @@ function confirmDeleteForMe(onConfirm) {
 
 function confirmDeleteConversation(thread, onConfirm) {
   const title = 'Delete chat?';
-  const kept = thread?.isAi
+  const kept = thread?.isAi && !(thread?.members || []).length
     ? ''
-    : thread?.isGroup
+    : thread?.isGroup || thread?.isAi
       ? 'Everyone else will still have it.'
       : `${conversationTitle(thread)} will still have it.`;
   const body = kept
@@ -991,6 +991,9 @@ export default function MessagesScreen({
   onUnreadChange,
   openUserId,
   onOpenedUser,
+  openConversationId,
+  onOpenedConversation,
+  onConversationSeen,
   openAiKey,
   onOpenedAi,
   onOpenProfile,
@@ -1056,6 +1059,7 @@ export default function MessagesScreen({
   const sendingRef = useRef(false);
   const typingRef = useRef(null);
   const activeIdRef = useRef(null);
+  const aiShareRef = useRef(null);
   const inboxRef = useRef(inbox);
   const agentInboxRef = useRef(agentInbox);
   const agentMessagesRef = useRef(agentMessages);
@@ -1068,6 +1072,8 @@ export default function MessagesScreen({
   draftRef.current = draft;
   const onUnreadChangeRef = useRef(onUnreadChange);
   onUnreadChangeRef.current = onUnreadChange;
+  const onConversationSeenRef = useRef(onConversationSeen);
+  onConversationSeenRef.current = onConversationSeen;
   const onMobileHeaderRef = useRef(onMobileHeader);
   onMobileHeaderRef.current = onMobileHeader;
   const onOpenThreadChangeRef = useRef(onOpenThreadChange);
@@ -1180,6 +1186,7 @@ export default function MessagesScreen({
         const rows = await listDmMessages(conversationId, myId);
         setMessages(rows);
         await markDmRead(conversationId);
+        void onConversationSeenRef.current?.(conversationId);
         setInbox((current) =>
           current.map((row) =>
             row.conversationId === conversationId ? { ...row, unreadCount: 0 } : row,
@@ -1274,6 +1281,17 @@ export default function MessagesScreen({
     openedUserRef.current = openUserId;
     void openDirect(openUserId).finally(() => onOpenedUser?.());
   }, [openUserId, openDirect, onOpenedUser]);
+
+  const openedConversationRef = useRef('');
+  useEffect(() => {
+    if (!openConversationId) {
+      openedConversationRef.current = '';
+      return;
+    }
+    if (openedConversationRef.current === openConversationId) return;
+    openedConversationRef.current = openConversationId;
+    void openConversation(openConversationId).finally(() => onOpenedConversation?.());
+  }, [openConversationId, openConversation, onOpenedConversation]);
 
   useEffect(() => {
     refreshInbox();
@@ -2258,14 +2276,18 @@ export default function MessagesScreen({
       const preview = row.isAgent
         ? agentWorkPreview(agentBuilds[row.conversationId]) || 'New conversation'
         : row.isAi
-          ? 'Charts, maps, stock, hours, and documents'
+          ? row.lastMessagePreview || 'Charts, maps, stock, hours, and documents'
           : row.lastMessagePreview
             || (row.isTeam ? 'New team chat' : row.isGroup ? 'New group chat' : 'Start the conversation');
       const other = (row.members || []).find((person) => person.id !== myId);
       const subjectLine = row.isAgent
         ? AGENT_CONVERSATION_TITLE
         : row.isAi
-          ? 'MyCanadaGold AI'
+          ? row.members?.length
+            ? `${row.members.length + 1} people`
+            : row.lastMessageIsAssistant
+              ? 'MyCanadaGold AI'
+              : senderName || 'MyCanadaGold AI'
           : row.lastMessagePreview
             ? senderName || 'Teammate'
             : row.isTeam
@@ -2514,9 +2536,14 @@ export default function MessagesScreen({
                   title={AI_TITLE}
                   session={session}
                   compact={isMobile}
+                  conversationId={activeThread.conversationId}
+                  members={activeThread.members}
                   startBlank={aiStartBlank}
                   onBlankStarted={() => setAiStartBlank(false)}
                   onClose={() => setActiveId(null)}
+                  onNewChat={() => void openAiConversation()}
+                  onInboxChanged={() => void refreshInbox()}
+                  shareApiRef={aiShareRef}
                   onOpenCustomer={onOpenCustomer}
                   onOpenDocument={onOpenDocument}
                 />
@@ -2634,7 +2661,15 @@ export default function MessagesScreen({
                   ]}
                   keyboardShouldPersistTaps="handled"
                 >
-                  {activeThread.isAi || activeThread.isAgent ? (
+                  {activeThread.isAi ? (
+                    <>
+                      <Text style={styles.detailsLabel}>Chat</Text>
+                      <Text style={styles.detailsTeamName}>{conversationTitle(activeThread)}</Text>
+                      <Text style={styles.detailsHint}>
+                        People you add can see this history and talk to the AI with you.
+                      </Text>
+                    </>
+                  ) : activeThread.isAgent ? (
                     <>
                       <Text style={styles.detailsLabel}>Chat</Text>
                       <Text style={styles.detailsTeamName}>{conversationTitle(activeThread)}</Text>
@@ -2679,9 +2714,11 @@ export default function MessagesScreen({
                       <Text style={styles.detailsTeamName}>{conversationTitle(activeThread)}</Text>
                     </>
                   )}
-                  {!activeThread.isAi && !activeThread.isAgent ? (
+                  {!activeThread.isAgent ? (
                     <Text style={styles.detailsLabel}>
-                      {activeThread.members.length + 1} people
+                      {activeThread.isAi && !activeThread.members.length
+                        ? 'Only you so far'
+                        : `${activeThread.members.length + 1} people`}
                     </Text>
                   ) : null}
                   {activeThread.members.map((person) => (
@@ -2708,7 +2745,7 @@ export default function MessagesScreen({
                       ) : null}
                     </Pressable>
                   ))}
-                  {activeThread.isGroup && !activeThread.isTeam && !activeThread.isAi ? (
+                  {activeThread.isGroup && !activeThread.isTeam ? (
                     <>
                       <Pressable
                         onPress={() => setAddingMembers((current) => !current)}
@@ -2723,7 +2760,11 @@ export default function MessagesScreen({
                               key={person.id}
                               onPress={async () => {
                                 try {
-                                  await addDmGroupMembers(activeThread.conversationId, [person.id]);
+                                  if (activeThread.isAi && aiShareRef.current?.addPeople) {
+                                    await aiShareRef.current.addPeople([person.id]);
+                                  } else {
+                                    await addDmGroupMembers(activeThread.conversationId, [person.id]);
+                                  }
                                   await refreshInbox();
                                 } catch (err) {
                                   setError(err.message || 'Could not add that person.');
@@ -2749,7 +2790,7 @@ export default function MessagesScreen({
                       {activeThread.isAi || activeThread.isAgent ? 'Delete chat' : 'Delete for you'}
                     </Text>
                   </Pressable>
-                  {activeThread.isGroup && !activeThread.isAi ? (
+                  {activeThread.isGroup && (!activeThread.isAi || activeThread.members.length > 0) ? (
                     <Pressable
                       onPress={async () => {
                         try {
@@ -2765,7 +2806,7 @@ export default function MessagesScreen({
                       style={styles.leaveButton}
                     >
                       <Text style={styles.leaveButtonText}>
-                        {activeThread.isTeam ? 'Leave team chat' : 'Leave group'}
+                        {activeThread.isTeam ? 'Leave team chat' : activeThread.isAi ? 'Leave chat' : 'Leave group'}
                       </Text>
                     </Pressable>
                   ) : null}
@@ -4013,6 +4054,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     height: 32,
     outlineStyle: 'none',
+  },
+  detailsHint: {
+    fontFamily,
+    fontSize: 13,
+    lineHeight: 18,
+    color: '#8e8e93',
+    marginBottom: 8,
   },
   detailsTeamName: {
     fontFamily,

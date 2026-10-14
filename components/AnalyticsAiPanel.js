@@ -28,7 +28,24 @@ import {
   storedUsage,
 } from '../lib/openrouterPricing';
 import { parseDocReference } from '../lib/transactions';
-import { formatInboxTime } from '../lib/messages';
+import {
+  avatarColorForId,
+  contactName,
+  formatInboxTime,
+  initialsFromName,
+  isDefaultAiTitle,
+  listDmContacts,
+  mapIncomingDmMessage,
+  renameDmGroup,
+  subscribeDmRealtime,
+} from '../lib/messages';
+import {
+  hydrateAiDmChat,
+  listSharedAiChats,
+  mergeLocalAndSharedAiChats,
+  persistMissingAiTurns,
+  shareAiChat,
+} from '../lib/aiDmShare';
 import AnalyticsChartCard from './AnalyticsChartCard';
 import AnalyticsMapCard from './AnalyticsMapCard';
 import AnalyticsTableCard from './AnalyticsTableCard';
@@ -335,6 +352,8 @@ function storedTurns(turns) {
       if (!content && !charts.length && !attachments.length) return null;
       const next = charts.length ? { role: turn.role, content, charts } : { role: turn.role, content };
       if (attachments.length) next.attachments = attachments;
+      if (turn.senderId) next.senderId = String(turn.senderId);
+      if (turn.messageId) next.messageId = String(turn.messageId);
       return usage ? { ...next, usage } : next;
     })
     .filter(Boolean)
@@ -348,12 +367,14 @@ function parseChats(raw) {
     return list
       .map((item) => ({
         id: String(item?.id || ''),
+        conversationId: String(item?.conversationId || ''),
         title: String(item?.title || 'New analysis').slice(0, 80),
         scopeLabel: String(item?.scopeLabel || ''),
         createdAt: String(item?.createdAt || ''),
         updatedAt: String(item?.updatedAt || item?.createdAt || ''),
         pinned: Boolean(item?.pinned),
         placeholder: Boolean(item?.placeholder),
+        members: Array.isArray(item?.members) ? item.members : [],
         turns: storedTurns(item?.turns),
       }))
       .filter((chat) => chat.id && (chat.placeholder || chat.turns.some((turn) => turn.role === 'user')));
@@ -441,12 +462,14 @@ async function writeChats(userKey, chats) {
   const slim = (Array.isArray(chats) ? chats : [])
     .map((chat) => ({
       id: chat.id,
+      conversationId: chat.conversationId || '',
       title: String(chat.title || 'New analysis').slice(0, 80),
       scopeLabel: String(chat.scopeLabel || ''),
       createdAt: chat.createdAt,
       updatedAt: chat.updatedAt,
       pinned: Boolean(chat.pinned),
       placeholder: Boolean(chat.placeholder),
+      members: Array.isArray(chat.members) ? chat.members : [],
       turns: storedTurns(chat.turns),
     }))
     .filter((chat) => chat.id && (chat.placeholder || chat.turns.some((turn) => turn.role === 'user')))
@@ -622,10 +645,46 @@ function firstNameOfSession(session) {
   return full.split(/\s+/)[0] || '';
 }
 
+function firstNameOfPerson(person) {
+  const first = String(person?.firstName || '').trim();
+  if (first) return first;
+  return contactName(person).split(/\s+/)[0] || 'Teammate';
+}
+
+function PersonMark({ person, size = 28 }) {
+  const name = contactName(person);
+  const uri = String(person?.avatarUrl || '').trim();
+  if (uri) {
+    return (
+      <Image
+        source={{ uri }}
+        style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: '#e8e8ed' }}
+        accessibilityLabel={name}
+      />
+    );
+  }
+  return (
+    <View
+      style={{
+        width: size,
+        height: size,
+        borderRadius: size / 2,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: avatarColorForId(person?.id || name),
+      }}
+    >
+      <Text style={{ color: '#fff', fontFamily: FONT, fontSize: Math.max(10, Math.round(size * 0.36)), fontWeight: '600' }}>
+        {initialsFromName(name) || '?'}
+      </Text>
+    </View>
+  );
+}
+
 /**
  * `embedded`: hosted inside another screen (Direct Messages). Opens straight
- * into the conversation; the back chevron hands control to `onClose`. Saved
- * Analytics threads stay in the Analytics app — Messages has its own AI DMs.
+ * into that conversation (`conversationId`) and writes turns there so people
+ * you add can see the history and talk to the AI with you.
  * `title` names the assistant in the header, the bubble label, and the placeholder.
  * `startBlank` opens a new empty chat (Talk to AI). `onMobileHeader` puts New
  * chat / history on the app top bar so a phone does not stack two headers.
@@ -639,12 +698,18 @@ export default function AnalyticsAiPanel({
   onOpenCustomer,
   onOpenDocument,
   embedded = false,
+  conversationId = '',
+  members = null,
   startBlank = false,
   onBlankStarted = null,
+  onNewChat = null,
+  onInboxChanged = null,
+  shareApiRef = null,
   onMobileHeader = null,
   title = 'Analytics',
 }) {
   const userKey = session?.supabaseUserId || session?.profile?.id || '';
+  const myId = session?.supabaseUserId || session?.profile?.id || '';
   const firstName = firstNameOfSession(session);
   const [chats, setChats] = useState([]);
   const [ready, setReady] = useState(false);
@@ -664,6 +729,9 @@ export default function AnalyticsAiPanel({
   const [savedKey, setSavedKey] = useState('');
   const [menuChatId, setMenuChatId] = useState(null);
   const [hoverChatId, setHoverChatId] = useState(null);
+  const [people, setPeople] = useState([]);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [sharing, setSharing] = useState(false);
   const [mapsKey, setMapsKey] = useState('');
   const [prices, setPrices] = useState(() => cachedOpenRouterPrices());
   const pricesRef = useRef(prices);
@@ -681,6 +749,10 @@ export default function AnalyticsAiPanel({
   startBlankRef.current = startBlank;
   const onMobileHeaderRef = useRef(onMobileHeader);
   onMobileHeaderRef.current = onMobileHeader;
+  const onInboxChangedRef = useRef(onInboxChanged);
+  onInboxChangedRef.current = onInboxChanged;
+  const conversationIdRef = useRef(conversationId);
+  conversationIdRef.current = conversationId;
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
   const composerPillRef = useRef(null);
@@ -716,6 +788,9 @@ export default function AnalyticsAiPanel({
     [chats],
   );
   const activeChat = history.find((chat) => chat.id === activeId) || null;
+  const activeMembers = (Array.isArray(members) && members.length
+    ? members
+    : activeChat?.members) || [];
   const turns = (activeChat?.turns || []).filter((turn) => turn.role === 'user' || turn.role === 'assistant');
   const showList = compact && mobileList && !embedded;
   const tail = turns[turns.length - 1]?.content || '';
@@ -834,20 +909,93 @@ export default function AnalyticsAiPanel({
 
   useEffect(() => {
     let alive = true;
+    listDmContacts()
+      .then((rows) => {
+        if (alive) setPeople(rows);
+      })
+      .catch(() => {
+        if (alive) setPeople([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
     const seen = revisionRef.current;
     setReady(false);
     activeIdRef.current = null;
     setActiveId(null);
     setMobileList(false);
     setError('');
-    loadChats(userKey).then((rows) => {
+    const boot = async () => {
+      const local = await loadChats(userKey);
+      let shared = [];
+      try {
+        shared = await listSharedAiChats();
+      } catch {
+        shared = [];
+      }
       if (!alive) return;
-      setReady(true);
-      if (revisionRef.current !== seen) return;
+      let rows = mergeLocalAndSharedAiChats(local, shared);
+      const boundId = conversationIdRef.current;
+      if (boundId) {
+        const current = rows.find((chat) => chat.conversationId === boundId || chat.id === boundId);
+        const seed = !startBlankRef.current
+          ? current || rows.slice().sort(byChatOrder)[0]
+          : current;
+        try {
+          const hydrated = await hydrateAiDmChat(
+            {
+              id: boundId,
+              conversationId: boundId,
+              title: seed?.title || 'New chat',
+              scopeLabel: seed?.scopeLabel || '',
+              createdAt: seed?.createdAt || new Date().toISOString(),
+              updatedAt: seed?.updatedAt || new Date().toISOString(),
+              pinned: Boolean(seed?.pinned),
+              placeholder: true,
+              members: seed?.members || [],
+              turns: seed?.turns || [],
+            },
+            myId,
+          );
+          if (!hydrated.turns.length && seed?.turns?.length && !startBlankRef.current) {
+            hydrated.turns = seed.turns;
+            hydrated.placeholder = false;
+          }
+          rows = [
+            hydrated,
+            ...rows.filter((chat) => chat.conversationId !== boundId && chat.id !== boundId),
+          ];
+        } catch {
+          rows = [
+            {
+              id: boundId,
+              conversationId: boundId,
+              title: seed?.title || 'New chat',
+              scopeLabel: seed?.scopeLabel || '',
+              createdAt: seed?.createdAt || new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              pinned: false,
+              placeholder: !seed?.turns?.length,
+              members: seed?.members || [],
+              turns: startBlankRef.current ? [] : seed?.turns || [],
+            },
+            ...rows.filter((chat) => chat.conversationId !== boundId && chat.id !== boundId),
+          ];
+        }
+      }
+      if (!alive || revisionRef.current !== seen) return;
       chatsRef.current = rows;
       setChats(rows);
-      // Opening an existing Messages AI row resumes the latest saved thread.
-      // Talk to AI and the Analytics app start empty via startBlank / startNew.
+      setReady(true);
+      if (boundId) {
+        activeIdRef.current = boundId;
+        setActiveId(boundId);
+        return;
+      }
       if (embedded && !startBlankRef.current && rows.length) {
         const latest = rows.slice().sort(byChatOrder)[0];
         if (latest) {
@@ -855,14 +1003,15 @@ export default function AnalyticsAiPanel({
           setActiveId(latest.id);
         }
       }
-    });
+    };
+    boot();
     loadPrompts(userKey).then((rows) => {
       if (alive) setSavedPrompts(rows);
     });
     return () => {
       alive = false;
     };
-  }, [userKey, embedded]);
+  }, [userKey, embedded, conversationId, myId]);
 
   useEffect(() => {
     if (!active || showList || activeId) return undefined;
@@ -891,6 +1040,10 @@ export default function AnalyticsAiPanel({
   };
 
   const startNew = useCallback(() => {
+    if (embedded && onNewChat) {
+      onNewChat();
+      return;
+    }
     const unused = chatsRef.current.find(isUnusedPlaceholder);
     if (unused) {
       selectChat(unused.id);
@@ -925,7 +1078,7 @@ export default function AnalyticsAiPanel({
     setMenuChatId(null);
     setMobileList(false);
     setSentAnim(null);
-  }, [scopeLabel]);
+  }, [embedded, onNewChat, scopeLabel]);
 
   const didAutoBlankRef = useRef(false);
   useEffect(() => {
@@ -934,7 +1087,7 @@ export default function AnalyticsAiPanel({
       return;
     }
     if (startBlank) {
-      startNew();
+      if (!embedded) startNew();
       onBlankStartedRef.current?.();
       return;
     }
@@ -958,6 +1111,18 @@ export default function AnalyticsAiPanel({
           ]}
         >
           <Ionicons name={mobileList ? 'close-outline' : 'chatbubbles-outline'} size={20} color={INK} />
+        </Pressable>
+        <Pressable
+          onPress={() => setShareOpen(true)}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Add people to this chat"
+          style={({ hovered, pressed }) => [
+            styles.listNewChatHit,
+            (hovered || pressed) && styles.listNewChatHitOn,
+          ]}
+        >
+          <Ionicons name="person-add-outline" size={20} color={INK} />
         </Pressable>
         <Pressable
           onPress={startNew}
@@ -993,7 +1158,113 @@ export default function AnalyticsAiPanel({
     setError('');
     setMobileList(false);
     setSentAnim(null);
+    const chat = chatsRef.current.find((item) => item.id === id);
+    if (!chat?.conversationId || !chat.previewOnly) return;
+    hydrateAiDmChat(chat, myId)
+      .then((hydrated) => {
+        commit((current) => current.map((item) => (item.id === id ? hydrated : item)));
+      })
+      .catch(() => {});
   };
+
+  const addPeopleToActive = useCallback(async (memberIds) => {
+    const ids = [...new Set((Array.isArray(memberIds) ? memberIds : []).filter(Boolean))];
+    if (!ids.length) return;
+    const chat = chatsRef.current.find((item) => item.id === activeIdRef.current);
+    if (!chat) throw new Error('Open a chat first.');
+    setSharing(true);
+    try {
+      const conversation = await shareAiChat({
+        conversationId: chat.conversationId || conversationIdRef.current,
+        title: chat.title,
+        turns: chat.turns,
+        memberIds: ids,
+      });
+      const added = people.filter((person) => ids.includes(person.id));
+      const known = new Set((chat.members || []).map((person) => person.id));
+      commit((current) =>
+        current.map((item) =>
+          item.id === chat.id
+            ? {
+                ...item,
+                id: conversation,
+                conversationId: conversation,
+                members: [...(item.members || []), ...added.filter((person) => !known.has(person.id))],
+              }
+            : item,
+        ),
+        { persist: true },
+      );
+      if (activeIdRef.current === chat.id && chat.id !== conversation) {
+        selectChat(conversation);
+      }
+      onInboxChangedRef.current?.();
+    } finally {
+      setSharing(false);
+    }
+  }, [people]);
+
+  useEffect(() => {
+    if (!shareApiRef) return undefined;
+    shareApiRef.current = { addPeople: addPeopleToActive };
+    return () => {
+      if (shareApiRef.current?.addPeople === addPeopleToActive) {
+        shareApiRef.current = null;
+      }
+    };
+  }, [addPeopleToActive, shareApiRef]);
+
+  useEffect(() => {
+    const boundId = conversationId || activeChat?.conversationId;
+    if (!boundId || !myId) return undefined;
+    return subscribeDmRealtime({
+      onMessage: (payload) => {
+        const row = payload?.new;
+        if (!row?.id || row.conversation_id !== boundId) return;
+        if (payload.eventType !== 'INSERT') return;
+        void mapIncomingDmMessage(row, myId).then((mapped) => {
+          const turn = {
+            role: mapped.isAssistant ? 'assistant' : 'user',
+            content: String(mapped.body || '').trim(),
+            charts: mapped.charts || [],
+            attachments: mapped.attachments || [],
+            senderId: mapped.senderId || '',
+            messageId: mapped.id,
+            createdAt: mapped.createdAt,
+          };
+          if (!turn.content && !turn.charts.length && !turn.attachments.length) return;
+          commit((current) =>
+            current.map((chat) => {
+              if (chat.conversationId !== boundId && chat.id !== boundId) return chat;
+              const turns = chat.turns || [];
+              if (turns.some((item) => item.messageId === mapped.id)) return chat;
+              const match = turns.findIndex(
+                (item) =>
+                  !item.messageId
+                  && item.role === turn.role
+                  && String(item.content || '').trim() === turn.content,
+              );
+              if (match >= 0) {
+                const nextTurns = turns.slice();
+                nextTurns[match] = { ...nextTurns[match], ...turn };
+                return { ...chat, previewOnly: false, turns: nextTurns };
+              }
+              return {
+                ...chat,
+                placeholder: false,
+                previewOnly: false,
+                updatedAt: mapped.createdAt || chat.updatedAt,
+                turns: [...turns.filter((item) => String(item.content || '').trim() || item.role === 'user'), turn],
+              };
+            }),
+          );
+        }).catch(() => {});
+      },
+      onParticipant: () => {
+        onInboxChangedRef.current?.();
+      },
+    });
+  }, [activeChat?.conversationId, conversationId, myId]);
 
   const removeChat = (id) => {
     bump(id);
@@ -1141,21 +1412,41 @@ export default function AnalyticsAiPanel({
     }).start();
 
     const stored = attachments.map(storableAttachment).filter(Boolean);
-    const userTurnBase = stored.length ? { role: 'user', content: text, attachments: stored } : { role: 'user', content: text };
+    const boundId = existing?.conversationId || conversationId || '';
+    const userTurnBase = stored.length
+      ? { role: 'user', content: text, attachments: stored, senderId: myId }
+      : { role: 'user', content: text, senderId: myId };
     const nextChat = {
       id,
+      conversationId: boundId || existing?.conversationId || '',
       title: nameThis ? fallbackTitle(text) : (existing?.title || fallbackTitle(text)),
       scopeLabel: existing?.scopeLabel || scopeLabel,
       createdAt: existing?.createdAt || now,
       updatedAt: now,
       pinned: Boolean(existing?.pinned),
       placeholder: false,
+      members: existing?.members || [],
       turns: [...history, userTurnBase, { role: 'assistant', content: '' }],
     };
     commit((current) => {
       const rest = current.filter((chat) => chat.id !== id);
       return [nextChat, ...rest];
     }, { persist: true });
+
+    if (boundId) {
+      persistMissingAiTurns(boundId, [...history, userTurnBase])
+        .then((stored) => {
+          if (genRef.current.get(id) !== gen) return;
+          commit((current) =>
+            current.map((chat) => {
+              if (chat.id !== id) return chat;
+              const pending = (chat.turns || []).filter((turn) => turn.role === 'assistant' && !String(turn.content || '').trim());
+              return { ...chat, conversationId: boundId, turns: [...stored, ...pending] };
+            }),
+          );
+        })
+        .catch(() => {});
+    }
 
     try {
       const result = await askAnalytics({
@@ -1181,11 +1472,22 @@ export default function AnalyticsAiPanel({
         ? { role: 'assistant', content: answer, charts: result.charts || [], usage: priced }
         : { role: 'assistant', content: answer, charts: result.charts || [] };
       const savedTurns = [...history, userTurn, assistantTurn];
+      let storedTurns = savedTurns;
+      if (boundId) {
+        try {
+          storedTurns = await persistMissingAiTurns(boundId, savedTurns);
+        } catch {
+          // Keep the answer on this device even if the shared thread is late.
+        }
+      }
       commit((current) =>
         current.map((chat) => (
-          chat.id === id ? { ...chat, turns: savedTurns, updatedAt: new Date().toISOString() } : chat
+          chat.id === id
+            ? { ...chat, conversationId: boundId || chat.conversationId, turns: storedTurns, updatedAt: new Date().toISOString() }
+            : chat
         )),
       { persist: true });
+      if (boundId) onInboxChangedRef.current?.();
       if (!nameThis) return;
       const named = await nameChat(savedTurns, model);
       if (named.usage) {
@@ -1210,6 +1512,9 @@ export default function AnalyticsAiPanel({
       commit((current) =>
         current.map((chat) => (chat.id === id ? { ...chat, title: named.title } : chat)),
       { persist: true });
+      if (boundId && named.title && !isDefaultAiTitle(named.title)) {
+        renameDmGroup(boundId, named.title).catch(() => {});
+      }
     } catch (err) {
       if (isAbort(err) || genRef.current.get(id) !== gen) return;
       commit((current) =>
@@ -1474,6 +1779,98 @@ export default function AnalyticsAiPanel({
     </Modal>
   );
 
+  const shareMemberIds = new Set(activeMembers.map((person) => person.id));
+  const shareAddable = people.filter((person) => person.id !== myId && !shareMemberIds.has(person.id));
+  const shareSheet = (
+    <Modal
+      visible={shareOpen}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setShareOpen(false)}
+    >
+      <View style={styles.modelSheetRoot}>
+        <Pressable
+          style={styles.modelSheetBackdrop}
+          accessibilityRole="button"
+          accessibilityLabel="Close add people"
+          onPress={() => setShareOpen(false)}
+        />
+        <View style={[styles.modelSheetCard, compact && styles.modelSheetCardPhone]}>
+          <View style={styles.modelSheetHead}>
+            <Text style={styles.modelSheetTitle}>Add people</Text>
+            <Text style={styles.modelSheetSubtitle}>
+              They get this chat and its history, and can talk to the AI with you.
+            </Text>
+          </View>
+          <ScrollView
+            style={styles.modelSheetScroll}
+            contentContainerStyle={styles.modelSheetScrollContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {activeMembers.length ? (
+              <View style={styles.modelSection}>
+                <Text style={styles.modelSectionTitle}>In this chat</Text>
+                {activeMembers.map((person) => (
+                  <View key={person.id} style={styles.sharePerson}>
+                    <PersonMark person={person} size={36} />
+                    <Text style={styles.sharePersonName} numberOfLines={1}>
+                      {contactName(person)}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+            <View style={styles.modelSection}>
+              <Text style={styles.modelSectionTitle}>Add</Text>
+              {shareAddable.length ? (
+                shareAddable.map((person) => (
+                  <Pressable
+                    key={person.id}
+                    disabled={sharing}
+                    onPress={() => {
+                      void addPeopleToActive([person.id]).catch((err) => {
+                        setError(err?.message || 'Could not add that person.');
+                      });
+                    }}
+                    style={({ hovered, pressed }) => [
+                      styles.sharePerson,
+                      (hovered || pressed) && styles.sharePersonHover,
+                    ]}
+                  >
+                    <PersonMark person={person} size={36} />
+                    <Text style={styles.sharePersonName} numberOfLines={1}>
+                      {contactName(person)}
+                    </Text>
+                    {sharing ? (
+                      <ActivityIndicator size="small" color={SECONDARY} />
+                    ) : (
+                      <Ionicons name="add-circle-outline" size={20} color={BUBBLE_MINE} />
+                    )}
+                  </Pressable>
+                ))
+              ) : (
+                <Text style={styles.promptEmpty}>
+                  {people.length ? 'Everyone you can add is already here.' : 'No other staff have signed in yet.'}
+                </Text>
+              )}
+            </View>
+          </ScrollView>
+          <Pressable
+            onPress={() => setShareOpen(false)}
+            accessibilityRole="button"
+            style={({ hovered, pressed }) => [
+              styles.modelSheetDone,
+              (hovered || pressed) && styles.modelSheetDoneHover,
+            ]}
+          >
+            <Text style={styles.modelSheetDoneText}>Done</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+  );
+
   const listBody = (
     <>
       <View style={styles.listHead}>
@@ -1523,9 +1920,21 @@ export default function AnalyticsAiPanel({
             // Inbox-style row: title + time, a scope line, then the last thing said.
             const lastTurn = [...(chat.turns || [])].reverse().find((turn) => String(turn?.content || '').trim());
             const lastLine = lastTurn
-              ? `${lastTurn.role === 'user' ? 'You: ' : ''}${String(lastTurn.content).replace(/\s+/g, ' ').trim()}`
+              ? `${
+                  lastTurn.role === 'user'
+                    ? lastTurn.senderId && lastTurn.senderId !== myId
+                      ? `${firstNameOfPerson(
+                          (chat.members || []).find((person) => person.id === lastTurn.senderId)
+                            || people.find((person) => person.id === lastTurn.senderId),
+                        )}: `
+                      : 'You: '
+                    : ''
+                }${String(lastTurn.content).replace(/\s+/g, ' ').trim()}`
               : 'New analysis';
-            const scopeLine = chat.scopeLabel || (chat.placeholder ? 'Draft' : 'Analytics');
+            const memberCount = (chat.members || []).length;
+            const scopeLine = memberCount
+              ? `${memberCount + 1} people`
+              : chat.scopeLabel || (chat.placeholder ? 'Draft' : 'Analytics');
             return (
               <View
                 key={chat.id}
@@ -1601,6 +2010,22 @@ export default function AnalyticsAiPanel({
                         <Pressable
                           onPress={(event) => {
                             event?.stopPropagation?.();
+                            setMenuChatId(null);
+                            selectChat(chat.id);
+                            setShareOpen(true);
+                          }}
+                          accessibilityRole="button"
+                          style={({ hovered: itemHovered, pressed }) => [
+                            styles.chatMenuItem,
+                            (itemHovered || pressed) && styles.chatMenuItemHover,
+                          ]}
+                        >
+                          <Ionicons name="person-add-outline" size={15} color={INK} />
+                          <Text style={styles.chatMenuText}>Add people</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={(event) => {
+                            event?.stopPropagation?.();
                             togglePin(chat.id);
                             setMenuChatId(null);
                           }}
@@ -1673,8 +2098,21 @@ export default function AnalyticsAiPanel({
               <Text style={styles.navSubtitle} numberOfLines={1}>
                 {busyNote || 'Thinking…'}
               </Text>
+            ) : activeMembers.length ? (
+              <Text style={styles.navSubtitle} numberOfLines={1}>
+                {activeMembers.length + 1} people
+              </Text>
             ) : null}
           </View>
+          <Pressable
+            onPress={() => setShareOpen(true)}
+            hitSlop={8}
+            style={styles.chromeCircle}
+            accessibilityRole="button"
+            accessibilityLabel="Add people to this chat"
+          >
+            <Ionicons name="person-add-outline" size={16} color={INK} />
+          </Pressable>
           <Pressable
             onPress={startNew}
             hitSlop={8}
@@ -1700,8 +2138,12 @@ export default function AnalyticsAiPanel({
       >
         {turns.length ? (
           turns.map((turn, index) => {
-            const mine = turn.role === 'user';
-            const streaming = !mine && busyId === activeId && index === turns.length - 1 && !String(turn.content || '').trim();
+            const mine = turn.role === 'user' && (!turn.senderId || turn.senderId === myId);
+            const otherPerson = !mine && turn.role === 'user'
+              ? activeMembers.find((person) => person.id === turn.senderId)
+                || people.find((person) => person.id === turn.senderId)
+              : null;
+            const streaming = turn.role === 'assistant' && busyId === activeId && index === turns.length - 1 && !String(turn.content || '').trim();
             if (!mine && !String(turn.content || '').trim() && !streaming) return null;
             const costLine = streaming ? '' : turnCostLine(turn, turn.role);
             const flying = Boolean(
@@ -1734,12 +2176,22 @@ export default function AnalyticsAiPanel({
               <View key={`${turn.role}-${index}`} style={styles.turnGroup}>
                 <View style={[styles.turnRow, mine ? styles.turnRowMine : styles.turnRowTheirs]}>
                   {!mine ? (
-                    <View style={styles.turnAvatar}>
-                      <Ionicons name="sparkles" size={14} color={BUBBLE_MINE} />
-                    </View>
+                    otherPerson ? (
+                      <View style={styles.turnAvatar}>
+                        <PersonMark person={otherPerson} size={28} />
+                      </View>
+                    ) : (
+                      <View style={styles.turnAvatar}>
+                        <Ionicons name="sparkles" size={14} color={BUBBLE_MINE} />
+                      </View>
+                    )
                   ) : null}
                   <View style={[styles.turnBody, mine && styles.turnBodyMine, compact && (mine ? styles.turnBodyMinePhone : styles.turnBodyPhone)]}>
-                    {!mine ? <Text style={styles.turnLabel}>{title}</Text> : null}
+                    {!mine ? (
+                      <Text style={styles.turnLabel}>
+                        {otherPerson ? contactName(otherPerson) : title}
+                      </Text>
+                    ) : null}
                     {mine ? <AttachmentChips items={turn.attachments} mine /> : null}
                     {mine ? (
                       <SendFromInput
@@ -1849,6 +2301,22 @@ export default function AnalyticsAiPanel({
               </Text>
             ) : null}
           </View>
+          {compact ? null : (
+          <Pressable
+            onPress={() => setShareOpen(true)}
+            accessibilityRole="button"
+            accessibilityLabel="Add people to this chat"
+            style={({ hovered, pressed }) => [
+              styles.promptsHit,
+              (hovered || pressed) && styles.promptsHitHover,
+            ]}
+          >
+            <Ionicons name="person-add-outline" size={13} color={INK} />
+            <Text style={styles.promptsHitText}>
+              {activeMembers.length ? `${activeMembers.length + 1} people` : 'Add people'}
+            </Text>
+          </Pressable>
+          )}
           {compact ? null : (
           <Pressable
             onPress={() => setPromptsOpen(true)}
@@ -1980,6 +2448,20 @@ export default function AnalyticsAiPanel({
           <View style={[styles.composerTrail, compact && styles.composerTrailPhone]}>
             {compact ? (
               <Pressable
+                onPress={() => setShareOpen(true)}
+                accessibilityRole="button"
+                accessibilityLabel="Add people to this chat"
+                style={({ hovered, pressed }) => [
+                  styles.composerModel,
+                  styles.composerModelPhone,
+                  (hovered || pressed) && styles.composerModelHover,
+                ]}
+              >
+                <Ionicons name="person-add-outline" size={16} color={SECONDARY} />
+              </Pressable>
+            ) : null}
+            {compact ? (
+              <Pressable
                 onPress={() => setPromptsOpen(true)}
                 accessibilityRole="button"
                 accessibilityLabel="Saved prompts"
@@ -2056,6 +2538,7 @@ export default function AnalyticsAiPanel({
     <View style={[styles.root, compact && styles.rootPhone]}>
       {modelSheet}
       {promptsSheet}
+      {shareSheet}
       {embedded ? conversation : showList ? list : compact ? conversation : (
         <>
           {list}
@@ -3244,6 +3727,25 @@ const styles = StyleSheet.create({
     fontFamily: FONT,
     fontSize: 16,
     fontWeight: '600',
+    color: INK,
+  },
+  sharePerson: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 2,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  sharePersonHover: {
+    backgroundColor: '#f5f5f7',
+  },
+  sharePersonName: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '500',
     color: INK,
   },
   errorText: {
