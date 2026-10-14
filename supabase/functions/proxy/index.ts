@@ -10,6 +10,7 @@
  *   /proxy/openrouter/v1/models            GET   → openrouter.ai model catalog + prices
  *   /proxy/avatars/inspect                 POST  → OpenAI vision (is there exactly one clear face? describe them)
  *   /proxy/triage/read-po                  POST  → OpenAI vision (read the PO number off a purchase ticket)
+ *   /proxy/pos/<east|gta|pmx>/<path>       *     → that Aureus POS host, with the caller's own POS token
  *   /proxy/avatars/stylize                 POST  → OpenAI images/edits (Disney cartoon of the person in the photo) + likeness check
  *   /proxy/fintrac/<path>                  *     → www142.fintrac-canafe.canada.ca
  *   /proxy/rippling/oauth/config           GET   → { clientId, configured, connected, canManage }
@@ -105,6 +106,8 @@ const CANADAGOLD_PAGES: Record<string, string> = {
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT_AI = 60;
 const RATE_LIMIT_OTHER = 240;
+// POS reads fan out (three tenants, paginated searches, per-customer enrichment).
+const RATE_LIMIT_POS = 2000;
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
 function throttled(key: string, limit: number): boolean {
@@ -575,6 +578,63 @@ async function handleTriageReadPo(req: Request, body: ArrayBuffer | null): Promi
 
   const result = await avatarVisionJson(key, TRIAGE_PO_PROMPT, [dataUrl], AVATAR_VISION_TIMEOUT_MS);
   return json(req, 200, { poNumber: sanitizePoNumber(result?.poNumber) });
+}
+
+// ---------------------------------------------------------------------------
+// Aureus POS passthrough
+// ---------------------------------------------------------------------------
+
+/**
+ * Aureus answers browser preflights without Access-Control-Allow-Origin, so
+ * the web app cannot reach the POS hosts directly (Triage PO lookups were the
+ * first thing to break). `lib/auth.js` sends the same request here with the
+ * staff member's own POS token in X-Upstream-Authorization. Only the three
+ * known tenants are reachable; nothing is cached or logged.
+ */
+const POS_UPSTREAM_TIMEOUT_MS = 45_000;
+const POS_FORWARD_REQUEST_HEADERS = ['accept', 'content-type', 'accept-language'];
+const POS_FORWARD_RESPONSE_HEADERS = ['content-type', 'content-disposition'];
+
+async function handlePosPassthrough(
+  req: Request,
+  rest: string,
+  search: string,
+  body: ArrayBuffer | null,
+): Promise<Response> {
+  const match = rest.match(/^\/([a-z]+)(\/.*)?$/);
+  const system = match ? POS_SYSTEMS.find((entry) => entry.key === match[1]) : null;
+  if (!system) return error(req, 404, 'Unknown POS system.', 'not_found');
+
+  const authorization = upstreamAuthorization(req);
+  if (!authorization) return error(req, 401, 'Sign in to the POS first.', 'pos_unauthenticated');
+
+  const path = (match?.[2] || '/').replace(/\/{2,}/g, '/');
+  if (path.split('/').some((part) => part === '..' || part === '.')) {
+    return error(req, 400, 'Bad POS path.', 'bad_request');
+  }
+
+  const headers: Record<string, string> = { Authorization: authorization };
+  for (const name of POS_FORWARD_REQUEST_HEADERS) {
+    const value = req.headers.get(name);
+    if (value) headers[name] = value;
+  }
+
+  const upstream = await forward(
+    `${system.baseUrl}${path}${search}`,
+    { method: req.method, headers, body },
+    POS_UPSTREAM_TIMEOUT_MS,
+  );
+
+  // Body is streamed as-is. Content-Length is deliberately not copied: fetch
+  // may have decompressed the upstream body, so the original length is wrong.
+  const out = new Headers({ ...corsHeaders(req), ...securityHeaders() });
+  for (const name of POS_FORWARD_RESPONSE_HEADERS) {
+    const value = upstream.headers.get(name);
+    if (value) out.set(name, value);
+  }
+  out.set('X-Cgold-Upstream', 'pos');
+  out.set('Access-Control-Expose-Headers', 'X-Cgold-Upstream');
+  return new Response(upstream.body, { status: upstream.status, headers: out });
 }
 
 function buildAvatarEditForm(
@@ -8957,8 +9017,9 @@ Deno.serve(async (req) => {
     path.startsWith('/openai/') ||
     path.startsWith('/openrouter/') ||
     path === '/triage/read-po';
-  const bucket = isAvatar ? 'avatar' : isAi ? 'ai' : 'other';
-  const limit = isAvatar ? RATE_LIMIT_AVATAR : isAi ? RATE_LIMIT_AI : RATE_LIMIT_OTHER;
+  const isPos = path.startsWith('/pos/');
+  const bucket = isAvatar ? 'avatar' : isAi ? 'ai' : isPos ? 'pos' : 'other';
+  const limit = isAvatar ? RATE_LIMIT_AVATAR : isAi ? RATE_LIMIT_AI : isPos ? RATE_LIMIT_POS : RATE_LIMIT_OTHER;
   if (throttled(`${staff.userId}:${bucket}`, limit)) {
     return error(req, 429, 'Too many requests. Slow down and try again.', 'throttled');
   }
@@ -8981,6 +9042,9 @@ Deno.serve(async (req) => {
     }
     if (path === '/triage/read-po') {
       return await handleTriageReadPo(req, await readBody(req));
+    }
+    if (isPos) {
+      return await handlePosPassthrough(req, path.slice('/pos'.length), search, await readBody(req));
     }
     if (path === '/avatars/stylize') {
       return await handleAvatarStylize(req, await readBody(req), staff.userId);
