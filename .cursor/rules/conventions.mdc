@@ -10,7 +10,8 @@ globs:
 
 - Screens: `components/<Name>Screen.js`, default export, `StyleSheet.create`, `useIsMobile()` from `lib/mobileUi.js` at 768px.
 - Logic and POS/proxy clients: `lib/<topic>.js`. Keep `App.js` to shell, nav, and the lazy `SCREEN_LOADERS` map.
-- New apps need all four: `TOOL_CARDS` (`App.js`), `ALL_APP_KEYS` + role defaults (`lib/permissions.js`), `SCREEN_LOADERS` + `lazy()`, and the screen file.
+- New apps need all five: `TOOL_CARDS` (`App.js`), `ALL_APP_KEYS` + role defaults (`lib/permissions.js`), `SCREEN_LOADERS` + `lazy()`, a `TOOL_SCREENS` entry (component + shell props), and the screen file.
+- Screens are kept mounted and hidden between visits (`components/KeptScreen.js`). Pass them stable handlers only; pause polling/animation when `useScreenVisible()` is false.
 - Import `Text` / `Pressable` / `TextInput` / `Animated` from `react-native` (Metro wraps them). Use `@expo/vector-icons` (Ionicons) like neighboring screens.
 - JavaScript in the app; TypeScript only under `supabase/functions/`. No Jest/Vitest setup exists — do not add a runner unless asked.
 - `eslint-config-expo` is the linter. Edge Functions are lint-ignored (Deno).

@@ -5,8 +5,8 @@ import { EmptyState } from './TriageKit';
 
 const AnalyticsAiPanel = lazy(() => import('./AnalyticsAiPanel'));
 
-// Nothing is preloaded. Every answer is pulled for the dates and stores the
-// user names, so the chat opens as a blank slate.
+// Saved conversations are restored from this device. A new chat is only
+// opened when there is nothing to resume, or the person asks for one.
 export default function AnalyticsScreen({
   session,
   storeFilter,
