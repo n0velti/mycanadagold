@@ -27,6 +27,7 @@ import {
   formatInboxTime,
   formatLastSeen,
   formatThreadStamp,
+  findBlankAiDm,
   getOrCreateAiDm,
   getOrCreateDm,
   hideDmConversation,
@@ -1020,6 +1021,7 @@ export default function MessagesScreen({
   const [agentPhotoBusy, setAgentPhotoBusy] = useState(false);
   const [pendingFiles, setPendingFiles] = useState([]);
   const [attaching, setAttaching] = useState('');
+  const [aiStartBlank, setAiStartBlank] = useState(false);
   const [mapsKey, setMapsKey] = useState('');
   const [contacts, setContacts] = useState([]);
   const [query, setQuery] = useState('');
@@ -1875,7 +1877,9 @@ export default function MessagesScreen({
 
   const openAiConversation = useCallback(async () => {
     try {
-      const conversationId = await getOrCreateAiDm();
+      const blank = findBlankAiDm(inboxRef.current);
+      const conversationId = blank?.conversationId || (await getOrCreateAiDm());
+      setAiStartBlank(true);
       await refreshInbox();
       await openConversation(conversationId);
     } catch (err) {
@@ -2137,6 +2141,7 @@ export default function MessagesScreen({
           style={({ hovered, pressed }) => [
             styles.personRow,
             isMobile && styles.personRowCompact,
+            isMobile && styles.aiPinRowMobile,
             (hovered || pressed) && styles.rowPressed,
           ]}
           accessibilityLabel="Talk to AI"
@@ -2149,16 +2154,17 @@ export default function MessagesScreen({
               isMobile && styles.teamAvatarCompact,
             ]}
           >
-            <Ionicons name="sparkles" size={isMobile ? 18 : 20} color={BUBBLE_MINE} />
+            <Ionicons name="sparkles" size={isMobile ? 16 : 20} color={BUBBLE_MINE} />
           </View>
           <View style={styles.personCopy}>
-            <Text style={styles.personName} numberOfLines={1}>
+            <Text style={[styles.personName, isMobile && styles.aiPinNameMobile]} numberOfLines={1}>
               Talk to AI
             </Text>
             <Text style={styles.personSub} numberOfLines={1}>
-              Charts, maps, stock, hours, and documents
+              {isMobile ? 'New chat · charts, stock, hours' : 'Charts, maps, stock, hours, and documents'}
             </Text>
           </View>
+          <Ionicons name="chevron-forward" size={16} color="#c7c7cc" />
         </Pressable>
       ) : null;
 
@@ -2248,19 +2254,25 @@ export default function MessagesScreen({
         : row.lastMessageSenderId === myId
           ? 'You'
           : firstNameOf((row.members || []).find((person) => person.id === row.lastMessageSenderId));
+      // Same three-line shape as the Emails inbox: who, a subject-style line, then the preview.
       const preview = row.isAgent
         ? agentWorkPreview(agentBuilds[row.conversationId]) || 'New conversation'
         : row.isAi
           ? 'Charts, maps, stock, hours, and documents'
           : row.lastMessagePreview
-            ? row.isGroup || row.lastMessageSenderId === myId
-              ? `${senderName}: ${row.lastMessagePreview}`
-              : row.lastMessagePreview
+            || (row.isTeam ? 'New team chat' : row.isGroup ? 'New group chat' : 'Start the conversation');
+      const other = (row.members || []).find((person) => person.id !== myId);
+      const subjectLine = row.isAgent
+        ? AGENT_CONVERSATION_TITLE
+        : row.isAi
+          ? 'MyCanadaGold AI'
+          : row.lastMessagePreview
+            ? senderName || 'Teammate'
             : row.isTeam
-              ? 'New team chat'
+              ? 'Team chat'
               : row.isGroup
-                ? 'New group chat'
-                : 'Start the conversation';
+                ? `${(row.members || []).length} people`
+                : other?.teamName || other?.locationName || 'Direct message';
       const openMenu = (event) => {
         event?.preventDefault?.();
         event?.stopPropagation?.();
@@ -2285,7 +2297,7 @@ export default function MessagesScreen({
           ]}
           accessibilityLabel={`Conversation with ${conversationTitle(row)}`}
         >
-          <ConversationAvatar conversation={row} size={28} />
+          <ConversationAvatar conversation={row} size={isMobile ? 40 : 44} />
           <View style={styles.personCopy}>
             <View style={styles.personTop}>
               <Text
@@ -2302,6 +2314,9 @@ export default function MessagesScreen({
                 {formatInboxTime(row.lastMessageAt)}
               </Text>
             </View>
+            <Text style={[styles.personSubject, unread && styles.personNameUnread]} numberOfLines={1}>
+              {subjectLine}
+            </Text>
             <View style={styles.personBottom}>
               <Text
                 style={[styles.personSub, unread && styles.personPreviewUnread]}
@@ -2436,6 +2451,16 @@ export default function MessagesScreen({
           <View style={[styles.listHead, !isMobile && styles.listHeadDesktop]}>
             {searchField}
             <Pressable
+              onPress={() => void openAiConversation()}
+              style={({ hovered, pressed }) => [
+                isMobile ? styles.listIconHit : styles.chromeCircle,
+                (hovered || pressed) && (isMobile ? styles.listIconHitOn : styles.chromeCircleOn),
+              ]}
+              accessibilityLabel="Talk to AI"
+            >
+              <Ionicons name="sparkles-outline" size={isMobile ? 20 : 16} color={INK} />
+            </Pressable>
+            <Pressable
               onPress={openAgentConversation}
               style={({ hovered, pressed }) => [
                 isMobile ? styles.listIconHit : styles.chromeCircle,
@@ -2489,6 +2514,8 @@ export default function MessagesScreen({
                   title={AI_TITLE}
                   session={session}
                   compact={isMobile}
+                  startBlank={aiStartBlank}
+                  onBlankStarted={() => setAiStartBlank(false)}
                   onClose={() => setActiveId(null)}
                   onOpenCustomer={onOpenCustomer}
                   onOpenDocument={onOpenDocument}
@@ -2513,7 +2540,7 @@ export default function MessagesScreen({
                     <Ionicons name="chevron-back" size={16} color={INK} />
                   </Pressable>
                 ) : null}
-                <View style={[styles.threadHeaderMain, !isMobile && styles.threadHeaderMainDesktop]}>
+                <View style={styles.threadHeaderMain}>
                   <Pressable
                     onPress={() => {
                       if (activeThread.isGroup || activeThread.isAi || activeThread.isAgent) {
@@ -2524,6 +2551,7 @@ export default function MessagesScreen({
                       }
                       if (activeThread.other) handleOpenProfile(activeThread.other);
                     }}
+                    style={styles.threadHeaderAvatar}
                     accessibilityLabel={
                       activeThread.isAgent
                         ? 'Agent conversation'
@@ -2551,6 +2579,7 @@ export default function MessagesScreen({
                         styles.threadSeen,
                         !activeThread.isGroup && activeThread.other?.isOnline && styles.threadSeenLive,
                       ]}
+                      numberOfLines={1}
                     >
                       {conversationSubtitle(activeThread, {
                         typingLabel: aiThinking ? 'Thinking…' : typingLabel,
@@ -3549,6 +3578,13 @@ const styles = StyleSheet.create({
   aiPinAvatar: {
     backgroundColor: BUBBLE_THEM_BG,
   },
+  aiPinRowMobile: {
+    minHeight: 64,
+    paddingVertical: 12,
+  },
+  aiPinNameMobile: {
+    fontWeight: '600',
+  },
   teamAvatar: {
     width: 44,
     height: 44,
@@ -3598,11 +3634,11 @@ const styles = StyleSheet.create({
     width: '100%',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
     minHeight: 56,
     paddingVertical: 10,
-    paddingLeft: 16,
-    paddingRight: 12,
+    paddingLeft: 14,
+    paddingRight: 14,
     backgroundColor: CANVAS,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: RULE,
@@ -3612,45 +3648,53 @@ const styles = StyleSheet.create({
     }),
   },
   personRowCompact: {
-    gap: 10,
+    gap: 12,
     paddingVertical: 10,
   },
   personRowSelected: {
-    backgroundColor: '#f2f2f7',
+    backgroundColor: '#ececef',
   },
   rowPressed: {
-    backgroundColor: '#f2f2f7',
+    backgroundColor: '#f5f5f7',
   },
   personCopy: {
     flex: 1,
     minWidth: 0,
-    gap: 2,
   },
   personTop: {
     flexDirection: 'row',
-    alignItems: 'baseline',
+    alignItems: 'center',
     gap: 8,
   },
   personBottom: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    marginTop: 1,
   },
+  // Mirrors the Emails inbox row: name + time, a subject-style line, then the preview.
   personName: {
     flex: 1,
     fontFamily,
-    fontSize: 16,
-    lineHeight: 21,
-    color: '#636366',
-    fontWeight: '400',
-    letterSpacing: -0.2,
+    fontSize: 15,
+    lineHeight: 20,
+    color: '#1d1d1f',
+    fontWeight: '600',
+    letterSpacing: -0.15,
   },
   personNameActive: {
-    color: '#3a3a3c',
+    color: '#1d1d1f',
   },
   personNameUnread: {
     color: INK,
-    fontWeight: '500',
+    fontWeight: '700',
+  },
+  personSubject: {
+    fontFamily,
+    fontSize: 14,
+    lineHeight: 19,
+    color: '#1d1d1f',
+    marginTop: 1,
   },
   personTime: {
     fontFamily,
@@ -3670,8 +3714,7 @@ const styles = StyleSheet.create({
     letterSpacing: -0.1,
   },
   personPreviewUnread: {
-    color: '#1d1d1f',
-    fontWeight: '600',
+    color: '#3a3a3c',
   },
   unreadPill: {
     minWidth: 16,
@@ -3734,6 +3777,7 @@ const styles = StyleSheet.create({
     paddingTop: DESKTOP_TOP_BAR_HEIGHT,
   },
   threadHeader: {
+    width: '100%',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
@@ -3756,16 +3800,16 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
     borderBottomColor: 'rgba(42,38,30,0.08)',
   },
-  threadHeaderMainDesktop: {
-    flexGrow: 0,
-    flexShrink: 1,
-  },
   threadHeaderMain: {
     flex: 1,
     minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+    flexShrink: 1,
+  },
+  threadHeaderAvatar: {
+    flexShrink: 0,
   },
   infoButton: {
     width: 32,
@@ -3776,6 +3820,11 @@ const styles = StyleSheet.create({
   threadHeaderCopy: {
     flex: 1,
     minWidth: 0,
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { overflow: 'hidden' },
+      default: {},
+    }),
   },
   threadName: {
     fontFamily,

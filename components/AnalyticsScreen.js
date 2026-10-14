@@ -7,7 +7,13 @@ const AnalyticsAiPanel = lazy(() => import('./AnalyticsAiPanel'));
 
 // Nothing is preloaded. Every answer is pulled for the dates and stores the
 // user names, so the chat opens as a blank slate.
-export default function AnalyticsScreen({ session, storeFilter, onOpenCustomer, onOpenDocument }) {
+export default function AnalyticsScreen({
+  session,
+  storeFilter,
+  onOpenCustomer,
+  onOpenDocument,
+  onMobileHeader,
+}) {
   const compact = useIsMobile();
 
   if (!session?.token) {
@@ -33,6 +39,7 @@ export default function AnalyticsScreen({ session, storeFilter, onOpenCustomer, 
           onOpenCustomer={onOpenCustomer}
           onOpenDocument={onOpenDocument}
           storeFilter={storeFilter}
+          onMobileHeader={onMobileHeader}
         />
       </Suspense>
     </View>

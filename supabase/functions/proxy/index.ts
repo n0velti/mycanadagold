@@ -31,6 +31,8 @@
  *   /proxy/gmail/accounts/disconnect       POST  → revoke + forget one of their inboxes
  *   /proxy/gmail/mailbox                   POST  → Gmail inbox / sent list for one of their inboxes
  *   /proxy/gmail/message                   GET   → one Gmail message body (?account=&id=)
+ *   /proxy/gmail/signature                 GET   → Gmail signature + whether this inbox may send (?account=)
+ *   /proxy/gmail/send                      POST  → send or reply (to/cc/bcc, signature, thread headers)
  *   /proxy/google/local-boq                GET   → Google local reviews (GetLocalBoqProxy)
  *   /proxy/bonus/google-reviews            GET   → same Google feed, bonuses-only grant
  *   /proxy/bonus/roster                    POST  → legacy no-op (bonuses use the in-app HR roster)
@@ -1249,23 +1251,28 @@ function extractGmailText(part: GmailPart | undefined, preferHtml = false): stri
     if (html) return html;
   }
   if ((mime === 'text/html' || preferHtml) && part.body?.data) {
-    return decodeGmailBody(part.body.data)
-      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/p>/gi, '\n\n')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&nbsp;/gi, ' ')
-      .replace(/&amp;/gi, '&')
-      .replace(/&lt;/gi, '<')
-      .replace(/&gt;/gi, '>')
-      .replace(/&#39;/g, "'")
-      .replace(/&quot;/g, '"')
-      .replace(/[ \t]+\n/g, '\n')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
+    return stripHtml(decodeGmailBody(part.body.data));
   }
   return '';
+}
+
+function stripHtml(html: string): string {
+  return String(html || '')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(?:p|div|tr|li|h[1-6])>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function parseAddressList(value: string): { name: string; email: string }[] {
@@ -1762,11 +1769,311 @@ async function handleGmailMessage(req: Request, staff: StaffContext, query: URLS
   const mapped = mapGmailListMessage(detail.payload);
   const root = detail.payload.payload as GmailPart | undefined;
   const text = extractGmailText(root);
+  // Threading headers so a reply from the app lands in the same Gmail thread.
+  const headers = root?.headers;
   return json(req, 200, {
     ...mapped,
     account: row.email,
     body: text || mapped.snippet,
     attachments: listGmailAttachments(root),
+    messageId: gmailHeader(headers, 'Message-ID'),
+    inReplyTo: gmailHeader(headers, 'In-Reply-To'),
+    references: gmailHeader(headers, 'References'),
+    replyTo: parseAddressList(gmailHeader(headers, 'Reply-To')),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Emails app: sending. Needs the gmail.send scope, which inboxes connected
+// before this existed do not have; those get `gmail_scope_send` and the app
+// asks the person to connect that inbox again. The MIME message is built here
+// so the browser never needs the Gmail signature HTML or threading headers.
+// ---------------------------------------------------------------------------
+
+const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
+const GMAIL_SEND_DENIED = 'This inbox was connected before sending was turned on. Connect it again and allow “Send email on your behalf”.';
+const GMAIL_SEND_MAX_RECIPIENTS = 50;
+const GMAIL_SEND_MAX_TEXT = 100_000;
+const EMAIL_ADDRESS_RE = /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i;
+
+function scopeAllowsGmailSend(scope: string): boolean {
+  const value = String(scope || '');
+  return value.includes(GMAIL_SEND_SCOPE)
+    || value.includes('https://www.googleapis.com/auth/gmail.compose')
+    || value.includes('https://www.googleapis.com/auth/gmail.modify')
+    || value.includes('https://mail.google.com/');
+}
+
+async function fetchGmailSignature(
+  authorization: string,
+  account: string,
+): Promise<{ signatureHtml: string; signatureText: string; displayName: string }> {
+  const empty = { signatureHtml: '', signatureText: '', displayName: '' };
+  const res = await googleJson(`${GMAIL_API}/settings/sendAs`, authorization).catch(() => null);
+  if (!res?.ok || !res.payload) return empty;
+  const rows = Array.isArray(res.payload.sendAs) ? res.payload.sendAs as Record<string, unknown>[] : [];
+  const match = rows.find((row) => String(row.sendAsEmail || '').toLowerCase() === account)
+    || rows.find((row) => row.isPrimary === true)
+    || rows.find((row) => row.isDefault === true)
+    || rows[0];
+  const signatureHtml = String(match?.signature || '').trim();
+  return {
+    signatureHtml,
+    signatureText: stripHtml(signatureHtml),
+    displayName: String(match?.displayName || '').trim(),
+  };
+}
+
+async function handleGmailSignature(req: Request, staff: StaffContext, query: URLSearchParams): Promise<Response> {
+  const account = gmailAccountFromRequest({}, query);
+  if (!account) return error(req, 401, GMAIL_NOT_CONNECTED, 'gmail_unauthenticated');
+  let token = '';
+  let row: GmailAccountRow;
+  try {
+    ({ row, token } = await gmailAccountAccessToken(staff, account));
+  } catch (err) {
+    return gmailAccountFailure(req, err, 'Could not load that inbox.');
+  }
+  const signature = await fetchGmailSignature(`Bearer ${token}`, row.email);
+  return json(req, 200, {
+    account: row.email,
+    canSend: scopeAllowsGmailSend(row.granted_scope || ''),
+    ...signature,
+  });
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+function utf8Base64(text: string): string {
+  return bytesToBase64(new TextEncoder().encode(text));
+}
+
+function base64Url(value: string): string {
+  return value.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function wrapBase64(value: string): string {
+  return value.replace(/(.{76})/g, '$1\r\n');
+}
+
+/** RFC 2047 encode a header value when it is not plain ASCII. */
+function encodeHeaderText(value: string): string {
+  const text = String(value || '').replace(/[\r\n]+/g, ' ').trim();
+  // deno-lint-ignore no-control-regex
+  if (/^[\x20-\x7e]*$/.test(text)) return text;
+  return `=?UTF-8?B?${utf8Base64(text)}?=`;
+}
+
+function formatMailbox(name: string, email: string): string {
+  const address = String(email || '').trim().toLowerCase();
+  const display = String(name || '').replace(/[\r\n"<>]+/g, ' ').trim();
+  if (!display) return address;
+  // deno-lint-ignore no-control-regex
+  const safe = /^[\x20-\x7e]*$/.test(display) ? `"${display}"` : encodeHeaderText(display);
+  return `${safe} <${address}>`;
+}
+
+function parseRecipientInput(value: unknown): string[] {
+  const rows = Array.isArray(value) ? value : typeof value === 'string' ? value.split(/[,;\n]+/) : [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of rows) {
+    let name = '';
+    let email = '';
+    if (item && typeof item === 'object') {
+      name = String((item as { name?: string }).name || '');
+      email = String((item as { email?: string }).email || '');
+    } else {
+      const parsed = parseAddressList(String(item || ''))[0];
+      if (parsed) {
+        name = parsed.name;
+        email = parsed.email;
+      } else {
+        email = String(item || '');
+      }
+    }
+    const address = email.trim().toLowerCase();
+    if (!address || seen.has(address)) continue;
+    if (!EMAIL_ADDRESS_RE.test(address)) throw new Error(`“${address}” is not a valid email address.`);
+    seen.add(address);
+    out.push(formatMailbox(name, address));
+    if (out.length > GMAIL_SEND_MAX_RECIPIENTS) throw new Error(`Keep it under ${GMAIL_SEND_MAX_RECIPIENTS} recipients per field.`);
+  }
+  return out;
+}
+
+function escapeHtml(text: string): string {
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function textToHtml(text: string): string {
+  return escapeHtml(String(text || '').replace(/\r\n?/g, '\n'))
+    .replace(/ {2}/g, ' &nbsp;')
+    .split('\n')
+    .join('<br>');
+}
+
+function quotePlainText(text: string): string {
+  return String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => `> ${line}`)
+    .join('\n');
+}
+
+type GmailOutgoing = {
+  from: string;
+  to: string[];
+  cc: string[];
+  bcc: string[];
+  subject: string;
+  text: string;
+  html: string;
+  inReplyTo: string;
+  references: string;
+};
+
+function buildMimeMessage(mail: GmailOutgoing): string {
+  const boundary = `cgold_${crypto.randomUUID().replace(/-/g, '')}`;
+  const lines = [
+    `From: ${mail.from}`,
+    `To: ${mail.to.join(', ')}`,
+  ];
+  if (mail.cc.length) lines.push(`Cc: ${mail.cc.join(', ')}`);
+  if (mail.bcc.length) lines.push(`Bcc: ${mail.bcc.join(', ')}`);
+  lines.push(`Subject: ${encodeHeaderText(mail.subject)}`);
+  lines.push(`Date: ${new Date().toUTCString()}`);
+  if (mail.inReplyTo) lines.push(`In-Reply-To: ${mail.inReplyTo}`);
+  if (mail.references) lines.push(`References: ${mail.references}`);
+  lines.push('MIME-Version: 1.0');
+  lines.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
+  lines.push('');
+  lines.push(`--${boundary}`);
+  lines.push('Content-Type: text/plain; charset="UTF-8"');
+  lines.push('Content-Transfer-Encoding: base64');
+  lines.push('');
+  lines.push(wrapBase64(utf8Base64(mail.text)));
+  lines.push(`--${boundary}`);
+  lines.push('Content-Type: text/html; charset="UTF-8"');
+  lines.push('Content-Transfer-Encoding: base64');
+  lines.push('');
+  lines.push(wrapBase64(utf8Base64(mail.html)));
+  lines.push(`--${boundary}--`);
+  return lines.join('\r\n');
+}
+
+async function handleGmailSend(req: Request, staff: StaffContext, body: ArrayBuffer | null): Promise<Response> {
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = body ? JSON.parse(new TextDecoder().decode(body)) : {};
+  } catch {
+    return error(req, 400, 'Body must be JSON.', 'bad_request');
+  }
+  const account = gmailAccountFromRequest(payload);
+  if (!account) return error(req, 401, GMAIL_NOT_CONNECTED, 'gmail_unauthenticated');
+
+  let to: string[];
+  let cc: string[];
+  let bcc: string[];
+  try {
+    to = parseRecipientInput(payload.to);
+    cc = parseRecipientInput(payload.cc);
+    bcc = parseRecipientInput(payload.bcc);
+  } catch (err) {
+    return error(req, 400, err instanceof Error ? err.message : 'Check the recipients.', 'bad_request');
+  }
+  if (!to.length && !cc.length && !bcc.length) return error(req, 400, 'Add at least one recipient.', 'bad_request');
+  const subject = String(payload.subject || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 500);
+  const text = String(payload.text || '').replace(/\r\n?/g, '\n');
+  if (!text.trim()) return error(req, 400, 'Write a message first.', 'bad_request');
+  if (text.length > GMAIL_SEND_MAX_TEXT) return error(req, 400, 'That message is too long to send from here.', 'bad_request');
+
+  let token = '';
+  let row: GmailAccountRow;
+  try {
+    ({ row, token } = await gmailAccountAccessToken(staff, account));
+  } catch (err) {
+    return gmailAccountFailure(req, err, 'Could not open that inbox.');
+  }
+  if (!scopeAllowsGmailSend(row.granted_scope || '')) {
+    return error(req, 403, GMAIL_SEND_DENIED, 'gmail_scope_send');
+  }
+  const authorization = `Bearer ${token}`;
+
+  const includeSignature = payload.includeSignature !== false;
+  const signature = includeSignature
+    ? await fetchGmailSignature(authorization, row.email)
+    : { signatureHtml: '', signatureText: '', displayName: '' };
+
+  const reply = payload.reply && typeof payload.reply === 'object' ? payload.reply as Record<string, unknown> : null;
+  const threadId = String(reply?.threadId || '').trim();
+  const inReplyTo = String(reply?.messageId || '').replace(/[\r\n]+/g, '').trim();
+  const priorReferences = String(reply?.references || '').replace(/[\r\n]+/g, ' ').trim();
+  const references = [priorReferences, inReplyTo].filter(Boolean).join(' ').slice(0, 4000);
+
+  const quoted = payload.quoted && typeof payload.quoted === 'object' ? payload.quoted as Record<string, unknown> : null;
+  const quotedHeader = String(quoted?.header || '').replace(/[\r\n]+/g, ' ').trim();
+  const quotedText = String(quoted?.text || '').replace(/\r\n?/g, '\n').slice(0, GMAIL_SEND_MAX_TEXT);
+
+  const plainParts = [text.trimEnd()];
+  if (signature.signatureText) plainParts.push(`\n\n${signature.signatureText}`);
+  if (quotedText) plainParts.push(`\n\n${quotedHeader ? `${quotedHeader}\n` : ''}${quotePlainText(quotedText)}`);
+
+  let html = `<div dir="ltr">${textToHtml(text.trimEnd())}</div>`;
+  if (signature.signatureHtml) {
+    html += `<br><div dir="ltr" class="gmail_signature" data-smartmail="gmail_signature">${signature.signatureHtml}</div>`;
+  }
+  if (quotedText) {
+    html += `<br><div class="gmail_quote">`
+      + (quotedHeader ? `<div dir="ltr" class="gmail_attr">${escapeHtml(quotedHeader)}</div>` : '')
+      + `<blockquote class="gmail_quote" style="margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-left:1ex">${textToHtml(quotedText)}</blockquote></div>`;
+  }
+
+  const mime = buildMimeMessage({
+    from: formatMailbox(signature.displayName || row.display_name, row.email),
+    to,
+    cc,
+    bcc,
+    subject,
+    text: plainParts.join(''),
+    html,
+    inReplyTo,
+    references,
+  });
+  const sendBody: Record<string, string> = { raw: base64Url(utf8Base64(mime)) };
+  if (threadId) sendBody.threadId = threadId;
+
+  const upstream = await forward(`${GMAIL_API}/messages/send`, {
+    method: 'POST',
+    headers: { Accept: 'application/json', Authorization: authorization, 'Content-Type': 'application/json' },
+    body: JSON.stringify(sendBody),
+  }, 45_000);
+  const result = (await upstream.json().catch(() => null)) as Record<string, unknown> | null;
+  if (!upstream.ok) {
+    const message = googleErrorMessage(result, 'Google did not send that email.');
+    if (upstream.status === 403 || /insufficient.*scope/i.test(message)) {
+      return error(req, 403, GMAIL_SEND_DENIED, 'gmail_scope_send');
+    }
+    const status = upstream.status === 401 ? 401 : 400;
+    return error(req, status, message, upstream.status === 401 ? 'gmail_unauthenticated' : 'bad_request');
+  }
+  saveGmailAccount(staff, row.email, { last_used_at: new Date().toISOString() }).catch(() => {});
+  return json(req, 200, {
+    account: row.email,
+    id: String(result?.id || ''),
+    threadId: String(result?.threadId || threadId || ''),
+    labelIds: Array.isArray(result?.labelIds) ? result.labelIds : [],
   });
 }
 
@@ -8737,6 +9044,12 @@ Deno.serve(async (req) => {
     }
     if (path === '/gmail/message' && req.method === 'GET') {
       return await handleGmailMessage(req, staff, query);
+    }
+    if (path === '/gmail/signature' && req.method === 'GET') {
+      return await handleGmailSignature(req, staff, query);
+    }
+    if (path === '/gmail/send' && req.method === 'POST') {
+      return await handleGmailSend(req, staff, await readBody(req));
     }
     if (path === '/google/local-boq') {
       return await handleGoogleBoq(req, query);

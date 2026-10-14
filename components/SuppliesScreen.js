@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { createElement, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -11,13 +12,16 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
+import { formatDateParam, formatPickerDate, parseDateParam } from '../lib/transactions';
 import { fetchTransferStores, uniquePreferredStores } from '../lib/locations';
 import { CANVAS, MOBILE, NAV_TAB_ACTIVE_RADIUS, useIsMobile } from '../lib/mobileUi';
 import { canonicalStoreName, HOME_PINNED_STORES, storesMatch } from '../lib/storeCatalog';
 import { FONT_LIGHT } from '../lib/typography';
 import {
   createSupply,
+  deleteSupply,
   formatSupplyQty,
   listSupplies,
   SUPPLY_STATUSES,
@@ -35,6 +39,7 @@ const BLUE = '#007AFF';
 const PAGE = '#F2F2F7';
 const TAB_BORDER = '#d0d0d0';
 const HAIRLINE = '#e5e5ea';
+const CHEVRON = '#C7C7CC';
 const CHIP_SHADOW = Platform.select({
   web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
   default: {
@@ -52,9 +57,8 @@ const COLUMNS = [
   { key: 'details', label: 'Other product details', style: 'colDetails' },
   { key: 'boughtFrom', label: 'Bought from', style: 'colBought' },
   { key: 'qty', label: 'Qty', style: 'colQty' },
-  { key: 'status', label: 'Status', style: 'colStatus' },
   { key: 'date', label: 'Last bought', style: 'colDate' },
-  { key: 'lastQty', label: 'Last qty', style: 'colLastQty' },
+  { key: 'status', label: 'Status', style: 'colStatus' },
 ];
 
 const EMPTY_FORM = {
@@ -65,17 +69,8 @@ const EMPTY_FORM = {
   currentQuantity: '0',
   status: 'in_stock',
   lastBoughtDate: '',
-  lastBoughtQuantity: '',
   storeName: '',
 };
-
-function formatDate(value) {
-  const text = String(value || '').trim();
-  if (!text) return '—';
-  const [year, month, day] = text.split('-');
-  if (!year || !month || !day) return text;
-  return `${Number(month)}/${Number(day)}/${year}`;
-}
 
 function draftFromRow(row) {
   return {
@@ -86,9 +81,21 @@ function draftFromRow(row) {
     currentQuantity: String(row.currentQuantity ?? '0'),
     status: row.status || 'in_stock',
     lastBoughtDate: row.lastBoughtDate || '',
-    lastBoughtQuantity: row.lastBoughtQuantity == null ? '' : String(row.lastBoughtQuantity),
     storeName: row.storeName || '',
   };
+}
+
+function confirmDeleteSupply(name) {
+  const message = `Remove ${name || 'this supply'} from the list?`;
+  if (Platform.OS === 'web' && typeof window !== 'undefined' && window.confirm) {
+    return Promise.resolve(window.confirm(message));
+  }
+  return new Promise((resolve) => {
+    Alert.alert('Delete supply', message, [
+      { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+      { text: 'Delete', style: 'destructive', onPress: () => resolve(true) },
+    ]);
+  });
 }
 
 function storeOptions(names, { includeAll = true } = {}) {
@@ -99,17 +106,21 @@ function storeOptions(names, { includeAll = true } = {}) {
   return options;
 }
 
-function StoreSelect({ value, options, onChange, label, compact = false }) {
+function StoreSelect({ value, options, onChange, label, compact = false, fill = false }) {
   const [open, setOpen] = useState(false);
   const selected = options.find((item) => item.key === value) || options[0];
   return (
-    <View style={styles.storeSelect} pointerEvents="box-none">
+    <View
+      style={[styles.storeSelect, fill && styles.storeSelectFill, open && styles.storeSelectOpen]}
+      pointerEvents="box-none"
+    >
       {label ? <Text style={styles.storeSelectCaption}>{label}</Text> : null}
       <Pressable
         onPress={() => setOpen((current) => !current)}
         style={({ hovered, pressed }) => [
           styles.storeSelectBtn,
           compact && styles.storeSelectBtnCompact,
+          fill && styles.storeSelectBtnFill,
           (open || hovered || pressed) && styles.storeSelectBtnOpen,
         ]}
         accessibilityRole="button"
@@ -228,7 +239,9 @@ function SupplyModal({
   onChange,
   onSubmit,
   onClose,
+  onDelete,
   saving,
+  deleting,
   error,
   isMobile,
   storeChoices,
@@ -334,35 +347,33 @@ function SupplyModal({
                   accessibilityLabel="Current quantity"
                 />
               </DetailField>
+              <DetailField label="Last bought">
+                <SupplyDateField
+                  value={draft.lastBoughtDate}
+                  onChange={set('lastBoughtDate')}
+                  variant="plain"
+                  accessibilityLabel="Last bought date"
+                />
+              </DetailField>
               <DetailField label="Status" last>
                 <StatusPicker value={draft.status || 'in_stock'} onChange={set('status')} />
               </DetailField>
             </View>
-            <View style={styles.appleGroup}>
-              <DetailField label="Last bought">
-                <TextInput
-                  style={styles.detailInput}
-                  value={draft.lastBoughtDate}
-                  onChangeText={set('lastBoughtDate')}
-                  placeholder="YYYY-MM-DD"
-                  placeholderTextColor={SECONDARY}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  accessibilityLabel="Last bought date"
-                />
-              </DetailField>
-              <DetailField label="Last qty" last>
-                <TextInput
-                  style={styles.detailInput}
-                  value={draft.lastBoughtQuantity}
-                  onChangeText={set('lastBoughtQuantity')}
-                  placeholder="—"
-                  placeholderTextColor={SECONDARY}
-                  keyboardType="decimal-pad"
-                  accessibilityLabel="Last bought quantity"
-                />
-              </DetailField>
-            </View>
+            {onDelete ? (
+              <Pressable
+                onPress={onDelete}
+                disabled={saving || deleting}
+                style={({ pressed }) => [styles.deleteButton, pressed && styles.deleteButtonPressed]}
+                accessibilityRole="button"
+                accessibilityLabel="Delete supply"
+              >
+                {deleting ? (
+                  <ActivityIndicator color="#B91C1C" size="small" />
+                ) : (
+                  <Text style={styles.deleteButtonText}>Delete Supply</Text>
+                )}
+              </Pressable>
+            ) : null}
             {error ? <Text style={styles.modalError}>{error}</Text> : null}
           </ScrollView>
         </KeyboardAvoidingView>
@@ -395,28 +406,128 @@ function CellInput({ value, onCommit, style, accessibilityLabel, keyboardType = 
   );
 }
 
-function DateInput({ value, onCommit, style, accessibilityLabel }) {
-  const [text, setText] = useState(value);
-  useEffect(() => {
-    setText(value);
-  }, [value]);
+function SupplyDateField({
+  value,
+  onChange,
+  variant = 'cell',
+  style,
+  accessibilityLabel,
+  maximumDate = new Date(),
+}) {
+  const [open, setOpen] = useState(false);
+  const plain = variant === 'plain';
+  const hasValue = Boolean(String(value || '').trim());
+  const dateValue = parseDateParam(hasValue ? value : new Date());
+  const displayText = hasValue ? formatPickerDate(parseDateParam(value)) : '—';
+
+  const commit = (next) => {
+    if (!next) return;
+    let date = parseDateParam(next);
+    if (maximumDate && date > parseDateParam(maximumDate)) {
+      date = parseDateParam(maximumDate);
+    }
+    onChange(formatDateParam(date));
+  };
+
+  const field = (
+    <>
+      {!plain ? <Ionicons name="calendar-outline" size={14} color={SECONDARY} /> : null}
+      {Platform.OS === 'web' ? (
+        createElement('input', {
+          type: 'date',
+          value: hasValue ? formatDateParam(dateValue) : '',
+          max: maximumDate ? formatDateParam(maximumDate) : undefined,
+          'aria-label': accessibilityLabel,
+          onChange: (event) => {
+            if (event.target.value) commit(event.target.value);
+          },
+          style: {
+            border: 'none',
+            background: 'transparent',
+            fontFamily,
+            fontSize: plain ? 15 : 14,
+            fontWeight: plain ? '400' : '300',
+            color: hasValue ? TEXT : SECONDARY,
+            padding: 0,
+            margin: 0,
+            outline: 'none',
+            cursor: 'pointer',
+            minWidth: plain ? 0 : 88,
+            width: plain ? '100%' : undefined,
+            textAlign: plain ? 'right' : 'left',
+            letterSpacing: '-0.2px',
+          },
+        })
+      ) : (
+        <Text
+          style={[
+            plain ? styles.detailDateValue : styles.cellInput,
+            !hasValue && styles.datePlaceholder,
+            style,
+          ]}
+        >
+          {displayText}
+        </Text>
+      )}
+      {plain ? <Ionicons name="chevron-down" size={14} color={CHEVRON} /> : null}
+    </>
+  );
+
+  if (Platform.OS === 'web') {
+    return (
+      <View style={[plain ? styles.dateChipPlain : styles.dateFieldCell, style]} accessibilityLabel={accessibilityLabel}>
+        {field}
+      </View>
+    );
+  }
+
   return (
-    <TextInput
-      style={[styles.cellInput, style]}
-      value={text}
-      onChangeText={setText}
-      onBlur={() => {
-        if (text !== value) onCommit(text);
-      }}
-      onSubmitEditing={() => {
-        if (text !== value) onCommit(text);
-      }}
-      placeholder="YYYY-MM-DD"
-      placeholderTextColor={SECONDARY}
-      autoCapitalize="none"
-      autoCorrect={false}
-      accessibilityLabel={accessibilityLabel}
-    />
+    <>
+      <Pressable
+        style={[plain ? styles.dateChipPlain : styles.dateFieldCell, style]}
+        onPress={() => setOpen(true)}
+        accessibilityRole="button"
+        accessibilityLabel={accessibilityLabel}
+      >
+        {field}
+      </Pressable>
+      {Platform.OS === 'android' && open ? (
+        <DateTimePicker
+          value={dateValue}
+          mode="date"
+          display="default"
+          maximumDate={maximumDate ? parseDateParam(maximumDate) : undefined}
+          onChange={(event, selected) => {
+            setOpen(false);
+            if (event.type !== 'dismissed' && selected) commit(selected);
+          }}
+        />
+      ) : null}
+      {Platform.OS === 'ios' ? (
+        <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+          <View style={styles.dateModalBackdrop}>
+            <Pressable style={StyleSheet.absoluteFill} onPress={() => setOpen(false)} />
+            <View style={styles.dateModalCard}>
+              <View style={styles.dateModalHeader}>
+                <Text style={styles.dateModalTitle}>{accessibilityLabel || 'Date'}</Text>
+                <Pressable onPress={() => setOpen(false)} hitSlop={8}>
+                  <Text style={styles.dateModalDone}>Done</Text>
+                </Pressable>
+              </View>
+              <DateTimePicker
+                value={dateValue}
+                mode="date"
+                display="spinner"
+                maximumDate={maximumDate ? parseDateParam(maximumDate) : undefined}
+                onChange={(_, selected) => {
+                  if (selected) commit(selected);
+                }}
+              />
+            </View>
+          </View>
+        </Modal>
+      ) : null}
+    </>
   );
 }
 
@@ -434,6 +545,7 @@ export default function SuppliesScreen({ session, storeFilter = '', embedded = f
   const [editingId, setEditingId] = useState('');
   const [draft, setDraft] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     if (!session?.token) return undefined;
@@ -568,6 +680,41 @@ export default function SuppliesScreen({ session, storeFilter = '', embedded = f
     }
   };
 
+  const removeRow = async (row) => {
+    const ok = await confirmDeleteSupply(row.name);
+    if (!ok) return;
+    setError('');
+    setDeleting(true);
+    try {
+      await deleteSupply(row.id);
+      setRows((current) => current.filter((item) => item.id !== row.id));
+      if (editingId === row.id) closeModal();
+    } catch (deleteError) {
+      setError(deleteError?.message || 'Could not delete that supply.');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const onDeleteFromModal = async () => {
+    if (!editingId) return;
+    const row = rows.find((item) => item.id === editingId);
+    if (!row) return;
+    setModalError('');
+    const ok = await confirmDeleteSupply(row.name);
+    if (!ok) return;
+    setDeleting(true);
+    try {
+      await deleteSupply(row.id);
+      setRows((current) => current.filter((item) => item.id !== row.id));
+      closeModal();
+    } catch (deleteError) {
+      setModalError(deleteError?.message || 'Could not delete that supply.');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const empty = useMemo(() => {
     if (selectedStore) return `No supplies listed for ${selectedStore} yet.`;
     return 'No supplies yet. Add the first item to this list.';
@@ -585,7 +732,7 @@ export default function SuppliesScreen({ session, storeFilter = '', embedded = f
     );
   }
 
-  const storePicker = embedded ? null : (
+  const storePicker = embedded || lockedStore ? null : (
     <StoreSelect
       value={selectedStore}
       options={storeOptions(storeNames, { includeAll: true })}
@@ -605,6 +752,19 @@ export default function SuppliesScreen({ session, storeFilter = '', embedded = f
       <Ionicons name="add" size={16} color={TEXT} />
       <Text style={styles.addChipText}>Add</Text>
     </Pressable>
+  );
+
+  const actionBar = (
+    <View
+      style={[
+        styles.actionBar,
+        isMobile && styles.actionBarMobile,
+        embedded && !isMobile && styles.actionBarEmbedded,
+      ]}
+    >
+      {storePicker}
+      {addChip}
+    </View>
   );
 
   const renderDesktopRow = (row, index) => (
@@ -653,21 +813,23 @@ export default function SuppliesScreen({ session, storeFilter = '', embedded = f
           style={styles.colQty}
           accessibilityLabel={`${row.name} quantity`}
         />
-        <View style={styles.colStatus}>
-          <StatusPill status={row.status} onPress={() => patchRow(row, { status: cycleStatus(row.status) })} compact />
-        </View>
-        <DateInput
+        <SupplyDateField
           value={row.lastBoughtDate || ''}
-          onCommit={(value) => patchRow(row, { lastBoughtDate: value })}
+          onChange={(value) => patchRow(row, { lastBoughtDate: value })}
           style={styles.colDate}
           accessibilityLabel={`${row.name} last bought date`}
         />
-        <CellInput
-          value={row.lastBoughtQuantity == null ? '' : formatSupplyQty(row.lastBoughtQuantity)}
-          onCommit={(value) => patchRow(row, { lastBoughtQuantity: value })}
-          style={styles.colLastQty}
-          accessibilityLabel={`${row.name} last bought quantity`}
-        />
+        <View style={styles.colStatus}>
+          <StatusPill status={row.status} onPress={() => patchRow(row, { status: cycleStatus(row.status) })} compact />
+        </View>
+        <Pressable
+          onPress={() => removeRow(row)}
+          style={({ hovered, pressed }) => [styles.colDelete, (hovered || pressed) && styles.colDeleteHover]}
+          accessibilityRole="button"
+          accessibilityLabel={`Delete ${row.name}`}
+        >
+          <Ionicons name="trash-outline" size={16} color={SECONDARY} />
+        </Pressable>
       </View>
     </View>
   );
@@ -688,23 +850,17 @@ export default function SuppliesScreen({ session, storeFilter = '', embedded = f
                 <Text style={[styles.title, isMobile && styles.titleMobile]} numberOfLines={2}>
                   Supplies
                 </Text>
-                {selectedStore ? <Text style={styles.subtitle}>{selectedStore}</Text> : null}
-              </View>
-              <View style={styles.headActions}>
-                {storePicker}
-                {addChip}
+                {selectedStore && !storePicker ? <Text style={styles.subtitle}>{selectedStore}</Text> : null}
               </View>
             </View>
             <View
               style={styles.headRule}
               {...(Platform.OS === 'web' ? { className: 'cgold-home-row-rule' } : null)}
             />
+            {actionBar}
           </View>
         ) : (
-          <View style={styles.embeddedToolbar}>
-            {storePicker}
-            {addChip}
-          </View>
+          actionBar
         )}
         {error ? <Text style={[styles.error, isMobile && styles.errorMobile]}>{error}</Text> : null}
         {loading ? (
@@ -724,6 +880,7 @@ export default function SuppliesScreen({ session, storeFilter = '', embedded = f
                       {col.label}
                     </Text>
                   ))}
+                  <View style={styles.colDelete} />
                 </View>
               </View>
               {rows.length === 0 ? (
@@ -753,14 +910,27 @@ export default function SuppliesScreen({ session, storeFilter = '', embedded = f
                   <Text style={styles.mobileName} numberOfLines={1}>
                     {row.name}
                   </Text>
-                  <Pressable
-                    onPress={(event) => {
-                      event?.stopPropagation?.();
-                      patchRow(row, { status: cycleStatus(row.status) });
-                    }}
-                  >
-                    <StatusPill status={row.status} compact />
-                  </Pressable>
+                  <View style={styles.mobileRowTopActions}>
+                    <Pressable
+                      onPress={(event) => {
+                        event?.stopPropagation?.();
+                        patchRow(row, { status: cycleStatus(row.status) });
+                      }}
+                    >
+                      <StatusPill status={row.status} compact />
+                    </Pressable>
+                    <Pressable
+                      onPress={(event) => {
+                        event?.stopPropagation?.();
+                        void removeRow(row);
+                      }}
+                      hitSlop={8}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Delete ${row.name}`}
+                    >
+                      <Ionicons name="trash-outline" size={18} color={SECONDARY} />
+                    </Pressable>
+                  </View>
                 </View>
                 <Text style={styles.mobileMeta} numberOfLines={2}>
                   {[
@@ -781,14 +951,14 @@ export default function SuppliesScreen({ session, storeFilter = '', embedded = f
                       accessibilityLabel={`${row.name} quantity`}
                     />
                   </Pressable>
-                  <View style={styles.mobileMetric}>
+                  <Pressable onPress={(event) => event?.stopPropagation?.()} style={styles.mobileMetric}>
                     <Text style={styles.mobileMetricLabel}>Last bought</Text>
-                    <Text style={styles.mobileMetricValue}>{formatDate(row.lastBoughtDate)}</Text>
-                  </View>
-                  <View style={styles.mobileMetric}>
-                    <Text style={styles.mobileMetricLabel}>Last qty</Text>
-                    <Text style={styles.mobileMetricValue}>{formatSupplyQty(row.lastBoughtQuantity)}</Text>
-                  </View>
+                    <SupplyDateField
+                      value={row.lastBoughtDate || ''}
+                      onChange={(value) => patchRow(row, { lastBoughtDate: value })}
+                      accessibilityLabel={`${row.name} last bought date`}
+                    />
+                  </Pressable>
                 </View>
               </Pressable>
             ))}
@@ -802,7 +972,9 @@ export default function SuppliesScreen({ session, storeFilter = '', embedded = f
         onChange={setDraft}
         onSubmit={mode === 'add' ? onCreate : onUpdate}
         onClose={closeModal}
+        onDelete={mode === 'edit' ? onDeleteFromModal : undefined}
         saving={saving}
+        deleting={deleting}
         error={modalError}
         isMobile={isMobile}
         storeChoices={storeNames}
@@ -850,14 +1022,25 @@ const styles = StyleSheet.create({
   headRowMobile: {
     alignItems: 'center',
     paddingBottom: 14,
-    zIndex: 30,
   },
-  headActions: {
+  actionBar: {
+    position: 'relative',
+    zIndex: 50,
     flexDirection: 'row',
     alignItems: 'flex-end',
+    justifyContent: 'flex-end',
     gap: 8,
-    flexShrink: 0,
-    zIndex: 30,
+    paddingTop: 4,
+    paddingBottom: 12,
+    ...Platform.select({ web: { overflow: 'visible' }, default: {} }),
+  },
+  actionBarMobile: {
+    paddingBottom: 10,
+  },
+  actionBarEmbedded: {
+    paddingHorizontal: 48,
+    paddingTop: 12,
+    paddingBottom: 8,
   },
   titleBlock: {
     flex: 1,
@@ -890,13 +1073,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(42,38,30,0.16)',
     marginTop: 4,
     marginBottom: 4,
-  },
-  embeddedToolbar: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    paddingHorizontal: 48,
-    paddingTop: 12,
-    paddingBottom: 8,
   },
   addChip: {
     flexDirection: 'row',
@@ -941,6 +1117,7 @@ const styles = StyleSheet.create({
   },
   tableScroll: {
     width: '100%',
+    zIndex: 0,
   },
   tableScrollContent: {
     minWidth: '100%',
@@ -1021,7 +1198,19 @@ const styles = StyleSheet.create({
   colQty: { width: 56, flexShrink: 0 },
   colStatus: { width: 108, flexShrink: 0 },
   colDate: { width: 112, flexShrink: 0 },
-  colLastQty: { width: 72, flexShrink: 0 },
+  colDelete: {
+    width: 32,
+    flexShrink: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  colDeleteHover: {
+    opacity: 0.65,
+  },
   statusPill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1090,6 +1279,12 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 10,
   },
+  mobileRowTopActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flexShrink: 0,
+  },
   mobileName: {
     fontFamily: titleFontFamily,
     fontSize: 16,
@@ -1148,7 +1343,7 @@ const styles = StyleSheet.create({
     maxHeight: '88%',
     backgroundColor: PAGE,
     borderRadius: 14,
-    overflow: 'hidden',
+    overflow: Platform.OS === 'web' ? 'visible' : 'hidden',
     ...Platform.select({
       web: { boxShadow: '0 16px 48px rgba(0,0,0,0.18)' },
       default: {
@@ -1213,13 +1408,26 @@ const styles = StyleSheet.create({
   modalStoreBar: {
     paddingHorizontal: 16,
     paddingTop: 12,
-    zIndex: 40,
+    paddingBottom: 4,
+    zIndex: 60,
+    ...Platform.select({ web: { overflow: 'visible' }, default: {} }),
   },
   storeSelect: {
     position: 'relative',
     zIndex: 20,
     minWidth: 168,
     maxWidth: 260,
+  },
+  storeSelectFill: {
+    maxWidth: '100%',
+    width: '100%',
+  },
+  storeSelectOpen: {
+    zIndex: 100,
+    ...Platform.select({
+      web: {},
+      default: { elevation: 12 },
+    }),
   },
   storeSelectCaption: {
     fontFamily,
@@ -1243,6 +1451,9 @@ const styles = StyleSheet.create({
   },
   storeSelectBtnCompact: {
     minWidth: 132,
+  },
+  storeSelectBtnFill: {
+    width: '100%',
   },
   storeSelectBtnOpen: {
     backgroundColor: 'rgba(60, 60, 67, 0.045)',
@@ -1274,7 +1485,7 @@ const styles = StyleSheet.create({
     borderRadius: NAV_TAB_ACTIVE_RADIUS,
     borderWidth: 1,
     borderColor: TAB_BORDER,
-    zIndex: 2,
+    zIndex: 101,
     ...CHIP_SHADOW,
     ...Platform.select({
       web: { boxShadow: '0 8px 24px rgba(0,0,0,0.12)' },
@@ -1303,6 +1514,7 @@ const styles = StyleSheet.create({
   },
   modalScroll: {
     flexGrow: 0,
+    zIndex: 1,
   },
   modalScrollContent: {
     padding: 16,
@@ -1351,10 +1563,95 @@ const styles = StyleSheet.create({
     paddingVertical: 0,
     ...Platform.select({ web: { outlineStyle: 'none' }, default: {} }),
   },
+  detailDateValue: {
+    fontFamily,
+    fontSize: 15,
+    color: TEXT,
+    letterSpacing: -0.2,
+    textAlign: 'right',
+  },
+  datePlaceholder: {
+    color: SECONDARY,
+  },
+  dateFieldCell: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    minWidth: 0,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  dateChipPlain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 6,
+    minHeight: 44,
+    width: '100%',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  dateModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.28)',
+    justifyContent: 'flex-end',
+  },
+  dateModalCard: {
+    backgroundColor: CANVAS,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingBottom: 24,
+  },
+  dateModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 4,
+  },
+  dateModalTitle: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: TEXT,
+  },
+  dateModalDone: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: BLUE,
+  },
   modalError: {
     fontFamily,
     fontSize: 13,
     color: '#B91C1C',
     textAlign: 'center',
+  },
+  deleteButton: {
+    marginTop: 20,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    backgroundColor: '#FEE2E2',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  deleteButtonPressed: {
+    opacity: 0.85,
+  },
+  deleteButtonText: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#B91C1C',
+    letterSpacing: -0.2,
   },
 });

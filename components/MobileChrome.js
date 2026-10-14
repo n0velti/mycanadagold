@@ -104,32 +104,59 @@ function CanadaGoldMark({ size = 22 }) {
   );
 }
 
-/** Date chip matching the Home / store-details mobile top bar. */
-export function MobileFeedDateButton({ label, active = false, onPress, disabled = false }) {
+const FEED_DATE_CHEVRON = '#636366';
+
+function MobileFeedDateChevrons({ onPress, disabled = false }) {
   return (
     <Pressable
       onPress={onPress}
-      hitSlop={6}
       disabled={disabled}
-      style={({ pressed }) => [
+      hitSlop={4}
+      accessibilityRole="button"
+      accessibilityLabel="Change date"
+      style={({ hovered, pressed }) => [
+        styles.mobileFeedDateChevronHit,
+        !disabled && (hovered || pressed) && styles.mobileFeedDateChevronHitOn,
+        disabled && styles.mobileFeedDateChevronHitDisabled,
+      ]}
+    >
+      <View style={styles.mobileFeedDateChevrons}>
+        <Ionicons name="chevron-up" size={9} color={FEED_DATE_CHEVRON} />
+        <Ionicons name="chevron-down" size={9} color={FEED_DATE_CHEVRON} style={styles.mobileFeedDateChevronDown} />
+      </View>
+    </Pressable>
+  );
+}
+
+/** Date chip matching the Home / store-details mobile top bar. */
+export function MobileFeedDateButton({ label, active = false, onPress, disabled = false }) {
+  return (
+    <View
+      style={[
         styles.mobileFeedDateBtn,
         active && styles.mobileFeedDateBtnActive,
         disabled && styles.mobileFeedDateBtnDisabled,
-        pressed && !disabled && styles.mobileFeedDateBtnPressed,
       ]}
-      accessibilityRole="button"
-      accessibilityLabel={`Date: ${label}`}
-      accessibilityHint="Change date or set a range"
     >
-      <Ionicons name="calendar-outline" size={15} color={MOBILE.secondary} />
-      <Text style={styles.mobileFeedDateText} numberOfLines={1}>
-        {label}
-      </Text>
-      <View style={styles.mobileFeedDateChevrons}>
-        <Ionicons name="chevron-up" size={9} color="#8e8e93" />
-        <Ionicons name="chevron-down" size={9} color="#8e8e93" style={styles.mobileFeedDateChevronDown} />
-      </View>
-    </Pressable>
+      <Pressable
+        onPress={onPress}
+        hitSlop={6}
+        disabled={disabled}
+        style={({ pressed }) => [
+          styles.mobileFeedDateMain,
+          pressed && !disabled && styles.mobileFeedDateBtnPressed,
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel={`Date: ${label}`}
+        accessibilityHint="Change date or set a range"
+      >
+        <Ionicons name="calendar-outline" size={15} color={MOBILE.secondary} />
+        <Text style={styles.mobileFeedDateText} numberOfLines={1}>
+          {label}
+        </Text>
+      </Pressable>
+      <MobileFeedDateChevrons onPress={onPress} disabled={disabled} />
+    </View>
   );
 }
 
@@ -1114,6 +1141,35 @@ const styles = StyleSheet.create({
   },
   mobileFeedDateChevronDown: {
     marginTop: -3,
+  },
+  mobileFeedDateMain: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  mobileFeedDateChevronHit: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 5,
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+    marginRight: -2,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  mobileFeedDateChevronHitOn: {
+    backgroundColor: 'rgba(0,0,0,0.06)',
+  },
+  mobileFeedDateChevronHitDisabled: {
+    opacity: 0.45,
   },
   mobileFeedAddBtn: {
     flexDirection: 'row',
