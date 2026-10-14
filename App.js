@@ -195,6 +195,7 @@ const SCREEN_LOADERS = {
   bonuses: () => import('./components/BonusesScreen'),
   calendar: () => import('./components/CalendarScreen'),
   customers: () => import('./components/CustomersScreen'),
+  dashboards: () => import('./components/DashboardsScreen'),
   debit: () => import('./components/DebitScreen'),
   documents: () => import('./components/DocumentsScreen'),
   emails: () => import('./components/EmailsScreen'),
@@ -231,6 +232,7 @@ const AuditScreen = lazy(SCREEN_LOADERS.audit);
 const BonusesScreen = lazy(SCREEN_LOADERS.bonuses);
 const CalendarScreen = lazy(SCREEN_LOADERS.calendar);
 const CustomersScreen = lazy(SCREEN_LOADERS.customers);
+const DashboardsScreen = lazy(SCREEN_LOADERS.dashboards);
 const DebitScreen = lazy(SCREEN_LOADERS.debit);
 const DocumentsScreen = lazy(SCREEN_LOADERS.documents);
 const EmailsScreen = lazy(SCREEN_LOADERS.emails);
@@ -959,6 +961,7 @@ const TOOL_CARDS = [
   { key: 'debit', label: 'Debit', icon: 'card-outline', tint: '#EEF4FF', accent: '#1D4ED8' },
   { key: 'accounting', label: 'Accounting', icon: 'calculator-outline', tint: '#EEF2FF', accent: '#3730A3' },
   { key: 'analytics', label: 'Analytics', icon: 'analytics-outline', tint: '#EEF2FF', accent: '#4F46E5' },
+  { key: 'dashboards', label: 'Dashboards', icon: 'grid-outline', tint: '#EEF2FF', accent: '#4338CA' },
   { key: 'pricing', label: 'Pricing', icon: 'pricetag-outline', tint: '#F8F1E3', accent: '#A67C2D' },
   { key: 'bonuses', label: 'Bonuses', icon: 'gift-outline', tint: '#FEF9C3', accent: '#A16207' },
   { key: 'leaderboards', label: 'Leaderboards', icon: 'trophy-outline', tint: '#FFF8E8', accent: '#B8860B' },
@@ -1451,6 +1454,60 @@ function ToolCard({ tool, pinned, onPress, onTogglePin, layout, wrapStyle }) {
   );
 }
 
+function filterToolCards(tools, query) {
+  const q = String(query || '')
+    .trim()
+    .toLowerCase();
+  if (!q) return tools;
+  return (tools || []).filter((tool) => {
+    const hay = `${tool.label || ''} ${tool.key || ''}`.toLowerCase();
+    return hay.includes(q);
+  });
+}
+
+function TopBarSearchField({
+  value,
+  onChange,
+  placeholder = 'Search',
+  desktop = false,
+  mobileApps = false,
+  accessibilityLabel = 'Search',
+}) {
+  const trimmed = String(value || '');
+  const fieldStyle = mobileApps
+    ? styles.igHomeMobileAppsSearch
+    : [
+        styles.homeTabSearchField,
+        desktop ? styles.homeTabSearchFieldDesktop : styles.homeTabSearchFieldMobile,
+      ];
+  const inputStyle = mobileApps ? styles.igHomeMobileAppsSearchInput : [
+    styles.homeTabSearchInput,
+    desktop && styles.homeTabSearchInputDesktop,
+  ];
+  return (
+    <View style={fieldStyle}>
+      <Ionicons name="search" size={mobileApps ? 14 : 16} color="#8e8e93" />
+      <TextInput
+        style={inputStyle}
+        value={value}
+        onChangeText={onChange}
+        placeholder={placeholder}
+        placeholderTextColor="#8e8e93"
+        autoCapitalize="none"
+        autoCorrect={false}
+        clearButtonMode="while-editing"
+        returnKeyType="search"
+        accessibilityLabel={accessibilityLabel}
+      />
+      {trimmed && Platform.OS !== 'ios' ? (
+        <Pressable onPress={() => onChange('')} hitSlop={8} accessibilityLabel="Clear search">
+          <Ionicons name="close-circle" size={mobileApps ? 16 : 18} color="#c7c7cc" />
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
 function ToolsGrid({ tools, pinnedKeys, onOpen, onTogglePin, layout }) {
   const { columns, gap, rowGap } = layout;
   const wrapStyle = Platform.select({
@@ -1536,15 +1593,23 @@ function AppsLibrary({
   pinnedKeys,
   onOpen,
   onTogglePin,
+  query = '',
+  onQueryChange,
 }) {
   const { isMobile, pagePad } = useHomePageLayout();
   const appGrid = useAppGridLayout();
   const tabBarScroll = useMobileTabBarScrollProps();
+  const filteredTools = useMemo(() => filterToolCards(tools, query), [tools, query]);
+  const hasQuery = Boolean(String(query || '').trim());
 
   const appsBody =
     tools.length === 0 ? (
       <Text style={[styles.toolsEmpty, isMobile ? { paddingTop: 20 } : { paddingTop: 28 }]}>
         No apps are available.
+      </Text>
+    ) : filteredTools.length === 0 ? (
+      <Text style={[styles.toolsEmpty, isMobile ? { paddingTop: 20 } : { paddingTop: 28 }]}>
+        {hasQuery ? 'No apps match your search.' : 'No apps are available.'}
       </Text>
     ) : (
       <View
@@ -1556,7 +1621,7 @@ function AppsLibrary({
         ]}
       >
         <ToolsGrid
-          tools={tools}
+          tools={filteredTools}
           pinnedKeys={pinnedKeys}
           onOpen={onOpen}
           onTogglePin={onTogglePin}
@@ -1596,6 +1661,15 @@ function AppsLibrary({
                 <View style={styles.igHomeMobileBrand} accessibilityLabel="Canada Gold">
                   <HomeGlyph size={22} />
                 </View>
+                {typeof onQueryChange === 'function' ? (
+                  <TopBarSearchField
+                    mobileApps
+                    value={query}
+                    onChange={onQueryChange}
+                    placeholder="Search apps"
+                    accessibilityLabel="Search apps"
+                  />
+                ) : null}
               </View>
             </View>
           </View>
@@ -8671,7 +8745,11 @@ function TopNavBar({
   pageTitle = '',
   apps,
   activeAppKey = '',
+  searchValue = '',
+  onSearchChange,
+  searchPlaceholder = 'Search',
 }) {
+  const showTopBarSearch = typeof onSearchChange === 'function';
   const trail =
     Array.isArray(crumbs) && crumbs.length
       ? crumbs.filter((crumb) => crumb?.label)
@@ -8750,6 +8828,17 @@ function TopNavBar({
             </Fragment>
           );
         })}
+        {showTopBarSearch ? (
+          <View style={styles.topBarSearchWrap}>
+            <TopBarSearchField
+              desktop
+              value={searchValue}
+              onChange={onSearchChange}
+              placeholder={searchPlaceholder}
+              accessibilityLabel={searchPlaceholder}
+            />
+          </View>
+        ) : null}
       </View>
       <View style={styles.topBarRight}>
         <SpotMetalToggle />
@@ -9130,8 +9219,10 @@ export default function App() {
   const [triageMobileOverlay, setTriageMobileOverlay] = useState(false);
   const [settingsPanel, setSettingsPanel] = useState(null);
   const [pinnedKeys, setPinnedKeys] = useState([]);
+  const [appsSearchQuery, setAppsSearchQuery] = useState('');
   const [searchDoc, setSearchDoc] = useState(null);
   const [customerFocus, setCustomerFocus] = useState(null);
+  const [dashboardFocusId, setDashboardFocusId] = useState('');
   const [searchDocDetail, setSearchDocDetail] = useState(null);
   const [searchDocLoading, setSearchDocLoading] = useState(false);
   const [searchDocError, setSearchDocError] = useState('');
@@ -9453,6 +9544,10 @@ export default function App() {
     });
   }, [activeTab, activeTool?.key, activeTool?.label]);
 
+  useEffect(() => {
+    if (activeTab !== 'tools' || activeTool) setAppsSearchQuery('');
+  }, [activeTab, activeTool]);
+
   // If Supabase revokes the session (another tab signed out, refresh token
   // rejected) or Aureus rejects the POS token, drop straight to the login screen.
   const hasSessionRef = useRef(false);
@@ -9617,6 +9712,18 @@ export default function App() {
   const openAnalyticsApp = useCallback(() => {
     const tool = TOOL_CARDS.find((item) => item.key === 'analytics');
     if (!tool || !hasApp('analytics')) return;
+    startTransition(() => {
+      setActiveTab('tools');
+      setActiveTool(tool);
+      setSettingsPanel(null);
+    });
+  }, [hasApp]);
+
+  // From "+ Dashboard" in Analytics: open the Dashboards app on the new tab.
+  const openDashboardsApp = useCallback((dashboardId) => {
+    const tool = TOOL_CARDS.find((item) => item.key === 'dashboards');
+    if (!tool || !hasApp('dashboards')) return;
+    setDashboardFocusId(String(dashboardId || ''));
     startTransition(() => {
       setActiveTab('tools');
       setActiveTool(tool);
@@ -10017,6 +10124,16 @@ export default function App() {
             onOpenCustomer={openCustomerProfile}
             onOpenDocument={openSearchDocument}
             onMobileHeader={handleAnalyticsMobileHeader}
+            onOpenDashboard={openDashboardsApp}
+          />
+        ) : activeTool.key === 'dashboards' ? (
+          <DashboardsScreen
+            session={session}
+            onOpenCustomer={openCustomerProfile}
+            onOpenDocument={openSearchDocument}
+            onOpenAnalytics={openAnalyticsApp}
+            focusId={dashboardFocusId}
+            onFocusConsumed={() => setDashboardFocusId('')}
           />
         ) : activeTool.key === 'audit' ? (
           <AuditScreen
@@ -10290,6 +10407,8 @@ export default function App() {
           pinnedKeys={pinnedKeys}
           onOpen={openTool}
           onTogglePin={togglePin}
+          query={appsSearchQuery}
+          onQueryChange={setAppsSearchQuery}
         />
       );
     }
@@ -10816,6 +10935,9 @@ export default function App() {
         onSelectStore={homeDocRef ? () => homeDocumentCloseRef.current?.() : undefined}
         onSelectBuy={() => selectTab('buy')}
         onSelectSell={() => selectTab('sell')}
+        searchValue={isAppsLibrary ? appsSearchQuery : ''}
+        onSearchChange={isAppsLibrary && !isMobile ? setAppsSearchQuery : undefined}
+        searchPlaceholder="Search apps"
       />
       <ProfileLoginSwitcher
         visible={loginSwitcherOpen}
@@ -10891,8 +11013,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     minWidth: 0,
+    flex: 1,
     flexShrink: 1,
     paddingRight: 12,
+  },
+  topBarSearchWrap: {
+    flex: 1,
+    minWidth: 140,
+    maxWidth: 320,
+    marginLeft: 4,
   },
   topBarBrand: {
     height: 32,

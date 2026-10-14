@@ -15,6 +15,8 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { ANALYTICS_CHAT_MODELS, askAnalytics, buildExportSheet, completeOpenRouter } from '../lib/analyticsChartTools';
+import { storedChart } from '../lib/analyticsStoredChart';
+import { createDashboardFromAnswers, dashboardableTurnIndexes } from '../lib/dashboards';
 import { loadGoogleMapsBrowserKey } from '../lib/aiKeys';
 import {
   addUsage,
@@ -144,8 +146,6 @@ const MAX_TURNS = 20;
 const MAX_TURN_CHARS = 6000;
 const MAX_PROMPTS = 40;
 const MAX_PROMPT_CHARS = 4000;
-// A year of daily points, matching MAX_LINE_POINTS in lib/analyticsChartTools.
-const MAX_CHART_POINTS = 370;
 
 function storageKey(userKey) {
   return `${CHATS_KEY}.${userKey || 'local'}`;
@@ -175,166 +175,6 @@ function byChatOrder(a, b) {
 function isUnusedPlaceholder(chat) {
   if (!chat?.placeholder) return false;
   return !(chat.turns || []).some((turn) => turn.role === 'user' && String(turn.content || '').trim());
-}
-
-function storedChart(chart) {
-  if (!chart || typeof chart !== 'object') return null;
-  const title = String(chart.title || '').slice(0, 80);
-  const subtitle = String(chart.subtitle || '').slice(0, 80);
-  if ((chart.type === 'line' || chart.type === 'bar') && Array.isArray(chart.categories) && Array.isArray(chart.series)) {
-    return {
-      type: chart.type,
-      title,
-      subtitle,
-      categories: chart.categories.slice(0, MAX_CHART_POINTS).map((item) => String(item).slice(0, 24)),
-      series: chart.series.slice(0, 8).map((series) => ({
-        key: String(series.key || ''),
-        label: String(series.label || '').slice(0, 40),
-        format: ['money', 'decimal', 'hours'].includes(series.format) ? series.format : 'int',
-        axis: series.axis === 'right' ? 'right' : 'left',
-        values: (series.values || []).slice(0, MAX_CHART_POINTS).map((value) => Number(value) || 0),
-      })),
-    };
-  }
-  if (chart.type === 'pie' && Array.isArray(chart.slices)) {
-    return {
-      type: 'pie',
-      title,
-      subtitle,
-      format: ['money', 'decimal', 'hours'].includes(chart.format) ? chart.format : 'int',
-      slices: chart.slices.slice(0, 12).map((slice) => ({
-        name: String(slice.name || '').slice(0, 40),
-        value: Number(slice.value) || 0,
-      })),
-    };
-  }
-  if (chart.type === 'file' && Array.isArray(chart.sheets)) {
-    // Rows are not persisted for sheets that came from a live source; the
-    // card rebuilds those from `spec` when Download is pressed after a reload.
-    const column = (item) => ({
-      key: String(item?.key || '').slice(0, 60),
-      label: String(item?.label || item?.key || '').slice(0, 60),
-      format: ['int', 'decimal', 'money', 'hours'].includes(item?.format) ? item.format : 'text',
-    });
-    const sheets = chart.sheets
-      .slice(0, 8)
-      .map((sheet) => {
-        const columns = (Array.isArray(sheet?.columns) ? sheet.columns : []).map(column).filter((item) => item.key);
-        if (!columns.length) return null;
-        const spec = sheet?.spec && typeof sheet.spec === 'object' ? sheet.spec : null;
-        const rows = spec
-          ? []
-          : (Array.isArray(sheet?.rows) ? sheet.rows : []).slice(0, 200).map((row) =>
-              Object.fromEntries(columns.map((item) => [item.key, row?.[item.key] ?? ''])),
-            );
-        return {
-          name: String(sheet?.name || 'Sheet').slice(0, 31),
-          columns,
-          rows,
-          total: Number(sheet?.total) || rows.length,
-          scopeLabel: String(sheet?.scopeLabel || '').slice(0, 160),
-          spec,
-        };
-      })
-      .filter(Boolean);
-    if (!sheets.length) return null;
-    return {
-      type: 'file',
-      kind: 'xlsx',
-      title,
-      fileName: String(chart.fileName || title).slice(0, 80),
-      subtitle,
-      note: String(chart.note || '').slice(0, 200) || undefined,
-      sheets,
-    };
-  }
-  if (chart.type === 'table' && Array.isArray(chart.columns) && Array.isArray(chart.rows)) {
-    const columns = chart.columns
-      .slice(0, 8)
-      .map((column) => ({
-        key: String(column?.key || '').slice(0, 40),
-        label: String(column?.label || '').slice(0, 40),
-        format: ['int', 'decimal', 'money', 'hours'].includes(column?.format) ? column.format : 'text',
-      }))
-      .filter((column) => column.key);
-    if (!columns.length) return null;
-    const cell = (value, format) => {
-      if (value == null) return '';
-      if (format === 'text') return String(value).slice(0, 80);
-      return Number.isFinite(Number(value)) ? Number(value) : String(value).slice(0, 80);
-    };
-    const pick = (row) =>
-      row && typeof row === 'object'
-        ? Object.fromEntries(columns.map((column) => [column.key, cell(row[column.key], column.format)]))
-        : null;
-    const footer = chart.footer && typeof chart.footer === 'object' ? pick(chart.footer) : null;
-    return {
-      type: 'table',
-      title,
-      subtitle,
-      columns,
-      rows: chart.rows.slice(0, 60).map(pick).filter(Boolean),
-      footer: footer || undefined,
-      note: String(chart.note || '').slice(0, 160) || undefined,
-      tickets: (Array.isArray(chart.tickets) ? chart.tickets : [])
-        .slice(0, 60)
-        .map((ticket) => ({
-          reference: String(ticket?.reference || '').slice(0, 24),
-          type: ticket?.type === 'purchase' ? 'purchase' : 'order',
-          sourceId: String(ticket?.sourceId || '').slice(0, 24),
-          systemKey: String(ticket?.systemKey || 'east').slice(0, 16),
-        }))
-        .filter((ticket) => ticket.sourceId),
-    };
-  }
-  if (chart.type === 'map' && (Array.isArray(chart.markers) || Array.isArray(chart.areas))) {
-    // Street lines are not kept in saved chats; the popup falls back to postal code and city.
-    return {
-      type: 'map',
-      style: ['heat', 'area'].includes(chart.style) ? chart.style : 'dots',
-      title,
-      subtitle,
-      city: String(chart.city || '').slice(0, 40),
-      note: String(chart.note || '').slice(0, 160),
-      areas: (Array.isArray(chart.areas) ? chart.areas : []).slice(0, 5).map((area) => ({
-        name: String(area?.name || '').slice(0, 60),
-        lat: Number(area?.lat),
-        lng: Number(area?.lng),
-        approximate: area?.approximate ? true : undefined,
-        rings: (Array.isArray(area?.rings) ? area.rings : [])
-          .slice(0, 12)
-          .map((ring) =>
-            (Array.isArray(ring) ? ring : [])
-              .slice(0, 400)
-              .map((pair) => [Number(pair?.[0]), Number(pair?.[1])])
-              .filter((pair) => Number.isFinite(pair[0]) && Number.isFinite(pair[1])),
-          )
-          .filter((ring) => ring.length >= 3),
-      })),
-      missingPostal: Number(chart.missingPostal) || 0,
-      unplaced: Number(chart.unplaced) || 0,
-      markers: (Array.isArray(chart.markers) ? chart.markers : [])
-        .slice(0, 1500)
-        .map((marker) => ({
-          lat: Number(marker.lat),
-          lng: Number(marker.lng),
-          label: String(marker.label || '').slice(0, 16),
-          city: String(marker.city || '').slice(0, 40),
-          count: Number(marker.count) || 0,
-          customers: (Array.isArray(marker.customers) ? marker.customers : [])
-            .slice(0, 12)
-            .map((customer) => ({
-              id: String(customer?.id || '').slice(0, 40),
-              systemKey: String(customer?.systemKey || '').slice(0, 16),
-              name: String(customer?.name || '').slice(0, 60),
-              transactions: Number(customer?.transactions) || 0,
-            }))
-            .filter((customer) => customer.id),
-        }))
-        .filter((marker) => Number.isFinite(marker.lat) && Number.isFinite(marker.lng)),
-    };
-  }
-  return null;
 }
 
 function storedTurns(turns) {
@@ -706,6 +546,7 @@ export default function AnalyticsAiPanel({
   onInboxChanged = null,
   shareApiRef = null,
   onMobileHeader = null,
+  onOpenDashboard = null,
   title = 'Analytics',
 }) {
   const userKey = session?.supabaseUserId || session?.profile?.id || '';
@@ -733,6 +574,11 @@ export default function AnalyticsAiPanel({
   const [shareOpen, setShareOpen] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [mapsKey, setMapsKey] = useState('');
+  // "+ Dashboard": check off answers in this chat, then Submit makes a tab.
+  const [pickMode, setPickMode] = useState(false);
+  const [picked, setPicked] = useState(() => new Set());
+  const [pickBusy, setPickBusy] = useState(false);
+  const [pickDone, setPickDone] = useState(null);
   const [prices, setPrices] = useState(() => cachedOpenRouterPrices());
   const pricesRef = useRef(prices);
   const chatsRef = useRef([]);
@@ -831,6 +677,54 @@ export default function AnalyticsAiPanel({
       systemKey: known?.systemKey || 'east',
     };
   };
+  const dashboardable = useMemo(() => dashboardableTurnIndexes(turns), [turns]);
+  const canPickDashboard = Boolean(onOpenDashboard) && !embedded && dashboardable.length > 0;
+  const startPick = () => {
+    if (!canPickDashboard || busyId) return;
+    // Answers with a chart, table, or map are the usual pins; start with those checked.
+    const withViz = dashboardable.filter((index) => (turns[index]?.charts || []).length > 0);
+    setPicked(new Set(withViz.length ? withViz : dashboardable));
+    setPickDone(null);
+    setError('');
+    setPickMode(true);
+  };
+  const stopPick = () => {
+    setPickMode(false);
+    setPicked(new Set());
+    setPickBusy(false);
+  };
+  const togglePicked = (index) => {
+    setPicked((current) => {
+      const next = new Set(current);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  };
+  const submitPick = async () => {
+    if (pickBusy || !picked.size || !activeChat) return;
+    setPickBusy(true);
+    setError('');
+    try {
+      const board = await createDashboardFromAnswers({
+        turns,
+        indexes: [...picked],
+        model,
+        chatId: activeChat.id,
+        chatTitle: activeChat.title,
+        storeFilter,
+      });
+      if (!mountedRef.current) return;
+      setPickMode(false);
+      setPicked(new Set());
+      setPickDone({ id: board.id, title: board.title, count: board.widgets.length });
+    } catch (err) {
+      if (mountedRef.current) setError(err?.message || 'Could not create the dashboard.');
+    } finally {
+      if (mountedRef.current) setPickBusy(false);
+    }
+  };
+
   // Each exchange stores the same priced usage on both bubbles; count it once.
   const chatCost = turns.reduce(
     (sum, turn) => (turn.role === 'assistant' ? sum + (Number(turn.usage?.cost) || 0) : sum),
@@ -1031,6 +925,13 @@ export default function AnalyticsAiPanel({
   useEffect(() => {
     if (!draft) setInputHeight(COMPOSER_LINE_HEIGHT);
   }, [draft]);
+
+  // Picking answers belongs to one chat; switching chats drops the selection.
+  useEffect(() => {
+    setPickMode(false);
+    setPicked(new Set());
+    setPickDone(null);
+  }, [activeId]);
 
   const syncInputHeight = (event) => {
     const raw = event?.nativeEvent?.contentSize?.height;
@@ -2172,8 +2073,41 @@ export default function AnalyticsAiPanel({
               </View>
             );
             const charts = mine ? [] : turn.charts || [];
+            const pickable = pickMode && !mine && dashboardable.includes(index);
+            const isPicked = pickable && picked.has(index);
             return (
-              <View key={`${turn.role}-${index}`} style={styles.turnGroup}>
+              <View
+                key={`${turn.role}-${index}`}
+                style={[
+                  styles.turnGroup,
+                  pickable && styles.turnGroupPick,
+                  pickable && isPicked && styles.turnGroupPicked,
+                  pickMode && !pickable && styles.turnGroupUnpickable,
+                ]}
+              >
+                {pickable ? (
+                  <Pressable
+                    onPress={() => togglePicked(index)}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: isPicked }}
+                    accessibilityLabel={isPicked ? 'Remove this answer from the dashboard' : 'Add this answer to the dashboard'}
+                    style={({ hovered, pressed }) => [styles.pickRow, (hovered || pressed) && styles.pickRowHover]}
+                  >
+                    <View style={[styles.pickBox, isPicked && styles.pickBoxOn]}>
+                      {isPicked ? <Ionicons name="checkmark" size={13} color="#fff" /> : null}
+                    </View>
+                    <Text style={[styles.pickLabel, isPicked && styles.pickLabelOn]}>
+                      {isPicked ? 'Added to dashboard' : 'Add to dashboard'}
+                    </Text>
+                    {charts.length ? (
+                      <Text style={styles.pickKind}>
+                        {charts.map((chart) => (chart.type === 'map' ? 'Map' : chart.type === 'table' ? 'Table' : chart.type === 'file' ? 'File' : 'Chart')).join(' · ')}
+                      </Text>
+                    ) : (
+                      <Text style={styles.pickKind}>Reply</Text>
+                    )}
+                  </Pressable>
+                ) : null}
                 <View style={[styles.turnRow, mine ? styles.turnRowMine : styles.turnRowTheirs]}>
                   {!mine ? (
                     otherPerson ? (
@@ -2292,6 +2226,89 @@ export default function AnalyticsAiPanel({
         )}
       </ScrollView>
       <View style={[styles.composerWrap, compact && styles.composerWrapPhone]}>
+        {pickMode ? (
+          <View style={styles.pickBar}>
+            <View style={styles.pickBarCopy}>
+              <Text style={styles.pickBarTitle}>
+                {picked.size} of {dashboardable.length} {dashboardable.length === 1 ? 'answer' : 'answers'} checked
+              </Text>
+              <Text style={styles.pickBarHint} numberOfLines={2}>
+                Each checked answer becomes a card. The dashboard re-asks it for whatever date is picked there.
+              </Text>
+            </View>
+            {error ? <Text style={styles.errorText}>{error}</Text> : null}
+            <View style={styles.pickBarActions}>
+              <Pressable
+                onPress={() =>
+                  setPicked(picked.size === dashboardable.length ? new Set() : new Set(dashboardable))
+                }
+                disabled={pickBusy}
+                accessibilityRole="button"
+                style={({ hovered, pressed }) => [styles.pickGhost, (hovered || pressed) && styles.pickGhostHover]}
+              >
+                <Text style={styles.pickGhostText}>
+                  {picked.size === dashboardable.length ? 'Clear all' : 'Select all'}
+                </Text>
+              </Pressable>
+              <View style={styles.pickBarSpacer} />
+              <Pressable
+                onPress={stopPick}
+                disabled={pickBusy}
+                accessibilityRole="button"
+                style={({ hovered, pressed }) => [styles.pickGhost, (hovered || pressed) && styles.pickGhostHover]}
+              >
+                <Text style={styles.pickGhostText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={submitPick}
+                disabled={pickBusy || !picked.size}
+                accessibilityRole="button"
+                accessibilityLabel="Create the dashboard"
+                style={({ hovered, pressed }) => [
+                  styles.pickSubmit,
+                  (!picked.size || pickBusy) && styles.pickSubmitOff,
+                  (hovered || pressed) && picked.size && !pickBusy && styles.pickSubmitHover,
+                ]}
+              >
+                {pickBusy ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Ionicons name="grid-outline" size={14} color="#fff" />
+                )}
+                <Text style={styles.pickSubmitText}>{pickBusy ? 'Building…' : 'Submit'}</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : (
+        <>
+        {pickDone ? (
+          <View style={styles.pickDone}>
+            <Ionicons name="checkmark-circle" size={16} color="#2F8A4E" />
+            <Text style={styles.pickDoneText} numberOfLines={2}>
+              {pickDone.count} {pickDone.count === 1 ? 'card' : 'cards'} saved to “{pickDone.title}”.
+            </Text>
+            <Pressable
+              onPress={() => {
+                const id = pickDone.id;
+                setPickDone(null);
+                onOpenDashboard?.(id);
+              }}
+              accessibilityRole="button"
+              style={({ hovered, pressed }) => [styles.pickDoneOpen, (hovered || pressed) && styles.pickDoneOpenHover]}
+            >
+              <Text style={styles.pickDoneOpenText}>Open Dashboards</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setPickDone(null)}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss"
+              style={styles.pickDoneClose}
+            >
+              <Ionicons name="close" size={14} color={SECONDARY} />
+            </Pressable>
+          </View>
+        ) : null}
         {composerMeta || !compact ? (
         <View style={styles.composerToolbar}>
           <View style={styles.composerToolbarLead}>
@@ -2329,6 +2346,23 @@ export default function AnalyticsAiPanel({
           >
             <Ionicons name="bookmark-outline" size={13} color={INK} />
             <Text style={styles.promptsHitText}>Saved</Text>
+          </Pressable>
+          )}
+          {compact || !canPickDashboard ? null : (
+          <Pressable
+            onPress={startPick}
+            disabled={Boolean(busyId)}
+            accessibilityRole="button"
+            accessibilityLabel="Add answers from this chat to a dashboard"
+            style={({ hovered, pressed }) => [
+              styles.promptsHit,
+              styles.dashboardHit,
+              (hovered || pressed) && styles.promptsHitHover,
+              busyId && styles.promptPickOff,
+            ]}
+          >
+            <Ionicons name="add" size={14} color={INK} />
+            <Text style={styles.promptsHitText}>Dashboard</Text>
           </Pressable>
           )}
         </View>
@@ -2474,6 +2508,21 @@ export default function AnalyticsAiPanel({
                 <Ionicons name="bookmark-outline" size={16} color={SECONDARY} />
               </Pressable>
             ) : null}
+            {compact && canPickDashboard ? (
+              <Pressable
+                onPress={startPick}
+                disabled={Boolean(busyId)}
+                accessibilityRole="button"
+                accessibilityLabel="Add answers from this chat to a dashboard"
+                style={({ hovered, pressed }) => [
+                  styles.composerModel,
+                  styles.composerModelPhone,
+                  (hovered || pressed) && styles.composerModelHover,
+                ]}
+              >
+                <Ionicons name="grid-outline" size={16} color={SECONDARY} />
+              </Pressable>
+            ) : null}
             <Pressable
               onPress={() => setModelOpen(true)}
               accessibilityRole="button"
@@ -2529,6 +2578,8 @@ export default function AnalyticsAiPanel({
         </View>
         {compact ? null : (
           <Text style={styles.composerHint}>Enter to send · Shift+Enter for a new line</Text>
+        )}
+        </>
         )}
       </View>
     </View>
@@ -3025,6 +3076,174 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     width: '100%',
     gap: 4,
+  },
+  // Pick mode: each answer gets a check row and a left rule that fills in when checked.
+  turnGroupPick: {
+    borderLeftWidth: 2,
+    borderLeftColor: CHIP_BORDER,
+    paddingLeft: 10,
+    borderRadius: 2,
+  },
+  turnGroupPicked: {
+    borderLeftColor: BUBBLE_MINE,
+  },
+  turnGroupUnpickable: {
+    opacity: 0.45,
+  },
+  pickRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    alignSelf: 'flex-start',
+    paddingVertical: 4,
+    paddingRight: 8,
+    borderRadius: CHIP_RADIUS,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  pickRowHover: {
+    backgroundColor: 'rgba(0,0,0,0.04)',
+  },
+  pickBox: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: CHIP_BORDER,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#fff',
+  },
+  pickBoxOn: {
+    backgroundColor: BUBBLE_MINE,
+    borderColor: BUBBLE_MINE,
+  },
+  pickLabel: {
+    fontFamily: FONT,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '500',
+    color: SECONDARY,
+  },
+  pickLabelOn: {
+    color: INK,
+  },
+  pickKind: {
+    fontFamily: FONT,
+    fontSize: 11,
+    lineHeight: 16,
+    color: SECONDARY,
+  },
+  pickBar: {
+    gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: CHIP_BORDER,
+    backgroundColor: '#fff',
+    ...CHIP_SHADOW,
+  },
+  pickBarCopy: {
+    gap: 2,
+  },
+  pickBarTitle: {
+    fontFamily: FONT,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '500',
+    color: INK,
+  },
+  pickBarHint: {
+    fontFamily: FONT,
+    fontSize: 12,
+    lineHeight: 16,
+    color: SECONDARY,
+  },
+  pickBarActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  pickBarSpacer: {
+    flex: 1,
+  },
+  pickGhost: {
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 8,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  pickGhostHover: {
+    backgroundColor: 'rgba(0,0,0,0.05)',
+  },
+  pickGhostText: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '500',
+    color: INK,
+  },
+  pickSubmit: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: INK,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  pickSubmitHover: {
+    backgroundColor: '#000',
+  },
+  pickSubmitOff: {
+    opacity: 0.4,
+  },
+  pickSubmitText: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  pickDone: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: '#EAF6EE',
+  },
+  pickDoneText: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: FONT,
+    fontSize: 13,
+    lineHeight: 17,
+    color: INK,
+  },
+  pickDoneOpen: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  pickDoneOpenHover: {
+    backgroundColor: 'rgba(0,0,0,0.05)',
+  },
+  pickDoneOpenText: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#2F8A4E',
+  },
+  pickDoneClose: {
+    width: 24,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dashboardHit: {
+    paddingLeft: 6,
   },
   turnRow: {
     flexDirection: 'row',
