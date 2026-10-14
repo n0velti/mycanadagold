@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
-  Easing,
   Image,
   Modal,
   Platform,
@@ -29,6 +28,7 @@ import {
   storedUsage,
 } from '../lib/openrouterPricing';
 import { parseDocReference } from '../lib/transactions';
+import { formatInboxTime } from '../lib/messages';
 import AnalyticsChartCard from './AnalyticsChartCard';
 import AnalyticsMapCard from './AnalyticsMapCard';
 import AnalyticsTableCard from './AnalyticsTableCard';
@@ -44,6 +44,7 @@ import {
 } from '../lib/aiAttachments';
 import { CANVAS, MOBILE, NAV_TAB_ACTIVE_BG, NAV_TAB_ACTIVE_RADIUS } from '../lib/mobileUi';
 import { FONT, FONT_LIGHT } from '../lib/typography';
+import { MobileFeedTopBarActions } from './MobileChrome';
 
 const MODEL_KEY = 'cgold.analytics.aiModel';
 
@@ -60,7 +61,6 @@ const BUBBLE_THEM_BORDER = 'rgba(60, 60, 67, 0.08)';
 const COMPOSER_LINE_HEIGHT = 22;
 const COMPOSER_MAX_LINES = 4;
 const SIDEBAR_WIDTH = 320;
-const SIDEBAR_COLLAPSED = Math.round(SIDEBAR_WIDTH / 4);
 
 /** Friendly copy for the model sheet — keys match ANALYTICS_CHAT_MODELS. */
 const MODEL_META = {
@@ -127,6 +127,8 @@ const MAX_TURNS = 20;
 const MAX_TURN_CHARS = 6000;
 const MAX_PROMPTS = 40;
 const MAX_PROMPT_CHARS = 4000;
+// A year of daily points, matching MAX_LINE_POINTS in lib/analyticsChartTools.
+const MAX_CHART_POINTS = 370;
 
 function storageKey(userKey) {
   return `${CHATS_KEY}.${userKey || 'local'}`;
@@ -153,6 +155,11 @@ function byChatOrder(a, b) {
   return String(b.updatedAt).localeCompare(String(a.updatedAt));
 }
 
+function isUnusedPlaceholder(chat) {
+  if (!chat?.placeholder) return false;
+  return !(chat.turns || []).some((turn) => turn.role === 'user' && String(turn.content || '').trim());
+}
+
 function storedChart(chart) {
   if (!chart || typeof chart !== 'object') return null;
   const title = String(chart.title || '').slice(0, 80);
@@ -162,13 +169,13 @@ function storedChart(chart) {
       type: chart.type,
       title,
       subtitle,
-      categories: chart.categories.slice(0, 92).map((item) => String(item).slice(0, 24)),
+      categories: chart.categories.slice(0, MAX_CHART_POINTS).map((item) => String(item).slice(0, 24)),
       series: chart.series.slice(0, 8).map((series) => ({
         key: String(series.key || ''),
         label: String(series.label || '').slice(0, 40),
         format: ['money', 'decimal', 'hours'].includes(series.format) ? series.format : 'int',
         axis: series.axis === 'right' ? 'right' : 'left',
-        values: (series.values || []).slice(0, 92).map((value) => Number(value) || 0),
+        values: (series.values || []).slice(0, MAX_CHART_POINTS).map((value) => Number(value) || 0),
       })),
     };
   }
@@ -620,6 +627,8 @@ function firstNameOfSession(session) {
  * into the conversation; the back chevron hands control to `onClose`. Saved
  * Analytics threads stay in the Analytics app — Messages has its own AI DMs.
  * `title` names the assistant in the header, the bubble label, and the placeholder.
+ * `startBlank` opens a new empty chat (Talk to AI). `onMobileHeader` puts New
+ * chat / history on the app top bar so a phone does not stack two headers.
  */
 export default function AnalyticsAiPanel({
   session,
@@ -630,6 +639,9 @@ export default function AnalyticsAiPanel({
   onOpenCustomer,
   onOpenDocument,
   embedded = false,
+  startBlank = false,
+  onBlankStarted = null,
+  onMobileHeader = null,
   title = 'Analytics',
 }) {
   const userKey = session?.supabaseUserId || session?.profile?.id || '';
@@ -643,7 +655,7 @@ export default function AnalyticsAiPanel({
   const [busyId, setBusyId] = useState('');
   const [busyNote, setBusyNote] = useState('');
   const [error, setError] = useState('');
-  const [mobileList, setMobileList] = useState(!embedded);
+  const [mobileList, setMobileList] = useState(false);
   const [model, setModel] = useState(ANALYTICS_CHAT_MODELS[0].key);
   const [modelOpen, setModelOpen] = useState(false);
   const [savedPrompts, setSavedPrompts] = useState([]);
@@ -652,9 +664,6 @@ export default function AnalyticsAiPanel({
   const [savedKey, setSavedKey] = useState('');
   const [menuChatId, setMenuChatId] = useState(null);
   const [hoverChatId, setHoverChatId] = useState(null);
-  const [listOpen, setListOpen] = useState(false);
-  const listHoverRef = useRef(false);
-  const listWidth = useRef(new Animated.Value(SIDEBAR_COLLAPSED)).current;
   const [mapsKey, setMapsKey] = useState('');
   const [prices, setPrices] = useState(() => cachedOpenRouterPrices());
   const pricesRef = useRef(prices);
@@ -666,7 +675,12 @@ export default function AnalyticsAiPanel({
   const abortsRef = useRef(new Map());
   const sendingRef = useRef(false);
   const writeChainRef = useRef(Promise.resolve());
-  const openedEmptyRef = useRef(false);
+  const onBlankStartedRef = useRef(onBlankStarted);
+  onBlankStartedRef.current = onBlankStarted;
+  const startBlankRef = useRef(startBlank);
+  startBlankRef.current = startBlank;
+  const onMobileHeaderRef = useRef(onMobileHeader);
+  onMobileHeaderRef.current = onMobileHeader;
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
   const composerPillRef = useRef(null);
@@ -682,13 +696,16 @@ export default function AnalyticsAiPanel({
   // start from nothing but the store lock.
   const scopeLabel = storeFilter ? String(storeFilter) : '';
   const suggestions = useMemo(
-    () => [
-      'Transactions per employee at Montreal over the past month',
-      'Transactions and volume by day',
-      'Volume by store as a pie chart',
-      'Where do Montreal customers live?',
-    ],
-    [],
+    () =>
+      compact
+        ? ['Volume by day', 'By store (pie)', 'This month by person', 'Where customers live']
+        : [
+            'Transactions per employee at Montreal over the past month',
+            'Transactions and volume by day',
+            'Volume by store as a pie chart',
+            'Where do Montreal customers live?',
+          ],
+    [compact],
   );
   const blocked = !ready;
   const history = useMemo(
@@ -701,30 +718,6 @@ export default function AnalyticsAiPanel({
   const activeChat = history.find((chat) => chat.id === activeId) || null;
   const turns = (activeChat?.turns || []).filter((turn) => turn.role === 'user' || turn.role === 'assistant');
   const showList = compact && mobileList && !embedded;
-  const listHide = listWidth.interpolate({
-    inputRange: [SIDEBAR_COLLAPSED, SIDEBAR_WIDTH],
-    outputRange: [1, 0],
-    extrapolate: 'clamp',
-  });
-  const animateList = (open) => {
-    setListOpen(open);
-    listWidth.stopAnimation();
-    Animated.timing(listWidth, {
-      toValue: open ? SIDEBAR_WIDTH : SIDEBAR_COLLAPSED,
-      duration: open ? 280 : 220,
-      easing: open ? Easing.out(Easing.cubic) : Easing.inOut(Easing.quad),
-      useNativeDriver: false,
-    }).start();
-  };
-  const openList = () => {
-    listHoverRef.current = true;
-    animateList(true);
-  };
-  const closeList = () => {
-    listHoverRef.current = false;
-    setMenuChatId(null);
-    animateList(false);
-  };
   const tail = turns[turns.length - 1]?.content || '';
   // After a reload a file card only has its sheet specs; run them again to get the rows.
   const rebuildFile = async (chart) => {
@@ -845,7 +838,7 @@ export default function AnalyticsAiPanel({
     setReady(false);
     activeIdRef.current = null;
     setActiveId(null);
-    setMobileList(!embedded);
+    setMobileList(false);
     setError('');
     loadChats(userKey).then((rows) => {
       if (!alive) return;
@@ -853,8 +846,9 @@ export default function AnalyticsAiPanel({
       if (revisionRef.current !== seen) return;
       chatsRef.current = rows;
       setChats(rows);
-      // Inside Messages the row the user tapped is "the AI chat": land on the latest one.
-      if (embedded && rows.length) {
+      // Opening an existing Messages AI row resumes the latest saved thread.
+      // Talk to AI and the Analytics app start empty via startBlank / startNew.
+      if (embedded && !startBlankRef.current && rows.length) {
         const latest = rows.slice().sort(byChatOrder)[0];
         if (latest) {
           activeIdRef.current = latest.id;
@@ -869,12 +863,6 @@ export default function AnalyticsAiPanel({
       alive = false;
     };
   }, [userKey, embedded]);
-
-  useEffect(() => {
-    if (!ready || openedEmptyRef.current) return;
-    openedEmptyRef.current = true;
-    if (compact && chatsRef.current.length === 0) setMobileList(false);
-  }, [ready, compact]);
 
   useEffect(() => {
     if (!active || showList || activeId) return undefined;
@@ -902,7 +890,17 @@ export default function AnalyticsAiPanel({
     setInputHeight(Math.min(composerMaxHeight, Math.max(COMPOSER_LINE_HEIGHT, next)));
   };
 
-  const startNew = () => {
+  const startNew = useCallback(() => {
+    const unused = chatsRef.current.find(isUnusedPlaceholder);
+    if (unused) {
+      selectChat(unused.id);
+      setDraft('');
+      setError('');
+      setMenuChatId(null);
+      setMobileList(false);
+      setSentAnim(null);
+      return;
+    }
     const now = new Date().toISOString();
     const id = chatId();
     commit(
@@ -927,7 +925,67 @@ export default function AnalyticsAiPanel({
     setMenuChatId(null);
     setMobileList(false);
     setSentAnim(null);
-  };
+  }, [scopeLabel]);
+
+  const didAutoBlankRef = useRef(false);
+  useEffect(() => {
+    if (!ready) {
+      didAutoBlankRef.current = false;
+      return;
+    }
+    if (startBlank) {
+      startNew();
+      onBlankStartedRef.current?.();
+      return;
+    }
+    if (!embedded && !didAutoBlankRef.current) {
+      didAutoBlankRef.current = true;
+      startNew();
+    }
+  }, [ready, startBlank, embedded, startNew]);
+
+  const mobileTopBarTrailing = useMemo(
+    () => (
+      <MobileFeedTopBarActions>
+        <Pressable
+          onPress={() => setMobileList((open) => !open)}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={mobileList ? 'Back to chat' : 'Chats'}
+          style={({ hovered, pressed }) => [
+            styles.listNewChatHit,
+            (hovered || pressed) && styles.listNewChatHitOn,
+          ]}
+        >
+          <Ionicons name={mobileList ? 'close-outline' : 'chatbubbles-outline'} size={20} color={INK} />
+        </Pressable>
+        <Pressable
+          onPress={startNew}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="New chat"
+          style={({ hovered, pressed }) => [
+            styles.listNewChatHit,
+            (hovered || pressed) && styles.listNewChatHitOn,
+          ]}
+        >
+          <Ionicons name="create-outline" size={22} color={INK} />
+        </Pressable>
+      </MobileFeedTopBarActions>
+    ),
+    [mobileList, startNew],
+  );
+
+  useEffect(() => {
+    const setHeader = onMobileHeaderRef.current;
+    if (!setHeader) return undefined;
+    if (!compact || embedded) {
+      setHeader(null);
+      return () => setHeader(null);
+    }
+    setHeader({ trailing: mobileTopBarTrailing });
+    return () => setHeader(null);
+  }, [compact, embedded, mobileTopBarTrailing]);
 
   const openChat = (id) => {
     selectChat(id);
@@ -1461,7 +1519,13 @@ export default function AnalyticsAiPanel({
             const busy = busyId === chat.id;
             const pinned = Boolean(chat.pinned);
             const menuOpen = menuChatId === chat.id;
-            const showMore = (compact || listOpen) && (menuOpen || hoverChatId === chat.id || Platform.OS !== 'web');
+            const showMore = menuOpen || hoverChatId === chat.id || Platform.OS !== 'web';
+            // Inbox-style row: title + time, a scope line, then the last thing said.
+            const lastTurn = [...(chat.turns || [])].reverse().find((turn) => String(turn?.content || '').trim());
+            const lastLine = lastTurn
+              ? `${lastTurn.role === 'user' ? 'You: ' : ''}${String(lastTurn.content).replace(/\s+/g, ' ').trim()}`
+              : 'New analysis';
+            const scopeLine = chat.scopeLabel || (chat.placeholder ? 'Draft' : 'Analytics');
             return (
               <View
                 key={chat.id}
@@ -1487,12 +1551,31 @@ export default function AnalyticsAiPanel({
                     hoverChatId === chat.id && !selected && styles.chatRowHover,
                   ]}
                 >
-                  <View style={styles.chatRowTitleLine}>
-                    <View style={[styles.chatDot, (selected || pinned) && styles.chatDotOn]} />
-                    <Text style={[styles.chatRowTitle, selected && styles.chatRowTitleOn]} numberOfLines={1}>
-                      {chat.title}
+                  <View style={[styles.chatAvatar, selected && styles.chatAvatarOn]}>
+                    <Ionicons name="sparkles" size={18} color={selected ? '#fff' : INK} />
+                    {pinned ? (
+                      <View style={styles.chatPinBadge}>
+                        <Ionicons name="pin" size={9} color="#fff" />
+                      </View>
+                    ) : null}
+                  </View>
+                  <View style={styles.chatRowCopy}>
+                    <View style={styles.chatRowTitleLine}>
+                      <Text style={[styles.chatRowTitle, selected && styles.chatRowTitleOn]} numberOfLines={1}>
+                        {chat.title}
+                      </Text>
+                      {busy ? (
+                        <ActivityIndicator size="small" color={SECONDARY} style={styles.chatRowSpinner} />
+                      ) : (
+                        <Text style={styles.chatRowTime}>{formatInboxTime(chat.updatedAt)}</Text>
+                      )}
+                    </View>
+                    <Text style={styles.chatRowScope} numberOfLines={1}>
+                      {scopeLine}
                     </Text>
-                    {busy ? <ActivityIndicator size="small" color={SECONDARY} style={styles.chatRowSpinner} /> : null}
+                    <Text style={styles.chatRowPreview} numberOfLines={1}>
+                      {lastLine}
+                    </Text>
                   </View>
                 </Pressable>
                 {showMore ? (
@@ -1566,35 +1649,19 @@ export default function AnalyticsAiPanel({
   const list = compact ? (
     <View style={[styles.sidebar, styles.sidebarPhone]}>{listBody}</View>
   ) : (
-    <View style={styles.sidebarSlot}>
-      <Animated.View
-        style={[
-          styles.sidebar,
-          styles.sidebarFlyout,
-          { width: listWidth },
-        ]}
-        {...(Platform.OS === 'web'
-          ? { onMouseEnter: openList, onMouseLeave: closeList }
-          : null)}
-      >
-        <View style={styles.sidebarInner}>
-          {listBody}
-        </View>
-        <Animated.View pointerEvents="none" style={[styles.sidebarHideEdge, { opacity: listHide }]} />
-      </Animated.View>
-    </View>
+    <View style={styles.sidebar}>{listBody}</View>
   );
 
   const conversation = (
     <View style={styles.main}>
-      {compact ? (
+      {compact && embedded ? (
         <View style={styles.nav}>
           <Pressable
-            onPress={() => (embedded && onClose ? onClose() : setMobileList(true))}
+            onPress={() => onClose?.()}
             hitSlop={8}
             style={styles.chromeCircle}
             accessibilityRole="button"
-            accessibilityLabel={embedded ? 'Back to messages' : 'Chats'}
+            accessibilityLabel="Back to messages"
           >
             <Ionicons name="chevron-back" size={16} color={INK} />
           </Pressable>
@@ -1608,21 +1675,15 @@ export default function AnalyticsAiPanel({
               </Text>
             ) : null}
           </View>
-          {embedded ? (
-            <View style={styles.chromeCircleGhost} />
-          ) : onClose ? (
-            <Pressable
-              onPress={onClose}
-              hitSlop={8}
-              style={styles.chromeCircle}
-              accessibilityRole="button"
-              accessibilityLabel="Close"
-            >
-              <Ionicons name="close" size={16} color={INK} />
-            </Pressable>
-          ) : (
-            <View style={styles.chromeCircleGhost} />
-          )}
+          <Pressable
+            onPress={startNew}
+            hitSlop={8}
+            style={styles.chromeCircle}
+            accessibilityRole="button"
+            accessibilityLabel="New chat"
+          >
+            <Ionicons name="create-outline" size={16} color={INK} />
+          </Pressable>
         </View>
       ) : null}
       <ScrollView
@@ -1677,7 +1738,7 @@ export default function AnalyticsAiPanel({
                       <Ionicons name="sparkles" size={14} color={BUBBLE_MINE} />
                     </View>
                   ) : null}
-                  <View style={[styles.turnBody, mine && styles.turnBodyMine]}>
+                  <View style={[styles.turnBody, mine && styles.turnBodyMine, compact && (mine ? styles.turnBodyMinePhone : styles.turnBodyPhone)]}>
                     {!mine ? <Text style={styles.turnLabel}>{title}</Text> : null}
                     {mine ? <AttachmentChips items={turn.attachments} mine /> : null}
                     {mine ? (
@@ -1768,17 +1829,18 @@ export default function AnalyticsAiPanel({
             );
           })
         ) : (
-          <View style={styles.empty}>
-            <View style={styles.emptyMark}>
-              <Ionicons name="sparkles" size={18} color={INK} />
+          <View style={[styles.empty, compact && styles.emptyPhone]}>
+            <View style={[styles.emptyMark, compact && styles.emptyMarkPhone]}>
+              <Ionicons name="sparkles" size={compact ? 16 : 18} color={INK} />
             </View>
-            <Text style={styles.emptyGreeting}>
+            <Text style={[styles.emptyGreeting, compact && styles.emptyGreetingPhone]}>
               {firstName ? `Hi ${firstName} 👋` : 'Hi 👋'}
             </Text>
           </View>
         )}
       </ScrollView>
       <View style={[styles.composerWrap, compact && styles.composerWrapPhone]}>
+        {composerMeta || !compact ? (
         <View style={styles.composerToolbar}>
           <View style={styles.composerToolbarLead}>
             {composerMeta ? (
@@ -1787,6 +1849,7 @@ export default function AnalyticsAiPanel({
               </Text>
             ) : null}
           </View>
+          {compact ? null : (
           <Pressable
             onPress={() => setPromptsOpen(true)}
             accessibilityRole="button"
@@ -1799,7 +1862,9 @@ export default function AnalyticsAiPanel({
             <Ionicons name="bookmark-outline" size={13} color={INK} />
             <Text style={styles.promptsHitText}>Saved</Text>
           </Pressable>
+          )}
         </View>
+        ) : null}
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
         {attaching ? (
           <View style={styles.attachBusy}>
@@ -1811,6 +1876,27 @@ export default function AnalyticsAiPanel({
         ) : null}
         <AttachmentChips items={pending} onRemove={removePending} />
         {!turns.length ? (
+          compact ? (
+            <View style={styles.suggestWrapPhone}>
+              {suggestions.map((item) => (
+                <Pressable
+                  key={item}
+                  onPress={() => send(item)}
+                  disabled={Boolean(busyId) || blocked}
+                  accessibilityRole="button"
+                  style={({ hovered, pressed }) => [
+                    styles.suggest,
+                    styles.suggestPhone,
+                    (hovered || pressed) && styles.suggestHover,
+                  ]}
+                >
+                  <Text style={styles.suggestText} numberOfLines={1}>
+                    {item}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : (
           <ScrollView
             horizontal
             style={styles.suggestScroll}
@@ -1835,6 +1921,7 @@ export default function AnalyticsAiPanel({
               </Pressable>
             ))}
           </ScrollView>
+          )
         ) : null}
         <View ref={composerPillRef} collapsable={false} style={styles.composerPillAnchor}>
         <Pressable
@@ -1890,20 +1977,41 @@ export default function AnalyticsAiPanel({
               if (canSend) void send();
             }}
           />
-          <View style={styles.composerTrail}>
+          <View style={[styles.composerTrail, compact && styles.composerTrailPhone]}>
+            {compact ? (
+              <Pressable
+                onPress={() => setPromptsOpen(true)}
+                accessibilityRole="button"
+                accessibilityLabel="Saved prompts"
+                style={({ hovered, pressed }) => [
+                  styles.composerModel,
+                  styles.composerModelPhone,
+                  (hovered || pressed) && styles.composerModelHover,
+                ]}
+              >
+                <Ionicons name="bookmark-outline" size={16} color={SECONDARY} />
+              </Pressable>
+            ) : null}
             <Pressable
               onPress={() => setModelOpen(true)}
               accessibilityRole="button"
               accessibilityLabel={`Model, ${modelLabel}${modelTag ? `, ${modelTag}` : ''}`}
               style={({ hovered, pressed }) => [
                 styles.composerModel,
+                compact && styles.composerModelPhone,
                 (hovered || pressed) && styles.composerModelHover,
               ]}
             >
-              <Text style={styles.composerModelText} numberOfLines={1}>
-                {modelLabel}
-              </Text>
-              <Ionicons name="chevron-down" size={12} color={SECONDARY} />
+              {compact ? (
+                <Ionicons name="options-outline" size={16} color={SECONDARY} />
+              ) : (
+                <>
+                  <Text style={styles.composerModelText} numberOfLines={1}>
+                    {modelLabel}
+                  </Text>
+                  <Ionicons name="chevron-down" size={12} color={SECONDARY} />
+                </>
+              )}
             </Pressable>
             {compact ? null : (
               <Pressable
@@ -1937,7 +2045,9 @@ export default function AnalyticsAiPanel({
           </View>
         </Pressable>
         </View>
-        <Text style={styles.composerHint}>Enter to send · Shift+Enter for a new line</Text>
+        {compact ? null : (
+          <Text style={styles.composerHint}>Enter to send · Shift+Enter for a new line</Text>
+        )}
       </View>
     </View>
   );
@@ -1967,49 +2077,13 @@ const styles = StyleSheet.create({
     flexDirection: 'column',
   },
   sidebar: {
+    width: SIDEBAR_WIDTH,
     flexShrink: 0,
     flexDirection: 'column',
     minHeight: 0,
     borderRightWidth: StyleSheet.hairlineWidth,
     borderRightColor: RULE,
     backgroundColor: CANVAS,
-  },
-  sidebarSlot: {
-    width: SIDEBAR_COLLAPSED,
-    flexShrink: 0,
-    position: 'relative',
-    zIndex: 4,
-    minHeight: 0,
-  },
-  sidebarFlyout: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    overflow: 'hidden',
-    zIndex: 5,
-  },
-  sidebarInner: {
-    width: SIDEBAR_WIDTH,
-    flex: 1,
-    minHeight: 0,
-    flexDirection: 'column',
-    backgroundColor: CANVAS,
-  },
-  sidebarHideEdge: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    width: 28,
-    ...Platform.select({
-      web: {
-        backgroundImage: 'linear-gradient(to right, rgba(0,0,0,0) 0%, rgba(0,0,0,0.03) 100%)',
-      },
-      default: {
-        backgroundColor: 'rgba(0,0,0,0.02)',
-      },
-    }),
   },
   sidebarPhone: {
     width: '100%',
@@ -2100,14 +2174,16 @@ const styles = StyleSheet.create({
     position: 'relative',
     width: '100%',
   },
+  // Same shape as the Emails inbox row: avatar, title + time, scope line, preview.
   chatRow: {
     width: '100%',
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 48,
-    paddingVertical: 12,
-    paddingLeft: 16,
-    paddingRight: 12,
+    gap: 12,
+    minHeight: 64,
+    paddingVertical: 10,
+    paddingLeft: 14,
+    paddingRight: 14,
     backgroundColor: CANVAS,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: RULE,
@@ -2116,45 +2192,79 @@ const styles = StyleSheet.create({
   chatRowMenuOpen: {
     zIndex: 4,
   },
-  chatRowTitleLine: {
+  chatAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#e8e8ed',
+    flexShrink: 0,
+  },
+  chatAvatarOn: {
+    backgroundColor: INK,
+  },
+  chatPinBadge: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#8e8e93',
+    borderWidth: 2,
+    borderColor: CANVAS,
+  },
+  chatRowCopy: {
     flex: 1,
     minWidth: 0,
+    paddingRight: 24,
+  },
+  chatRowTitleLine: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingRight: 28,
-  },
-  chatDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    borderWidth: 1.5,
-    borderColor: '#d1d1d6',
-    backgroundColor: 'transparent',
-    flexShrink: 0,
-  },
-  chatDotOn: {
-    borderColor: INK,
-    backgroundColor: INK,
   },
   chatRowOn: {
-    backgroundColor: '#f2f2f7',
+    backgroundColor: '#ececef',
   },
   chatRowHover: {
-    backgroundColor: '#f2f2f7',
+    backgroundColor: '#f5f5f7',
   },
   chatRowTitle: {
     flex: 1,
     minWidth: 0,
     fontFamily: FONT,
-    fontSize: 16,
-    lineHeight: 21,
-    fontWeight: '400',
-    color: '#636366',
-    letterSpacing: -0.2,
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    letterSpacing: -0.15,
   },
   chatRowTitleOn: {
-    color: '#3a3a3c',
+    color: INK,
+  },
+  chatRowTime: {
+    fontFamily: FONT,
+    fontSize: 12,
+    color: SECONDARY,
+    flexShrink: 0,
+  },
+  chatRowScope: {
+    fontFamily: FONT,
+    fontSize: 14,
+    lineHeight: 19,
+    color: '#1d1d1f',
+    marginTop: 1,
+  },
+  chatRowPreview: {
+    fontFamily: FONT,
+    fontSize: 13,
+    lineHeight: 18,
+    color: SECONDARY,
+    marginTop: 1,
   },
   chatRowSpinner: {
     flexShrink: 0,
@@ -2341,6 +2451,15 @@ const styles = StyleSheet.create({
     letterSpacing: -0.3,
     textAlign: 'center',
   },
+  emptyPhone: {
+    gap: 8,
+    paddingHorizontal: 4,
+  },
+  emptyMarkPhone: {
+    width: 36,
+    height: 36,
+    marginBottom: 0,
+  },
   emptyGreeting: {
     fontFamily: FONT_LIGHT,
     fontSize: 28,
@@ -2348,6 +2467,10 @@ const styles = StyleSheet.create({
     color: SECONDARY,
     letterSpacing: -0.4,
     textAlign: 'center',
+  },
+  emptyGreetingPhone: {
+    fontSize: 22,
+    letterSpacing: -0.3,
   },
   emptyBody: {
     fontFamily: FONT,
@@ -2375,6 +2498,13 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
+  suggestWrapPhone: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 6,
+    width: '100%',
+  },
   suggestRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2391,6 +2521,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     ...CHIP_SHADOW,
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  suggestPhone: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
   },
   suggestHover: {
     backgroundColor: NAV_TAB_ACTIVE_BG,
@@ -2448,6 +2582,12 @@ const styles = StyleSheet.create({
   },
   turnBodyMine: {
     maxWidth: '78%',
+  },
+  turnBodyPhone: {
+    maxWidth: '92%',
+  },
+  turnBodyMinePhone: {
+    maxWidth: '88%',
   },
   turnLabel: {
     fontFamily: FONT,
@@ -2533,9 +2673,10 @@ const styles = StyleSheet.create({
     backgroundColor: CANVAS,
   },
   composerWrapPhone: {
-    paddingHorizontal: 12,
-    paddingTop: 8,
-    paddingBottom: Platform.select({ web: 12, ios: 10, default: 10 }),
+    paddingHorizontal: 10,
+    paddingTop: 6,
+    paddingBottom: Platform.select({ web: 8, ios: 8, default: 8 }),
+    gap: 6,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: RULE,
   },
@@ -2818,6 +2959,10 @@ const styles = StyleSheet.create({
     flexShrink: 0,
     maxWidth: '46%',
   },
+  composerTrailPhone: {
+    maxWidth: '42%',
+    gap: 0,
+  },
   composerModel: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2827,6 +2972,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     borderRadius: 999,
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  composerModelPhone: {
+    maxWidth: 36,
+    minHeight: 32,
+    paddingHorizontal: 6,
+    justifyContent: 'center',
   },
   composerModelHover: {
     backgroundColor: 'rgba(0,0,0,0.04)',
@@ -2945,8 +3096,10 @@ const styles = StyleSheet.create({
     maxWidth: '100%',
     marginHorizontal: 0,
     marginBottom: 0,
+    maxHeight: '86%',
     borderBottomLeftRadius: 0,
     borderBottomRightRadius: 0,
+    paddingBottom: 12,
   },
   modelSheetHead: {
     paddingHorizontal: 20,

@@ -215,6 +215,7 @@ const SCREEN_LOADERS = {
   serphint: () => import('./components/SerphintScreen'),
   settings: () => import('./components/SettingsScreen'),
   supplies: () => import('./components/SuppliesScreen'),
+  tasks: () => import('./components/TasksScreen'),
   'shared-services': () => import('./components/SharedServicesScreen'),
   'store-settings': () => import('./components/StoreSettingsPanel'),
   teams: () => import('./components/TeamsScreen'),
@@ -252,6 +253,7 @@ const SettingsScreen = lazy(SCREEN_LOADERS.settings);
 const SharedServicesScreen = lazy(SCREEN_LOADERS['shared-services']);
 const StoreSettingsPanel = lazy(SCREEN_LOADERS['store-settings']);
 const SuppliesScreen = lazy(SCREEN_LOADERS.supplies);
+const TasksScreen = lazy(SCREEN_LOADERS.tasks);
 const TeamsScreen = lazy(SCREEN_LOADERS.teams);
 const TradeScreen = lazy(SCREEN_LOADERS.trade);
 const TransferScreen = lazy(SCREEN_LOADERS.transfer);
@@ -973,6 +975,7 @@ const TOOL_CARDS = [
   { key: 'notifications', label: 'Notifications', icon: 'notifications-outline', tint: '#FEE2E2', accent: '#B91C1C' },
   { key: 'reviews', label: 'Reviews', icon: 'star-outline', tint: '#FEF9C3', accent: '#A16207' },
   { key: 'emails', label: 'Emails', icon: 'mail-outline', tint: '#E0E7FF', accent: '#4338CA' },
+  { key: 'tasks', label: 'Tasks', icon: 'checkbox-outline', tint: '#ECFDF5', accent: '#059669' },
   { key: 'documents', label: 'Documents', icon: 'folder-outline', tint: '#E2E8F0', accent: '#475569' },
   { key: 'contacts', label: 'Contacts', icon: 'book-outline', tint: '#FCE7F3', accent: '#BE185D' },
   { key: 'triage', label: 'Triage', icon: 'medkit-outline', tint: '#FFEDD5', accent: '#C2410C' },
@@ -1493,6 +1496,37 @@ function ToolsGrid({ tools, pinnedKeys, onOpen, onTogglePin, layout }) {
         />
       ))}
     </View>
+  );
+}
+
+const TOP_PICKER_CHEVRON = '#636366';
+
+function TopBarPickerChevrons({
+  onPress,
+  compact = false,
+  disabled = false,
+  accessibilityLabel = 'Open menu',
+}) {
+  const size = compact ? 10 : 9;
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      hitSlop={4}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      style={({ hovered, pressed }) => [
+        styles.topSpotChevronHit,
+        styles.topSpotChevronStackHit,
+        !disabled && (hovered || pressed) && styles.topSpotChevronHitOn,
+        disabled && styles.topSpotChevronHitDisabled,
+      ]}
+    >
+      <View style={styles.topSpotChevrons}>
+        <Ionicons name="chevron-up" size={size} color={TOP_PICKER_CHEVRON} />
+        <Ionicons name="chevron-down" size={size} color={TOP_PICKER_CHEVRON} style={styles.topSpotChevronDown} />
+      </View>
+    </Pressable>
   );
 }
 
@@ -6387,34 +6421,45 @@ function HomeScreen({
             collapsable={false}
             style={styles.igHomeMobileDateAnchor}
           >
-            <Pressable
-              onPress={() => {
-                if (dateRestricted) return;
-                expandMobileTabBar();
-                heroDateOpenRef.current?.({ range: dateMode === 'range' });
-              }}
-              style={({ pressed }) => [
+            <View
+              style={[
                 styles.igHomeMobileDateBtn,
                 dateMode === 'range' || (dateMode === 'day' && !isToday)
                   ? styles.igHomeMobileDateBtnActive
                   : null,
                 dateRestricted && styles.igHomeMobileDateBtnDisabled,
-                pressed && !dateRestricted && styles.igHomeMobileDateBtnPressed,
               ]}
-              accessibilityRole="button"
-              accessibilityLabel={`Date: ${heroDateLabel}`}
-              accessibilityHint="Change date or set a range"
-              disabled={dateRestricted}
             >
-              <Ionicons name="calendar-outline" size={15} color={MOBILE.secondary} />
-              <Text style={styles.igHomeMobileDateText} numberOfLines={1}>
-                {heroDateLabel}
-              </Text>
-              <View style={styles.igHomeMobileDateChevrons}>
-                <Ionicons name="chevron-up" size={9} color="#8e8e93" />
-                <Ionicons name="chevron-down" size={9} color="#8e8e93" style={styles.topSpotChevronDown} />
-              </View>
-            </Pressable>
+              <Pressable
+                onPress={() => {
+                  if (dateRestricted) return;
+                  expandMobileTabBar();
+                  heroDateOpenRef.current?.({ range: dateMode === 'range' });
+                }}
+                style={({ pressed }) => [
+                  styles.igHomeMobileDateMain,
+                  pressed && !dateRestricted && styles.igHomeMobileDateBtnPressed,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel={`Date: ${heroDateLabel}`}
+                accessibilityHint="Change date or set a range"
+                disabled={dateRestricted}
+              >
+                <Ionicons name="calendar-outline" size={15} color={MOBILE.secondary} />
+                <Text style={styles.igHomeMobileDateText} numberOfLines={1}>
+                  {heroDateLabel}
+                </Text>
+              </Pressable>
+              <TopBarPickerChevrons
+                onPress={() => {
+                  if (dateRestricted) return;
+                  expandMobileTabBar();
+                  heroDateOpenRef.current?.({ range: dateMode === 'range' });
+                }}
+                disabled={dateRestricted}
+                accessibilityLabel="Change date"
+              />
+            </View>
             {renderHiddenDatePicker(heroDateOpenRef, heroDateAnchorRef)}
           </View>
           ) : null}
@@ -7972,34 +8017,41 @@ function TopDateToggle({ disabled = false }) {
   const openRef = useRef(null);
   const [open, setOpen] = useState(false);
 
+  const openDateMenu = () => {
+    if (disabled) return;
+    if (open) openRef.current?.({ close: true });
+    else openRef.current?.();
+  };
+
   return (
     <View ref={fieldRef} collapsable={false} style={styles.topSpotWrap}>
-      <Pressable
-        disabled={disabled}
-        onPress={() => {
-          if (disabled) return;
-          if (open) openRef.current?.({ close: true });
-          else openRef.current?.();
-        }}
+      <View
         style={[
           styles.topSpot,
           styles.topDateField,
           mode === 'range' && styles.topDateFieldRange,
           disabled && styles.topDateFieldDisabled,
         ]}
-        accessibilityRole="button"
-        accessibilityState={{ expanded: open, disabled }}
-        accessibilityLabel={`Date ${label}`}
       >
-        <Ionicons name="calendar-outline" size={14} color={MOBILE.secondary} />
-        <Text style={styles.topSpotPrice} numberOfLines={1}>
-          {label}
-        </Text>
-        <View style={styles.topSpotChevrons}>
-          <Ionicons name="chevron-up" size={9} color="#8e8e93" />
-          <Ionicons name="chevron-down" size={9} color="#8e8e93" style={styles.topSpotChevronDown} />
-        </View>
-      </Pressable>
+        <Pressable
+          disabled={disabled}
+          onPress={openDateMenu}
+          style={styles.topSpotMainHit}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: open, disabled }}
+          accessibilityLabel={`Date ${label}`}
+        >
+          <Ionicons name="calendar-outline" size={14} color={MOBILE.secondary} />
+          <Text style={styles.topSpotPrice} numberOfLines={1}>
+            {label}
+          </Text>
+        </Pressable>
+        <TopBarPickerChevrons
+          onPress={openDateMenu}
+          disabled={disabled}
+          accessibilityLabel="Change date"
+        />
+      </View>
       {disabled ? null : (
         <HomeDatePicker
           hideField
@@ -8337,38 +8389,43 @@ function SpotMetalToggle({ compact = false }) {
           breath={breath}
           chip={chip}
         />
-        <Pressable
-          onPress={open ? close : openMenu}
+        <View
           onLayout={(event) => {
             const { width, height } = event.nativeEvent.layout;
             setChip((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
           }}
           style={[styles.topSpot, compact && styles.topSpotCompact]}
-          accessibilityRole="button"
-          accessibilityState={{ expanded: open }}
-          accessibilityLabel={`${label} spot ${empty ? 'unavailable' : `${formatSpotMoney(shown)} ${currency}`}`}
         >
           <SpotRefreshBorder compact={compact} progress={progress} breath={breath} />
-          <Animated.Text
-            style={[
-              styles.topSpotPrice,
-              compact && styles.topSpotPriceCompact,
-              {
-                color: flash.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: ['#1a1a1a', '#5C5340'],
-                }),
-              },
-            ]}
-            numberOfLines={1}
+          <Pressable
+            onPress={open ? close : openMenu}
+            style={styles.topSpotMainHit}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: open }}
+            accessibilityLabel={`${label} spot ${empty ? 'unavailable' : `${formatSpotMoney(shown)} ${currency}`}`}
           >
-            {empty ? '—' : formatSpotMoney(shown)}
-          </Animated.Text>
-          <View style={styles.topSpotChevrons}>
-            <Ionicons name="chevron-up" size={compact ? 10 : 9} color="#8e8e93" />
-            <Ionicons name="chevron-down" size={compact ? 10 : 9} color="#8e8e93" style={styles.topSpotChevronDown} />
-          </View>
-        </Pressable>
+            <Animated.Text
+              style={[
+                styles.topSpotPrice,
+                compact && styles.topSpotPriceCompact,
+                {
+                  color: flash.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: ['#1a1a1a', '#5C5340'],
+                  }),
+                },
+              ]}
+              numberOfLines={1}
+            >
+              {empty ? '—' : formatSpotMoney(shown)}
+            </Animated.Text>
+          </Pressable>
+          <TopBarPickerChevrons
+            onPress={open ? close : openMenu}
+            compact={compact}
+            accessibilityLabel="Change spot metal"
+          />
+        </View>
       </View>
       <Modal visible={open} transparent animationType="fade" onRequestClose={close}>
         <View style={styles.topSpotOverlay}>
@@ -8443,21 +8500,24 @@ function CurrencyToggle({ compact = false }) {
         <Text style={[styles.topSpotMetal, compact && styles.topSpotMetalCompact]} numberOfLines={1}>
           Currency
         </Text>
-        <Pressable
-          onPress={open ? close : openMenu}
-          style={[styles.topSpot, styles.topCurrencyField, compact && styles.topSpotCompact]}
-          accessibilityRole="button"
-          accessibilityState={{ expanded: open }}
-          accessibilityLabel={currency === 'USD' ? 'US dollars' : 'Canadian dollars'}
-        >
-          <Text style={[styles.topSpotPrice, compact && styles.topSpotPriceCompact]} numberOfLines={1}>
-            {currency}
-          </Text>
-          <View style={styles.topSpotChevrons}>
-            <Ionicons name="chevron-up" size={compact ? 10 : 9} color="#8e8e93" />
-            <Ionicons name="chevron-down" size={compact ? 10 : 9} color="#8e8e93" style={styles.topSpotChevronDown} />
-          </View>
-        </Pressable>
+        <View style={[styles.topSpot, styles.topCurrencyField, compact && styles.topSpotCompact]}>
+          <Pressable
+            onPress={open ? close : openMenu}
+            style={styles.topSpotMainHit}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: open }}
+            accessibilityLabel={currency === 'USD' ? 'US dollars' : 'Canadian dollars'}
+          >
+            <Text style={[styles.topSpotPrice, compact && styles.topSpotPriceCompact]} numberOfLines={1}>
+              {currency}
+            </Text>
+          </Pressable>
+          <TopBarPickerChevrons
+            onPress={open ? close : openMenu}
+            compact={compact}
+            accessibilityLabel="Change currency"
+          />
+        </View>
       </View>
       <Modal visible={open} transparent animationType="fade" onRequestClose={close}>
         <View style={styles.topSpotOverlay}>
@@ -8551,19 +8611,10 @@ function TopAppSwitcher({
           </Text>
         </Pressable>
         <View ref={fieldRef} collapsable={false}>
-          <Pressable
+          <TopBarPickerChevrons
             onPress={open ? close : openMenu}
-            hitSlop={4}
-            accessibilityRole="button"
-            accessibilityState={{ expanded: open }}
             accessibilityLabel="Switch app"
-            style={styles.topBarAppChevronsBtn}
-          >
-            <View style={styles.topSpotChevrons}>
-              <Ionicons name="chevron-up" size={9} color="#8e8e93" />
-              <Ionicons name="chevron-down" size={9} color="#8e8e93" style={styles.topSpotChevronDown} />
-            </View>
-          </Pressable>
+          />
         </View>
       </View>
       <Modal visible={open} transparent animationType="fade" onRequestClose={close}>
@@ -9067,6 +9118,14 @@ export default function App() {
   const [triageMobileHeader, setTriageMobileHeader] = useState(null);
   const handleTriageMobileHeader = useCallback((next) => {
     setTriageMobileHeader((prev) => {
+      if (!next && !prev) return prev;
+      if (prev?.trailing === next?.trailing) return prev;
+      return next;
+    });
+  }, []);
+  const [analyticsMobileHeader, setAnalyticsMobileHeader] = useState(null);
+  const handleAnalyticsMobileHeader = useCallback((next) => {
+    setAnalyticsMobileHeader((prev) => {
       if (!next && !prev) return prev;
       if (prev?.trailing === next?.trailing) return prev;
       return next;
@@ -9689,6 +9748,15 @@ export default function App() {
     setSettingsPanel(null);
   }, [hasApp]);
 
+  // Tasks only needs the Emails app itself (to connect or read an inbox); no store focus.
+  const openEmailsFromTasks = useCallback(() => {
+    if (!hasApp('emails')) return;
+    const emailsTool = TOOL_CARDS.find((tool) => tool.key === 'emails');
+    setActiveTab('tools');
+    setActiveTool(emailsTool || { key: 'emails', label: 'Emails' });
+    setSettingsPanel(null);
+  }, [hasApp]);
+
   const togglePin = (toolKey) => {
     setPinnedKeys((current) => {
       const next = current.includes(toolKey)
@@ -9826,7 +9894,9 @@ export default function App() {
       activeTool.key === 'financials' ||
       activeTool.key === 'audit' ||
       activeTool.key === 'analytics' ||
-      activeTool.key === 'supplies'
+      activeTool.key === 'supplies' ||
+      activeTool.key === 'tasks' ||
+      activeTool.key === 'bonuses'
     ) {
       return null;
     }
@@ -9936,6 +10006,7 @@ export default function App() {
             storeFilter={scopedStore || undefined}
             onOpenCustomer={openCustomerProfile}
             onOpenDocument={openSearchDocument}
+            onMobileHeader={handleAnalyticsMobileHeader}
           />
         ) : activeTool.key === 'audit' ? (
           <AuditScreen
@@ -10109,6 +10180,12 @@ export default function App() {
           <SuppliesScreen
             session={session}
             storeFilter={scopedStore || undefined}
+          />
+        ) : activeTool.key === 'tasks' ? (
+          <TasksScreen
+            session={session}
+            onRequireLogin={() => selectTab('profile')}
+            onOpenEmails={hasApp('emails') ? openEmailsFromTasks : null}
           />
         ) : activeTool.key === 'logs' ? (
           <LogsScreen session={session} />
@@ -10302,7 +10379,8 @@ export default function App() {
       activeTool?.key === 'customers' ||
       activeTool?.key === 'analytics' ||
       activeTool?.key === 'triage' ||
-      activeTool?.key === 'supplies'));
+      activeTool?.key === 'supplies' ||
+      activeTool?.key === 'tasks'));
 
   const isAppsLibrary = activeTab === 'tools' && !activeTool;
   const settingsSubPanels = {
@@ -10483,7 +10561,9 @@ export default function App() {
                   ? dmMobileHeader?.trailing
                   : activeTool?.key === 'triage'
                     ? triageMobileHeader?.trailing
-                    : null
+                    : activeTool?.key === 'analytics'
+                      ? analyticsMobileHeader?.trailing
+                      : null
               }
             />
           ) : null}
@@ -11002,7 +11082,7 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '400',
     lineHeight: 12,
-    color: '#8e8e93',
+    color: '#3A3A3C',
     letterSpacing: -0.1,
   },
   topSpotMetalCompact: {
@@ -11028,7 +11108,7 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '400',
     lineHeight: 12,
-    color: '#8e8e93',
+    color: '#3A3A3C',
     letterSpacing: -0.1,
   },
   topSpotMetalLabelCompact: {
@@ -11073,6 +11153,60 @@ const styles = StyleSheet.create({
   },
   topSpotChevronDown: {
     marginTop: -4,
+  },
+  topSpotMainHit: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  topSpotChevronHit: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 5,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  topSpotChevronStackHit: {
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+    marginRight: -2,
+  },
+  topSpotChevronHitUp: {
+    paddingBottom: 0,
+  },
+  topSpotChevronHitDown: {
+    marginTop: -4,
+    paddingTop: 0,
+  },
+  topSpotChevronHitOn: {
+    backgroundColor: 'rgba(0,0,0,0.06)',
+  },
+  topSpotChevronHitDisabled: {
+    opacity: 0.45,
+  },
+  topAppsViewField: {
+    minWidth: 76,
+    maxWidth: 120,
+    paddingRight: 4,
+    gap: 6,
+  },
+  topAppsViewLabel: {
+    color: MOBILE.label,
+    fontWeight: '500',
+  },
+  topAppsViewChevronCol: {
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
   },
   topSpotOverlay: {
     flex: 1,
@@ -15365,6 +15499,17 @@ const styles = StyleSheet.create({
     maxWidth: '100%',
     alignItems: 'flex-end',
     alignSelf: 'flex-end',
+  },
+  igHomeMobileDateMain: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
   igHomeMobileDateBtn: {
     flexDirection: 'row',

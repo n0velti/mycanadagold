@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
-  KeyboardAvoidingView,
   Linking,
   Platform,
   Pressable,
@@ -34,6 +33,7 @@ import {
   clearLegacyGmailSession,
   createGmailOAuthState,
   disconnectGmailAccount,
+  draftFromMail,
   exchangeGmailOAuthCode,
   getGmailMessage,
   getGmailRedirectUri,
@@ -48,6 +48,7 @@ import {
   readGmailOAuthState,
 } from '../lib/gmail';
 import { useIsMobile } from '../lib/mobileUi';
+import EmailComposer from './EmailComposer';
 import ProfilePhotoModal from './ProfilePhotoModal';
 
 const fontFamily = Platform.select({
@@ -300,14 +301,15 @@ export default function EmailsScreen({
   const [query, setQuery] = useState('');
   const [activeKey, setActiveKey] = useState(null);
   const [activeMail, setActiveMail] = useState(null);
-  const [composeOpen, setComposeOpen] = useState(false);
-  const [selectedIds, setSelectedIds] = useState([]);
-  const [subjectDraft, setSubjectDraft] = useState('');
-  const [bodyDraft, setBodyDraft] = useState('');
+  // A draft from draftFromMail (reply / forward) or { mode: 'new' }. Null = closed.
+  const [composeDraft, setComposeDraft] = useState(null);
+  const [notice, setNotice] = useState('');
   const [loadingList, setLoadingList] = useState(true);
   const [loadingMail, setLoadingMail] = useState(false);
   const [error, setError] = useState('');
   const [photoPerson, setPhotoPerson] = useState(null);
+  const composeOpen = Boolean(composeDraft);
+  const noticeTimer = useRef(null);
   // Connected inboxes live on the server (per signed-in person), so they are
   // the same on every device and survive logouts. `selectedAccount` is '' for
   // the merged "All inboxes" view and is remembered per person on this device.
@@ -351,7 +353,7 @@ export default function EmailsScreen({
     appliedFocusKey.current = focus.key;
     if (capture) {
       setFolder('customers');
-      setComposeOpen(false);
+      setComposeDraft(null);
       setActiveKey(null);
       setActiveMail(null);
     }
@@ -363,7 +365,7 @@ export default function EmailsScreen({
       setSelectedAccount(next);
       setActiveKey(null);
       setActiveMail(null);
-      setComposeOpen(false);
+      setComposeDraft(null);
       AsyncStorage.setItem(prefKey, next).catch(() => {});
     },
     [prefKey],
@@ -512,7 +514,7 @@ export default function EmailsScreen({
     async (row) => {
       if (!row?.id || !row.account) return;
       setActiveKey(`${row.account}|${row.id}`);
-      setComposeOpen(false);
+      setComposeDraft(null);
       setLoadingMail(true);
       try {
         const result = await getGmailMessage(row.account, row.id);
@@ -611,42 +613,42 @@ export default function EmailsScreen({
     }
   };
 
-  const toggleSelected = (personId) => {
-    setSelectedIds((current) =>
-      current.includes(personId)
-        ? current.filter((id) => id !== personId)
-        : [...current, personId],
-    );
+  const showNotice = useCallback((text) => {
+    clearTimeout(noticeTimer.current);
+    setNotice(text);
+    noticeTimer.current = setTimeout(() => setNotice(''), 4000);
+  }, []);
+  useEffect(() => () => clearTimeout(noticeTimer.current), []);
+
+  const composeAccount = selectedAccount || activeMail?.account || accounts.find((account) => account.connected)?.email || '';
+  const connectedList = useMemo(() => Array.from(connectedEmails), [connectedEmails]);
+
+  const startCompose = () => {
+    setError('');
+    setComposeDraft({ mode: 'new', to: [], cc: [], bcc: [], subject: '' });
   };
 
-  // Mail is read-only for now; the compose button only explains that.
-  const sending = false;
-  const handleSend = async () => {
-    setError('This inbox is read-only. Reply from Gmail for now.');
+  const startReply = (mode) => {
+    if (!activeMail) return;
+    setError('');
+    setComposeDraft(draftFromMail(activeMail, mode, connectedList));
+  };
+
+  const handleSent = (result) => {
+    setComposeDraft(null);
+    showNotice(result?.mode === 'new' ? 'Sent.' : result?.mode === 'forward' ? 'Forwarded.' : 'Reply sent.');
+    // Gmail files the message under Sent right away; pull it in so the folder is current.
+    refreshList();
   };
 
   const filteredList = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q || composeOpen) return list;
+    if (!q) return list;
     return list.filter((row) => {
       const hay = `${emailSubject(row)} ${contactName(row.sender)} ${recipientNames(row.recipients)} ${row.preview} ${row.account}`.toLowerCase();
       return hay.includes(q);
     });
-  }, [composeOpen, list, query]);
-
-  const filteredPeople = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return contacts;
-    return contacts.filter((person) => {
-      const hay = `${contactName(person)} ${person.email || ''} ${person.locationName || ''}`.toLowerCase();
-      return hay.includes(q);
-    });
-  }, [contacts, query]);
-
-  const selectedPeople = useMemo(
-    () => selectedIds.map((id) => contacts.find((person) => person.id === id)).filter(Boolean),
-    [selectedIds, contacts],
-  );
+  }, [list, query]);
 
   if (!session?.token && !myId) {
     return (
@@ -664,49 +666,14 @@ export default function EmailsScreen({
   }
 
   const needsGoogle = accountsReady && accounts.length === 0 && folder !== 'customers';
-  const showFolders = !isMobile || !activeKey;
-  const showList = !needsGoogle && folder !== 'customers' && (!isMobile || !activeKey);
-  const showReader = !needsGoogle && folder !== 'customers' && (!isMobile || Boolean(activeKey)) && !(isMobile && composeOpen);
+  // On mobile the composer takes the whole screen; on desktop it replaces the reader.
+  const showFolders = !isMobile || (!activeKey && !composeOpen);
+  const showList = !needsGoogle && folder !== 'customers' && (!isMobile || (!activeKey && !composeOpen));
+  const showReader = !needsGoogle && folder !== 'customers' && (!isMobile || Boolean(activeKey) || composeOpen);
   const isMe = (person) =>
     Boolean(person) && (person.profileId === myId || (person.email && connectedEmails.has(person.email)));
 
   const renderList = () => {
-    if (composeOpen) {
-      if (filteredPeople.length === 0) {
-        return (
-          <Text style={styles.emptyHint}>
-            {contacts.length === 0 ? 'No other staff have signed in yet.' : 'No matching people.'}
-          </Text>
-        );
-      }
-      return filteredPeople.map((person) => {
-        const checked = selectedIds.includes(person.id);
-        return (
-          <Pressable
-            key={person.id}
-            onPress={() => toggleSelected(person.id)}
-            {...(Platform.OS === 'web' ? { className: 'cgold-dm-row' } : null)}
-            style={({ pressed }) => [styles.personRow, pressed && styles.rowPressed]}
-          >
-            <PersonAvatar person={person} size={44} />
-            <View style={styles.personCopy}>
-              <Text style={styles.personName} numberOfLines={1}>
-                {contactName(person)}
-              </Text>
-              <Text style={styles.personSub} numberOfLines={1}>
-                {[person.email, person.locationName].filter(Boolean).join(' · ') || 'App user'}
-              </Text>
-            </View>
-            <Ionicons
-              name={checked ? 'checkmark-circle' : 'ellipse-outline'}
-              size={22}
-              color={checked ? BLUE : '#c7c7cc'}
-            />
-          </Pressable>
-        );
-      });
-    }
-
     if (loadingList && list.length === 0) {
       return (
         <View style={styles.inboxCentered}>
@@ -800,83 +767,19 @@ export default function EmailsScreen({
   const renderReader = () => {
     if (composeOpen) {
       return (
-        <KeyboardAvoidingView
-          style={styles.thread}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        >
-          {isMobile ? (
-            <View style={styles.threadHeader}>
-              <Pressable onPress={() => setComposeOpen(false)} style={styles.backButton} accessibilityLabel="Back">
-                <Ionicons name="chevron-back" size={22} color={BLUE} />
-              </Pressable>
-              <Text style={styles.threadName}>New message</Text>
-            </View>
-          ) : (
-            <View style={styles.threadHeader}>
-              <Text style={styles.threadName}>New message</Text>
-            </View>
-          )}
-          <View style={styles.composeFields}>
-            <View style={styles.composeRow}>
-              <Text style={styles.composeLabel}>To</Text>
-              <View style={styles.recipientBody}>
-                {selectedPeople.length === 0 ? (
-                  <Text style={styles.composePlaceholder}>Choose people on the left</Text>
-                ) : (
-                  selectedPeople.map((person) => (
-                    <Pressable
-                      key={person.id}
-                      onPress={() => toggleSelected(person.id)}
-                      style={({ hovered }) => [styles.chip, hovered && styles.chipHover]}
-                    >
-                      <PersonAvatar person={person} size={22} />
-                      <Text style={styles.chipText}>{contactName(person)}</Text>
-                    </Pressable>
-                  ))
-                )}
-              </View>
-            </View>
-            <View style={styles.composeRow}>
-              <Text style={styles.composeLabel}>Subject</Text>
-              <TextInput
-                value={subjectDraft}
-                onChangeText={setSubjectDraft}
-                placeholder="Subject"
-                placeholderTextColor="#8e8e93"
-                style={styles.composeInput}
-              />
-            </View>
-          </View>
-          <TextInput
-            value={bodyDraft}
-            onChangeText={setBodyDraft}
-            placeholder="Write your email…"
-            placeholderTextColor="#8e8e93"
-            multiline
-            textAlignVertical="top"
-            style={styles.composeBody}
+        <View style={styles.thread}>
+          <EmailComposer
+            key={`${composeDraft.mode}:${composeDraft.reply?.messageId || ''}:${composeAccount}`}
+            draft={composeDraft}
+            accounts={accounts}
+            initialAccount={composeAccount}
+            contacts={contacts}
+            isMobile={isMobile}
+            onClose={() => setComposeDraft(null)}
+            onSent={handleSent}
+            onReconnect={(email) => reconnectInbox(email)}
           />
-          <View style={styles.composeFooter}>
-            <Pressable
-              onPress={handleSend}
-              disabled={sending || selectedIds.length === 0 || !bodyDraft.trim()}
-              style={({ hovered, pressed }) => [
-                styles.sendButton,
-                (hovered || pressed) && styles.sendButtonHover,
-                (sending || selectedIds.length === 0 || !bodyDraft.trim()) && styles.sendButtonDisabled,
-              ]}
-            >
-              {sending ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <>
-                  <Ionicons name="paper-plane" size={14} color="#fff" />
-                  <Text style={styles.sendButtonText}>Send</Text>
-                </>
-              )}
-            </Pressable>
-          </View>
-        </KeyboardAvoidingView>
+        </View>
       );
     }
 
@@ -939,6 +842,28 @@ export default function EmailsScreen({
               {multiAccount && activeMail.account ? `${stamp} · ${activeMail.account}` : stamp}
             </Text>
           </View>
+          <View style={styles.threadActions}>
+            {[
+              { mode: 'reply', label: 'Reply', icon: 'arrow-undo-outline' },
+              { mode: 'replyAll', label: 'Reply all', icon: 'arrow-undo-circle-outline' },
+              { mode: 'forward', label: 'Forward', icon: 'arrow-redo-outline' },
+            ].map((action) => (
+              <Pressable
+                key={action.mode}
+                onPress={() => startReply(action.mode)}
+                accessibilityRole="button"
+                accessibilityLabel={action.label}
+                style={({ hovered, pressed }) => [
+                  styles.threadAction,
+                  isMobile && styles.threadActionIcon,
+                  (hovered || pressed) && styles.threadActionHover,
+                ]}
+              >
+                <Ionicons name={action.icon} size={isMobile ? 20 : 15} color={ACCENT} />
+                {!isMobile ? <Text style={styles.threadActionText}>{action.label}</Text> : null}
+              </Pressable>
+            ))}
+          </View>
         </View>
         <ScrollView style={styles.threadList} contentContainerStyle={styles.mailBodyContent}>
           <Text style={styles.sectionLabel}>From</Text>
@@ -968,6 +893,32 @@ export default function EmailsScreen({
               </View>
             ) : null}
             <Text style={styles.mailBodyText}>{activeMail.body}</Text>
+          </View>
+          <View style={styles.replyBar}>
+            <Pressable
+              onPress={() => startReply('reply')}
+              accessibilityRole="button"
+              style={({ hovered, pressed }) => [styles.replyBarButton, (hovered || pressed) && styles.replyBarButtonHover]}
+            >
+              <Ionicons name="arrow-undo-outline" size={16} color={ACCENT} />
+              <Text style={styles.replyBarText}>Reply</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => startReply('replyAll')}
+              accessibilityRole="button"
+              style={({ hovered, pressed }) => [styles.replyBarButton, (hovered || pressed) && styles.replyBarButtonHover]}
+            >
+              <Ionicons name="arrow-undo-circle-outline" size={16} color={ACCENT} />
+              <Text style={styles.replyBarText}>Reply all</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => startReply('forward')}
+              accessibilityRole="button"
+              style={({ hovered, pressed }) => [styles.replyBarButton, (hovered || pressed) && styles.replyBarButtonHover]}
+            >
+              <Ionicons name="arrow-redo-outline" size={16} color={ACCENT} />
+              <Text style={styles.replyBarText}>Forward</Text>
+            </Pressable>
           </View>
         </ScrollView>
       </View>
@@ -1084,7 +1035,7 @@ export default function EmailsScreen({
                 count={item.key === 'inbox' ? unreadCount : 0}
                 onPress={() => {
                   setFolder(item.key);
-                  setComposeOpen(false);
+                  setComposeDraft(null);
                   setActiveKey(null);
                   setActiveMail(null);
                   setQuery('');
@@ -1156,89 +1107,43 @@ export default function EmailsScreen({
           {showList ? (
             <View style={[styles.inbox, isMobile && styles.inboxMobile]}>
               <View style={[styles.inboxHeader, isMobile && styles.inboxHeaderMobile]}>
-                <Text style={styles.inboxTitle}>
-                  {composeOpen ? (isMobile ? 'New message' : 'To') : folder === 'sent' ? 'Sent' : 'Inbox'}
-                </Text>
-                {isMobile && !composeOpen ? renderAccountBlock() : null}
-              </View>
-              {isMobile && composeOpen ? (
-                <View style={styles.composeFields}>
-                  <View style={styles.composeRow}>
-                    <Text style={styles.composeLabel}>To</Text>
-                    <View style={styles.recipientBody}>
-                      {selectedPeople.length === 0 ? (
-                        <Text style={styles.composePlaceholder}>Tap people below</Text>
-                      ) : (
-                        selectedPeople.map((person) => (
-                          <Pressable
-                            key={person.id}
-                            onPress={() => toggleSelected(person.id)}
-                            style={({ hovered }) => [styles.chip, hovered && styles.chipHover]}
-                          >
-                            <PersonAvatar person={person} size={22} />
-                            <Text style={styles.chipText}>{contactName(person)}</Text>
-                          </Pressable>
-                        ))
-                      )}
-                    </View>
-                  </View>
-                  <View style={styles.composeRow}>
-                    <Text style={styles.composeLabel}>Subject</Text>
-                    <TextInput
-                      value={subjectDraft}
-                      onChangeText={setSubjectDraft}
-                      placeholder="Subject"
-                      placeholderTextColor="#8e8e93"
-                      style={styles.composeInput}
-                    />
-                  </View>
+                <View style={styles.inboxTitleRow}>
+                  <Text style={styles.inboxTitle}>{folder === 'sent' ? 'Sent' : 'Inbox'}</Text>
+                  <Pressable
+                    onPress={startCompose}
+                    accessibilityRole="button"
+                    accessibilityLabel="New message"
+                    style={({ hovered, pressed }) => [
+                      styles.composeButton,
+                      (hovered || pressed) && styles.composeButtonHover,
+                      composeOpen && composeDraft?.mode === 'new' && styles.composeButtonActive,
+                    ]}
+                  >
+                    <Ionicons name="create-outline" size={20} color={ACCENT} />
+                  </Pressable>
                 </View>
-              ) : null}
+                {isMobile ? renderAccountBlock() : null}
+              </View>
               <View style={styles.searchWrap}>
                 <Ionicons name="search" size={16} color="#8e8e93" />
                 <TextInput
                   value={query}
                   onChangeText={setQuery}
-                  placeholder={composeOpen ? 'Search people' : 'Search'}
+                  placeholder="Search"
                   placeholderTextColor="#8e8e93"
                   style={styles.searchInput}
                 />
               </View>
+              {notice ? (
+                <View style={styles.noticeRow}>
+                  <Ionicons name="checkmark-circle" size={14} color="#15803D" />
+                  <Text style={styles.noticeText}>{notice}</Text>
+                </View>
+              ) : null}
               {error ? <Text style={styles.errorText}>{error}</Text> : null}
               <ScrollView style={styles.inboxList} contentContainerStyle={styles.inboxListContent}>
                 {renderList()}
               </ScrollView>
-              {isMobile && composeOpen ? (
-                <View style={styles.composeFooter}>
-                  <TextInput
-                    value={bodyDraft}
-                    onChangeText={setBodyDraft}
-                    placeholder="Write your email…"
-                    placeholderTextColor="#8e8e93"
-                    multiline
-                    textAlignVertical="top"
-                    style={styles.composeBodyMobile}
-                  />
-                  <Pressable
-                    onPress={handleSend}
-                    disabled={sending || selectedIds.length === 0 || !bodyDraft.trim()}
-                    style={({ hovered, pressed }) => [
-                      styles.sendButton,
-                      (hovered || pressed) && styles.sendButtonHover,
-                      (sending || selectedIds.length === 0 || !bodyDraft.trim()) && styles.sendButtonDisabled,
-                    ]}
-                  >
-                    {sending ? (
-                      <ActivityIndicator color="#fff" />
-                    ) : (
-                      <>
-                        <Ionicons name="paper-plane" size={14} color="#fff" />
-                        <Text style={styles.sendButtonText}>Send</Text>
-                      </>
-                    )}
-                  </Pressable>
-                </View>
-              ) : null}
             </View>
           ) : null}
           {showReader ? renderReader() : null}
@@ -1279,16 +1184,6 @@ const styles = StyleSheet.create({
     borderColor: '#e5e5ea',
     borderRadius: 14,
     overflow: 'hidden',
-  },
-  composeBodyMobile: {
-    minHeight: 88,
-    maxHeight: 140,
-    fontFamily,
-    fontSize: 16,
-    lineHeight: 22,
-    color: '#1d1d1f',
-    marginBottom: 10,
-    outlineStyle: 'none',
   },
   folders: {
     width: FOLDER_WIDTH,
@@ -1471,11 +1366,112 @@ const styles = StyleSheet.create({
   inboxHeaderMobile: {
     paddingTop: 8,
   },
+  inboxTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
   inboxTitle: {
     fontFamily,
     fontSize: 22,
     fontWeight: '700',
     color: '#1d1d1f',
+  },
+  composeButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  composeButtonHover: {
+    backgroundColor: '#f2f2f7',
+  },
+  composeButtonActive: {
+    backgroundColor: '#e8e7ff',
+  },
+  noticeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginHorizontal: 12,
+    marginBottom: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 8,
+    backgroundColor: '#ECFDF5',
+  },
+  noticeText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#15803D',
+  },
+  threadActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    flexShrink: 0,
+  },
+  threadAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: '#eef0ff',
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  threadActionIcon: {
+    width: 36,
+    height: 36,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    borderRadius: 18,
+    justifyContent: 'center',
+    backgroundColor: 'transparent',
+  },
+  threadActionHover: {
+    backgroundColor: '#dcdfff',
+  },
+  threadActionText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: ACCENT,
+  },
+  replyBar: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 24,
+    paddingTop: 16,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#e5e5ea',
+  },
+  replyBarButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#dcdfff',
+    backgroundColor: '#fff',
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  replyBarButtonHover: {
+    backgroundColor: '#eef0ff',
+  },
+  replyBarText: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '600',
+    color: ACCENT,
   },
   searchWrap: {
     flexDirection: 'row',
@@ -1879,110 +1875,5 @@ const styles = StyleSheet.create({
     minHeight: 0,
     paddingHorizontal: 16,
     paddingTop: 8,
-  },
-  composeFields: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e5e5ea',
-  },
-  composeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e5e5ea',
-  },
-  composeLabel: {
-    width: 64,
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#8e8e93',
-  },
-  composePlaceholder: {
-    fontFamily,
-    fontSize: 15,
-    color: '#8e8e93',
-  },
-  composeInput: {
-    flex: 1,
-    fontFamily,
-    fontSize: 15,
-    color: '#1d1d1f',
-    paddingVertical: 4,
-    outlineStyle: 'none',
-  },
-  composeBody: {
-    flex: 1,
-    fontFamily,
-    fontSize: 16,
-    lineHeight: 22,
-    color: '#1d1d1f',
-    paddingHorizontal: 16,
-    paddingTop: 14,
-    outlineStyle: 'none',
-  },
-  composeFooter: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#e5e5ea',
-    alignItems: 'flex-start',
-  },
-  recipientBody: {
-    flex: 1,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    alignItems: 'center',
-    gap: 6,
-  },
-  chip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: '#eef4ff',
-    borderRadius: 999,
-    paddingLeft: 2,
-    paddingRight: 8,
-    paddingVertical: 2,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  chipHover: {
-    backgroundColor: '#dceaff',
-  },
-  chipText: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: BLUE,
-  },
-  sendButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: ACCENT,
-    borderRadius: 999,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  sendButtonHover: {
-    backgroundColor: '#3730A3',
-  },
-  sendButtonDisabled: {
-    opacity: 0.45,
-  },
-  sendButtonText: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#fff',
   },
 });
