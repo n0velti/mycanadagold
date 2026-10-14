@@ -1065,7 +1065,7 @@ const TRADE_SELL = {
 const TROVE_LOGO = require('./assets/trove-logo.png');
 const TROVE_APP_ICON = require('./assets/trove-app-icon.jpg');
 const TROVE_LOGO_ASPECT = 3.85;
-const TROVE_APP_ICON_SCALE = 0.82;
+const TROVE_APP_ICON_SCALE = 0.72;
 
 const PROFILE_TAB = { key: 'profile', label: 'Profile', icon: 'person-outline' };
 
@@ -1543,24 +1543,23 @@ function ToolCard({ tool, pinned, onPress, onTogglePin, layout, wrapStyle }) {
           <View
             style={[
               styles.appsGridIcon,
-              isTrove ? styles.appsGridIconBare : null,
-              !isTrove && {
+              {
                 width: iconSize,
                 height: iconSize,
                 borderRadius: radius,
                 backgroundColor: tool.accent,
-              },
-              isTrove && {
-                width: iconSize,
-                height: iconSize,
               },
             ]}
           >
             {isTrove ? (
               <Image
                 source={TROVE_APP_ICON}
-                style={{ width: troveLogoSize, height: troveLogoSize }}
-                resizeMode="contain"
+                style={{
+                  width: troveLogoSize,
+                  height: troveLogoSize,
+                  borderRadius: Math.round(troveLogoSize * 0.12),
+                }}
+                resizeMode="cover"
                 accessibilityIgnoresInvertColors
               />
             ) : (
@@ -13958,17 +13957,6 @@ const styles = StyleSheet.create({
         cursor: 'pointer',
       },
       default: {},
-    }),
-  },
-  appsGridIconBare: {
-    backgroundColor: 'transparent',
-    overflow: 'visible',
-    ...Platform.select({
-      web: { boxShadow: 'none' },
-      default: {
-        elevation: 0,
-        shadowOpacity: 0,
-      },
     }),
   },
   appsGridIcon: {

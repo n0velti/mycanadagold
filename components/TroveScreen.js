@@ -6,23 +6,22 @@ const fontFamily = Platform.select({
   default: 'Sohne',
 });
 
-const TROVE_LOGO = require('../assets/trove-logo.png');
-const LOGO_ASPECT = 3.85;
-const LOGO_HEIGHT = 36;
-const LOGO_WIDTH = Math.round(LOGO_HEIGHT * LOGO_ASPECT);
+const TINT = '#FFF7ED';
+const TROVE_APP_ICON = require('../assets/trove-app-icon.jpg');
 
 export default function TroveScreen() {
   return (
     <View style={styles.screen}>
       <View style={styles.emptyPanel}>
-        <View style={styles.logoFrame}>
+        <View style={styles.emptyIcon}>
           <Image
-            source={TROVE_LOGO}
-            style={styles.logo}
-            resizeMode="contain"
+            source={TROVE_APP_ICON}
+            style={styles.emptyLogo}
+            resizeMode="cover"
             accessibilityIgnoresInvertColors
           />
         </View>
+        <Text style={styles.emptyTitle}>Trove</Text>
         <Text style={styles.emptyBody}>Collections and saved finds will live here.</Text>
       </View>
     </View>
@@ -42,30 +41,28 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingBottom: 48,
   },
-  logoFrame: {
-    width: LOGO_WIDTH + 28,
-    height: LOGO_HEIGHT + 16,
-    borderRadius: 12,
-    backgroundColor: '#000',
+  emptyIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: TINT,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 16,
-    ...Platform.select({
-      web: {
-        boxShadow: '0 1px 1px rgba(0,0,0,0.06), 0 8px 18px rgba(0,0,0,0.12)',
-      },
-      default: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 6 },
-        shadowOpacity: 0.14,
-        shadowRadius: 10,
-        elevation: 4,
-      },
-    }),
+    marginBottom: 12,
+    overflow: 'hidden',
   },
-  logo: {
-    width: LOGO_WIDTH,
-    height: LOGO_HEIGHT,
+  emptyLogo: {
+    width: 42,
+    height: 42,
+    borderRadius: 11,
+  },
+  emptyTitle: {
+    fontFamily,
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    letterSpacing: -0.3,
+    marginBottom: 6,
   },
   emptyBody: {
     fontFamily,
