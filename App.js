@@ -254,7 +254,6 @@ const SearchScreen = lazy(SCREEN_LOADERS.search);
 const SerphintScreen = lazy(SCREEN_LOADERS.serphint);
 const SettingsScreen = lazy(SCREEN_LOADERS.settings);
 const SharedServicesScreen = lazy(SCREEN_LOADERS['shared-services']);
-const StoreSettingsPanel = lazy(SCREEN_LOADERS['store-settings']);
 const SuppliesScreen = lazy(SCREEN_LOADERS.supplies);
 const TasksScreen = lazy(SCREEN_LOADERS.tasks);
 const TeamsScreen = lazy(SCREEN_LOADERS.teams);
@@ -3425,6 +3424,10 @@ function HomeStoreDrawer({
   onCrumbsChange,
   documentCloseRef,
   onActiveTabChange,
+  settingsApps,
+  onAccessSaved,
+  onStaffAccessSaved,
+  onUserAccessSaved,
 }) {
   const { width: windowWidth } = useWindowDimensions();
   const isMobile = windowWidth < MOBILE_BREAKPOINT;
@@ -3461,12 +3464,16 @@ function HomeStoreDrawer({
   useEffect(() => {
     onActiveTabChange?.(activeTab);
   }, [activeTab, onActiveTabChange]);
+  useEffect(() => {
+    if (activeTab !== 'settings') setDrawerSettingsPanel(null);
+  }, [activeTab]);
   const [txRows, setTxRows] = useState([]);
   const [selectedRow, setSelectedRow] = useState(null);
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
   const [inventoryItemName, setInventoryItemName] = useState('');
+  const [drawerSettingsPanel, setDrawerSettingsPanel] = useState(null);
   const detailRequestId = useRef(0);
   const paymentCache = useRef({});
   const inventoryCloseRef = useRef(null);
@@ -3823,10 +3830,15 @@ function HomeStoreDrawer({
                             embedded
                           />
                         ) : (
-                          <StoreSettingsPanel
+                          <SettingsScreen
+                            panel={drawerSettingsPanel}
+                            onOpenPanel={setDrawerSettingsPanel}
                             session={session}
+                            apps={settingsApps}
                             storeName={heldStore.store}
-                            embedded
+                            onAccessSaved={onAccessSaved}
+                            onStaffAccessSaved={onStaffAccessSaved}
+                            onUserAccessSaved={onUserAccessSaved}
                           />
                         )}
                       </ScreenGate>
@@ -5896,6 +5908,10 @@ function HomeScreen({
   onSelectedDocumentChange,
   onCrumbsChange,
   documentCloseRef,
+  settingsApps,
+  onAccessSaved,
+  onStaffAccessSaved,
+  onUserAccessSaved,
 }) {
   const { isMobile, tableMaxWidth, pagePad, tablePagePad } = useHomePageLayout();
   const homeHeroPad = pagePad + HOME_STORE_NAME_INSET;
@@ -6576,6 +6592,10 @@ function HomeScreen({
         visible
         store={selectedStore}
         session={session}
+        settingsApps={settingsApps}
+        onAccessSaved={onAccessSaved}
+        onStaffAccessSaved={onStaffAccessSaved}
+        onUserAccessSaved={onUserAccessSaved}
         onOpenCustomer={onOpenCustomer}
         periodLabel={periodLabel}
         date={startDate}
@@ -9912,6 +9932,35 @@ export default function App() {
     setSettingsPanel(null);
   }, [isMobile, activeTool?.key]);
 
+  const handleAccessSaved = useCallback((next) => {
+    setAccessByRole(next);
+  }, []);
+  const handleStaffAccessSaved = useCallback((staff) => {
+    setSession((current) => {
+      if (!current?.profile || current.profile.id !== staff.id) return current;
+      const profile = {
+        ...current.profile,
+        appRole: staff.appRole,
+        allowedAppRoles: staff.allowedAppRoles || current.profile.allowedAppRoles || [],
+        isSystemAdmin: staff.isSystemAdmin,
+        isActive: staff.isActive ?? current.profile.isActive,
+      };
+      if (shouldPrefetchTriage(profile)) {
+        import('./lib/transferWorkflow')
+          .then((mod) => mod.warmTriageWorkflow())
+          .catch(() => {});
+      }
+      return { ...current, profile };
+    });
+  }, []);
+  const handleUserAccessSaved = useCallback((userId, access) => {
+    setOwnUserAccess((current) => {
+      const ownId = session?.supabaseUserId || session?.profile?.id;
+      if (userId !== ownId) return current;
+      return access;
+    });
+  }, [session?.profile?.id, session?.supabaseUserId]);
+
   const handleLogin = async () => {
     if (!loginId.trim() || !password.trim() || submitting) return;
 
@@ -10175,31 +10224,9 @@ export default function App() {
             onOpenPanel={setSettingsPanel}
             session={session}
             apps={PERMISSION_APPS}
-            onAccessSaved={(next) => {
-              setAccessByRole(next);
-            }}
-            onStaffAccessSaved={(staff) => {
-              setSession((current) => {
-                if (!current?.profile || current.profile.id !== staff.id) return current;
-                const profile = {
-                  ...current.profile,
-                  appRole: staff.appRole,
-                  allowedAppRoles: staff.allowedAppRoles || current.profile.allowedAppRoles || [],
-                  isSystemAdmin: staff.isSystemAdmin,
-                  isActive: staff.isActive ?? current.profile.isActive,
-                };
-                if (shouldPrefetchTriage(profile)) {
-                  import('./lib/transferWorkflow')
-                    .then((mod) => mod.warmTriageWorkflow())
-                    .catch(() => {});
-                }
-                return { ...current, profile };
-              });
-            }}
-            onUserAccessSaved={(userId, access) => {
-              if (userId !== (session?.supabaseUserId || session?.profile?.id)) return;
-              setOwnUserAccess(access);
-            }}
+            onAccessSaved={handleAccessSaved}
+            onStaffAccessSaved={handleStaffAccessSaved}
+            onUserAccessSaved={handleUserAccessSaved}
           />
         ) : activeTool.key === 'transfer' ? (
           <TransferScreen
@@ -10485,6 +10512,10 @@ export default function App() {
           onSelectedDocumentChange={setHomeDocRef}
           onCrumbsChange={setHomeStoreCrumbs}
           documentCloseRef={homeDocumentCloseRef}
+          settingsApps={PERMISSION_APPS}
+          onAccessSaved={handleAccessSaved}
+          onStaffAccessSaved={handleStaffAccessSaved}
+          onUserAccessSaved={handleUserAccessSaved}
         />
         </AppDateScope>
       );
@@ -10736,6 +10767,10 @@ export default function App() {
                 onSelectedDocumentChange={setHomeDocRef}
                 onCrumbsChange={setHomeStoreCrumbs}
                 documentCloseRef={homeDocumentCloseRef}
+                settingsApps={PERMISSION_APPS}
+                onAccessSaved={handleAccessSaved}
+                onStaffAccessSaved={handleStaffAccessSaved}
+                onUserAccessSaved={handleUserAccessSaved}
               />
               </AppDateScope>
             </View>
