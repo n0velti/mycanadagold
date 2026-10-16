@@ -166,7 +166,12 @@ import {
   reviewStatsFromReviews,
   reviewsForStoreName,
 } from './lib/googleReviews';
-import { attributedReviewEmployeeNames, employeeNameMatchesAny } from './lib/bonuses';
+import {
+  attributedReviewEmployeeNames,
+  canViewAllBonusCounts,
+  employeeNameMatchesAny,
+  filterReviewsForViewer,
+} from './lib/bonuses';
 import { captureTokenFromLocation } from './lib/qrCode';
 import { fetchAureusEmployee } from './lib/aureusEmployees';
 import { useDirectMessages } from './lib/messages';
@@ -633,6 +638,11 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-home-row{cursor:pointer;background-color:transparent!important;overflow:visible!important;position:relative;}',
     '.cgold-home-row-hit{position:absolute;top:0;bottom:0;left:-6px;right:0;border-radius:6px;border:1px solid transparent;background:transparent!important;box-sizing:border-box;}',
     '.cgold-home-row:hover .cgold-home-row-hit,.cgold-home-row-selected .cgold-home-row-hit{border-color:#d0d0d0!important;background:rgba(60,60,67,0.045)!important;box-shadow:0 1px 2px rgba(0,0,0,0.05);}',
+    '.cgold-store-tile{cursor:pointer;}',
+    '.cgold-store-tile:hover,.cgold-store-tile:active{background-color:#F2F2F7!important;}',
+    '.cgold-store-tile-static{cursor:default;}',
+    '.cgold-store-tile-inert,.cgold-store-tile-inert *{pointer-events:none!important;}',
+    '.cgold-store-tile-inert .cgold-store-tile-sort,.cgold-store-tile-inert .cgold-store-tile-sort *{pointer-events:auto!important;cursor:pointer;}',
     '.cgold-store-tx-row{cursor:pointer;background-color:transparent!important;overflow:visible!important;position:relative;}',
     '.cgold-store-tx-row:hover .cgold-store-tx-rule,.cgold-store-tx-row:has(+ .cgold-store-tx-row:hover) .cgold-store-tx-rule{opacity:0!important;}',
     '.cgold-home-row:hover .cgold-home-row-rule,.cgold-home-row:has(+ .cgold-home-row:hover) .cgold-home-row-rule{opacity:0!important;}',
@@ -665,10 +675,11 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '@media (min-width:768px){.cgold-store-sheet,.cgold-store-sheet *{pointer-events:auto!important;}}',
     '.cgold-home-chip-blur{-webkit-backdrop-filter:saturate(140%) blur(10px);backdrop-filter:saturate(140%) blur(10px);background-color:rgba(255,255,255,0.56)!important;border-radius:999px;}',
     '.cgold-apps-view-blur{-webkit-backdrop-filter:saturate(140%) blur(10px);backdrop-filter:saturate(140%) blur(10px);background-color:rgba(255,255,255,0.56)!important;border-radius:20px;}',
-    '.cgold-app-icon .cgold-app-pin{opacity:0;transition:opacity 120ms;}',
-    '.cgold-app-icon:hover .cgold-app-pin,.cgold-app-icon:focus-within .cgold-app-pin{opacity:1!important;}',
-    '.cgold-app-icon{display:flex;flex-direction:column;align-items:center;text-align:center;}',
-    '.cgold-app-icon,.cgold-app-icon *{text-align:center;}',
+    '.cgold-app-card{cursor:pointer;}',
+    '.cgold-app-card:hover,.cgold-app-card:active{background-color:#F2F2F7!important;}',
+    '.cgold-app-card .cgold-app-pin{opacity:0;transition:opacity 120ms,color 120ms;}',
+    '.cgold-app-card:hover .cgold-app-pin,.cgold-app-card:focus-within .cgold-app-pin,.cgold-app-pin-on{opacity:1!important;}',
+    '.cgold-app-pin:hover:not(.cgold-app-pin-on){opacity:0.55!important;}',
     '.cgold-store-header-blur{-webkit-backdrop-filter:saturate(160%) blur(12px);backdrop-filter:saturate(160%) blur(12px);background-color:rgba(255,255,255,0.72)!important;transform:translateZ(0);}',
     '.cgold-dm-row{cursor:pointer;}',
     '.cgold-dm-row:hover{background-color:#f2f2f7!important;}',
@@ -941,14 +952,14 @@ function TxTableHeader({
   );
 }
 
-const APP_GRID_MAX_WIDTH = 880;
-const APP_COLUMNS = 6;
-const APP_COLUMNS_MOBILE = 4;
-const APP_ICON_SIZE = 64;
-const APP_GAP = 18;
+const APP_GRID_MAX_WIDTH = 1480;
+const APP_COLUMNS = 4;
+const APP_COLUMNS_MOBILE = 1;
+const APP_ICON_SIZE = 48;
+const APP_GAP = 12;
 const MOBILE_APP_GAP = 12;
-const MOBILE_APP_ICON_MAX = 84;
-const MOBILE_APP_ICON_SCALE = 0.94;
+const MOBILE_APP_ICON_MAX = 48;
+const MOBILE_APP_ICON_SCALE = 1;
 const MOBILE_BREAKPOINT = 768;
 
 function useIsMobile() {
@@ -956,8 +967,8 @@ function useIsMobile() {
   return width < MOBILE_BREAKPOINT;
 }
 
-const HOME_PAGE_MAX_WIDTH = 1360;
-const HOME_TABLE_MAX_WIDTH = 1200;
+const HOME_PAGE_MAX_WIDTH = 1480;
+const HOME_TABLE_MAX_WIDTH = 1480;
 /** Extra left inset on desktop so search / hero / table sit slightly right of viewport center. */
 const HOME_DESKTOP_LEADING_NUDGE = 28;
 const HOME_STORE_ROW_PAD = 8;
@@ -1128,6 +1139,50 @@ const TOOL_CARDS = [
   { key: 'logs', label: 'Logs', icon: 'reader-outline', tint: '#F1F5F9', accent: '#0F172A' },
   { key: 'settings', label: 'Settings', icon: 'settings-outline', tint: '#F4F4F5', accent: '#52525B' },
 ];
+
+const APP_CARD_META = {
+  trove: { category: 'Trade', blurb: 'Buy · Sell' },
+  transactions: { category: 'Sales', blurb: 'Sales · Purchases' },
+  inventory: { category: 'Stock', blurb: 'On hand' },
+  preorders: { category: 'Sales', blurb: 'Holds' },
+  messages: { category: 'People', blurb: 'Chat' },
+  audit: { category: 'Compliance', blurb: 'Audits' },
+  transfer: { category: 'Stock', blurb: 'Transfers' },
+  fintrac: { category: 'Compliance', blurb: 'LCTR' },
+  financials: { category: 'Money', blurb: 'Tills · Cash' },
+  debit: { category: 'Payments', blurb: 'Terminals' },
+  accounting: { category: 'Money', blurb: 'Books' },
+  analytics: { category: 'Insights', blurb: 'Performance' },
+  dashboards: { category: 'Insights', blurb: 'Boards' },
+  pricing: { category: 'Sales', blurb: 'Spot · Tickets' },
+  bonuses: { category: 'People', blurb: 'Bonuses' },
+  leaderboards: { category: 'People', blurb: 'Rankings' },
+  'police-report': { category: 'Compliance', blurb: 'Holds' },
+  security: { category: 'Admin', blurb: 'Access' },
+  serphint: { category: 'Insights', blurb: 'Watch list' },
+  supplies: { category: 'Ops', blurb: 'Supplies' },
+  employees: { category: 'People', blurb: 'Staff' },
+  phone: { category: 'Comms', blurb: 'Calls' },
+  teams: { category: 'People', blurb: 'Teams' },
+  marketing: { category: 'Comms', blurb: 'Campaigns' },
+  'shared-services': { category: 'Ops', blurb: 'Shared' },
+  customers: { category: 'People', blurb: 'Customers' },
+  calendar: { category: 'Ops', blurb: 'Schedule' },
+  notifications: { category: 'Comms', blurb: 'Alerts' },
+  reviews: { category: 'Comms', blurb: 'Reviews' },
+  emails: { category: 'Comms', blurb: 'Inbox' },
+  tasks: { category: 'Ops', blurb: 'Tasks' },
+  documents: { category: 'Ops', blurb: 'Files' },
+  contacts: { category: 'People', blurb: 'Directory' },
+  triage: { category: 'Stock', blurb: 'Incoming' },
+  '100-ways': { category: 'Sales', blurb: 'Playbook' },
+  'cdn-coin': { category: 'Sales', blurb: 'Coin' },
+  pmx: { category: 'Sales', blurb: 'Metals' },
+  shipping: { category: 'Ops', blurb: 'Shipping' },
+  storage: { category: 'Stock', blurb: 'Vault' },
+  logs: { category: 'Admin', blurb: 'History' },
+  settings: { category: 'Admin', blurb: 'Preferences' },
+};
 
 const TOOL_KEYS = new Set(TOOL_CARDS.map((tool) => tool.key));
 const PERMISSION_APPS = [HOME_APP, ...TOOL_CARDS];
@@ -1463,146 +1518,104 @@ function ProfileAvatar({ uri, name, size = 24, style, showClock = true, clockMar
 }
 
 function useAppGridLayout() {
-  const { width } = useWindowDimensions();
-  const isMobile = width < MOBILE_BREAKPOINT;
-  if (isMobile) {
-    const gap = MOBILE_APP_GAP;
-    const pagePad = MOBILE_FILTER_INSET;
-    const gridWidth = Math.max(0, width - pagePad * 2);
-    const cell = (gridWidth - gap * (APP_COLUMNS_MOBILE - 1)) / APP_COLUMNS_MOBILE;
-    const iconSize = Math.floor(
-      Math.min(MOBILE_APP_ICON_MAX, Math.max(56, cell)) * MOBILE_APP_ICON_SCALE,
-    );
-    return {
-      isMobile: true,
-      columns: APP_COLUMNS_MOBILE,
-      iconSize,
-      radius: Math.round(iconSize * 0.223),
-      glyph: Math.round(iconSize * 0.44),
-      gap,
-      rowGap: 24,
-      maxWidth: undefined,
-      labelBleed: gap / 2,
-    };
-  }
-  if (width < 1240) {
-    const iconSize = 52;
-    const gap = 14;
-    return {
-      isMobile: false,
-      columns: 5,
-      iconSize,
-      radius: Math.round(iconSize * 0.223),
-      glyph: Math.round(iconSize * 0.44),
-      gap,
-      rowGap: 22,
-      maxWidth: 740,
-      labelBleed: gap / 2,
-    };
-  }
-  const iconSize = APP_ICON_SIZE;
-  const gap = APP_GAP;
+  const { isMobile, tableMaxWidth } = useHomePageLayout();
+  const iconSize = isMobile ? 48 : APP_ICON_SIZE;
+  const gap = isMobile ? MOBILE_APP_GAP : APP_GAP;
   return {
-    isMobile: false,
-    columns: APP_COLUMNS,
+    isMobile,
+    columns: isMobile ? APP_COLUMNS_MOBILE : APP_COLUMNS,
     iconSize,
     radius: Math.round(iconSize * 0.223),
-    glyph: Math.round(iconSize * 0.44),
+    glyph: Math.round(iconSize * 0.42),
     gap,
-    rowGap: 26,
-    maxWidth: APP_GRID_MAX_WIDTH,
-    labelBleed: gap / 2,
+    rowGap: gap,
+    maxWidth: isMobile ? undefined : tableMaxWidth || APP_GRID_MAX_WIDTH,
   };
 }
 
 function ToolCard({ tool, pinned, onPress, onTogglePin, layout, wrapStyle }) {
-  const { iconSize, radius, glyph, isMobile, labelBleed } = layout;
+  const { iconSize, radius, glyph } = layout;
   const isTrove = tool.key === 'trove';
   const troveLogoSize = Math.round(iconSize * TROVE_APP_ICON_SCALE);
+  const meta = APP_CARD_META[tool.key] || { category: 'App' };
+  const cardClass = Platform.OS === 'web' ? 'cgold-app-card' : undefined;
 
   return (
-    <View
-      style={[styles.toolCardWrap, wrapStyle]}
-      {...(Platform.OS === 'web' ? { className: 'cgold-app-icon' } : null)}
-    >
+    <View style={[styles.appStoreCardWrap, wrapStyle]}>
       <Pressable
         onPress={onPress}
         onLongPress={onTogglePin}
         delayLongPress={420}
         onHoverIn={() => warmScreen(tool.key)}
         onPressIn={() => warmScreen(tool.key)}
-        style={({ pressed }) => [
-          styles.toolCard,
-          isMobile && styles.toolCardMobile,
-          pressed && styles.toolCardPressed,
+        style={({ hovered, pressed }) => [
+          styles.appStoreCard,
+          (hovered || pressed) && styles.appStoreCardPressed,
         ]}
         accessibilityRole="button"
-        accessibilityLabel={tool.label}
+        accessibilityLabel={`${tool.label}. ${meta.category}`}
+        {...(cardClass ? { className: cardClass } : null)}
       >
-        <View style={styles.toolIconStack}>
-          <View
-            style={[
-              styles.appsGridIcon,
-              {
-                width: iconSize,
-                height: iconSize,
-                borderRadius: radius,
-                backgroundColor: tool.accent,
-              },
-            ]}
-          >
-            {isTrove ? (
-              <Image
-                source={TROVE_APP_ICON}
-                style={{
-                  width: troveLogoSize,
-                  height: troveLogoSize,
-                  borderRadius: Math.round(troveLogoSize * 0.12),
-                }}
-                resizeMode="cover"
-                accessibilityIgnoresInvertColors
-              />
-            ) : (
-              <Ionicons name={filledIonicon(tool.icon)} size={glyph} color="#fff" />
-            )}
-          </View>
-          <Pressable
-            style={[styles.appsGridPin, pinned && styles.appsGridPinActive]}
-            {...(Platform.OS === 'web' ? { className: 'cgold-app-pin' } : null)}
-            onPress={(event) => {
-              event?.stopPropagation?.();
-              onTogglePin();
-            }}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel={pinned ? `Unpin ${tool.label}` : `Pin ${tool.label}`}
-          >
-            <Ionicons
-              name={pinned ? 'pin' : 'pin-outline'}
-              size={13}
-              color={pinned ? TAB_INK : MOBILE.secondary}
-            />
-          </Pressable>
-        </View>
         <View
           style={[
-            styles.appsGridLabelWrap,
-            labelBleed ? { marginHorizontal: -labelBleed } : null,
+            styles.appsGridIcon,
+            styles.appStoreIcon,
+            {
+              width: iconSize,
+              height: iconSize,
+              borderRadius: radius,
+              backgroundColor: tool.accent,
+            },
           ]}
         >
-          <Text
-            style={[
-              styles.appsGridLabel,
-              isMobile && styles.toolCardLabelMobile,
-              pinned && styles.appsGridLabelPinned,
-            ]}
-            numberOfLines={2}
-            ellipsizeMode="tail"
-            selectable={false}
-          >
+          {isTrove ? (
+            <Image
+              source={TROVE_APP_ICON}
+              style={{
+                width: troveLogoSize,
+                height: troveLogoSize,
+                borderRadius: Math.round(troveLogoSize * 0.12),
+              }}
+              resizeMode="cover"
+              accessibilityIgnoresInvertColors
+            />
+          ) : (
+            <Ionicons name={filledIonicon(tool.icon)} size={glyph} color="#fff" />
+          )}
+        </View>
+        <View style={styles.appStoreCopy}>
+          <Text style={styles.appStoreName} numberOfLines={1}>
             {tool.label}
           </Text>
+          <Text style={styles.appStoreCategory} numberOfLines={1}>
+            {meta.category}
+          </Text>
         </View>
+        <Pressable
+          style={({ hovered }) => [
+            styles.appStorePin,
+            hovered && !pinned && styles.appStorePinHover,
+            pinned && styles.appStorePinOn,
+          ]}
+          {...(Platform.OS === 'web'
+            ? { className: pinned ? 'cgold-app-pin cgold-app-pin-on' : 'cgold-app-pin' }
+            : null)}
+          onPress={(event) => {
+            event?.stopPropagation?.();
+            onTogglePin();
+          }}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={pinned ? `Unpin ${tool.label}` : `Pin ${tool.label}`}
+        >
+          {({ hovered }) => (
+            <Ionicons
+              name={pinned ? 'bookmark' : 'bookmark-outline'}
+              size={16}
+              color={pinned ? '#FF3B30' : hovered ? '#8e8e93' : '#c7c7cc'}
+            />
+          )}
+        </Pressable>
       </Pressable>
     </View>
   );
@@ -1614,7 +1627,8 @@ function filterToolCards(tools, query) {
     .toLowerCase();
   if (!q) return tools;
   return (tools || []).filter((tool) => {
-    const hay = `${tool.label || ''} ${tool.key || ''}`.toLowerCase();
+    const meta = APP_CARD_META[tool.key] || {};
+    const hay = `${tool.label || ''} ${tool.key || ''} ${meta.category || ''} ${meta.blurb || ''}`.toLowerCase();
     return hay.includes(q);
   });
 }
@@ -1627,7 +1641,6 @@ function ToolsGrid({ tools, pinnedKeys, onOpen, onTogglePin, layout }) {
       maxWidth: '100%',
       minWidth: 0,
       boxSizing: 'border-box',
-      paddingHorizontal: gap / 2,
     },
     default: {
       width: `${100 / columns}%`,
@@ -1635,7 +1648,6 @@ function ToolsGrid({ tools, pinnedKeys, onOpen, onTogglePin, layout }) {
       flexBasis: `${100 / columns}%`,
       flexGrow: 0,
       flexShrink: 0,
-      paddingHorizontal: gap / 2,
     },
   });
 
@@ -1643,7 +1655,7 @@ function ToolsGrid({ tools, pinnedKeys, onOpen, onTogglePin, layout }) {
     <View
       style={[
         styles.toolsGrid,
-        { marginHorizontal: -(gap / 2), rowGap },
+        { rowGap, columnGap: gap },
         Platform.OS === 'web'
           ? {
               display: 'grid',
@@ -1707,7 +1719,7 @@ function AppsLibrary({
   query = '',
   onQueryChange,
 }) {
-  const { isMobile, pagePad } = useHomePageLayout();
+  const { isMobile, pagePad, tableMaxWidth } = useHomePageLayout();
   const appGrid = useAppGridLayout();
   const tabBarScroll = useMobileTabBarScrollProps();
   const filteredTools = useMemo(() => filterToolCards(tools, query), [tools, query]);
@@ -1728,7 +1740,7 @@ function AppsLibrary({
           styles.toolsSection,
           styles.toolsSectionMobile,
           isMobile && { marginTop: 0, maxWidth: '100%' },
-          !isMobile && appGrid.maxWidth ? { maxWidth: appGrid.maxWidth } : null,
+          !isMobile && { maxWidth: '100%' },
         ]}
       >
         <ToolsGrid
@@ -1766,8 +1778,8 @@ function AppsLibrary({
               styles.appsGridScroll,
               {
                 flexGrow: 1,
-                paddingTop: isMobile ? 12 : TOP_BAR_HEIGHT + 16,
-                paddingBottom: isMobile ? mobileTabBarReserve() + 24 : 36,
+                paddingTop: isMobile ? 12 : TOP_BAR_HEIGHT + 12,
+                paddingBottom: isMobile ? mobileTabBarReserve() + 8 : 24,
               },
             ]}
             showsVerticalScrollIndicator={false}
@@ -1780,20 +1792,26 @@ function AppsLibrary({
             <View
               style={[
                 styles.appsGridInset,
-                isMobile ? { paddingHorizontal: pagePad, maxWidth: '100%' } : null,
+                styles.igHomeTableInset,
+                isMobile
+                  ? { paddingHorizontal: pagePad, maxWidth: '100%' }
+                  : {
+                      paddingHorizontal: pagePad,
+                      width: '100%',
+                      ...(tableMaxWidth ? { maxWidth: tableMaxWidth } : null),
+                    },
               ]}
             >
-              <Text style={styles.appsLibraryTitle}>Apps</Text>
               {typeof onQueryChange === 'function' ? (
-                <View style={styles.appsLibrarySearchRow}>
-                  <View style={styles.toolsSearch}>
-                    <Ionicons name="search" size={15} color="#8e8e93" />
+                <View style={styles.appsLibraryToolbar}>
+                  <View style={styles.homeStoreSearch}>
+                    <Ionicons name="search-outline" size={16} color={MOBILE.secondary} />
                     <TextInput
-                      style={styles.toolsSearchInput}
+                      style={styles.homeStoreSearchInput}
                       value={query}
                       onChangeText={onQueryChange}
                       placeholder="Search apps"
-                      placeholderTextColor="#8e8e93"
+                      placeholderTextColor={MOBILE.secondary}
                       autoCapitalize="none"
                       autoCorrect={false}
                       clearButtonMode="while-editing"
@@ -1802,7 +1820,7 @@ function AppsLibrary({
                     />
                     {String(query || '').trim() ? (
                       <Pressable onPress={() => onQueryChange('')} hitSlop={8} accessibilityLabel="Clear search">
-                        <Ionicons name="close-circle" size={18} color="#c7c7cc" />
+                        <Ionicons name="close-circle" size={16} color="#c7c7cc" />
                       </Pressable>
                     ) : null}
                   </View>
@@ -4082,9 +4100,9 @@ function storeAccent(name) {
   return STORE_ACCENT_FALLBACKS[hash % STORE_ACCENT_FALLBACKS.length];
 }
 
-function HomeStoreStatusIcon({ accent, open, compact = false, onPress }) {
+function HomeStoreStatusIcon({ accent, open, compact = false, mini = false, onPress }) {
   const [anchor, setAnchor] = useState(null);
-  const iconSize = compact ? 21 : 14;
+  const iconSize = mini ? 16 : compact ? 21 : 14;
   const closed = !open;
   const hover =
     Platform.OS === 'web' && closed
@@ -4104,13 +4122,18 @@ function HomeStoreStatusIcon({ accent, open, compact = false, onPress }) {
 
   return (
     <View
-      style={[styles.homeStoreIconWrap, compact && styles.igStoreIconWrap, hover && styles.homeStoreIconHit]}
+      style={[
+        styles.homeStoreIconWrap,
+        compact && styles.igStoreIconWrap,
+        mini && styles.igStoreIconWrapMini,
+        hover && styles.homeStoreIconHit,
+      ]}
       accessibilityLabel={closed ? 'Closed' : undefined}
       {...hover}
     >
       <View
         style={[
-          compact ? styles.igStoreIcon : styles.homeStoreIconTile,
+          mini ? styles.igStoreIconMini : compact ? styles.igStoreIcon : styles.homeStoreIconTile,
           { backgroundColor: accent },
           closed && styles.homeStoreIconClosed,
         ]}
@@ -4434,6 +4457,102 @@ function homeLowReviewMark(stats, loading, size = 13, countSize = 14) {
   return <LowReviewMark count={lowCount} size={size} countSize={countSize} />;
 }
 
+function homeTileCountLabel(count, focus) {
+  if (!count) return 'No activity';
+  if (focus === 'sales') return count === 1 ? '1 sale' : `${count} sales`;
+  if (focus === 'purchases') return count === 1 ? '1 purchase' : `${count} purchases`;
+  return count === 1 ? '1 transaction' : `${count} transactions`;
+}
+
+function homeTileSortIcon(column, sortKey, sortDir) {
+  if (sortKey !== column || sortDir === 'default') return 'swap-vertical';
+  return sortDir === 'asc' ? 'chevron-up' : 'chevron-down';
+}
+
+function HomeStoresGridSort({ showAmounts, sortKey, sortDir, onSort, compact = false }) {
+  const chips = [
+    { key: 'store', label: 'Store' },
+    { key: 'count', label: 'Transactions' },
+    { key: 'email', label: 'Email' },
+    { key: 'phone', label: 'Phone' },
+    { key: 'review', label: 'Reviews' },
+    { key: 'people', label: 'Staff' },
+    ...(showAmounts ? [{ key: 'money', label: 'Amount' }] : []),
+  ];
+  const items = chips.map((chip) => {
+    const active = sortKey === chip.key && sortDir !== 'default';
+    return (
+      <Pressable
+        key={chip.key}
+        onPress={() => onSort(chip.key)}
+        style={styles.homeGridSortItem}
+        accessibilityRole="button"
+        accessibilityLabel={`Sort by ${chip.label}, ${homeStoreSortLabel(sortDir, active)}`}
+      >
+        <Text style={[styles.homeGridSortText, active && styles.homeGridSortTextActive]}>
+          {chip.label}
+        </Text>
+        <Ionicons
+          name={homeTileSortIcon(chip.key, sortKey, sortDir)}
+          size={13}
+          color={active ? '#1d1d1f' : '#c7c7cc'}
+        />
+      </Pressable>
+    );
+  });
+  if (compact) {
+    return (
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={[styles.homeGridSortRow, styles.homeGridSortRowCompact]}
+        style={styles.homeGridSortScroll}
+      >
+        {items}
+      </ScrollView>
+    );
+  }
+  return <View style={styles.homeGridSortRow}>{items}</View>;
+}
+
+function HomeStoreTileStat({ label, stats, loading = false, trailing = null }) {
+  const empty = !loading && stats?.rate == null;
+  const low = !loading && !empty && stats.rate < 80;
+  return (
+    <View
+      style={styles.igStoreTileStat}
+      accessibilityLabel={
+        loading
+          ? `${label}, loading`
+          : empty
+            ? `${label}, no activity`
+            : `${label} ${stats.ratio}`
+      }
+    >
+      <Text style={styles.igStoreTileStatLabel}>{label}</Text>
+      <View style={styles.igStoreTileStatValueRow}>
+        {loading ? (
+          <HomeMetricPending compact />
+        ) : empty ? (
+          <Text style={styles.igStoreTileStatEmpty}>—</Text>
+        ) : (
+          <HomeLiveValue
+            style={[
+              styles.igStoreTileStatValue,
+              low ? styles.igStoreTileStatLow : styles.igStoreTileStatHigh,
+            ]}
+            numeric={stats.numeric ?? stats.rate}
+            format={homeMetricFormat(stats)}
+          >
+            {stats.ratio}
+          </HomeLiveValue>
+        )}
+        {trailing}
+      </View>
+    </View>
+  );
+}
+
 function HomeStoreMetric({ icon, stats, label, stretch = false, loading = false, trailing = null }) {
   const empty = !loading && stats?.rate == null;
   const low = !loading && !empty && stats.rate < 80;
@@ -4506,12 +4625,22 @@ const HomeStoreCard = memo(function HomeStoreCard({
   const accent = storeAccent(row.store);
   const focused = homeAmountForFocus(row, amountFocus);
   const closed = open === false;
+  const activityLabel = homeTileCountLabel(focused.count, amountFocus);
+  const saleCount = Number(row.saleCount) || 0;
+  const purchaseCount = Number(row.purchaseCount) || 0;
+  const txCount = Number(row.txCount) || 0;
+  const countBreakdown =
+    txCount || saleCount || purchaseCount
+      ? `${txCount === 1 ? '1 transaction' : `${txCount} transactions`} · ${
+          saleCount === 1 ? '1 sale' : `${saleCount} sales`
+        } · ${purchaseCount === 1 ? '1 purchase' : `${purchaseCount} purchases`}`
+      : 'No activity';
   const cardStyle = [
     styles.igStoreCard,
     !wide && !tile && styles.igHomeStoreCard,
     wide && styles.igStoreCardWide,
     tile && styles.igStoreTile,
-    selected && styles.igStoreCardSelected,
+    selected && (tile ? styles.igStoreTileSelected : styles.igStoreCardSelected),
   ];
   const rateMetrics = (
     <View
@@ -4615,38 +4744,73 @@ const HomeStoreCard = memo(function HomeStoreCard({
   const tileBody = (
     <>
       <View style={styles.igStoreTileTop}>
-        <HomeStoreStatusIcon accent={accent} open={open} compact onPress={canOpen ? () => onOpenStore(row) : undefined} />
-        {nameBlock}
-        {canOpen && showAmounts ? (
+        <HomeStoreStatusIcon accent={accent} open={open} mini />
+        <View style={styles.igStoreTileTitleCol}>
+          <Text style={styles.igStoreTileName} numberOfLines={1}>
+            {row.store}
+          </Text>
+          <Text style={styles.igStoreTileMeta} numberOfLines={1}>
+            {closed ? 'Closed' : 'Open'}
+          </Text>
+        </View>
+      </View>
+      {showAmounts ? (
+        <View style={styles.igStoreTileFigures}>
           <HomeStoreAmount
             amount={focused.amount}
             count={focused.count}
-            breakdown={amountFocus === 'all' ? row : null}
             compact
+            emphasized
           />
-        ) : null}
+          <Text style={styles.igStoreTileSplit} numberOfLines={1}>
+            {countBreakdown}
+          </Text>
+        </View>
+      ) : (
+        <Text style={styles.igStoreTileSplit} numberOfLines={1}>
+          {activityLabel}
+        </Text>
+      )}
+      <View style={styles.igStoreTileMetrics}>
+        <HomeStoreTileStat label="Email" stats={emailStats} loading={emailLoading} />
+        <HomeStoreTileStat label="Phone" stats={phoneStats} loading={phoneLoading} />
+        <HomeStoreTileStat
+          label="Reviews"
+          stats={reviewStats}
+          loading={reviewLoading}
+          trailing={homeLowReviewMark(reviewStats, reviewLoading, 12, 13)}
+        />
       </View>
-      <View style={styles.igStoreTileFoot}>
-        {rateMetrics}
-        {people.length > 0 ? (
+      {people.length > 0 ? (
+        <View style={styles.igStoreTileFoot}>
           <HomePeopleStack
             people={people}
             compact
-            interactive={peopleInteractive}
+            interactive={false}
             onOpenPerson={onOpenPerson}
           />
-        ) : (
-          <View style={styles.igStorePeopleSlot} />
-        )}
-      </View>
+        </View>
+      ) : null}
     </>
   );
 
   if (tile) {
+    const tileClass =
+      Platform.OS === 'web' ? (canOpen ? 'cgold-store-tile' : 'cgold-store-tile cgold-store-tile-static') : undefined;
     if (!canOpen) {
       return (
-        <View style={[cardStyle, styles.igStoreCardStatic]} accessibilityLabel={`${row.store}, ${open ? 'open' : 'closed'}`}>
-          {tileBody}
+        <View
+          style={[cardStyle, styles.igStoreCardStatic]}
+          accessibilityLabel={`${row.store}, ${open ? 'open' : 'closed'}`}
+          {...(tileClass ? { className: tileClass } : null)}
+        >
+          <View
+            pointerEvents="box-none"
+            style={styles.igStoreTileInert}
+            {...(Platform.OS === 'web' ? { className: 'cgold-store-tile-inert' } : null)}
+          >
+            {tileBody}
+          </View>
         </View>
       );
     }
@@ -4655,12 +4819,19 @@ const HomeStoreCard = memo(function HomeStoreCard({
         onPress={() => onOpenStore(row)}
         style={({ hovered, pressed }) => [
           ...cardStyle,
-          (hovered || pressed) && styles.igStoreCardPressed,
+          (hovered || pressed) && styles.igStoreTilePressed,
         ]}
         accessibilityRole="button"
         accessibilityLabel={`${row.store}, ${open ? 'open' : 'closed'}`}
+        {...(tileClass ? { className: tileClass } : null)}
       >
-        {tileBody}
+        <View
+          pointerEvents="box-none"
+          style={styles.igStoreTileInert}
+          {...(Platform.OS === 'web' ? { className: 'cgold-store-tile-inert' } : null)}
+        >
+          {tileBody}
+        </View>
       </Pressable>
     );
   }
@@ -5124,7 +5295,7 @@ function HomeStoreTxCount({ count, compact = false }) {
   );
 }
 
-function HomeStoreAmount({ amount, count, strong = false, breakdown = null, compact = false }) {
+function HomeStoreAmount({ amount, count, strong = false, breakdown = null, compact = false, emphasized = false }) {
   const { currency, fromCad, money } = useDisplayCurrency();
   const [anchor, setAnchor] = useState(null);
   const empty = !Number(amount) && !Number(count);
@@ -5140,7 +5311,11 @@ function HomeStoreAmount({ amount, count, strong = false, breakdown = null, comp
 
   return (
     <View
-      style={[compact ? styles.igStoreAmountWrap : styles.homeStoreColMoney, hover && styles.homeStoreAmountHover]}
+      style={[
+        compact ? styles.igStoreAmountWrap : styles.homeStoreColMoney,
+        emphasized && styles.igStoreTileAmountWrap,
+        hover && styles.homeStoreAmountHover,
+      ]}
       {...hover}
       accessibilityLabel={
         empty
@@ -5153,7 +5328,7 @@ function HomeStoreAmount({ amount, count, strong = false, breakdown = null, comp
       {compact || empty ? (
         <HomeLiveValue
           style={[
-            compact ? styles.igStoreAmount : styles.homeStoreMoney,
+            emphasized ? styles.igStoreTileAmount : compact ? styles.igStoreAmount : styles.homeStoreMoney,
             strong && styles.homeStoreMoneyStrong,
             empty && styles.homeStoreMoneyEmpty,
           ]}
@@ -5488,6 +5663,7 @@ function HomeStoresTable({
   selectedStore,
   totals,
   staff = [],
+  profile = null,
   startKey,
   endKey,
   onOpenStore,
@@ -5511,7 +5687,6 @@ function HomeStoresTable({
   const [reviewEmployeesByStore, setReviewEmployeesByStore] = useState(() => new Map());
   const reviewAttrCacheRef = useRef(new Map());
   const [sort, setSort] = useState({ key: null, dir: 'default' });
-  const [hoveredStore, setHoveredStore] = useState(null);
   const cycleSort = useCallback((column) => {
     setSort((current) => nextHomeStoreSort(current, column));
   }, []);
@@ -5533,35 +5708,6 @@ function HomeStoresTable({
       ),
     [basePeopleByStore, reviewEmployeesByStore, rows],
   );
-  const totalPeople = useMemo(() => {
-    const byKey = new Map();
-    for (const people of basePeopleByStore.values()) {
-      for (const person of people) {
-        const key = person.name.toLowerCase();
-        const current = byKey.get(key);
-        if (!current) {
-          byKey.set(key, { ...person });
-          continue;
-        }
-        current.txCount += person.txCount;
-        current.photoUrl = current.photoUrl || person.photoUrl;
-        current.profileId = current.profileId || person.profileId;
-        current.locationName = current.locationName || person.locationName;
-      }
-    }
-    return Array.from(byKey.values())
-      .sort((a, b) => {
-        if (Boolean(b.photoUrl) !== Boolean(a.photoUrl)) return b.photoUrl ? 1 : -1;
-        if (b.txCount !== a.txCount) return b.txCount - a.txCount;
-        return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
-      })
-      .map((person) => ({
-        ...person,
-        reviewStar: rows.some((row) =>
-          employeeNameMatchesAny(person.name, reviewEmployeesByStore.get(row.store) || []),
-        ),
-      }));
-  }, [basePeopleByStore, reviewEmployeesByStore, rows]);
   const storeNamesKey = useMemo(() => rows.map((row) => row.store).filter(Boolean).join('\n'), [rows]);
   const phoneByStore = useMemo(() => {
     const next = new Map();
@@ -5573,13 +5719,6 @@ function HomeStoresTable({
     }
     return next;
   }, [callHistoryByStore, endKey, phone.mergedCallsByStore, rows, startKey]);
-  const totalPhoneStats = useMemo(() => {
-    const calls = rows.flatMap((row) =>
-      homeCallsForStore(phone.mergedCallsByStore, callHistoryByStore, row.store, startKey, endKey),
-    );
-    const resolveFrom = rows.flatMap((row) => homeCallsForStoreAll(phone.mergedCallsByStore, callHistoryByStore, row.store));
-    return inboundCallRatio(calls, resolveFrom);
-  }, [callHistoryByStore, endKey, phone.mergedCallsByStore, rows, startKey]);
   const emailByStore = useMemo(() => {
     const next = new Map();
     for (const row of rows) {
@@ -5587,31 +5726,21 @@ function HomeStoresTable({
     }
     return next;
   }, [rows]);
-  const totalEmailStats = useMemo(
-    () => emailRatioFromTransactions(rows.flatMap((row) => row.transactions || [])),
-    [rows],
-  );
   const reviewByStore = useMemo(() => {
+    const selfOnly = Boolean(profile) && !canViewAllBonusCounts(profile);
     const next = new Map();
     for (const row of rows) {
-      next.set(row.store, reviewStatsFromReviews(reviewsForStoreName(reviewsByStore, row.store)));
+      const raw = reviewsForStoreName(reviewsByStore, row.store);
+      const reviews = selfOnly
+        ? filterReviewsForViewer(raw, profile, {
+            transactionRows: row.transactions,
+            storeName: row.store,
+          })
+        : raw;
+      next.set(row.store, reviewStatsFromReviews(reviews));
     }
     return next;
-  }, [reviewsByStore, rows]);
-  const totalReviewStats = useMemo(() => {
-    const seen = new Set();
-    const reviews = [];
-    for (const row of rows) {
-      for (const review of reviewsForStoreName(reviewsByStore, row.store)) {
-        const id = review.id || `${review.author}-${review.timestampMs}`;
-        if (seen.has(id)) continue;
-        seen.add(id);
-        reviews.push(review);
-      }
-    }
-    return reviewStatsFromReviews(reviews);
-  }, [reviewsByStore, rows]);
-
+  }, [profile, reviewsByStore, rows]);
   useEffect(() => {
     if (!startKey || !endKey || !storeNamesKey) {
       setCallHistoryByStore({});
@@ -5809,7 +5938,6 @@ function HomeStoresTable({
     return next;
   }, [hoursByKey, nowTick, rows]);
   const emailLoading = !emailReady;
-  const anyReviewLoading = rows.some((row) => homeReviewsLoading(reviewsPending, row.store));
   const sortedRows = useMemo(() => {
     if (!sort.key || sort.dir === 'default') return rows;
     const dir = sort.dir === 'asc' ? 1 : -1;
@@ -5835,130 +5963,61 @@ function HomeStoresTable({
     });
   }, [amountFocus, emailByStore, peopleByStore, phoneByStore, reviewByStore, rows, sort.dir, sort.key]);
 
-  if (compact) {
-    return (
-      <View style={styles.homeStoreTableWrap}>
-        <View style={styles.igStoreList}>
-          {rows.map((row, index) => (
-            <HomeStoreCard
-              key={row.store}
-              row={row}
-              people={peopleByStore.get(row.store) || []}
-              emailStats={emailByStore.get(row.store)}
-              phoneStats={phoneByStore.get(row.store)}
-              reviewStats={reviewByStore.get(row.store)}
-              emailLoading={emailLoading && emailByStore.get(row.store)?.rate == null}
-              phoneLoading={phonePending && phoneByStore.get(row.store)?.rate == null}
-              reviewLoading={
-                homeReviewsLoading(reviewsPending, row.store) &&
-                reviewByStore.get(row.store)?.rate == null
-              }
-              selected={selectedStore?.store === row.store}
-              last={index === rows.length - 1}
-              onOpenStore={onOpenStore}
-              onOpenPerson={onOpenPerson}
-              open={openByStore.get(row.store) === true}
-              showAmounts={showAmounts}
-              canOpen={canOpenStore ? canOpenStore(row) : true}
-              peopleInteractive={peopleInteractive}
-              amountFocus={amountFocus}
-            />
-          ))}
-        </View>
-      </View>
-    );
-  }
+  const { width: gridWidth } = useWindowDimensions();
+  const gridCols = gridWidth < MOBILE_BREAKPOINT ? 1 : gridWidth < 1180 ? 2 : 3;
+  const gridGap = 14;
+  const gridItemWidth =
+    Platform.OS === 'web' || gridCols === 1
+      ? undefined
+      : Math.max(240, Math.floor((gridWidth - 48 - gridGap * (gridCols - 1)) / gridCols));
 
-  const tableMinStyle = [styles.homeStoreTable, !showAmounts && styles.homeStoreTableNoAmounts];
-  const focusedTotals = totals ? homeAmountForFocus(totals, amountFocus) : null;
-  const tableContent = (
-    <>
-      <HomeStoresTableHeader
+  const renderStoreCard = (row, index, { last = false } = {}) => (
+    <View
+      key={row.store}
+      style={[
+        styles.homeStoreGridItem,
+        gridItemWidth ? { width: gridItemWidth, maxWidth: gridItemWidth, flexBasis: gridItemWidth } : null,
+      ]}
+    >
+      <HomeStoreCard
+        row={row}
+        people={peopleByStore.get(row.store) || []}
+        emailStats={emailByStore.get(row.store)}
+        phoneStats={phoneByStore.get(row.store)}
+        reviewStats={reviewByStore.get(row.store)}
+        emailLoading={emailLoading && emailByStore.get(row.store)?.rate == null}
+        phoneLoading={phonePending && phoneByStore.get(row.store)?.rate == null}
+        reviewLoading={
+          homeReviewsLoading(reviewsPending, row.store) &&
+          reviewByStore.get(row.store)?.rate == null
+        }
+        selected={selectedStore?.store === row.store}
+        last={last}
+        onOpenStore={onOpenStore}
+        onOpenPerson={onOpenPerson}
+        open={openByStore.get(row.store) === true}
+        showAmounts={showAmounts}
+        canOpen={canOpenStore ? canOpenStore(row) : true}
+        peopleInteractive={peopleInteractive}
+        amountFocus={amountFocus}
+        tile
+      />
+    </View>
+  );
+
+  return (
+    <View style={styles.homeStoreTableWrap}>
+      <HomeStoresGridSort
         showAmounts={showAmounts}
         sortKey={sort.key}
         sortDir={sort.dir}
         onSort={cycleSort}
+        compact={compact}
       />
-      {sortedRows.map((row, index) => (
-        <HomeStoreTableRow
-          key={row.store}
-          row={row}
-          people={peopleByStore.get(row.store) || []}
-          emailStats={emailByStore.get(row.store)}
-          phoneStats={phoneByStore.get(row.store)}
-          reviewStats={reviewByStore.get(row.store)}
-          emailLoading={emailLoading && emailByStore.get(row.store)?.rate == null}
-          phoneLoading={phonePending && phoneByStore.get(row.store)?.rate == null}
-          reviewLoading={
-            homeReviewsLoading(reviewsPending, row.store) &&
-            reviewByStore.get(row.store)?.rate == null
-          }
-          selected={selectedStore?.store === row.store}
-          last={index === sortedRows.length - 1 && !totals}
-          onOpenStore={onOpenStore}
-          onOpenPerson={onOpenPerson}
-          open={openByStore.get(row.store) === true}
-          showAmounts={showAmounts}
-          canOpen={canOpenStore ? canOpenStore(row) : true}
-          peopleInteractive={peopleInteractive}
-          amountFocus={amountFocus}
-          hovered={hoveredStore === row.store}
-          onHoverRow={setHoveredStore}
-        />
-      ))}
-      {totals ? (
-        <View style={[styles.homeStoreRow, styles.homeStoreTotalRow, styles.homeStoreRowLast]}>
-          <View style={styles.homeStoreIconSpacer} />
-          <View style={styles.homeStoreRowBody}>
-            <View style={styles.homeStoreColStore}>
-              <Text style={styles.homeStoreTotalLabel}>Total</Text>
-            </View>
-            <HomeStoreTxCount count={focusedTotals.count} />
-            <HomeEmailRate stats={totalEmailStats} loading={emailLoading && totalEmailStats?.rate == null} />
-            <HomePhoneRate stats={totalPhoneStats} loading={phonePending && totalPhoneStats?.rate == null} />
-            <HomeReviewRate stats={totalReviewStats} loading={anyReviewLoading && totalReviewStats?.rate == null} />
-            {showAmounts ? (
-              <View style={styles.homeStoreColPeople}>
-                {totalPeople.length > 0 ? (
-                  <HomePeopleStack
-                    people={totalPeople}
-                    compact
-                    onOpenPerson={onOpenPerson}
-                    interactive={peopleInteractive}
-                  />
-                ) : null}
-              </View>
-            ) : null}
-            {showAmounts ? (
-              <HomeStoreAmount
-                amount={focusedTotals.amount}
-                count={focusedTotals.count}
-                breakdown={amountFocus === 'all' ? totals : null}
-                strong
-              />
-            ) : (
-              <View style={[styles.homeStoreColPeople, styles.homeStoreColPeopleTrailing]}>
-                {totalPeople.length > 0 ? (
-                  <HomePeopleStack
-                    people={totalPeople}
-                    compact
-                    onOpenPerson={onOpenPerson}
-                    trailing
-                    interactive={peopleInteractive}
-                  />
-                ) : null}
-              </View>
-            )}
-          </View>
-        </View>
-      ) : null}
-    </>
-  );
-
-  return (
-    <View style={styles.homeStoreTableShadow}>
-      <View style={styles.homeStoreTableWrap}>
-        <View style={[styles.homeStoreTableCard, ...tableMinStyle]}>{tableContent}</View>
+      <View style={[styles.homeStoreGrid, compact && styles.homeStoreGridCompact]}>
+        {sortedRows.map((row, index) =>
+          renderStoreCard(row, index, { last: index === sortedRows.length - 1 }),
+        )}
       </View>
     </View>
   );
@@ -6029,7 +6088,7 @@ function HomeScreen({
       styles.igHomeContentInset,
       styles.igHomeTableInset,
       isMobile
-        ? { paddingHorizontal: 0 }
+        ? { paddingHorizontal: pagePad }
         : {
             paddingLeft: pagePad,
             paddingRight: pagePad,
@@ -6766,7 +6825,7 @@ function HomeScreen({
                 stageHeight > 0 ? { minHeight: stageHeight } : null,
               ]}
             >
-              <View style={[styles.homeTableDateRow, isMobile && { paddingHorizontal: pagePad }]}>
+              <View style={styles.homeTableDateRow}>
                 <View style={styles.homeStoreSearch}>
                   <Ionicons name="search-outline" size={16} color={MOBILE.secondary} />
                   <TextInput
@@ -6813,6 +6872,7 @@ function HomeScreen({
                     selectedStore={null}
                     totals={!isMobile && !hideHomeAmounts ? totals : null}
                     staff={staff}
+                    profile={session?.profile}
                     startKey={startKey}
                     endKey={endKey}
                     onOpenStore={openStore}
@@ -8864,7 +8924,13 @@ const TopNavBar = memo(function TopNavBar({
   pageTitle = '',
   apps,
   activeAppKey = '',
+  sidebarCollapsed = false,
 }) {
+  const { width } = useWindowDimensions();
+  const { pagePad, tableMaxWidth } = useHomePageLayout();
+  const contentPaneWidth = Math.max(0, width - (sidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_EXPANDED_WIDTH));
+  const contentBoxWidth = Math.min(contentPaneWidth, tableMaxWidth || contentPaneWidth);
+  const contentEdgeInset = Math.max(0, (contentPaneWidth - contentBoxWidth) / 2) + pagePad;
   const trail =
     Array.isArray(crumbs) && crumbs.length
       ? crumbs.filter((crumb) => crumb?.label)
@@ -8882,7 +8948,7 @@ const TopNavBar = memo(function TopNavBar({
     <BlurView
       intensity={56}
       tint="light"
-      style={styles.topBar}
+      style={[styles.topBar, { paddingRight: contentEdgeInset }]}
       pointerEvents="box-none"
       accessibilityRole="toolbar"
       accessibilityLabel="Canada Gold"
@@ -9231,10 +9297,19 @@ const PinnedToolsList = memo(function PinnedToolsList({
                     style={[
                       styles.pinnedAppIcon,
                       sidebarCollapsed && styles.pinnedAppIconCollapsed,
-                      { backgroundColor: tool.accent },
+                      tool.key !== 'trove' && { backgroundColor: tool.accent },
                     ]}
                   >
-                    <Ionicons name={filledIonicon(tool.icon)} size={13} color="#fff" />
+                    {tool.key === 'trove' ? (
+                      <Image
+                        source={TROVE_APP_ICON}
+                        style={styles.pinnedTroveIcon}
+                        resizeMode="cover"
+                        accessibilityIgnoresInvertColors
+                      />
+                    ) : (
+                      <Ionicons name={filledIonicon(tool.icon)} size={13} color="#fff" />
+                    )}
                   </View>
                 </View>
                 <Text
@@ -10893,6 +10968,7 @@ export default function App() {
         onSelectApp={openPinnedTool}
         onSelectHome={selectHome}
         onSelectStore={homeDocRef ? closeHomeDocument : undefined}
+        sidebarCollapsed={sidebarCompact}
       />
       <ProfileLoginSwitcher
         visible={loginSwitcherOpen}
@@ -10956,7 +11032,8 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     width: '100%',
     minHeight: TOP_BAR_HEIGHT,
-    paddingHorizontal: 16,
+    paddingLeft: 0,
+    paddingRight: 16,
     paddingVertical: 8,
     overflow: 'visible',
     backgroundColor: 'transparent',
@@ -10973,9 +11050,11 @@ const styles = StyleSheet.create({
     paddingRight: 12,
   },
   topBarBrand: {
+    width: SIDEBAR_COLLAPSED_WIDTH,
     height: 32,
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 0,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -11697,6 +11776,12 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  pinnedTroveIcon: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
   },
   pinnedAppIconCollapsed: {
     marginRight: 0,
@@ -12825,10 +12910,122 @@ const styles = StyleSheet.create({
   homeStoreTableWrap: {
     alignSelf: 'stretch',
     borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
+  },
+  homeStoreGrid: {
+    width: '100%',
+    alignSelf: 'stretch',
+    overflow: 'visible',
     ...Platform.select({
-      web: { overflowX: 'auto' },
-      default: {},
+      web: {
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 320px), 1fr))',
+        gap: 12,
+      },
+      default: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 12,
+      },
     }),
+  },
+  homeStoreGridCompact: {
+    ...Platform.select({
+      web: {
+        gridTemplateColumns: '1fr',
+      },
+      default: {
+        flexDirection: 'column',
+        flexWrap: 'nowrap',
+      },
+    }),
+  },
+  homeStoreGridItem: {
+    minWidth: 0,
+    ...Platform.select({
+      web: { width: 'auto', maxWidth: '100%' },
+      default: { flexGrow: 1 },
+    }),
+  },
+  homeGridSummaryMain: {
+    minWidth: 0,
+    gap: 2,
+  },
+  homeGridSummaryLabel: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+  },
+  homeGridSummaryMeta: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+  },
+  homeGridSummarySide: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 24,
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  homeGridSummaryRates: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 28,
+    flexShrink: 0,
+  },
+  homeGridSummary: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    gap: 20,
+    paddingBottom: 18,
+    marginBottom: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(60,60,67,0.12)',
+  },
+  homeGridSortScroll: {
+    flexGrow: 0,
+    marginHorizontal: -8,
+  },
+  homeGridSortRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 4,
+    paddingTop: 2,
+    paddingBottom: 14,
+  },
+  homeGridSortRowCompact: {
+    flexWrap: 'nowrap',
+    paddingHorizontal: 8,
+  },
+  homeGridSortItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+  },
+  homeGridSortDot: {
+    fontFamily,
+    fontSize: 13,
+    color: '#c7c7cc',
+    paddingHorizontal: 8,
+  },
+  homeGridSortText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+  },
+  homeGridSortTextActive: {
+    color: '#1d1d1f',
   },
   storeDrawerShell: {
     height: '100%',
@@ -13881,6 +14078,7 @@ const styles = StyleSheet.create({
     width: '100%',
     alignSelf: 'center',
     maxWidth: APP_GRID_MAX_WIDTH,
+    paddingHorizontal: 0,
   },
   appsRailLabel: {
     flex: 1,
@@ -13927,22 +14125,97 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  appsLibraryTitle: {
-    fontFamily: FONT_EXTRALIGHT,
-    fontSize: 22,
-    fontWeight: '200',
-    color: TAB_INK,
-    letterSpacing: -0.4,
-    textAlign: 'center',
-    alignSelf: 'center',
+  appsLibraryToolbar: {
     width: '100%',
-    marginTop: 8,
-    marginBottom: 12,
-  },
-  appsLibrarySearchRow: {
-    width: '100%',
+    flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16,
+    justifyContent: 'flex-start',
+    paddingBottom: 12,
+  },
+  appStoreCardWrap: {
+    minWidth: 0,
+    width: '100%',
+  },
+  appStoreCard: {
+    position: 'relative',
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingLeft: 10,
+    paddingRight: 28,
+    paddingVertical: 10,
+    borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(60,60,67,0.22)',
+    backgroundColor: '#fff',
+    ...CHIP_SHADOW,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  appStoreCardPressed: {
+    backgroundColor: '#F2F2F7',
+  },
+  appStoreIcon: {
+    flexShrink: 0,
+  },
+  appStoreCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 1,
+  },
+  appStoreName: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    letterSpacing: -0.3,
+  },
+  appStoreCategory: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '400',
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+  },
+  appStorePin: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    width: 22,
+    height: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 2,
+    borderRadius: 11,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: { opacity: 1 },
+    }),
+  },
+  appStorePinHover: {
+    opacity: 0.55,
+  },
+  appStorePinOn: {
+    opacity: 1,
+  },
+  appStoreGet: {
+    minWidth: 52,
+    height: 26,
+    paddingHorizontal: 12,
+    borderRadius: 13,
+    backgroundColor: 'rgba(0,122,255,0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  appStoreGetText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#007AFF',
+    letterSpacing: -0.2,
   },
   toolCard: {
     width: '100%',
@@ -15321,9 +15594,8 @@ const styles = StyleSheet.create({
   igStoreTileFoot: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     width: '100%',
-    gap: 12,
+    paddingTop: 2,
   },
   igHomeHeroInsetDesktop: {
     gap: 10,
@@ -15449,32 +15721,159 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-end',
   },
   igStoreTile: {
-    flexGrow: 1,
-    flexBasis: 340,
+    width: '100%',
     maxWidth: '100%',
-    minHeight: 132,
-    paddingLeft: 16,
-    paddingRight: 16,
-    paddingTop: 16,
-    paddingBottom: 14,
-    borderRadius: 18,
+    minHeight: 196,
+    paddingLeft: 20,
+    paddingRight: 20,
+    paddingTop: 18,
+    paddingBottom: 16,
+    borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(42,38,30,0.08)',
+    borderColor: 'rgba(60,60,67,0.22)',
+    backgroundColor: '#fff',
     alignItems: 'stretch',
     flexDirection: 'column',
-    gap: 14,
-    ...Platform.select({
-      web: {
-        boxShadow: '0 8px 24px rgba(18,16,12,0.06)',
-      },
-      default: {},
-    }),
+    gap: 16,
+    ...CHIP_SHADOW,
+  },
+  igStoreTileInert: {
+    alignSelf: 'stretch',
+    gap: 16,
+  },
+  igStoreTileSelected: {
+    backgroundColor: '#F2F2F7',
+  },
+  igStoreTilePressed: {
+    backgroundColor: '#F2F2F7',
   },
   igStoreTileTop: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
     width: '100%',
+  },
+  igStoreTileTitleCol: {
+    flex: 1,
+    minWidth: 0,
+    gap: 1,
+  },
+  igStoreTileName: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    letterSpacing: -0.43,
+  },
+  igStoreTileMeta: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+  },
+  igStoreTileFigures: {
+    gap: 2,
+  },
+  igStoreTileAmountWrap: {
+    alignItems: 'flex-start',
+    width: '100%',
+  },
+  igStoreTileAmount: {
+    fontFamily: titleFontFamily,
+    fontSize: 34,
+    lineHeight: 38,
+    fontWeight: '400',
+    color: '#1d1d1f',
+    letterSpacing: -1.1,
+    fontVariant: ['tabular-nums'],
+  },
+  igStoreTileSplit: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+  },
+  igStoreTileMetrics: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    width: '100%',
+    gap: 16,
+    paddingTop: 14,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(60,60,67,0.12)',
+  },
+  igStoreTileStat: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  igStoreTileTitleHit: {
+    flex: 1,
+    minWidth: 0,
+  },
+  igStoreTileSortHit: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minWidth: 0,
+  },
+  igStoreTileSortHitBody: {
+    flex: 1,
+    minWidth: 0,
+  },
+  igStoreTileSortGlyph: {
+    flexShrink: 0,
+  },
+  igStoreTileSortAmount: {
+    alignItems: 'center',
+  },
+  igStoreTileSortMeta: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+  },
+  igStoreTileStatLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  igStoreTileStatLabel: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '400',
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+  },
+  igStoreTileStatLabelActive: {
+    color: '#1d1d1f',
+  },
+  igStoreTileStatValueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    minWidth: 0,
+  },
+  igStoreTileStatValue: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '400',
+    color: '#1d1d1f',
+    letterSpacing: -0.43,
+    fontVariant: ['tabular-nums'],
+  },
+  igStoreTileStatLow: {
+    color: '#FF3B30',
+  },
+  igStoreTileStatHigh: {
+    color: '#15803D',
+  },
+  igStoreTileStatEmpty: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '400',
+    color: '#c7c7cc',
+    letterSpacing: -0.43,
   },
   igHomeScreen: {
     backgroundColor: CANVAS,
@@ -16162,10 +16561,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  igStoreIconWrapMini: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   igStoreIcon: {
     width: 46,
     height: 46,
     borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  igStoreIconMini: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,

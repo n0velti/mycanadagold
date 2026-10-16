@@ -12,6 +12,11 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useIsMobile } from '../lib/mobileUi';
 import { BONUS_ACCESS_DENIED, canViewBonusReviewData } from '../lib/auth';
+import {
+  bonusBoardAccessDenied,
+  canViewAllBonusCounts,
+  filterReviewsForViewer,
+} from '../lib/bonuses';
 import { useAppAccess } from '../lib/permissions';
 import {
   GOOGLE_STORE_PLACES,
@@ -24,7 +29,7 @@ import {
   summarizeReviews,
 } from '../lib/googleReviews';
 import { useAppDate } from '../lib/appDate';
-import { formatDateParam, parseDateParam } from '../lib/transactions';
+import { fetchTransactionsAcrossPos, formatDateParam, parseDateParam } from '../lib/transactions';
 import HomeDatePicker from './HomeDatePicker';
 import ReviewAuthorLink from './ReviewAuthorLink';
 
@@ -206,6 +211,14 @@ function ReviewCard({ review, storeName, showStore, compact, session, onOpenCust
         {review.text || '(No written comment)'}
       </Text>
       <View style={styles.reviewFlags}>
+        {review.attributionSource === 'named' && review.namedEmployees?.length ? (
+          <Text style={styles.flagNames}>Names you: {review.namedEmployees.join(', ')}</Text>
+        ) : null}
+        {review.attributionSource === 'transaction' && review.attributedEmployees?.length ? (
+          <Text style={styles.flagMatched}>
+            Matched via txn → {review.attributedEmployees.join(', ')}
+          </Text>
+        ) : null}
         {review.hasPhotos ? (
           <Text style={styles.flagPhoto}>
             {review.photoCount} photo{review.photoCount === 1 ? '' : 's'}
@@ -231,6 +244,7 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter, on
   const isMobile = useIsMobile();
   const { canFilter } = useAppAccess();
   const allowFilters = canFilter('reviews');
+  const selfOnly = Boolean(session?.profile) && !canViewAllBonusCounts(session.profile);
   const appDate = useAppDate();
   const startDate = appDate.startDate;
   const endDate = appDate.endDate;
@@ -276,7 +290,7 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter, on
         setError('');
         return;
       }
-      if (canViewBonusReviewData(session) === false) {
+      if (bonusBoardAccessDenied(session)) {
         setResults([]);
         setError(BONUS_ACCESS_DENIED);
         setLoading(false);
@@ -311,6 +325,26 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter, on
       );
 
       try {
+        let transactionRows = [];
+        if (selfOnly) {
+          const txEnd = allTime ? formatDateParam(new Date()) : endDate;
+          const txStart = allTime
+            ? formatDateParam(new Date(new Date().getFullYear() - 1, new Date().getMonth(), new Date().getDate()))
+            : startDate;
+          const tx = await fetchTransactionsAcrossPos(session, {
+            startDate: txStart,
+            endDate: txEnd,
+          });
+          if (id !== requestId.current) return;
+          transactionRows = tx.rows || [];
+        }
+        const keepMine = (storeName, reviews) =>
+          selfOnly
+            ? filterReviewsForViewer(reviews || [], session.profile, {
+                transactionRows,
+                storeName,
+              })
+            : reviews || [];
         const next = await fetchAllGoogleStoreReviews({
           storeName: storeFilter || undefined,
           startDate: allTime ? undefined : startDate,
@@ -320,15 +354,22 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter, on
           purpose: canViewBonusReviewData(session) === true ? 'bonus' : 'home',
           onPage: ({ storeName, reviews, done }) => {
             if (id !== requestId.current) return;
+            const mine = keepMine(storeName, reviews);
             setResults((current) =>
               current.map((row) =>
-                row.storeName === storeName ? { ...row, reviews, loading: !done } : row,
+                row.storeName === storeName ? { ...row, reviews: mine, loading: !done } : row,
               ),
             );
           },
         });
         if (id !== requestId.current) return;
-        setResults(next.map((row) => ({ ...row, loading: false })));
+        setResults(
+          next.map((row) => ({
+            ...row,
+            reviews: keepMine(row.storeName, row.reviews),
+            loading: false,
+          })),
+        );
       } catch (err) {
         if (id !== requestId.current) return;
         setResults([]);
@@ -337,7 +378,7 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter, on
         if (id === requestId.current) setLoading(false);
       }
     },
-    [session, storeFilter, startDate, endDate, allTime],
+    [session, storeFilter, startDate, endDate, allTime, selfOnly],
   );
 
   useEffect(() => {
@@ -391,10 +432,12 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter, on
   };
 
   const summaryLine = combined.count
-    ? `${formatAverage(combined.average)} average · ${combined.count} in ${periodLabel}`
+    ? `${formatAverage(combined.average)} average · ${combined.count}${selfOnly ? ' yours' : ''} in ${periodLabel}`
     : stillLoading
       ? `Loading ${periodLabel} from Google…`
-      : `No reviews in ${periodLabel}`;
+      : selfOnly
+        ? `No reviews attributed to you in ${periodLabel}`
+        : `No reviews in ${periodLabel}`;
 
   const storeChips =
     allowFilters && !storeFilter ? (
@@ -523,7 +566,7 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter, on
       ) : (
         <View style={styles.toolbar}>
           <View style={styles.toolbarCopy}>
-            <Text style={styles.toolbarTitle}>Google reviews</Text>
+            <Text style={styles.toolbarTitle}>{selfOnly ? 'Your reviews' : 'Google reviews'}</Text>
             <Text style={styles.toolbarSub}>{summaryLine}</Text>
           </View>
           {refreshButton}
@@ -702,7 +745,9 @@ export default function ReviewsScreen({ session, onRequireLogin, storeFilter, on
         ) : stillLoading ? null : (
           <View style={[styles.emptyBlock, isMobile && styles.paddedBlock]}>
             <Text style={styles.emptyText}>
-              No reviews in {periodLabel}
+              {selfOnly
+                ? `No reviews attributed to you in ${periodLabel}`
+                : `No reviews in ${periodLabel}`}
               {ratingFilter || needsReplyOnly ? ' match these filters' : ''}.
             </Text>
           </View>
@@ -1197,6 +1242,28 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 6,
     marginTop: 2,
+  },
+  flagNames: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#5B21B6',
+    backgroundColor: '#F5F3FF',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    overflow: 'hidden',
+  },
+  flagMatched: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#1D4ED8',
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    overflow: 'hidden',
   },
   flagPhoto: {
     fontFamily,
