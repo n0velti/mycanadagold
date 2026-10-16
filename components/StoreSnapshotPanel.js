@@ -59,6 +59,7 @@ import {
   rememberHomeStoreReviews,
   reviewStatsFromReviews,
 } from '../lib/googleReviews';
+import { filterReviewsForViewer } from '../lib/bonuses';
 import { CANVAS, MOBILE, MOBILE_FILTER_INSET, MOBILE_FILTER_SIZE, NAV_TAB_ACTIVE_RADIUS, useIsMobile } from '../lib/mobileUi';
 import { useDisplayCurrency } from '../lib/displayCurrency';
 import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
@@ -2566,7 +2567,12 @@ function StoreSnapshotPanel({
   const [priceReview, setPriceReview] = useState(null);
   const [heroFocus, setHeroFocus] = useState(heroFocusProp || 'all');
   const [reviewStats, setReviewStats] = useState(() =>
-    reviewStatsFromReviews(peekHomeStoreReviews(storeName, startKey, endKey) || []),
+    reviewStatsFromReviews(
+      filterReviewsForViewer(peekHomeStoreReviews(storeName, startKey, endKey) || [], session?.profile, {
+        transactionRows: txRows,
+        storeName,
+      }),
+    ),
   );
   const [storeContact, setStoreContact] = useState({ address: '', phone: '', email: '' });
   useEffect(() => {
@@ -2597,8 +2603,15 @@ function StoreSnapshotPanel({
     };
   }, [session, storeName]);
   useEffect(() => {
+    const statsFrom = (reviews) =>
+      reviewStatsFromReviews(
+        filterReviewsForViewer(reviews || [], session?.profile, {
+          transactionRows: txRows,
+          storeName,
+        }),
+      );
     const cached = peekHomeStoreReviews(storeName, startKey, endKey);
-    setReviewStats(reviewStatsFromReviews(cached || []));
+    setReviewStats(statsFrom(cached || []));
     if (!storeName || !startKey || !endKey) return undefined;
     let cancelled = false;
     fetchGoogleReviewsForStore(storeName, { startDate: startKey, endDate: endKey })
@@ -2606,13 +2619,13 @@ function StoreSnapshotPanel({
         if (cancelled) return;
         const reviews = fetched?.reviews || [];
         rememberHomeStoreReviews(storeName, startKey, endKey, reviews);
-        setReviewStats(reviewStatsFromReviews(reviews));
+        setReviewStats(statsFrom(reviews));
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [endKey, startKey, storeName]);
+  }, [endKey, session?.profile, startKey, storeName, txRows]);
   const tolerance = usePriceCheckTolerance();
   const [stageHeight, setStageHeight] = useState(0);
   const ticketOpen = Boolean(transactionTicket);
