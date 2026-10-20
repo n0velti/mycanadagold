@@ -27,12 +27,7 @@ import {
   saveLocalBullionCounts,
   saveNightCount,
 } from '../lib/bullionNight';
-import {
-  analyzeBullionDiscrepancy,
-  buildUnbalancedBullionItems,
-  continueBullionAuditChat,
-} from '../lib/bullionAuditAi';
-import { analyzeCashDiscrepancy, continueCashAuditChat } from '../lib/cashAudit';
+import { buildUnbalancedBullionItems } from '../lib/bullionAuditAi';
 import {
   analyzeBullionRange,
   analyzeCashRange,
@@ -496,6 +491,10 @@ function RangeReviewSection({
   runHint,
   placeholder,
   onOpenReference,
+  model,
+  onChangeModel,
+  modelMenuOpen,
+  onToggleModelMenu,
 }) {
   const today = new Date();
   const range = normalizeAuditRange(startDate, endDate);
@@ -515,17 +514,15 @@ function RangeReviewSection({
 
   return (
     <GroupSection title={title}>
-      <TicketFieldRow label="From">
-        <View style={styles.ticketFieldInline}>
-          <DateChip label="From" value={startDate} onChange={setStart} maximumDate={today} variant="plain" />
-        </View>
-      </TicketFieldRow>
-      <TicketFieldRow label="To">
-        <View style={styles.ticketFieldInline}>
-          <DateChip label="To" value={endDate} onChange={setEnd} maximumDate={today} variant="plain" />
-        </View>
-      </TicketFieldRow>
       <View style={styles.rangePresetRow}>
+        <View style={styles.rangeDatePick}>
+          <Text style={styles.rangeDateCaption}>From</Text>
+          <DateChip label="From" value={startDate} onChange={setStart} maximumDate={today} />
+        </View>
+        <View style={styles.rangeDatePick}>
+          <Text style={styles.rangeDateCaption}>To</Text>
+          <DateChip label="To" value={endDate} onChange={setEnd} maximumDate={today} />
+        </View>
         {RANGE_PRESETS.map((days) => {
           const active = shiftDateParam(endDate, -(days - 1)) === startDate;
           return (
@@ -549,7 +546,59 @@ function RangeReviewSection({
       </View>
 
       <View style={[styles.aiRow, isMobile && styles.aiRowMobile]}>
-        <Text style={[styles.rangeDescription, isMobile && styles.rangeDescriptionMobile]}>{runHint}</Text>
+        <View style={[styles.modelDropdownWrap, isMobile && styles.modelDropdownWrapMobile]}>
+          <Pressable
+            style={[styles.modelDropdown, modelMenuOpen && styles.modelDropdownOpen]}
+            onPress={() => onToggleModelMenu((open) => !open)}
+          >
+            <View style={styles.modelDropdownMain}>
+              <Text style={styles.modelDropdownValue} numberOfLines={1}>
+                {getModelMeta(model, MODEL_OPTIONS)?.label || model}
+              </Text>
+              <Text style={styles.modelDropdownMeta} numberOfLines={1}>
+                {modelOptionMetaLine(getModelMeta(model, MODEL_OPTIONS) || MODEL_OPTIONS[0])}
+              </Text>
+            </View>
+            <Ionicons
+              name={modelMenuOpen ? 'chevron-up' : 'chevron-down'}
+              size={16}
+              color={SECONDARY}
+            />
+          </Pressable>
+          {modelMenuOpen ? (
+            <ScrollView style={styles.modelMenu} nestedScrollEnabled>
+              {MODEL_OPTIONS.map((option) => {
+                const active = option.key === model;
+                return (
+                  <Pressable
+                    key={option.key}
+                    style={[styles.modelOption, active && styles.modelOptionActive]}
+                    onPress={() => {
+                      onChangeModel(option.key);
+                      onToggleModelMenu(false);
+                    }}
+                  >
+                    <View style={styles.modelOptionCopy}>
+                      <Text
+                        style={[
+                          styles.modelOptionText,
+                          active && styles.modelOptionTextActive,
+                        ]}
+                      >
+                        {option.label}
+                      </Text>
+                      <Text style={styles.modelOptionStats}>{modelOptionMetaLine(option)}</Text>
+                      {option.blurb ? (
+                        <Text style={styles.modelOptionBlurb}>{option.blurb}</Text>
+                      ) : null}
+                    </View>
+                    {active ? <Ionicons name="checkmark" size={20} color={ACCENT} /> : null}
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          ) : null}
+        </View>
         <Pressable
           style={[
             styles.findWhyButton,
@@ -567,6 +616,9 @@ function RangeReviewSection({
           <Text style={styles.findWhyButtonText}>{reviewing ? 'Reviewing…' : 'Review range'}</Text>
         </Pressable>
       </View>
+      {runHint ? (
+        <Text style={[styles.rangeDescription, isMobile && styles.rangeDescriptionMobile]}>{runHint}</Text>
+      ) : null}
 
       {chat.label && chat.hasContext ? (
         <Text style={styles.aiProgress}>Reviewed {chat.label}. Follow-ups use this review.</Text>
@@ -1170,15 +1222,8 @@ function BullionAuditPanel({
   const [error, setError] = useState('');
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
-  const [aiStatus, setAiStatus] = useState('idle');
-  const [aiProgress, setAiProgress] = useState('');
-  const [aiTurns, setAiTurns] = useState([]);
-  const [aiMessages, setAiMessages] = useState([]);
-  const [aiDraft, setAiDraft] = useState('');
-  const [aiError, setAiError] = useState('');
   const requestId = useRef(0);
   const storesRequestId = useRef(0);
-  const aiAbortRef = useRef(null);
   const qtyInputRefs = useRef(new Map());
   const shiftSaveTimers = useRef(new Map());
   const draftsRef = useRef({});
@@ -1187,18 +1232,6 @@ function BullionAuditPanel({
   const dateKey = formatDateParam(date);
   const todayKey = formatDateParam(parseDateParam(new Date()));
   const isToday = dateKey === todayKey;
-  const modelMeta = getModelMeta(model, MODEL_OPTIONS) || MODEL_OPTIONS[0];
-  const aiBusy = aiStatus === 'running';
-
-  const resetAiChat = useCallback(() => {
-    aiAbortRef.current?.abort();
-    setAiStatus('idle');
-    setAiProgress('');
-    setAiTurns([]);
-    setAiMessages([]);
-    setAiDraft('');
-    setAiError('');
-  }, []);
 
   const selectedStore = useMemo(() => {
     if (!stores.length) return null;
@@ -1328,18 +1361,16 @@ function BullionAuditPanel({
   useEffect(() => {
     const timers = shiftSaveTimers.current;
     return () => {
-      aiAbortRef.current?.abort();
       for (const timer of timers.values()) clearTimeout(timer);
       timers.clear();
     };
   }, []);
 
   useEffect(() => {
-    resetAiChat();
     lookupRef.current.day = [];
     applyLookup();
     closeTxnDrawer();
-  }, [dateKey, selectedStore?.id, selectedStore?.systemKey, resetAiChat, applyLookup, closeTxnDrawer]);
+  }, [dateKey, selectedStore?.id, selectedStore?.systemKey, applyLookup, closeTxnDrawer]);
 
   // The range review survives day changes; only a different store clears it.
   useEffect(() => {
@@ -1679,76 +1710,6 @@ function BullionAuditPanel({
   const saveAll = () => writeAll({ aureus: false });
   const updateAll = () => writeAll({ aureus: true });
 
-  const runFindOutWhy = async () => {
-    if (
-      !(selectedStore?.token || session?.token) ||
-      !selectedStore?.id ||
-      aiBusy
-    ) {
-      return;
-    }
-    if (!unbalancedItems.length) {
-      setAiStatus('error');
-      setAiError('No unbalanced metals. Enter vault counts (and Update) so +/− is non-zero.');
-      return;
-    }
-
-    aiAbortRef.current?.abort();
-    const controller = new AbortController();
-    aiAbortRef.current = controller;
-
-    setAiStatus('running');
-    setAiProgress('Starting…');
-    setAiTurns([{ role: 'assistant', content: '' }]);
-    setAiMessages([]);
-    setAiDraft('');
-    setAiError('');
-    setModelMenuOpen(false);
-
-    try {
-      const result = await analyzeBullionDiscrepancy({
-        session,
-        date: dateKey,
-        storeName: selectedStore.name,
-        locationId: selectedStore.id,
-        systemKey: selectedStore.systemKey,
-        unbalancedItems,
-        model,
-        signal: controller.signal,
-        onProgress: setAiProgress,
-        onDelta: (_chunk, full) => {
-          setAiTurns([{ role: 'assistant', content: full || '' }]);
-        },
-      });
-      if (controller.signal.aborted) return;
-      setAiTurns([{ role: 'assistant', content: result.text || '' }]);
-      setAiMessages(result.messages || []);
-      lookupRef.current.day = result.context?.lookupTransactions || [];
-      applyLookup();
-      setAiStatus('done');
-      setAiProgress('');
-    } catch (err) {
-      if (controller.signal.aborted) {
-        setAiStatus('idle');
-        setAiProgress('');
-        return;
-      }
-      setAiStatus('error');
-      setAiError(err?.message || 'AI analysis failed.');
-      setAiProgress('');
-      setAiTurns((prev) => {
-        if (
-          prev.length === 1 &&
-          prev[0]?.role === 'assistant' &&
-          !String(prev[0].content || '').trim()
-        ) {
-          return [];
-        }
-        return prev;
-      });
-    }
-  };
-
   const runRangeReview = () => {
     if (!(selectedStore?.token || session?.token) || !selectedStore?.id || rangeChat.busy) return;
     setModelMenuOpen(false);
@@ -1782,69 +1743,6 @@ function BullionAuditPanel({
     rangeChat.send(({ messages, userMessage, signal, onDelta }) =>
       continueRangeChat({ kind: 'bullion', messages, userMessage, model, signal, onDelta }),
     );
-
-  const sendAiFollowUp = async () => {
-    const question = String(aiDraft || '').trim();
-    if (!question || aiBusy || !aiMessages.length) return;
-
-    aiAbortRef.current?.abort();
-    const controller = new AbortController();
-    aiAbortRef.current = controller;
-
-    setAiStatus('running');
-    setAiProgress('Replying…');
-    setAiError('');
-    setAiDraft('');
-    setAiTurns((prev) => [
-      ...prev,
-      { role: 'user', content: question },
-      { role: 'assistant', content: '' },
-    ]);
-
-    try {
-      const result = await continueBullionAuditChat({
-        messages: aiMessages,
-        userMessage: question,
-        model,
-        signal: controller.signal,
-        onDelta: (_chunk, full) => {
-          setAiTurns((prev) => {
-            if (!prev.length) return prev;
-            const next = prev.slice();
-            next[next.length - 1] = { role: 'assistant', content: full || '' };
-            return next;
-          });
-        },
-      });
-      if (controller.signal.aborted) return;
-      setAiTurns((prev) => {
-        if (!prev.length) return prev;
-        const next = prev.slice();
-        next[next.length - 1] = { role: 'assistant', content: result.text || '' };
-        return next;
-      });
-      setAiMessages(result.messages || []);
-      setAiStatus('done');
-      setAiProgress('');
-    } catch (err) {
-      if (controller.signal.aborted) {
-        setAiStatus('done');
-        setAiProgress('');
-        return;
-      }
-      setAiStatus('error');
-      setAiError(err?.message || 'Follow-up failed.');
-      setAiProgress('');
-      setAiTurns((prev) => {
-        if (prev.length < 2) return prev;
-        const last = prev[prev.length - 1];
-        if (last?.role === 'assistant' && !String(last.content || '').trim()) {
-          return prev.slice(0, -1);
-        }
-        return prev;
-      });
-    }
-  };
 
   if (!session?.token) {
     return (
@@ -1899,103 +1797,6 @@ function BullionAuditPanel({
             ))}
           </View>
         ) : null}
-
-        <View style={[styles.aiRow, isMobile && styles.aiRowMobile]}>
-          <View style={[styles.modelDropdownWrap, isMobile && styles.modelDropdownWrapMobile]}>
-            <Pressable
-              style={[styles.modelDropdown, modelMenuOpen && styles.modelDropdownOpen]}
-              onPress={() => setModelMenuOpen((open) => !open)}
-            >
-              <View style={styles.modelDropdownMain}>
-                <Text style={styles.modelDropdownValue} numberOfLines={1}>
-                  {modelMeta.label}
-                </Text>
-                <Text style={styles.modelDropdownMeta} numberOfLines={1}>
-                  {modelOptionMetaLine(modelMeta)}
-                </Text>
-              </View>
-              <Ionicons
-                name={modelMenuOpen ? 'chevron-up' : 'chevron-down'}
-                size={16}
-                color={SECONDARY}
-              />
-            </Pressable>
-
-            {modelMenuOpen ? (
-              <ScrollView style={styles.modelMenu} nestedScrollEnabled>
-                {MODEL_OPTIONS.map((option) => {
-                  const active = option.key === model;
-                  return (
-                    <Pressable
-                      key={option.key}
-                      style={[styles.modelOption, active && styles.modelOptionActive]}
-                      onPress={() => {
-                        setModel(option.key);
-                        setModelMenuOpen(false);
-                      }}
-                    >
-                      <View style={styles.modelOptionCopy}>
-                        <Text
-                          style={[
-                            styles.modelOptionText,
-                            active && styles.modelOptionTextActive,
-                          ]}
-                        >
-                          {option.label}
-                        </Text>
-                        <Text style={styles.modelOptionStats}>
-                          {modelOptionMetaLine(option)}
-                        </Text>
-                        {option.blurb ? (
-                          <Text style={styles.modelOptionBlurb}>{option.blurb}</Text>
-                        ) : null}
-                      </View>
-                      {active ? <Ionicons name="checkmark" size={20} color={ACCENT} /> : null}
-                    </Pressable>
-                  );
-                })}
-              </ScrollView>
-            ) : null}
-          </View>
-
-          <Pressable
-            style={[
-              styles.findWhyButton,
-              isMobile && styles.findWhyButtonMobile,
-              (aiBusy || !unbalancedItems.length) && styles.findWhyButtonDisabled,
-            ]}
-            onPress={runFindOutWhy}
-            disabled={aiBusy || !unbalancedItems.length}
-          >
-            {aiBusy && !aiMessages.length ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <Ionicons name="sparkles" size={16} color="#fff" />
-            )}
-            <Text style={styles.findWhyButtonText}>
-              {aiBusy && !aiMessages.length ? 'Analyzing…' : 'Find out why'}
-            </Text>
-          </Pressable>
-        </View>
-
-        {aiBusy && aiProgress ? (
-          <Text style={styles.aiProgress}>{aiProgress}</Text>
-        ) : null}
-        {aiStatus === 'error' && aiError ? (
-          <Text style={[styles.errorText, styles.aiProgress]}>{aiError}</Text>
-        ) : null}
-        <View style={styles.aiChatWrap}>
-          <AuditAiChat
-            turns={aiTurns}
-            draft={aiDraft}
-            onChangeDraft={setAiDraft}
-            onSend={sendAiFollowUp}
-            busy={aiBusy}
-            disabled={!aiMessages.length}
-            placeholder="Ask about a metal, SO/PO, or next check…"
-            onOpenReference={txnDrawer.openReference}
-          />
-        </View>
       </GroupSection>
     );
 
@@ -2424,9 +2225,13 @@ function BullionAuditPanel({
           onRun={runRangeReview}
           onSend={sendRangeFollowUp}
           canRun={Boolean(selectedStore?.id)}
-          runHint="Walks every vault count, sale, purchase, transfer, delivery, payment, and POS edit for this store across the range, then explains when and why each metal drifted. Uses the model picked above."
+          runHint="Walks every vault count, sale, purchase, transfer, delivery, payment, and POS edit for this store across the selected dates, then explains when and why each metal drifted."
           placeholder="Ask about a metal, a day, an SO/PO/TR, or an undelivered line…"
           onOpenReference={txnDrawer.openReference}
+          model={model}
+          onChangeModel={setModel}
+          modelMenuOpen={modelMenuOpen}
+          onToggleModelMenu={setModelMenuOpen}
         />
       </ScrollView>
 
@@ -2482,14 +2287,7 @@ function CashAuditPanel({
   const [tillOpen, setTillOpen] = useState(false);
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
-  const [aiStatus, setAiStatus] = useState('idle');
-  const [aiProgress, setAiProgress] = useState('');
-  const [aiTurns, setAiTurns] = useState([]);
-  const [aiMessages, setAiMessages] = useState([]);
-  const [aiDraft, setAiDraft] = useState('');
-  const [aiError, setAiError] = useState('');
   const requestId = useRef(0);
-  const aiAbortRef = useRef(null);
   const cashInputRefs = useRef(new Map());
   const cashCountHydrating = useRef(false);
   const [openingSheets, setOpeningSheets] = useState({ cad: null, usd: null });
@@ -2502,17 +2300,6 @@ function CashAuditPanel({
   const dateKey = formatDateParam(date);
   const todayKey = formatDateParam(parseDateParam(new Date()));
   const isToday = dateKey === todayKey;
-  const aiBusy = aiStatus === 'running';
-
-  const resetAiChat = useCallback(() => {
-    aiAbortRef.current?.abort();
-    setAiStatus('idle');
-    setAiProgress('');
-    setAiTurns([]);
-    setAiMessages([]);
-    setAiDraft('');
-    setAiError('');
-  }, []);
 
   const txnDrawer = useAuditTxnDrawer(session, {
     token: session?.token,
@@ -2662,17 +2449,10 @@ function CashAuditPanel({
   }, [dateKey, selectedStore]);
 
   useEffect(() => {
-    return () => {
-      aiAbortRef.current?.abort();
-    };
-  }, []);
-
-  useEffect(() => {
-    resetAiChat();
     lookupRef.current.day = [];
     applyLookup();
     closeTxnDrawer();
-  }, [dateKey, selectedStore, resetAiChat, applyLookup, closeTxnDrawer]);
+  }, [dateKey, selectedStore, applyLookup, closeTxnDrawer]);
 
   // The range review survives day changes; only a different store clears it.
   useEffect(() => {
@@ -2932,65 +2712,6 @@ function CashAuditPanel({
   const hasCount = cashOnHand != null;
   const variance = hasCount ? cashOnHand - expectedOnHand : null;
   const balanced = variance != null && Math.abs(variance) < 0.005;
-  const modelMeta = getModelMeta(model, MODEL_OPTIONS) || MODEL_OPTIONS[0];
-
-  const runFindOutWhy = async () => {
-    if (!session?.token || !selectedStore || aiBusy) return;
-
-    aiAbortRef.current?.abort();
-    const controller = new AbortController();
-    aiAbortRef.current = controller;
-
-    setAiStatus('running');
-    setAiProgress('Starting…');
-    setAiTurns([{ role: 'assistant', content: '' }]);
-    setAiMessages([]);
-    setAiDraft('');
-    setAiError('');
-
-    try {
-      const result = await analyzeCashDiscrepancy({
-        session,
-        date: dateKey,
-        storeName: selectedStore,
-        cashOnHand: cadCashOnHand,
-        cashOnHandUsd: usdCashOnHand,
-        expectedNet: position?.cad?.expectedOnHand ?? expectedOnHand,
-        model,
-        signal: controller.signal,
-        onProgress: setAiProgress,
-        onDelta: (_chunk, full) => {
-          setAiTurns([{ role: 'assistant', content: full || '' }]);
-        },
-      });
-      if (controller.signal.aborted) return;
-      setAiTurns([{ role: 'assistant', content: result.text || '' }]);
-      setAiMessages(result.messages || []);
-      lookupRef.current.day = result.context?.lookupTransactions || [];
-      applyLookup();
-      setAiStatus('done');
-      setAiProgress('');
-    } catch (err) {
-      if (controller.signal.aborted) {
-        setAiStatus('idle');
-        setAiProgress('');
-        return;
-      }
-      setAiStatus('error');
-      setAiError(err?.message || 'AI analysis failed.');
-      setAiProgress('');
-      setAiTurns((prev) => {
-        if (
-          prev.length === 1 &&
-          prev[0]?.role === 'assistant' &&
-          !String(prev[0].content || '').trim()
-        ) {
-          return [];
-        }
-        return prev;
-      });
-    }
-  };
 
   const runRangeReview = () => {
     if (!session?.token || !selectedStore || rangeChat.busy) return;
@@ -3021,88 +2742,6 @@ function CashAuditPanel({
     rangeChat.send(({ messages, userMessage, signal, onDelta }) =>
       continueRangeChat({ kind: 'cash', messages, userMessage, model, signal, onDelta }),
     );
-
-  const sendAiFollowUp = async () => {
-    const question = String(aiDraft || '').trim();
-    if (!question || aiBusy || !aiMessages.length) return;
-
-    aiAbortRef.current?.abort();
-    const controller = new AbortController();
-    aiAbortRef.current = controller;
-
-    setAiStatus('running');
-    setAiProgress('Replying…');
-    setAiError('');
-    setAiDraft('');
-    setAiTurns((prev) => [
-      ...prev,
-      { role: 'user', content: question },
-      { role: 'assistant', content: '' },
-    ]);
-
-    try {
-      const result = await continueCashAuditChat({
-        messages: aiMessages,
-        userMessage: question,
-        model,
-        signal: controller.signal,
-        onDelta: (_chunk, full) => {
-          setAiTurns((prev) => {
-            if (!prev.length) return prev;
-            const next = prev.slice();
-            next[next.length - 1] = { role: 'assistant', content: full || '' };
-            return next;
-          });
-        },
-      });
-      if (controller.signal.aborted) return;
-      setAiTurns((prev) => {
-        if (!prev.length) return prev;
-        const next = prev.slice();
-        next[next.length - 1] = { role: 'assistant', content: result.text || '' };
-        return next;
-      });
-      setAiMessages(result.messages || []);
-      setAiStatus('done');
-      setAiProgress('');
-    } catch (err) {
-      if (controller.signal.aborted) {
-        setAiStatus('done');
-        setAiProgress('');
-        return;
-      }
-      setAiStatus('error');
-      setAiError(err?.message || 'Follow-up failed.');
-      setAiProgress('');
-      setAiTurns((prev) => {
-        if (prev.length < 2) return prev;
-        const last = prev[prev.length - 1];
-        if (last?.role === 'assistant' && !String(last.content || '').trim()) {
-          return prev.slice(0, -1);
-        }
-        return prev;
-      });
-    }
-  };
-
-  const renderAiSection = () => (
-    <>
-      {aiBusy && aiProgress ? (
-        <Text style={styles.aiProgress}>{aiProgress}</Text>
-      ) : null}
-      {aiError ? <Text style={styles.errorText}>{aiError}</Text> : null}
-      <AuditAiChat
-        turns={aiTurns}
-        draft={aiDraft}
-        onChangeDraft={setAiDraft}
-        onSend={sendAiFollowUp}
-        busy={aiBusy}
-        disabled={!aiMessages.length}
-        placeholder="Ask which sale, purchase, transfer, or combination explains the difference…"
-        onOpenReference={txnDrawer.openReference}
-      />
-    </>
-  );
 
   if (!session?.token) {
     return (
@@ -3597,84 +3236,6 @@ function CashAuditPanel({
     </View>
   );
 
-  const renderFindWhy = () => (
-    <GroupSection title="Find out why">
-      <View style={[styles.aiRow, isMobile && styles.aiRowMobile]}>
-        <View style={[styles.modelDropdownWrap, isMobile && styles.modelDropdownWrapMobile]}>
-          <Pressable
-            style={[styles.modelDropdown, modelMenuOpen && styles.modelDropdownOpen]}
-            onPress={() => setModelMenuOpen((open) => !open)}
-          >
-            <View style={styles.modelDropdownMain}>
-              <Text style={styles.modelDropdownValue} numberOfLines={1}>
-                {modelMeta.label}
-              </Text>
-              <Text style={styles.modelDropdownMeta} numberOfLines={1}>
-                {modelOptionMetaLine(modelMeta)}
-              </Text>
-            </View>
-            <Ionicons
-              name={modelMenuOpen ? 'chevron-up' : 'chevron-down'}
-              size={16}
-              color={SECONDARY}
-            />
-          </Pressable>
-          {modelMenuOpen ? (
-            <ScrollView style={styles.modelMenu} nestedScrollEnabled>
-              {MODEL_OPTIONS.map((option) => {
-                const active = option.key === model;
-                return (
-                  <Pressable
-                    key={option.key}
-                    style={[styles.modelOption, active && styles.modelOptionActive]}
-                    onPress={() => {
-                      setModel(option.key);
-                      setModelMenuOpen(false);
-                    }}
-                  >
-                    <View style={styles.modelOptionCopy}>
-                      <Text
-                        style={[
-                          styles.modelOptionText,
-                          active && styles.modelOptionTextActive,
-                        ]}
-                      >
-                        {option.label}
-                      </Text>
-                      <Text style={styles.modelOptionStats}>
-                        {modelOptionMetaLine(option)}
-                      </Text>
-                    </View>
-                    {active ? <Ionicons name="checkmark" size={20} color={ACCENT} /> : null}
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-          ) : null}
-        </View>
-        <Pressable
-          style={[
-            styles.findWhyButton,
-            isMobile && styles.findWhyButtonMobile,
-            aiBusy && styles.findWhyButtonDisabled,
-          ]}
-          onPress={runFindOutWhy}
-          disabled={aiBusy || !selectedStore}
-        >
-          {aiBusy && !aiMessages.length ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <Ionicons name="sparkles" size={16} color="#fff" />
-          )}
-          <Text style={styles.findWhyButtonText}>
-            {aiBusy && !aiMessages.length ? 'Analyzing…' : 'Find out why'}
-          </Text>
-        </Pressable>
-      </View>
-      <View style={styles.aiChatWrap}>{renderAiSection()}</View>
-    </GroupSection>
-  );
-
   const renderCashMeta = () => (
     <>
       <View style={[styles.metaRow, isMobile && styles.metaRowMobile]}>
@@ -3731,7 +3292,6 @@ function CashAuditPanel({
         {renderCashHero()}
         {renderCashCount()}
         {renderCashActivity()}
-        {renderFindWhy()}
         <RangeReviewSection
           isMobile={isMobile}
           startDate={rangeDates.start}
@@ -3741,9 +3301,13 @@ function CashAuditPanel({
           onRun={runRangeReview}
           onSend={sendRangeFollowUp}
           canRun={Boolean(selectedStore)}
-          runHint="Rebuilds Till 1 CAD and USD day by day across the range: opening vs prior count, every cash, debit, and cheque payment, till entries, whether each sale and purchase was actually paid, transfers, and POS edits. Uses the model picked above."
+          runHint="Rebuilds Till 1 CAD and USD day by day across the selected dates: opening vs prior count, every cash, debit, and cheque payment, till entries, whether each sale and purchase was actually paid, transfers, and POS edits."
           placeholder="Ask about a day, a drawer, an SO/PO, or whether something was paid…"
           onOpenReference={txnDrawer.openReference}
+          model={model}
+          onChangeModel={setModel}
+          modelMenuOpen={modelMenuOpen}
+          onToggleModelMenu={setModelMenuOpen}
         />
       </ScrollView>
 
@@ -5784,6 +5348,17 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#ececef',
+  },
+  rangeDatePick: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  rangeDateCaption: {
+    fontFamily,
+    fontSize: 13,
+    color: SECONDARY,
+    letterSpacing: -0.1,
   },
   rangePreset: {
     borderRadius: NAV_TAB_ACTIVE_RADIUS,
