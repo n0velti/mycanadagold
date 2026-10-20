@@ -1,4 +1,4 @@
-import { createElement, useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -12,34 +12,40 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
-import { formatDateParam, formatPickerDate, parseDateParam } from '../lib/transactions';
 import { fetchTransferStores, uniquePreferredStores } from '../lib/locations';
 import { CANVAS, MOBILE, NAV_TAB_ACTIVE_RADIUS, useIsMobile } from '../lib/mobileUi';
 import { canonicalStoreName, HOME_PINNED_STORES, storesMatch } from '../lib/storeCatalog';
 import { FONT_LIGHT } from '../lib/typography';
+import { formatDateParam, formatPickerDate } from '../lib/transactions';
 import {
   createSupply,
+  createSupplySection,
+  cycleOrderMore,
   deleteSupply,
-  formatSupplyQty,
-  listSupplies,
-  SUPPLY_STATUSES,
-  supplyStatusMeta,
+  ensureStoreSupplies,
+  groupSupplies,
+  listSupplyAudits,
+  listSupplySections,
+  saveSupplyAudit,
+  SUPPLY_CATEGORIES,
+  SUPPLY_ORDER_MORE,
+  supplyOrderMeta,
   updateSupply,
 } from '../lib/supplies';
 
-const ALL_STORES = '';
-
-const fontFamily = Platform.select({ ios: 'Sohne', android: 'Sohne', default: 'Sohne' });
-const titleFontFamily = FONT_LIGHT;
-const TEXT = MOBILE.label;
+const PAGE = CANVAS;
+const GROUP = '#FFFFFF';
+const LABEL = MOBILE.label;
 const SECONDARY = MOBILE.secondary;
-const BLUE = '#007AFF';
-const PAGE = '#F2F2F7';
 const TAB_BORDER = '#d0d0d0';
-const HAIRLINE = '#e5e5ea';
-const CHEVRON = '#C7C7CC';
+const HAIRLINE = 'rgba(42,38,30,0.10)';
+const FILL = 'rgba(118, 118, 128, 0.12)';
+const PRESS = 'rgba(60, 60, 67, 0.045)';
+const BLUE = '#007AFF';
+const RED = '#FF3B30';
+const fontFamily = 'Sohne';
+const titleFontFamily = FONT_LIGHT;
 const CHIP_SHADOW = Platform.select({
   web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
   default: {
@@ -51,42 +57,29 @@ const CHIP_SHADOW = Platform.select({
   },
 });
 
-const COLUMNS = [
-  { key: 'name', label: 'Supply', style: 'colName' },
-  { key: 'brand', label: 'Brand', style: 'colBrand' },
-  { key: 'details', label: 'Other product details', style: 'colDetails' },
-  { key: 'boughtFrom', label: 'Bought from', style: 'colBought' },
-  { key: 'qty', label: 'Qty', style: 'colQty' },
-  { key: 'date', label: 'Last bought', style: 'colDate' },
-  { key: 'status', label: 'Status', style: 'colStatus' },
-];
-
 const EMPTY_FORM = {
   name: '',
-  brand: '',
-  details: '',
-  boughtFrom: '',
-  currentQuantity: '0',
-  status: 'in_stock',
-  lastBoughtDate: '',
-  storeName: '',
+  category: 'office',
+  inUse: '',
+  unopened: '',
+  orderMore: 'no',
+  notes: '',
 };
 
-function draftFromRow(row) {
-  return {
-    name: row.name,
-    brand: row.brand,
-    details: row.details,
-    boughtFrom: row.boughtFrom || '',
-    currentQuantity: String(row.currentQuantity ?? '0'),
-    status: row.status || 'in_stock',
-    lastBoughtDate: row.lastBoughtDate || '',
-    storeName: row.storeName || '',
-  };
+function confirmAction(title, message) {
+  if (Platform.OS === 'web' && typeof window !== 'undefined' && window.confirm) {
+    return Promise.resolve(window.confirm(message));
+  }
+  return new Promise((resolve) => {
+    Alert.alert(title, message, [
+      { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+      { text: 'Save', onPress: () => resolve(true) },
+    ]);
+  });
 }
 
 function confirmDeleteSupply(name) {
-  const message = `Remove ${name || 'this supply'} from the list?`;
+  const message = `Remove ${name || 'this supply'} from this store?`;
   if (Platform.OS === 'web' && typeof window !== 'undefined' && window.confirm) {
     return Promise.resolve(window.confirm(message));
   }
@@ -98,35 +91,23 @@ function confirmDeleteSupply(name) {
   });
 }
 
-function storeOptions(names, { includeAll = true } = {}) {
-  const options = includeAll ? [{ key: ALL_STORES, label: 'All stores' }] : [];
-  for (const name of names) {
-    options.push({ key: name, label: name });
-  }
-  return options;
-}
-
-function StoreSelect({ value, options, onChange, label, compact = false, fill = false }) {
+function StoreSelect({ value, options, onChange, fill = false, icon = 'storefront-outline', accessibilityLabel = 'Store' }) {
   const [open, setOpen] = useState(false);
   const selected = options.find((item) => item.key === value) || options[0];
   return (
-    <View
-      style={[styles.storeSelect, fill && styles.storeSelectFill, open && styles.storeSelectOpen]}
-      pointerEvents="box-none"
-    >
-      {label ? <Text style={styles.storeSelectCaption}>{label}</Text> : null}
+    <View style={[styles.storeSelect, fill && styles.storeSelectFill, open && styles.storeSelectOpen]}>
       <Pressable
         onPress={() => setOpen((current) => !current)}
         style={({ hovered, pressed }) => [
           styles.storeSelectBtn,
-          compact && styles.storeSelectBtnCompact,
           fill && styles.storeSelectBtnFill,
           (open || hovered || pressed) && styles.storeSelectBtnOpen,
         ]}
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
-        accessibilityLabel={label || 'Store'}
+        accessibilityLabel={accessibilityLabel}
       >
+        <Ionicons name={icon} size={15} color={SECONDARY} />
         <Text style={styles.storeSelectValue} numberOfLines={1}>
           {selected?.label || 'Store'}
         </Text>
@@ -140,7 +121,7 @@ function StoreSelect({ value, options, onChange, label, compact = false, fill = 
               const active = item.key === value;
               return (
                 <Pressable
-                  key={item.key || 'all'}
+                  key={item.key}
                   onPress={() => {
                     onChange(item.key);
                     setOpen(false);
@@ -159,6 +140,7 @@ function StoreSelect({ value, options, onChange, label, compact = false, fill = 
                   >
                     {item.label}
                   </Text>
+                  {active ? <Ionicons name="checkmark" size={18} color={BLUE} /> : null}
                 </Pressable>
               );
             })}
@@ -169,48 +151,60 @@ function StoreSelect({ value, options, onChange, label, compact = false, fill = 
   );
 }
 
-function StatusPill({ status, onPress, compact = false }) {
-  const meta = supplyStatusMeta(status);
-  const body = (
-    <View style={[styles.statusPill, { backgroundColor: meta.tint }, compact && styles.statusPillCompact]}>
-      <View style={[styles.statusDot, { backgroundColor: meta.color }]} />
-      <Text style={[styles.statusPillText, { color: meta.color }]} numberOfLines={1}>
-        {meta.label}
+function CellField({ value, onCommit, style, placeholder = '—', accessibilityLabel, compact, readOnly }) {
+  const [text, setText] = useState(value);
+  useEffect(() => {
+    setText(value);
+  }, [value]);
+  if (readOnly) {
+    return (
+      <Text
+        style={[styles.cellField, compact && styles.cellFieldCompact, style, !value && styles.cellPlaceholder]}
+        numberOfLines={2}
+      >
+        {value || placeholder}
       </Text>
-    </View>
-  );
-  if (!onPress) return body;
+    );
+  }
   return (
-    <Pressable
-      onPress={onPress}
-      hitSlop={6}
-      accessibilityRole="button"
-      accessibilityLabel={`Status ${meta.label}. Change status.`}
-    >
-      {body}
-    </Pressable>
+    <TextInput
+      style={[styles.cellField, compact && styles.cellFieldCompact, style]}
+      value={text}
+      onChangeText={setText}
+      onBlur={() => {
+        if (text !== value) onCommit(text);
+      }}
+      onSubmitEditing={() => {
+        if (text !== value) onCommit(text);
+      }}
+      placeholder={placeholder}
+      placeholderTextColor={SECONDARY}
+      accessibilityLabel={accessibilityLabel}
+    />
   );
 }
 
-function StatusPicker({ value, onChange }) {
+function OrderControl({ value, onChange, compact = false, readOnly = false }) {
   return (
-    <View style={styles.statusPicker}>
-      {SUPPLY_STATUSES.map((item) => {
+    <View style={[styles.orderControl, compact && styles.orderControlCompact]} pointerEvents={readOnly ? 'none' : 'auto'}>
+      {SUPPLY_ORDER_MORE.map((item) => {
         const active = item.key === value;
         return (
           <Pressable
             key={item.key}
             onPress={() => onChange(item.key)}
             style={[
-              styles.statusChoice,
-              { backgroundColor: item.tint, borderColor: active ? item.color : 'transparent' },
+              styles.orderSeg,
+              compact && styles.orderSegCompact,
+              active && { backgroundColor: item.color },
             ]}
             accessibilityRole="button"
             accessibilityState={{ selected: active }}
-            accessibilityLabel={item.label}
+            accessibilityLabel={item.title}
           >
-            <View style={[styles.statusDot, { backgroundColor: item.color }]} />
-            <Text style={[styles.statusChoiceText, { color: item.color }]}>{item.label}</Text>
+            <Text style={[styles.orderSegText, compact && styles.orderSegTextCompact, active && styles.orderSegTextOn]}>
+              {item.label}
+            </Text>
           </Pressable>
         );
       })}
@@ -218,36 +212,41 @@ function StatusPicker({ value, onChange }) {
   );
 }
 
-function cycleStatus(status) {
-  const index = SUPPLY_STATUSES.findIndex((item) => item.key === status);
-  return SUPPLY_STATUSES[(index + 1) % SUPPLY_STATUSES.length].key;
-}
-
-function DetailField({ label, last, children }) {
-  return (
-    <View style={[styles.detailRow, last && styles.detailRowLast]}>
-      <Text style={styles.detailLabel}>{label}</Text>
-      <View style={styles.detailValueWrap}>{children}</View>
+function OrderPill({ value, onPress }) {
+  const meta = supplyOrderMeta(value);
+  const body = (
+    <View style={[styles.orderPill, { backgroundColor: meta.tint }]}>
+      <Text style={[styles.orderPillText, { color: meta.color }]}>{meta.label}</Text>
     </View>
+  );
+  if (!onPress) return body;
+  return (
+    <Pressable
+      onPress={onPress}
+      style={[styles.orderPill, { backgroundColor: meta.tint }]}
+      accessibilityRole="button"
+      accessibilityLabel={`Order more: ${meta.title}. Change.`}
+    >
+      <Text style={[styles.orderPillText, { color: meta.color }]}>{meta.label}</Text>
+    </Pressable>
   );
 }
 
-function SupplyModal({
+function AddModal({
   visible,
-  title,
+  title = 'New Supply',
   draft,
   onChange,
   onSubmit,
   onClose,
-  onDelete,
   saving,
-  deleting,
   error,
   isMobile,
-  storeChoices,
-  allowAllStores,
+  sections,
+  lockCategory = false,
 }) {
   const set = (key) => (value) => onChange({ ...draft, [key]: value });
+  const choices = (sections || []).filter((item) => item.key !== 'other');
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={[styles.modalRoot, isMobile && styles.modalRootMobile]}>
@@ -260,120 +259,75 @@ function SupplyModal({
             <Pressable onPress={onClose} hitSlop={8} style={styles.modalNavSide} accessibilityLabel="Cancel">
               <Text style={styles.modalCancel}>Cancel</Text>
             </Pressable>
-            <Text style={styles.modalTitle} numberOfLines={1}>
-              {title}
-            </Text>
+            <Text style={styles.modalTitle}>{title}</Text>
             <Pressable
               onPress={onSubmit}
               disabled={saving}
               hitSlop={8}
               style={styles.modalNavSideRight}
-              accessibilityLabel="Save"
+              accessibilityLabel="Add"
             >
-              {saving ? (
-                <ActivityIndicator color={BLUE} size="small" />
-              ) : (
-                <Text style={styles.modalSave}>Save</Text>
-              )}
+              {saving ? <ActivityIndicator color={BLUE} size="small" /> : <Text style={styles.modalSave}>Add</Text>}
             </Pressable>
           </View>
-          <View style={styles.modalStoreBar}>
-            <StoreSelect
-              value={draft.storeName}
-              options={storeOptions(storeChoices, { includeAll: allowAllStores })}
-              onChange={set('storeName')}
-              label="Store"
-            />
-          </View>
-          <ScrollView
-            style={styles.modalScroll}
-            contentContainerStyle={styles.modalScrollContent}
-            keyboardShouldPersistTaps="handled"
-          >
+          <ScrollView contentContainerStyle={styles.modalScroll} keyboardShouldPersistTaps="handled">
             <View style={styles.appleGroup}>
-              <DetailField label="Supply">
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Item</Text>
                 <TextInput
                   style={styles.detailInput}
                   value={draft.name}
                   onChangeText={set('name')}
                   placeholder="Name"
                   placeholderTextColor={SECONDARY}
-                  autoCapitalize="words"
+                  autoCapitalize="sentences"
                   accessibilityLabel="Supply name"
                 />
-              </DetailField>
-              <DetailField label="Brand">
+              </View>
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>In use</Text>
                 <TextInput
                   style={styles.detailInput}
-                  value={draft.brand}
-                  onChangeText={set('brand')}
+                  value={draft.inUse}
+                  onChangeText={set('inUse')}
                   placeholder="—"
                   placeholderTextColor={SECONDARY}
-                  autoCapitalize="words"
-                  accessibilityLabel="Brand"
+                  accessibilityLabel="In use"
                 />
-              </DetailField>
-              <DetailField label="Details">
+              </View>
+              <View style={[styles.detailRow, lockCategory && styles.detailRowLast]}>
+                <Text style={styles.detailLabel}>Unopened</Text>
                 <TextInput
                   style={styles.detailInput}
-                  value={draft.details}
-                  onChangeText={set('details')}
+                  value={draft.unopened}
+                  onChangeText={set('unopened')}
                   placeholder="—"
                   placeholderTextColor={SECONDARY}
-                  accessibilityLabel="Other product details"
+                  accessibilityLabel="Unopened"
                 />
-              </DetailField>
-              <DetailField label="Bought from" last>
-                <TextInput
-                  style={styles.detailInput}
-                  value={draft.boughtFrom}
-                  onChangeText={set('boughtFrom')}
-                  placeholder="Vendor"
-                  placeholderTextColor={SECONDARY}
-                  autoCapitalize="words"
-                  accessibilityLabel="Bought from"
-                />
-              </DetailField>
+              </View>
+              {lockCategory ? null : (
+                <View style={[styles.detailRow, styles.detailRowLast]}>
+                  <Text style={styles.detailLabel}>Section</Text>
+                  <View style={styles.categoryPicker}>
+                    {choices.map((item) => {
+                      const active = draft.category === item.key;
+                      return (
+                        <Pressable
+                          key={item.key}
+                          onPress={() => set('category')(item.key)}
+                          style={[styles.categoryChip, active && styles.categoryChipOn]}
+                        >
+                          <Text style={[styles.categoryChipText, active && styles.categoryChipTextOn]}>
+                            {item.label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+              )}
             </View>
-            <View style={styles.appleGroup}>
-              <DetailField label="Quantity">
-                <TextInput
-                  style={styles.detailInput}
-                  value={draft.currentQuantity}
-                  onChangeText={set('currentQuantity')}
-                  placeholder="0"
-                  placeholderTextColor={SECONDARY}
-                  keyboardType="decimal-pad"
-                  accessibilityLabel="Current quantity"
-                />
-              </DetailField>
-              <DetailField label="Last bought">
-                <SupplyDateField
-                  value={draft.lastBoughtDate}
-                  onChange={set('lastBoughtDate')}
-                  variant="plain"
-                  accessibilityLabel="Last bought date"
-                />
-              </DetailField>
-              <DetailField label="Status" last>
-                <StatusPicker value={draft.status || 'in_stock'} onChange={set('status')} />
-              </DetailField>
-            </View>
-            {onDelete ? (
-              <Pressable
-                onPress={onDelete}
-                disabled={saving || deleting}
-                style={({ pressed }) => [styles.deleteButton, pressed && styles.deleteButtonPressed]}
-                accessibilityRole="button"
-                accessibilityLabel="Delete supply"
-              >
-                {deleting ? (
-                  <ActivityIndicator color="#B91C1C" size="small" />
-                ) : (
-                  <Text style={styles.deleteButtonText}>Delete Supply</Text>
-                )}
-              </Pressable>
-            ) : null}
             {error ? <Text style={styles.modalError}>{error}</Text> : null}
           </ScrollView>
         </KeyboardAvoidingView>
@@ -382,170 +336,88 @@ function SupplyModal({
   );
 }
 
-function CellInput({ value, onCommit, style, accessibilityLabel, keyboardType = 'decimal-pad' }) {
-  const [text, setText] = useState(value);
-  useEffect(() => {
-    setText(value);
-  }, [value]);
+function AddSectionModal({ visible, value, onChange, onSubmit, onClose, saving, error, isMobile }) {
   return (
-    <TextInput
-      style={[styles.cellInput, style]}
-      value={text}
-      onChangeText={setText}
-      onBlur={() => {
-        if (text !== value) onCommit(text);
-      }}
-      onSubmitEditing={() => {
-        if (text !== value) onCommit(text);
-      }}
-      placeholder="—"
-      placeholderTextColor={SECONDARY}
-      keyboardType={keyboardType}
-      accessibilityLabel={accessibilityLabel}
-    />
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={[styles.modalRoot, isMobile && styles.modalRootMobile]}>
+        <Pressable style={styles.modalBackdrop} onPress={onClose} accessibilityLabel="Close" />
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={[styles.modalSheet, isMobile && styles.modalSheetMobile]}
+        >
+          <View style={styles.modalNav}>
+            <Pressable onPress={onClose} hitSlop={8} style={styles.modalNavSide} accessibilityLabel="Cancel">
+              <Text style={styles.modalCancel}>Cancel</Text>
+            </Pressable>
+            <Text style={styles.modalTitle}>New Section</Text>
+            <Pressable
+              onPress={onSubmit}
+              disabled={saving}
+              hitSlop={8}
+              style={styles.modalNavSideRight}
+              accessibilityLabel="Add section"
+            >
+              {saving ? <ActivityIndicator color={BLUE} size="small" /> : <Text style={styles.modalSave}>Add</Text>}
+            </Pressable>
+          </View>
+          <View style={styles.modalScroll}>
+            <View style={styles.appleGroup}>
+              <View style={[styles.detailRow, styles.detailRowLast]}>
+                <Text style={styles.detailLabel}>Name</Text>
+                <TextInput
+                  style={styles.detailInput}
+                  value={value}
+                  onChangeText={onChange}
+                  placeholder="Shipping extras"
+                  placeholderTextColor={SECONDARY}
+                  autoCapitalize="words"
+                  accessibilityLabel="Section name"
+                />
+              </View>
+            </View>
+            {error ? <Text style={styles.modalError}>{error}</Text> : null}
+          </View>
+        </KeyboardAvoidingView>
+      </View>
+    </Modal>
   );
 }
 
-function SupplyDateField({
-  value,
-  onChange,
-  variant = 'cell',
-  style,
-  accessibilityLabel,
-  maximumDate = new Date(),
-}) {
-  const [open, setOpen] = useState(false);
-  const plain = variant === 'plain';
-  const hasValue = Boolean(String(value || '').trim());
-  const dateValue = parseDateParam(hasValue ? value : new Date());
-  const displayText = hasValue ? formatPickerDate(parseDateParam(value)) : '—';
-
-  const commit = (next) => {
-    if (!next) return;
-    let date = parseDateParam(next);
-    if (maximumDate && date > parseDateParam(maximumDate)) {
-      date = parseDateParam(maximumDate);
-    }
-    onChange(formatDateParam(date));
-  };
-
-  const field = (
-    <>
-      {!plain ? <Ionicons name="calendar-outline" size={14} color={SECONDARY} /> : null}
-      {Platform.OS === 'web' ? (
-        createElement('input', {
-          type: 'date',
-          value: hasValue ? formatDateParam(dateValue) : '',
-          max: maximumDate ? formatDateParam(maximumDate) : undefined,
-          'aria-label': accessibilityLabel,
-          onChange: (event) => {
-            if (event.target.value) commit(event.target.value);
-          },
-          style: {
-            border: 'none',
-            background: 'transparent',
-            fontFamily,
-            fontSize: plain ? 15 : 14,
-            fontWeight: plain ? '400' : '300',
-            color: hasValue ? TEXT : SECONDARY,
-            padding: 0,
-            margin: 0,
-            outline: 'none',
-            cursor: 'pointer',
-            minWidth: plain ? 0 : 88,
-            width: plain ? '100%' : undefined,
-            textAlign: plain ? 'right' : 'left',
-            letterSpacing: '-0.2px',
-          },
-        })
-      ) : (
-        <Text
-          style={[
-            plain ? styles.detailDateValue : styles.cellInput,
-            !hasValue && styles.datePlaceholder,
-            style,
-          ]}
-        >
-          {displayText}
-        </Text>
-      )}
-      {plain ? <Ionicons name="chevron-down" size={14} color={CHEVRON} /> : null}
-    </>
-  );
-
-  if (Platform.OS === 'web') {
-    return (
-      <View style={[plain ? styles.dateChipPlain : styles.dateFieldCell, style]} accessibilityLabel={accessibilityLabel}>
-        {field}
-      </View>
-    );
-  }
-
+function Legend() {
   return (
-    <>
-      <Pressable
-        style={[plain ? styles.dateChipPlain : styles.dateFieldCell, style]}
-        onPress={() => setOpen(true)}
-        accessibilityRole="button"
-        accessibilityLabel={accessibilityLabel}
-      >
-        {field}
-      </Pressable>
-      {Platform.OS === 'android' && open ? (
-        <DateTimePicker
-          value={dateValue}
-          mode="date"
-          display="default"
-          maximumDate={maximumDate ? parseDateParam(maximumDate) : undefined}
-          onChange={(event, selected) => {
-            setOpen(false);
-            if (event.type !== 'dismissed' && selected) commit(selected);
-          }}
-        />
-      ) : null}
-      {Platform.OS === 'ios' ? (
-        <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
-          <View style={styles.dateModalBackdrop}>
-            <Pressable style={StyleSheet.absoluteFill} onPress={() => setOpen(false)} />
-            <View style={styles.dateModalCard}>
-              <View style={styles.dateModalHeader}>
-                <Text style={styles.dateModalTitle}>{accessibilityLabel || 'Date'}</Text>
-                <Pressable onPress={() => setOpen(false)} hitSlop={8}>
-                  <Text style={styles.dateModalDone}>Done</Text>
-                </Pressable>
-              </View>
-              <DateTimePicker
-                value={dateValue}
-                mode="date"
-                display="spinner"
-                maximumDate={maximumDate ? parseDateParam(maximumDate) : undefined}
-                onChange={(_, selected) => {
-                  if (selected) commit(selected);
-                }}
-              />
-            </View>
-          </View>
-        </Modal>
-      ) : null}
-    </>
+    <View style={styles.legend}>
+      <Text style={styles.legendTitle}>Order more</Text>
+      {SUPPLY_ORDER_MORE.map((item) => (
+        <View key={item.key} style={[styles.legendChip, { backgroundColor: item.tint }]}>
+          <View style={[styles.legendDot, { backgroundColor: item.color }]} />
+          <Text style={[styles.legendText, { color: item.color }]}>{item.title}</Text>
+        </View>
+      ))}
+    </View>
   );
 }
 
 export default function SuppliesScreen({ session, storeFilter = '', embedded = false }) {
   const isMobile = useIsMobile();
   const lockedStore = canonicalStoreName(storeFilter) || String(storeFilter || '').trim();
-  const homeStore = canonicalStoreName(session?.profile?.locationName) || String(session?.profile?.locationName || '').trim();
+  const homeStore =
+    canonicalStoreName(session?.profile?.locationName) || String(session?.profile?.locationName || '').trim();
   const [storeNames, setStoreNames] = useState(() => [...HOME_PINNED_STORES]);
-  const [selectedStore, setSelectedStore] = useState(lockedStore || homeStore || ALL_STORES);
+  const [selectedStore, setSelectedStore] = useState(lockedStore || homeStore || HOME_PINNED_STORES[0]);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [modalError, setModalError] = useState('');
-  const [mode, setMode] = useState(null);
-  const [editingId, setEditingId] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [addingSection, setAddingSection] = useState(false);
+  const [sectionName, setSectionName] = useState('');
+  const [lockCategory, setLockCategory] = useState(false);
+  const [customSections, setCustomSections] = useState([]);
   const [draft, setDraft] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  const [audits, setAudits] = useState([]);
+  const [viewingAuditId, setViewingAuditId] = useState('');
+  const [savingAudit, setSavingAudit] = useState(false);
 
   useEffect(() => {
     if (!session?.token) return undefined;
@@ -579,16 +451,32 @@ export default function SuppliesScreen({ session, storeFilter = '', embedded = f
     if (match && match !== selectedStore) setSelectedStore(match);
   }, [lockedStore, selectedStore, storeNames]);
 
+  useEffect(() => {
+    if (lockedStore || selectedStore) return;
+    setSelectedStore(homeStore || storeNames[0] || HOME_PINNED_STORES[0]);
+  }, [homeStore, lockedStore, selectedStore, storeNames]);
+
   const load = useCallback(async () => {
-    if (!session?.token) {
+    if (!session?.token || !selectedStore) {
       setRows([]);
+      setAudits([]);
+      setCustomSections([]);
+      setViewingAuditId('');
       setLoading(false);
       return;
     }
     setLoading(true);
     setError('');
+    setViewingAuditId('');
     try {
-      setRows(await listSupplies(selectedStore));
+      const [nextRows, nextAudits, nextSections] = await Promise.all([
+        ensureStoreSupplies(selectedStore),
+        listSupplyAudits(selectedStore),
+        listSupplySections(selectedStore),
+      ]);
+      setRows(nextRows);
+      setAudits(nextAudits);
+      setCustomSections(nextSections);
     } catch (loadError) {
       setError(loadError?.message || 'Could not load supplies.');
     } finally {
@@ -600,129 +488,156 @@ export default function SuppliesScreen({ session, storeFilter = '', embedded = f
     load();
   }, [load]);
 
-  const closeModal = () => {
-    setMode(null);
-    setEditingId('');
-    setDraft({ ...EMPTY_FORM });
-    setModalError('');
-  };
-
-  const startAdd = () => {
-    setEditingId('');
-    setDraft({
-      ...EMPTY_FORM,
-      status: 'in_stock',
-      currentQuantity: '0',
-      storeName: selectedStore || homeStore || ALL_STORES,
-    });
-    setModalError('');
-    setMode('add');
-  };
-
-  const startEdit = (row) => {
-    setEditingId(row.id);
-    setDraft(draftFromRow(row));
-    setModalError('');
-    setMode('edit');
-  };
+  const viewingAudit = useMemo(
+    () => audits.find((item) => item.id === viewingAuditId) || null,
+    [audits, viewingAuditId],
+  );
+  const readOnly = Boolean(viewingAudit);
+  const displayRows = viewingAudit ? viewingAudit.items : rows;
+  const extraSections = viewingAudit ? [] : customSections;
+  const sections = useMemo(
+    () => groupSupplies(displayRows, extraSections),
+    [displayRows, extraSections],
+  );
+  const sectionChoices = useMemo(() => {
+    const seen = new Set();
+    const next = [];
+    for (const item of [...SUPPLY_CATEGORIES.filter((s) => s.key !== 'other'), ...customSections, ...sections]) {
+      if (!item?.key || seen.has(item.key)) continue;
+      seen.add(item.key);
+      next.push({ key: item.key, label: item.label || item.key });
+    }
+    return next;
+  }, [customSections, sections]);
+  const storeOptions = useMemo(
+    () => storeNames.map((name) => ({ key: name, label: name })),
+    [storeNames],
+  );
+  const todayKey = formatDateParam(new Date());
+  const todayAudit = audits.find((item) => item.auditDate === todayKey);
+  const auditOptions = useMemo(
+    () => [
+      { key: '', label: 'Current list' },
+      ...audits.map((item) => ({
+        key: item.id,
+        label: item.auditDate === todayKey ? `${item.label} · saved today` : item.label,
+      })),
+    ],
+    [audits, todayKey],
+  );
 
   const replaceRow = (row) => {
-    setRows((current) => {
-      const next = current.filter((item) => item.id !== row.id);
-      if (selectedStore && !storesMatch(row.storeName, selectedStore)) return next;
-      return [...next, row].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
-    });
-  };
-
-  const onCreate = async () => {
-    setSaving(true);
-    setModalError('');
-    try {
-      const targets = draft.storeName ? [draft.storeName] : storeNames;
-      await createSupply({
-        ...draft,
-        status: draft.status || 'in_stock',
-        storeNames: targets,
-      });
-      closeModal();
-      await load();
-    } catch (saveError) {
-      setModalError(saveError?.message || 'Could not save that supply.');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const onUpdate = async () => {
-    if (!editingId) return;
-    if (!draft.storeName) {
-      setModalError('Choose a store.');
-      return;
-    }
-    setSaving(true);
-    setModalError('');
-    try {
-      replaceRow(await updateSupply(editingId, draft));
-      closeModal();
-    } catch (saveError) {
-      setModalError(saveError?.message || 'Could not update that supply.');
-    } finally {
-      setSaving(false);
-    }
+    setRows((current) => current.map((item) => (item.id === row.id ? row : item)));
   };
 
   const patchRow = async (row, patch) => {
+    if (readOnly) return;
     setError('');
     try {
-      replaceRow(await updateSupply(row.id, { ...draftFromRow(row), ...patch }));
+      replaceRow(await updateSupply(row.id, patch));
     } catch (saveError) {
       setError(saveError?.message || 'Could not update that supply.');
     }
   };
 
   const removeRow = async (row) => {
+    if (readOnly) return;
     const ok = await confirmDeleteSupply(row.name);
     if (!ok) return;
     setError('');
-    setDeleting(true);
     try {
       await deleteSupply(row.id);
       setRows((current) => current.filter((item) => item.id !== row.id));
-      if (editingId === row.id) closeModal();
     } catch (deleteError) {
       setError(deleteError?.message || 'Could not delete that supply.');
-    } finally {
-      setDeleting(false);
     }
   };
 
-  const onDeleteFromModal = async () => {
-    if (!editingId) return;
-    const row = rows.find((item) => item.id === editingId);
-    if (!row) return;
+  const startAdd = (category) => {
+    if (readOnly) return;
+    const nextCategory = category || 'office';
+    setDraft({ ...EMPTY_FORM, category: nextCategory });
+    setLockCategory(Boolean(category));
     setModalError('');
-    const ok = await confirmDeleteSupply(row.name);
-    if (!ok) return;
-    setDeleting(true);
+    setAdding(true);
+  };
+
+  const startAddSection = () => {
+    if (readOnly) return;
+    setSectionName('');
+    setModalError('');
+    setAddingSection(true);
+  };
+
+  const onCreate = async () => {
+    if (!selectedStore) {
+      setModalError('Choose a store.');
+      return;
+    }
+    setSaving(true);
+    setModalError('');
     try {
-      await deleteSupply(row.id);
-      setRows((current) => current.filter((item) => item.id !== row.id));
-      closeModal();
-    } catch (deleteError) {
-      setModalError(deleteError?.message || 'Could not delete that supply.');
+      const inSection = rows.filter((item) => item.category === draft.category);
+      const sortOrder = inSection.reduce((max, item) => Math.max(max, Number(item.sortOrder) || 0), 0) + 10;
+      const row = await createSupply({ ...draft, storeName: selectedStore, sortOrder });
+      setRows((current) => [...current, row]);
+      setAdding(false);
+      setLockCategory(false);
+      setDraft({ ...EMPTY_FORM });
+    } catch (saveError) {
+      setModalError(saveError?.message || 'Could not add that supply.');
     } finally {
-      setDeleting(false);
+      setSaving(false);
     }
   };
 
-  const empty = useMemo(() => {
-    if (selectedStore) return `No supplies listed for ${selectedStore} yet.`;
-    return 'No supplies yet. Add the first item to this list.';
-  }, [selectedStore]);
-  const showStoreColumn = !selectedStore;
-  const tableColumns = showStoreColumn
-    ? [{ key: 'store', label: 'Store', style: 'colStore' }, ...COLUMNS]
-    : COLUMNS;
+  const onCreateSection = async () => {
+    if (!selectedStore) {
+      setModalError('Choose a store.');
+      return;
+    }
+    setSaving(true);
+    setModalError('');
+    try {
+      const section = await createSupplySection(
+        selectedStore,
+        sectionName,
+        customSections.map((item) => item.key),
+      );
+      setCustomSections((current) => [...current, section]);
+      setAddingSection(false);
+      setSectionName('');
+      setSaving(false);
+      startAdd(section.key);
+    } catch (saveError) {
+      setModalError(saveError?.message || 'Could not add that section.');
+      setSaving(false);
+    }
+  };
+
+  const onSaveAudit = async () => {
+    if (!selectedStore || readOnly) return;
+    if (todayAudit) {
+      const ok = await confirmAction(
+        'Replace today’s audit',
+        `Replace the saved ${selectedStore} audit for ${formatPickerDate(new Date())}?`,
+      );
+      if (!ok) return;
+    }
+    setSavingAudit(true);
+    setError('');
+    try {
+      const saved = await saveSupplyAudit(selectedStore, rows, todayKey);
+      setAudits((current) => {
+        const next = current.filter((item) => item.id !== saved.id && item.auditDate !== saved.auditDate);
+        return [saved, ...next].sort((a, b) => String(b.auditDate).localeCompare(String(a.auditDate)));
+      });
+    } catch (saveError) {
+      setError(saveError?.message || 'Could not save that audit.');
+    } finally {
+      setSavingAudit(false);
+    }
+  };
 
   if (!session?.token) {
     return (
@@ -733,95 +648,112 @@ export default function SuppliesScreen({ session, storeFilter = '', embedded = f
   }
 
   const storePicker = embedded || lockedStore ? null : (
+    <StoreSelect value={selectedStore} options={storeOptions} onChange={setSelectedStore} fill={isMobile} />
+  );
+
+  const historyPicker = (
     <StoreSelect
-      value={selectedStore}
-      options={storeOptions(storeNames, { includeAll: true })}
-      onChange={setSelectedStore}
-      label={isMobile ? undefined : 'Store'}
-      compact={isMobile}
+      value={viewingAuditId}
+      options={auditOptions}
+      onChange={setViewingAuditId}
+      fill={isMobile}
+      icon="calendar-outline"
+      accessibilityLabel="Saved audits"
     />
   );
 
-  const addChip = (
+  const saveChip = readOnly ? (
     <Pressable
-      onPress={startAdd}
-      style={({ hovered, pressed }) => [styles.addChip, (hovered || pressed) && styles.addChipHover]}
+      onPress={() => setViewingAuditId('')}
+      style={({ hovered, pressed }) => [styles.chip, (hovered || pressed) && styles.chipHover]}
       accessibilityRole="button"
-      accessibilityLabel="Add supply"
+      accessibilityLabel="Back to current list"
     >
-      <Ionicons name="add" size={16} color={TEXT} />
-      <Text style={styles.addChipText}>Add</Text>
+      <Text style={styles.chipText}>Current</Text>
+    </Pressable>
+  ) : (
+    <Pressable
+      onPress={onSaveAudit}
+      disabled={savingAudit || loading}
+      style={({ hovered, pressed }) => [styles.chip, (hovered || pressed) && styles.chipHover]}
+      accessibilityRole="button"
+      accessibilityLabel={todayAudit ? 'Update today’s audit' : 'Save today’s audit'}
+    >
+      {savingAudit ? (
+        <ActivityIndicator color={SECONDARY} size="small" />
+      ) : (
+        <>
+          <Ionicons name="download-outline" size={15} color={SECONDARY} />
+          <Text style={styles.chipText}>{todayAudit ? 'Update' : 'Save'} audit</Text>
+        </>
+      )}
     </Pressable>
   );
 
-  const actionBar = (
-    <View
-      style={[
-        styles.actionBar,
-        isMobile && styles.actionBarMobile,
-        embedded && !isMobile && styles.actionBarEmbedded,
-      ]}
-    >
-      {storePicker}
-      {addChip}
+  const addChip = readOnly ? null : (
+    <View style={styles.headActions}>
+      <Pressable
+        onPress={startAddSection}
+        style={({ hovered, pressed }) => [styles.chip, (hovered || pressed) && styles.chipHover]}
+        accessibilityRole="button"
+        accessibilityLabel="Add section"
+      >
+        <Ionicons name="folder-open-outline" size={15} color={SECONDARY} />
+        <Text style={styles.chipText}>Add section</Text>
+      </Pressable>
+      <Pressable
+        onPress={() => startAdd()}
+        style={({ hovered, pressed }) => [styles.chip, (hovered || pressed) && styles.chipHover]}
+        accessibilityRole="button"
+        accessibilityLabel="Add supply"
+      >
+        <Ionicons name="add" size={16} color={LABEL} />
+        <Text style={styles.chipText}>Add item</Text>
+      </Pressable>
     </View>
   );
 
-  const renderDesktopRow = (row, index) => (
-    <View
-      key={row.id}
-      style={[styles.row, index === rows.length - 1 && styles.rowLast]}
-    >
-      <View style={styles.rowBody}>
-        {showStoreColumn ? (
-          <Pressable onPress={() => startEdit(row)} style={styles.colStore} accessibilityRole="button">
-            <Text style={styles.cell} numberOfLines={1}>
-              {row.storeName || '—'}
-            </Text>
-          </Pressable>
-        ) : null}
-        <Pressable
-          onPress={() => startEdit(row)}
-          style={styles.colName}
-          accessibilityRole="button"
-          accessibilityLabel={`Open ${row.name}`}
-        >
-          <Text style={styles.cellName} numberOfLines={1}>
-            {row.name}
-          </Text>
-        </Pressable>
-        <Pressable onPress={() => startEdit(row)} style={styles.colBrand} accessibilityRole="button">
-          <Text style={styles.cell} numberOfLines={1}>
-            {row.brand || '—'}
-          </Text>
-        </Pressable>
-        <Pressable onPress={() => startEdit(row)} style={styles.colDetails} accessibilityRole="button">
-          <Text style={styles.cell} numberOfLines={1}>
-            {row.details || '—'}
-          </Text>
-        </Pressable>
-        <CellInput
-          value={row.boughtFrom || ''}
-          onCommit={(value) => patchRow(row, { boughtFrom: value })}
-          style={styles.colBought}
-          keyboardType="default"
-          accessibilityLabel={`${row.name} bought from`}
-        />
-        <CellInput
-          value={formatSupplyQty(row.currentQuantity)}
-          onCommit={(value) => patchRow(row, { currentQuantity: value })}
+  const renderDesktopRow = (row, last, hideUnopened) => (
+    <View key={row.id} style={[styles.tableRow, last && styles.tableRowLast]}>
+      <Text style={[styles.itemName, styles.colItem]} numberOfLines={2}>
+        {row.name}
+      </Text>
+      <CellField
+        value={row.inUse}
+        onCommit={(value) => patchRow(row, { inUse: value })}
+        style={styles.colQty}
+        accessibilityLabel={`${row.name} in use`}
+        readOnly={readOnly}
+      />
+      {hideUnopened ? (
+        <View style={styles.colQty} />
+      ) : (
+        <CellField
+          value={row.unopened}
+          onCommit={(value) => patchRow(row, { unopened: value })}
           style={styles.colQty}
-          accessibilityLabel={`${row.name} quantity`}
+          accessibilityLabel={`${row.name} unopened`}
+          readOnly={readOnly}
         />
-        <SupplyDateField
-          value={row.lastBoughtDate || ''}
-          onChange={(value) => patchRow(row, { lastBoughtDate: value })}
-          style={styles.colDate}
-          accessibilityLabel={`${row.name} last bought date`}
+      )}
+      <View style={styles.colOrder}>
+        <OrderControl
+          value={row.orderMore}
+          onChange={(value) => patchRow(row, { orderMore: value })}
+          readOnly={readOnly}
         />
-        <View style={styles.colStatus}>
-          <StatusPill status={row.status} onPress={() => patchRow(row, { status: cycleStatus(row.status) })} compact />
-        </View>
+      </View>
+      <CellField
+        value={row.notes}
+        onCommit={(value) => patchRow(row, { notes: value })}
+        style={styles.colNotes}
+        placeholder="Notes"
+        accessibilityLabel={`${row.name} notes`}
+        readOnly={readOnly}
+      />
+      {row.isTemplate || readOnly ? (
+        <View style={styles.colDelete} />
+      ) : (
         <Pressable
           onPress={() => removeRow(row)}
           style={({ hovered, pressed }) => [styles.colDelete, (hovered || pressed) && styles.colDeleteHover]}
@@ -830,7 +762,58 @@ export default function SuppliesScreen({ session, storeFilter = '', embedded = f
         >
           <Ionicons name="trash-outline" size={16} color={SECONDARY} />
         </Pressable>
+      )}
+    </View>
+  );
+
+  const renderMobileRow = (row, last, hideUnopened) => (
+    <View key={row.id} style={[styles.mobileRow, last && styles.mobileRowLast]}>
+      <View style={styles.mobileTop}>
+        <Text style={styles.mobileName}>{row.name}</Text>
+        <View style={styles.mobileTopActions}>
+          <OrderPill
+            value={row.orderMore}
+            onPress={readOnly ? undefined : () => patchRow(row, { orderMore: cycleOrderMore(row.orderMore) })}
+          />
+          {row.isTemplate || readOnly ? null : (
+            <Pressable onPress={() => removeRow(row)} hitSlop={8} accessibilityLabel={`Delete ${row.name}`}>
+              <Ionicons name="trash-outline" size={18} color={SECONDARY} />
+            </Pressable>
+          )}
+        </View>
       </View>
+      <View style={styles.mobileMetrics}>
+        <View style={styles.mobileMetric}>
+          <Text style={styles.mobileMetricLabel}>{hideUnopened ? 'Count' : 'In use'}</Text>
+          <CellField
+            value={row.inUse}
+            onCommit={(value) => patchRow(row, { inUse: value })}
+            compact
+            accessibilityLabel={`${row.name} in use`}
+            readOnly={readOnly}
+          />
+        </View>
+        {hideUnopened ? null : (
+          <View style={styles.mobileMetric}>
+            <Text style={styles.mobileMetricLabel}>Unopened</Text>
+            <CellField
+              value={row.unopened}
+              onCommit={(value) => patchRow(row, { unopened: value })}
+              compact
+              accessibilityLabel={`${row.name} unopened`}
+              readOnly={readOnly}
+            />
+          </View>
+        )}
+      </View>
+      <CellField
+        value={row.notes}
+        onCommit={(value) => patchRow(row, { notes: value })}
+        compact
+        placeholder="Status / notes"
+        accessibilityLabel={`${row.name} notes`}
+        readOnly={readOnly}
+      />
     </View>
   );
 
@@ -838,147 +821,139 @@ export default function SuppliesScreen({ session, storeFilter = '', embedded = f
     <View style={[styles.screen, embedded && styles.screenEmbedded]}>
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={[styles.scrollContent, isMobile && styles.scrollContentMobile]}
+        contentContainerStyle={[
+          styles.scrollContent,
+          isMobile && styles.scrollContentMobile,
+          embedded && styles.scrollContentEmbedded,
+        ]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
-        horizontal={false}
       >
         {!embedded || isMobile ? (
           <View style={[styles.head, isMobile && styles.headMobile]}>
             <View style={[styles.headRow, isMobile && styles.headRowMobile]}>
               <View style={styles.titleBlock}>
-                <Text style={[styles.title, isMobile && styles.titleMobile]} numberOfLines={2}>
-                  Supplies
+                <Text style={[styles.title, isMobile && styles.titleMobile]}>Supplies</Text>
+                <Text style={styles.subtitle}>
+                  {[selectedStore, viewingAudit ? viewingAudit.label : 'Current list'].filter(Boolean).join(' · ')}
                 </Text>
-                {selectedStore && !storePicker ? <Text style={styles.subtitle}>{selectedStore}</Text> : null}
               </View>
+              {addChip}
             </View>
             <View
               style={styles.headRule}
               {...(Platform.OS === 'web' ? { className: 'cgold-home-row-rule' } : null)}
             />
-            {actionBar}
+            <View style={[styles.toolbar, isMobile && styles.toolbarMobile]}>
+              {storePicker}
+              {historyPicker}
+              {saveChip}
+            </View>
           </View>
         ) : (
-          actionBar
+          <View style={styles.embeddedBar}>
+            {storePicker}
+            {historyPicker}
+            {saveChip}
+            {addChip}
+          </View>
         )}
-        {error ? <Text style={[styles.error, isMobile && styles.errorMobile]}>{error}</Text> : null}
+
+        <View style={[styles.content, isMobile && styles.contentMobile, embedded && !isMobile && styles.contentEmbedded]}>
+        {readOnly ? (
+          <Text style={styles.auditBanner}>
+            Saved audit for {viewingAudit.label}. This copy is read-only.
+          </Text>
+        ) : todayAudit ? (
+          <Text style={styles.auditHint}>Last saved today. Update after you finish the count.</Text>
+        ) : null}
+
+        <Legend />
+
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+
         {loading ? (
           <ActivityIndicator color={SECONDARY} style={styles.spinner} />
-        ) : !isMobile ? (
-          <ScrollView
-            horizontal
-            style={styles.tableScroll}
-            contentContainerStyle={styles.tableScrollContent}
-            showsHorizontalScrollIndicator={false}
-          >
-            <View style={styles.listBox}>
-              <View style={[styles.row, styles.headerRow]}>
-                <View style={styles.rowBody}>
-                  {tableColumns.map((col) => (
-                    <Text key={col.key} style={[styles.headerCell, styles[col.style]]} numberOfLines={1}>
-                      {col.label}
-                    </Text>
-                  ))}
-                  <View style={styles.colDelete} />
-                </View>
-              </View>
-              {rows.length === 0 ? (
-                <View style={[styles.row, styles.rowLast]}>
-                  <View style={styles.rowBody}>
-                    <Text style={styles.empty}>{empty}</Text>
-                  </View>
-                </View>
-              ) : (
-                rows.map(renderDesktopRow)
-              )}
-            </View>
-          </ScrollView>
-        ) : rows.length === 0 ? (
-          <Text style={styles.empty}>{empty}</Text>
         ) : (
-          <View style={styles.mobileList}>
-            {rows.map((row, index) => (
-              <Pressable
-                key={row.id}
-                onPress={() => startEdit(row)}
-                style={[styles.mobileRow, index === rows.length - 1 && styles.mobileRowLast]}
-                accessibilityRole="button"
-                accessibilityLabel={`Open ${row.name}`}
-              >
-                <View style={styles.mobileRowTop}>
-                  <Text style={styles.mobileName} numberOfLines={1}>
-                    {row.name}
-                  </Text>
-                  <View style={styles.mobileRowTopActions}>
+          sections.map((section) => {
+            const hideUnopened = section.key === 'cheques';
+            return (
+              <View key={section.key} style={styles.section}>
+                <View style={styles.sectionHead}>
+                  <Text style={styles.sectionHeader}>{section.label}</Text>
+                  {readOnly ? null : (
                     <Pressable
-                      onPress={(event) => {
-                        event?.stopPropagation?.();
-                        patchRow(row, { status: cycleStatus(row.status) });
-                      }}
-                    >
-                      <StatusPill status={row.status} compact />
-                    </Pressable>
-                    <Pressable
-                      onPress={(event) => {
-                        event?.stopPropagation?.();
-                        void removeRow(row);
-                      }}
-                      hitSlop={8}
+                      onPress={() => startAdd(section.key)}
+                      style={({ hovered, pressed }) => [styles.sectionAdd, (hovered || pressed) && styles.chipHover]}
                       accessibilityRole="button"
-                      accessibilityLabel={`Delete ${row.name}`}
+                      accessibilityLabel={`Add item to ${section.label}`}
                     >
-                      <Ionicons name="trash-outline" size={18} color={SECONDARY} />
+                      <Ionicons name="add" size={16} color={LABEL} />
+                      <Text style={styles.sectionAddText}>Add item</Text>
                     </Pressable>
-                  </View>
+                  )}
                 </View>
-                <Text style={styles.mobileMeta} numberOfLines={2}>
-                  {[
-                    showStoreColumn ? row.storeName : null,
-                    row.brand || 'No brand',
-                    row.details,
-                    row.boughtFrom && `From ${row.boughtFrom}`,
-                  ]
-                    .filter(Boolean)
-                    .join('  ·  ')}
-                </Text>
-                <View style={styles.mobileMetrics}>
-                  <Pressable onPress={(event) => event?.stopPropagation?.()} style={styles.mobileMetric}>
-                    <Text style={styles.mobileMetricLabel}>Qty</Text>
-                    <CellInput
-                      value={formatSupplyQty(row.currentQuantity)}
-                      onCommit={(value) => patchRow(row, { currentQuantity: value })}
-                      accessibilityLabel={`${row.name} quantity`}
-                    />
-                  </Pressable>
-                  <Pressable onPress={(event) => event?.stopPropagation?.()} style={styles.mobileMetric}>
-                    <Text style={styles.mobileMetricLabel}>Last bought</Text>
-                    <SupplyDateField
-                      value={row.lastBoughtDate || ''}
-                      onChange={(value) => patchRow(row, { lastBoughtDate: value })}
-                      accessibilityLabel={`${row.name} last bought date`}
-                    />
-                  </Pressable>
+                <View style={styles.group}>
+                  {isMobile ? null : (
+                    <View style={[styles.tableRow, styles.headerRow]}>
+                      <Text style={[styles.headerCell, styles.colItem]}>Item</Text>
+                      <Text style={[styles.headerCell, styles.colQty]}>
+                        {hideUnopened ? 'Count' : 'In use'}
+                      </Text>
+                      {hideUnopened ? (
+                        <View style={styles.colQty} />
+                      ) : (
+                        <Text style={[styles.headerCell, styles.colQty]}>Unopened</Text>
+                      )}
+                      <Text style={[styles.headerCell, styles.colOrder]}>Order more</Text>
+                      <Text style={[styles.headerCell, styles.colNotes]}>Status / notes</Text>
+                      <View style={styles.colDelete} />
+                    </View>
+                  )}
+                  {section.rows.length === 0 ? (
+                    <View style={[styles.tableRow, styles.tableRowLast, isMobile && styles.mobileRow]}>
+                      <Text style={styles.empty}>No items in this section yet.</Text>
+                    </View>
+                  ) : (
+                    section.rows.map((row, index) =>
+                      isMobile
+                        ? renderMobileRow(row, index === section.rows.length - 1, hideUnopened)
+                        : renderDesktopRow(row, index === section.rows.length - 1, hideUnopened),
+                    )
+                  )}
                 </View>
-              </Pressable>
-            ))}
-          </View>
+                {section.hint ? <Text style={styles.sectionFooter}>{section.hint}</Text> : null}
+              </View>
+            );
+          })
         )}
+        </View>
       </ScrollView>
-      <SupplyModal
-        visible={Boolean(mode)}
-        title={mode === 'add' ? 'New Supply' : draft.name || 'Supply'}
+      <AddModal
+        visible={adding}
+        title={lockCategory ? `New item · ${sectionChoices.find((item) => item.key === draft.category)?.label || 'Section'}` : 'New item'}
         draft={draft}
         onChange={setDraft}
-        onSubmit={mode === 'add' ? onCreate : onUpdate}
-        onClose={closeModal}
-        onDelete={mode === 'edit' ? onDeleteFromModal : undefined}
+        onSubmit={onCreate}
+        onClose={() => {
+          setAdding(false);
+          setLockCategory(false);
+        }}
         saving={saving}
-        deleting={deleting}
         error={modalError}
         isMobile={isMobile}
-        storeChoices={storeNames}
-        allowAllStores={mode === 'add' && !embedded}
+        sections={sectionChoices}
+        lockCategory={lockCategory}
+      />
+      <AddSectionModal
+        visible={addingSection}
+        value={sectionName}
+        onChange={setSectionName}
+        onSubmit={onCreateSection}
+        onClose={() => setAddingSection(false)}
+        saving={saving}
+        error={modalError}
+        isMobile={isMobile}
       />
     </View>
   );
@@ -987,7 +962,7 @@ export default function SuppliesScreen({ session, storeFilter = '', embedded = f
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: CANVAS,
+    backgroundColor: PAGE,
   },
   screenEmbedded: {
     backgroundColor: 'transparent',
@@ -997,16 +972,20 @@ const styles = StyleSheet.create({
     minHeight: 0,
   },
   scrollContent: {
-    paddingBottom: 36,
+    paddingBottom: 48,
   },
   scrollContentMobile: {
     paddingHorizontal: 16,
     paddingBottom: 48,
   },
+  scrollContentEmbedded: {
+    paddingTop: 4,
+  },
   head: {
     marginBottom: 8,
     paddingTop: 20,
     paddingHorizontal: 48,
+    zIndex: 40,
   },
   headMobile: {
     paddingHorizontal: 0,
@@ -1023,24 +1002,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingBottom: 14,
   },
-  actionBar: {
-    position: 'relative',
-    zIndex: 50,
+  headActions: {
     flexDirection: 'row',
-    alignItems: 'flex-end',
+    alignItems: 'center',
+    flexWrap: 'wrap',
     justifyContent: 'flex-end',
     gap: 8,
-    paddingTop: 4,
-    paddingBottom: 12,
-    ...Platform.select({ web: { overflow: 'visible' }, default: {} }),
-  },
-  actionBarMobile: {
-    paddingBottom: 10,
-  },
-  actionBarEmbedded: {
-    paddingHorizontal: 48,
-    paddingTop: 12,
-    paddingBottom: 8,
+    flexShrink: 0,
   },
   titleBlock: {
     flex: 1,
@@ -1053,7 +1021,7 @@ const styles = StyleSheet.create({
     fontSize: 22,
     lineHeight: 26,
     fontWeight: '300',
-    color: TEXT,
+    color: LABEL,
     letterSpacing: -0.3,
   },
   titleMobile: {
@@ -1072,9 +1040,368 @@ const styles = StyleSheet.create({
     height: StyleSheet.hairlineWidth,
     backgroundColor: 'rgba(42,38,30,0.16)',
     marginTop: 4,
-    marginBottom: 4,
+    marginBottom: 12,
   },
-  addChip: {
+  chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    height: 32,
+    paddingHorizontal: 10,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: PAGE,
+    ...CHIP_SHADOW,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  chipHover: {
+    backgroundColor: '#f0f0f2',
+  },
+  chipText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: LABEL,
+    letterSpacing: -0.1,
+  },
+  embeddedBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 12,
+    paddingHorizontal: 0,
+    zIndex: 40,
+  },
+  toolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    zIndex: 30,
+    paddingBottom: 8,
+  },
+  toolbarMobile: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+  },
+  content: {
+    paddingHorizontal: 48,
+    gap: 4,
+  },
+  contentMobile: {
+    paddingHorizontal: 0,
+  },
+  contentEmbedded: {
+    paddingHorizontal: 0,
+  },
+  auditBanner: {
+    fontFamily,
+    fontSize: 13,
+    color: LABEL,
+    marginBottom: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: PAGE,
+  },
+  auditHint: {
+    fontFamily,
+    fontSize: 13,
+    color: SECONDARY,
+    paddingBottom: 8,
+  },
+  cellPlaceholder: {
+    color: SECONDARY,
+  },
+  legend: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8,
+    paddingBottom: 8,
+  },
+  legendTitle: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: SECONDARY,
+    letterSpacing: 0.2,
+    textTransform: 'uppercase',
+    marginRight: 4,
+  },
+  legendChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    height: 28,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+  },
+  legendDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  legendText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    letterSpacing: -0.1,
+  },
+  error: {
+    fontFamily,
+    fontSize: 13,
+    color: RED,
+    paddingVertical: 4,
+    paddingBottom: 8,
+  },
+  spinner: {
+    marginTop: 36,
+  },
+  empty: {
+    fontFamily,
+    fontSize: 15,
+    color: SECONDARY,
+    padding: 16,
+  },
+  section: {
+    marginBottom: 18,
+  },
+  sectionHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingHorizontal: 8,
+    marginBottom: 8,
+    marginTop: 8,
+  },
+  sectionHeader: {
+    fontFamily,
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '400',
+    color: SECONDARY,
+    textTransform: 'uppercase',
+    letterSpacing: -0.08,
+  },
+  sectionAdd: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    height: 28,
+    paddingHorizontal: 8,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: PAGE,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  sectionAddText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: LABEL,
+    letterSpacing: -0.1,
+  },
+  sectionFooter: {
+    fontFamily,
+    fontSize: 13,
+    color: SECONDARY,
+    lineHeight: 18,
+    paddingHorizontal: 8,
+    paddingTop: 8,
+  },
+  group: {
+    backgroundColor: PAGE,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    overflow: 'hidden',
+    ...CHIP_SHADOW,
+  },
+  tableRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 64,
+    paddingLeft: 14,
+    paddingRight: 10,
+    paddingVertical: 8,
+    gap: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e8e8e8',
+  },
+  headerRow: {
+    minHeight: 36,
+    paddingVertical: 6,
+    backgroundColor: 'transparent',
+  },
+  tableRowLast: {
+    borderBottomWidth: 0,
+  },
+  headerCell: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#9a9a9a',
+    letterSpacing: 0.2,
+  },
+  itemName: {
+    fontFamily: titleFontFamily,
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '400',
+    color: LABEL,
+    letterSpacing: -0.2,
+  },
+  cellField: {
+    fontFamily,
+    fontSize: 17,
+    lineHeight: 22,
+    color: LABEL,
+    letterSpacing: -0.4,
+    minHeight: 44,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: FILL,
+    minWidth: 0,
+    ...Platform.select({ web: { outlineStyle: 'none' }, default: {} }),
+  },
+  cellFieldCompact: {
+    minHeight: 48,
+    paddingVertical: 12,
+  },
+  colItem: { flex: 1.35, minWidth: 128 },
+  colQty: { width: 108, flexShrink: 0 },
+  colOrder: { width: 176, flexShrink: 0 },
+  colNotes: { flex: 1.7, minWidth: 140 },
+  colDelete: {
+    width: 32,
+    flexShrink: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  colDeleteHover: {
+    opacity: 0.6,
+  },
+  orderControl: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: FILL,
+    borderRadius: 10,
+    padding: 3,
+    gap: 3,
+    minHeight: 44,
+  },
+  orderControlCompact: {
+    alignSelf: 'flex-start',
+    minHeight: 40,
+  },
+  orderSeg: {
+    flex: 1,
+    minHeight: 38,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  orderSegCompact: {
+    flex: 0,
+    paddingHorizontal: 10,
+  },
+  orderSegText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: SECONDARY,
+  },
+  orderSegTextCompact: {
+    fontSize: 13,
+  },
+  orderSegTextOn: {
+    color: '#fff',
+  },
+  orderPill: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  orderPillText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: -0.1,
+  },
+  mobileRow: {
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e8e8e8',
+  },
+  mobileRowLast: {
+    borderBottomWidth: 0,
+  },
+  mobileTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  mobileTopActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  mobileName: {
+    fontFamily: titleFontFamily,
+    flex: 1,
+    fontSize: 16,
+    lineHeight: 20,
+    color: LABEL,
+    letterSpacing: -0.2,
+  },
+  mobileMetrics: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  mobileMetric: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
+  },
+  mobileMetricLabel: {
+    fontFamily,
+    fontSize: 12,
+    color: SECONDARY,
+    letterSpacing: -0.08,
+  },
+  storeSelect: {
+    position: 'relative',
+    zIndex: 20,
+    alignSelf: 'flex-start',
+    minWidth: 168,
+    maxWidth: 280,
+  },
+  storeSelectFill: {
+    alignSelf: 'stretch',
+    maxWidth: '100%',
+    width: '100%',
+  },
+  storeSelectOpen: {
+    zIndex: 80,
+  },
+  storeSelectBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
@@ -1083,245 +1410,76 @@ const styles = StyleSheet.create({
     borderRadius: NAV_TAB_ACTIVE_RADIUS,
     borderWidth: 1,
     borderColor: TAB_BORDER,
-    backgroundColor: CANVAS,
+    backgroundColor: PAGE,
     ...CHIP_SHADOW,
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
-  addChipHover: {
-    backgroundColor: 'rgba(60, 60, 67, 0.045)',
-  },
-  addChipText: {
-    fontFamily,
-    fontSize: 14,
-    color: TEXT,
-    letterSpacing: -0.15,
-  },
-  error: {
-    fontFamily,
-    fontSize: 13,
-    color: '#B91C1C',
-    paddingHorizontal: 48,
-    paddingBottom: 8,
-  },
-  errorMobile: {
-    paddingHorizontal: 0,
-  },
-  spinner: {
-    marginTop: 36,
-  },
-  empty: {
-    fontFamily,
-    fontSize: 14,
-    color: SECONDARY,
-    letterSpacing: -0.15,
-  },
-  tableScroll: {
+  storeSelectBtnFill: {
     width: '100%',
-    zIndex: 0,
+    height: 44,
   },
-  tableScrollContent: {
-    minWidth: '100%',
-    paddingHorizontal: 48,
+  storeSelectBtnOpen: {
+    backgroundColor: '#f0f0f2',
   },
-  listBox: {
-    minWidth: 1040,
-    flex: 1,
-    borderRadius: NAV_TAB_ACTIVE_RADIUS,
-    borderWidth: 1,
-    borderColor: TAB_BORDER,
-    backgroundColor: CANVAS,
-    overflow: 'hidden',
-    ...CHIP_SHADOW,
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 46,
-    paddingVertical: 6,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(42,38,30,0.08)',
-  },
-  headerRow: {
-    minHeight: 34,
-  },
-  rowLast: {
-    borderBottomWidth: 0,
-  },
-  rowBody: {
+  storeSelectValue: {
     flex: 1,
     minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 24,
-    paddingLeft: 16,
-    paddingRight: 20,
-  },
-  headerCell: {
     fontFamily,
     fontSize: 13,
-    fontWeight: '500',
-    color: SECONDARY,
-    letterSpacing: -0.15,
-  },
-  cell: {
-    fontFamily: titleFontFamily,
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: '400',
-    color: TEXT,
-    letterSpacing: -0.2,
-  },
-  cellName: {
-    fontFamily: titleFontFamily,
-    fontSize: 14,
-    lineHeight: 18,
-    color: TEXT,
-    letterSpacing: -0.2,
-  },
-  cellInput: {
-    fontFamily: titleFontFamily,
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: '300',
-    color: TEXT,
-    letterSpacing: -0.2,
-    paddingVertical: 4,
-    paddingHorizontal: 0,
-    minWidth: 0,
-    ...Platform.select({ web: { outlineStyle: 'none' }, default: {} }),
-  },
-  colStore: { flex: 0.9, minWidth: 112, maxWidth: 168 },
-  colName: { flex: 1.3, minWidth: 128, maxWidth: 220 },
-  colBrand: { flex: 0.9, minWidth: 88, maxWidth: 160 },
-  colDetails: { flex: 1.5, minWidth: 140 },
-  colBought: { flex: 1.1, minWidth: 120, maxWidth: 200 },
-  colQty: { width: 56, flexShrink: 0 },
-  colStatus: { width: 108, flexShrink: 0 },
-  colDate: { width: 112, flexShrink: 0 },
-  colDelete: {
-    width: 32,
-    flexShrink: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  colDeleteHover: {
-    opacity: 0.65,
-  },
-  statusPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    gap: 5,
-    borderRadius: 999,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  statusPillCompact: {
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-  },
-  statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  statusPillText: {
-    fontFamily,
-    fontSize: 12,
     fontWeight: '600',
+    color: LABEL,
     letterSpacing: -0.1,
   },
-  statusPicker: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'flex-end',
-    gap: 6,
+  storeSelectDismiss: {
+    position: 'absolute',
+    top: -2400,
+    left: -2400,
+    right: -2400,
+    bottom: -2400,
+    zIndex: 1,
   },
-  statusChoice: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    borderRadius: 999,
-    borderWidth: 1,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
-  },
-  statusChoiceText: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  mobileList: {
-    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+  storeSelectMenu: {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    right: 0,
+    marginTop: 6,
+    maxHeight: 320,
+    backgroundColor: GROUP,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: TAB_BORDER,
-    backgroundColor: CANVAS,
-    overflow: 'hidden',
+    zIndex: 90,
+    ...Platform.select({
+      web: { boxShadow: '0 12px 40px rgba(0,0,0,0.18)' },
+      default: { elevation: 8 },
+    }),
   },
-  mobileRow: {
+  storeSelectOption: {
+    minHeight: 44,
     paddingHorizontal: 14,
-    paddingVertical: 12,
-    gap: 6,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(42,38,30,0.08)',
-  },
-  mobileRowLast: {
-    borderBottomWidth: 0,
-  },
-  mobileRowTop: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 10,
+    gap: 8,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
-  mobileRowTopActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    flexShrink: 0,
+  storeSelectOptionActive: {
+    backgroundColor: 'rgba(0,122,255,0.08)',
   },
-  mobileName: {
-    fontFamily: titleFontFamily,
-    fontSize: 16,
-    lineHeight: 20,
-    color: TEXT,
-    letterSpacing: -0.2,
-    flex: 1,
-    minWidth: 0,
+  storeSelectOptionHover: {
+    backgroundColor: PAGE,
   },
-  mobileMeta: {
+  storeSelectOptionText: {
     fontFamily,
-    fontSize: 13,
-    lineHeight: 16,
-    color: SECONDARY,
-    letterSpacing: -0.1,
-  },
-  mobileMetrics: {
-    flexDirection: 'row',
-    gap: 12,
-    paddingTop: 4,
-  },
-  mobileMetric: {
     flex: 1,
-    minWidth: 0,
-    gap: 2,
-  },
-  mobileMetricLabel: {
-    fontFamily,
-    fontSize: 11,
-    color: SECONDARY,
-    letterSpacing: -0.08,
-  },
-  mobileMetricValue: {
-    fontFamily: titleFontFamily,
-    fontSize: 14,
-    color: TEXT,
+    fontSize: 15,
+    color: LABEL,
     letterSpacing: -0.2,
+  },
+  storeSelectOptionTextActive: {
+    color: BLUE,
+    fontWeight: '600',
   },
   modalRoot: {
     flex: 1,
@@ -1343,31 +1501,19 @@ const styles = StyleSheet.create({
     maxHeight: '88%',
     backgroundColor: PAGE,
     borderRadius: 14,
-    overflow: Platform.OS === 'web' ? 'visible' : 'hidden',
-    ...Platform.select({
-      web: { boxShadow: '0 16px 48px rgba(0,0,0,0.18)' },
-      default: {
-        shadowColor: '#000',
-        shadowOpacity: 0.18,
-        shadowRadius: 24,
-        shadowOffset: { width: 0, height: 10 },
-        elevation: 8,
-      },
-    }),
+    overflow: 'hidden',
   },
   modalSheetMobile: {
     maxWidth: '100%',
     maxHeight: '92%',
     borderBottomLeftRadius: 0,
     borderBottomRightRadius: 0,
-    paddingBottom: 12,
   },
   modalNav: {
     flexDirection: 'row',
     alignItems: 'center',
     minHeight: 52,
     paddingHorizontal: 8,
-    backgroundColor: 'rgba(242,242,247,0.94)',
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: HAIRLINE,
   },
@@ -1396,7 +1542,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 17,
     fontWeight: '600',
-    color: TEXT,
+    color: LABEL,
     textAlign: 'center',
   },
   modalSave: {
@@ -1405,125 +1551,14 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: BLUE,
   },
-  modalStoreBar: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 4,
-    zIndex: 60,
-    ...Platform.select({ web: { overflow: 'visible' }, default: {} }),
-  },
-  storeSelect: {
-    position: 'relative',
-    zIndex: 20,
-    minWidth: 168,
-    maxWidth: 260,
-  },
-  storeSelectFill: {
-    maxWidth: '100%',
-    width: '100%',
-  },
-  storeSelectOpen: {
-    zIndex: 100,
-    ...Platform.select({
-      web: {},
-      default: { elevation: 12 },
-    }),
-  },
-  storeSelectCaption: {
-    fontFamily,
-    fontSize: 11,
-    color: SECONDARY,
-    letterSpacing: -0.08,
-    marginBottom: 4,
-  },
-  storeSelectBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    minHeight: 32,
-    paddingHorizontal: 10,
-    borderRadius: NAV_TAB_ACTIVE_RADIUS,
-    borderWidth: 1,
-    borderColor: TAB_BORDER,
-    backgroundColor: CANVAS,
-    ...CHIP_SHADOW,
-    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
-  },
-  storeSelectBtnCompact: {
-    minWidth: 132,
-  },
-  storeSelectBtnFill: {
-    width: '100%',
-  },
-  storeSelectBtnOpen: {
-    backgroundColor: 'rgba(60, 60, 67, 0.045)',
-  },
-  storeSelectValue: {
-    flex: 1,
-    minWidth: 0,
-    fontFamily,
-    fontSize: 14,
-    color: TEXT,
-    letterSpacing: -0.15,
-  },
-  storeSelectDismiss: {
-    position: 'absolute',
-    top: -2400,
-    left: -2400,
-    right: -2400,
-    bottom: -2400,
-    zIndex: 1,
-  },
-  storeSelectMenu: {
-    position: 'absolute',
-    top: '100%',
-    left: 0,
-    right: 0,
-    marginTop: 4,
-    maxHeight: 280,
-    backgroundColor: '#fff',
-    borderRadius: NAV_TAB_ACTIVE_RADIUS,
-    borderWidth: 1,
-    borderColor: TAB_BORDER,
-    zIndex: 101,
-    ...CHIP_SHADOW,
-    ...Platform.select({
-      web: { boxShadow: '0 8px 24px rgba(0,0,0,0.12)' },
-      default: { elevation: 8 },
-    }),
-  },
-  storeSelectOption: {
-    paddingHorizontal: 10,
-    paddingVertical: 9,
-    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
-  },
-  storeSelectOptionActive: {
-    backgroundColor: 'rgba(60, 60, 67, 0.06)',
-  },
-  storeSelectOptionHover: {
-    backgroundColor: 'rgba(60, 60, 67, 0.045)',
-  },
-  storeSelectOptionText: {
-    fontFamily,
-    fontSize: 14,
-    color: TEXT,
-    letterSpacing: -0.15,
-  },
-  storeSelectOptionTextActive: {
-    fontWeight: '600',
-  },
   modalScroll: {
-    flexGrow: 0,
-    zIndex: 1,
-  },
-  modalScrollContent: {
     padding: 16,
     gap: 16,
     paddingBottom: 28,
   },
   appleGroup: {
-    backgroundColor: '#fff',
-    borderRadius: 14,
+    backgroundColor: GROUP,
+    borderRadius: 10,
     overflow: 'hidden',
   },
   detailRow: {
@@ -1541,117 +1576,53 @@ const styles = StyleSheet.create({
   },
   detailLabel: {
     fontFamily,
-    width: 108,
+    width: 72,
     flexShrink: 0,
-    fontSize: 15,
-    color: SECONDARY,
-    letterSpacing: -0.2,
+    fontSize: 17,
+    color: LABEL,
+    letterSpacing: -0.4,
     paddingTop: 2,
   },
-  detailValueWrap: {
-    flex: 1,
-    minWidth: 0,
-    alignItems: 'flex-end',
-  },
   detailInput: {
-    width: '100%',
+    flex: 1,
     fontFamily,
-    fontSize: 15,
-    color: TEXT,
-    letterSpacing: -0.2,
+    fontSize: 17,
+    color: LABEL,
+    letterSpacing: -0.4,
     textAlign: 'right',
     paddingVertical: 0,
     ...Platform.select({ web: { outlineStyle: 'none' }, default: {} }),
   },
-  detailDateValue: {
-    fontFamily,
-    fontSize: 15,
-    color: TEXT,
-    letterSpacing: -0.2,
-    textAlign: 'right',
-  },
-  datePlaceholder: {
-    color: SECONDARY,
-  },
-  dateFieldCell: {
+  categoryPicker: {
+    flex: 1,
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    minWidth: 0,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  dateChipPlain: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexWrap: 'wrap',
     justifyContent: 'flex-end',
     gap: 6,
-    minHeight: 44,
-    width: '100%',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
   },
-  dateModalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.28)',
-    justifyContent: 'flex-end',
+  categoryChip: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: PAGE,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
-  dateModalCard: {
-    backgroundColor: CANVAS,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingBottom: 24,
+  categoryChipOn: {
+    backgroundColor: BLUE,
   },
-  dateModalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 4,
-  },
-  dateModalTitle: {
+  categoryChipText: {
     fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: TEXT,
+    fontSize: 13,
+    color: LABEL,
   },
-  dateModalDone: {
-    fontFamily,
-    fontSize: 15,
+  categoryChipTextOn: {
+    color: '#fff',
     fontWeight: '600',
-    color: BLUE,
   },
   modalError: {
     fontFamily,
     fontSize: 13,
-    color: '#B91C1C',
+    color: RED,
     textAlign: 'center',
-  },
-  deleteButton: {
-    marginTop: 20,
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: NAV_TAB_ACTIVE_RADIUS,
-    backgroundColor: '#FEE2E2',
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  deleteButtonPressed: {
-    opacity: 0.85,
-  },
-  deleteButtonText: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#B91C1C',
-    letterSpacing: -0.2,
   },
 });
