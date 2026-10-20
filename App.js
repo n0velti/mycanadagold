@@ -1160,7 +1160,7 @@ const APP_CARD_META = {
   'police-report': { category: 'Compliance', blurb: 'Holds' },
   security: { category: 'Admin', blurb: 'Access' },
   serphint: { category: 'Insights', blurb: 'Watch list' },
-  supplies: { category: 'Ops', blurb: 'Supplies' },
+  supplies: { category: 'Ops', blurb: 'Store supply checklist' },
   employees: { category: 'People', blurb: 'Staff' },
   phone: { category: 'Comms', blurb: 'Calls' },
   teams: { category: 'People', blurb: 'Teams' },

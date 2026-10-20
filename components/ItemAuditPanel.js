@@ -45,7 +45,6 @@ const TEXT = '#1a1a1a';
 const SECONDARY = '#8e8e93';
 const TAB_BORDER = '#d0d0d0';
 const PAGE = CANVAS;
-const CARD = CANVAS;
 const HAIRLINE = 'rgba(42,38,30,0.08)';
 const CHEVRON = '#c7c7cc';
 const MOBILE_BREAKPOINT = 768;
@@ -362,7 +361,7 @@ export default function ItemAuditPanel({
   const isMobile = useIsMobile();
   const lockedStore = Boolean(storeFilter) || !allowFilters;
   const today = formatDateParam(new Date());
-  const initialRange = defaultDateRange(7);
+  const initialRange = defaultDateRange(3);
   const seedEnd = formatDateParam(initialDate || initialRange.endDate);
 
   const [catalog, setCatalog] = useState([]);
@@ -414,7 +413,7 @@ export default function ItemAuditPanel({
     if (initialDate) {
       const end = parseDateParam(initialDate);
       const start = parseDateParam(initialDate);
-      start.setDate(end.getDate() - 6);
+      start.setDate(end.getDate() - 2);
       setEndDate(end);
       setStartDate(start);
     }
@@ -1057,8 +1056,9 @@ const styles = StyleSheet.create({
     gap: 1,
   },
   storeTitle: {
-    fontFamily,
-    fontSize: 17,
+    fontFamily: FONT_LIGHT,
+    fontSize: 16,
+    fontWeight: '300',
     color: TEXT,
     letterSpacing: -0.2,
   },
@@ -1099,16 +1099,16 @@ const styles = StyleSheet.create({
   },
   statCaption: {
     fontFamily,
-    fontSize: 11,
-    color: SECONDARY,
-    letterSpacing: 0.2,
-    textTransform: 'uppercase',
+    fontSize: 10,
+    fontWeight: '500',
+    color: '#aeaeb2',
+    letterSpacing: 0.02,
     marginBottom: 2,
   },
   statFigure: {
-    fontFamily,
-    fontSize: 18,
-    fontWeight: '600',
+    fontFamily: FONT_LIGHT,
+    fontSize: 16,
+    fontWeight: '300',
     color: TEXT,
     fontVariant: ['tabular-nums'],
     letterSpacing: -0.2,
@@ -1220,7 +1220,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 14,
     paddingBottom: 10,
-    backgroundColor: '#fff',
+    backgroundColor: PAGE,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: HAIRLINE,
   },
@@ -1262,11 +1262,13 @@ const styles = StyleSheet.create({
   },
   modalList: {
     maxHeight: 420,
-    backgroundColor: CARD,
+    backgroundColor: PAGE,
     marginHorizontal: 16,
     marginBottom: 12,
-    borderRadius: 12,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
     overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
   },
   modalOption: {
     flexDirection: 'row',
@@ -1296,10 +1298,10 @@ const styles = StyleSheet.create({
     color: SECONDARY,
   },
   ticketCard: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: HAIRLINE,
-    borderRadius: 12,
-    backgroundColor: CARD,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    backgroundColor: PAGE,
     overflow: 'hidden',
     width: '100%',
     marginBottom: 8,

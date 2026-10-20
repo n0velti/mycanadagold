@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
-import { CANVAS, NAV_TAB_ACTIVE_BG, NAV_TAB_ACTIVE_RADIUS, useIsMobile } from '../lib/mobileUi';
+import { CANVAS, NAV_TAB_ACTIVE_RADIUS, useIsMobile } from '../lib/mobileUi';
 import { useAppAccess } from '../lib/permissions';
 import {
   fetchCashPayments,
@@ -37,9 +37,10 @@ const LABEL = '#1a1a1a';
 const SECONDARY = '#8e8e93';
 const TAB_BORDER = '#d0d0d0';
 const RULE = 'rgba(42,38,30,0.08)';
+const HEAD_RULE = 'rgba(42,38,30,0.16)';
 const BLUE = '#007AFF';
-const GREEN = '#34C759';
-const AMBER = '#FF9F0A';
+const GREEN = '#15803D';
+const AMBER = '#C47A12';
 const CHIP_SHADOW = Platform.select({
   web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
   default: {
@@ -372,8 +373,54 @@ export default function FinancialsScreen({
     .filter(Boolean)
     .join(' · ');
 
+  const heroStats = [
+    { key: 'in', icon: 'arrow-down-outline', label: 'Cash in', value: formatAmount(totals.cashIn), tone: 'ok' },
+    { key: 'out', icon: 'arrow-up-outline', label: 'Cash out', value: formatAmount(totals.cashOut), tone: 'warn' },
+    {
+      key: 'net',
+      icon: 'wallet-outline',
+      label: 'Net',
+      value: formatAmount(totals.net),
+      tone: totals.net >= 0 ? 'ok' : 'warn',
+    },
+  ];
+
   return (
     <View style={[styles.body, embedded && styles.bodyEmbedded]}>
+      <View style={[styles.pageHead, isMobile && styles.pageHeadMobile, embedded && styles.pageHeadEmbedded]}>
+        {embedded ? null : (
+          <View style={styles.pageHeadCopy}>
+            <Text style={styles.pageTitle}>Financials</Text>
+            <Text style={styles.pageMeta} numberOfLines={2}>
+              {scopeLabel}
+            </Text>
+          </View>
+        )}
+        <View style={[styles.heroStats, embedded && styles.heroStatsEmbedded, isMobile && styles.heroStatsMobile]}>
+          {heroStats.map((row, index) => (
+            <View
+              key={row.key}
+              style={[styles.heroStatRow, index === heroStats.length - 1 && styles.heroStatRowLast]}
+            >
+              <View style={styles.heroStatLead}>
+                <Ionicons name={row.icon} size={15} color={SECONDARY} />
+                <Text style={styles.heroStatLabel}>{row.label}</Text>
+              </View>
+              <Text
+                style={[
+                  styles.heroStatValue,
+                  row.tone === 'ok' && styles.cashIn,
+                  row.tone === 'warn' && styles.cashOut,
+                ]}
+                numberOfLines={1}
+              >
+                {row.value}
+              </Text>
+            </View>
+          ))}
+        </View>
+      </View>
+
       <View style={styles.filters}>
         <View style={[styles.searchPair, !isMobile && styles.searchPairWide]}>
           {!embedded ? (
@@ -381,10 +428,10 @@ export default function FinancialsScreen({
           ) : null}
           <View style={styles.dateFilters}>
             <Pressable
-              style={({ pressed }) => [
+              style={({ hovered, pressed }) => [
                 styles.chip,
                 isToday && styles.chipActive,
-                pressed && styles.chipPressed,
+                (hovered || pressed) && !isToday && styles.chipHover,
               ]}
               onPress={() => setDate(parseDateParam(new Date()))}
               accessibilityRole="button"
@@ -394,13 +441,16 @@ export default function FinancialsScreen({
             </Pressable>
             <DateChip label="Date" value={date} onChange={setDate} maximumDate={new Date()} />
             <Pressable
-              style={({ pressed }) => [styles.refresh, pressed && styles.chipPressed]}
+              style={({ hovered, pressed }) => [
+                styles.refresh,
+                (hovered || pressed) && styles.chipHover,
+              ]}
               onPress={load}
               hitSlop={8}
               accessibilityLabel="Refresh financials"
             >
               {loading ? (
-                <ActivityIndicator size="small" color={BLUE} />
+                <ActivityIndicator size="small" color={LABEL} />
               ) : (
                 <Ionicons name="refresh" size={16} color={SECONDARY} />
               )}
@@ -415,10 +465,10 @@ export default function FinancialsScreen({
             contentContainerStyle={styles.chipRow}
           >
             <Pressable
-              style={({ pressed }) => [
+              style={({ hovered, pressed }) => [
                 styles.chip,
                 !selectedStore && styles.chipActive,
-                pressed && styles.chipPressed,
+                (hovered || pressed) && selectedStore && styles.chipHover,
               ]}
               onPress={() => setSelectedStore(null)}
             >
@@ -427,10 +477,10 @@ export default function FinancialsScreen({
             {storeNames.map((name) => (
               <Pressable
                 key={name}
-                style={({ pressed }) => [
+                style={({ hovered, pressed }) => [
                   styles.chip,
                   selectedStore === name && styles.chipActive,
-                  pressed && styles.chipPressed,
+                  (hovered || pressed) && selectedStore !== name && styles.chipHover,
                 ]}
                 onPress={() =>
                   setSelectedStore((current) => (current === name ? null : name))
@@ -447,9 +497,11 @@ export default function FinancialsScreen({
           </ScrollView>
         ) : null}
 
-        <Text style={styles.scopeLabel} numberOfLines={1}>
-          {scopeLabel}
-        </Text>
+        {embedded ? (
+          <Text style={styles.pageMeta} numberOfLines={1}>
+            {scopeLabel}
+          </Text>
+        ) : null}
 
         {error ? (
           <Pressable style={styles.banner} onPress={load}>
@@ -461,40 +513,10 @@ export default function FinancialsScreen({
 
       <ListContainer {...listProps}>
         <View style={styles.section}>
-          <View style={styles.summaryCards}>
-            <View style={styles.summaryCard}>
-              <Text style={styles.summaryLabel}>Cash in</Text>
-              <Text style={[styles.summaryValue, styles.cashIn]}>
-                {formatAmount(totals.cashIn)}
-              </Text>
-              <Text style={styles.summaryHint}>{totals.inCount} received</Text>
-            </View>
-            <View style={styles.summaryCard}>
-              <Text style={styles.summaryLabel}>Cash out</Text>
-              <Text style={[styles.summaryValue, styles.cashOut]}>
-                {formatAmount(totals.cashOut)}
-              </Text>
-              <Text style={styles.summaryHint}>{totals.outCount} paid out</Text>
-            </View>
-            <View style={styles.summaryCard}>
-              <Text style={styles.summaryLabel}>Net</Text>
-              <Text
-                style={[
-                  styles.summaryValue,
-                  totals.net >= 0 ? styles.cashIn : styles.cashOut,
-                ]}
-              >
-                {formatAmount(totals.net)}
-              </Text>
-              <Text style={styles.summaryHint}>
-                {isToday ? 'Today' : formatPickerDate(date)}
-              </Text>
-            </View>
-          </View>
-
           {!singleStore && storeSummaries.length > 0 ? (
-            <View style={styles.tableCard}>
+            <View style={styles.tableBlock}>
               <Text style={styles.tableBlockTitle}>By store</Text>
+              <View style={styles.tableCard}>
               <View style={[styles.row, styles.headerRow]}>
                 {STORE_SORT_KEYS.map((col) => (
                   <SortHeader
@@ -552,11 +574,13 @@ export default function FinancialsScreen({
                   </Text>
                 </Pressable>
               ))}
+              </View>
             </View>
           ) : null}
 
-          <View style={styles.tableCard}>
+          <View style={styles.tableBlock}>
             <Text style={styles.tableBlockTitle}>Cash transactions</Text>
+            <View style={styles.tableCard}>
             <View style={[styles.row, styles.headerRow]}>
               {TX_SORT_KEYS.filter((col) => !(singleStore && col.key === 'storeName')).map(
                 (col) => (
@@ -626,6 +650,7 @@ export default function FinancialsScreen({
                 </View>
               ))
             )}
+            </View>
           </View>
         </View>
       </ListContainer>
@@ -647,6 +672,108 @@ const styles = StyleSheet.create({
     paddingTop: 0,
     width: '100%',
     maxWidth: '100%',
+  },
+  pageHead: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 24,
+    paddingTop: 12,
+    paddingBottom: 16,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HEAD_RULE,
+    marginBottom: 12,
+  },
+  pageHeadMobile: {
+    flexDirection: 'column',
+    gap: 16,
+    paddingTop: 4,
+  },
+  pageHeadEmbedded: {
+    paddingTop: 0,
+    paddingBottom: 12,
+    marginBottom: 8,
+    borderBottomWidth: 0,
+    justifyContent: 'flex-start',
+  },
+  pageHeadCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 6,
+    paddingTop: 4,
+  },
+  pageTitle: {
+    fontFamily: FONT_LIGHT,
+    fontSize: 22,
+    lineHeight: 26,
+    fontWeight: '300',
+    color: LABEL,
+    letterSpacing: -0.3,
+  },
+  pageMeta: {
+    fontFamily,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.15,
+  },
+  heroStats: {
+    width: 248,
+    flexShrink: 0,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
+    overflow: 'hidden',
+    ...CHIP_SHADOW,
+  },
+  heroStatsEmbedded: {
+    width: '100%',
+    maxWidth: 320,
+  },
+  heroStatsMobile: {
+    width: '100%',
+    maxWidth: '100%',
+  },
+  heroStatRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    minHeight: 32,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: RULE,
+  },
+  heroStatRowLast: {
+    borderBottomWidth: 0,
+  },
+  heroStatLead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minWidth: 0,
+    flexShrink: 1,
+  },
+  heroStatLabel: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.2,
+  },
+  heroStatValue: {
+    fontFamily,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '400',
+    color: LABEL,
+    letterSpacing: -0.2,
+    fontVariant: ['tabular-nums'],
+    textAlign: 'right',
+    flexShrink: 0,
   },
   filters: {
     gap: 10,
@@ -699,22 +826,31 @@ const styles = StyleSheet.create({
   chipRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 2,
     paddingRight: 8,
   },
   chip: {
-    height: 32,
+    minHeight: 36,
+    paddingVertical: 7,
     paddingHorizontal: 10,
     borderRadius: NAV_TAB_ACTIVE_RADIUS,
     borderWidth: 1,
-    borderColor: TAB_BORDER,
-    backgroundColor: CANVAS,
+    borderColor: 'transparent',
+    backgroundColor: 'transparent',
     alignItems: 'center',
     justifyContent: 'center',
-    ...CHIP_SHADOW,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  chipHover: {
+    backgroundColor: '#f5f5f5',
   },
   chipActive: {
-    backgroundColor: NAV_TAB_ACTIVE_BG,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
+    ...CHIP_SHADOW,
   },
   chipPressed: {
     opacity: 0.72,
@@ -728,7 +864,7 @@ const styles = StyleSheet.create({
   },
   chipTextActive: {
     color: LABEL,
-    fontWeight: '400',
+    fontWeight: '600',
   },
   dateChip: {
     height: 32,
@@ -790,13 +926,6 @@ const styles = StyleSheet.create({
     backgroundColor: CANVAS,
     ...CHIP_SHADOW,
   },
-  scopeLabel: {
-    fontFamily: FONT_LIGHT,
-    fontSize: 16,
-    fontWeight: '300',
-    color: LABEL,
-    letterSpacing: -0.2,
-  },
   banner: {
     paddingVertical: 2,
   },
@@ -832,47 +961,10 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
   },
   section: {
-    gap: 12,
+    gap: 20,
   },
-  summaryCards: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+  tableBlock: {
     gap: 8,
-  },
-  summaryCard: {
-    flexGrow: 1,
-    flexBasis: 120,
-    minWidth: 110,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: NAV_TAB_ACTIVE_RADIUS,
-    backgroundColor: CANVAS,
-    borderWidth: 1,
-    borderColor: TAB_BORDER,
-    ...CHIP_SHADOW,
-  },
-  summaryLabel: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '400',
-    color: SECONDARY,
-    letterSpacing: -0.1,
-    marginBottom: 4,
-  },
-  summaryValue: {
-    fontFamily: FONT_LIGHT,
-    fontSize: 22,
-    fontWeight: '300',
-    color: LABEL,
-    letterSpacing: -0.4,
-    fontVariant: ['tabular-nums'],
-  },
-  summaryHint: {
-    fontFamily,
-    fontSize: 12,
-    color: SECONDARY,
-    marginTop: 4,
-    letterSpacing: -0.1,
   },
   cashIn: {
     color: GREEN,
@@ -887,17 +979,16 @@ const styles = StyleSheet.create({
     borderColor: TAB_BORDER,
     overflow: 'hidden',
     paddingHorizontal: 12,
-    paddingTop: 10,
+    paddingTop: 4,
     paddingBottom: 4,
     ...CHIP_SHADOW,
   },
   tableBlockTitle: {
-    fontFamily,
-    fontSize: 12,
-    fontWeight: '400',
-    color: SECONDARY,
-    letterSpacing: -0.1,
-    marginBottom: 6,
+    fontFamily: FONT_LIGHT,
+    fontSize: 16,
+    fontWeight: '300',
+    color: LABEL,
+    letterSpacing: -0.2,
   },
   row: {
     flexDirection: 'row',
@@ -908,7 +999,7 @@ const styles = StyleSheet.create({
     borderBottomColor: RULE,
   },
   rowSelected: {
-    backgroundColor: NAV_TAB_ACTIVE_BG,
+    backgroundColor: '#f5f5f5',
     marginHorizontal: -12,
     paddingHorizontal: 12,
   },
