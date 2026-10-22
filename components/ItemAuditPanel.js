@@ -89,15 +89,40 @@ function eventTint(kind) {
   if (kind === 'sale' || kind === 'transfer_out' || kind === 'pending_out') return RED;
   if (kind === 'purchase' || kind === 'transfer_in') return ACCENT;
   if (kind === 'pending_in') return AMBER;
+  if (kind === 'cash_log') return BLUE;
   return SECONDARY;
 }
 
+function eventAmount(event) {
+  if (event.kind === 'count') return formatQty(event.qty);
+  if (event.kind === 'cash_log') return event.amountLabel || '';
+  if (event.kind === 'log_edit') return '';
+  return signedQty(event.qty);
+}
+
 function eventQtyColor(event) {
-  if (event.kind === 'count') return TEXT;
+  if (event.kind === 'count' || event.kind === 'log_edit') return TEXT;
+  if (event.kind === 'cash_log') {
+    return String(event.amountLabel || '').startsWith('+') ? ACCENT : RED;
+  }
   const qty = Number(event.qty) || 0;
   if (qty > 0) return ACCENT;
   if (qty < 0) return RED;
   return TEXT;
+}
+
+function eventMeta(event) {
+  return [
+    formatPickerDate(event.date),
+    event.timeLabel,
+    event.from && event.to ? `${event.from} → ${event.to}` : '',
+    event.customerName,
+    event.detail,
+    event.undeliveredQty > 0 ? `${formatQty(event.undeliveredQty)} undelivered` : '',
+    event.shortfall > 0 ? `short ${formatQty(event.shortfall)}` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
 }
 
 function TicketFieldRow({ label, last, children }) {
@@ -327,20 +352,11 @@ function StoreLocationCard({ location, expanded, onToggle, onOpenRef, compact })
                   {event.reference ? ` · ${event.reference}` : ''}
                 </Text>
                 <Text style={styles.eventMeta} numberOfLines={2}>
-                  {[
-                    formatPickerDate(event.date),
-                    event.timeLabel,
-                    event.from && event.to ? `${event.from} → ${event.to}` : '',
-                    event.customerName,
-                    event.undeliveredQty > 0 ? `${formatQty(event.undeliveredQty)} undelivered` : '',
-                    event.shortfall > 0 ? `short ${formatQty(event.shortfall)}` : '',
-                  ]
-                    .filter(Boolean)
-                    .join(' · ')}
+                  {eventMeta(event)}
                 </Text>
               </View>
               <Text style={[styles.eventQty, { color: eventQtyColor(event) }]}>
-                {event.kind === 'count' ? formatQty(event.qty) : signedQty(event.qty)}
+                {eventAmount(event)}
               </Text>
             </Pressable>
           ))
@@ -368,7 +384,8 @@ export default function ItemAuditPanel({
   const [catalogWarning, setCatalogWarning] = useState('');
   const [stores, setStores] = useState([]);
   const [itemQuery, setItemQuery] = useState('');
-  const [itemPickerOpen, setItemPickerOpen] = useState(false);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [searchNote, setSearchNote] = useState('');
   const [storePickerOpen, setStorePickerOpen] = useState(false);
   const [selectedItem, setSelectedItem] = useState(null);
   const [selectedStoreNames, setSelectedStoreNames] = useState(() =>
@@ -404,6 +421,36 @@ export default function ItemAuditPanel({
     () => filterItemCatalog(catalog, itemQuery),
     [catalog, itemQuery],
   );
+  const showItemMatches =
+    itemQuery.trim().length > 0 && itemQuery.trim() !== (selectedItem?.name || '').trim();
+
+  const chooseItem = useCallback((item) => {
+    if (!item) return;
+    setSearchNote('');
+    setSelectedItem(item);
+    setItemQuery(item.name);
+  }, []);
+
+  const submitItemSearch = useCallback(() => {
+    const q = itemQuery.trim();
+    if (!q) {
+      setSearchNote('Type an item name or SKU, then Submit.');
+      return;
+    }
+    if (catalogLoading && !catalog.length) {
+      setSearchNote('Items are still loading.');
+      return;
+    }
+    const exact = filteredCatalog.find(
+      (item) => item.name.trim().toLowerCase() === q.toLowerCase() || item.sku.trim().toLowerCase() === q.toLowerCase(),
+    );
+    const chosen = exact || filteredCatalog[0];
+    if (!chosen) {
+      setSearchNote('No item matches that search.');
+      return;
+    }
+    chooseItem(chosen);
+  }, [itemQuery, catalogLoading, catalog.length, filteredCatalog, chooseItem]);
 
   useEffect(() => {
     if (storeFilter) setSelectedStoreNames([storeFilter]);
@@ -423,15 +470,18 @@ export default function ItemAuditPanel({
     if (!session?.token) {
       setStores([]);
       setCatalog([]);
+      setCatalogLoading(false);
       return;
     }
     const id = ++storesRequestId.current;
+    setCatalogLoading(true);
     Promise.all([loadItemAuditStores(session), loadItemCatalog(session)])
       .then(([nextStores, nextCatalog]) => {
         if (id !== storesRequestId.current) return;
         setStores(nextStores);
         setCatalog(nextCatalog.items);
         setCatalogWarning(nextCatalog.warning || '');
+        setCatalogLoading(false);
         setSelectedStoreNames((prev) => {
           if (storeFilter) {
             return findStore(nextStores, storeFilter) ? [storeFilter] : prev;
@@ -445,6 +495,7 @@ export default function ItemAuditPanel({
       })
       .catch((err) => {
         if (id !== storesRequestId.current) return;
+        setCatalogLoading(false);
         setError(err?.message || 'Failed to load items and stores.');
       });
   }, [session, storeFilter]);
@@ -535,17 +586,41 @@ export default function ItemAuditPanel({
     );
   }
 
+  const itemSearchField = (
+    <View style={[styles.itemSearchRow, isMobile && styles.itemSearchRowMobile]}>
+      <View style={[styles.itemSearchField, isMobile && styles.itemSearchFieldMobile]}>
+        <Ionicons name="search" size={14} color={SECONDARY} />
+        <TextInput
+          style={styles.itemSearchInput}
+          value={itemQuery}
+          onChangeText={(value) => {
+            setItemQuery(value);
+            setSearchNote('');
+          }}
+          placeholder={catalogLoading ? 'Loading items…' : 'Search item name or SKU'}
+          placeholderTextColor={SECONDARY}
+          autoCapitalize="none"
+          autoCorrect={false}
+          returnKeyType="search"
+          onSubmitEditing={submitItemSearch}
+          accessibilityLabel="Search for an item"
+        />
+      </View>
+      <Pressable
+        style={[styles.submitButton, isMobile && styles.submitButtonMobile]}
+        onPress={submitItemSearch}
+        accessibilityRole="button"
+        accessibilityLabel="Submit item search"
+      >
+        <Text style={styles.submitButtonText}>Submit</Text>
+      </Pressable>
+    </View>
+  );
+
   const renderItemToolbar = () =>
     isMobile ? (
       <View style={styles.ticketCard}>
-        <TicketFieldRow label="Item">
-          <PickerChip
-            label="Item"
-            value={selectedItem?.name || 'Select item'}
-            onPress={() => setItemPickerOpen(true)}
-            variant="plain"
-          />
-        </TicketFieldRow>
+        <View style={styles.mobileSearchPad}>{itemSearchField}</View>
         <TicketFieldRow label="Stores">
           <PickerChip
             label="Stores"
@@ -577,12 +652,7 @@ export default function ItemAuditPanel({
       </View>
     ) : (
       <View style={styles.toolbar}>
-        <PickerChip
-          label="Item"
-          value={selectedItem?.name || 'Select item'}
-          onPress={() => setItemPickerOpen(true)}
-          style={styles.itemChip}
-        />
+        {itemSearchField}
         <PickerChip
           label="Stores"
           value={storeChipLabel}
@@ -613,10 +683,40 @@ export default function ItemAuditPanel({
             ? progress || 'Loading…'
             : selectedItem
               ? `${selectedItem.name} · ${formatItemAuditRangeLabel(startKey, endKey)}`
-              : 'Pick an item to trace counts, transfers, and tickets.'}
+              : 'Search an item name or SKU, then Submit.'}
         </Text>
         {loading ? <ActivityIndicator size="small" color={SECONDARY} /> : null}
       </View>
+      {searchNote ? <Text style={styles.errorText}>{searchNote}</Text> : null}
+      {showItemMatches ? (
+        <View style={styles.matchList}>
+          {filteredCatalog.length ? (
+            filteredCatalog.slice(0, 12).map((item) => (
+              <Pressable
+                key={item.key}
+                style={styles.matchRow}
+                onPress={() => chooseItem(item)}
+                accessibilityRole="button"
+                accessibilityLabel={`Audit ${item.name}`}
+              >
+                <Text style={styles.matchTitle} numberOfLines={1}>
+                  {item.name}
+                </Text>
+                <Text style={styles.matchMeta} numberOfLines={1}>
+                  {[item.metal, item.sku].filter(Boolean).join(' · ')}
+                </Text>
+              </Pressable>
+            ))
+          ) : (
+            <Text style={styles.matchEmpty}>
+              {catalogLoading ? 'Loading items…' : 'No items match that search.'}
+            </Text>
+          )}
+          {filteredCatalog.length > 12 ? (
+            <Text style={styles.matchEmpty}>{filteredCatalog.length - 12} more. Refine the search or Submit the best match.</Text>
+          ) : null}
+        </View>
+      ) : null}
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
       {result?.warning || catalogWarning ? (
         <Text style={styles.warningText}>{[result?.warning, catalogWarning].filter(Boolean).join(' ')}</Text>
@@ -690,83 +790,25 @@ export default function ItemAuditPanel({
                           {event.storeName} · {event.title}
                           {event.reference ? ` · ${event.reference}` : ''}
                         </Text>
-                        <Text style={styles.eventMeta} numberOfLines={1}>
-                          {[formatPickerDate(event.date), event.from && event.to ? `${event.from} → ${event.to}` : '', event.customerName]
-                            .filter(Boolean)
-                            .join(' · ')}
+                        <Text style={styles.eventMeta} numberOfLines={2}>
+                          {eventMeta(event)}
                         </Text>
                       </View>
                       <Text style={[styles.eventQty, { color: eventQtyColor(event) }]}>
-                        {event.kind === 'count' ? formatQty(event.qty) : signedQty(event.qty)}
+                        {eventAmount(event)}
                       </Text>
                     </Pressable>
                   ))}
                 </View>
               </View>
             ) : (
-              <Text style={styles.emptyText}>No counts, transfers, or tickets for this item in the range.</Text>
+              <Text style={styles.emptyText}>
+                No counts, transfers, tickets, or Aureus log lines for this item in the range.
+              </Text>
             )}
           </View>
         ) : null}
       </ScrollView>
-
-      <Modal
-        visible={itemPickerOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setItemPickerOpen(false)}
-      >
-        <View style={styles.modalRoot}>
-          <Pressable style={styles.modalBackdrop} onPress={() => setItemPickerOpen(false)} />
-          <View style={styles.modalSheet}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Select item</Text>
-              <Pressable onPress={() => setItemPickerOpen(false)} hitSlop={8}>
-                <Text style={styles.doneText}>Done</Text>
-              </Pressable>
-            </View>
-            <View style={styles.searchField}>
-              <Ionicons name="search" size={16} color={SECONDARY} />
-              <TextInput
-                style={styles.searchInput}
-                value={itemQuery}
-                onChangeText={setItemQuery}
-                placeholder="GML 1oz DNA, SBAR 100oz…"
-                placeholderTextColor={SECONDARY}
-                autoFocus
-              />
-            </View>
-            <ScrollView keyboardShouldPersistTaps="handled" style={styles.modalList}>
-              {filteredCatalog.slice(0, 80).map((item) => {
-                const active = selectedItem?.key === item.key;
-                return (
-                  <Pressable
-                    key={item.key}
-                    style={[styles.modalOption, active && styles.modalOptionActive]}
-                    onPress={() => {
-                      setSelectedItem(item);
-                      setItemPickerOpen(false);
-                    }}
-                  >
-                    <View style={styles.modalOptionCopy}>
-                      <Text style={styles.modalOptionTitle} numberOfLines={1}>
-                        {item.name}
-                      </Text>
-                      <Text style={styles.modalOptionMeta} numberOfLines={1}>
-                        {[item.metal, item.sku].filter(Boolean).join(' · ')}
-                      </Text>
-                    </View>
-                    {active ? <Ionicons name="checkmark" size={20} color={ACCENT} /> : null}
-                  </Pressable>
-                );
-              })}
-              {!filteredCatalog.length ? (
-                <Text style={styles.emptyText}>No items match that search.</Text>
-              ) : null}
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
 
       <Modal
         visible={storePickerOpen}
@@ -873,9 +915,100 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  itemChip: {
-    minWidth: 180,
-    maxWidth: 280,
+  itemSearchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexGrow: 1,
+    flexShrink: 1,
+    minWidth: 240,
+  },
+  itemSearchRowMobile: {
+    minWidth: 0,
+    width: '100%',
+  },
+  itemSearchField: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    height: 32,
+    minWidth: 0,
+    paddingHorizontal: 10,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: PAGE,
+    ...TICKET_SHADOW,
+  },
+  itemSearchFieldMobile: {
+    height: 36,
+  },
+  itemSearchInput: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily,
+    fontSize: 14,
+    color: TEXT,
+    paddingVertical: 0,
+    ...Platform.select({
+      web: { outlineStyle: 'none' },
+      default: {},
+    }),
+  },
+  submitButton: {
+    height: 32,
+    paddingHorizontal: 14,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    backgroundColor: ACCENT,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  submitButtonMobile: {
+    height: 36,
+  },
+  submitButtonText: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  matchList: {
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    backgroundColor: PAGE,
+    marginBottom: 8,
+    overflow: 'hidden',
+  },
+  matchRow: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
+  },
+  matchTitle: {
+    fontFamily,
+    fontSize: 15,
+    color: TEXT,
+  },
+  matchMeta: {
+    fontFamily,
+    fontSize: 12,
+    color: SECONDARY,
+    marginTop: 1,
+  },
+  matchEmpty: {
+    fontFamily,
+    fontSize: 13,
+    color: SECONDARY,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
   },
   chipGrow: {
     flexGrow: 1,
@@ -1235,31 +1368,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 8,
   },
-  searchField: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginHorizontal: 16,
-    marginTop: 12,
-    marginBottom: 8,
-    backgroundColor: PAGE,
-    borderRadius: NAV_TAB_ACTIVE_RADIUS,
-    borderWidth: 1,
-    borderColor: TAB_BORDER,
-    paddingHorizontal: 10,
-    height: 32,
-  },
-  searchInput: {
-    flex: 1,
-    fontFamily,
-    fontSize: 14,
-    color: TEXT,
-    paddingVertical: 0,
-    ...Platform.select({
-      web: { outlineStyle: 'none' },
-      default: {},
-    }),
-  },
   modalList: {
     maxHeight: 420,
     backgroundColor: PAGE,
@@ -1296,6 +1404,12 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 12,
     color: SECONDARY,
+  },
+  mobileSearchPad: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#ececef',
   },
   ticketCard: {
     borderWidth: 1,

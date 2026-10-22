@@ -16,6 +16,7 @@ const fontFamily = 'Sohne';
 const ICON = '#8e8e93';
 
 export default function LoginScreen({
+  mode = 'login',
   loginId,
   password,
   error,
@@ -23,9 +24,26 @@ export default function LoginScreen({
   onChangeLoginId,
   onChangePassword,
   onSubmit,
+  onJoin,
+  joinEmail = '',
+  joinError = '',
+  joinSubmitting = false,
+  onChangeJoinEmail,
+  onSubmitJoin,
+  onBackToLogin,
+  newPassword = '',
+  repeatPassword = '',
+  passwordError = '',
+  passwordSubmitting = false,
+  onChangeNewPassword,
+  onChangeRepeatPassword,
+  onSubmitNewPassword,
+  onCancelPassword,
 }) {
   const isMobile = useIsMobile();
   const canSubmit = Boolean(loginId.trim() && password.trim() && !submitting);
+  const canJoin = Boolean(joinEmail.trim() && !joinSubmitting);
+  const canSetPassword = Boolean(newPassword && repeatPassword && !passwordSubmitting);
 
   return (
     <View style={[styles.page, isMobile && styles.pageMobile]}>
@@ -41,6 +59,147 @@ export default function LoginScreen({
         </View>
 
         <View style={[styles.card, isMobile && styles.cardMobile]}>
+          {mode === 'join' ? (
+            <>
+              <Text style={[styles.prompt, isMobile && styles.promptMobile]}>
+                Please input your Canada Gold or CDN Coin email.
+              </Text>
+              <View style={[styles.fields, isMobile && styles.fieldsMobile]}>
+                <View style={[styles.fieldRow, isMobile && styles.fieldRowMobile]}>
+                  <Ionicons
+                    name="mail-outline"
+                    size={isMobile ? 20 : 16}
+                    color={ICON}
+                    style={styles.fieldIcon}
+                  />
+                  <TextInput
+                    style={[styles.input, isMobile && styles.inputMobile]}
+                    value={joinEmail}
+                    onChangeText={onChangeJoinEmail}
+                    placeholder="name@canadagold.ca"
+                    placeholderTextColor="#8e8e93"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    keyboardType="email-address"
+                    textContentType="emailAddress"
+                    editable={!joinSubmitting}
+                    returnKeyType="done"
+                    onSubmitEditing={() => {
+                      if (canJoin) onSubmitJoin();
+                    }}
+                  />
+                </View>
+              </View>
+              {joinError ? (
+                <Text style={[styles.errorText, isMobile && styles.errorTextMobile]}>{joinError}</Text>
+              ) : null}
+              <Pressable
+                style={[styles.button, isMobile && styles.buttonMobile, !canJoin && styles.buttonDisabled]}
+                onPress={onSubmitJoin}
+                disabled={!canJoin}
+              >
+                {joinSubmitting ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={[styles.buttonText, isMobile && styles.buttonTextMobile]}>Done</Text>
+                )}
+              </Pressable>
+              <Pressable style={styles.textButton} onPress={onBackToLogin} disabled={joinSubmitting}>
+                <Text style={[styles.textButtonText, isMobile && styles.textButtonTextMobile]}>Back</Text>
+              </Pressable>
+            </>
+          ) : null}
+
+          {mode === 'sent' ? (
+            <>
+              <Text style={[styles.prompt, isMobile && styles.promptMobile]}>
+                A temporary password has been sent to your email.
+              </Text>
+              <Text style={[styles.hint, isMobile && styles.hintMobile]}>
+                Open that email, then log in here with your email and the temporary password.
+              </Text>
+              <Pressable style={[styles.button, isMobile && styles.buttonMobile]} onPress={onBackToLogin}>
+                <Text style={[styles.buttonText, isMobile && styles.buttonTextMobile]}>Log in</Text>
+              </Pressable>
+            </>
+          ) : null}
+
+          {mode === 'set-password' ? (
+            <>
+              <Text style={[styles.prompt, isMobile && styles.promptMobile]}>Choose a password</Text>
+              <Text style={[styles.hint, isMobile && styles.hintMobile]}>
+                At least 12 characters, with an uppercase letter, a lowercase letter, and a number.
+              </Text>
+              <View style={[styles.fields, isMobile && styles.fieldsMobile]}>
+                <View style={[styles.fieldRow, isMobile && styles.fieldRowMobile]}>
+                  <Ionicons
+                    name="lock-closed-outline"
+                    size={isMobile ? 20 : 16}
+                    color={ICON}
+                    style={styles.fieldIcon}
+                  />
+                  <TextInput
+                    style={[styles.input, isMobile && styles.inputMobile]}
+                    value={newPassword}
+                    onChangeText={onChangeNewPassword}
+                    placeholder="Password"
+                    placeholderTextColor="#8e8e93"
+                    secureTextEntry
+                    textContentType="newPassword"
+                    editable={!passwordSubmitting}
+                    returnKeyType="next"
+                  />
+                </View>
+                <View style={[styles.fieldDivider, isMobile && styles.fieldDividerMobile]} />
+                <View style={[styles.fieldRow, isMobile && styles.fieldRowMobile]}>
+                  <Ionicons
+                    name="lock-closed-outline"
+                    size={isMobile ? 20 : 16}
+                    color={ICON}
+                    style={styles.fieldIcon}
+                  />
+                  <TextInput
+                    style={[styles.input, isMobile && styles.inputMobile]}
+                    value={repeatPassword}
+                    onChangeText={onChangeRepeatPassword}
+                    placeholder="Repeat password"
+                    placeholderTextColor="#8e8e93"
+                    secureTextEntry
+                    textContentType="newPassword"
+                    editable={!passwordSubmitting}
+                    returnKeyType="done"
+                    onSubmitEditing={() => {
+                      if (canSetPassword) onSubmitNewPassword();
+                    }}
+                  />
+                </View>
+              </View>
+              {passwordError ? (
+                <Text style={[styles.errorText, isMobile && styles.errorTextMobile]}>{passwordError}</Text>
+              ) : null}
+              <Pressable
+                style={[
+                  styles.button,
+                  isMobile && styles.buttonMobile,
+                  !canSetPassword && styles.buttonDisabled,
+                ]}
+                onPress={onSubmitNewPassword}
+                disabled={!canSetPassword}
+              >
+                {passwordSubmitting ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={[styles.buttonText, isMobile && styles.buttonTextMobile]}>Done</Text>
+                )}
+              </Pressable>
+              <Pressable style={styles.textButton} onPress={onCancelPassword} disabled={passwordSubmitting}>
+                <Text style={[styles.textButtonText, isMobile && styles.textButtonTextMobile]}>Back</Text>
+              </Pressable>
+            </>
+          ) : null}
+
+          {mode === 'login' ? (
+          <>
           <View style={[styles.fields, isMobile && styles.fieldsMobile]}>
             <View style={[styles.fieldRow, isMobile && styles.fieldRowMobile]}>
               <Ionicons
@@ -113,6 +272,15 @@ export default function LoginScreen({
               </View>
             )}
           </Pressable>
+          <Pressable
+            style={[styles.secondaryButton, isMobile && styles.secondaryButtonMobile]}
+            onPress={onJoin}
+            disabled={submitting}
+          >
+            <Text style={[styles.secondaryButtonText, isMobile && styles.secondaryButtonTextMobile]}>Join</Text>
+          </Pressable>
+          </>
+          ) : null}
         </View>
       </View>
     </View>
@@ -265,5 +433,82 @@ const styles = StyleSheet.create({
   buttonTextMobile: {
     fontSize: 17,
     fontWeight: '600',
+  },
+  secondaryButton: {
+    marginTop: 10,
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#d0d0d0',
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    minHeight: 40,
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  secondaryButtonMobile: {
+    marginTop: 12,
+    borderRadius: 12,
+    minHeight: 50,
+    paddingVertical: 14,
+    borderColor: 'rgba(60,60,67,0.18)',
+  },
+  secondaryButtonText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1a1a1a',
+  },
+  secondaryButtonTextMobile: {
+    fontSize: 17,
+  },
+  prompt: {
+    fontFamily,
+    fontSize: 15,
+    lineHeight: 21,
+    color: '#1a1a1a',
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  promptMobile: {
+    fontSize: 17,
+    lineHeight: 24,
+    marginBottom: 20,
+  },
+  hint: {
+    fontFamily,
+    fontSize: 13,
+    lineHeight: 18,
+    color: '#636366',
+    textAlign: 'center',
+    marginTop: -8,
+    marginBottom: 4,
+  },
+  hintMobile: {
+    fontSize: 15,
+    lineHeight: 21,
+  },
+  textButton: {
+    marginTop: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 36,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  textButtonText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1a1a1a',
+  },
+  textButtonTextMobile: {
+    fontSize: 17,
   },
 });
