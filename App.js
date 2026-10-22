@@ -37,8 +37,10 @@ import { Feather, Ionicons, MaterialCommunityIcons, Octicons } from '@expo/vecto
 import {
   accessiblePosSystems,
   hasStoredSession,
+  completeEmailPassword,
   login as loginRequest,
   logout as logoutRequest,
+  requestJoin,
   onAureusSessionExpired,
   onSessionRevoked,
   posEmployeeId,
@@ -379,7 +381,10 @@ const TOOL_SCREENS = {
     Component: DebitScreen,
     props: (c) => ({ session: c.session, onRequireLogin: c.requireLogin, storeFilter: c.storeFilter }),
   },
-  accounting: { Component: AccountingScreen, props: () => ({}) },
+  accounting: {
+    Component: AccountingScreen,
+    props: (c) => ({ session: c.session, onRequireLogin: c.requireLogin, storeFilter: c.storeFilter }),
+  },
   analytics: {
     Component: AnalyticsScreen,
     props: (c) => ({
@@ -6476,14 +6481,19 @@ function HomeScreen({
   }, [onCrumbsChange, selectedStore]);
 
   if (!session?.token) {
+    const emailAccount = session?.authKind === 'email';
     return (
       <View style={styles.toolsScreen}>
         <View style={styles.homeInnerCentered}>
           <Text style={[styles.contentTitle, styles.homeTitle]}>Home</Text>
-          <Text style={styles.homeSubtitle}>Log in to see store summaries.</Text>
-          <Pressable style={[styles.loginButton, styles.homeLoginButton]} onPress={onRequireLogin}>
-            <Text style={styles.loginButtonText}>Log in</Text>
-          </Pressable>
+          <Text style={styles.homeSubtitle}>
+            {emailAccount ? 'Store summaries use an Aureus login.' : 'Log in to see store summaries.'}
+          </Text>
+          {emailAccount ? null : (
+            <Pressable style={[styles.loginButton, styles.homeLoginButton]} onPress={onRequireLogin}>
+              <Text style={styles.loginButtonText}>Log in</Text>
+            </Pressable>
+          )}
         </View>
       </View>
     );
@@ -9478,6 +9488,15 @@ export default function App() {
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [loginMode, setLoginMode] = useState('login');
+  const [joinEmail, setJoinEmail] = useState('');
+  const [joinError, setJoinError] = useState('');
+  const [joinSubmitting, setJoinSubmitting] = useState(false);
+  const [passwordSetupEmail, setPasswordSetupEmail] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [repeatPassword, setRepeatPassword] = useState('');
+  const [passwordSetupError, setPasswordSetupError] = useState('');
+  const [passwordSetupSubmitting, setPasswordSetupSubmitting] = useState(false);
   const [switchingPos, setSwitchingPos] = useState(false);
   const [switchError, setSwitchError] = useState('');
   const [loginSwitcherOpen, setLoginSwitcherOpen] = useState(false);
@@ -9510,7 +9529,9 @@ export default function App() {
     loadFontsAsync(WEB_DEFERRED_FONTS).catch(() => {});
   }, []);
 
-  const isLoggedIn = Boolean(session?.token && session?.supabaseUserId);
+  const isLoggedIn = Boolean(
+    session?.supabaseUserId && (session?.token || session?.authKind === 'email'),
+  );
   const scopedStore = scopedStoreName(session?.profile);
   const activeToolKey = activeTool?.key || '';
   useEffect(() => {
@@ -9613,6 +9634,13 @@ export default function App() {
     setLoginId('');
     setPassword('');
     setLoginError('');
+    setLoginMode('login');
+    setJoinEmail('');
+    setJoinError('');
+    setPasswordSetupEmail('');
+    setNewPassword('');
+    setRepeatPassword('');
+    setPasswordSetupError('');
     setActiveTab('home');
     setActiveTool(null);
     setKeptToolKeys([]);
@@ -10199,6 +10227,30 @@ export default function App() {
     });
   }, [session?.profile?.id, session?.supabaseUserId]);
 
+  const enterSession = async (next) => {
+    const [pins, access, userAccess] = await Promise.all([
+      loadPinnedTools(next, TOOL_KEYS),
+      loadRoleAppAccess(ACCESS_CATALOG_KEYS),
+      loadOwnUserAppAccess(next.supabaseUserId || next.profile?.id, ACCESS_CATALOG_KEYS),
+    ]);
+    setSession(next);
+    setPinnedKeys(pins);
+    setAccessByRole(access.byRole);
+    setOwnUserAccess(userAccess);
+    warmSessionCaches(next);
+    setPassword('');
+    setNewPassword('');
+    setRepeatPassword('');
+    setPasswordSetupEmail('');
+    setPasswordSetupError('');
+    setLoginMode('login');
+    setActiveTab('home');
+    setActiveTool(null);
+    setSettingsPanel(null);
+    setSwitchError('');
+    setLoginSwitcherOpen(false);
+  };
+
   const handleLogin = async () => {
     if (!loginId.trim() || !password.trim() || submitting) return;
 
@@ -10207,27 +10259,63 @@ export default function App() {
 
     try {
       const next = await loginRequest(loginId, password);
-      const [pins, access, userAccess] = await Promise.all([
-        loadPinnedTools(next, TOOL_KEYS),
-        loadRoleAppAccess(ACCESS_CATALOG_KEYS),
-        loadOwnUserAppAccess(next.supabaseUserId || next.profile?.id, ACCESS_CATALOG_KEYS),
-      ]);
-      setSession(next);
-      setPinnedKeys(pins);
-      setAccessByRole(access.byRole);
-      setOwnUserAccess(userAccess);
-      warmSessionCaches(next);
-      setPassword('');
-      setActiveTab('home');
-      setActiveTool(null);
-      setSettingsPanel(null);
-      setSwitchError('');
-      setLoginSwitcherOpen(false);
+      if (next?.mustSetPassword) {
+        setPasswordSetupEmail(next.email || loginId.trim());
+        setPassword('');
+        setNewPassword('');
+        setRepeatPassword('');
+        setPasswordSetupError('');
+        return;
+      }
+      await enterSession(next);
     } catch (error) {
       setLoginError(error?.message || 'Login failed.');
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleJoin = async () => {
+    if (!joinEmail.trim() || joinSubmitting) return;
+    setJoinSubmitting(true);
+    setJoinError('');
+    try {
+      const email = await requestJoin(joinEmail);
+      setJoinEmail(email);
+      setLoginId(email);
+      setLoginMode('sent');
+    } catch (error) {
+      setJoinError(error?.message || 'Could not send that email.');
+    } finally {
+      setJoinSubmitting(false);
+    }
+  };
+
+  const handleSetPassword = async () => {
+    if (!newPassword || !repeatPassword || passwordSetupSubmitting) return;
+    if (newPassword !== repeatPassword) {
+      setPasswordSetupError('Those passwords do not match.');
+      return;
+    }
+    setPasswordSetupSubmitting(true);
+    setPasswordSetupError('');
+    try {
+      const next = await completeEmailPassword(newPassword);
+      await enterSession(next);
+    } catch (error) {
+      setPasswordSetupError(error?.message || 'Could not save that password.');
+    } finally {
+      setPasswordSetupSubmitting(false);
+    }
+  };
+
+  const cancelPasswordSetup = async () => {
+    await logoutRequest().catch(() => {});
+    setPasswordSetupEmail('');
+    setNewPassword('');
+    setRepeatPassword('');
+    setPasswordSetupError('');
+    setLoginMode('login');
   };
 
   const handleLogout = useStableCallback(async () => {
@@ -10296,6 +10384,7 @@ export default function App() {
       activeTool.key === 'transactions' ||
       activeTool.key === 'inventory' ||
       activeTool.key === 'financials' ||
+      activeTool.key === 'accounting' ||
       activeTool.key === 'audit' ||
       activeTool.key === 'analytics' ||
       activeTool.key === 'supplies' ||
@@ -10606,6 +10695,7 @@ export default function App() {
       activeTool?.key === 'audit' ||
       activeTool?.key === 'serphint' ||
       activeTool?.key === 'financials' ||
+      activeTool?.key === 'accounting' ||
       activeTool?.key === 'debit' ||
       activeTool?.key === 'transfer' ||
       activeTool?.key === 'fintrac' ||
@@ -10731,6 +10821,7 @@ export default function App() {
       <View style={styles.loginShell}>
         <StatusBar style="auto" />
         <LoginScreen
+          mode={passwordSetupEmail ? 'set-password' : loginMode}
           loginId={loginId}
           password={password}
           error={loginError}
@@ -10738,6 +10829,27 @@ export default function App() {
           onChangeLoginId={setLoginId}
           onChangePassword={setPassword}
           onSubmit={handleLogin}
+          onJoin={() => {
+            setJoinError('');
+            setLoginMode('join');
+          }}
+          joinEmail={joinEmail}
+          joinError={joinError}
+          joinSubmitting={joinSubmitting}
+          onChangeJoinEmail={setJoinEmail}
+          onSubmitJoin={handleJoin}
+          onBackToLogin={() => {
+            setJoinError('');
+            setLoginMode('login');
+          }}
+          newPassword={newPassword}
+          repeatPassword={repeatPassword}
+          passwordError={passwordSetupError}
+          passwordSubmitting={passwordSetupSubmitting}
+          onChangeNewPassword={setNewPassword}
+          onChangeRepeatPassword={setRepeatPassword}
+          onSubmitNewPassword={handleSetPassword}
+          onCancelPassword={cancelPasswordSetup}
         />
       </View>
     );
