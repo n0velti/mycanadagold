@@ -67,6 +67,10 @@ import { MobileFeedTopBarActions } from './MobileChrome';
 
 const MODEL_KEY = 'cgold.analytics.aiModel';
 
+// The eval runner (lib/aiEval.js) is a dev tool. A conditional require keeps
+// it, and its cases, out of the production bundle entirely.
+const AiEvalPanel = __DEV__ ? require('./AiEvalPanel').default : null;
+
 const INK = '#1a1a1a';
 const CHIP_BORDER = '#d0d0d0';
 const CHIP_RADIUS = 6;
@@ -644,6 +648,8 @@ export default function AnalyticsAiPanel({
   const [listQuery, setListQuery] = useState('');
   const [model, setModel] = useState(ANALYTICS_CHAT_MODELS[0].key);
   const [modelOpen, setModelOpen] = useState(false);
+  // Dev-only eval runner (lib/aiEval.js); the button only renders under __DEV__.
+  const [evalsOpen, setEvalsOpen] = useState(false);
   const [savedPrompts, setSavedPrompts] = useState([]);
   const [promptsOpen, setPromptsOpen] = useState(false);
   const [copiedKey, setCopiedKey] = useState('');
@@ -1673,6 +1679,19 @@ export default function AnalyticsAiPanel({
               );
             })}
           </ScrollView>
+          {__DEV__ ? (
+            <Pressable
+              onPress={() => {
+                setModelOpen(false);
+                setEvalsOpen(true);
+              }}
+              accessibilityRole="button"
+              style={styles.modelSheetDev}
+            >
+              <Ionicons name="flask-outline" size={14} color="#8e8e93" />
+              <Text style={styles.modelSheetDevText}>Run AI evals (dev build only)</Text>
+            </Pressable>
+          ) : null}
           <Pressable
             onPress={() => setModelOpen(false)}
             accessibilityRole="button"
@@ -1687,6 +1706,9 @@ export default function AnalyticsAiPanel({
       </View>
     </Modal>
   );
+  const evalSheet = __DEV__ && AiEvalPanel ? (
+    <AiEvalPanel visible={evalsOpen} onClose={() => setEvalsOpen(false)} session={session} model={model} />
+  ) : null;
 
   const promptsSheet = (
     <Modal
@@ -2727,6 +2749,7 @@ export default function AnalyticsAiPanel({
   return (
     <View style={[styles.root, compact && styles.rootPhone]}>
       {modelSheet}
+      {evalSheet}
       {promptsSheet}
       {shareSheet}
       {embedded ? conversation : showList ? list : compact ? conversation : (
@@ -4135,6 +4158,21 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: RULE,
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  modelSheetDev: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: RULE,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  modelSheetDevText: {
+    fontFamily: FONT,
+    fontSize: 12,
+    color: SECONDARY,
   },
   modelSheetDoneHover: {
     backgroundColor: '#f5f5f7',

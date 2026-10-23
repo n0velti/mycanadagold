@@ -34,6 +34,11 @@ There is **no test suite** and no GitHub Actions CI. Quality gates are `npm run 
 | `components/` | Screens (`*Screen.js`) and shared UI. Default-export screens |
 | `lib/` | Client logic. `auth.js`, `proxy.js`, `supabase.js`, vendor clients |
 | `lib/typography/`, `lib/actionLog/` | Metro wrappers. Do not import them directly from screens |
+| `lib/semantics/` | `glossary.js` (domain terms, in every data prompt) and `metrics.js` (every metric the assistants report: fact, formula, format, supported dimensions). Add a metric here, never in a prompt |
+| `lib/data/facts.js` | Sources reduced to rows at natural grain with shared keys (`store`, `date`, `employee`, `docRef`). `lib/metricsQuery.js` joins them for the `query_metrics` tool |
+| `lib/aiResults.js` | Result handles (`resultId`). Renderer tools (`draw_chart`, `show_table`, `export_spreadsheet`) draw from a handle, not from model-typed numbers |
+| `lib/bullionLedger.js`, `lib/cashVariance.js` | Audit reconciliation in code (ledger walk, ranked candidates, confidence). The model writes the result up; it does not investigate |
+| `lib/aiEval.js`, `components/AiEvalPanel.js` | Eval cases and the dev-only runner (Analytics → model sheet → "Run AI evals", `__DEV__` builds only). Rerun after changing tools, prompts, or loaders |
 | `supabase/migrations/` | Schema, RLS, triggers. Additive SQL only |
 | `supabase/functions/aureus-login` | Sign-in (`verify_jwt` off; it validates itself) |
 | `supabase/functions/proxy` | Authenticated third-party gateway |

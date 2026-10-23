@@ -68,7 +68,8 @@ function lineOption(chart, { compact, expanded }) {
         const title = rows[0]?.axisValueLabel || rows[0]?.name || '';
         const lines = rows.map((item) => {
           const series = chart.series[item.seriesIndex];
-          const value = formatMeasure(item.value, series?.format || 'int');
+          // A null point is a gap (no data for that bucket), not a zero.
+          const value = item.value == null ? 'no data' : formatMeasure(item.value, series?.format || 'int');
           return `${item.marker} ${item.seriesName}: ${value}`;
         });
         return [title, ...lines].join('<br/>');
