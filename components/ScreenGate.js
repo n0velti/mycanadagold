@@ -11,18 +11,17 @@ export function ScreenFallback() {
   );
 }
 
-/**
- * Catches a screen that failed to load or render. The usual cause is a chunk
- * that no longer exists because a new version was deployed while this tab
- * stayed open; reloading picks up the new build. Without this, the failure
- * would unmount the whole app.
- */
-function reloadFreshScreen() {
-  const url = new URL(window.location.href);
-  url.searchParams.set('screen', String(Date.now()));
-  window.location.replace(url.toString());
+function reloadPage() {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+  window.location.reload();
 }
 
+/**
+ * Catches a screen that failed to load or render so the rest of the shell
+ * (sidebar, Home) stays up. Search, Messages, Profile, and every app in the
+ * grid are lazy; a throw here used to call location.replace and boot the
+ * person back on Home. Keep them on this tab and let them reload if they want.
+ */
 class ScreenBoundary extends Component {
   state = { failed: false };
 
@@ -33,31 +32,12 @@ class ScreenBoundary extends Component {
   componentDidUpdate(prevProps) {
     if (this.state.failed && prevProps.resetKey !== this.props.resetKey) {
       this.setState({ failed: false });
-      return;
     }
-    this.clearReloadFlag();
   }
 
-  componentDidCatch() {
-    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
-    try {
-      if (sessionStorage.getItem('cgold-screen-reload')) return;
-      sessionStorage.setItem('cgold-screen-reload', '1');
-    } catch {
-      return;
-    }
-    reloadFreshScreen();
-  }
-
-  clearReloadFlag() {
-    // Only after a committed successful screen. Clearing on mount used to run
-    // while Suspense still showed the fallback; the lazy screen then threw,
-    // we reloaded, cgold-open-tool restored the same app, and the tab looped.
-    if (this.state.failed || Platform.OS !== 'web') return;
-    try {
-      sessionStorage.removeItem('cgold-screen-reload');
-    } catch {
-      /* ignore */
+  componentDidCatch(error, info) {
+    if (typeof console !== 'undefined' && console.error) {
+      console.error('[ScreenGate]', this.props.resetKey || 'screen', error, info?.componentStack);
     }
   }
 
@@ -67,7 +47,7 @@ class ScreenBoundary extends Component {
       <View style={styles.centered}>
         <Text style={styles.message}>This screen could not be loaded.</Text>
         {Platform.OS === 'web' ? (
-          <Pressable accessibilityRole="button" onPress={reloadFreshScreen} style={styles.reloadButton}>
+          <Pressable accessibilityRole="button" onPress={reloadPage} style={styles.reloadButton}>
             <Text style={styles.reloadLabel}>Reload</Text>
           </Pressable>
         ) : null}

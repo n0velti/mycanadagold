@@ -59,8 +59,9 @@ function loadLocalEnv(file) {
 }
 
 function token() {
+  const fromFunctionsEnv = loadLocalEnv(path.join(ROOT, 'supabase', '.env.local')).SUPABASE_ACCESS_TOKEN;
   const fromRootEnv = loadLocalEnv(path.join(ROOT, '.env.local')).SUPABASE_ACCESS_TOKEN;
-  const value = String(process.env.SUPABASE_ACCESS_TOKEN || fromRootEnv || '').trim();
+  const value = String(process.env.SUPABASE_ACCESS_TOKEN || fromFunctionsEnv || fromRootEnv || '').trim();
   if (!value) {
     console.error('SUPABASE_ACCESS_TOKEN is required (personal access token, sbp_…).');
     process.exit(1);

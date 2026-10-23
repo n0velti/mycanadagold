@@ -42,6 +42,7 @@ import {
   subscribeDmRealtime,
 } from '../lib/messages';
 import {
+  ensureAiDmForChat,
   hydrateAiDmChat,
   listSharedAiChats,
   mergeLocalAndSharedAiChats,
@@ -62,6 +63,7 @@ import {
   storableAttachment,
 } from '../lib/aiAttachments';
 import { CANVAS, MOBILE, NAV_TAB_ACTIVE_BG, NAV_TAB_ACTIVE_RADIUS } from '../lib/mobileUi';
+import { useScreenVisible } from '../lib/screenVisibility';
 import { FONT, FONT_LIGHT } from '../lib/typography';
 import { MobileFeedTopBarActions } from './MobileChrome';
 
@@ -146,7 +148,7 @@ const COMPOSER_PILL_ACTIVE_SHADOW = Platform.select({
 const CHATS_KEY = 'cgold.analytics.aiChats';
 const ACTIVE_KEY = 'cgold.analytics.aiChat.active';
 const PROMPTS_KEY = 'cgold.analytics.savedPrompts';
-const MAX_CHATS = 40;
+const MAX_CHATS = 200;
 const MAX_TURNS = 20;
 const MAX_TURN_CHARS = 6000;
 const MAX_PROMPTS = 40;
@@ -183,6 +185,17 @@ function byChatOrder(a, b) {
 
 function hasUserMessage(chat) {
   return (chat?.turns || []).some((turn) => turn.role === 'user' && String(turn.content || '').trim());
+}
+
+function hasListedContent(chat) {
+  if (hasUserMessage(chat)) return true;
+  if (chat?.previewOnly && String(chatPreview(chat) || '').trim()) return true;
+  return (chat?.turns || []).some((turn) => String(turn?.content || '').trim() || (turn?.charts || []).length);
+}
+
+function isHistoryChat(chat) {
+  if (!chat || isUnusedPlaceholder(chat)) return false;
+  return hasListedContent(chat);
 }
 
 function isUnusedPlaceholder(chat) {
@@ -277,10 +290,11 @@ function parseChats(raw) {
         updatedAt: String(item?.updatedAt || item?.createdAt || ''),
         pinned: Boolean(item?.pinned),
         placeholder: Boolean(item?.placeholder),
+        previewOnly: Boolean(item?.previewOnly),
         members: Array.isArray(item?.members) ? item.members : [],
         turns: storedTurns(item?.turns),
       }))
-      .filter((chat) => chat.id && (chat.placeholder || hasUserMessage(chat)));
+      .filter((chat) => chat.id && (chat.placeholder || isHistoryChat(chat)));
   } catch {
     return [];
   }
@@ -381,15 +395,20 @@ function slimChats(chats, { stripCharts = false } = {}) {
       updatedAt: chat.updatedAt,
       pinned: Boolean(chat.pinned),
       placeholder: Boolean(chat.placeholder) && !hasUserMessage(chat),
+      previewOnly: Boolean(chat.previewOnly) && !hasUserMessage(chat),
       members: Array.isArray(chat.members) ? chat.members : [],
       turns: storedTurns(chat.turns).map((turn) => (
         stripCharts && turn.charts ? { ...turn, charts: [] } : turn
       )),
     }))
-    .filter((chat) => chat.id && (chat.placeholder || hasUserMessage(chat)));
+    .filter((chat) => chat.id && (chat.placeholder || isHistoryChat(chat)));
   const draft = mapped.find(isUnusedPlaceholder) || null;
-  const real = mapped.filter((chat) => !isUnusedPlaceholder(chat)).sort(byChatOrder).slice(0, MAX_CHATS);
-  return (draft ? [draft, ...real] : real).sort(byChatOrder);
+  const real = mapped.filter((chat) => !isUnusedPlaceholder(chat));
+  const pinned = real.filter((chat) => chat.pinned);
+  const unpinned = real.filter((chat) => !chat.pinned).sort(byChatOrder);
+  const room = Math.max(0, MAX_CHATS - pinned.length);
+  const kept = [...pinned, ...unpinned.slice(0, room)];
+  return (draft ? [draft, ...kept] : kept).sort(byChatOrder);
 }
 
 async function writeChats(userKey, chats) {
@@ -634,6 +653,7 @@ export default function AnalyticsAiPanel({
 }) {
   const userKey = session?.supabaseUserId || session?.profile?.id || '';
   const myId = session?.supabaseUserId || session?.profile?.id || '';
+  const screenVisible = useScreenVisible();
   const firstName = firstNameOfSession(session);
   const [chats, setChats] = useState([]);
   const [ready, setReady] = useState(false);
@@ -713,7 +733,7 @@ export default function AnalyticsAiPanel({
   );
   const blocked = !ready;
   const history = useMemo(
-    () => chats.filter(hasUserMessage).sort(byChatOrder),
+    () => chats.filter(isHistoryChat).sort(byChatOrder),
     [chats],
   );
   const visibleHistory = useMemo(() => {
@@ -983,7 +1003,7 @@ export default function AnalyticsAiPanel({
       chatsRef.current = rows;
       setChats(rows);
       setReady(true);
-      if (rows.some((chat) => hasUserMessage(chat) || chat.conversationId)) {
+      if (rows.some((chat) => isHistoryChat(chat) || chat.conversationId)) {
         writeChainRef.current = writeChainRef.current
           .then(() => writeChats(userKey, chatsRef.current))
           .catch(() => {});
@@ -993,29 +1013,33 @@ export default function AnalyticsAiPanel({
         setActiveId(boundId);
         return;
       }
+      const unsynced = rows.filter((chat) => isHistoryChat(chat) && !chat.conversationId);
+      if (unsynced.length) {
+        void (async () => {
+          for (const chat of unsynced) {
+            if (!alive || !mountedRef.current) return;
+            try {
+              const conversation = await ensureAiDmForChat(chat);
+              if (!alive || !mountedRef.current) return;
+              commit((current) =>
+                current.map((item) => (
+                  item.id === chat.id ? { ...item, conversationId: conversation } : item
+                )),
+                { persist: true },
+              );
+              onInboxChangedRef.current?.();
+            } catch {
+              // Keep the chat on this device; the next send retries the inbox write.
+            }
+          }
+        })();
+      }
       if (embedded && !startBlankRef.current && rows.length) {
         const latest = rows.slice().sort(byChatOrder)[0];
         if (latest) {
           activeIdRef.current = latest.id;
           setActiveId(latest.id);
         }
-        return;
-      }
-      if (embedded) return;
-      let lastId = '';
-      try {
-        lastId = (await AsyncStorage.getItem(activeStorageKey(userKey))) || '';
-      } catch {
-        lastId = '';
-      }
-      const match =
-        rows.find((chat) => chat.id === lastId)
-        || rows.find(hasUserMessage)
-        || rows.slice().sort(byChatOrder)[0]
-        || null;
-      if (match && !startBlankRef.current) {
-        activeIdRef.current = match.id;
-        setActiveId(match.id);
       }
     };
     boot();
@@ -1101,22 +1125,19 @@ export default function AnalyticsAiPanel({
     setSentAnim(null);
   }, [embedded, onNewChat, scopeLabel]);
 
-  const didAutoBlankRef = useRef(false);
+  const startNewRef = useRef(startNew);
+  startNewRef.current = startNew;
   useEffect(() => {
-    if (!ready) {
-      didAutoBlankRef.current = false;
-      return;
-    }
+    if (!ready) return;
     if (startBlank) {
-      if (!embedded) startNew();
+      if (!embedded) startNewRef.current();
       onBlankStartedRef.current?.();
       return;
     }
-    if (!embedded && !didAutoBlankRef.current) {
-      didAutoBlankRef.current = true;
-      if (!activeIdRef.current && !chatsRef.current.some(hasUserMessage)) startNew();
-    }
-  }, [ready, startBlank, embedded, startNew]);
+    if (embedded || !screenVisible) return;
+    startNewRef.current();
+    setMobileList(false);
+  }, [ready, startBlank, embedded, screenVisible]);
 
   const mobileTopBarTrailing = useMemo(
     () => (
@@ -1180,7 +1201,8 @@ export default function AnalyticsAiPanel({
     setMobileList(false);
     setSentAnim(null);
     const chat = chatsRef.current.find((item) => item.id === id);
-    if (!chat?.conversationId || !chat.previewOnly) return;
+    if (!chat?.conversationId) return;
+    if (!chat.previewOnly && (chat.turns || []).length > 1) return;
     hydrateAiDmChat(chat, myId)
       .then((hydrated) => {
         commit((current) => current.map((item) => (item.id === id ? hydrated : item)));
@@ -1433,7 +1455,17 @@ export default function AnalyticsAiPanel({
     }).start();
 
     const stored = attachments.map(storableAttachment).filter(Boolean);
-    const boundId = existing?.conversationId || conversationId || '';
+    let boundId = existing?.conversationId || conversationId || '';
+    if (!boundId) {
+      try {
+        boundId = await ensureAiDmForChat({
+          title: nameThis ? fallbackTitle(text) : (existing?.title || fallbackTitle(text)),
+          turns: [],
+        });
+      } catch {
+        boundId = '';
+      }
+    }
     const userTurnBase = stored.length
       ? { role: 'user', content: text, attachments: stored, senderId: myId }
       : { role: 'user', content: text, senderId: myId };

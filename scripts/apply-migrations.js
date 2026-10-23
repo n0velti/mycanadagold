@@ -18,17 +18,20 @@ const MIGRATIONS_DIR = path.join(__dirname, '..', 'supabase', 'migrations');
 const DASHBOARD_SQL = `https://supabase.com/dashboard/project/${PROJECT_REF}/sql/new`;
 
 function loadLocalEnv() {
-  const envPath = path.join(__dirname, '..', '.env.local');
-  if (!fs.existsSync(envPath)) return;
-  for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eq = trimmed.indexOf('=');
-    if (eq < 1) continue;
-    const key = trimmed.slice(0, eq).trim();
-    let value = trimmed.slice(eq + 1).trim();
-    if (/^(['"]).*\1$/.test(value)) value = value.slice(1, -1);
-    if (process.env[key] == null) process.env[key] = value;
+  const root = path.join(__dirname, '..');
+  const files = [path.join(root, 'supabase', '.env.local'), path.join(root, '.env.local')];
+  for (const envPath of files) {
+    if (!fs.existsSync(envPath)) continue;
+    for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq < 1) continue;
+      const key = trimmed.slice(0, eq).trim();
+      let value = trimmed.slice(eq + 1).trim();
+      if (/^(['"]).*\1$/.test(value)) value = value.slice(1, -1);
+      if (process.env[key] == null) process.env[key] = value;
+    }
   }
 }
 
@@ -98,15 +101,32 @@ async function main() {
     return;
   }
 
+  let appliedNow = 0;
+  let recordedExisting = 0;
   for (const migration of pending) {
     process.stdout.write(`Applying ${migration.file} … `);
     const ledger = `insert into supabase_migrations.schema_migrations (version, name)
       values ('${migration.version}', '${migration.name.replace(/'/g, "''")}')
       on conflict (version) do nothing;`;
-    await runSql(token, `begin;\n${migration.sql}\n${ledger}\ncommit;`);
-    console.log('done');
+    try {
+      await runSql(token, `begin;\n${migration.sql}\n${ledger}\ncommit;`);
+      console.log('done');
+      appliedNow += 1;
+    } catch (error) {
+      const message = String(error?.message || error);
+      // Ledger lagged the database (object created earlier, version not recorded).
+      if (/42710|42P07|already exists/i.test(message)) {
+        await runSql(token, ledger);
+        console.log('already present, recorded');
+        recordedExisting += 1;
+        continue;
+      }
+      throw error;
+    }
   }
-  console.log(`Applied ${pending.length} migration(s) to project ${PROJECT_REF}.`);
+  console.log(
+    `Finished ${pending.length} pending file(s) on ${PROJECT_REF}: ${appliedNow} applied, ${recordedExisting} already present.`,
+  );
 }
 
 main().catch((error) => {

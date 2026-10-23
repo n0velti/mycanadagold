@@ -11,6 +11,15 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useIsMobile } from '../lib/mobileUi';
 import {
+  AI_SCOPE_CAPABILITIES,
+  AI_SCOPE_LEVELS,
+  aiScopesEqual,
+  defaultAiScopesByRole,
+  defaultAiScopesForRole,
+  resolveAiScopes,
+  sanitizeAiScopes,
+} from '../lib/aiScopes';
+import {
   USER_CATEGORIES,
   USER_CATEGORY_KEYS,
   accessListsEqual,
@@ -19,20 +28,23 @@ import {
   allowedRolesForTriageSwitch,
   canSwitchWithTriage,
   triageSwitchPartner,
+  clearUserAiAccess,
   clearUserAppAccess,
   defaultAccessByRole,
   getCategory,
   hasFullAppAccess,
   listStaffProfiles,
   loadRoleAppAccess,
+  loadUserAiAccessMap,
   loadUserAppAccessMap,
   resolvedAccessForProfile,
   saveRoleAppAccess,
+  saveUserAiAccess,
   saveUserAppAccess,
   saveUserAppAccessBatch,
   updateStaffAccess,
 } from '../lib/permissions';
-import { IosGroup, IosPage, IosRow, IosSwitch } from './IosSettings';
+import { IosGroup, IosPage, IosRow } from './IosSettings';
 import {
   Chip,
   EmptyState,
@@ -109,26 +121,6 @@ async function queryMediaPermission(name) {
   } catch {
     return 'prompt';
   }
-}
-
-function AccessToggle({ on, disabled, onPress }) {
-  const isMobile = useIsMobile();
-  if (isMobile) {
-    return <IosSwitch on={on} disabled={disabled} onPress={onPress} />;
-  }
-
-  return (
-    <Pressable
-      onPress={onPress}
-      disabled={disabled}
-      hitSlop={6}
-      style={[styles.toggleTrack, on && styles.toggleTrackOn, disabled && styles.toggleDisabled]}
-      accessibilityRole="switch"
-      accessibilityState={{ checked: on, disabled }}
-    >
-      <View style={[styles.toggleThumb, on && styles.toggleThumbOn]} />
-    </Pressable>
-  );
 }
 
 function RoleBadge({ role, isSystemAdmin }) {
@@ -233,11 +225,61 @@ function personDraftFromResolved(resolved) {
   };
 }
 
-function accessLine(row, accessByRole, userAccessMap, catalogKeys) {
-  if (hasFullAppAccess(row)) return 'Every app';
+function accessLine(row, accessByRole, userAccessMap, catalogKeys, userAiMap) {
+  if (hasFullAppAccess(row)) return 'Every app · Company Analytics';
   const resolved = resolvedAccessForProfile(row, accessByRole, catalogKeys, userAccessMap[row.id]);
-  const custom = resolved.inherited ? 'Role defaults' : 'Custom apps';
-  return `${resolved.visibleApps.length} apps · ${custom}`;
+  const customApps = resolved.inherited ? 'Role defaults' : 'Custom apps';
+  const customAi = userAiMap?.[row.id] ? 'Custom Analytics' : null;
+  return `${resolved.visibleApps.length} apps · ${[customApps, customAi].filter(Boolean).join(' · ')}`;
+}
+
+function groupApps(apps) {
+  const groups = [];
+  const seen = new Map();
+  for (const app of apps || []) {
+    const category = app.category || 'App';
+    if (!seen.has(category)) {
+      seen.set(category, []);
+      groups.push({ category, apps: seen.get(category) });
+    }
+    seen.get(category).push(app);
+  }
+  return groups;
+}
+
+function ScopeChips({ value, disabled, onChange }) {
+  return (
+    <View style={styles.scopeChipRow}>
+      {AI_SCOPE_LEVELS.map((level) => {
+        const selected = value === level;
+        const label = level === 'self' ? 'Self' : level === 'store' ? 'Store' : 'Company';
+        return (
+          <Pressable
+            key={level}
+            onPress={() => onChange(level)}
+            disabled={disabled}
+            style={[styles.scopeChip, selected && styles.scopeChipOn, disabled && styles.toggleDisabled]}
+          >
+            <Text style={[styles.scopeChipText, selected && styles.scopeChipTextOn]}>{label}</Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+function MatrixCheck({ on, locked, onPress }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={locked}
+      style={[styles.matrixCell, on && styles.matrixCellOn, locked && styles.toggleDisabled]}
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked: on, disabled: locked }}
+    >
+      <Ionicons name={on ? 'checkmark' : 'remove'} size={14} color={on ? '#fff' : '#C7C7CC'} />
+    </Pressable>
+  );
 }
 
 function FilterBulkState({ value, onChange, disabled }) {
@@ -407,49 +449,135 @@ function DevicePermissionsPanel() {
   );
 }
 
-function RoleDefaultsPane({ apps, catalogKeys, draft, locked, activeRole, onRoleChange, onToggleApp, onSave, saving, message, error }) {
+function RoleDefaultsPane({
+  apps,
+  draft,
+  aiDraft,
+  activeRole,
+  onRoleChange,
+  onToggleRoleApp,
+  onChangeRoleScope,
+  onSave,
+  saving,
+  message,
+  error,
+}) {
+  const isMobile = useIsMobile();
+  const groups = groupApps((apps || []).filter((app) => app.key !== 'home'));
+  const roles = isMobile
+    ? USER_CATEGORIES.filter((category) => category.key === activeRole)
+    : USER_CATEGORIES;
   const activeCategory = USER_CATEGORIES.find((category) => category.key === activeRole);
 
   return (
-    <ScrollView style={styles.paneScroll} contentContainerStyle={styles.rolesContent}>
+    <ScrollView style={styles.paneScroll} contentContainerStyle={styles.rolesContentWide}>
       <View style={styles.ticketCard}>
-        <Text style={styles.cardTitle}>Starting apps for each role</Text>
+        <Text style={styles.cardTitle}>Role defaults</Text>
         <Text style={styles.cardIntro}>
-          A person gets these apps until you save a custom set for them. System Admin always has
-          every app. Home is always visible.
+          Each role starts with these apps and Analytics scopes. A person keeps them until you save
+          a custom set. System Admin is always every app and Company scope. These Analytics scopes
+          also apply to Messages @ai, not only the Analytics app.
         </Text>
-        <View style={styles.chipRow}>
-          {USER_CATEGORIES.map((category) => (
-            <Chip
-              key={category.key}
-              label={category.shortLabel}
-              selected={category.key === activeRole}
-              onPress={() => onRoleChange(category.key)}
-            />
-          ))}
-        </View>
-        {activeCategory ? <Text style={styles.fieldHint}>{activeCategory.description}</Text> : null}
+        {isMobile ? (
+          <>
+            <View style={styles.chipRow}>
+              {USER_CATEGORIES.map((category) => (
+                <Chip
+                  key={category.key}
+                  label={category.shortLabel}
+                  selected={category.key === activeRole}
+                  onPress={() => onRoleChange(category.key)}
+                />
+              ))}
+            </View>
+            {activeCategory ? <Text style={styles.fieldHint}>{activeCategory.description}</Text> : null}
+          </>
+        ) : null}
       </View>
 
       <View style={styles.ticketCard}>
-        <View style={styles.itemsHead}>
-          <Text style={[styles.itemsHeadLabel, styles.colApp]}>App</Text>
-          <Text style={styles.itemsHeadLabel}>Open</Text>
+        <Text style={styles.cardTitle}>Apps</Text>
+        <View style={styles.matrixHead}>
+          <Text style={[styles.matrixCorner, styles.matrixAppName]}>App</Text>
+          {roles.map((category) => (
+            <Text key={category.key} style={styles.matrixColLabel} numberOfLines={1}>
+              {category.shortLabel}
+            </Text>
+          ))}
         </View>
-        {(apps || [])
-          .filter((app) => app.key !== 'home')
-          .map((app, index, list) => {
-            const on = locked || (draft[activeRole] || []).includes(app.key);
-            return (
-              <View key={app.key} style={[styles.appRow, index === list.length - 1 && styles.appRowLast]}>
-                <View style={[styles.appIcon, { backgroundColor: app.tint || '#F4F4F5' }]}>
-                  <Ionicons name={app.icon || 'apps-outline'} size={16} color={app.accent || '#52525B'} />
+        {groups.map((group) => (
+          <View key={group.category}>
+            <Text style={styles.matrixGroup}>{group.category}</Text>
+            {group.apps.map((app) => (
+              <View key={app.key} style={styles.matrixRow}>
+                <View style={styles.matrixAppName}>
+                  <View style={[styles.matrixIcon, { backgroundColor: app.tint || '#F4F4F5' }]}>
+                    <Ionicons name={app.icon || 'apps-outline'} size={13} color={app.accent || '#52525B'} />
+                  </View>
+                  <Text style={styles.matrixAppLabel} numberOfLines={1}>
+                    {app.label}
+                  </Text>
                 </View>
-                <Text style={styles.appRowLabel}>{app.label}</Text>
-                <AccessToggle on={on} disabled={locked} onPress={() => onToggleApp(app.key)} />
+                {roles.map((category) => {
+                  const locked = category.key === 'system_admin';
+                  const on = locked || (draft[category.key] || []).includes(app.key);
+                  return (
+                    <MatrixCheck
+                      key={category.key}
+                      on={on}
+                      locked={locked}
+                      onPress={() => onToggleRoleApp(category.key, app.key)}
+                    />
+                  );
+                })}
               </View>
-            );
-          })}
+            ))}
+          </View>
+        ))}
+      </View>
+
+      <View style={styles.ticketCard}>
+        <Text style={styles.cardTitle}>Analytics</Text>
+        <Text style={styles.cardIntro}>
+          Self is only their own figures. Store is people at their allocated store. Company is
+          everyone.
+        </Text>
+        <View style={styles.matrixHead}>
+          <Text style={[styles.matrixCorner, styles.matrixAppName]}>Capability</Text>
+          {roles.map((category) => (
+            <Text key={category.key} style={styles.matrixColLabel} numberOfLines={1}>
+              {category.shortLabel}
+            </Text>
+          ))}
+        </View>
+        {AI_SCOPE_CAPABILITIES.map((capability) => (
+          <View key={capability.key} style={styles.scopeMatrixBlock}>
+            <View style={styles.scopeMatrixCopy}>
+              <Text style={styles.matrixAppLabel}>{capability.label}</Text>
+              <Text style={styles.fieldHint}>{capability.description}</Text>
+            </View>
+            <View style={styles.scopeMatrixCells}>
+              {roles.map((category) => {
+                const locked = category.key === 'system_admin';
+                const value = locked
+                  ? 'company'
+                  : aiDraft[category.key]?.[capability.key] || defaultAiScopesForRole(category.key)[capability.key];
+                return (
+                  <View key={category.key} style={styles.scopeMatrixCell}>
+                    {!isMobile ? (
+                      <Text style={styles.scopeRoleHint}>{category.shortLabel}</Text>
+                    ) : null}
+                    <ScopeChips
+                      value={value}
+                      disabled={locked}
+                      onChange={(level) => onChangeRoleScope(category.key, capability.key, level)}
+                    />
+                  </View>
+                );
+              })}
+            </View>
+          </View>
+        ))}
       </View>
 
       <Pressable
@@ -473,8 +601,11 @@ function PersonDetail({
   draft,
   userAccessMap,
   personDraft,
+  personAiDraft,
+  personAiInherited,
   busy,
   personSaving,
+  personAiSaving,
   message,
   error,
   compact,
@@ -487,6 +618,9 @@ function PersonDetail({
   onToggleFilter,
   onSaveApps,
   onResetApps,
+  onChangePersonScope,
+  onSaveAi,
+  onResetAi,
 }) {
   const resolved = resolvedAccessForProfile(row, draft, catalogKeys, userAccessMap[row.id]);
   const lockedPerson = hasFullAppAccess(row);
@@ -609,35 +743,40 @@ function PersonDetail({
               ? 'Custom set for this person. Filter lets them change the store inside an app they can open.'
               : `Using ${getCategory(row.appRole)?.label || 'role'} defaults until you save a custom set.`}
         </Text>
-        <View style={styles.itemsHead}>
-          <Text style={[styles.itemsHeadLabel, styles.colApp]}>App</Text>
-          <Text style={styles.itemsHeadLabel}>Open</Text>
-          <Text style={[styles.itemsHeadLabel, styles.filterHead]}>Filter</Text>
-        </View>
-        {(apps || []).map((app, index, list) => {
-          const visible = lockedPerson || personDraft.visibleApps.includes(app.key);
-          const filterOn = lockedPerson || personDraft.filterableApps.includes(app.key);
-          return (
-            <View key={app.key} style={[styles.appRow, index === list.length - 1 && styles.appRowLast]}>
-              <View style={[styles.appIcon, { backgroundColor: app.tint || '#F4F4F5' }]}>
-                <Ionicons name={app.icon || 'apps-outline'} size={16} color={app.accent || '#52525B'} />
-              </View>
-              <Text style={styles.appRowLabel}>{app.label}</Text>
-              <AccessToggle
-                on={visible}
-                disabled={lockedPerson || app.key === 'home'}
-                onPress={() => onToggleApp(app.key)}
-              />
-              <View style={styles.filterToggleWrap}>
-                <AccessToggle
-                  on={visible && filterOn}
-                  disabled={lockedPerson || !visible}
+        <View style={styles.appTileGrid}>
+          {(apps || []).map((app) => {
+            const visible = lockedPerson || personDraft.visibleApps.includes(app.key);
+            const filterOn = lockedPerson || personDraft.filterableApps.includes(app.key);
+            const homeLocked = app.key === 'home';
+            return (
+              <View
+                key={app.key}
+                style={[styles.appTile, visible && styles.appTileOn, !row.isActive && styles.toggleDisabled]}
+              >
+                <View style={[styles.matrixIcon, { backgroundColor: app.tint || '#F4F4F5' }]}>
+                  <Ionicons name={app.icon || 'apps-outline'} size={14} color={app.accent || '#52525B'} />
+                </View>
+                <Text style={styles.appTileLabel} numberOfLines={2}>
+                  {app.label}
+                </Text>
+                <Pressable
+                  onPress={() => onToggleApp(app.key)}
+                  disabled={lockedPerson || homeLocked}
+                  style={[styles.tileChip, visible && styles.tileChipOn]}
+                >
+                  <Text style={[styles.tileChipText, visible && styles.tileChipTextOn]}>Open</Text>
+                </Pressable>
+                <Pressable
                   onPress={() => onToggleFilter(app.key)}
-                />
+                  disabled={lockedPerson || !visible}
+                  style={[styles.tileChip, visible && filterOn && styles.tileChipOn]}
+                >
+                  <Text style={[styles.tileChipText, visible && filterOn && styles.tileChipTextOn]}>Filter</Text>
+                </Pressable>
               </View>
-            </View>
-          );
-        })}
+            );
+          })}
+        </View>
         {!lockedPerson ? (
           <View style={styles.personAppActions}>
             <Pressable
@@ -664,6 +803,54 @@ function PersonDetail({
         ) : null}
       </View>
 
+      <View style={styles.ticketCard}>
+        <Text style={styles.cardTitle}>Analytics</Text>
+        <Text style={styles.cardIntro}>
+          {lockedPerson
+            ? 'System Admin always has Company scope for pay, hours, and per-person performance.'
+            : personAiInherited
+              ? `Using ${getCategory(row.appRole)?.label || 'role'} Analytics defaults.`
+              : 'Custom Analytics scopes for this person. Does not change the apps they can open.'}
+        </Text>
+        {AI_SCOPE_CAPABILITIES.map((capability) => (
+          <View key={capability.key} style={styles.personScopeRow}>
+            <View style={styles.flexCopy}>
+              <Text style={styles.personName}>{capability.label}</Text>
+              <Text style={styles.personMeta}>{capability.description}</Text>
+            </View>
+            <ScopeChips
+              value={personAiDraft[capability.key]}
+              disabled={lockedPerson}
+              onChange={(level) => onChangePersonScope(capability.key, level)}
+            />
+          </View>
+        ))}
+        {!lockedPerson ? (
+          <View style={styles.personAppActions}>
+            <Pressable
+              style={[styles.saveButton, personAiSaving && styles.buttonDisabled]}
+              onPress={onSaveAi}
+              disabled={personAiSaving}
+            >
+              {personAiSaving ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.saveButtonText}>Save analytics</Text>
+              )}
+            </Pressable>
+            {!personAiInherited ? (
+              <Pressable
+                style={[styles.ghostButton, personAiSaving && styles.buttonDisabled]}
+                onPress={onResetAi}
+                disabled={personAiSaving}
+              >
+                <Text style={styles.ghostButtonText}>Use role defaults</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
+      </View>
+
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
       {message ? <Text style={styles.savedText}>{message}</Text> : null}
       {resolved.inherited && !lockedPerson ? (
@@ -675,22 +862,33 @@ function PersonDetail({
   );
 }
 
-function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUserAccessSaved }) {
+function AppAccessPanel({
+  session,
+  apps,
+  onAccessSaved,
+  onStaffAccessSaved,
+  onUserAccessSaved,
+  onUserAiAccessSaved,
+}) {
   const isMobile = useIsMobile();
   const catalogKeys = useMemo(() => (apps || []).map((app) => app.key), [apps]);
   const actorId = session?.supabaseUserId || session?.profile?.id;
   const [tab, setTab] = useState('people');
   const [activeRole, setActiveRole] = useState('precious_metal_analyst');
   const [draft, setDraft] = useState(() => defaultAccessByRole(catalogKeys));
+  const [aiDraft, setAiDraft] = useState(() => defaultAiScopesByRole());
   const [staff, setStaff] = useState([]);
   const [userAccessMap, setUserAccessMap] = useState({});
+  const [userAiMap, setUserAiMap] = useState({});
   const [staffQuery, setStaffQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState('');
   const [selectedId, setSelectedId] = useState('');
   const [personDraft, setPersonDraft] = useState({ visibleApps: [], filterableApps: [] });
+  const [personAiDraft, setPersonAiDraft] = useState(() => defaultAiScopesForRole('precious_metal_analyst'));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [personSaving, setPersonSaving] = useState(false);
+  const [personAiSaving, setPersonAiSaving] = useState(false);
   const [updatingId, setUpdatingId] = useState('');
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkTarget, setBulkTarget] = useState('matching');
@@ -700,7 +898,6 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
-  const locked = activeRole === 'system_admin';
   const selectedRow = staff.find((row) => row.id === selectedId) || null;
 
   const roleCounts = useMemo(() => {
@@ -768,17 +965,20 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
       setLoading(true);
       setError('');
       try {
-        const [access, people, userAccess] = await Promise.all([
+        const [access, people, userAccess, userAi] = await Promise.all([
           loadRoleAppAccess(catalogKeys),
           listStaffProfiles().catch(() => []),
           loadUserAppAccessMap(catalogKeys),
+          loadUserAiAccessMap(),
         ]);
         if (cancelled) return;
         setDraft(access.byRole);
+        setAiDraft({ ...defaultAiScopesByRole(), ...(access.aiScopesByRole || {}) });
         setStaff(people);
         setUserAccessMap(userAccess.byUser);
-        if (access.error || userAccess.error) {
-          setError(access.error || userAccess.error);
+        setUserAiMap(userAi.byUser || {});
+        if (access.error || userAccess.error || userAi.error) {
+          setError(access.error || userAccess.error || userAi.error);
         }
       } catch (nextError) {
         if (!cancelled) {
@@ -811,21 +1011,31 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
   const openPerson = (row) => {
     const resolved = resolvedAccessForProfile(row, draft, catalogKeys, userAccessMap[row.id]);
     setPersonDraft(personDraftFromResolved(resolved));
+    setPersonAiDraft(sanitizeAiScopes(resolveAiScopes(row, aiDraft, userAiMap[row.id])));
     setSelectedId(row.id);
     setMessage('');
     setError('');
   };
 
-  const toggleApp = (appKey) => {
-    if (locked || saving) return;
+  const toggleRoleApp = (role, appKey) => {
+    if (role === 'system_admin' || saving) return;
     setMessage('');
     setDraft((current) => {
-      const list = current[activeRole] || [];
+      const list = current[role] || [];
       const nextList = list.includes(appKey)
         ? list.filter((key) => key !== appKey)
         : [...list, appKey];
-      return { ...current, [activeRole]: nextList };
+      return { ...current, [role]: nextList };
     });
+  };
+
+  const changeRoleScope = (role, capability, level) => {
+    if (role === 'system_admin' || saving) return;
+    setMessage('');
+    setAiDraft((current) => ({
+      ...current,
+      [role]: sanitizeAiScopes({ ...(current[role] || defaultAiScopesForRole(role)), [capability]: level }),
+    }));
   };
 
   const handleSaveDefaults = async () => {
@@ -834,17 +1044,27 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
     setError('');
     setMessage('');
     try {
-      const next = await saveRoleAppAccess(draft, catalogKeys, actorId);
-      setDraft(next);
+      const sanitizedAi = {};
+      for (const role of USER_CATEGORY_KEYS) {
+        sanitizedAi[role] = sanitizeAiScopes(aiDraft[role], defaultAiScopesForRole(role));
+      }
+      const next = await saveRoleAppAccess(draft, catalogKeys, actorId, sanitizedAi);
+      setDraft(next.byRole || next);
+      if (next.aiScopesByRole) setAiDraft({ ...defaultAiScopesByRole(), ...next.aiScopesByRole });
       onAccessSaved?.(next);
       if (selectedRow && !userAccessMap[selectedRow.id] && !hasFullAppAccess(selectedRow)) {
         setPersonDraft(
-          personDraftFromResolved(resolvedAccessForProfile(selectedRow, next, catalogKeys, null)),
+          personDraftFromResolved(
+            resolvedAccessForProfile(selectedRow, next.byRole || next, catalogKeys, null),
+          ),
         );
+      }
+      if (selectedRow && !userAiMap[selectedRow.id] && !hasFullAppAccess(selectedRow)) {
+        setPersonAiDraft(sanitizeAiScopes(resolveAiScopes(selectedRow, next.aiScopesByRole || sanitizedAi, null)));
       }
       setMessage('Role defaults saved.');
     } catch (nextError) {
-      setError(nextError?.message || 'Could not save app visibility.');
+      setError(nextError?.message || 'Could not save permissions.');
     } finally {
       setSaving(false);
     }
@@ -894,6 +1114,67 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
       setError(nextError?.message || "Could not save that person's apps.");
     } finally {
       setPersonSaving(false);
+    }
+  };
+
+  const changePersonScope = (capability, level) => {
+    if (hasFullAppAccess(selectedRow) || personAiSaving) return;
+    setMessage('');
+    setPersonAiDraft((current) => sanitizeAiScopes({ ...current, [capability]: level }));
+  };
+
+  const handleSavePersonAi = async (row) => {
+    if (personAiSaving || hasFullAppAccess(row)) return;
+    setPersonAiSaving(true);
+    setError('');
+    setMessage('');
+    try {
+      const next = sanitizeAiScopes(personAiDraft, defaultAiScopesForRole(row.appRole));
+      const inherited = sanitizeAiScopes(resolveAiScopes(row, aiDraft, null));
+      if (aiScopesEqual(next, inherited)) {
+        await clearUserAiAccess(row.id);
+        setUserAiMap((current) => {
+          const copy = { ...current };
+          delete copy[row.id];
+          return copy;
+        });
+        setPersonAiDraft(inherited);
+        onUserAiAccessSaved?.(row.id, null);
+        setMessage(`Restored Analytics for ${staffName(row)} to role defaults.`);
+        return;
+      }
+      const saved = await saveUserAiAccess(row.id, next, actorId);
+      setUserAiMap((current) => ({ ...current, [row.id]: saved }));
+      setPersonAiDraft(sanitizeAiScopes(saved));
+      onUserAiAccessSaved?.(row.id, saved);
+      setMessage(`Saved Analytics for ${staffName(row)}.`);
+    } catch (nextError) {
+      setError(nextError?.message || "Could not save that person's Analytics permissions.");
+    } finally {
+      setPersonAiSaving(false);
+    }
+  };
+
+  const handleResetPersonAi = async (row) => {
+    if (personAiSaving || hasFullAppAccess(row)) return;
+    setPersonAiSaving(true);
+    setError('');
+    setMessage('');
+    try {
+      await clearUserAiAccess(row.id);
+      setUserAiMap((current) => {
+        const copy = { ...current };
+        delete copy[row.id];
+        return copy;
+      });
+      const inherited = sanitizeAiScopes(resolveAiScopes(row, aiDraft, null));
+      setPersonAiDraft(inherited);
+      onUserAiAccessSaved?.(row.id, null);
+      setMessage(`Restored Analytics for ${staffName(row)} to ${getCategory(row.appRole)?.label || 'role'} defaults.`);
+    } catch (nextError) {
+      setError(nextError?.message || 'Could not restore Analytics defaults.');
+    } finally {
+      setPersonAiSaving(false);
     }
   };
 
@@ -955,10 +1236,15 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
     setError('');
     setMessage('');
     setStaff((current) => current.map((entry) => (entry.id === row.id ? optimistic : entry)));
-    if (selectedId === row.id && !userAccessMap[row.id] && !hasFullAppAccess(optimistic)) {
-      setPersonDraft(
-        personDraftFromResolved(resolvedAccessForProfile(optimistic, draft, catalogKeys, null)),
-      );
+    if (selectedId === row.id && !hasFullAppAccess(optimistic)) {
+      if (!userAccessMap[row.id]) {
+        setPersonDraft(
+          personDraftFromResolved(resolvedAccessForProfile(optimistic, draft, catalogKeys, null)),
+        );
+      }
+      if (!userAiMap[row.id]) {
+        setPersonAiDraft(sanitizeAiScopes(resolveAiScopes(optimistic, aiDraft, null)));
+      }
     }
 
     try {
@@ -1200,7 +1486,7 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
                           {!row.isActive ? ' · Disabled' : ''}
                         </Text>
                         <Text style={styles.personMeta} numberOfLines={1}>
-                          {accessLine(row, draft, userAccessMap, catalogKeys)}
+                          {accessLine(row, draft, userAccessMap, catalogKeys, userAiMap)}
                         </Text>
                       </View>
                       <RoleBadge role={row.appRole} isSystemAdmin={row.isSystemAdmin} />
@@ -1224,8 +1510,11 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
       draft={draft}
       userAccessMap={userAccessMap}
       personDraft={personDraft}
+      personAiDraft={personAiDraft}
+      personAiInherited={!userAiMap[selectedRow.id]}
       busy={updatingId === selectedRow.id}
       personSaving={personSaving}
+      personAiSaving={personAiSaving}
       message={message}
       error={error}
       compact={isMobile}
@@ -1252,6 +1541,9 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
       onToggleFilter={togglePersonFilter}
       onSaveApps={() => handleSavePersonApps(selectedRow)}
       onResetApps={() => handleResetPersonApps(selectedRow)}
+      onChangePersonScope={changePersonScope}
+      onSaveAi={() => handleSavePersonAi(selectedRow)}
+      onResetAi={() => handleResetPersonAi(selectedRow)}
     />
   ) : (
     <EmptyState
@@ -1275,12 +1567,12 @@ function AppAccessPanel({ session, apps, onAccessSaved, onStaffAccessSaved, onUs
       ) : tab === 'roles' ? (
         <RoleDefaultsPane
           apps={apps}
-          catalogKeys={catalogKeys}
           draft={draft}
-          locked={locked}
+          aiDraft={aiDraft}
           activeRole={activeRole}
           onRoleChange={setActiveRole}
-          onToggleApp={toggleApp}
+          onToggleRoleApp={toggleRoleApp}
+          onChangeRoleScope={changeRoleScope}
           onSave={handleSaveDefaults}
           saving={saving}
           message={message}
@@ -1309,6 +1601,7 @@ export default function PermissionsPanel({
   onAccessSaved,
   onStaffAccessSaved,
   onUserAccessSaved,
+  onUserAiAccessSaved,
 }) {
   const isMobile = useIsMobile();
 
@@ -1351,6 +1644,7 @@ export default function PermissionsPanel({
       onAccessSaved={onAccessSaved}
       onStaffAccessSaved={onStaffAccessSaved}
       onUserAccessSaved={onUserAccessSaved}
+      onUserAiAccessSaved={onUserAiAccessSaved}
     />
   );
 }
@@ -1370,6 +1664,184 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     maxWidth: 720,
     gap: 12,
+  },
+  rolesContentWide: {
+    paddingBottom: 40,
+    paddingTop: 12,
+    maxWidth: 1080,
+    gap: 12,
+  },
+  matrixHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 32,
+    paddingVertical: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#ececef',
+    gap: 6,
+  },
+  matrixCorner: {
+    fontFamily: FONT,
+    fontSize: 11,
+    fontWeight: '600',
+    color: T.secondary,
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+  },
+  matrixColLabel: {
+    width: 52,
+    textAlign: 'center',
+    fontFamily: FONT,
+    fontSize: 11,
+    fontWeight: '700',
+    color: T.secondary,
+  },
+  matrixGroup: {
+    fontFamily: FONT,
+    fontSize: 11,
+    fontWeight: '700',
+    color: T.secondary,
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+    marginTop: 12,
+    marginBottom: 4,
+  },
+  matrixRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 36,
+    gap: 6,
+  },
+  matrixAppName: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  matrixIcon: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  matrixAppLabel: {
+    flex: 1,
+    fontFamily: FONT,
+    fontSize: 13,
+    color: T.text,
+  },
+  matrixCell: {
+    width: 52,
+    height: 28,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f4f4f5',
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  matrixCellOn: {
+    backgroundColor: '#1a1a1a',
+  },
+  scopeChipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+  },
+  scopeChip: {
+    borderRadius: 6,
+    paddingVertical: 5,
+    paddingHorizontal: 7,
+    backgroundColor: '#f4f4f5',
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  scopeChipOn: {
+    backgroundColor: '#1a1a1a',
+  },
+  scopeChipText: {
+    fontFamily: FONT,
+    fontSize: 11,
+    fontWeight: '600',
+    color: T.text,
+  },
+  scopeChipTextOn: {
+    color: '#fff',
+  },
+  scopeMatrixBlock: {
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#ececef',
+    gap: 8,
+  },
+  scopeMatrixCopy: {
+    gap: 2,
+  },
+  scopeMatrixCells: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  scopeMatrixCell: {
+    gap: 4,
+  },
+  scopeRoleHint: {
+    fontFamily: FONT,
+    fontSize: 10,
+    fontWeight: '700',
+    color: T.secondary,
+    textTransform: 'uppercase',
+  },
+  appTileGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  appTile: {
+    width: 112,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
+    borderRadius: 10,
+    padding: 8,
+    gap: 6,
+    backgroundColor: '#fff',
+  },
+  appTileOn: {
+    backgroundColor: '#F5F5F7',
+    borderColor: '#D2D2D7',
+  },
+  appTileLabel: {
+    fontFamily: FONT,
+    fontSize: 12,
+    fontWeight: '600',
+    color: T.text,
+    minHeight: 30,
+  },
+  tileChip: {
+    borderRadius: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 6,
+    backgroundColor: '#f4f4f5',
+    alignItems: 'center',
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  tileChipOn: {
+    backgroundColor: '#1a1a1a',
+  },
+  tileChipText: {
+    fontFamily: FONT,
+    fontSize: 11,
+    fontWeight: '600',
+    color: T.secondary,
+  },
+  tileChipTextOn: {
+    color: '#fff',
+  },
+  personScopeRow: {
+    gap: 8,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#ececef',
   },
   deviceContent: {
     paddingBottom: 40,

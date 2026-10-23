@@ -1,5 +1,6 @@
 /**
- * Join for @canadagold.ca and @cdncoin.com.
+ * Join for company Workspace domains (GOOGLE_MAIL_HOSTED_DOMAIN plus
+ * @canadagold.ca and @cdncoin.com).
  *
  * The temporary password signs the person in, but aureus_verified_at stays
  * null and the JWT has no aureus_user_id until they replace it. That is the
@@ -9,7 +10,7 @@
  */
 import { createClient, type SupabaseClient } from 'npm:@supabase/supabase-js@2';
 import { bearerToken, clientIp, error, json, sha256Hex } from './http.ts';
-import { companyJoinEmail, sendTemporaryPassword } from './joinMail.ts';
+import { allowedJoinDomains, companyJoinEmail, joinEmailHint, sendTemporaryPassword } from './joinMail.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('SUPABASE_SECRET_KEY') ?? '';
@@ -197,7 +198,7 @@ async function markPasswordPending(admin: SupabaseClient, userId: string): Promi
 export async function handleEmailJoin(req: Request, body: JoinBody): Promise<Response> {
   const email = companyJoinEmail(body.email);
   if (!email) {
-    return error(req, 400, 'Use your @canadagold.ca or @cdncoin.com email.', 'bad_email');
+    return error(req, 400, joinEmailHint(), 'bad_email');
   }
 
   const admin = adminClient();

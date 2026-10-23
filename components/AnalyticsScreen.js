@@ -5,8 +5,8 @@ import { EmptyState } from './TriageKit';
 
 const AnalyticsAiPanel = lazy(() => import('./AnalyticsAiPanel'));
 
-// Saved conversations are restored from this device. A new chat is only
-// opened when there is nothing to resume, or the person asks for one.
+// Opening Analytics always lands on a new chat. Earlier conversations stay
+// in the sidebar and are loaded from this device plus shared AI threads.
 export default function AnalyticsScreen({
   session,
   storeFilter,

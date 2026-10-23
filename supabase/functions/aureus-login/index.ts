@@ -16,8 +16,12 @@
  *        so every staff session can load every store.
  *
  *   POST { action: "join", email }
- *     @canadagold.ca and @cdncoin.com only. Emails a temporary password.
+ *     Company Workspace domains (GOOGLE_MAIL_HOSTED_DOMAIN plus
+ *     @canadagold.ca and @cdncoin.com). Emails a temporary password.
  *     The account cannot read data until set-password replaces it.
+ *
+ *   POST { action: "join-config" }
+ *     Public list of those domains for the login screen.
  *
  *   POST { action: "set-password", password }   Authorization: Bearer <user JWT>
  *     Replaces that temporary password and stamps the staff claim.
@@ -66,6 +70,7 @@ import {
   type AureusIdentity,
 } from '../_shared/identity.ts';
 import { handleEmailJoin, handleSetEmailPassword } from '../_shared/emailJoin.ts';
+import { allowedJoinDomains } from '../_shared/joinMail.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('SUPABASE_SECRET_KEY') ?? '';
@@ -1118,6 +1123,8 @@ Deno.serve(async (req) => {
         return await handleSyncBonusAccess(req, body);
       case 'join':
         return await handleEmailJoin(req, body);
+      case 'join-config':
+        return json(req, 200, { domains: allowedJoinDomains() });
       case 'set-password':
         return await handleSetEmailPassword(req, body);
       default:
