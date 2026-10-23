@@ -25,7 +25,7 @@ const FEATURES = tableFeatures({
   sortFns: { alphanumeric: sortFn_alphanumeric, basic: sortFn_basic },
 });
 
-const NUMBER_FORMATS = new Set(['int', 'decimal', 'money', 'hours']);
+const NUMBER_FORMATS = new Set(['int', 'decimal', 'money', 'hours', 'percent']);
 
 function cellText(value, format) {
   if (value == null || value === '') return '—';
