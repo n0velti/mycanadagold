@@ -28,8 +28,6 @@ import { enrichClientActivity, searchClients } from '../lib/triageLookups';
 import { FONT } from '../lib/typography';
 import { usePhoneCalls } from './PhoneCallProvider';
 
-const AI_PURPLE = '#6B4DE6';
-
 function initialsFromName(name) {
   const parts = String(name || '')
     .trim()
@@ -327,7 +325,6 @@ export default function SearchScreen({
   onOpenDocument,
   onOpenCustomer,
   onMessage,
-  onOpenAi,
   query: queryProp,
   onQueryChange,
   hideSearchField = false,
@@ -581,20 +578,6 @@ export default function SearchScreen({
             ) : null}
           </View>
           )}
-          {typeof onOpenAi === 'function' ? (
-          <Pressable
-            onPress={onOpenAi}
-            style={({ pressed, hovered }) => [
-              styles.aiToggle,
-              (pressed || hovered) && styles.aiToggleHover,
-            ]}
-            accessibilityRole="button"
-            accessibilityLabel="Talk to AI"
-          >
-            <Ionicons name="sparkles" size={14} color={AI_PURPLE} />
-            <Text style={styles.aiToggleLabel}>AI</Text>
-          </Pressable>
-          ) : null}
         </View>
       </View>
 
@@ -775,30 +758,6 @@ const styles = StyleSheet.create({
     gap: 8,
     width: '100%',
     alignSelf: 'center',
-  },
-  aiToggle: {
-    flexShrink: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 6,
-    backgroundColor: '#fff',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(60, 60, 67, 0.18)',
-    minHeight: 40,
-    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
-  },
-  aiToggleHover: {
-    opacity: 0.92,
-  },
-  aiToggleLabel: {
-    fontFamily: FONT,
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#1d1d1f',
-    letterSpacing: 0.2,
   },
   searchInput: {
     flex: 1,

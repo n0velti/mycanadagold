@@ -866,6 +866,7 @@ export default function SettingsScreen({
   onAccessSaved,
   onStaffAccessSaved,
   onUserAccessSaved,
+  onUserAiAccessSaved,
 }) {
   const canManageAccess = canManageAppAccess(session?.profile);
   const canManageAiKeys = canManageCompanyAiKeys(session?.profile);
@@ -886,6 +887,7 @@ export default function SettingsScreen({
         onAccessSaved={onAccessSaved}
         onStaffAccessSaved={onStaffAccessSaved}
         onUserAccessSaved={onUserAccessSaved}
+        onUserAiAccessSaved={onUserAiAccessSaved}
       />
     );
   }

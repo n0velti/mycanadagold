@@ -62,7 +62,7 @@ export default function LoginScreen({
           {mode === 'join' ? (
             <>
               <Text style={[styles.prompt, isMobile && styles.promptMobile]}>
-                Please input your Canada Gold or CDN Coin email.
+                Please input your Canada Gold, CDN Coin, or other company email.
               </Text>
               <View style={[styles.fields, isMobile && styles.fieldsMobile]}>
                 <View style={[styles.fieldRow, isMobile && styles.fieldRowMobile]}>

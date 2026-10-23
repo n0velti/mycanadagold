@@ -40,7 +40,7 @@ import {
   listRingCentralAccounts,
 } from '../lib/ringcentral';
 import { storeKeyFromName } from '../lib/storeSettings';
-import { useIsMobile } from '../lib/mobileUi';
+import { CANVAS, MOBILE, NAV_TAB_ACTIVE_BG, NAV_TAB_ACTIVE_RADIUS, useIsMobile } from '../lib/mobileUi';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -49,6 +49,26 @@ const fontFamily = Platform.select({
 });
 
 const ACCENT = '#15803D';
+const TAB_BORDER = '#d0d0d0';
+const ROW_RULE = 'rgba(42,38,30,0.08)';
+const CHIP_SHADOW = Platform.select({
+  web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
+  default: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+});
+const STORE_ACCENT_FALLBACKS = ['#1D4ED8', '#0F766E', '#B91C1C', '#B45309', '#6D28D9', '#047857', '#4338CA', '#BE185D'];
+
+function storeAccent(name) {
+  const value = String(name || '');
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+  return STORE_ACCENT_FALLBACKS[hash % STORE_ACCENT_FALLBACKS.length];
+}
 const TABS = [
   { key: 'incoming', label: 'Incoming' },
   { key: 'missed', label: 'Missed' },
@@ -136,9 +156,8 @@ function DateChip({ label, value, onChange, minimumDate, maximumDate }) {
   if (Platform.OS === 'web') {
     return (
       <View style={styles.pickChip}>
-        <Text style={styles.pickChipLabel}>{label}</Text>
         <View style={styles.pickChipControl}>
-          <Ionicons name="calendar-outline" size={14} color="#6b6b6b" />
+          <Ionicons name="calendar-outline" size={14} color={MOBILE.secondary} />
           {createElement('input', {
             type: 'date',
             value: formatDateParam(dateValue),
@@ -152,8 +171,9 @@ function DateChip({ label, value, onChange, minimumDate, maximumDate }) {
               border: 'none',
               background: 'transparent',
               fontFamily,
-              fontSize: 13,
-              color: '#1a1a1a',
+              fontSize: 14,
+              color: MOBILE.label,
+              letterSpacing: '-0.2px',
               padding: 0,
               margin: 0,
               outline: 'none',
@@ -169,9 +189,8 @@ function DateChip({ label, value, onChange, minimumDate, maximumDate }) {
   return (
     <>
       <Pressable style={styles.pickChip} onPress={() => setOpen(true)} accessibilityRole="button" accessibilityLabel={label}>
-        <Text style={styles.pickChipLabel}>{label}</Text>
         <View style={styles.pickChipControl}>
-          <Ionicons name="calendar-outline" size={14} color="#6b6b6b" />
+          <Ionicons name="calendar-outline" size={14} color={MOBILE.secondary} />
           <Text style={styles.pickChipValue}>{formatPickerDate(dateValue)}</Text>
         </View>
       </Pressable>
@@ -223,23 +242,21 @@ function DateFilter({ mode, startDate, endDate, onMode, onDay, onStart, onEnd })
   const today = new Date();
   const earliest = new Date(today.getTime() - (HISTORY_MAX_DAYS - 1) * DAY_MS);
   return (
-    <View style={styles.dateRow}>
-      <View style={styles.dateModeGroup}>
-        {DATE_MODES.map((item) => {
-          const active = mode === item.key;
-          return (
-            <Pressable
-              key={item.key}
-              style={[styles.dateChip, active && styles.dateChipActive]}
-              onPress={() => onMode(item.key)}
-              accessibilityRole="button"
-              accessibilityState={{ selected: active }}
-            >
-              <Text style={[styles.dateChipText, active && styles.dateChipTextActive]}>{item.label}</Text>
-            </Pressable>
-          );
-        })}
-      </View>
+    <View style={styles.dateRow} accessibilityRole="tablist">
+      {DATE_MODES.map((item) => {
+        const active = mode === item.key;
+        return (
+          <Pressable
+            key={item.key}
+            style={[styles.dateChip, active && styles.dateChipActive]}
+            onPress={() => onMode(item.key)}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: active }}
+          >
+            <Text style={[styles.dateChipText, active && styles.dateChipTextActive]}>{item.label}</Text>
+          </Pressable>
+        );
+      })}
       {mode === 'day' ? (
         <DateChip label="Date" value={startDate} onChange={onDay} minimumDate={earliest} maximumDate={today} />
       ) : null}
@@ -360,7 +377,7 @@ function CallHistoryRow({
   return (
     <View style={styles.itemRow}>
       <View style={styles.callIcon}>
-        <Ionicons name={icon} size={14} color={missed && !resolvedAt ? '#B91C1C' : ACCENT} />
+        <Ionicons name={icon} size={14} color={missed && !resolvedAt ? '#B91C1C' : MOBILE.secondary} />
       </View>
       <View style={styles.itemText}>
         <Text style={styles.itemTitle}>{label}</Text>
@@ -858,6 +875,68 @@ function RatioDayChart({ calls, resolveFrom = calls, anchor = null, label = 'tod
         </View>
       </View>
     </View>
+  );
+}
+
+function StoreTableRow({ row, status, storeRatio, last, compact, onOpen }) {
+  const rate = storeRatio.rate;
+  const number = row.account?.mainNumber
+    ? formatPhoneNumber(row.account.mainNumber)
+    : row.posPhone
+      ? formatPhoneNumber(row.posPhone)
+      : '—';
+  const answered = storeRatio.total ? `${storeRatio.answered} of ${storeRatio.total}` : '—';
+  const rateLabel = row.account?.hasJwt ? storeRatio.ratio : '—';
+  return (
+    <Pressable
+      style={({ hovered, pressed }) => [
+        styles.storeRow,
+        last && styles.storeRowLast,
+        (hovered || pressed) && styles.storeRowHover,
+      ]}
+      onPress={() => onOpen(row)}
+      accessibilityRole="button"
+      accessibilityLabel={`${row.storeName}, ${status}, ${rateLabel} answered`}
+    >
+      <View style={styles.storeIconWrap}>
+        <View style={[styles.storeIconTile, { backgroundColor: storeAccent(row.storeName) }]}>
+          <Ionicons name="storefront" size={compact ? 12 : 14} color="#fff" />
+        </View>
+      </View>
+      <View style={styles.storeRowBody}>
+        <View style={styles.storeColName}>
+          <Text style={styles.storeName} numberOfLines={1}>
+            {row.storeName}
+          </Text>
+          {compact ? (
+            <Text style={styles.storeMeta} numberOfLines={1}>
+              {[status, number !== '—' ? number : '', storeRatio.total ? answered : ''].filter(Boolean).join(' · ')}
+            </Text>
+          ) : null}
+        </View>
+        {compact ? null : (
+          <>
+            <Text style={styles.storeColNumber} numberOfLines={1}>
+              {number}
+            </Text>
+            <Text style={styles.storeColAnswered} numberOfLines={1}>
+              {answered}
+            </Text>
+          </>
+        )}
+        <Text
+          style={[
+            styles.storeRate,
+            rate == null && styles.storeRateMuted,
+            rate != null && rate < 80 && styles.statusError,
+            rate != null && rate >= 80 && styles.statusConnected,
+          ]}
+        >
+          {rateLabel}
+        </Text>
+      </View>
+      <Ionicons name="chevron-forward" size={18} color={MOBILE.secondary} />
+    </Pressable>
   );
 }
 
@@ -1442,7 +1521,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
         onPress={() => phone.setSilent(!phone.silent)}
         accessibilityLabel={phone.silent ? 'Turn ringtone on' : 'Silence ringtone'}
       >
-        <Ionicons name={phone.silent ? 'volume-mute' : 'volume-high'} size={16} color={phone.silent ? '#991B1B' : '#1a1a1a'} />
+        <Ionicons name={phone.silent ? 'volume-mute' : 'volume-high'} size={16} color={phone.silent ? '#991B1B' : MOBILE.label} />
       </Pressable>
       <Pressable
         style={styles.iconBtn}
@@ -1450,9 +1529,9 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
         accessibilityLabel="Refresh"
       >
         {(showStores ? loading : inboxLoading) ? (
-          <ActivityIndicator size="small" color={ACCENT} />
+          <ActivityIndicator size="small" color={MOBILE.secondary} />
         ) : (
-          <Ionicons name="refresh" size={16} color="#6b6b6b" />
+          <Ionicons name="refresh" size={16} color={MOBILE.secondary} />
         )}
       </Pressable>
     </View>
@@ -1473,7 +1552,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
   const historyNote = needsHistory ? (
     historyBusy ? (
       <View style={styles.historyRow}>
-        <ActivityIndicator size="small" color={ACCENT} />
+        <ActivityIndicator size="small" color={MOBILE.secondary} />
         <Text style={styles.sectionMeta}>Loading calls {rangeShort}…</Text>
       </View>
     ) : historyError ? (
@@ -1499,7 +1578,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
   if (storeFilter && loading && !viewStoreKey) {
     return (
       <View style={[styles.screen, styles.centered, embedded && styles.screenEmbedded, { flex: 1 }]}>
-        <ActivityIndicator color={ACCENT} />
+        <ActivityIndicator color={MOBILE.label} />
       </View>
     );
   }
@@ -1507,82 +1586,77 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
   if (showStores) {
     return (
       <View style={[styles.screen, embedded && styles.screenEmbedded]}>
-        <ScrollView style={styles.list} contentContainerStyle={[styles.listContent, embedded && styles.listContentEmbedded]} showsVerticalScrollIndicator={false}>
-          <View style={styles.headerRow}>
-            {hideStoreNav ? <View style={styles.headerCopy} /> : <Text style={styles.crumbCurrent}>Stores</Text>}
-            {headerActions}
-          </View>
-          <Text style={styles.sectionMeta}>
-            {canManage
-              ? 'Tap a store to open its calls, voicemail, and ratio. Add each store’s RingCentral JWT in Settings → RingCentral.'
-              : 'Tap a store to open its calls, voicemail, and ratio.'}
-          </Text>
-          <View style={styles.toolbar}>
+        <ScrollView
+          style={styles.list}
+          contentContainerStyle={[styles.listContent, styles.listContentTable, embedded && styles.listContentEmbedded]}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.tableToolbar}>
             <View style={styles.search}>
-              <Ionicons name="search" size={14} color="#8e8e93" />
+              <Ionicons name="search-outline" size={16} color={MOBILE.secondary} />
               <TextInput
                 style={styles.searchInput}
                 value={query}
                 onChangeText={setQuery}
                 placeholder="Search stores"
-                placeholderTextColor="#8e8e93"
+                placeholderTextColor={MOBILE.secondary}
                 autoCapitalize="none"
                 autoCorrect={false}
                 clearButtonMode="while-editing"
+                accessibilityLabel="Search stores"
               />
+              {query ? (
+                <Pressable onPress={() => setQuery('')} hitSlop={8} accessibilityLabel="Clear store search">
+                  <Ionicons name="close-circle" size={16} color="#c7c7cc" />
+                </Pressable>
+              ) : null}
+            </View>
+            <View style={styles.tableToolbarEnd}>
+              {dateFilter}
+              {headerActions}
             </View>
           </View>
-          {dateFilter}
           {historyNote}
           {warning ? <Text style={styles.warningText}>{warning}</Text> : null}
-          {rows.map((row) => {
-            const account = row.account;
-            const status = connectionLabel(account);
-            const storeRatio = storeRatios[row.key] || inboundCallRatio([]);
-            const rateLabel = account?.hasJwt ? storeRatio.ratio : '—';
-            return (
-              <Pressable
-                key={row.key}
-                style={styles.storeRow}
-                onPress={() => openStore(row)}
-                accessibilityRole="button"
-                accessibilityLabel={`${row.storeName}, ${status}, ${rateLabel} answered`}
-              >
-                <View style={styles.storeIcon}>
-                  <Ionicons name="call-outline" size={16} color={ACCENT} />
+          {loading && rows.length === 0 ? (
+            <View style={styles.centered}>
+              <ActivityIndicator color={MOBILE.label} />
+            </View>
+          ) : rows.length === 0 ? (
+            <Text style={styles.emptyText}>
+              {query.trim()
+                ? 'No stores match that search.'
+                : canManage
+                  ? 'No stores yet. Add each store’s RingCentral JWT in Settings → RingCentral.'
+                  : 'No store phones yet.'}
+            </Text>
+          ) : (
+            <View style={styles.storeTable}>
+              {isMobile ? null : (
+                <View style={styles.storeHeaderRow}>
+                  <View style={styles.storeIconWrap} />
+                  <View style={styles.storeRowBody}>
+                    <Text style={[styles.storeHeader, styles.storeColName]}>Store</Text>
+                    <Text style={[styles.storeHeader, styles.storeColNumber]}>Number</Text>
+                    <Text style={[styles.storeHeader, styles.storeColAnswered]}>Answered</Text>
+                    <Text style={[styles.storeHeader, styles.storeColRate]}>Phone</Text>
+                  </View>
+                  <View style={styles.storeChevronSpacer} />
                 </View>
-                <View style={styles.storeText}>
-                  <Text style={styles.storeName} numberOfLines={1}>
-                    {row.storeName}
-                  </Text>
-                  <Text style={styles.cellSub} numberOfLines={1}>
-                    {[
-                      status,
-                      account?.mainNumber
-                        ? formatPhoneNumber(account.mainNumber)
-                        : row.posPhone
-                          ? formatPhoneNumber(row.posPhone)
-                          : '',
-                      storeRatio.total ? `${storeRatio.answered} of ${storeRatio.total}` : '',
-                    ]
-                      .filter(Boolean)
-                      .join(' · ')}
-                  </Text>
-                </View>
-                <Text
-                  style={[
-                    styles.storeRate,
-                    storeRatio.rate == null && styles.storeRateMuted,
-                    storeRatio.rate != null && storeRatio.rate < 80 && styles.statusError,
-                    storeRatio.rate != null && storeRatio.rate >= 80 && styles.statusConnected,
-                  ]}
-                >
-                  {rateLabel}
-                </Text>
-                <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
-              </Pressable>
-            );
-          })}
+              )}
+              {rows.map((row, index) => (
+                <StoreTableRow
+                  key={row.key}
+                  row={row}
+                  status={connectionLabel(row.account)}
+                  storeRatio={storeRatios[row.key] || inboundCallRatio([])}
+                  last={index === rows.length - 1}
+                  compact={isMobile}
+                  onOpen={openStore}
+                />
+              ))}
+            </View>
+          )}
         </ScrollView>
       </View>
     );
@@ -1591,7 +1665,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
   return (
     <View style={[styles.screen, embedded && styles.screenEmbedded]}>
       <ScrollView style={styles.list} contentContainerStyle={[styles.listContent, embedded && styles.listContentEmbedded]} showsVerticalScrollIndicator={false}>
-        <View style={styles.headerRow}>
+        <View style={styles.tableToolbar}>
           <View style={styles.headerCopy}>
             {hideStoreNav ? null : activeAccount?.storeName || selected?.storeName || viewStoreKey ? (
               <PhoneCrumb
@@ -1602,7 +1676,10 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
               <Text style={styles.crumbCurrent}>Phone</Text>
             )}
           </View>
-          {headerActions}
+          <View style={styles.tableToolbarEnd}>
+            {dateFilter}
+            {headerActions}
+          </View>
         </View>
 
         {connectedStores.length > 1 && !storeFilter ? (
@@ -1654,7 +1731,6 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
           </Text>
         ) : null}
 
-        {dateFilter}
         {historyNote}
 
         {activeCall ? (
@@ -1806,7 +1882,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
             ))}
             {inboxLoading && inboundCalls.length === 0 ? (
               <View style={styles.centered}>
-                <ActivityIndicator color={ACCENT} />
+                <ActivityIndicator color={MOBILE.label} />
               </View>
             ) : inboundCalls.length === 0 && incomingLive.length === 0 ? (
               <Text style={styles.emptyText}>No incoming calls {rangeLabel}.</Text>
@@ -1828,7 +1904,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
           <View style={styles.section}>
             {inboxLoading && missedCalls.length === 0 ? (
               <View style={styles.centered}>
-                <ActivityIndicator color={ACCENT} />
+                <ActivityIndicator color={MOBILE.label} />
               </View>
             ) : missedCalls.length === 0 ? (
               <Text style={styles.emptyText}>No missed calls {rangeLabel}.</Text>
@@ -1853,7 +1929,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
           <View style={styles.section}>
             {inboxLoading && callLog.length === 0 ? (
               <View style={styles.centered}>
-                <ActivityIndicator color={ACCENT} />
+                <ActivityIndicator color={MOBILE.label} />
               </View>
             ) : callLog.length === 0 ? (
               <Text style={styles.emptyText}>No calls {rangeLabel}.</Text>
@@ -1995,7 +2071,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
             {playError ? <Text style={styles.errorText}>{playError}</Text> : null}
             {inboxLoading && visibleVoicemails.length === 0 ? (
               <View style={styles.centered}>
-                <ActivityIndicator color={ACCENT} />
+                <ActivityIndicator color={MOBILE.label} />
               </View>
             ) : visibleVoicemails.length === 0 ? (
               <Text style={styles.emptyText}>No voicemail {rangeLabel}.</Text>
@@ -2006,7 +2082,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
                 return (
                   <View key={row.id} style={styles.itemRow}>
                     <Pressable style={styles.playBtn} onPress={() => playVoicemail(row)} accessibilityLabel={playingId === row.id ? 'Pause voicemail' : 'Play voicemail'}>
-                      <Ionicons name={playingId === row.id ? 'pause' : 'play'} size={16} color={ACCENT} />
+                      <Ionicons name={playingId === row.id ? 'pause' : 'play'} size={16} color={MOBILE.label} />
                     </Pressable>
                     <View style={styles.itemText}>
                       <Text style={[styles.itemTitle, unread && styles.unread]}>
@@ -2125,7 +2201,7 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
   },
   screenEmbedded: {
     backgroundColor: 'transparent',
@@ -2134,18 +2210,36 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   listContent: {
-    paddingHorizontal: 20,
-    paddingTop: 4,
+    paddingHorizontal: 24,
+    paddingTop: 8,
     paddingBottom: 32,
-    maxWidth: 720,
+    maxWidth: 880,
     width: '100%',
     alignSelf: 'center',
+    gap: 12,
+  },
+  listContentTable: {
+    maxWidth: 1100,
     gap: 10,
   },
   listContentEmbedded: {
     paddingHorizontal: 16,
     maxWidth: '100%',
     paddingTop: 0,
+  },
+  tableToolbar: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  tableToolbarEnd: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8,
+    marginLeft: 'auto',
   },
   section: {
     gap: 4,
@@ -2180,7 +2274,8 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 20,
     fontWeight: '600',
-    color: '#6b6b6b',
+    color: MOBILE.secondary,
+    letterSpacing: -0.3,
   },
   crumbSep: {
     fontFamily,
@@ -2191,8 +2286,9 @@ const styles = StyleSheet.create({
     fontFamily,
     fontSize: 20,
     fontWeight: '600',
-    color: '#1a1a1a',
+    color: MOBILE.label,
     flexShrink: 1,
+    letterSpacing: -0.3,
   },
   headerActions: {
     flexDirection: 'row',
@@ -2202,10 +2298,13 @@ const styles = StyleSheet.create({
   iconBtn: {
     width: 32,
     height: 32,
-    borderRadius: 8,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#f3f3f3',
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
+    ...CHIP_SHADOW,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -2213,12 +2312,14 @@ const styles = StyleSheet.create({
   },
   iconBtnActive: {
     backgroundColor: '#FEE2E2',
+    borderColor: '#FECACA',
   },
   sectionMeta: {
     fontFamily,
     fontSize: 12,
-    color: '#8a8a8a',
+    color: MOBILE.secondary,
     lineHeight: 17,
+    letterSpacing: -0.1,
   },
   storeChips: {
     gap: 8,
@@ -2229,34 +2330,39 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
     paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
-    backgroundColor: '#f3f3f3',
+    height: 32,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
+    ...CHIP_SHADOW,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
   chipActive: {
-    backgroundColor: '#ECFDF5',
+    backgroundColor: NAV_TAB_ACTIVE_BG,
   },
   chipText: {
     fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#6b6b6b',
+    fontSize: 14,
+    fontWeight: '400',
+    color: MOBILE.label,
+    letterSpacing: -0.2,
   },
   chipTextActive: {
-    color: ACCENT,
+    color: MOBILE.label,
   },
   chipRatio: {
     fontFamily,
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#8a8a8a',
+    fontSize: 12,
+    fontWeight: '500',
+    color: MOBILE.secondary,
+    fontVariant: ['tabular-nums'],
   },
   chipRatioActive: {
-    color: ACCENT,
+    color: MOBILE.label,
   },
   storeRatioList: {
     gap: 6,
@@ -2268,23 +2374,26 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingVertical: 8,
     paddingHorizontal: 10,
-    borderRadius: 10,
-    backgroundColor: '#f7f7f7',
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
   storeRatioRowActive: {
-    backgroundColor: '#ECFDF5',
+    backgroundColor: NAV_TAB_ACTIVE_BG,
   },
   storeRatioName: {
     flex: 1,
     minWidth: 0,
     fontFamily,
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#1a1a1a',
+    fontSize: 14,
+    fontWeight: '400',
+    color: MOBILE.label,
+    letterSpacing: -0.2,
   },
   storeRatioValue: {
     fontFamily,
@@ -2311,8 +2420,9 @@ const styles = StyleSheet.create({
   compactStatusText: {
     fontFamily,
     fontSize: 12,
-    fontWeight: '600',
-    color: '#6b6b6b',
+    fontWeight: '500',
+    color: MOBILE.secondary,
+    letterSpacing: -0.1,
   },
   dateRow: {
     flexDirection: 'row',
@@ -2320,40 +2430,38 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
-  dateModeGroup: {
-    flexDirection: 'row',
-    backgroundColor: '#f3f3f3',
-    borderRadius: 999,
-    padding: 2,
-    gap: 2,
-  },
   dateChip: {
     paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 999,
+    height: 32,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...CHIP_SHADOW,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
   dateChipActive: {
-    backgroundColor: '#ECFDF5',
+    backgroundColor: NAV_TAB_ACTIVE_BG,
   },
   dateRangeSep: {
     fontFamily,
-    fontSize: 14,
-    color: '#8a8a8a',
+    fontSize: 16,
+    color: '#c7c7cc',
   },
   pickChip: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e0e0e0',
-    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
     paddingHorizontal: 10,
-    paddingVertical: 5,
-    backgroundColor: '#fff',
-    minHeight: 36,
+    height: 32,
+    backgroundColor: CANVAS,
     justifyContent: 'center',
-    gap: 1,
+    ...CHIP_SHADOW,
   },
   pickChipLabel: {
     fontFamily,
@@ -2370,9 +2478,10 @@ const styles = StyleSheet.create({
   },
   pickChipValue: {
     fontFamily,
-    fontSize: 13,
-    color: '#1a1a1a',
-    fontWeight: '500',
+    fontSize: 14,
+    color: MOBILE.label,
+    fontWeight: '400',
+    letterSpacing: -0.2,
   },
   pickModalBackdrop: {
     flex: 1,
@@ -2413,12 +2522,13 @@ const styles = StyleSheet.create({
   },
   dateChipText: {
     fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#6b6b6b',
+    fontSize: 14,
+    fontWeight: '400',
+    color: MOBILE.label,
+    letterSpacing: -0.2,
   },
   dateChipTextActive: {
-    color: ACCENT,
+    color: MOBILE.label,
   },
   callbackBtn: {
     flexDirection: 'row',
@@ -2457,34 +2567,37 @@ const styles = StyleSheet.create({
   tabs: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 4,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e5e5e5',
+    alignItems: 'center',
+    gap: 8,
   },
   tab: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    borderBottomWidth: 2,
-    borderBottomColor: 'transparent',
+    paddingHorizontal: 10,
+    height: 32,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
+    ...CHIP_SHADOW,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
   tabActive: {
-    borderBottomColor: ACCENT,
+    backgroundColor: NAV_TAB_ACTIVE_BG,
   },
   tabText: {
     fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#8a8a8a',
+    fontSize: 14,
+    fontWeight: '400',
+    color: MOBILE.label,
+    letterSpacing: -0.2,
   },
   tabTextActive: {
-    color: '#1a1a1a',
+    color: MOBILE.label,
   },
   badge: {
     minWidth: 16,
@@ -2507,22 +2620,31 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   search: {
-    flex: 1,
+    flexGrow: 1,
+    flexShrink: 1,
     minWidth: 160,
-    maxWidth: 320,
+    maxWidth: 300,
+    height: 32,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e0e0e0',
-    paddingBottom: 6,
+    gap: 8,
+    paddingHorizontal: 10,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
+    backgroundColor: CANVAS,
+    ...CHIP_SHADOW,
   },
   searchInput: {
     flex: 1,
+    minWidth: 0,
+    height: 30,
     fontFamily,
     fontSize: 14,
-    color: '#1a1a1a',
+    fontWeight: '400',
+    color: MOBILE.label,
     paddingVertical: 0,
+    letterSpacing: -0.2,
     ...Platform.select({
       web: { outlineStyle: 'none' },
       default: {},
@@ -2541,54 +2663,132 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#9a6b2f',
   },
+  storeTable: {
+    width: '100%',
+  },
+  storeHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 34,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: ROW_RULE,
+  },
+  storeHeader: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '500',
+    color: MOBILE.secondary,
+    letterSpacing: -0.15,
+  },
   storeRow: {
     flexDirection: 'row',
     alignItems: 'center',
     width: '100%',
-    minHeight: 56,
-    paddingVertical: 10,
+    minHeight: 46,
+    paddingVertical: 6,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#f0f0f0',
-    gap: 10,
+    borderBottomColor: ROW_RULE,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
-  storeIcon: {
+  storeRowLast: {
+    borderBottomWidth: 0,
+  },
+  storeRowHover: {
+    backgroundColor: '#f5f5f5',
+  },
+  storeIconWrap: {
     width: 32,
     height: 32,
-    borderRadius: 8,
-    backgroundColor: '#ECFDF5',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  storeIconTile: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  storeText: {
+  storeRowBody: {
     flex: 1,
     minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 20,
+    marginLeft: 10,
+    paddingRight: 12,
+  },
+  storeColName: {
+    flex: 1.2,
+    minWidth: 0,
+  },
+  storeColNumber: {
+    width: 148,
+    flexShrink: 0,
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: MOBILE.secondary,
+    letterSpacing: -0.1,
+    fontVariant: ['tabular-nums'],
+  },
+  storeColAnswered: {
+    width: 96,
+    flexShrink: 0,
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: MOBILE.secondary,
+    letterSpacing: -0.1,
+    fontVariant: ['tabular-nums'],
   },
   storeName: {
     fontFamily,
     fontSize: 14,
-    fontWeight: '600',
-    color: '#1a1a1a',
+    lineHeight: 18,
+    fontWeight: '400',
+    color: MOBILE.label,
+    letterSpacing: -0.2,
+  },
+  storeMeta: {
+    fontFamily,
+    fontSize: 12,
+    color: MOBILE.secondary,
+    letterSpacing: -0.1,
+    marginTop: 2,
+    fontVariant: ['tabular-nums'],
+  },
+  storeColRate: {
+    width: 64,
+    flexShrink: 0,
   },
   storeRate: {
+    width: 64,
+    flexShrink: 0,
     fontFamily,
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1a1a1a',
-    minWidth: 48,
-    textAlign: 'right',
+    fontSize: 12,
+    fontWeight: '500',
+    color: MOBILE.label,
+    letterSpacing: -0.1,
+    fontVariant: ['tabular-nums'],
+    textAlign: 'left',
   },
   storeRateMuted: {
-    color: '#8a8a8a',
-    fontWeight: '600',
+    color: '#c7c7cc',
+    fontWeight: '500',
+  },
+  storeChevronSpacer: {
+    width: 18,
+    flexShrink: 0,
   },
   cellSub: {
     fontFamily,
     fontSize: 11,
-    color: '#8a8a8a',
+    color: MOBILE.secondary,
     marginTop: 2,
   },
   statusConnected: {
@@ -2616,10 +2816,11 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     fontFamily,
-    fontSize: 13,
-    color: '#8a8a8a',
+    fontSize: 14,
+    color: MOBILE.secondary,
     paddingTop: 16,
     paddingBottom: 8,
+    letterSpacing: -0.2,
   },
   blockTitle: {
     fontFamily,
@@ -2648,10 +2849,10 @@ const styles = StyleSheet.create({
     minWidth: 70,
     paddingVertical: 8,
     paddingHorizontal: 10,
-    borderRadius: 8,
-    backgroundColor: '#F3FBF6',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#D5EBD9',
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    backgroundColor: '#f5f5f5',
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
   },
   ratioStatCompact: {
     paddingVertical: 6,
@@ -2661,17 +2862,17 @@ const styles = StyleSheet.create({
   summaryLabel: {
     fontFamily,
     fontSize: 11,
-    fontWeight: '600',
-    color: '#8a8a8a',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
+    fontWeight: '500',
+    color: MOBILE.secondary,
+    letterSpacing: -0.1,
     marginBottom: 4,
   },
   summaryValue: {
     fontFamily,
     fontSize: 16,
-    fontWeight: '700',
-    color: '#1a1a1a',
+    fontWeight: '400',
+    color: MOBILE.label,
+    letterSpacing: -0.2,
     fontVariant: ['tabular-nums'],
   },
   summaryValueCompact: {
@@ -2906,9 +3107,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+    minHeight: 46,
     paddingVertical: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: ROW_RULE,
   },
   itemText: {
     flex: 1,
@@ -2917,8 +3119,9 @@ const styles = StyleSheet.create({
   itemTitle: {
     fontFamily,
     fontSize: 14,
-    fontWeight: '600',
-    color: '#1a1a1a',
+    fontWeight: '400',
+    color: MOBILE.label,
+    letterSpacing: -0.2,
   },
   unread: {
     fontWeight: '700',
@@ -2926,8 +3129,10 @@ const styles = StyleSheet.create({
   itemMeta: {
     fontFamily,
     fontSize: 12,
-    color: '#8a8a8a',
+    color: MOBILE.secondary,
     marginTop: 2,
+    letterSpacing: -0.1,
+    fontVariant: ['tabular-nums'],
   },
   liveCard: {
     flexDirection: 'row',
@@ -2978,12 +3183,12 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
   callIcon: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: '#F3FBF6',
+    width: 22,
+    height: 22,
+    borderRadius: 6,
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 0,
   },
   dialInput: {
     fontFamily,
@@ -3009,8 +3214,10 @@ const styles = StyleSheet.create({
   key: {
     width: 72,
     height: 56,
-    borderRadius: 12,
-    backgroundColor: '#f6f6f6',
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    backgroundColor: '#f5f5f5',
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
     alignItems: 'center',
     justifyContent: 'center',
     ...Platform.select({
@@ -3021,8 +3228,9 @@ const styles = StyleSheet.create({
   keyText: {
     fontFamily,
     fontSize: 22,
-    fontWeight: '600',
-    color: '#1a1a1a',
+    fontWeight: '400',
+    color: MOBILE.label,
+    letterSpacing: -0.3,
   },
   dialActions: {
     flexDirection: 'row',
@@ -3123,8 +3331,10 @@ const styles = StyleSheet.create({
   playBtn: {
     width: 32,
     height: 32,
-    borderRadius: 16,
-    backgroundColor: '#ECFDF5',
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    backgroundColor: CANVAS,
+    borderWidth: 1,
+    borderColor: TAB_BORDER,
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 2,

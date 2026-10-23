@@ -15,7 +15,7 @@ LoginScreen ──► Edge Function `aureus-login` ──► Aureus POS /login
                         └─ mint Supabase session (one-time token hash, never emailed)
 ```
 
-Company email is a second door, only for `@canadagold.ca` and `@cdncoin.com`. Join emails a temporary password. That password can sign in, but the account cannot read anything until the person replaces it: `aureus_verified_at` stays empty and the JWT has no `aureus_user_id` until then, which is what `is_active_staff()` already checks. The sign-in service then stamps `app_metadata.aureus_user_id` as `email:<user id>`. These accounts have no Aureus token, so store tools that read POS stay empty. An email that already belongs to a POS login is refused.
+Company email is a second door for `@canadagold.ca`, `@cdncoin.com`, and any other domain in `GOOGLE_MAIL_HOSTED_DOMAIN`. Join emails a temporary password. That password can sign in, but the account cannot read anything until the person replaces it: `aureus_verified_at` stays empty and the JWT has no `aureus_user_id` until then, which is what `is_active_staff()` already checks. The sign-in service then stamps `app_metadata.aureus_user_id` as `email:<user id>`. These accounts have no Aureus token, so store tools that read POS stay empty. An email that already belongs to a POS login is refused.
 
 Everything after sign-in is enforced twice:
 

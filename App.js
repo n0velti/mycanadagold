@@ -41,6 +41,7 @@ import {
   login as loginRequest,
   logout as logoutRequest,
   requestJoin,
+  loadJoinConfig,
   onAureusSessionExpired,
   onSessionRevoked,
   posEmployeeId,
@@ -65,8 +66,10 @@ import {
   listStaffProfiles,
   staffDisplayName,
   loadOwnUserAppAccess,
+  loadOwnUserAiAccess,
   loadRoleAppAccess,
   loadUserAppAccessMap,
+  loadUserAiAccessMap,
   canUseWorkshopLocation,
   canViewTriageInsights,
   shouldPrefetchTriage,
@@ -75,6 +78,7 @@ import {
 } from './lib/permissions';
 import { clearInventoryCache, prefetchInventoryMatrix } from './lib/inventory';
 import { clearCashTillCache, prefetchStoreCashPositions } from './lib/cashTill';
+import { aiScopesEqual, resolveAiScopes } from './lib/aiScopes';
 import { mergeStaffWithEmployeeRoster } from './lib/employeeRoster';
 import { HOME_PINNED_STORES, storesMatch } from './lib/storeCatalog';
 import { clearLocationCache } from './lib/locations';
@@ -443,6 +447,7 @@ const TOOL_SCREENS = {
       onAccessSaved: c.handleAccessSaved,
       onStaffAccessSaved: c.handleStaffAccessSaved,
       onUserAccessSaved: c.handleUserAccessSaved,
+      onUserAiAccessSaved: c.handleUserAiAccessSaved,
     }),
   },
   transfer: {
@@ -687,8 +692,8 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-app-pin:hover:not(.cgold-app-pin-on){opacity:0.55!important;}',
     '.cgold-store-header-blur{-webkit-backdrop-filter:saturate(160%) blur(12px);backdrop-filter:saturate(160%) blur(12px);background-color:rgba(255,255,255,0.72)!important;transform:translateZ(0);}',
     '.cgold-dm-row{cursor:pointer;}',
-    '.cgold-dm-row:hover{background-color:#f2f2f7!important;}',
-    '.cgold-dm-row-active,.cgold-dm-row-active:hover{background-color:#f2f2f7!important;}',
+    '.cgold-dm-row:hover{background-color:#f5f5f7!important;}',
+    '.cgold-dm-row-active,.cgold-dm-row-active:hover{background-color:#e8e8ed!important;}',
     '@media (max-width:767px){',
     `html,body,#root{background:${CANVAS};}`,
     '.cgold-mobile-inset-top{height:max(12px,env(safe-area-inset-top,0px))!important;}',
@@ -1190,7 +1195,13 @@ const APP_CARD_META = {
 };
 
 const TOOL_KEYS = new Set(TOOL_CARDS.map((tool) => tool.key));
-const PERMISSION_APPS = [HOME_APP, ...TOOL_CARDS];
+const PERMISSION_APPS = [
+  { ...HOME_APP, category: 'Home' },
+  ...TOOL_CARDS.map((tool) => ({
+    ...tool,
+    category: APP_CARD_META[tool.key]?.category || 'App',
+  })),
+];
 const ACCESS_CATALOG_KEYS = new Set(PERMISSION_APPS.map((app) => app.key));
 
 const STORE_DRAWER_TAB_KEYS = [
@@ -3561,6 +3572,7 @@ function HomeStoreDrawer({
   onAccessSaved,
   onStaffAccessSaved,
   onUserAccessSaved,
+  onUserAiAccessSaved,
 }) {
   const { width: windowWidth } = useWindowDimensions();
   const isMobile = windowWidth < MOBILE_BREAKPOINT;
@@ -3972,6 +3984,7 @@ function HomeStoreDrawer({
                             onAccessSaved={onAccessSaved}
                             onStaffAccessSaved={onStaffAccessSaved}
                             onUserAccessSaved={onUserAccessSaved}
+                            onUserAiAccessSaved={onUserAiAccessSaved}
                           />
                         )}
                       </ScreenGate>
@@ -6085,6 +6098,7 @@ function HomeScreen({
   onAccessSaved,
   onStaffAccessSaved,
   onUserAccessSaved,
+  onUserAiAccessSaved,
 }) {
   const { isMobile, tableMaxWidth, pagePad, tablePagePad } = useHomePageLayout();
   const homeHeroPad = pagePad + HOME_STORE_NAME_INSET;
@@ -6774,6 +6788,7 @@ function HomeScreen({
         onAccessSaved={onAccessSaved}
         onStaffAccessSaved={onStaffAccessSaved}
         onUserAccessSaved={onUserAccessSaved}
+        onUserAiAccessSaved={onUserAiAccessSaved}
         onOpenCustomer={onOpenCustomer}
         periodLabel={periodLabel}
         date={startDate}
@@ -9503,11 +9518,11 @@ export default function App() {
   const [emailsFocus, setEmailsFocus] = useState(null);
   const [accessByRole, setAccessByRole] = useState(null);
   const [ownUserAccess, setOwnUserAccess] = useState(null);
+  const [aiScopesByRole, setAiScopesByRole] = useState(null);
+  const [ownAiAccess, setOwnAiAccess] = useState(null);
   const [viewedProfile, setViewedProfile] = useState(null);
   const [dmFocusUserId, setDmFocusUserId] = useState('');
   const [dmFocusConversationId, setDmFocusConversationId] = useState('');
-  const [dmOpenAiKey, setDmOpenAiKey] = useState(0);
-  const dmOpenAiSeq = useRef(0);
   const [teamsFocusId, setTeamsFocusId] = useState('');
   const [profileReturnTo, setProfileReturnTo] = useState(null);
   const [locationPickerOpen, setLocationPickerOpen] = useState(false);
@@ -9631,6 +9646,8 @@ export default function App() {
     setPinnedKeys([]);
     setAccessByRole(null);
     setOwnUserAccess(null);
+    setAiScopesByRole(null);
+    setOwnAiAccess(null);
     setLoginId('');
     setPassword('');
     setLoginError('');
@@ -9674,10 +9691,12 @@ export default function App() {
         accessPromise = Promise.all([
           loadRoleAppAccess(ACCESS_CATALOG_KEYS),
           loadUserAppAccessMap(ACCESS_CATALOG_KEYS),
+          loadUserAiAccessMap(),
         ]);
       }
 
       let restored = null;
+      const joinConfig = loadJoinConfig().catch(() => {});
       try {
         restored = await restoreSession({
           onProfileSynced: (profile) => {
@@ -9711,18 +9730,28 @@ export default function App() {
       if (cancelled) return;
 
       if (restored?.token) {
-        const [pins, [access, userAccessMap]] = await Promise.all([
+        const [pins, [access, userAccessMap, userAiMap]] = await Promise.all([
           loadPinnedTools(restored, TOOL_KEYS),
           accessPromise ||
-            Promise.all([loadRoleAppAccess(ACCESS_CATALOG_KEYS), loadUserAppAccessMap(ACCESS_CATALOG_KEYS)]),
+            Promise.all([
+              loadRoleAppAccess(ACCESS_CATALOG_KEYS),
+              loadUserAppAccessMap(ACCESS_CATALOG_KEYS),
+              loadUserAiAccessMap(),
+            ]),
         ]);
         if (cancelled) return;
         const ownUserId = String(restored.supabaseUserId || restored.profile?.id || '').trim();
         const userAccess = (ownUserId && userAccessMap.byUser[ownUserId]) || null;
-        setSession(restored);
+        const userAi = (ownUserId && userAiMap?.byUser?.[ownUserId]) || null;
+        setSession({
+          ...restored,
+          aiScopes: resolveAiScopes(restored.profile, access.aiScopesByRole, userAi),
+        });
         setPinnedKeys(pins);
         setAccessByRole(access.byRole);
         setOwnUserAccess(userAccess);
+        setAiScopesByRole(access.aiScopesByRole || null);
+        setOwnAiAccess(userAi);
         cancelWarmup = warmSessionCaches(restored);
         const reopenKey = storedOpenTool();
         const reopen = TOOL_CARDS.find((tool) => tool.key === reopenKey);
@@ -9732,10 +9761,13 @@ export default function App() {
           setKeptToolKeys([reopen.key]);
         }
       } else {
+        await joinConfig;
         setSession(null);
         setPinnedKeys([]);
         setAccessByRole(null);
         setOwnUserAccess(null);
+        setAiScopesByRole(null);
+        setOwnAiAccess(null);
       }
 
       setBootstrapping(false);
@@ -9992,13 +10024,6 @@ export default function App() {
     selectTab('messages');
   });
 
-  const openAiMessages = useStableCallback(() => {
-    if (!hasApp('messages')) return;
-    dmOpenAiSeq.current += 1;
-    setDmOpenAiKey(dmOpenAiSeq.current);
-    selectTab('messages');
-  });
-
   const openTeamsFromProfile = useStableCallback((teamId) => {
     if (!hasApp('teams')) return;
     setTeamsFocusId(teamId || '');
@@ -10123,7 +10148,6 @@ export default function App() {
   const clearDashboardFocus = useCallback(() => setDashboardFocusId(''), []);
   const clearDmFocusUser = useCallback(() => setDmFocusUserId(''), []);
   const clearDmFocusConversation = useCallback(() => setDmFocusConversationId(''), []);
-  const clearDmOpenAi = useCallback(() => setDmOpenAiKey(0), []);
 
   // Employees → own row edited: mirror the fields the shell shows.
   const applyProfileUpdate = useCallback((profile) => {
@@ -10199,7 +10223,12 @@ export default function App() {
   }, [isMobile, activeTool?.key]);
 
   const handleAccessSaved = useCallback((next) => {
-    setAccessByRole(next);
+    if (next?.byRole) {
+      setAccessByRole(next.byRole);
+      if (next.aiScopesByRole) setAiScopesByRole(next.aiScopesByRole);
+    } else {
+      setAccessByRole(next);
+    }
   }, []);
   const handleStaffAccessSaved = useCallback((staff) => {
     setSession((current) => {
@@ -10226,17 +10255,39 @@ export default function App() {
       return access;
     });
   }, [session?.profile?.id, session?.supabaseUserId]);
+  const handleUserAiAccessSaved = useCallback((userId, scopes) => {
+    setOwnAiAccess((current) => {
+      const ownId = session?.supabaseUserId || session?.profile?.id;
+      if (userId !== ownId) return current;
+      return scopes;
+    });
+  }, [session?.profile?.id, session?.supabaseUserId]);
+
+  useEffect(() => {
+    setSession((current) => {
+      if (!current?.profile) return current;
+      const next = resolveAiScopes(current.profile, aiScopesByRole, ownAiAccess);
+      if (aiScopesEqual(current.aiScopes, next)) return current;
+      return { ...current, aiScopes: next };
+    });
+  }, [session?.profile?.id, session?.profile?.appRole, session?.profile?.isSystemAdmin, aiScopesByRole, ownAiAccess]);
 
   const enterSession = async (next) => {
-    const [pins, access, userAccess] = await Promise.all([
+    const [pins, access, userAccess, userAi] = await Promise.all([
       loadPinnedTools(next, TOOL_KEYS),
       loadRoleAppAccess(ACCESS_CATALOG_KEYS),
       loadOwnUserAppAccess(next.supabaseUserId || next.profile?.id, ACCESS_CATALOG_KEYS),
+      loadOwnUserAiAccess(next.supabaseUserId || next.profile?.id),
     ]);
-    setSession(next);
+    setSession({
+      ...next,
+      aiScopes: resolveAiScopes(next.profile, access.aiScopesByRole, userAi),
+    });
     setPinnedKeys(pins);
     setAccessByRole(access.byRole);
     setOwnUserAccess(userAccess);
+    setAiScopesByRole(access.aiScopesByRole || null);
+    setOwnAiAccess(userAi);
     warmSessionCaches(next);
     setPassword('');
     setNewPassword('');
@@ -10389,7 +10440,8 @@ export default function App() {
       activeTool.key === 'analytics' ||
       activeTool.key === 'supplies' ||
       activeTool.key === 'tasks' ||
-      activeTool.key === 'bonuses'
+      activeTool.key === 'bonuses' ||
+      activeTool.key === 'phone'
     ) {
       return null;
     }
@@ -10521,6 +10573,7 @@ export default function App() {
     handleAccessSaved,
     handleStaffAccessSaved,
     handleUserAccessSaved,
+    handleUserAiAccessSaved,
     applyOwnLocation,
     openEmailsFromBonuses,
     openEmailsFromTasks,
@@ -10547,6 +10600,7 @@ export default function App() {
     onAccessSaved: handleAccessSaved,
     onStaffAccessSaved: handleStaffAccessSaved,
     onUserAccessSaved: handleUserAccessSaved,
+    onUserAiAccessSaved: handleUserAiAccessSaved,
   };
 
   const messagesScreenProps = {
@@ -10557,8 +10611,6 @@ export default function App() {
     openConversationId: dmFocusConversationId,
     onOpenedConversation: clearDmFocusConversation,
     onConversationSeen: markNotificationsRead,
-    openAiKey: dmOpenAiKey,
-    onOpenedAi: clearDmOpenAi,
     onOpenProfile: openPersonProfile,
     onMobileHeader: chrome('messages', 'mobileHeader'),
     onOpenThreadChange: chrome('messages', 'thread'),
@@ -10572,7 +10624,6 @@ export default function App() {
     onOpenDocument: openSearchDocument,
     onOpenCustomer: openCustomerProfile,
     onMessage: messagePerson,
-    onOpenAi: canUseMessages ? openAiMessages : undefined,
   };
 
   const tradeScreenProps = { mode: tradeMode, hideHeader: isMobile, session };
@@ -10708,7 +10759,8 @@ export default function App() {
       activeTool?.key === 'analytics' ||
       activeTool?.key === 'triage' ||
       activeTool?.key === 'supplies' ||
-      activeTool?.key === 'tasks'));
+      activeTool?.key === 'tasks' ||
+      activeTool?.key === 'phone'));
 
   const isAppsLibrary = activeTab === 'tools' && !activeTool;
   const settingsSubPanels = {
@@ -11073,7 +11125,9 @@ export default function App() {
             ? homeStoreCrumbs
             : activeTab === 'tools' && activeTool?.key === 'triage'
               ? triageCrumbs
-              : undefined
+              : activeTab === 'tools' && activeTool?.key === 'phone' && triageStoreBack
+                ? [{ label: 'Phone', onPress: triageStoreBack }]
+                : undefined
         }
         apps={activeTab === 'tools' && activeTool ? filteredTools : undefined}
         activeAppKey={activeTool?.key || ''}

@@ -70,7 +70,6 @@ import {
   subscribeAgentBuilds,
 } from '../lib/agentBuilds';
 import { fetchAureusEmployee } from '../lib/aureusEmployees';
-import { ANALYTICS_CHAT_MODELS, askAnalytics } from '../lib/analyticsChartTools';
 import { loadGoogleMapsBrowserKey } from '../lib/aiKeys';
 import {
   MAX_ATTACHMENTS,
@@ -88,7 +87,7 @@ import {
   normalizeAgentRequestImages,
   uploadAgentRequestPhotos,
 } from '../lib/agentRequestPhotos';
-import { FONT } from '../lib/typography';
+import { FONT, FONT_LIGHT } from '../lib/typography';
 import { MobileFeedTopBarActions } from './MobileChrome';
 import SendFromInput from './SendFromInput';
 import { pickTriagePhotos } from './TriageCorrectionImages';
@@ -102,6 +101,7 @@ import {
   openPreviewUrl,
 } from './AgentPreviewTv';
 import { usePhoneCalls } from './PhoneCallProvider';
+import ScreenGate from './ScreenGate';
 
 // The AI conversation is the Analytics panel itself, hosted in the thread pane.
 const AnalyticsAiPanel = lazy(() => import('./AnalyticsAiPanel'));
@@ -225,8 +225,9 @@ function agentAvatarTheme(conversationId) {
   };
 }
 const MOBILE_BREAKPOINT = 768;
-// "@ai" inside a human chat answers with the same Analytics tools as the AI chat.
-const AI_MENTION_MODEL = ANALYTICS_CHAT_MODELS[0]?.key || '';
+// Same default as ANALYTICS_CHAT_MODELS[0]. Loaded with askAnalytics only when @ai is used,
+// so a broken analytics chunk cannot take down the inbox.
+const AI_MENTION_MODEL = 'anthropic/claude-sonnet-5';
 
 const EMOJI_GROUPS = [
   {
@@ -1815,6 +1816,7 @@ export default function MessagesScreen({
         const prior = messages.filter((item) => item.body && !String(item.id).startsWith('temp-'));
         const question = text.replace(AI_MENTION_RE, '$1').trim()
           || (preparedFiles.length ? 'Look at the attached files and answer in this chat.' : text);
+        const { askAnalytics } = await import('../lib/analyticsChartTools');
         const result = await askAnalytics({
           model: AI_MENTION_MODEL,
           history: [
@@ -2273,28 +2275,15 @@ export default function MessagesScreen({
           ? 'You'
           : firstNameOf((row.members || []).find((person) => person.id === row.lastMessageSenderId));
       // Same three-line shape as the Emails inbox: who, a subject-style line, then the preview.
-      const preview = row.isAgent
+      const previewBody = row.isAgent
         ? agentWorkPreview(agentBuilds[row.conversationId]) || 'New conversation'
         : row.isAi
           ? row.lastMessagePreview || 'Charts, maps, stock, hours, and documents'
           : row.lastMessagePreview
             || (row.isTeam ? 'New team chat' : row.isGroup ? 'New group chat' : 'Start the conversation');
-      const other = (row.members || []).find((person) => person.id !== myId);
-      const subjectLine = row.isAgent
-        ? AGENT_CONVERSATION_TITLE
-        : row.isAi
-          ? row.members?.length
-            ? `${row.members.length + 1} people`
-            : row.lastMessageIsAssistant
-              ? 'MyCanadaGold AI'
-              : senderName || 'MyCanadaGold AI'
-          : row.lastMessagePreview
-            ? senderName || 'Teammate'
-            : row.isTeam
-              ? 'Team chat'
-              : row.isGroup
-                ? `${(row.members || []).length} people`
-                : other?.teamName || other?.locationName || 'Direct message';
+      const preview = row.isAi || row.isAgent || !senderName
+        ? previewBody
+        : `${senderName}: ${previewBody}`;
       const openMenu = (event) => {
         event?.preventDefault?.();
         event?.stopPropagation?.();
@@ -2319,40 +2308,30 @@ export default function MessagesScreen({
           ]}
           accessibilityLabel={`Conversation with ${conversationTitle(row)}`}
         >
-          <ConversationAvatar conversation={row} size={isMobile ? 40 : 44} />
+          <ConversationAvatar conversation={row} size={isMobile ? 40 : 42} />
           <View style={styles.personCopy}>
             <View style={styles.personTop}>
               <Text
                 style={[
-                  styles.personName,
-                  (selected || unread) && styles.personNameActive,
-                  unread && styles.personNameUnread,
+                  styles.inboxName,
+                  unread && styles.inboxNameUnread,
                 ]}
                 numberOfLines={1}
               >
                 {conversationTitle(row)}
               </Text>
-              <Text style={[styles.personTime, unread && styles.personTimeUnread]}>
+              <Text style={[styles.inboxTime, unread && styles.inboxTimeUnread]}>
                 {formatInboxTime(row.lastMessageAt)}
               </Text>
             </View>
-            <Text style={[styles.personSubject, unread && styles.personNameUnread]} numberOfLines={1}>
-              {subjectLine}
-            </Text>
             <View style={styles.personBottom}>
               <Text
-                style={[styles.personSub, unread && styles.personPreviewUnread]}
-                numberOfLines={1}
+                style={[styles.inboxPreview, unread && styles.inboxPreviewUnread]}
+                numberOfLines={2}
               >
                 {preview}
               </Text>
-              {unread ? (
-                <View style={styles.unreadPill}>
-                  <Text style={styles.unreadPillText}>
-                    {row.unreadCount > 9 ? '9+' : row.unreadCount}
-                  </Text>
-                </View>
-              ) : null}
+              {unread ? <View style={styles.unreadDot} /> : null}
             </View>
           </View>
         </Pressable>
@@ -2473,16 +2452,6 @@ export default function MessagesScreen({
           <View style={[styles.listHead, !isMobile && styles.listHeadDesktop]}>
             {searchField}
             <Pressable
-              onPress={() => void openAiConversation()}
-              style={({ hovered, pressed }) => [
-                isMobile ? styles.listIconHit : styles.chromeCircle,
-                (hovered || pressed) && (isMobile ? styles.listIconHitOn : styles.chromeCircleOn),
-              ]}
-              accessibilityLabel="Talk to AI"
-            >
-              <Ionicons name="sparkles-outline" size={isMobile ? 20 : 16} color={INK} />
-            </Pressable>
-            <Pressable
               onPress={openAgentConversation}
               style={({ hovered, pressed }) => [
                 isMobile ? styles.listIconHit : styles.chromeCircle,
@@ -2524,13 +2493,7 @@ export default function MessagesScreen({
           {threadLive && activeThread.isAi ? (
             // The tab bar floats over Messages on a phone; keep the AI composer above it.
             <View style={[styles.aiHost, isMobile && styles.aiHostMobile, !isMobile && styles.aiHostDesktop]}>
-              <Suspense
-                fallback={
-                  <View style={styles.threadPlaceholder}>
-                    <ActivityIndicator color={INK} />
-                  </View>
-                }
-              >
+              <ScreenGate resetKey={activeThread.conversationId || 'ai'}>
                 <AnalyticsAiPanel
                   embedded
                   title={AI_TITLE}
@@ -2547,7 +2510,7 @@ export default function MessagesScreen({
                   onOpenCustomer={onOpenCustomer}
                   onOpenDocument={onOpenDocument}
                 />
-              </Suspense>
+              </ScreenGate>
             </View>
           ) : threadLive ? (
             <>
@@ -3315,7 +3278,7 @@ const styles = StyleSheet.create({
     minHeight: DESKTOP_TOP_BAR_HEIGHT,
     paddingTop: 0,
     paddingBottom: 0,
-    paddingLeft: 56,
+    paddingLeft: 12,
     paddingRight: 12,
     gap: 8,
     backgroundColor: 'transparent',
@@ -3674,26 +3637,29 @@ const styles = StyleSheet.create({
   personRow: {
     width: '100%',
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: 12,
-    minHeight: 56,
-    paddingVertical: 10,
-    paddingLeft: 14,
-    paddingRight: 14,
+    minHeight: 64,
+    paddingTop: 10,
+    paddingBottom: 10,
+    paddingLeft: 16,
+    paddingRight: 16,
     backgroundColor: CANVAS,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: RULE,
+    borderBottomColor: 'rgba(60, 60, 67, 0.12)',
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
   personRowCompact: {
+    alignItems: 'center',
     gap: 12,
+    minHeight: 56,
     paddingVertical: 10,
   },
   personRowSelected: {
-    backgroundColor: '#ececef',
+    backgroundColor: '#e8e8ed',
   },
   rowPressed: {
     backgroundColor: '#f5f5f7',
@@ -3704,16 +3670,15 @@ const styles = StyleSheet.create({
   },
   personTop: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'baseline',
     gap: 8,
   },
   personBottom: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: 8,
-    marginTop: 1,
+    marginTop: 2,
   },
-  // Mirrors the Emails inbox row: name + time, a subject-style line, then the preview.
   personName: {
     flex: 1,
     fontFamily,
@@ -3721,7 +3686,7 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     color: '#1d1d1f',
     fontWeight: '600',
-    letterSpacing: -0.15,
+    letterSpacing: -0.2,
   },
   personNameActive: {
     color: '#1d1d1f',
@@ -3756,6 +3721,51 @@ const styles = StyleSheet.create({
   },
   personPreviewUnread: {
     color: '#3a3a3c',
+  },
+  inboxName: {
+    flex: 1,
+    fontFamily,
+    fontSize: 16,
+    lineHeight: 21,
+    color: '#1d1d1f',
+    fontWeight: '600',
+    letterSpacing: -0.31,
+  },
+  inboxNameUnread: {
+    fontWeight: '700',
+  },
+  inboxTime: {
+    fontFamily: FONT_LIGHT,
+    fontSize: 13,
+    lineHeight: 18,
+    color: SECONDARY,
+    letterSpacing: -0.08,
+  },
+  inboxTimeUnread: {
+    fontFamily,
+    fontWeight: '500',
+    color: BUBBLE_MINE,
+  },
+  inboxPreview: {
+    flex: 1,
+    fontFamily: FONT_LIGHT,
+    fontSize: 14,
+    lineHeight: 19,
+    color: SECONDARY,
+    letterSpacing: -0.16,
+  },
+  inboxPreviewUnread: {
+    fontFamily,
+    fontWeight: '400',
+    color: '#3a3a3c',
+  },
+  unreadDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginTop: 5,
+    backgroundColor: BUBBLE_MINE,
+    flexShrink: 0,
   },
   unreadPill: {
     minWidth: 16,

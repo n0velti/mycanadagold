@@ -1,22 +1,57 @@
 /**
  * Sends the join temporary password.
  *
- * Explicit JOIN_SMTP_* is used when both the user and password are set.
- * Otherwise the hours mailbox (already connected for the company Gmail app)
- * sends through the Gmail API. The password is the message body and is never
- * logged, and it is never returned to the browser.
+ * Tries, in order: a dedicated JOIN_GMAIL_* sender, the hours mailbox, a
+ * company inbox already connected in Emails with send, then JOIN_SMTP_*.
+ * The hours inbox was first connected for Rippling CSV reads and often has
+ * no send scope — that must not abort the others.
+ * The password is the message body and is never logged or returned.
  */
 import type { SupabaseClient } from 'npm:@supabase/supabase-js@2';
 
-const JOIN_DOMAINS = new Set(['canadagold.ca', 'cdncoin.com']);
+const DEFAULT_JOIN_DOMAINS = ['canadagold.ca', 'cdncoin.com'];
+const HOURS_MAILBOX = 'edward.anuichi@canadagold.ca';
 const GMAIL_SEND = 'https://www.googleapis.com/auth/gmail.send';
+
+export function allowedJoinDomains(): string[] {
+  const extra = String(Deno.env.get('GOOGLE_MAIL_HOSTED_DOMAIN') || '')
+    .split(',')
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  return [...new Set([...DEFAULT_JOIN_DOMAINS, ...extra])];
+}
+
+export function joinEmailHint(): string {
+  const domains = allowedJoinDomains();
+  if (domains.length <= 1) return `Use your @${domains[0] || 'canadagold.ca'} email.`;
+  if (domains.length === 2) return `Use your @${domains[0]} or @${domains[1]} email.`;
+  const last = domains[domains.length - 1];
+  return `Use your ${domains.slice(0, -1).map((domain) => `@${domain}`).join(', ')}, or @${last} email.`;
+}
 
 export function companyJoinEmail(value: unknown): string {
   const email = String(value || '').trim().toLowerCase();
   if (email.length > 320 || email.includes('+') || /[\r\n\0]/.test(email)) return '';
   const match = /^[^\s@<>"]+@([a-z0-9.-]+)$/.exec(email);
-  if (!match || !JOIN_DOMAINS.has(match[1])) return '';
+  if (!match || !allowedJoinDomains().includes(match[1])) return '';
   return email;
+}
+
+function mailboxAddress(value: unknown): string {
+  const email = String(value || '').trim().toLowerCase();
+  if (email.length > 320 || /[\r\n\0]/.test(email)) return '';
+  const match = /^[^\s@<>"]+@([a-z0-9.-]+)$/.exec(email);
+  return match ? email : '';
+}
+
+function scopeAllowsSend(scope: string): boolean {
+  const value = String(scope || '');
+  return (
+    value.includes(GMAIL_SEND) ||
+    value.includes('https://www.googleapis.com/auth/gmail.compose') ||
+    value.includes('https://www.googleapis.com/auth/gmail.modify') ||
+    value.includes('https://mail.google.com/')
+  );
 }
 
 function mailError(message: string, status = 502, code = 'mail_failed'): Error {
@@ -154,16 +189,39 @@ async function hoursMailbox(admin: SupabaseClient): Promise<{ email: string; ref
     .maybeSingle();
   if (read.error || !read.data) return null;
   const row = read.data as { gmail_email?: string; gmail_refresh_token?: string };
-  const email = companyJoinEmail(row.gmail_email);
+  const email = mailboxAddress(row.gmail_email);
   const refreshToken = String(row.gmail_refresh_token || '').trim();
   if (!email || !refreshToken) return null;
   return { email, refreshToken };
 }
 
+async function staffSendMailbox(
+  admin: SupabaseClient,
+  exceptToken = '',
+): Promise<{ email: string; refreshToken: string } | null> {
+  const read = await admin
+    .from('staff_gmail_accounts')
+    .select('email, refresh_token, granted_scope')
+    .is('disconnected_at', null);
+  if (read.error || !Array.isArray(read.data)) return null;
+  const allowed = new Set(allowedJoinDomains());
+  const usable: { email: string; refreshToken: string }[] = [];
+  for (const row of read.data as { email?: string; refresh_token?: string; granted_scope?: string }[]) {
+    const email = mailboxAddress(row.email);
+    const refreshToken = String(row.refresh_token || '').trim();
+    const domain = email.split('@')[1] || '';
+    if (!email || !refreshToken || refreshToken === exceptToken) continue;
+    if (!allowed.has(domain)) continue;
+    if (row.granted_scope && !scopeAllowsSend(row.granted_scope)) continue;
+    usable.push({ email, refreshToken });
+  }
+  return usable.find((row) => row.email === HOURS_MAILBOX) || usable[0] || null;
+}
+
 async function sendGmail(from: string, refreshToken: string, to: string, temporaryPassword: string, admin: SupabaseClient | null): Promise<void> {
   const token = await gmailAccessToken(refreshToken);
   const scope = token.scope;
-  if (scope && !scope.includes(GMAIL_SEND) && !scope.includes('https://mail.google.com/')) {
+  if (scope && !scopeAllowsSend(scope)) {
     throw mailError(
       'The company mailbox can read mail but cannot send it. Reconnect it and allow sending.',
       503,
@@ -205,25 +263,44 @@ export async function sendTemporaryPassword(
   const recipient = companyJoinEmail(to);
   if (!recipient || !temporaryPassword) throw mailError('Could not email that temporary password.', 400);
 
-  const smtpUser = (Deno.env.get('JOIN_SMTP_USER') || '').trim();
-  const smtpPass = Deno.env.get('JOIN_SMTP_PASS') || '';
-  if (smtpUser && smtpPass) {
-    const from = companyJoinEmail(Deno.env.get('JOIN_MAIL_FROM') || smtpUser);
-    if (!from) throw mailError('Join email is not configured.', 503, 'join_unconfigured');
-    await sendSmtp(from, recipient, temporaryPassword);
-    return;
-  }
+  const attempts: Array<() => Promise<void>> = [];
 
   const dedicatedRefresh = (Deno.env.get('JOIN_GMAIL_REFRESH_TOKEN') || '').trim();
-  const dedicatedFrom = companyJoinEmail(Deno.env.get('JOIN_MAIL_FROM') || '');
+  const dedicatedFrom = mailboxAddress(Deno.env.get('JOIN_MAIL_FROM') || '');
   if (dedicatedRefresh && dedicatedFrom) {
-    await sendGmail(dedicatedFrom, dedicatedRefresh, recipient, temporaryPassword, null);
-    return;
+    attempts.push(() => sendGmail(dedicatedFrom, dedicatedRefresh, recipient, temporaryPassword, null));
   }
 
   const hours = await hoursMailbox(admin);
-  if (!hours) {
+  if (hours) {
+    attempts.push(() => sendGmail(hours.email, hours.refreshToken, recipient, temporaryPassword, admin));
+  }
+
+  const staffSend = await staffSendMailbox(admin, hours?.refreshToken || '');
+  if (staffSend) {
+    attempts.push(() => sendGmail(staffSend.email, staffSend.refreshToken, recipient, temporaryPassword, null));
+  }
+
+  const smtpUser = (Deno.env.get('JOIN_SMTP_USER') || '').trim();
+  const smtpPass = Deno.env.get('JOIN_SMTP_PASS') || '';
+  const smtpFrom = mailboxAddress(Deno.env.get('JOIN_MAIL_FROM') || smtpUser);
+  if (smtpUser && smtpPass && smtpFrom) {
+    attempts.push(() => sendSmtp(smtpFrom, recipient, temporaryPassword));
+  }
+
+  if (!attempts.length) {
     throw mailError('Join email is not configured. Connect the company mailbox first.', 503, 'join_unconfigured');
   }
-  await sendGmail(hours.email, hours.refreshToken, recipient, temporaryPassword, admin);
+
+  let lastError: Error | null = null;
+  for (const attempt of attempts) {
+    try {
+      await attempt();
+      return;
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      console.error('join mail attempt', lastError.message);
+    }
+  }
+  throw lastError || mailError('Could not email that temporary password.');
 }
