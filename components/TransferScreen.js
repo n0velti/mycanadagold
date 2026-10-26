@@ -17,7 +17,6 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { persistOwnLocation, posEmployeeId as sessionPosEmployeeId } from '../lib/auth';
 import { fetchTransferStores } from '../lib/locations';
-import { CANVAS, useIsMobile } from '../lib/mobileUi';
 import { rowMatchesQuery } from '../lib/itemSearch';
 import { formatDateParam, formatPickerDate, parseDateParam } from '../lib/transactions';
 import {
@@ -45,7 +44,7 @@ import {
   triageDatesForStore,
   useTransferWorkflow,
 } from '../lib/transferWorkflow';
-import { confirmDestructive, T, TextAction, TextTabs } from './TriageKit';
+import { confirmDestructive, T, TextAction } from './TriageKit';
 import {
   TERRITORY_KEYS,
   TERRITORY_LABELS,
@@ -61,7 +60,17 @@ import {
   isInTransitStore,
   isWorkshopStore,
   moveQtyKey,
+  resolveTerritoryKey,
 } from '../lib/transferPlan';
+import {
+  CANVAS,
+  CHIP_BORDER,
+  CHIP_SHADOW,
+  CHIP_WASH,
+  CHIP_WASH_HOVER,
+  DESKTOP_TOP_BAR_HEIGHT,
+  useIsMobile,
+} from '../lib/mobileUi';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -77,7 +86,6 @@ const BLUE = '#007AFF';
 const GREEN = '#248A3D';
 const titleFont = 'SohneLeicht';
 const ACCENT = BLUE;
-const TILE = '#1F7A9A';
 const MIN_STOPS = 2;
 const MOBILE_BREAKPOINT = 768;
 const DRAWER_OPEN_MS = 280;
@@ -107,6 +115,50 @@ const TRANSFER_TABS = [
     empty: 'Transfers in progress will appear here.',
   },
 ];
+
+function TransferTabs({ options, value, onChange }) {
+  const isMobile = useIsMobile();
+  return (
+    <View
+      style={[styles.tabBar, isMobile && styles.tabBarMobile]}
+      accessibilityRole="tablist"
+    >
+      {options.map((option) => {
+        const active = option.key === value;
+        return (
+          <Pressable
+            key={option.key}
+            onPress={() => onChange(option.key)}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: active }}
+            accessibilityLabel={option.label}
+            style={({ hovered, pressed }) => [
+              styles.tabChip,
+              isMobile && styles.tabChipMobile,
+              !active && (hovered || pressed) && styles.tabChipHover,
+              active && styles.tabChipActive,
+            ]}
+          >
+            <Text
+              style={[
+                styles.tabChipLabel,
+                isMobile && styles.tabChipLabelMobile,
+                active && styles.tabChipLabelActive,
+              ]}
+            >
+              {option.label}
+            </Text>
+            {option.count != null ? (
+              <Text style={[styles.tabChipCount, active && styles.tabChipCountActive]}>
+                {option.count}
+              </Text>
+            ) : null}
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
 
 const PRIORITY_COLORS = {
   green: '#34C759',
@@ -290,26 +342,29 @@ function StoreDropdown({
 
 function PercentField({ value, onChange, disabled }) {
   return (
-    <TextInput
-      style={[styles.percentInput, disabled && styles.percentInputDisabled]}
-      value={value == null ? '' : String(value)}
-      onChangeText={(text) => {
-        const cleaned = text.replace(/[^0-9.]/g, '');
-        if (cleaned === '' || cleaned === '.') {
-          onChange(cleaned === '' ? '' : cleaned);
-          return;
-        }
-        const n = Number(cleaned);
-        if (Number.isFinite(n)) onChange(cleaned);
-      }}
-      onBlur={() => {
-        if (value === '' || value === '.') onChange(0);
-        else onChange(Number(value));
-      }}
-      keyboardType="decimal-pad"
-      editable={!disabled}
-      selectTextOnFocus
-    />
+    <View style={[styles.percentFieldWrap, disabled && styles.percentFieldDisabled]}>
+      <TextInput
+        style={[styles.percentInput, disabled && styles.percentInputDisabled]}
+        value={value == null ? '' : String(value)}
+        onChangeText={(text) => {
+          const cleaned = text.replace(/[^0-9.]/g, '');
+          if (cleaned === '' || cleaned === '.') {
+            onChange(cleaned === '' ? '' : cleaned);
+            return;
+          }
+          const n = Number(cleaned);
+          if (Number.isFinite(n)) onChange(cleaned);
+        }}
+        onBlur={() => {
+          if (value === '' || value === '.') onChange(0);
+          else onChange(Number(value));
+        }}
+        keyboardType="decimal-pad"
+        editable={!disabled}
+        selectTextOnFocus
+      />
+      <Text style={styles.percentSuffix}>%</Text>
+    </View>
   );
 }
 
@@ -568,19 +623,22 @@ function ReceiveStatusButton({ status, onPress }) {
 
 function SplitsEditor({
   title,
+  hint,
   splits,
   territories,
+  labels,
   onChangeTier,
   disabledTiers = {},
 }) {
   return (
     <View style={styles.splitsCard}>
-      <Text style={styles.sectionTitle}>{title}</Text>
+      {title ? <Text style={styles.sectionTitle}>{title}</Text> : null}
+      {hint ? <Text style={styles.splitsHint}>{hint}</Text> : null}
       <View style={styles.splitsHeader}>
         <Text style={[styles.splitsCorner, styles.splitsHeaderText]}>Tier</Text>
         {territories.map((key) => (
           <Text key={key} style={[styles.splitsCell, styles.splitsHeaderText]} numberOfLines={1}>
-            {TERRITORY_LABELS[key] || key}
+            {(labels && labels[key]) || TERRITORY_LABELS[key] || key}
           </Text>
         ))}
       </View>
@@ -598,13 +656,10 @@ function SplitsEditor({
                 {disabled || !row ? (
                   <Text style={styles.skippedText}>{tier === 'red' && !row ? 'n/a' : '—'}</Text>
                 ) : (
-                  <View style={styles.percentFieldWrap}>
-                    <PercentField
-                      value={row[key] ?? 0}
-                      onChange={(next) => onChangeTier(tier, key, next)}
-                    />
-                    <Text style={styles.percentSuffix}>%</Text>
-                  </View>
+                  <PercentField
+                    value={row[key] ?? 0}
+                    onChange={(next) => onChangeTier(tier, key, next)}
+                  />
                 )}
               </View>
             ))}
@@ -613,6 +668,47 @@ function SplitsEditor({
       })}
     </View>
   );
+}
+
+function ItemPercentEditor({ title, hint, territories, labels, values, onChange, onReset }) {
+  return (
+    <View style={styles.itemOverrideCard}>
+      {title ? <Text style={styles.itemOverrideTitle}>{title}</Text> : null}
+      {hint ? <Text style={styles.itemOverrideHint}>{hint}</Text> : null}
+      <View style={styles.itemOverrideGrid}>
+        {territories.map((key) => (
+          <View key={key} style={styles.itemOverrideCell}>
+            <Text style={styles.itemOverrideLabel} numberOfLines={1}>
+              {(labels && labels[key]) || TERRITORY_LABELS[key] || key}
+            </Text>
+            <PercentField
+              value={values?.[key] ?? 0}
+              onChange={(next) => onChange(key, next)}
+            />
+          </View>
+        ))}
+      </View>
+      {onReset ? (
+        <Pressable onPress={onReset} hitSlop={6}>
+          <Text style={styles.resetLinkText}>Use category default</Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
+function stopTargetLine(storeName, isWorkshop, splits, mode) {
+  const key = resolveTerritoryKey({ name: storeName, isWorkshop });
+  if (!key) return '';
+  const tiers = mode === 'workshop' ? ['green', 'yellow', 'red'] : ['green', 'yellow'];
+  return tiers
+    .map((tier) => {
+      const pct = splits?.[tier]?.[key];
+      if (pct == null || pct === '') return null;
+      return `${tier} ${pct}%`;
+    })
+    .filter(Boolean)
+    .join('  ·  ');
 }
 
 function posEmployeeId(session) {
@@ -632,7 +728,7 @@ function EmptyTab({ tab }) {
   return (
     <View style={styles.emptyPanel}>
       <View style={styles.emptyIcon}>
-        <Ionicons name={tab.icon} size={22} color={ACCENT} />
+        <Ionicons name={tab.icon} size={22} color={LABEL} />
       </View>
       <Text style={styles.emptyTitle}>{tab.label}</Text>
       <Text style={styles.emptyBody}>{tab.empty}</Text>
@@ -2493,7 +2589,7 @@ function ActivePanel({ onRequireLogin, session, onLocationChanged }) {
   );
 }
 
-export default function TransferScreen({ session, onRequireLogin, onLocationChanged, onNavTabs }) {
+export default function TransferScreen({ session, onRequireLogin, onLocationChanged }) {
   const isMobile = useIsMobile();
   const { planned } = useTransferWorkflow();
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -2518,7 +2614,6 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
   const [pdfBusy, setPdfBusy] = useState(false);
   const [showPlan, setShowPlan] = useState(false);
   const [finishOpen, setFinishOpen] = useState(false);
-  const [targetsOpen, setTargetsOpen] = useState(false);
 
   const tabOptions = useMemo(
     () =>
@@ -2527,27 +2622,6 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
       ),
     [planned.length],
   );
-
-  const navTabs = useMemo(
-    () => (
-      <TextTabs
-        options={tabOptions}
-        value={activeTab}
-        onChange={setActiveTab}
-        size="lg"
-        layout={isMobile ? 'bar' : 'inline'}
-      />
-    ),
-    [activeTab, isMobile, tabOptions],
-  );
-
-  const portalNav = Boolean(onNavTabs) && !isMobile;
-
-  useLayoutEffect(() => {
-    if (!portalNav) return undefined;
-    onNavTabs(navTabs);
-    return () => onNavTabs(null);
-  }, [navTabs, onNavTabs, portalNav]);
 
   const requestId = useRef(0);
   const planRequestId = useRef(0);
@@ -2612,6 +2686,20 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
   const activeTerritories = useMemo(() => {
     const keys = mode === 'workshop' ? TERRITORY_KEYS : TERRITORY_KEYS.filter((k) => k !== 'workshop');
     return keys;
+  }, [mode]);
+
+  const territoryLabels = useMemo(() => {
+    const labels = { ...TERRITORY_LABELS };
+    for (const store of selectedStores) {
+      const key = resolveTerritoryKey(store);
+      if (key) labels[key] = store.name;
+    }
+    return labels;
+  }, [selectedStores]);
+
+  useEffect(() => {
+    setSplits(defaultSplitsForMode(mode));
+    setItemOverrides({});
   }, [mode]);
 
   const basePlan = useMemo(() => {
@@ -2681,9 +2769,6 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
     setMoveQtyOverrides({});
     setExpandedProductId(null);
     setExpandedStops(new Set());
-
-    const nextMode = detectTransferMode(selectedStores);
-    setSplits(defaultSplitsForMode(nextMode));
 
     try {
       const result = await fetchTransferInventory(session, selectedStores);
@@ -2865,7 +2950,7 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
       <PageHero
         label="Create"
         value={pathLabels.length >= 2 ? pathLabels.join(' → ') : 'New transfer'}
-        hint="Build a one-way route. In Transit is a stop for metal that has left a store but is not received yet."
+        hint="Build a one-way route, set how much each location should hold, then plan the moves. In Transit is for metal that has left a store but is not received yet."
         stats={[
           { label: 'Stops', value: selectedStores.length },
           { label: 'Mode', value: mode === 'workshop' ? 'Workshop' : 'Quebec' },
@@ -2924,25 +3009,73 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
         })}
       </View>
 
-      <Pressable style={[styles.addHopButton, isMobile && styles.addHopButtonMobile]} onPress={addStop}>
+      <Pressable
+        style={({ hovered, pressed }) => [
+          styles.addHopButton,
+          isMobile && styles.addHopButtonMobile,
+          (hovered || pressed) && styles.chipHover,
+        ]}
+        onPress={addStop}
+      >
+        <Ionicons name="add-outline" size={17} color={LABEL} />
         <Text style={styles.addHopText}>Add stop</Text>
       </Pressable>
 
+      <SectionHead title="Target split" meta="Edit % per location" />
+      <View style={[styles.splitsWrap, isMobile && styles.splitsWrapMobile]}>
+        <SplitsEditor
+          hint="Share of stock each location should hold after the transfer. Green / yellow / red are inventory priority tiers."
+          splits={splits}
+          territories={activeTerritories}
+          labels={territoryLabels}
+          onChangeTier={updateSplit}
+          disabledTiers={{
+            red: mode === 'quebec',
+          }}
+        />
+        <Pressable
+          style={({ hovered, pressed }) => [
+            styles.resetLink,
+            (hovered || pressed) && styles.chipHover,
+          ]}
+          onPress={resetSplits}
+        >
+          <Text style={styles.resetLinkText}>Reset to defaults</Text>
+        </Pressable>
+      </View>
+
       <View style={[styles.actionsRow, isMobile && styles.actionsRowMobile]}>
         <Pressable
-          style={[styles.transferButton, (!canTransfer || planning) && styles.transferButtonDisabled]}
+          style={({ hovered, pressed }) => [
+            styles.transferButton,
+            (hovered || pressed) && styles.chipHover,
+            (!canTransfer || planning) && styles.transferButtonDisabled,
+          ]}
           onPress={handleTransfer}
           disabled={planning}
         >
-          {planning ? <ActivityIndicator size="small" color="#fff" /> : null}
+          {planning ? (
+            <ActivityIndicator size="small" color={LABEL} />
+          ) : (
+            <Ionicons name="arrow-forward-outline" size={17} color={LABEL} />
+          )}
           <Text style={styles.transferButtonText}>
             {planning ? 'Planning…' : 'Transfer'}
           </Text>
         </Pressable>
 
         {showPlan && plan ? (
-          <Pressable onPress={handleDownloadPdf} disabled={pdfBusy} hitSlop={6}>
-            <Text style={[styles.textAction, pdfBusy && styles.transferButtonDisabled]}>PDF</Text>
+          <Pressable
+            onPress={handleDownloadPdf}
+            disabled={pdfBusy}
+            style={({ hovered, pressed }) => [
+              styles.chipAction,
+              (hovered || pressed) && styles.chipHover,
+              pdfBusy && styles.transferButtonDisabled,
+            ]}
+          >
+            <Ionicons name="document-outline" size={17} color={LABEL} />
+            <Text style={styles.chipActionText}>PDF</Text>
           </Pressable>
         ) : null}
         {showPlan && plan ? (
@@ -2954,9 +3087,13 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
               }
               setFinishOpen(true);
             }}
-            hitSlop={6}
+            style={({ hovered, pressed }) => [
+              styles.chipAction,
+              (hovered || pressed) && styles.chipHover,
+            ]}
           >
-            <Text style={styles.textAction}>Finish</Text>
+            <Ionicons name="checkmark-outline" size={17} color={LABEL} />
+            <Text style={styles.chipActionText}>Finish</Text>
           </Pressable>
         ) : null}
       </View>
@@ -2980,27 +3117,6 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
             </Text>
           ) : null}
 
-          <Pressable style={styles.targetsToggle} onPress={() => setTargetsOpen((open) => !open)}>
-            <Text style={styles.targetsToggleText}>Targets</Text>
-            <Ionicons name={targetsOpen ? 'chevron-up' : 'chevron-down'} size={14} color={SECONDARY} />
-          </Pressable>
-          {targetsOpen ? (
-            <>
-              <SplitsEditor
-                title="Target split %"
-                splits={splits}
-                territories={activeTerritories}
-                onChangeTier={updateSplit}
-                disabledTiers={{
-                  red: mode === 'quebec',
-                }}
-              />
-              <Pressable style={styles.resetLink} onPress={resetSplits}>
-                <Text style={styles.resetLinkText}>Reset</Text>
-              </Pressable>
-            </>
-          ) : null}
-
           {plan?.hasManualEdits ? (
             <Text style={styles.itemOverrideHint}>
               Manual send qty edits are included in the lists and PDF.
@@ -3021,7 +3137,14 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
                       {sheet.isInTransit ? (
                         <Ionicons name="swap-horizontal" size={14} color="#8e8e93" />
                       ) : null}
-                      <Text style={styles.stopTitle}>{sheet.storeName}</Text>
+                      <View style={styles.stopHeaderCopy}>
+                        <Text style={styles.stopTitle}>{sheet.storeName}</Text>
+                        {stopTargetLine(sheet.storeName, sheet.isWorkshop, splits, mode) ? (
+                          <Text style={styles.stopTarget} numberOfLines={1}>
+                            {stopTargetLine(sheet.storeName, sheet.isWorkshop, splits, mode)}
+                          </Text>
+                        ) : null}
+                      </View>
                     </View>
 
                     {sheet.outs.length > 0 ? (
@@ -3037,65 +3160,80 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
                           <Text style={[styles.th, styles.thQty]}>To has</Text>
                         </View>
                         {sheet.outs.map((row, index) => (
-                          <View
-                            key={`out-${sheet.storeId}-${row.productId}-${row.partnerId}-${index}`}
-                            style={[
-                              styles.tableRow,
-                              expandedProductId === row.productId && styles.tableRowActive,
-                            ]}
-                          >
-                            <Pressable
-                              style={[styles.td, styles.thProduct, styles.productCell]}
-                              onPress={() => {
-                                const product = plan.products.find((p) => p.id === row.productId)
-                                  || plan.catalog?.find((p) => p.id === row.productId);
-                                if (!product) return;
-                                const next =
-                                  expandedProductId === row.productId ? null : row.productId;
-                                setExpandedProductId(next);
-                                if (next) ensureItemOverride(product);
-                              }}
+                          <View key={`out-${sheet.storeId}-${row.productId}-${row.partnerId}-${index}`}>
+                            <View
+                              style={[
+                                styles.tableRow,
+                                expandedProductId === row.productId && styles.tableRowActive,
+                              ]}
                             >
-                              <View
-                                style={[
-                                  styles.priorityDot,
-                                  { backgroundColor: PRIORITY_COLORS[row.priority] },
-                                ]}
-                              />
-                              <Text style={styles.tdText} numberOfLines={2}>
-                                {row.productName}
+                              <Pressable
+                                style={[styles.td, styles.thProduct, styles.productCell]}
+                                onPress={() => {
+                                  const product = plan.products.find((p) => p.id === row.productId)
+                                    || plan.catalog?.find((p) => p.id === row.productId);
+                                  if (!product) return;
+                                  const next =
+                                    expandedProductId === row.productId ? null : row.productId;
+                                  setExpandedProductId(next);
+                                  if (next) ensureItemOverride(product);
+                                }}
+                              >
+                                <View
+                                  style={[
+                                    styles.priorityDot,
+                                    { backgroundColor: PRIORITY_COLORS[row.priority] },
+                                  ]}
+                                />
+                                <Text style={styles.tdText} numberOfLines={2}>
+                                  {row.productName}
+                                </Text>
+                              </Pressable>
+                              <Text style={[styles.td, styles.thQty, styles.haveText]}>
+                                {formatQty(row.currentQty ?? 0)}
                               </Text>
-                            </Pressable>
-                            <Text style={[styles.td, styles.thQty, styles.haveText]}>
-                              {formatQty(row.currentQty ?? 0)}
-                            </Text>
-                            <View style={[styles.td, styles.thQty]}>
-                              <QtyEditField
-                                value={
-                                  Object.prototype.hasOwnProperty.call(
-                                    moveQtyOverrides,
-                                    moveQtyKey(row.productId, sheet.storeId, row.partnerId),
-                                  )
-                                    ? moveQtyOverrides[
-                                        moveQtyKey(row.productId, sheet.storeId, row.partnerId)
-                                      ]
-                                    : row.qty
-                                }
-                                max={row.currentQty ?? 0}
-                                onChange={(next) =>
-                                  setMoveQty(row.productId, sheet.storeId, row.partnerId, next)
-                                }
-                              />
+                              <View style={[styles.td, styles.thQty]}>
+                                <QtyEditField
+                                  value={
+                                    Object.prototype.hasOwnProperty.call(
+                                      moveQtyOverrides,
+                                      moveQtyKey(row.productId, sheet.storeId, row.partnerId),
+                                    )
+                                      ? moveQtyOverrides[
+                                          moveQtyKey(row.productId, sheet.storeId, row.partnerId)
+                                        ]
+                                      : row.qty
+                                  }
+                                  max={row.currentQty ?? 0}
+                                  onChange={(next) =>
+                                    setMoveQty(row.productId, sheet.storeId, row.partnerId, next)
+                                  }
+                                />
+                              </View>
+                              <Text
+                                style={[styles.td, styles.thPartner, styles.tdText]}
+                                numberOfLines={1}
+                              >
+                                → {row.partnerName}
+                              </Text>
+                              <Text style={[styles.td, styles.thQty, styles.haveText]}>
+                                {formatQty(row.partnerQty ?? 0)}
+                              </Text>
                             </View>
-                            <Text
-                              style={[styles.td, styles.thPartner, styles.tdText]}
-                              numberOfLines={1}
-                            >
-                              → {row.partnerName}
-                            </Text>
-                            <Text style={[styles.td, styles.thQty, styles.haveText]}>
-                              {formatQty(row.partnerQty ?? 0)}
-                            </Text>
+                            {expandedProductId === row.productId ? (
+                              <ItemPercentEditor
+                                title={`Custom % · ${row.productName}`}
+                                hint="This item only. Other products keep the location targets above."
+                                territories={activeTerritories}
+                                labels={territoryLabels}
+                                values={itemOverrides[row.productId]}
+                                onChange={(key, next) => updateItemPercent(row.productId, key, next)}
+                                onReset={() => {
+                                  clearItemOverride(row.productId);
+                                  setExpandedProductId(null);
+                                }}
+                              />
+                            ) : null}
                           </View>
                         ))}
                       </View>
@@ -3251,36 +3389,6 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
                 );
               })}
 
-              {expandedProductId ? (
-                <View style={styles.itemOverrideCard}>
-                  <Text style={styles.itemOverrideTitle}>
-                    Custom % ·{' '}
-                    {plan.products.find((p) => p.id === expandedProductId)?.name || 'item'}
-                  </Text>
-                  <Text style={styles.itemOverrideHint}>
-                    Tap a product row above to edit its split for this route.
-                  </Text>
-                  <View style={styles.itemOverrideGrid}>
-                    {activeTerritories.map((key) => (
-                      <View key={key} style={styles.itemOverrideCell}>
-                        <Text style={styles.itemOverrideLabel}>{TERRITORY_LABELS[key]}</Text>
-                        <View style={styles.percentFieldWrap}>
-                          <PercentField
-                            value={itemOverrides[expandedProductId]?.[key] ?? 0}
-                            onChange={(next) =>
-                              updateItemPercent(expandedProductId, key, next)
-                            }
-                          />
-                          <Text style={styles.percentSuffix}>%</Text>
-                        </View>
-                      </View>
-                    ))}
-                  </View>
-                  <Pressable onPress={() => clearItemOverride(expandedProductId)}>
-                    <Text style={styles.resetLinkText}>Use category default</Text>
-                  </Pressable>
-                </View>
-              ) : null}
             </>
           ) : (
             <Text style={styles.emptyPlan}>
@@ -3296,10 +3404,10 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
   }
 
   return (
-    <View style={styles.screen}>
-      {portalNav ? null : (
-        <View style={[styles.localNavRow, isMobile && styles.localNavRowMobile]}>{navTabs}</View>
-      )}
+    <View style={[styles.screen, !isMobile && styles.screenDesktop]}>
+      <View style={[styles.localNavRow, isMobile && styles.localNavRowMobile]}>
+        <TransferTabs options={tabOptions} value={activeTab} onChange={setActiveTab} />
+      </View>
       {activeTab === 'create' ? (
         createBody
       ) : activeTab === 'dashboard' ? (
@@ -3330,25 +3438,116 @@ export default function TransferScreen({ session, onRequireLogin, onLocationChan
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
+    minHeight: 0,
     backgroundColor: CANVAS,
+  },
+  screenDesktop: {
+    paddingTop: DESKTOP_TOP_BAR_HEIGHT,
   },
   createScroll: {
     flex: 1,
     minHeight: 0,
+    ...Platform.select({
+      web: { overflowY: 'auto', height: 0 },
+      default: {},
+    }),
   },
   localNavRow: {
     flexShrink: 0,
     flexDirection: 'row',
-    justifyContent: 'flex-end',
-    alignItems: 'flex-end',
-    paddingHorizontal: 20,
-    paddingBottom: 2,
+    justifyContent: 'flex-start',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+    paddingTop: 16,
+    paddingBottom: 4,
   },
   localNavRowMobile: {
     justifyContent: 'flex-start',
     alignItems: 'stretch',
-    paddingHorizontal: 0,
+    paddingHorizontal: 16,
+    paddingTop: 8,
     paddingBottom: 0,
+  },
+  tabBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 4,
+  },
+  tabBarMobile: {
+    alignSelf: 'stretch',
+  },
+  tabChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 36,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    backgroundColor: 'transparent',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  tabChipMobile: {
+    minHeight: 44,
+    paddingHorizontal: 14,
+  },
+  tabChipHover: {
+    backgroundColor: CHIP_WASH_HOVER,
+  },
+  tabChipActive: {
+    backgroundColor: '#fff',
+    borderColor: CHIP_BORDER,
+    ...CHIP_SHADOW,
+  },
+  tabChipLabel: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.2,
+  },
+  tabChipLabelMobile: {
+    fontSize: 16,
+  },
+  tabChipLabelActive: {
+    color: LABEL,
+    fontWeight: '500',
+  },
+  tabChipCount: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '500',
+    color: SECONDARY,
+  },
+  tabChipCountActive: {
+    color: LABEL,
+  },
+  chipHover: {
+    backgroundColor: CHIP_WASH_HOVER,
+  },
+  chipAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minHeight: 36,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  chipActionText: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: LABEL,
+    letterSpacing: -0.2,
   },
   emptyPanel: {
     flex: 1,
@@ -3362,7 +3561,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 14,
-    backgroundColor: 'rgba(31,122,154,0.12)',
+    backgroundColor: CHIP_WASH,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 12,
@@ -3397,7 +3596,7 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 14,
     paddingHorizontal: 32,
-    backgroundColor: '#fff',
+    backgroundColor: 'transparent',
   },
   heroMobile: {
     paddingHorizontal: 16,
@@ -3546,7 +3745,14 @@ const styles = StyleSheet.create({
     marginHorizontal: 16,
   },
   addHopButtonMobile: {
-    paddingHorizontal: 16,
+    marginHorizontal: 6,
+  },
+  splitsWrap: {
+    marginHorizontal: 32,
+    marginBottom: 8,
+  },
+  splitsWrapMobile: {
+    marginHorizontal: 16,
   },
   actionsRowMobile: {
     paddingHorizontal: 16,
@@ -3557,7 +3763,7 @@ const styles = StyleSheet.create({
   listTable: {
     flex: 1,
     minHeight: 0,
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: HAIRLINE_SOFT,
   },
@@ -3566,7 +3772,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     minHeight: 32,
     paddingLeft: 16,
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: HAIRLINE_SOFT,
     ...Platform.select({
@@ -3588,6 +3794,11 @@ const styles = StyleSheet.create({
   },
   listScroll: {
     flex: 1,
+    minHeight: 0,
+    ...Platform.select({
+      web: { overflowY: 'auto', height: 0 },
+      default: {},
+    }),
   },
   listScrollContent: {
     paddingBottom: 24,
@@ -3608,7 +3819,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     minHeight: 72,
     paddingLeft: 16,
-    backgroundColor: '#fff',
+    backgroundColor: CANVAS,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -3627,7 +3838,7 @@ const styles = StyleSheet.create({
     marginRight: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: TILE,
+    backgroundColor: LABEL,
     flexShrink: 0,
   },
   txIconReceived: {
@@ -3687,9 +3898,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     minWidth: 0,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    backgroundColor: 'rgba(118,118,128,0.12)',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    backgroundColor: CHIP_WASH,
+    borderWidth: 1,
+    borderColor: 'transparent',
     minHeight: 36,
   },
   searchIcon: {
@@ -4172,8 +4385,8 @@ const styles = StyleSheet.create({
   chain: {
     marginHorizontal: 32,
     marginBottom: 8,
-    backgroundColor: '#fff',
-    borderRadius: 14,
+    backgroundColor: CHIP_WASH,
+    borderRadius: 12,
     overflow: 'visible',
   },
   hopBlock: {
@@ -4305,15 +4518,22 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 32,
+    minHeight: 36,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    marginHorizontal: 22,
     marginBottom: 8,
+    borderRadius: 8,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
   addHopText: {
     fontFamily,
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '400',
-    color: BLUE,
+    color: LABEL,
     letterSpacing: -0.2,
   },
   pathLine: {
@@ -4339,20 +4559,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 10,
   },
-  targetsToggle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    minHeight: 44,
-    paddingHorizontal: 2,
-  },
-  targetsToggleText: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '500',
-    color: LABEL,
-    letterSpacing: -0.2,
-  },
   actionsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -4366,19 +4572,25 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: LABEL,
-    borderRadius: 10,
-    paddingHorizontal: 16,
+    gap: 8,
+    backgroundColor: CHIP_WASH,
+    borderRadius: 8,
+    paddingHorizontal: 12,
     minHeight: 36,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
   transferButtonDisabled: {
     opacity: 0.45,
   },
   transferButtonText: {
     fontFamily,
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#fff',
+    fontSize: 14,
+    fontWeight: '400',
+    color: LABEL,
+    letterSpacing: -0.2,
   },
   statusText: {
     fontFamily,
@@ -4401,9 +4613,17 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   splitsCard: {
-    borderRadius: 14,
+    borderRadius: 12,
     padding: 14,
-    backgroundColor: '#fff',
+    backgroundColor: CHIP_WASH,
+  },
+  splitsHint: {
+    fontFamily,
+    fontSize: 13,
+    lineHeight: 18,
+    color: SECONDARY,
+    letterSpacing: -0.2,
+    marginBottom: 12,
   },
   splitsHeader: {
     flexDirection: 'row',
@@ -4447,29 +4667,38 @@ const styles = StyleSheet.create({
   percentFieldWrap: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 2,
+    gap: 4,
+    minHeight: 36,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  percentFieldDisabled: {
+    backgroundColor: 'rgba(60,60,67,0.04)',
   },
   percentInput: {
     fontFamily,
     flex: 1,
     minWidth: 0,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#dcdcdc',
-    borderRadius: 8,
-    paddingHorizontal: 8,
     paddingVertical: 6,
-    fontSize: 13,
-    color: '#1a1a1a',
-    backgroundColor: '#fff',
+    fontSize: 14,
+    color: LABEL,
+    letterSpacing: -0.2,
+    ...Platform.select({
+      web: { outlineStyle: 'none', outlineWidth: 0 },
+      default: {},
+    }),
   },
   percentInputDisabled: {
-    backgroundColor: '#f5f5f5',
     color: '#9a9a9a',
   },
   percentSuffix: {
     fontFamily,
-    fontSize: 11,
-    color: '#8a8a8a',
+    fontSize: 13,
+    color: SECONDARY,
+    letterSpacing: -0.2,
   },
   skippedText: {
     fontFamily,
@@ -4479,16 +4708,25 @@ const styles = StyleSheet.create({
   },
   resetLink: {
     alignSelf: 'flex-start',
-    marginTop: -4,
+    marginTop: 6,
+    minHeight: 36,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    justifyContent: 'center',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
   resetLinkText: {
     fontFamily,
-    fontSize: 12,
-    fontWeight: '600',
-    color: ACCENT,
+    fontSize: 13,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.2,
   },
   stopCard: {
-    borderRadius: 14,
+    borderRadius: 12,
     padding: 14,
     backgroundColor: '#fff',
     gap: 8,
@@ -4501,6 +4739,18 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: HAIRLINE_SOFT,
+  },
+  stopHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  stopTarget: {
+    fontFamily,
+    fontSize: 12,
+    color: SECONDARY,
+    letterSpacing: -0.08,
+    textTransform: 'capitalize',
   },
   stopTitle: {
     fontFamily,
@@ -4640,9 +4890,11 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,122,255,0.08)',
   },
   itemOverrideCard: {
-    borderRadius: 14,
-    padding: 14,
-    backgroundColor: '#f7f7f8',
+    borderRadius: 8,
+    padding: 12,
+    marginTop: 4,
+    marginBottom: 8,
+    backgroundColor: CHIP_WASH,
     gap: 8,
   },
   itemOverrideHint: {

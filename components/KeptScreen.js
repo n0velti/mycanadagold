@@ -24,10 +24,11 @@ function KeptScreen({ visible, Component, screenProps, gateKey, dateScope, style
   return (
     <ScreenVisibilityProvider value={visible}>
       <View
-        style={visible ? style || styles.live : styles.hidden}
+        style={visible ? [styles.live, style] : styles.hidden}
         pointerEvents={visible ? 'auto' : 'none'}
         accessibilityElementsHidden={!visible}
         importantForAccessibility={visible ? 'auto' : 'no-hide-descendants'}
+        {...(Platform.OS === 'web' && visible ? { className: 'cgold-flex-scroll' } : null)}
       >
         <AppDateScope id={dateScope}>
           <ScreenGate resetKey={gateKey}>
@@ -84,7 +85,16 @@ const styles = StyleSheet.create({
     minHeight: 0,
     alignSelf: 'stretch',
     width: '100%',
-    ...Platform.select({ web: { display: 'flex' }, default: {} }),
+    ...Platform.select({
+      web: {
+        display: 'flex',
+        flexDirection: 'column',
+        height: 0,
+        overflowY: 'auto',
+        overflowX: 'hidden',
+      },
+      default: {},
+    }),
   },
   hidden: {
     display: 'none',

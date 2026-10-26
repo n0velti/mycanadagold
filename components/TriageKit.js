@@ -2682,7 +2682,12 @@ const styles = StyleSheet.create({
     zIndex: 4,
     backgroundColor: 'transparent',
     ...Platform.select({
-      web: { overflowY: 'auto', touchAction: 'pan-y', WebkitOverflowScrolling: 'touch' },
+      web: {
+        overflowY: 'auto',
+        touchAction: 'pan-y',
+        WebkitOverflowScrolling: 'touch',
+        height: 0,
+      },
       default: {},
     }),
   },

@@ -163,8 +163,12 @@ function SettingsHome({
   }
 
   return (
-    <View style={styles.body}>
-      <View style={styles.menuList}>
+    <ScrollView
+      style={styles.body}
+      contentContainerStyle={[styles.menuList, styles.menuListScroll]}
+      showsVerticalScrollIndicator={false}
+      keyboardShouldPersistTaps="handled"
+    >
         <Pressable style={styles.menuRow} onPress={onOpenDatabase}>
           <View style={[styles.menuIcon, { backgroundColor: dbReady ? '#EAF6EE' : '#FFF6E8' }]}>
             <Ionicons
@@ -261,8 +265,7 @@ function SettingsHome({
           </View>
           <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
         </Pressable>
-      </View>
-    </View>
+    </ScrollView>
   );
 }
 
@@ -966,6 +969,10 @@ const styles = StyleSheet.create({
   menuList: {
     gap: 10,
     maxWidth: 480,
+  },
+  menuListScroll: {
+    flexGrow: 1,
+    paddingBottom: 48,
   },
   menuRow: {
     flexDirection: 'row',

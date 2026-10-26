@@ -3,9 +3,10 @@ const { getDefaultConfig } = require('expo/metro-config');
 
 const config = getDefaultConfig(__dirname);
 
-// App-source `react-native` imports are rewritten so Pressable logs presses
-// and Text / TextInput / Animated.Text always use Söhne. Third-party code in
-// node_modules, plus the wrapper folders themselves, keep the real module.
+// App-source `react-native` imports are rewritten so Pressable logs presses,
+// ScrollView can scroll on web, and Text / TextInput / Animated.Text always
+// use Söhne. Third-party code in node_modules, plus the wrapper folders
+// themselves, keep the real module.
 //
 // Native: `import { … } from 'react-native'` → reactNative.js, which swaps
 //   those exports and passes everything else through.
@@ -17,12 +18,14 @@ const actionLogDir = path.join(projectRoot, 'lib', 'actionLog');
 const typographyDir = path.join(projectRoot, 'lib', 'typography');
 const loggedReactNative = path.join(actionLogDir, 'reactNative.js');
 const loggedPressable = path.join(actionLogDir, 'LoggedPressable.js');
+const appScrollView = path.join(actionLogDir, 'AppScrollView.js');
 const appText = path.join(typographyDir, 'AppText.js');
 const appTextInput = path.join(typographyDir, 'AppTextInput.js');
 const appAnimated = path.join(typographyDir, 'AppAnimated.js');
 const nodeModulesSegment = `${path.sep}node_modules${path.sep}`;
 const webExport = (name) => new RegExp(`^react-native-web\\/dist\\/exports\\/${name}(\\/index(\\.js)?)?$`);
 const webPressablePattern = webExport('Pressable');
+const webScrollViewPattern = webExport('ScrollView');
 const webTextPattern = webExport('Text');
 const webTextInputPattern = webExport('TextInput');
 const webAnimatedPattern = webExport('Animated');
@@ -45,6 +48,9 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
     }
     if (webPressablePattern.test(moduleName)) {
       return { type: 'sourceFile', filePath: loggedPressable };
+    }
+    if (webScrollViewPattern.test(moduleName)) {
+      return { type: 'sourceFile', filePath: appScrollView };
     }
     if (webTextPattern.test(moduleName)) {
       return { type: 'sourceFile', filePath: appText };

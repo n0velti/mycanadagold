@@ -23,7 +23,7 @@ function reloadPage() {
  * person back on Home. Keep them on this tab and let them reload if they want.
  */
 class ScreenBoundary extends Component {
-  state = { failed: false, error: null };
+  state = { failed: false, error: null, retry: 0 };
 
   static getDerivedStateFromError(error) {
     return { failed: true, error };
@@ -34,6 +34,10 @@ class ScreenBoundary extends Component {
       this.setState({ failed: false, error: null });
     }
   }
+
+  retry = () => {
+    this.setState((state) => ({ failed: false, error: null, retry: state.retry + 1 }));
+  };
 
   componentDidCatch(error, info) {
     if (typeof console !== 'undefined' && console.error) {
@@ -50,15 +54,20 @@ class ScreenBoundary extends Component {
   }
 
   render() {
-    if (!this.state.failed) return this.props.children;
+    if (!this.state.failed) {
+      return <Suspense key={this.state.retry} fallback={<ScreenFallback />}>{this.props.children}</Suspense>;
+    }
     const detail = this.state.error?.message || this.state.error?.toString?.();
     return (
       <View style={styles.centered}>
         <Text style={styles.message}>This screen could not be loaded.</Text>
         {detail ? <Text style={styles.detail}>{detail}</Text> : null}
+        <Pressable accessibilityRole="button" onPress={this.retry} style={styles.reloadButton}>
+          <Text style={styles.reloadLabel}>Try again</Text>
+        </Pressable>
         {Platform.OS === 'web' ? (
-          <Pressable accessibilityRole="button" onPress={reloadPage} style={styles.reloadButton}>
-            <Text style={styles.reloadLabel}>Reload</Text>
+          <Pressable accessibilityRole="button" onPress={reloadPage} style={styles.retryQuiet}>
+            <Text style={styles.retryQuietLabel}>Reload the page</Text>
           </Pressable>
         ) : null}
       </View>
@@ -66,13 +75,9 @@ class ScreenBoundary extends Component {
   }
 }
 
-/** Suspense + error boundary for a lazily loaded screen. */
+/** Error boundary for a lazily loaded screen. Suspense lives inside so Try again remounts the chunk. */
 export default function ScreenGate({ resetKey, children }) {
-  return (
-    <ScreenBoundary resetKey={resetKey}>
-      <Suspense fallback={<ScreenFallback />}>{children}</Suspense>
-    </ScreenBoundary>
-  );
+  return <ScreenBoundary resetKey={resetKey}>{children}</ScreenBoundary>;
 }
 
 const styles = StyleSheet.create({
@@ -111,5 +116,15 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: '#fff',
+  },
+  retryQuiet: {
+    marginTop: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  retryQuietLabel: {
+    fontFamily: FONT,
+    fontSize: 13,
+    color: '#8e8e93',
   },
 });
