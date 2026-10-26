@@ -624,15 +624,45 @@ function firstNameOfPerson(person) {
   return contactName(person).split(/\s+/)[0] || 'Teammate';
 }
 
+function enrichPerson(person, directory = []) {
+  if (!person) return person;
+  const match = directory.find((row) => row?.id && row.id === person.id);
+  if (!match) return person;
+  return {
+    ...match,
+    ...person,
+    avatarUrl: person.avatarUrl || match.avatarUrl,
+    firstName: person.firstName || match.firstName,
+    lastName: person.lastName || match.lastName,
+    fullName: person.fullName || match.fullName,
+  };
+}
+
+function selfAsPerson(session) {
+  const profile = session?.profile || {};
+  return {
+    id: session?.supabaseUserId || profile.id || '',
+    firstName: profile.firstName || '',
+    lastName: profile.lastName || '',
+    fullName: profile.fullName || '',
+    avatarUrl: profile.avatarUrl || '',
+  };
+}
+
 function PersonMark({ person, size = 28 }) {
   const name = contactName(person);
   const uri = String(person?.avatarUrl || '').trim();
-  if (uri) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setFailed(false);
+  }, [uri]);
+  if (uri && !failed) {
     return (
       <Image
         source={{ uri }}
         style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: '#e8e8ed' }}
         accessibilityLabel={name}
+        onError={() => setFailed(true)}
       />
     );
   }
@@ -651,6 +681,120 @@ function PersonMark({ person, size = 28 }) {
         {initialsFromName(name) || '?'}
       </Text>
     </View>
+  );
+}
+
+function PersonFace({
+  person,
+  size = 48,
+  selected = false,
+  muted = false,
+  alwaysName = false,
+  onPress,
+  disabled = false,
+  accessibilityRole = 'button',
+}) {
+  const name = contactName(person);
+  return (
+    <Pressable
+      disabled={disabled}
+      onPress={onPress}
+      pressChrome={false}
+      accessibilityRole={onPress ? accessibilityRole : 'image'}
+      accessibilityState={onPress ? { checked: selected, disabled } : undefined}
+      accessibilityLabel={name}
+      style={({ hovered, pressed }) => [
+        styles.shareFace,
+        onPress && (hovered || pressed) && !selected && styles.shareFaceHover,
+        selected && styles.shareFaceOn,
+      ]}
+    >
+      {({ hovered }) => (
+        <>
+          <View style={[styles.shareFaceRing, selected && styles.shareFaceRingOn, muted && styles.shareFaceMuted]}>
+            <PersonMark person={person} size={size} />
+            {selected ? (
+              <View style={styles.shareFaceCheck}>
+                <Ionicons name="checkmark" size={11} color="#fff" />
+              </View>
+            ) : null}
+          </View>
+          <Text
+            style={[
+              styles.shareFaceName,
+              selected && styles.shareFaceNameOn,
+              !(alwaysName || hovered) && styles.shareFaceNameHidden,
+            ]}
+            numberOfLines={1}
+          >
+            {name}
+          </Text>
+        </>
+      )}
+    </Pressable>
+  );
+}
+
+function PeopleFaceStack({ people, size = 22, overlap = 8, onPress, emptyLabel = 'Add people' }) {
+  const [tip, setTip] = useState('');
+  const faces = (Array.isArray(people) ? people : []).filter((person) => person?.id);
+  const hover =
+    Platform.OS === 'web'
+      ? (name) => ({
+          onMouseEnter: () => setTip(name),
+          onMouseLeave: () => setTip(''),
+        })
+      : null;
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={
+        faces.length
+          ? `${faces.map(contactName).filter(Boolean).join(', ')}. Add people to this chat`
+          : 'Add people to this chat'
+      }
+      {...webClass(['cgold-home-chip'])}
+      style={({ hovered, pressed }) => [
+        styles.promptsHit,
+        (hovered || pressed) && styles.promptsHitHover,
+      ]}
+    >
+      {faces.length ? (
+        <View style={styles.shareStack}>
+          {faces.map((person, index) => {
+            const name = contactName(person);
+            return (
+              <View
+                key={person.id || `${name}-${index}`}
+                style={[
+                  styles.shareStackFace,
+                  {
+                    width: size + 4,
+                    height: size + 4,
+                    borderRadius: (size + 4) / 2,
+                    marginLeft: index === 0 ? 0 : -overlap,
+                    zIndex: index + 1,
+                  },
+                ]}
+                accessibilityLabel={name}
+                {...(hover ? hover(name) : null)}
+              >
+                <PersonMark person={person} size={size} />
+              </View>
+            );
+          })}
+        </View>
+      ) : (
+        <Ionicons name="person-add-outline" size={14} color={SECONDARY} />
+      )}
+      {tip || !faces.length ? (
+        <Text style={styles.promptsHitText} numberOfLines={1}>
+          {tip || emptyLabel}
+        </Text>
+      ) : null}
+      {faces.length ? <Ionicons name="person-add-outline" size={14} color={SECONDARY} /> : null}
+    </Pressable>
   );
 }
 
@@ -1956,6 +2100,11 @@ export default function AnalyticsAiPanel({
   );
 
   const shareMemberIds = new Set(activeMembers.map((person) => person.id));
+  const shareMembers = activeMembers.map((person) => enrichPerson(person, people));
+  const shareFaces = [
+    enrichPerson(selfAsPerson(session), people),
+    ...shareMembers,
+  ].filter((person, index, rows) => person?.id && rows.findIndex((row) => row.id === person.id) === index);
   const shareAddable = people.filter((person) => person.id !== myId && !shareMemberIds.has(person.id));
   const shareNeedle = shareQuery.trim().toLowerCase();
   const shareFiltered = shareAddable.filter((person) => {
@@ -2050,18 +2199,19 @@ export default function AnalyticsAiPanel({
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
-            {activeMembers.length && !shareNeedle ? (
+            {shareMembers.length && !shareNeedle ? (
               <View style={styles.shareSection}>
                 <Text style={styles.shareSectionTitle}>In this chat</Text>
-                {activeMembers.map((person) => (
-                  <View key={person.id} style={styles.sharePerson}>
-                    <PersonMark person={person} size={32} />
-                    <Text style={styles.sharePersonName} numberOfLines={1}>
-                      {contactName(person)}
-                    </Text>
-                    <Text style={styles.sharePersonMeta}>Added</Text>
-                  </View>
-                ))}
+                <View style={styles.shareFaceGrid}>
+                  {shareMembers.map((person) => (
+                    <PersonFace
+                      key={person.id}
+                      person={person}
+                      muted
+                      alwaysName={compact}
+                    />
+                  ))}
+                </View>
               </View>
             ) : null}
             <View style={styles.shareSection}>
@@ -2069,38 +2219,22 @@ export default function AnalyticsAiPanel({
                 {sharePickedCount ? `${sharePickedCount} selected` : 'Staff'}
               </Text>
               {shareFiltered.length ? (
-                shareFiltered.map((person) => {
-                  const pickedPerson = sharePicked.has(person.id);
-                  return (
-                    <Pressable
-                      key={person.id}
-                      disabled={sharing}
-                      pressChrome={false}
-                      onPress={() => toggleSharePick(person.id)}
-                      accessibilityRole="checkbox"
-                      accessibilityState={{ checked: pickedPerson }}
-                      accessibilityLabel={contactName(person)}
-                      {...webClass([pickedPerson && 'cgold-sidebar-item', pickedPerson && 'cgold-sidebar-item-active'])}
-                      style={({ hovered, pressed }) => [
-                        styles.sharePerson,
-                        styles.sharePersonPick,
-                        pickedPerson && styles.sharePersonOn,
-                        !pickedPerson && (hovered || pressed) && styles.sharePersonHover,
-                      ]}
-                    >
-                      <PersonMark person={person} size={32} />
-                      <Text
-                        style={[styles.sharePersonName, pickedPerson && styles.sharePersonNameOn]}
-                        numberOfLines={1}
-                      >
-                        {contactName(person)}
-                      </Text>
-                      <View style={[styles.shareCheck, pickedPerson && styles.shareCheckOn]}>
-                        {pickedPerson ? <Ionicons name="checkmark" size={13} color="#fff" /> : null}
-                      </View>
-                    </Pressable>
-                  );
-                })
+                <View style={styles.shareFaceGrid}>
+                  {shareFiltered.map((person) => {
+                    const pickedPerson = sharePicked.has(person.id);
+                    return (
+                      <PersonFace
+                        key={person.id}
+                        person={person}
+                        selected={pickedPerson}
+                        alwaysName={compact}
+                        disabled={sharing}
+                        onPress={() => toggleSharePick(person.id)}
+                        accessibilityRole="checkbox"
+                      />
+                    );
+                  })}
+                </View>
               ) : (
                 <Text style={styles.shareEmpty}>
                   {shareNeedle
@@ -2753,21 +2887,11 @@ export default function AnalyticsAiPanel({
             ) : null}
           </View>
           {compact ? null : (
-          <Pressable
+          <PeopleFaceStack
+            people={shareMembers.length ? shareFaces : []}
             onPress={() => setShareOpen(true)}
-            accessibilityRole="button"
-            accessibilityLabel="Add people to this chat"
-            {...webClass(['cgold-home-chip'])}
-            style={({ hovered, pressed }) => [
-              styles.promptsHit,
-              (hovered || pressed) && styles.promptsHitHover,
-            ]}
-          >
-            <Ionicons name="person-add-outline" size={14} color={SECONDARY} />
-            <Text style={styles.promptsHitText}>
-              {activeMembers.length ? `${activeMembers.length + 1} people` : 'Add people'}
-            </Text>
-          </Pressable>
+            emptyLabel="Add people"
+          />
           )}
           {compact ? null : (
           <Pressable
@@ -4590,61 +4714,88 @@ const styles = StyleSheet.create({
     paddingTop: 4,
     paddingBottom: 4,
   },
-  sharePerson: {
+  shareFaceGrid: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+    paddingHorizontal: 4,
+  },
+  shareFace: {
+    width: 76,
     alignItems: 'center',
-    gap: 10,
-    minHeight: 40,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
+    gap: 6,
+    paddingTop: 6,
+    paddingBottom: 4,
+    paddingHorizontal: 4,
     borderRadius: CHIP_RADIUS,
     borderWidth: 1,
     borderColor: 'transparent',
-  },
-  sharePersonPick: {
     ...WEB_CHIP_MOTION,
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
-  sharePersonHover: {
+  shareFaceHover: {
     backgroundColor: TAB_HOVER,
   },
-  sharePersonOn: {
+  shareFaceOn: {
     ...CHIP_CARD,
   },
-  sharePersonName: {
-    flex: 1,
-    minWidth: 0,
+  shareFaceRing: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  shareFaceRingOn: {
+    borderColor: INK,
+  },
+  shareFaceMuted: {
+    opacity: 0.72,
+  },
+  shareFaceCheck: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: INK,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: CANVAS,
+  },
+  shareFaceName: {
     fontFamily: FONT,
-    fontSize: 14,
+    fontSize: 11,
+    lineHeight: 14,
     fontWeight: '400',
     color: '#636366',
     letterSpacing: -0.2,
+    textAlign: 'center',
+    width: '100%',
   },
-  sharePersonNameOn: {
+  shareFaceNameOn: {
     color: INK,
   },
-  sharePersonMeta: {
-    fontFamily: FONT,
-    fontSize: 12,
-    fontWeight: '400',
-    color: SECONDARY,
-    letterSpacing: -0.2,
-    flexShrink: 0,
+  shareFaceNameHidden: {
+    opacity: 0,
   },
-  shareCheck: {
-    width: 20,
-    height: 20,
-    borderRadius: CHIP_RADIUS,
-    borderWidth: 1,
-    borderColor: CHIP_BORDER,
-    backgroundColor: 'transparent',
+  shareStack: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  shareStackFace: {
     alignItems: 'center',
     justifyContent: 'center',
-    flexShrink: 0,
-  },
-  shareCheckOn: {
-    backgroundColor: INK,
-    borderColor: INK,
+    overflow: 'hidden',
+    backgroundColor: '#e8e8ed',
+    borderWidth: 2,
+    borderColor: CANVAS,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
   shareEmpty: {
     fontFamily: FONT,
