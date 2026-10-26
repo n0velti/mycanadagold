@@ -3169,6 +3169,8 @@ const styles = StyleSheet.create({
   listGroup: {
     gap: 2,
     paddingBottom: 10,
+    overflow: 'visible',
+    zIndex: 0,
   },
   listGroupTitle: {
     fontFamily: FONT,
@@ -3189,6 +3191,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingBottom: 28,
     gap: 2,
+    overflow: 'visible',
   },
   sideScrollEmpty: {
     flexGrow: 1,
@@ -3232,6 +3235,8 @@ const styles = StyleSheet.create({
   chatRowWrap: {
     position: 'relative',
     width: '100%',
+    zIndex: 0,
+    overflow: 'visible',
   },
   chatRow: {
     width: '100%',
@@ -3250,7 +3255,11 @@ const styles = StyleSheet.create({
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
   chatRowMenuOpen: {
-    zIndex: 4,
+    zIndex: 40,
+    ...Platform.select({
+      web: { isolation: 'isolate' },
+      default: { elevation: 20 },
+    }),
   },
   chatRowCopy: {
     flex: 1,
@@ -3330,16 +3339,26 @@ const styles = StyleSheet.create({
   },
   chatMenu: {
     position: 'absolute',
-    top: 40,
+    top: '100%',
     right: 8,
+    marginTop: 4,
     minWidth: 148,
     paddingVertical: 4,
     borderRadius: 12,
     backgroundColor: '#fff',
     borderWidth: 1,
     borderColor: CHIP_BORDER,
-    zIndex: 5,
-    ...CHIP_SHADOW,
+    zIndex: 50,
+    ...Platform.select({
+      web: { boxShadow: '0 8px 24px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.06)' },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.16,
+        shadowRadius: 16,
+        elevation: 24,
+      },
+    }),
   },
   chatMenuItem: {
     flexDirection: 'row',
