@@ -136,7 +136,7 @@ import LowReviewMark from './components/LowReviewMark';
 import LoginScreen from './components/LoginScreen';
 import ProfileLoginSwitcher from './components/ProfileLoginSwitcher';
 import KeptScreen, { touchKeptKey } from './components/KeptScreen';
-import ScreenGate from './components/ScreenGate';
+import ScreenGate, { isStaleChunkError } from './components/ScreenGate';
 import { useStableCallback } from './lib/useStableCallback';
 import {
   MobileFeedTopBar,
@@ -266,6 +266,8 @@ function withScreenRetry(loader) {
         return await loader();
       } catch (error) {
         last = error;
+        // A missing hash after a deploy will 404 every time; don't sit on retries.
+        if (isStaleChunkError(error)) throw error;
         if (attempt < 2) {
           await new Promise((resolve) => setTimeout(resolve, 280 * (attempt + 1)));
         }
@@ -9598,8 +9600,12 @@ export default function App() {
   const scopedStore = scopedStoreName(session?.profile);
   const activeToolKey = activeTool?.key || '';
   useEffect(() => {
-    if (Platform.OS === 'web' && activeToolKey) rememberOpenTool(activeToolKey);
-  }, [activeToolKey]);
+    if (Platform.OS !== 'web') return;
+    if (activeToolKey) rememberOpenTool(activeToolKey);
+    else if (activeTab === 'search' || activeTab === 'messages' || activeTab === 'profile') {
+      rememberOpenTool(activeTab);
+    }
+  }, [activeTab, activeToolKey]);
 
   // Chrome reported by the app on display; hidden apps keep theirs in toolChrome.
   const activeChrome = (activeTab === 'tools' && toolChrome[activeToolKey]) || EMPTY_CHROME;
@@ -9817,11 +9823,15 @@ export default function App() {
         setPermissionRules(ruleState.rules || EMPTY_LIST);
         cancelWarmup = warmSessionCaches(restored);
         const reopenKey = storedOpenTool();
-        const reopen = reopenKey !== 'trove' ? TOOL_CARDS.find((tool) => tool.key === reopenKey) : null;
-        if (reopen) {
-          setActiveTab('tools');
-          setActiveTool(reopen);
-          setKeptToolKeys([reopen.key]);
+        if (reopenKey === 'search' || reopenKey === 'messages' || reopenKey === 'profile') {
+          setActiveTab(reopenKey);
+        } else {
+          const reopen = reopenKey !== 'trove' ? TOOL_CARDS.find((tool) => tool.key === reopenKey) : null;
+          if (reopen) {
+            setActiveTab('tools');
+            setActiveTool(reopen);
+            setKeptToolKeys([reopen.key]);
+          }
         }
       } else {
         await joinConfig;
