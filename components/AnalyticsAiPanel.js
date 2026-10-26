@@ -3170,7 +3170,6 @@ const styles = StyleSheet.create({
     gap: 2,
     paddingBottom: 10,
     overflow: 'visible',
-    zIndex: 0,
   },
   listGroupTitle: {
     fontFamily: FONT,
