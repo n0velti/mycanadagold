@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Modal, Platform, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import TriageAccuracyPanel from './TriageAccuracyPanel';
 import TriagePoCapture from './TriagePoCapture';
@@ -8,7 +8,7 @@ import TriageDashboardPanel, { ERROR_LIST_SORTS } from './TriageDashboardPanel';
 import TriageDeletedPanel from './TriageDeletedPanel';
 import TriageInsightsPanel from './TriageInsightsPanel';
 import { canViewTriageInsights } from '../lib/permissions';
-import { BarButton, FONT, SearchField, SegmentedSlider, T, TriageErrorBoundary } from './TriageKit';
+import { BarButton, ChipFilterButton, FONT, SearchField, SegmentedSlider, T, TriageErrorBoundary } from './TriageKit';
 import {
   MobileFeedAddButton,
   MobileFeedOutlineButton,
@@ -19,12 +19,15 @@ import { fetchTransferStores } from '../lib/locations';
 import { expandMobileTabBar } from '../lib/mobileTabBar';
 import {
   CANVAS,
+  CHIP_CARD,
+  CHIP_MOTION,
+  CHIP_WASH,
+  CHIP_WASH_HOVER,
   DESKTOP_TOP_BAR_HEIGHT,
   MOBILE,
   MOBILE_FEED_TOP_BAR_HEIGHT,
   NAV_ICON_ACTIVE,
   NAV_ICON_INACTIVE,
-  NAV_TAB_ACTIVE_BG,
   NAV_TAB_ACTIVE_RADIUS,
   useIsMobile,
 } from '../lib/mobileUi';
@@ -47,13 +50,13 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
   }
   style.textContent = [
     '.cgold-triage-row{cursor:pointer;background-color:transparent;}',
-    '.cgold-triage-table-row:hover,.cgold-triage-table-row:has(:hover),.cgold-triage-table-row.is-hover{background-color:#f5f5f5!important;}',
+    '.cgold-triage-table-row:hover,.cgold-triage-table-row:has(:hover),.cgold-triage-table-row.is-hover{background-color:rgba(60,60,67,0.06)!important;}',
     '.cgold-triage-table-row:hover > *,.cgold-triage-table-row:has(:hover) > *,.cgold-triage-table-row.is-hover > *{background-color:transparent!important;}',
-    '.cgold-triage-row-selected,.cgold-triage-row-selected:hover{background-color:#f5f5f5!important;}',
-    '.cgold-accuracy-row:hover{background-color:#f5f5f5!important;}',
-    '.cgold-chrome-stats-btn{cursor:pointer;transition:background-color .12s ease;}',
-    '.cgold-chrome-stats-btn:hover{background-color:#f5f5f5;}',
-    '.cgold-chrome-stats-btn-attention:hover{background-color:#f0f0f0;}',
+    '.cgold-triage-row-selected,.cgold-triage-row-selected:hover{background-color:rgba(60,60,67,0.06)!important;}',
+    '.cgold-accuracy-row:hover{background-color:rgba(60,60,67,0.06)!important;}',
+    '.cgold-chrome-stats-btn{cursor:pointer;transition:background-color .12s ease,border-color .12s ease,box-shadow .12s ease;}',
+    '.cgold-chrome-stats-btn:hover{background-color:rgba(60,60,67,0.10);}',
+    '.cgold-chrome-stats-btn-attention{background-color:#fff;border-color:#d0d0d0;box-shadow:0 1px 2px rgba(0,0,0,0.05);}',
   ].join('');
 }
 
@@ -66,6 +69,7 @@ const DASH_PAGE_LABELS = {
   stores: 'Stores',
   shipments: 'Transfers',
   lots: 'Lots',
+  people: 'People',
   return: 'Expected Return',
 };
 
@@ -73,6 +77,7 @@ const TRIAGE_RAIL = [
   { key: 'overview', label: 'Overview', icon: 'storefront-outline' },
   { key: 'lots', label: 'Lots', icon: 'layers-outline' },
   { key: 'errors', label: 'Errors', icon: 'alert-circle-outline' },
+  { key: 'people', label: 'People', icon: 'people-outline' },
   { key: 'analytics', label: 'Analytics', icon: 'analytics-outline' },
 ];
 const RAIL_WIDTH = 176;
@@ -86,6 +91,7 @@ function TriageRailTab({ tab, selected, onPress }) {
   const [hovered, setHovered] = useState(false);
   return (
     <Pressable
+      pressChrome={false}
       onPress={onPress}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
@@ -97,6 +103,13 @@ function TriageRailTab({ tab, selected, onPress }) {
       accessibilityRole="button"
       accessibilityState={{ selected }}
       accessibilityLabel={tab.label}
+      {...(Platform.OS === 'web'
+        ? {
+            className: ['cgold-sidebar-item', selected && 'cgold-sidebar-item-active']
+              .filter(Boolean)
+              .join(' '),
+          }
+        : null)}
     >
       <View style={styles.railTabGlyph}>
         <Ionicons
@@ -125,6 +138,7 @@ function triagePageTitle({ dashPage, activeTab, resultsLotId, storesView }) {
   if (dashPage === 'stores') return storesView?.selectedStore || 'Stores';
   if (dashPage === 'shipments') return 'Transfers';
   if (dashPage === 'lots') return 'Lots';
+  if (dashPage === 'people') return 'People';
   if (dashPage === 'return') return 'Expected Return';
   if (activeTab === 'accuracy') return resultsLotId || 'Results';
   if (activeTab === 'deleted') return 'Deleted';
@@ -132,84 +146,30 @@ function triagePageTitle({ dashPage, activeTab, resultsLotId, storesView }) {
 }
 
 function ErrorFilterButton({ value, onChange, compact = false }) {
-  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
-  const buttonRef = useRef(null);
-  const [open, setOpen] = useState(false);
-  const [anchor, setAnchor] = useState(null);
-  const current = ERROR_LIST_SORTS.find((option) => option.key === value) || ERROR_LIST_SORTS[0];
-
-  const openMenu = () => {
-    const node = buttonRef.current;
-    if (typeof node?.measureInWindow === 'function') {
-      node.measureInWindow((x, y, width, height) => {
-        setAnchor({ x, y, width, height });
-        setOpen(true);
-      });
-      return;
-    }
-    setAnchor(null);
-    setOpen(true);
-  };
-
-  const menuWidth = 232;
-  const menuLeft = anchor
-    ? Math.min(Math.max(12, anchor.x + anchor.width - menuWidth), Math.max(12, windowWidth - menuWidth - 12))
-    : Math.max(12, windowWidth - menuWidth - 16);
-  const menuTop = anchor ? Math.min(anchor.y + anchor.height + 6, Math.max(12, windowHeight - 240)) : 64;
-
   return (
-    <>
-      <View ref={buttonRef} collapsable={false}>
-        {compact ? (
-          <MobileFeedOutlineButton
-            label="Filter"
-            leadingIcon={current.key === 'recent' ? 'funnel-outline' : 'funnel'}
-            active={open || current.key !== 'recent'}
-            onPress={() => (open ? setOpen(false) : openMenu())}
-            accessibilityLabel={current.key === 'recent' ? 'Filter errors' : `Filter errors, ${current.label}`}
-          />
-        ) : (
-          <BarButton
-            icon={current.key === 'recent' ? 'funnel-outline' : 'funnel'}
-            label="Filter"
-            onPress={() => (open ? setOpen(false) : openMenu())}
-            accessibilityLabel={current.key === 'recent' ? 'Filter errors' : `Filter errors, ${current.label}`}
-          />
-        )}
-      </View>
-      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
-        <View style={styles.filterModal} pointerEvents="box-none">
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setOpen(false)} accessibilityLabel="Close filter" />
-          <View style={[styles.filterMenu, { top: menuTop, left: menuLeft, width: menuWidth }]}>
-            {ERROR_LIST_SORTS.map((option) => {
-              const on = option.key === current.key;
-              return (
-                <Pressable
-                  key={option.key}
-                  onPress={() => {
-                    onChange(option.key);
-                    setOpen(false);
-                  }}
-                  style={({ hovered, pressed }) => [
-                    styles.filterOption,
-                    on && styles.filterOptionOn,
-                    (hovered || pressed) && styles.filterOptionHover,
-                  ]}
-                  accessibilityRole="menuitem"
-                  accessibilityState={{ selected: on }}
-                  {...(Platform.OS === 'web' ? { className: 'cgold-triage-btn' } : null)}
-                >
-                  <Text style={[styles.filterOptionText, on && styles.filterOptionTextOn]} numberOfLines={1}>
-                    {option.label}
-                  </Text>
-                  {on ? <Ionicons name="checkmark" size={16} color={T.text} /> : <View style={styles.filterCheckSpacer} />}
-                </Pressable>
-              );
-            })}
-          </View>
-        </View>
-      </Modal>
-    </>
+    <ChipFilterButton
+      value={value}
+      options={ERROR_LIST_SORTS}
+      onChange={onChange}
+      label="Filter"
+      defaultKey="recent"
+      accessibilityNoun="errors"
+      renderTrigger={
+        compact
+          ? ({ open, current, isDefault, toggle }) => (
+              <MobileFeedOutlineButton
+                label="Filter"
+                leadingIcon={isDefault ? 'funnel-outline' : 'funnel'}
+                active={open || !isDefault}
+                onPress={toggle}
+                accessibilityLabel={
+                  isDefault ? 'Filter errors' : `Filter errors, ${current?.label || ''}`
+                }
+              />
+            )
+          : undefined
+      }
+    />
   );
 }
 
@@ -382,7 +342,7 @@ export default function TriageScreen({
           ? resultsLotId
             ? 'PO / person / store'
             : 'Lot / store'
-          : dashPage === 'errors'
+          : dashPage === 'errors' || dashPage === 'people'
             ? 'PO / person / store'
             : dashPage === 'lots'
               ? 'Lot / store'
@@ -519,7 +479,7 @@ export default function TriageScreen({
   const railKey =
     activeTab === 'accuracy' || resultsLotId
       ? 'lots'
-      : dashPage === 'errors' || dashPage === 'analytics' || dashPage === 'lots'
+      : dashPage === 'errors' || dashPage === 'analytics' || dashPage === 'lots' || dashPage === 'people'
         ? dashPage
         : 'overview';
 
@@ -540,7 +500,7 @@ export default function TriageScreen({
       : DESKTOP_TOP_BAR_HEIGHT + 12;
 
   const desktopToolbar =
-    session?.token && !isMobile && !embedded && activeTab === 'transfers' && !inBatch && dashPage ? (
+    session?.token && !isMobile && !embedded && activeTab === 'transfers' && !inBatch && dashPage && dashPage !== 'people' ? (
       <View style={[styles.tableToolbar, storeOpen && styles.overviewToolbar]}>
         <SearchField
           value={listQuery}
@@ -548,13 +508,15 @@ export default function TriageScreen({
           placeholder={
             dashPage === 'errors'
               ? 'PO / person'
-              : dashPage === 'lots'
-                ? storesView.selectedLot
-                  ? 'PO / person'
-                  : 'Lot'
-                : dashPage === 'analytics'
-                  ? 'Search'
-                  : 'Store'
+              : dashPage === 'people'
+                ? 'Person / role'
+                : dashPage === 'lots'
+                  ? storesView.selectedLot
+                    ? 'PO / person'
+                    : 'Lot'
+                  : dashPage === 'analytics'
+                    ? 'Search'
+                    : 'Store'
           }
           style={styles.tableSearch}
         />
@@ -669,7 +631,7 @@ export default function TriageScreen({
   }, [storesView.selectedLot]);
 
   useEffect(() => {
-    if (dashPage && dashPage !== 'lots' && dashPage !== 'errors' && dashPage !== 'analytics') {
+    if (dashPage && dashPage !== 'lots' && dashPage !== 'errors' && dashPage !== 'analytics' && dashPage !== 'people') {
       setDashPage('');
     }
     if (activeTab === 'deleted') {
@@ -777,6 +739,7 @@ export default function TriageScreen({
           {canAdd ? (
             <View style={styles.railFooter}>
               <Pressable
+                pressChrome={false}
                 onPress={() => openScanRef.current()}
                 style={({ hovered, pressed }) => [
                   styles.railAdd,
@@ -784,8 +747,9 @@ export default function TriageScreen({
                 ]}
                 accessibilityRole="button"
                 accessibilityLabel="Add a PO"
+                {...(Platform.OS === 'web' ? { className: 'cgold-home-chip' } : null)}
               >
-                <Ionicons name="add-circle-outline" size={TAB_ICON_SIZE} color="#1F8A4E" />
+                <Ionicons name="add-circle-outline" size={15} color="#1F8A4E" />
                 <Text style={styles.railAddLabel}>Add</Text>
               </Pressable>
             </View>
@@ -926,32 +890,27 @@ const styles = StyleSheet.create({
   railAdd: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    height: 32,
-    minHeight: 32,
+    gap: 5,
+    height: 28,
+    minHeight: 28,
     marginHorizontal: 8,
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     borderRadius: NAV_TAB_ACTIVE_RADIUS,
     borderWidth: 1,
-    borderColor: '#d0d0d0',
-    backgroundColor: CANVAS,
+    borderColor: 'transparent',
+    backgroundColor: CHIP_WASH,
+    ...CHIP_MOTION,
     ...Platform.select({
-      web: { cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
-      default: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.06,
-        shadowRadius: 2,
-        elevation: 1,
-      },
+      web: { cursor: 'pointer' },
+      default: {},
     }),
   },
   railAddHover: {
-    backgroundColor: '#f5f5f5',
+    backgroundColor: CHIP_WASH_HOVER,
   },
   railAddLabel: {
     fontFamily: FONT,
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '400',
     color: '#1F8A4E',
     letterSpacing: -0.2,
@@ -993,21 +952,16 @@ const styles = StyleSheet.create({
     paddingVertical: 0,
     borderRadius: NAV_TAB_ACTIVE_RADIUS,
     borderWidth: 1,
-    borderColor: '#d0d0d0',
-    backgroundColor: CANVAS,
+    borderColor: 'transparent',
+    backgroundColor: CHIP_WASH,
+    ...CHIP_MOTION,
     ...Platform.select({
-      web: { cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
-      default: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.06,
-        shadowRadius: 2,
-        elevation: 1,
-      },
+      web: { cursor: 'pointer' },
+      default: {},
     }),
   },
   tableAddHover: {
-    backgroundColor: '#f5f5f5',
+    backgroundColor: CHIP_WASH_HOVER,
   },
   tableAddLabel: {
     fontFamily: FONT,
@@ -1020,26 +974,26 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     alignSelf: 'stretch',
-    minHeight: 36,
+    minHeight: 34,
     marginHorizontal: 10,
-    paddingVertical: 7,
+    paddingVertical: 6,
     paddingHorizontal: 6,
     borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: 'transparent',
     overflow: 'visible',
+    ...CHIP_MOTION,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
   railTabHover: {
-    backgroundColor: '#f5f5f5',
+    backgroundColor: CHIP_WASH,
     borderRadius: NAV_TAB_ACTIVE_RADIUS,
   },
   railTabActive: {
-    borderWidth: 1,
-    borderColor: '#d0d0d0',
-    backgroundColor: NAV_TAB_ACTIVE_BG,
-    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    ...CHIP_CARD,
   },
   railTabGlyph: {
     width: 26,
@@ -1138,40 +1092,36 @@ const styles = StyleSheet.create({
   },
   filterMenu: {
     position: 'absolute',
-    backgroundColor: CANVAS,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#d0d0d0',
     paddingVertical: 4,
-    shadowColor: '#000',
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
+    ...CHIP_CARD,
   },
   filterOption: {
-    minHeight: 40,
+    minHeight: 36,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
-    paddingHorizontal: 14,
+    marginHorizontal: 4,
+    paddingHorizontal: 10,
     paddingVertical: 8,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
   },
   filterOptionOn: {
-    backgroundColor: 'rgba(0,0,0,0.04)',
+    ...CHIP_CARD,
   },
   filterOptionHover: {
-    backgroundColor: '#f5f5f5',
+    backgroundColor: CHIP_WASH,
   },
   filterOptionText: {
     fontFamily: FONT,
     flex: 1,
-    fontSize: 15,
-    color: T.text,
+    fontSize: 14,
+    fontWeight: '400',
+    color: T.secondary,
   },
   filterOptionTextOn: {
-    fontWeight: '600',
+    fontWeight: '400',
+    color: T.text,
   },
   filterCheckSpacer: {
     width: 16,
@@ -1204,10 +1154,11 @@ const styles = StyleSheet.create({
     maxWidth: 360,
     paddingHorizontal: 10,
     paddingVertical: 6,
-    borderRadius: 6,
-    backgroundColor: CANVAS,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    backgroundColor: CHIP_WASH,
     borderWidth: 1,
-    borderColor: '#d0d0d0',
+    borderColor: 'transparent',
+    ...CHIP_MOTION,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -1217,15 +1168,13 @@ const styles = StyleSheet.create({
     maxWidth: 640,
   },
   chromeStatsHitPressed: {
-    backgroundColor: '#f5f5f5',
+    backgroundColor: CHIP_WASH_HOVER,
   },
   chromeStatsHitAttention: {
-    backgroundColor: '#fff',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: T.text,
+    ...CHIP_CARD,
   },
   chromeStatsHitAttentionPressed: {
-    backgroundColor: '#f5f5f5',
+    backgroundColor: CHIP_WASH_HOVER,
   },
   chromeStatsCta: {
     flexDirection: 'row',
@@ -1248,16 +1197,15 @@ const styles = StyleSheet.create({
   },
   chromeStatLabel: {
     fontFamily: FONT,
-    fontSize: 10,
-    fontWeight: '600',
+    fontSize: 13,
+    fontWeight: '400',
     color: T.secondary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.3,
+    letterSpacing: -0.08,
   },
   chromeStatValue: {
     fontFamily: FONT,
-    fontSize: 13,
-    fontWeight: '600',
+    fontSize: 14,
+    fontWeight: '400',
     color: T.text,
     fontVariant: ['tabular-nums'],
   },

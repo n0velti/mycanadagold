@@ -26,12 +26,17 @@ import { FlashList } from '@shopify/flash-list';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import {
   CANVAS,
+  CHIP_BORDER,
+  CHIP_CARD,
+  CHIP_MOTION,
+  CHIP_SHADOW,
+  CHIP_WASH,
+  CHIP_WASH_HOVER,
   MOBILE,
   MOBILE_FILTER_INSET,
   MOBILE_ICON_COL_WIDTH,
   MOBILE_ROW_BODY_LEADING,
   MOBILE_TOP_FILTER_SIZE,
-  NAV_TAB_ACTIVE_BG,
   NAV_TAB_ACTIVE_RADIUS,
   mobileSafeTop,
   useIsMobile,
@@ -77,9 +82,7 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
   }
   style.textContent = [
     '.cgold-triage-btn{cursor:pointer;}',
-    '.cgold-triage-btn:hover{background-color:#f5f5f5!important;}',
-    '.cgold-triage-btn.cgold-triage-btn-fill:hover{background-color:#333!important;}',
-    '.cgold-triage-btn.cgold-triage-btn-green:hover{background-color:#176b3c!important;}',
+    '.cgold-triage-btn-fill:hover{background-color:#333!important;}',
   ].join('');
 }
 
@@ -96,17 +99,11 @@ export const DRAWER_OPEN_MS = 280;
 export const DRAWER_CLOSE_MS = 220;
 
 const webCursor = Platform.select({ web: { cursor: 'pointer' }, default: {} });
-const CHIP_SHADOW = Platform.select({
-  web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
-  default: {
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
-    shadowRadius: 2,
-    elevation: 1,
-  },
-});
-const TAB_BORDER = '#d0d0d0';
+
+function webClass(names) {
+  if (Platform.OS !== 'web') return null;
+  return { className: names.filter(Boolean).join(' ') };
+}
 
 /** Ask before a destructive action; uses window.confirm on web, Alert elsewhere. */
 export function confirmDestructive(title, message, onConfirm, confirmLabel = 'Delete') {
@@ -620,7 +617,7 @@ export function SegmentedSlider({ options, value, onChange, style, fill = false,
   const index = matched ? found : 0;
   const [trackW, setTrackW] = useState(0);
   const slide = useRef(new Animated.Value(index)).current;
-  const inset = 0;
+  const inset = 2;
   const count = Math.max(keys.length, 1);
   const segW = Math.max(0, (trackW - inset * 2) / count);
 
@@ -698,36 +695,36 @@ export function SegmentedSlider({ options, value, onChange, style, fill = false,
   );
 }
 
-/** Toolbar button. `fill` is the blue primary. `tone="green"` is the same shape in green. */
+/** Toolbar button. Home chip by default; `fill` stays the dark primary. */
 export function BarButton({ label, icon, onPress, disabled, accessibilityLabel, size, fill, tone }) {
   const large = size === 'lg';
   const green = tone === 'green';
-  const iconColor = fill || green ? '#fff' : T.text;
+  const iconColor = fill ? '#fff' : green ? T.green : T.text;
   return (
     <Pressable
-      style={[
+      pressChrome={false}
+      style={({ hovered, pressed }) => [
         styles.barButton,
         large && styles.barButtonLg,
-        fill && !green && styles.barButtonFill,
-        green && styles.barButtonGreen,
+        fill && styles.barButtonFill,
+        !fill && (hovered || pressed) && styles.barButtonHover,
         disabled && styles.textActionDisabled,
       ]}
       onPress={onPress}
       disabled={disabled}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel || label}
-      {...(Platform.OS === 'web'
-        ? {
-            className: green
-              ? 'cgold-triage-btn cgold-triage-btn-green'
-              : fill
-                ? 'cgold-triage-btn cgold-triage-btn-fill'
-                : 'cgold-triage-btn',
-          }
-        : null)}
+      {...webClass([fill ? 'cgold-triage-btn-fill' : 'cgold-home-chip'])}
     >
-      {icon ? <Ionicons name={icon} size={large ? 18 : 15} color={iconColor} /> : null}
-      <Text style={[styles.barButtonLabel, large && styles.barButtonLabelLg, (fill || green) && styles.barButtonLabelFill]}>
+      {icon ? <Ionicons name={icon} size={large ? 18 : 14} color={iconColor} /> : null}
+      <Text
+        style={[
+          styles.barButtonLabel,
+          large && styles.barButtonLabelLg,
+          fill && styles.barButtonLabelFill,
+          green && !fill && styles.barButtonLabelGreen,
+        ]}
+      >
         {label}
       </Text>
     </Pressable>
@@ -1295,13 +1292,31 @@ export function ChromePage({
 export function SearchField({ value, onChangeText, placeholder = 'Search', style, autoFocus, size }) {
   const large = size === 'lg';
   const compact = size === 'sm';
+  const [focused, setFocused] = useState(false);
+  const hasQuery = Boolean(String(value || '').trim());
+  const active = focused || hasQuery;
   return (
-    <View style={[styles.search, large && styles.searchLg, compact && styles.searchSm, style]}>
-      <Ionicons name="search" size={large ? 18 : compact ? 15 : 15} color={T.secondary} />
+    <View
+      style={[
+        styles.search,
+        large && styles.searchLg,
+        compact && styles.searchSm,
+        active && styles.searchActive,
+        style,
+      ]}
+      {...webClass(['cgold-home-search', active && 'cgold-home-search-active'])}
+    >
+      <Ionicons
+        name={active ? 'search' : 'search-outline'}
+        size={large ? 18 : 16}
+        color={active ? T.text : T.secondary}
+      />
       <TextInput
         style={[styles.searchInput, large && styles.searchInputLg, compact && styles.searchInputSm]}
         value={value}
         onChangeText={onChangeText}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         placeholder={placeholder}
         placeholderTextColor={T.secondary}
         autoCapitalize="none"
@@ -1315,6 +1330,115 @@ export function SearchField({ value, onChangeText, placeholder = 'Search', style
         </Pressable>
       ) : null}
     </View>
+  );
+}
+
+/** Chip filter next to SearchField — same wash / lifted-card chrome. */
+export function ChipFilterButton({
+  value,
+  options = [],
+  onChange,
+  label = 'Filter',
+  defaultKey,
+  menuWidth = 232,
+  accessibilityNoun,
+  renderTrigger,
+}) {
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const buttonRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [anchor, setAnchor] = useState(null);
+  const current = options.find((option) => option.key === value) || options[0];
+  const fallbackKey = defaultKey ?? options[0]?.key;
+  const isDefault = !current || current.key === fallbackKey;
+  const noun = accessibilityNoun || label.toLowerCase();
+
+  const openMenu = () => {
+    const node = buttonRef.current;
+    if (typeof node?.measureInWindow === 'function') {
+      node.measureInWindow((x, y, width, height) => {
+        setAnchor({ x, y, width, height });
+        setOpen(true);
+      });
+      return;
+    }
+    setAnchor(null);
+    setOpen(true);
+  };
+
+  const toggle = () => (open ? setOpen(false) : openMenu());
+  const menuLeft = anchor
+    ? Math.min(Math.max(12, anchor.x + anchor.width - menuWidth), Math.max(12, windowWidth - menuWidth - 12))
+    : Math.max(12, windowWidth - menuWidth - 16);
+  const menuTop = anchor ? Math.min(anchor.y + anchor.height + 6, Math.max(12, windowHeight - 280)) : 64;
+  const triggerLabel = isDefault ? label : current?.label || label;
+
+  return (
+    <>
+      <View ref={buttonRef} collapsable={false}>
+        {typeof renderTrigger === 'function' ? (
+          renderTrigger({ open, current, isDefault, toggle })
+        ) : (
+          <Pressable
+            pressChrome={false}
+            onPress={toggle}
+            style={({ hovered, pressed }) => [
+              styles.filterChip,
+              (open || !isDefault) && styles.filterChipOn,
+              (hovered || pressed) && !(open || !isDefault) && styles.filterChipHover,
+            ]}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: open }}
+            accessibilityLabel={
+              isDefault ? `${label} ${noun}` : `${label}, ${current?.label || ''}`
+            }
+            {...webClass(['cgold-home-chip', (open || !isDefault) && 'cgold-home-chip-active'])}
+          >
+            <Ionicons
+              name={isDefault && !open ? 'funnel-outline' : 'funnel'}
+              size={14}
+              color={T.text}
+            />
+            <Text style={styles.filterChipLabel} numberOfLines={1}>
+              {triggerLabel}
+            </Text>
+          </Pressable>
+        )}
+      </View>
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+        <View style={styles.filterModal} pointerEvents="box-none">
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setOpen(false)} accessibilityLabel="Close filter" />
+          <View style={[styles.filterMenu, { top: menuTop, left: menuLeft, width: menuWidth }]}>
+            {options.map((option) => {
+              const on = option.key === current?.key;
+              return (
+                <Pressable
+                  key={String(option.key)}
+                  onPress={() => {
+                    onChange?.(option.key);
+                    setOpen(false);
+                  }}
+                  style={({ hovered, pressed }) => [
+                    styles.filterOption,
+                    on && styles.filterOptionOn,
+                    (hovered || pressed) && !on && styles.filterOptionHover,
+                  ]}
+                  accessibilityRole="menuitem"
+                  accessibilityState={{ selected: on }}
+                  pressChrome={false}
+                  {...webClass(['cgold-filter-option'])}
+                >
+                  <Text style={[styles.filterOptionText, on && styles.filterOptionTextOn]} numberOfLines={1}>
+                    {option.label}
+                  </Text>
+                  {on ? <Ionicons name="checkmark" size={16} color={T.text} /> : <View style={styles.filterCheckSpacer} />}
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+      </Modal>
+    </>
   );
 }
 
@@ -1644,7 +1768,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: CANVAS,
     borderWidth: 1,
-    borderColor: TAB_BORDER,
+    borderColor: CHIP_BORDER,
     marginBottom: 6,
     ...CHIP_SHADOW,
   },
@@ -1945,19 +2069,22 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   barButton: {
-    height: 32,
-    minHeight: 32,
+    height: 28,
+    minHeight: 28,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
+    gap: 5,
+    paddingHorizontal: 8,
     paddingVertical: 0,
     borderRadius: NAV_TAB_ACTIVE_RADIUS,
     borderWidth: 1,
-    borderColor: TAB_BORDER,
-    backgroundColor: CANVAS,
-    ...CHIP_SHADOW,
+    borderColor: 'transparent',
+    backgroundColor: CHIP_WASH,
+    ...CHIP_MOTION,
     ...webCursor,
+  },
+  barButtonHover: {
+    backgroundColor: CHIP_WASH_HOVER,
   },
   barButtonLg: {
     height: 40,
@@ -1971,16 +2098,15 @@ const styles = StyleSheet.create({
     backgroundColor: T.text,
     borderColor: T.text,
   },
-  barButtonGreen: {
-    backgroundColor: '#1F8A4E',
-    borderColor: '#1F8A4E',
-  },
   barButtonLabel: {
     fontFamily: FONT,
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '400',
     color: MOBILE.label,
     letterSpacing: -0.2,
+  },
+  barButtonLabelGreen: {
+    color: T.green,
   },
   barButtonLabelLg: {
     fontSize: 16,
@@ -2073,15 +2199,14 @@ const styles = StyleSheet.create({
     ...webCursor,
   },
   statActive: {
-    backgroundColor: '#f5f5f5',
+    backgroundColor: CHIP_WASH,
   },
   statLabel: {
     fontFamily: FONT,
-    fontSize: 10,
-    fontWeight: '600',
+    fontSize: 13,
+    fontWeight: '400',
     color: T.secondary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.3,
+    letterSpacing: -0.08,
     flexShrink: 0,
   },
   statValue: {
@@ -2188,10 +2313,14 @@ const styles = StyleSheet.create({
     minHeight: 32,
     paddingHorizontal: 10,
     borderRadius: NAV_TAB_ACTIVE_RADIUS,
-    backgroundColor: CANVAS,
+    backgroundColor: CHIP_WASH,
     borderWidth: 1,
-    borderColor: TAB_BORDER,
-    ...CHIP_SHADOW,
+    borderColor: 'transparent',
+    overflow: 'hidden',
+    ...CHIP_MOTION,
+  },
+  searchActive: {
+    ...CHIP_CARD,
   },
   searchLg: {
     height: 40,
@@ -2228,6 +2357,75 @@ const styles = StyleSheet.create({
     height: 30,
     fontSize: 14,
     paddingVertical: 0,
+  },
+  filterChip: {
+    height: 28,
+    minHeight: 28,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 0,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    backgroundColor: CHIP_WASH,
+    ...CHIP_MOTION,
+    ...webCursor,
+  },
+  filterChipHover: {
+    backgroundColor: CHIP_WASH_HOVER,
+  },
+  filterChipOn: {
+    ...CHIP_CARD,
+  },
+  filterChipLabel: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '400',
+    color: MOBILE.label,
+    letterSpacing: -0.2,
+  },
+  filterModal: {
+    flex: 1,
+  },
+  filterMenu: {
+    position: 'absolute',
+    paddingVertical: 4,
+    ...CHIP_CARD,
+  },
+  filterOption: {
+    minHeight: 36,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginHorizontal: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    ...webCursor,
+  },
+  filterOptionOn: {
+    ...CHIP_CARD,
+  },
+  filterOptionHover: {
+    backgroundColor: CHIP_WASH,
+  },
+  filterOptionText: {
+    fontFamily: FONT,
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '400',
+    color: T.secondary,
+  },
+  filterOptionTextOn: {
+    fontWeight: '400',
+    color: T.text,
+  },
+  filterCheckSpacer: {
+    width: 16,
+    height: 16,
   },
   mobileCam: {
     width: 48,
@@ -2280,7 +2478,7 @@ const styles = StyleSheet.create({
     ...webCursor,
   },
   mobileListRowSelected: {
-    backgroundColor: '#f5f5f5',
+    backgroundColor: CHIP_WASH,
   },
   mobileListRowLast: {
     borderBottomWidth: 0,
@@ -2387,13 +2585,12 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     height: 32,
     minWidth: 220,
-    padding: 0,
+    padding: 2,
     borderRadius: NAV_TAB_ACTIVE_RADIUS,
-    backgroundColor: CANVAS,
+    backgroundColor: CHIP_WASH,
     borderWidth: 1,
-    borderColor: TAB_BORDER,
+    borderColor: 'transparent',
     overflow: 'hidden',
-    ...CHIP_SHADOW,
   },
   segmentedSliderFill: {
     alignSelf: 'stretch',
@@ -2418,11 +2615,12 @@ const styles = StyleSheet.create({
   },
   segmentedThumb: {
     position: 'absolute',
-    top: 0,
-    bottom: 0,
-    left: 0,
-    borderRadius: NAV_TAB_ACTIVE_RADIUS,
-    backgroundColor: NAV_TAB_ACTIVE_BG,
+    top: 2,
+    bottom: 2,
+    left: 2,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS - 2,
+    backgroundColor: '#fff',
+    ...CHIP_SHADOW,
   },
   segmentedHit: {
     flex: 1,
@@ -2682,7 +2880,7 @@ const styles = StyleSheet.create({
     left: MOBILE_FILTER_INSET + MOBILE_ICON_COL_WIDTH + MOBILE_ROW_BODY_LEADING,
     right: 0,
     height: StyleSheet.hairlineWidth,
-    backgroundColor: TAB_BORDER,
+    backgroundColor: CHIP_BORDER,
   },
   chromeRowExtra: {
     alignSelf: 'flex-start',
@@ -2910,11 +3108,10 @@ const styles = StyleSheet.create({
   },
   chromeSheetTitle: {
     fontFamily: FONT,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '400',
     color: '#8e8e93',
-    letterSpacing: -0.08,
-    textTransform: 'uppercase',
+    letterSpacing: -0.2,
   },
   chromeSheetMeta: {
     fontFamily: FONT,
@@ -2945,7 +3142,7 @@ const styles = StyleSheet.create({
     }),
   },
   chromeRowHover: {
-    backgroundColor: '#f5f5f5',
+    backgroundColor: CHIP_WASH,
   },
   chromeRowIcon: {
     width: 46,
