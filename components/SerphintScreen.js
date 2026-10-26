@@ -8,7 +8,6 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  useWindowDimensions,
   View,
 } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -22,15 +21,32 @@ import {
   REASONER_MODELS,
   sampleImageFrames,
 } from '../lib/openrouter';
+import { CANVAS, NAV_TAB_ACTIVE_BG, useIsMobile } from '../lib/mobileUi';
+import { useScreenVisible } from '../lib/screenVisibility';
+import { FONT } from '../lib/typography';
 import { getVideoElement, useWebcam } from '../lib/webcam';
 
-const fontFamily = Platform.select({
-  ios: 'Sohne',
-  android: 'Sohne',
-  default: 'Sohne',
+const INK = '#1a1a1a';
+const SECONDARY = '#8e8e93';
+const CHIP_BORDER = '#d0d0d0';
+const CHIP_RADIUS = 8;
+const HAIRLINE = 'rgba(42,38,30,0.08)';
+const HOVER_WASH = 'rgba(60,60,67,0.06)';
+const PRESS_WASH = 'rgba(60,60,67,0.10)';
+const WELL = 'rgba(60,60,67,0.06)';
+const GREEN = '#1F8A4E';
+const RED = '#B91C1C';
+const CHIP_SHADOW = Platform.select({
+  web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
+  default: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 2,
+    elevation: 1,
+  },
 });
-
-const ACCENT = '#047857';
+const webCursor = Platform.select({ web: { cursor: 'pointer' }, default: {} });
 
 const MODEL_OPTIONS = OPENROUTER_MODELS;
 const DEFAULT_SINGLE_MODEL =
@@ -109,9 +125,97 @@ function modelOptionMetaLine(option) {
   return parts.join('  ·  ');
 }
 
+function ChipPressable({ style, hoverStyle, pressStyle, children, ...props }) {
+  return (
+    <Pressable
+      {...props}
+      style={({ hovered, pressed }) => [
+        style,
+        hovered && (hoverStyle === undefined ? styles.washHover : hoverStyle),
+        pressed && (pressStyle === undefined ? styles.washPress : pressStyle),
+      ]}
+    >
+      {children}
+    </Pressable>
+  );
+}
+
+function ModelMenu({
+  open,
+  valueLabel,
+  valueMeta,
+  accessibilityLabel,
+  onToggle,
+  options,
+  isSelected,
+  onChoose,
+  multi = false,
+}) {
+  return (
+    <View style={styles.modelDropdownWrap}>
+      <ChipPressable
+        style={[styles.modelDropdown, open && styles.modelDropdownOpen]}
+        onPress={onToggle}
+        accessibilityRole="button"
+        accessibilityLabel={accessibilityLabel}
+      >
+        <View style={styles.modelDropdownMain}>
+          <Text style={styles.modelDropdownValue} numberOfLines={1}>
+            {valueLabel}
+          </Text>
+          {valueMeta ? (
+            <Text style={styles.modelDropdownMeta} numberOfLines={1}>
+              {valueMeta}
+            </Text>
+          ) : null}
+        </View>
+        <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={15} color={SECONDARY} />
+      </ChipPressable>
+      {open ? (
+        <ScrollView style={styles.modelMenu} nestedScrollEnabled>
+          {options.map((option) => {
+            const active = isSelected(option.key);
+            return (
+              <ChipPressable
+                key={option.key}
+                style={[styles.modelOption, active && styles.modelOptionActive]}
+                hoverStyle={styles.modelOptionHover}
+                onPress={() => onChoose(option.key)}
+              >
+                <View style={styles.modelOptionCopy}>
+                  <View style={styles.modelOptionHeader}>
+                    <Text
+                      style={[styles.modelOptionText, active && styles.modelOptionTextActive]}
+                    >
+                      {option.label}
+                    </Text>
+                    {multi ? (
+                      <Ionicons
+                        name={active ? 'checkmark-circle' : 'ellipse-outline'}
+                        size={18}
+                        color={active ? GREEN : '#c7c7cc'}
+                      />
+                    ) : active ? (
+                      <Ionicons name="checkmark" size={16} color={GREEN} />
+                    ) : null}
+                  </View>
+                  <Text style={styles.modelOptionStats}>{modelOptionMetaLine(option)}</Text>
+                  {option.blurb ? (
+                    <Text style={styles.modelOptionBlurb}>{option.blurb}</Text>
+                  ) : null}
+                </View>
+              </ChipPressable>
+            );
+          })}
+        </ScrollView>
+      ) : null}
+    </View>
+  );
+}
+
 export default function SerphintScreen() {
-  const { width } = useWindowDimensions();
-  const stacked = width < 900;
+  const isMobile = useIsMobile();
+  const screenVisible = useScreenVisible();
   const recorderRef = useRef(null);
   const chunksRef = useRef([]);
   const captureUrlsRef = useRef([]);
@@ -123,7 +227,7 @@ export default function SerphintScreen() {
   const bullionTimerRef = useRef(null);
   const recordingFramesRef = useRef([]);
   const { videoRef, streamRef, cameraState, startCamera, stopStream: stopWebcam, setVideoNode } = useWebcam({
-    active: true,
+    active: screenVisible,
     autoStart: true,
     constraints: CAMERA_CONSTRAINTS,
   });
@@ -657,116 +761,117 @@ export default function SerphintScreen() {
             ? `Ready · ${bullionSource}`
             : 'Ready'
           : null;
+  const previewColumn = (
+        <View style={[styles.previewPane, isMobile && styles.previewPaneStacked]}>
+          <View style={styles.cameraCard}>
+            <View style={styles.previewShell}>
+              {Platform.OS === 'web'
+                ? createElement('video', {
+                    ref: setVideoNode,
+                    autoPlay: true,
+                    muted: true,
+                    playsInline: true,
+                    style: {
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'cover',
+                      transform: 'scaleX(-1)',
+                      backgroundColor: '#111',
+                      outline: 'none',
+                      border: 'none',
+                    },
+                  })
+                : null}
 
-  return (
-    <View style={styles.screen}>
-      <View style={[styles.layout, stacked && styles.layoutStacked]}>
-        <View style={[styles.previewPane, stacked && styles.previewPaneStacked]}>
-          <View style={styles.previewShell}>
-            {Platform.OS === 'web'
-              ? createElement('video', {
-                  ref: setVideoNode,
-                  autoPlay: true,
-                  muted: true,
-                  playsInline: true,
-                  style: {
-                    width: '100%',
-                    height: '100%',
-                    objectFit: 'cover',
-                    transform: 'scaleX(-1)',
-                    backgroundColor: '#0a0a0a',
-                    outline: 'none',
-                    border: 'none',
-                  },
-                })
-              : null}
-
-            {cameraState !== 'live' ? (
-              <View style={styles.overlay}>
-                <Text style={styles.overlayTitle}>
-                  {cameraState === 'requesting'
-                    ? 'Starting camera…'
-                    : cameraState === 'denied'
-                      ? 'Camera access blocked'
+              {cameraState !== 'live' ? (
+                <View style={styles.overlay}>
+                  <Text style={styles.overlayTitle}>
+                    {cameraState === 'requesting'
+                      ? 'Starting camera…'
+                      : cameraState === 'denied'
+                        ? 'Camera access blocked'
+                        : cameraState === 'unsupported'
+                          ? 'Camera unavailable'
+                          : 'Camera ready'}
+                  </Text>
+                  <Text style={styles.overlayBody}>
+                    {cameraState === 'denied'
+                      ? 'Allow webcam access in your browser settings, then try again.'
                       : cameraState === 'unsupported'
-                        ? 'Camera unavailable'
-                        : 'Camera ready'}
-                </Text>
-                <Text style={styles.overlayBody}>
-                  {cameraState === 'denied'
-                    ? 'Allow webcam access in your browser settings, then try again.'
-                    : cameraState === 'unsupported'
-                      ? 'Open this app in a browser that supports webcam capture.'
-                      : 'Grant permission when prompted to preview the webcam.'}
-                </Text>
-                {(cameraState === 'denied' ||
-                  cameraState === 'idle' ||
-                  cameraState === 'unsupported') && (
-                  <Pressable style={styles.retryButton} onPress={() => void startCamera()}>
-                    <Text style={styles.retryLabel}>Enable Camera</Text>
-                  </Pressable>
-                )}
-              </View>
-            ) : (
-              <View style={[styles.statusPill, recording && styles.statusPillRec]} pointerEvents="none">
-                <View style={[styles.statusDot, recording && styles.statusDotRec]} />
-                <Text style={styles.statusPillLabel}>
-                  {recording ? formatRecordingTime(recordingSeconds) : 'LIVE'}
-                </Text>
-              </View>
-            )}
-          </View>
-
-          {cameraState === 'live' ? (
-            <View style={styles.controlsRow}>
-              <View style={styles.intervalControl}>
-                <Text style={styles.intervalLabel}>Frame</Text>
-                <TextInput
-                  style={styles.intervalInput}
-                  value={frameIntervalSec}
-                  onChangeText={(value) => {
-                    if (value === '' || /^\d{0,3}$/.test(value)) {
-                      setFrameIntervalSec(value);
-                    }
-                  }}
-                  keyboardType="number-pad"
-                  editable={!recording}
-                  accessibilityLabel="Frame interval in seconds"
-                />
-                <Text style={styles.intervalLabel}>sec</Text>
-              </View>
-
-              <View style={styles.shutterCluster}>
-                <Pressable
-                  style={styles.modeButton}
-                  onPress={toggleRecording}
-                  accessibilityRole="button"
-                  accessibilityLabel={recording ? 'Stop recording' : 'Record video'}
-                >
-                  <View
-                    style={[
-                      styles.recordGlyph,
-                      recording && styles.recordGlyphStop,
-                    ]}
-                  />
-                </Pressable>
-
-                <Pressable
-                  style={[styles.shutterOuter, recording && styles.shutterDisabled]}
-                  onPress={() => captureImage({ source: 'photo', analyze: true })}
-                  disabled={recording}
-                  accessibilityRole="button"
-                  accessibilityLabel="Capture photo"
-                >
-                  <View style={[styles.shutterInner, recording && styles.shutterInnerDisabled]} />
-                </Pressable>
-
-                <View style={styles.modeButtonSpacer} />
-              </View>
-
-              <View style={styles.controlsSpacer} />
+                        ? 'Open this app in a browser that supports webcam capture.'
+                        : 'Grant permission when prompted to preview the webcam.'}
+                  </Text>
+                  {(cameraState === 'denied' ||
+                    cameraState === 'idle' ||
+                    cameraState === 'unsupported') && (
+                    <ChipPressable
+                      style={styles.retryButton}
+                      hoverStyle={styles.retryButtonHover}
+                      pressStyle={styles.retryButtonPress}
+                      onPress={() => void startCamera()}
+                    >
+                      <Text style={styles.retryLabel}>Enable camera</Text>
+                    </ChipPressable>
+                  )}
+                </View>
+              ) : (
+                <View style={[styles.statusPill, recording && styles.statusPillRec]} pointerEvents="none">
+                  <View style={[styles.statusDot, recording && styles.statusDotRec]} />
+                  <Text style={styles.statusPillLabel}>
+                    {recording ? formatRecordingTime(recordingSeconds) : 'LIVE'}
+                  </Text>
+                </View>
+              )}
             </View>
-          ) : null}
+
+            {cameraState === 'live' ? (
+              <View style={styles.controlsRow}>
+                <View style={styles.intervalControl}>
+                  <Text style={styles.intervalLabel}>Frame</Text>
+                  <TextInput
+                    style={styles.intervalInput}
+                    value={frameIntervalSec}
+                    onChangeText={(value) => {
+                      if (value === '' || /^\d{0,3}$/.test(value)) {
+                        setFrameIntervalSec(value);
+                      }
+                    }}
+                    keyboardType="number-pad"
+                    editable={!recording}
+                    accessibilityLabel="Frame interval in seconds"
+                  />
+                  <Text style={styles.intervalLabel}>sec</Text>
+                </View>
+
+                <View style={styles.shutterCluster}>
+                  <ChipPressable
+                    style={styles.modeButton}
+                    onPress={toggleRecording}
+                    accessibilityRole="button"
+                    accessibilityLabel={recording ? 'Stop recording' : 'Record video'}
+                  >
+                    <View style={[styles.recordGlyph, recording && styles.recordGlyphStop]} />
+                  </ChipPressable>
+
+                  <ChipPressable
+                    style={[styles.shutterOuter, recording && styles.shutterDisabled]}
+                    hoverStyle={styles.shutterOuterHover}
+                    pressStyle={styles.shutterOuterPress}
+                    onPress={() => captureImage({ source: 'photo', analyze: true })}
+                    disabled={recording}
+                    accessibilityRole="button"
+                    accessibilityLabel="Capture photo"
+                  >
+                    <View style={[styles.shutterInner, recording && styles.shutterInnerDisabled]} />
+                  </ChipPressable>
+
+                  <View style={styles.modeButtonSpacer} />
+                </View>
+
+                <View style={styles.controlsSpacer} />
+              </View>
+            ) : null}
+          </View>
 
           {captures.length > 0 ? (
             <ScrollView
@@ -777,20 +882,16 @@ export default function SerphintScreen() {
             >
               {captures.map((item) => (
                 <View key={item.id} style={styles.thumbWrap}>
-                  <Pressable
+                  <ChipPressable
                     style={styles.thumbButton}
                     onPress={() => setSelectedId(item.id)}
                     accessibilityLabel={`Open ${item.kind} capture`}
                   >
-                    {item.kind === 'image' ||
-                    String(item.thumbnailUri).startsWith('data:') ? (
-                      <Image
-                        source={{ uri: item.thumbnailUri }}
-                        style={styles.thumbImage}
-                      />
+                    {item.kind === 'image' || String(item.thumbnailUri).startsWith('data:') ? (
+                      <Image source={{ uri: item.thumbnailUri }} style={styles.thumbImage} />
                     ) : (
                       <View style={styles.thumbFallback}>
-                        <Ionicons name="videocam" size={14} color="#8a8a8a" />
+                        <Ionicons name="videocam" size={14} color={SECONDARY} />
                       </View>
                     )}
                     <View style={styles.thumbBadge}>
@@ -802,16 +903,16 @@ export default function SerphintScreen() {
                             : 'Photo'}
                       </Text>
                     </View>
-                  </Pressable>
-                  <Pressable
+                  </ChipPressable>
+                  <ChipPressable
                     style={styles.thumbDelete}
                     onPress={() => deleteCapture(item.id)}
                     accessibilityRole="button"
                     accessibilityLabel={`Delete ${item.kind}`}
                     hitSlop={6}
                   >
-                    <Ionicons name="close" size={11} color="#1a1a1a" />
-                  </Pressable>
+                    <Ionicons name="close" size={11} color={INK} />
+                  </ChipPressable>
                 </View>
               ))}
             </ScrollView>
@@ -821,7 +922,7 @@ export default function SerphintScreen() {
             </Text>
           )}
 
-          <View style={styles.resultPanel}>
+          <View style={[styles.resultCard, isMobile && styles.resultCardMobile]}>
             <View style={styles.aiLabelRow}>
               <Text style={styles.resultHeading}>Result</Text>
               {bullionStatus === 'analyzing' || bullionElapsedMs > 0 ? (
@@ -900,9 +1001,7 @@ export default function SerphintScreen() {
 
                 {bullionStatus === 'analyzing' && bullionPhase !== 'reasoning' ? (
                   <Text style={styles.aiPlaceholder}>
-                    {isEnsemble
-                      ? 'Workers identifying bullion…'
-                      : 'Identifying bullion…'}
+                    {isEnsemble ? 'Workers identifying bullion…' : 'Identifying bullion…'}
                   </Text>
                 ) : null}
 
@@ -917,8 +1016,14 @@ export default function SerphintScreen() {
                       </Text>
                     ) : null}
                     {bullionItems.length > 0 ? (
-                      bullionItems.map((item) => (
-                        <View key={item.id} style={styles.resultRow}>
+                      bullionItems.map((item, index) => (
+                        <View
+                          key={item.id}
+                          style={[
+                            styles.resultRow,
+                            index === bullionItems.length - 1 && styles.resultRowLast,
+                          ]}
+                        >
                           <Text style={styles.resultTitle}>{item.bullion}</Text>
                           <Text style={styles.resultMeta}>
                             {item.quantity}× · {item.weight} · {item.metal} · {item.brandMint}
@@ -936,358 +1041,238 @@ export default function SerphintScreen() {
             )}
           </View>
         </View>
+  );
 
+  const settingsColumn = (
         <ScrollView
-          style={[styles.sidePane, stacked && styles.sidePaneStacked]}
+          style={[styles.sidePane, isMobile && styles.sidePaneStacked]}
           contentContainerStyle={styles.sidePaneContent}
           showsVerticalScrollIndicator={false}
+          scrollEnabled={!isMobile}
         >
-          <View style={styles.settingsGroup}>
-            <Text style={styles.groupTitle}>Mode</Text>
-            <View style={styles.segmented}>
-              <Pressable
-                style={[styles.segment, !isEnsemble && styles.segmentActive]}
-                onPress={() => {
-                  setAnalysisMode('single');
-                  setWorkerMenuOpen(false);
-                  setReasonerMenuOpen(false);
-                }}
-              >
-                <Text style={[styles.segmentText, !isEnsemble && styles.segmentTextActive]}>
-                  Single
-                </Text>
-              </Pressable>
-              <Pressable
-                style={[styles.segment, isEnsemble && styles.segmentActive]}
-                onPress={() => {
-                  setAnalysisMode('ensemble');
-                  setSingleMenuOpen(false);
-                }}
-              >
-                <Text style={[styles.segmentText, isEnsemble && styles.segmentTextActive]}>
-                  Ensemble
-                </Text>
-              </Pressable>
-            </View>
-          </View>
-
-          {!isEnsemble ? (
+          <View style={styles.settingsCard}>
             <View style={styles.settingsGroup}>
-              <Text style={styles.groupTitle}>Model</Text>
-              <View style={styles.modelDropdownWrap}>
-                <Pressable
-                  style={[styles.modelDropdown, singleMenuOpen && styles.modelDropdownOpen]}
-                  onPress={() => {
+              <Text style={styles.groupTitle}>Mode</Text>
+              <View style={styles.segmented}>
+                  <ChipPressable
+                    style={[styles.segment, !isEnsemble && styles.segmentActive]}
+                    hoverStyle={isEnsemble ? styles.washHover : null}
+                    onPress={() => {
+                      setAnalysisMode('single');
+                      setWorkerMenuOpen(false);
+                      setReasonerMenuOpen(false);
+                    }}
+                  >
+                    <Text style={[styles.segmentText, !isEnsemble && styles.segmentTextActive]}>
+                      Single
+                    </Text>
+                  </ChipPressable>
+                  <ChipPressable
+                    style={[styles.segment, isEnsemble && styles.segmentActive]}
+                    hoverStyle={!isEnsemble ? styles.washHover : null}
+                    onPress={() => {
+                      setAnalysisMode('ensemble');
+                      setSingleMenuOpen(false);
+                    }}
+                  >
+                  <Text style={[styles.segmentText, isEnsemble && styles.segmentTextActive]}>
+                    Ensemble
+                  </Text>
+                </ChipPressable>
+              </View>
+            </View>
+
+            {!isEnsemble ? (
+              <View style={styles.settingsGroup}>
+                <Text style={styles.groupTitle}>Model</Text>
+                <ModelMenu
+                  open={singleMenuOpen}
+                  valueLabel={singleModelMeta?.label ?? 'Select model'}
+                  valueMeta={singleModelMeta ? modelOptionMetaLine(singleModelMeta) : null}
+                  accessibilityLabel="Select model"
+                  onToggle={() => {
                     setSingleMenuOpen((open) => !open);
                     setWorkerMenuOpen(false);
                     setReasonerMenuOpen(false);
                   }}
-                  accessibilityRole="button"
-                  accessibilityLabel="Select model"
-                >
-                  <View style={styles.modelDropdownMain}>
-                    <Text style={styles.modelDropdownValue} numberOfLines={1}>
-                      {singleModelMeta?.label ?? 'Select model'}
-                    </Text>
-                    {singleModelMeta ? (
-                      <Text style={styles.modelDropdownMeta} numberOfLines={1}>
-                        {modelOptionMetaLine(singleModelMeta)}
-                      </Text>
-                    ) : null}
-                  </View>
-                  <Ionicons
-                    name={singleMenuOpen ? 'chevron-up' : 'chevron-down'}
-                    size={15}
-                    color="#8a8a8a"
-                  />
-                </Pressable>
-
-                {singleMenuOpen ? (
-                  <ScrollView style={styles.modelMenu} nestedScrollEnabled>
-                    {MODEL_OPTIONS.map((option) => {
-                      const active = option.key === singleModel;
-                      return (
-                        <Pressable
-                          key={option.key}
-                          style={[styles.modelOption, active && styles.modelOptionActive]}
-                          onPress={() => {
-                            setSingleModel(option.key);
-                            setSingleMenuOpen(false);
-                          }}
-                        >
-                          <View style={styles.modelOptionCopy}>
-                            <View style={styles.modelOptionHeader}>
-                              <Text
-                                style={[
-                                  styles.modelOptionText,
-                                  active && styles.modelOptionTextActive,
-                                ]}
-                              >
-                                {option.label}
-                              </Text>
-                              {active ? (
-                                <Ionicons name="checkmark" size={16} color={ACCENT} />
-                              ) : null}
-                            </View>
-                            <Text style={styles.modelOptionStats}>
-                              {modelOptionMetaLine(option)}
-                            </Text>
-                            {option.blurb ? (
-                              <Text style={styles.modelOptionBlurb}>{option.blurb}</Text>
-                            ) : null}
-                          </View>
-                        </Pressable>
-                      );
-                    })}
-                  </ScrollView>
-                ) : null}
+                  options={MODEL_OPTIONS}
+                  isSelected={(key) => key === singleModel}
+                  onChoose={(key) => {
+                    setSingleModel(key);
+                    setSingleMenuOpen(false);
+                  }}
+                />
               </View>
-            </View>
-          ) : (
-            <>
-              <View style={styles.settingsGroup}>
-                <Text style={styles.groupTitle}>Workers</Text>
-                <View style={styles.modelDropdownWrap}>
-                  <Pressable
-                    style={[styles.modelDropdown, workerMenuOpen && styles.modelDropdownOpen]}
-                    onPress={() => {
+            ) : (
+              <>
+                <View style={styles.settingsGroup}>
+                  <Text style={styles.groupTitle}>Workers</Text>
+                  <ModelMenu
+                    open={workerMenuOpen}
+                    valueLabel={workerSummary}
+                    valueMeta={
+                      selectedWorkers.map((model) => model.label).join(', ') || 'None selected'
+                    }
+                    accessibilityLabel="Select worker models"
+                    onToggle={() => {
                       setWorkerMenuOpen((open) => !open);
                       setReasonerMenuOpen(false);
                       setSingleMenuOpen(false);
                     }}
-                    accessibilityRole="button"
-                    accessibilityLabel="Select worker models"
-                  >
-                    <View style={styles.modelDropdownMain}>
-                      <Text style={styles.modelDropdownValue} numberOfLines={1}>
-                        {workerSummary}
-                      </Text>
-                      <Text style={styles.modelDropdownMeta} numberOfLines={1}>
-                        {selectedWorkers.map((model) => model.label).join(', ') || 'None selected'}
-                      </Text>
-                    </View>
-                    <Ionicons
-                      name={workerMenuOpen ? 'chevron-up' : 'chevron-down'}
-                      size={15}
-                      color="#8a8a8a"
-                    />
-                  </Pressable>
-
-                  {workerMenuOpen ? (
-                    <ScrollView style={styles.modelMenu} nestedScrollEnabled>
-                      {MODEL_OPTIONS.map((option) => {
-                        const active = selectedWorkerKeys.includes(option.key);
-                        return (
-                          <Pressable
-                            key={option.key}
-                            style={[styles.modelOption, active && styles.modelOptionActive]}
-                            onPress={() => toggleWorkerModel(option.key)}
-                          >
-                            <View style={styles.modelOptionCopy}>
-                              <View style={styles.modelOptionHeader}>
-                                <Text
-                                  style={[
-                                    styles.modelOptionText,
-                                    active && styles.modelOptionTextActive,
-                                  ]}
-                                >
-                                  {option.label}
-                                </Text>
-                                <Ionicons
-                                  name={active ? 'checkmark-circle' : 'ellipse-outline'}
-                                  size={18}
-                                  color={active ? ACCENT : '#c4c4c4'}
-                                />
-                              </View>
-                              <Text style={styles.modelOptionStats}>
-                                {modelOptionMetaLine(option)}
-                              </Text>
-                              {option.blurb ? (
-                                <Text style={styles.modelOptionBlurb}>{option.blurb}</Text>
-                              ) : null}
-                            </View>
-                          </Pressable>
-                        );
-                      })}
-                    </ScrollView>
-                  ) : null}
+                    options={MODEL_OPTIONS}
+                    isSelected={(key) => selectedWorkerKeys.includes(key)}
+                    onChoose={toggleWorkerModel}
+                    multi
+                  />
                 </View>
-              </View>
 
-              <View style={styles.settingsGroup}>
-                <Text style={styles.groupTitle}>Reasoner</Text>
-                <View style={styles.modelDropdownWrap}>
-                  <Pressable
-                    style={[styles.modelDropdown, reasonerMenuOpen && styles.modelDropdownOpen]}
-                    onPress={() => {
+                <View style={styles.settingsGroup}>
+                  <Text style={styles.groupTitle}>Reasoner</Text>
+                  <ModelMenu
+                    open={reasonerMenuOpen}
+                    valueLabel={reasonerMeta?.label ?? 'Select reasoner'}
+                    valueMeta={reasonerMeta ? modelOptionMetaLine(reasonerMeta) : null}
+                    accessibilityLabel="Select reasoner model"
+                    onToggle={() => {
                       setReasonerMenuOpen((open) => !open);
                       setWorkerMenuOpen(false);
                       setSingleMenuOpen(false);
                     }}
-                    accessibilityRole="button"
-                    accessibilityLabel="Select reasoner model"
-                  >
-                    <View style={styles.modelDropdownMain}>
-                      <Text style={styles.modelDropdownValue} numberOfLines={1}>
-                        {reasonerMeta?.label ?? 'Select reasoner'}
-                      </Text>
-                      {reasonerMeta ? (
-                        <Text style={styles.modelDropdownMeta} numberOfLines={1}>
-                          {modelOptionMetaLine(reasonerMeta)}
-                        </Text>
-                      ) : null}
-                    </View>
-                    <Ionicons
-                      name={reasonerMenuOpen ? 'chevron-up' : 'chevron-down'}
-                      size={15}
-                      color="#8a8a8a"
-                    />
-                  </Pressable>
-
-                  {reasonerMenuOpen ? (
-                    <ScrollView style={styles.modelMenu} nestedScrollEnabled>
-                      {REASONER_MODELS.map((option) => {
-                        const active = option.key === reasonerModel;
-                        return (
-                          <Pressable
-                            key={option.key}
-                            style={[styles.modelOption, active && styles.modelOptionActive]}
-                            onPress={() => {
-                              setReasonerModel(option.key);
-                              setReasonerMenuOpen(false);
-                            }}
-                          >
-                            <View style={styles.modelOptionCopy}>
-                              <View style={styles.modelOptionHeader}>
-                                <Text
-                                  style={[
-                                    styles.modelOptionText,
-                                    active && styles.modelOptionTextActive,
-                                  ]}
-                                >
-                                  {option.label}
-                                </Text>
-                                {active ? (
-                                  <Ionicons name="checkmark" size={16} color={ACCENT} />
-                                ) : null}
-                              </View>
-                              <Text style={styles.modelOptionStats}>
-                                {modelOptionMetaLine(option)}
-                              </Text>
-                              {option.blurb ? (
-                                <Text style={styles.modelOptionBlurb}>{option.blurb}</Text>
-                              ) : null}
-                            </View>
-                          </Pressable>
-                        );
-                      })}
-                    </ScrollView>
-                  ) : null}
+                    options={REASONER_MODELS}
+                    isSelected={(key) => key === reasonerModel}
+                    onChoose={(key) => {
+                      setReasonerModel(key);
+                      setReasonerMenuOpen(false);
+                    }}
+                  />
                 </View>
-              </View>
-            </>
-          )}
+              </>
+            )}
 
-          <View style={styles.settingsGroup}>
-            <Text style={styles.groupTitle}>Upload</Text>
-            {Platform.OS === 'web'
-              ? createElement('input', {
-                  ref: fileInputRef,
-                  type: 'file',
-                  accept: 'image/*',
-                  style: { display: 'none' },
-                  onChange: (event) => {
-                    const file = event.target.files?.[0];
-                    if (file) void handleUploadImage(file);
-                  },
-                })
-              : null}
-
-            {Platform.OS === 'web'
-              ? createElement(
-                  'div',
-                  {
-                    onDragEnter: (event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      setDragActive(true);
-                    },
-                    onDragOver: (event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      setDragActive(true);
-                    },
-                    onDragLeave: (event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      setDragActive(false);
-                    },
-                    onDrop: (event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      setDragActive(false);
-                      const file = event.dataTransfer?.files?.[0];
+            <View style={styles.settingsGroup}>
+              <Text style={styles.groupTitle}>Upload</Text>
+              {Platform.OS === 'web'
+                ? createElement('input', {
+                    ref: fileInputRef,
+                    type: 'file',
+                    accept: 'image/*',
+                    style: { display: 'none' },
+                    onChange: (event) => {
+                      const file = event.target.files?.[0];
                       if (file) void handleUploadImage(file);
                     },
-                    onClick: () => {
-                      if (!uploadUri) fileInputRef.current?.click();
+                  })
+                : null}
+
+              {Platform.OS === 'web'
+                ? createElement(
+                    'div',
+                    {
+                      onDragEnter: (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setDragActive(true);
+                      },
+                      onDragOver: (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setDragActive(true);
+                      },
+                      onDragLeave: (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setDragActive(false);
+                      },
+                      onDrop: (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setDragActive(false);
+                        const file = event.dataTransfer?.files?.[0];
+                        if (file) void handleUploadImage(file);
+                      },
+                      onClick: () => {
+                        if (!uploadUri) fileInputRef.current?.click();
+                      },
+                      style: {
+                        minHeight: 120,
+                        borderWidth: 1,
+                        borderStyle: uploadUri ? 'solid' : 'dashed',
+                        borderColor: dragActive ? INK : CHIP_BORDER,
+                        borderRadius: CHIP_RADIUS,
+                        backgroundColor: dragActive ? HOVER_WASH : WELL,
+                        overflow: 'hidden',
+                        cursor: uploadUri ? 'default' : 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      },
+                      role: 'button',
+                      'aria-label': 'Upload bullion image',
                     },
-                    style: {
-                      minHeight: 112,
-                      borderWidth: StyleSheet.hairlineWidth,
-                      borderStyle: 'solid',
-                      borderColor: dragActive ? ACCENT : '#e5e5e5',
-                      borderRadius: 12,
-                      backgroundColor: dragActive ? '#ECFDF5' : '#f7f7f7',
-                      overflow: 'hidden',
-                      cursor: uploadUri ? 'default' : 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                    },
-                    role: 'button',
-                    'aria-label': 'Upload bullion image',
-                  },
-                  uploadUri ? (
-                    <View style={styles.uploadPreviewWrap} pointerEvents="box-none">
-                      <Image
-                        source={{ uri: uploadUri }}
-                        style={styles.uploadPreview}
-                        resizeMode="contain"
-                      />
-                      <Pressable
-                        style={styles.uploadClear}
-                        onPress={clearUpload}
-                        accessibilityLabel="Clear uploaded image"
-                        hitSlop={8}
-                      >
-                        <Ionicons name="close" size={13} color="#1a1a1a" />
-                      </Pressable>
-                      <Pressable
-                        style={styles.uploadReplace}
-                        onPress={() => fileInputRef.current?.click()}
-                        accessibilityLabel="Replace uploaded image"
-                      >
-                        <Text style={styles.uploadReplaceLabel}>Replace</Text>
-                      </Pressable>
-                    </View>
-                  ) : (
-                    <View style={styles.dropZoneInner}>
-                      <Text style={styles.dropZoneTitle}>
-                        {dragActive ? 'Drop to analyze' : 'Drop image here'}
-                      </Text>
-                      <Text style={styles.dropZoneHint}>or click to browse</Text>
-                    </View>
+                    uploadUri ? (
+                      <View style={styles.uploadPreviewWrap} pointerEvents="box-none">
+                        <Image
+                          source={{ uri: uploadUri }}
+                          style={styles.uploadPreview}
+                          resizeMode="contain"
+                        />
+                        <ChipPressable
+                          style={styles.uploadClear}
+                          onPress={clearUpload}
+                          accessibilityLabel="Clear uploaded image"
+                          hitSlop={8}
+                        >
+                          <Ionicons name="close" size={13} color={INK} />
+                        </ChipPressable>
+                        <ChipPressable
+                          style={styles.uploadReplace}
+                          onPress={() => fileInputRef.current?.click()}
+                          accessibilityLabel="Replace uploaded image"
+                        >
+                          <Text style={styles.uploadReplaceLabel}>Replace</Text>
+                        </ChipPressable>
+                      </View>
+                    ) : (
+                      <View style={styles.dropZoneInner}>
+                        <Ionicons
+                          name={dragActive ? 'image' : 'image-outline'}
+                          size={22}
+                          color={dragActive ? INK : SECONDARY}
+                        />
+                        <Text style={styles.dropZoneTitle}>
+                          {dragActive ? 'Drop to analyze' : 'Drop image here'}
+                        </Text>
+                        <Text style={styles.dropZoneHint}>or click to browse</Text>
+                      </View>
+                    )
                   )
-                )
-              : (
-                <View style={styles.dropZone}>
-                  <Text style={styles.dropZoneHint}>Image upload is available on web.</Text>
-                </View>
-              )}
+                : (
+                  <View style={styles.dropZone}>
+                    <Text style={styles.dropZoneHint}>Image upload is available on web.</Text>
+                  </View>
+                )}
+            </View>
           </View>
         </ScrollView>
-      </View>
+  );
+
+  return (
+    <View style={[styles.screen, isMobile && styles.screenMobile]}>
+      {isMobile ? (
+        <ScrollView
+          style={styles.mobileScroll}
+          contentContainerStyle={styles.layoutStacked}
+          showsVerticalScrollIndicator={false}
+        >
+          {previewColumn}
+          {settingsColumn}
+        </ScrollView>
+      ) : (
+        <View style={styles.layout}>
+          {previewColumn}
+          {settingsColumn}
+        </View>
+      )}
 
       <Modal
         visible={selectedCapture != null}
@@ -1307,30 +1292,30 @@ export default function SerphintScreen() {
               </Text>
               <View style={styles.viewerActions}>
                 {selectedCapture ? (
-                  <Pressable
+                  <ChipPressable
                     style={styles.viewerIconButton}
                     onPress={() => saveCapture(selectedCapture)}
                     accessibilityLabel="Save capture"
                   >
-                    <Ionicons name="download-outline" size={18} color="#1a1a1a" />
-                  </Pressable>
+                    <Ionicons name="download-outline" size={18} color={INK} />
+                  </ChipPressable>
                 ) : null}
                 {selectedCapture ? (
-                  <Pressable
+                  <ChipPressable
                     style={styles.viewerIconButton}
                     onPress={() => deleteCapture(selectedCapture.id)}
                     accessibilityLabel="Delete capture"
                   >
-                    <Ionicons name="trash-outline" size={18} color="#8a8a8a" />
-                  </Pressable>
+                    <Ionicons name="trash-outline" size={18} color={SECONDARY} />
+                  </ChipPressable>
                 ) : null}
-                <Pressable
+                <ChipPressable
                   style={styles.viewerIconButton}
                   onPress={() => setSelectedId(null)}
                   accessibilityLabel="Close"
                 >
-                  <Ionicons name="close" size={20} color="#1a1a1a" />
-                </Pressable>
+                  <Ionicons name="close" size={20} color={INK} />
+                </ChipPressable>
               </View>
             </View>
             <View style={styles.viewerBody}>
@@ -1351,7 +1336,7 @@ export default function SerphintScreen() {
                     width: '100%',
                     height: '100%',
                     objectFit: 'contain',
-                    backgroundColor: '#111827',
+                    backgroundColor: '#111',
                   },
                 })
               ) : null}
@@ -1367,17 +1352,29 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     minHeight: 0,
-    marginTop: 8,
+    backgroundColor: CANVAS,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 20,
+  },
+  screenMobile: {
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 16,
+  },
+  mobileScroll: {
+    flex: 1,
+    minHeight: 0,
   },
   layout: {
     flex: 1,
     minHeight: 0,
     flexDirection: 'row',
-    gap: 28,
+    gap: 16,
   },
   layoutStacked: {
     flexDirection: 'column',
-    gap: 20,
+    gap: 12,
   },
   previewPane: {
     flex: 1.4,
@@ -1387,23 +1384,29 @@ const styles = StyleSheet.create({
   },
   previewPaneStacked: {
     width: '100%',
-    flex: 1,
-    minHeight: 420,
+    flexGrow: 0,
+    flexShrink: 0,
+    minHeight: 0,
+  },
+  cameraCard: {
+    backgroundColor: '#fff',
+    borderRadius: CHIP_RADIUS,
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
+    overflow: 'hidden',
+    ...CHIP_SHADOW,
   },
   previewShell: {
     width: '100%',
-    maxWidth: 520,
     aspectRatio: 16 / 9,
-    borderRadius: 16,
     overflow: 'hidden',
-    backgroundColor: '#0a0a0a',
+    backgroundColor: '#111',
     position: 'relative',
-    alignSelf: 'flex-start',
   },
   statusPill: {
     position: 'absolute',
-    top: 14,
-    left: 14,
+    top: 12,
+    left: 12,
     zIndex: 2,
     flexDirection: 'row',
     alignItems: 'center',
@@ -1411,22 +1414,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 999,
-    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
   },
   statusPillRec: {
-    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
   },
   statusDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: '#34d399',
+    backgroundColor: GREEN,
   },
   statusDotRec: {
-    backgroundColor: '#ef4444',
+    backgroundColor: '#FF3B30',
   },
   statusPillLabel: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 11,
     fontWeight: '600',
     letterSpacing: 0.6,
@@ -1437,9 +1440,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
     minHeight: 64,
-    maxWidth: 520,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: HAIRLINE,
+    backgroundColor: '#fff',
   },
   intervalControl: {
     flex: 1,
@@ -1448,27 +1454,29 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   intervalLabel: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 13,
-    color: '#8a8a8a',
+    color: SECONDARY,
     fontWeight: '500',
   },
   intervalInput: {
-    width: 36,
-    fontFamily,
-    fontSize: 15,
+    width: 40,
+    height: 28,
+    fontFamily: FONT,
+    fontSize: 14,
     fontWeight: '600',
-    color: '#1a1a1a',
+    color: INK,
     textAlign: 'center',
-    paddingVertical: 4,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#d0d0d0',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
+    backgroundColor: WELL,
     outlineStyle: 'none',
   },
   shutterCluster: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 16,
+    gap: 14,
   },
   modeButton: {
     width: 32,
@@ -1476,9 +1484,11 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#d0d0d0',
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
     backgroundColor: '#fff',
+    ...CHIP_SHADOW,
+    ...webCursor,
   },
   modeButtonSpacer: {
     width: 32,
@@ -1488,49 +1498,54 @@ const styles = StyleSheet.create({
     width: 11,
     height: 11,
     borderRadius: 6,
-    backgroundColor: '#ef4444',
+    backgroundColor: '#FF3B30',
   },
   recordGlyphStop: {
     width: 9,
     height: 9,
     borderRadius: 2,
-    backgroundColor: '#ef4444',
+    backgroundColor: '#FF3B30',
   },
   shutterOuter: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    borderWidth: 3,
-    borderColor: '#1a1a1a',
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    borderWidth: 2,
+    borderColor: INK,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#fff',
+    ...webCursor,
+  },
+  shutterOuterHover: {
+    backgroundColor: HOVER_WASH,
+  },
+  shutterOuterPress: {
+    backgroundColor: PRESS_WASH,
   },
   shutterDisabled: {
     opacity: 0.35,
   },
   shutterInner: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#1a1a1a',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: INK,
   },
   shutterInnerDisabled: {
-    backgroundColor: '#8a8a8a',
+    backgroundColor: SECONDARY,
   },
   controlsSpacer: {
     flex: 1,
   },
   previewHint: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 13,
     lineHeight: 18,
-    color: '#8a8a8a',
-    maxWidth: 520,
+    color: SECONDARY,
   },
   historyStrip: {
-    maxHeight: 64,
-    maxWidth: 520,
+    maxHeight: 68,
   },
   historyRow: {
     gap: 8,
@@ -1546,11 +1561,12 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
     overflow: 'hidden',
-    backgroundColor: '#f0f0f0',
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e5e5e5',
+    backgroundColor: NAV_TAB_ACTIVE_BG,
+    borderRadius: CHIP_RADIUS,
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
     position: 'relative',
+    ...webCursor,
   },
   thumbImage: {
     width: '100%',
@@ -1560,53 +1576,65 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#f0f0f0',
+    backgroundColor: NAV_TAB_ACTIVE_BG,
   },
   thumbBadge: {
     position: 'absolute',
     left: 5,
     bottom: 5,
-    paddingHorizontal: 5,
+    paddingHorizontal: 6,
     paddingVertical: 2,
-    borderRadius: 4,
-    backgroundColor: 'rgba(255, 255, 255, 0.92)',
+    borderRadius: 6,
+    backgroundColor: 'rgba(255, 255, 255, 0.94)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: HAIRLINE,
   },
   thumbBadgeLabel: {
-    fontFamily,
-    fontSize: 9,
+    fontFamily: FONT,
+    fontSize: 10,
     fontWeight: '600',
-    letterSpacing: 0.2,
-    color: '#1a1a1a',
+    letterSpacing: -0.1,
+    color: INK,
   },
   thumbDelete: {
     position: 'absolute',
-    top: -4,
-    right: -4,
+    top: -5,
+    right: -5,
     width: 20,
     height: 20,
     borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#fff',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e5e5e5',
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
     zIndex: 2,
+    ...CHIP_SHADOW,
+    ...webCursor,
   },
-  resultPanel: {
+  resultCard: {
     flex: 1,
     minHeight: 160,
+    backgroundColor: '#fff',
+    borderRadius: CHIP_RADIUS,
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     gap: 10,
-    marginTop: 4,
-    paddingTop: 14,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#e5e5e5',
+    ...CHIP_SHADOW,
+  },
+  resultCardMobile: {
+    flexGrow: 0,
+    flexShrink: 0,
+    minHeight: 0,
   },
   resultHeading: {
-    fontFamily,
-    fontSize: 20,
+    fontFamily: FONT,
+    fontSize: 13,
     fontWeight: '600',
-    color: '#1a1a1a',
-    letterSpacing: -0.4,
+    color: SECONDARY,
+    letterSpacing: -0.1,
   },
   resultScroll: {
     flex: 1,
@@ -1614,26 +1642,30 @@ const styles = StyleSheet.create({
   },
   resultScrollContent: {
     gap: 12,
-    paddingBottom: 8,
+    paddingBottom: 4,
   },
   resultRow: {
-    gap: 4,
-    paddingVertical: 12,
+    gap: 3,
+    paddingVertical: 11,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#efefef',
+    borderBottomColor: HAIRLINE,
+  },
+  resultRowLast: {
+    borderBottomWidth: 0,
+    paddingBottom: 2,
   },
   resultTitle: {
-    fontFamily,
-    fontSize: 22,
+    fontFamily: FONT,
+    fontSize: 16,
     fontWeight: '600',
-    color: '#1a1a1a',
-    letterSpacing: -0.4,
+    color: INK,
+    letterSpacing: -0.3,
   },
   resultMeta: {
-    fontFamily,
-    fontSize: 15,
-    lineHeight: 21,
-    color: '#6b6b6b',
+    fontFamily: FONT,
+    fontSize: 13,
+    lineHeight: 18,
+    color: SECONDARY,
   },
   sidePane: {
     flex: 0.85,
@@ -1645,26 +1677,38 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: '100%',
     minWidth: 0,
-    flex: 1,
+    flexGrow: 0,
+    flexShrink: 0,
   },
   sidePaneContent: {
-    gap: 20,
-    paddingBottom: 24,
+    gap: 12,
+    paddingBottom: 8,
+  },
+  settingsCard: {
+    backgroundColor: '#fff',
+    borderRadius: CHIP_RADIUS,
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 18,
+    ...CHIP_SHADOW,
   },
   settingsGroup: {
     gap: 8,
   },
   groupTitle: {
-    fontFamily,
-    fontSize: 13,
+    fontFamily: FONT,
+    fontSize: 12,
     fontWeight: '600',
-    color: '#8a8a8a',
-    letterSpacing: -0.1,
+    color: SECONDARY,
+    letterSpacing: 0.2,
+    textTransform: 'uppercase',
   },
   segmented: {
     flexDirection: 'row',
-    backgroundColor: '#f0f0f0',
-    borderRadius: 9,
+    backgroundColor: WELL,
+    borderRadius: CHIP_RADIUS,
     padding: 2,
   },
   segment: {
@@ -1672,23 +1716,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 8,
-    borderRadius: 7,
+    borderRadius: 6,
+    ...webCursor,
   },
   segmentActive: {
     backgroundColor: '#fff',
-    shadowColor: '#000',
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 1 },
+    ...CHIP_SHADOW,
   },
   segmentText: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 13,
     fontWeight: '500',
-    color: '#6b6b6b',
+    color: SECONDARY,
   },
   segmentTextActive: {
-    color: '#1a1a1a',
+    color: INK,
     fontWeight: '600',
   },
   modelDropdownWrap: {
@@ -1700,16 +1742,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e5e5e5',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    backgroundColor: '#f7f7f7',
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
+    borderRadius: CHIP_RADIUS,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: '#fff',
+    ...CHIP_SHADOW,
+    ...webCursor,
   },
   modelDropdownOpen: {
-    borderColor: '#d0d0d0',
-    backgroundColor: '#fff',
+    backgroundColor: NAV_TAB_ACTIVE_BG,
   },
   modelDropdownMain: {
     flex: 1,
@@ -1717,43 +1760,39 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   modelDropdownValue: {
-    fontFamily,
-    fontSize: 15,
+    fontFamily: FONT,
+    fontSize: 14,
     fontWeight: '500',
-    color: '#1a1a1a',
+    color: INK,
     letterSpacing: -0.2,
   },
   modelDropdownMeta: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 11,
-    color: '#8a8a8a',
+    color: SECONDARY,
   },
   modelMenu: {
-    position: 'absolute',
-    top: '100%',
-    left: 0,
-    right: 0,
     marginTop: 6,
     maxHeight: 280,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e5e5e5',
-    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
+    borderRadius: CHIP_RADIUS,
     backgroundColor: '#fff',
     overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOpacity: 0.1,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 6 },
-    zIndex: 20,
+    ...CHIP_SHADOW,
   },
   modelOption: {
-    paddingHorizontal: 14,
-    paddingVertical: 11,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: HAIRLINE,
+    ...webCursor,
   },
   modelOptionActive: {
-    backgroundColor: '#f7f7f7',
+    backgroundColor: NAV_TAB_ACTIVE_BG,
+  },
+  modelOptionHover: {
+    backgroundColor: HOVER_WASH,
   },
   modelOptionCopy: {
     gap: 3,
@@ -1765,24 +1804,24 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   modelOptionText: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 14,
-    color: '#1a1a1a',
+    color: INK,
     flex: 1,
   },
   modelOptionTextActive: {
     fontWeight: '600',
-    color: ACCENT,
+    color: INK,
   },
   modelOptionStats: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 11,
-    color: '#6b6b6b',
+    color: SECONDARY,
   },
   modelOptionBlurb: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 11,
-    color: '#8a8a8a',
+    color: SECONDARY,
     lineHeight: 15,
   },
   aiLabelRow: {
@@ -1792,21 +1831,22 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   analysisTimer: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 12,
     fontWeight: '500',
-    color: '#8a8a8a',
+    color: SECONDARY,
     fontVariant: ['tabular-nums'],
   },
   analysisTimerLive: {
-    color: ACCENT,
+    color: GREEN,
   },
   dropZone: {
-    minHeight: 112,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e5e5e5',
-    borderRadius: 12,
-    backgroundColor: '#f7f7f7',
+    minHeight: 120,
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
+    borderStyle: 'dashed',
+    borderRadius: CHIP_RADIUS,
+    backgroundColor: WELL,
     overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1814,28 +1854,29 @@ const styles = StyleSheet.create({
   dropZoneInner: {
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
+    gap: 6,
     paddingHorizontal: 20,
     paddingVertical: 24,
   },
   dropZoneTitle: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 14,
     fontWeight: '500',
-    color: '#1a1a1a',
+    color: INK,
     textAlign: 'center',
+    letterSpacing: -0.2,
   },
   dropZoneHint: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 12,
-    color: '#8a8a8a',
+    color: SECONDARY,
     textAlign: 'center',
   },
   uploadPreviewWrap: {
     width: '100%',
     height: 140,
     position: 'relative',
-    backgroundColor: '#0a0a0a',
+    backgroundColor: '#111',
   },
   uploadPreview: {
     width: '100%',
@@ -1851,7 +1892,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
     zIndex: 2,
+    ...CHIP_SHADOW,
+    ...webCursor,
   },
   uploadReplace: {
     position: 'absolute',
@@ -1860,31 +1905,35 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 6,
-    backgroundColor: 'rgba(255, 255, 255, 0.92)',
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
     zIndex: 2,
+    ...CHIP_SHADOW,
+    ...webCursor,
   },
   uploadReplaceLabel: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 12,
     fontWeight: '600',
-    color: '#1a1a1a',
+    color: INK,
   },
   voteSection: {
     gap: 8,
   },
   voteSectionLabel: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 11,
     fontWeight: '600',
     letterSpacing: 0.3,
     textTransform: 'uppercase',
-    color: '#8a8a8a',
+    color: SECONDARY,
   },
   voteCard: {
-    borderRadius: 10,
+    borderRadius: CHIP_RADIUS,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    backgroundColor: '#f7f7f7',
+    backgroundColor: WELL,
     gap: 4,
   },
   voteCardHeader: {
@@ -1894,61 +1943,61 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   voteCardTitle: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 13,
     fontWeight: '600',
-    color: '#1a1a1a',
+    color: INK,
     flex: 1,
   },
   voteCardStatus: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 11,
-    color: '#8a8a8a',
+    color: SECONDARY,
     fontVariant: ['tabular-nums'],
   },
   voteCardLine: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 12,
     lineHeight: 17,
     color: '#3f3f3f',
   },
   aiPlaceholder: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 14,
     lineHeight: 20,
-    color: '#8a8a8a',
+    color: SECONDARY,
   },
   aiResultText: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 14,
     lineHeight: 21,
-    color: '#1a1a1a',
+    color: INK,
     fontWeight: '500',
   },
   aiErrorText: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 13,
     lineHeight: 19,
-    color: '#b91c1c',
+    color: RED,
   },
   overlay: {
     ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 28,
-    backgroundColor: 'rgba(10, 10, 10, 0.92)',
+    backgroundColor: 'rgba(17, 17, 17, 0.92)',
     gap: 10,
   },
   overlayTitle: {
-    fontFamily,
-    fontSize: 17,
+    fontFamily: FONT,
+    fontSize: 16,
     fontWeight: '600',
     color: '#fff',
     textAlign: 'center',
     letterSpacing: -0.2,
   },
   overlayBody: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 13,
     lineHeight: 18,
     color: '#a3a3a3',
@@ -1957,20 +2006,30 @@ const styles = StyleSheet.create({
   },
   retryButton: {
     marginTop: 6,
-    paddingHorizontal: 18,
-    paddingVertical: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
     backgroundColor: '#fff',
-    borderRadius: 980,
+    borderRadius: CHIP_RADIUS,
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
+    ...CHIP_SHADOW,
+    ...webCursor,
+  },
+  retryButtonHover: {
+    backgroundColor: NAV_TAB_ACTIVE_BG,
+  },
+  retryButtonPress: {
+    backgroundColor: PRESS_WASH,
   },
   retryLabel: {
-    fontFamily,
+    fontFamily: FONT,
     fontSize: 14,
     fontWeight: '600',
-    color: '#1a1a1a',
+    color: INK,
   },
   viewerBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
@@ -1981,41 +2040,53 @@ const styles = StyleSheet.create({
     height: '80%',
     maxHeight: 560,
     backgroundColor: '#fff',
-    borderRadius: 16,
+    borderRadius: CHIP_RADIUS,
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
     overflow: 'hidden',
+    ...CHIP_SHADOW,
   },
   viewerHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#efefef',
+    borderBottomColor: HAIRLINE,
   },
   viewerTitle: {
-    fontFamily,
-    fontSize: 15,
+    fontFamily: FONT,
+    fontSize: 14,
     fontWeight: '600',
-    color: '#1a1a1a',
+    color: INK,
     letterSpacing: -0.2,
   },
   viewerActions: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 2,
   },
   viewerIconButton: {
     width: 34,
     height: 34,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
+    ...webCursor,
   },
   viewerBody: {
     flex: 1,
-    backgroundColor: '#0a0a0a',
+    backgroundColor: '#111',
   },
   viewerMedia: {
     width: '100%',
     height: '100%',
+  },
+  washHover: {
+    backgroundColor: HOVER_WASH,
+  },
+  washPress: {
+    backgroundColor: PRESS_WASH,
   },
 });

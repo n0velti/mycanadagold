@@ -1,4 +1,4 @@
-import { createElement, useEffect, useMemo, useState } from 'react';
+import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -9,7 +9,7 @@ import {
   View,
 } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useIsMobile } from '../lib/mobileUi';
+import { CANVAS, useIsMobile } from '../lib/mobileUi';
 import {
   AI_SCOPE_CAPABILITIES,
   AI_SCOPE_LEVELS,
@@ -43,8 +43,19 @@ import {
   saveUserAppAccess,
   saveUserAppAccessBatch,
   updateStaffAccess,
+  useAppAccess,
 } from '../lib/permissions';
+import {
+  RULES_UNAVAILABLE_MESSAGE,
+  deletePermissionRule,
+  describeRule,
+  loadPermissionRules,
+  roleRulesFor,
+  rulesForProfile,
+  savePermissionRule,
+} from '../lib/permissionRules';
 import { IosGroup, IosPage, IosRow } from './IosSettings';
+import PermissionsAiChat from './PermissionsAiChat';
 import {
   Chip,
   EmptyState,
@@ -52,6 +63,7 @@ import {
   SearchField,
   SectionLabel,
   StaffAvatar,
+  StatusPill,
   T,
   TextTabs,
 } from './TriageKit';
@@ -98,19 +110,6 @@ function permissionStatusLabel(status) {
   }
 }
 
-function permissionStatusColor(status) {
-  switch (status) {
-    case 'granted':
-      return '#2F8A4E';
-    case 'denied':
-      return '#b42318';
-    case 'unsupported':
-      return '#8a8a8a';
-    default:
-      return '#6b6b6b';
-  }
-}
-
 async function queryMediaPermission(name) {
   if (Platform.OS !== 'web' || !navigator?.permissions?.query) {
     return 'unsupported';
@@ -123,18 +122,100 @@ async function queryMediaPermission(name) {
   }
 }
 
+function roleTone(role) {
+  switch (role) {
+    case 'branch_manager':
+      return 'green';
+    case 'general_manager':
+      return 'purple';
+    case 'triage':
+      return 'orange';
+    case 'hr':
+      return 'blue';
+    case 'system_admin':
+      return 'neutral';
+    default:
+      return 'blue';
+  }
+}
+
+function rolePillLabel(role, isSystemAdmin) {
+  if (role === 'general_manager' && isSystemAdmin) return 'GM · Admin';
+  return getCategory(role)?.shortLabel || '—';
+}
+
 function RoleBadge({ role, isSystemAdmin }) {
-  const category = getCategory(role);
-  const tint = category?.tint || '#F4F4F5';
-  const accent = category?.accent || '#52525B';
-  const label =
-    role === 'general_manager' && isSystemAdmin ? 'GM · Admin' : category?.shortLabel || '—';
   return (
-    <View style={[styles.roleBadge, { backgroundColor: tint }]}>
-      <Text style={[styles.roleBadgeText, { color: accent }]} numberOfLines={1}>
-        {label}
+    <StatusPill
+      label={rolePillLabel(role, isSystemAdmin)}
+      tone={roleTone(role)}
+      compact
+    />
+  );
+}
+
+function PersonCard({
+  row,
+  selected,
+  checked,
+  bulkOpen,
+  onPress,
+  onToggle,
+  accessText,
+}) {
+  const name = staffName(row);
+  const title = staffTitle(row);
+  const inactive = !row.isActive;
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={name}
+      style={({ hovered, pressed }) => [
+        styles.personCard,
+        inactive && styles.personCardInactive,
+        selected && styles.personCardSelected,
+        (hovered || pressed) && styles.personCardHover,
+      ]}
+    >
+      {bulkOpen ? (
+        <Pressable
+          onPress={onToggle}
+          disabled={hasFullAppAccess(row)}
+          hitSlop={8}
+          style={styles.personCardCheck}
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked, disabled: hasFullAppAccess(row) }}
+        >
+          <Ionicons
+            name={checked ? 'checkbox' : 'square-outline'}
+            size={18}
+            color={checked ? T.text : T.tertiary}
+          />
+        </Pressable>
+      ) : null}
+      <StaffAvatar uri={row.avatarUrl} name={name} size={80} />
+      <Text style={styles.personCardName} numberOfLines={1}>
+        {name}
       </Text>
-    </View>
+      {title ? (
+        <Text style={styles.personCardRole} numberOfLines={1}>
+          {title}
+        </Text>
+      ) : null}
+      {row.locationName ? (
+        <Text style={styles.personCardMeta} numberOfLines={1}>
+          {row.locationName}
+        </Text>
+      ) : null}
+      <View style={styles.personCardPills}>
+        {inactive ? <StatusPill label="Disabled" tone="neutral" compact /> : null}
+        <RoleBadge role={row.appRole} isSystemAdmin={row.isSystemAdmin} />
+      </View>
+      <Text style={styles.personCardHint} numberOfLines={2}>
+        {accessText}
+      </Text>
+    </Pressable>
   );
 }
 
@@ -313,6 +394,69 @@ function FilterBulkState({ value, onChange, disabled }) {
   );
 }
 
+function ruleTargetTag(rule) {
+  const where = rule.stores?.length ? ` · ${rule.stores.join(', ')}` : '';
+  if (rule.target === 'user') return `This person${where}`;
+  if (rule.target === 'role') return `${getCategory(rule.role)?.label || 'Role'} role${where}`;
+  return `Everyone${where}`;
+}
+
+/** Granular rules (lib/permissionRules.js) for a role or a person, with remove. */
+function RulesCard({ title, intro, rules, staffById, onRemove, removingId, unavailable, emptyText }) {
+  return (
+    <View style={styles.ticketCard}>
+      <Text style={styles.cardTitle}>{title}</Text>
+      <Text style={styles.cardIntro}>{intro}</Text>
+      {unavailable ? (
+        <Text style={styles.fieldHint}>{RULES_UNAVAILABLE_MESSAGE}</Text>
+      ) : rules.length === 0 ? (
+        <Text style={styles.fieldHint}>{emptyText}</Text>
+      ) : (
+        <View style={styles.ruleList}>
+          {rules.map((rule, index) => {
+            const hide = rule.effect === 'hide';
+            const removing = removingId === rule.id;
+            return (
+              <View key={rule.id} style={[styles.ruleRow, index === rules.length - 1 && styles.ruleRowLast]}>
+                <View style={[styles.ruleIcon, hide ? styles.ruleIconHide : styles.ruleIconShow]}>
+                  <Ionicons
+                    name={hide ? 'eye-off-outline' : 'eye-outline'}
+                    size={14}
+                    color={hide ? '#B42318' : '#2F8A4E'}
+                  />
+                </View>
+                <View style={styles.flexCopy}>
+                  <Text style={styles.ruleText}>{describeRule(rule, { staffById })}</Text>
+                  <Text style={styles.ruleMeta} numberOfLines={2}>
+                    {ruleTargetTag(rule)}
+                    {rule.note ? ` · “${rule.note}”` : ''}
+                  </Text>
+                </View>
+                {onRemove ? (
+                  <Pressable
+                    onPress={() => onRemove(rule)}
+                    disabled={removing}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Remove rule"
+                    style={[styles.ruleRemove, removing && styles.buttonDisabled]}
+                  >
+                    {removing ? (
+                      <ActivityIndicator size="small" color={T.secondary} />
+                    ) : (
+                      <Ionicons name="close" size={16} color={T.secondary} />
+                    )}
+                  </Pressable>
+                ) : null}
+              </View>
+            );
+          })}
+        </View>
+      )}
+    </View>
+  );
+}
+
 function DevicePermissionsPanel() {
   const isMobile = useIsMobile();
   const [statuses, setStatuses] = useState({
@@ -421,9 +565,15 @@ function DevicePermissionsPanel() {
               <View style={styles.flexCopy}>
                 <Text style={styles.personName}>{item.label}</Text>
                 <Text style={styles.personMeta}>{item.description}</Text>
-                <Text style={[styles.statusText, { color: permissionStatusColor(status) }]}>
-                  {permissionStatusLabel(status)}
-                </Text>
+                <View style={styles.deviceStatus}>
+                  <StatusPill
+                    label={permissionStatusLabel(status)}
+                    tone={
+                      status === 'granted' ? 'green' : status === 'denied' ? 'red' : 'neutral'
+                    }
+                    compact
+                  />
+                </View>
               </View>
               {canRequest ? (
                 <Pressable
@@ -461,6 +611,11 @@ function RoleDefaultsPane({
   saving,
   message,
   error,
+  rules,
+  rulesUnavailable,
+  staffById,
+  onRemoveRule,
+  removingRuleId,
 }) {
   const isMobile = useIsMobile();
   const groups = groupApps((apps || []).filter((app) => app.key !== 'home'));
@@ -468,6 +623,7 @@ function RoleDefaultsPane({
     ? USER_CATEGORIES.filter((category) => category.key === activeRole)
     : USER_CATEGORIES;
   const activeCategory = USER_CATEGORIES.find((category) => category.key === activeRole);
+  const roleRules = roleRulesFor(rules, activeRole);
 
   return (
     <ScrollView style={styles.paneScroll} contentContainerStyle={styles.rolesContentWide}>
@@ -478,20 +634,21 @@ function RoleDefaultsPane({
           a custom set. System Admin is always every app and Company scope. These Analytics scopes
           also apply to Messages @ai, not only the Analytics app.
         </Text>
-        {isMobile ? (
-          <>
-            <View style={styles.chipRow}>
-              {USER_CATEGORIES.map((category) => (
-                <Chip
-                  key={category.key}
-                  label={category.shortLabel}
-                  selected={category.key === activeRole}
-                  onPress={() => onRoleChange(category.key)}
-                />
-              ))}
-            </View>
-            {activeCategory ? <Text style={styles.fieldHint}>{activeCategory.description}</Text> : null}
-          </>
+        <View style={styles.chipRow}>
+          {USER_CATEGORIES.map((category) => (
+            <Chip
+              key={category.key}
+              label={category.shortLabel}
+              selected={category.key === activeRole}
+              onPress={() => onRoleChange(category.key)}
+            />
+          ))}
+        </View>
+        {activeCategory ? (
+          <Text style={styles.fieldHint}>
+            {activeCategory.description}
+            {isMobile ? '' : ' The assistant talks about this role unless you name another.'}
+          </Text>
         ) : null}
       </View>
 
@@ -500,9 +657,20 @@ function RoleDefaultsPane({
         <View style={styles.matrixHead}>
           <Text style={[styles.matrixCorner, styles.matrixAppName]}>App</Text>
           {roles.map((category) => (
-            <Text key={category.key} style={styles.matrixColLabel} numberOfLines={1}>
-              {category.shortLabel}
-            </Text>
+            <Pressable
+              key={category.key}
+              onPress={() => onRoleChange(category.key)}
+              accessibilityRole="button"
+              accessibilityLabel={`Focus ${category.label}`}
+              style={styles.matrixColHit}
+            >
+              <Text
+                style={[styles.matrixColLabel, category.key === activeRole && styles.matrixColLabelActive]}
+                numberOfLines={1}
+              >
+                {category.shortLabel}
+              </Text>
+            </Pressable>
           ))}
         </View>
         {groups.map((group) => (
@@ -580,6 +748,21 @@ function RoleDefaultsPane({
         ))}
       </View>
 
+      <RulesCard
+        title={`Rules · ${activeCategory?.label || 'Role'}`}
+        intro="Parts of a screen this role cannot see, and topics the Analytics AI refuses for it, saved the moment they are made. Rules can be limited to stores. Ask the assistant, for example “Branch Managers in Quebec should not see revenue on Home” or “PMAs should not ask about phone data in Analytics”."
+        rules={roleRules}
+        staffById={staffById}
+        onRemove={onRemoveRule}
+        removingId={removingRuleId}
+        unavailable={rulesUnavailable}
+        emptyText={
+          activeRole === 'system_admin'
+            ? 'System Admin always sees everything.'
+            : 'No rules for this role yet. Everything an app shows is visible.'
+        }
+      />
+
       <Pressable
         style={[styles.saveButton, saving && styles.buttonDisabled]}
         onPress={onSave}
@@ -621,9 +804,15 @@ function PersonDetail({
   onChangePersonScope,
   onSaveAi,
   onResetAi,
+  rules,
+  rulesUnavailable,
+  staffById,
+  onRemoveRule,
+  removingRuleId,
 }) {
   const resolved = resolvedAccessForProfile(row, draft, catalogKeys, userAccessMap[row.id]);
   const lockedPerson = hasFullAppAccess(row);
+  const personRules = lockedPerson ? [] : rulesForProfile(rules, row);
   const isSelf = row.id === actorId;
   const showAdminToggle = row.appRole === 'general_manager';
   const pairPartner = TRIAGE_PAIR_ROLES.includes(row.appRole) ? row.appRole : triageSwitchPartner(row);
@@ -641,12 +830,23 @@ function PersonDetail({
       showsVerticalScrollIndicator={false}
     >
       <View style={styles.heroCard}>
-        {compact ? (
-          <View style={styles.detailMobileHeader}>
-            <Text style={styles.detailMobileTitle}>Access</Text>
-            <Pressable onPress={onClose} hitSlop={8} accessibilityRole="button" accessibilityLabel="Close">
-              <Ionicons name="close" size={22} color={T.secondary} />
+        {onClose ? (
+          <View style={styles.detailBackRow}>
+            <Pressable
+              onPress={onClose}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Back to people"
+              style={styles.detailBack}
+            >
+              <Ionicons name="chevron-back" size={18} color={T.text} />
+              <Text style={styles.detailBackText}>People</Text>
             </Pressable>
+            {compact ? (
+              <Pressable onPress={onClose} hitSlop={8} accessibilityRole="button" accessibilityLabel="Close">
+                <Ionicons name="close" size={22} color={T.secondary} />
+              </Pressable>
+            ) : null}
           </View>
         ) : null}
         <StaffAvatar uri={row.avatarUrl} name={staffName(row)} size={64} />
@@ -851,6 +1051,21 @@ function PersonDetail({
         ) : null}
       </View>
 
+      <RulesCard
+        title="Rules"
+        intro={
+          lockedPerson
+            ? 'Rules never apply to a System Admin.'
+            : 'Parts of a screen hidden for this person and topics the Analytics AI refuses for them, from their own rules and from rules on their role or store. Ask the assistant to add or change one.'
+        }
+        rules={personRules}
+        staffById={staffById}
+        onRemove={onRemoveRule}
+        removingId={removingRuleId}
+        unavailable={rulesUnavailable && !lockedPerson}
+        emptyText={lockedPerson ? 'Every app and every feature is visible.' : 'No rules apply. Everything their apps show is visible.'}
+      />
+
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
       {message ? <Text style={styles.savedText}>{message}</Text> : null}
       {resolved.inherited && !lockedPerson ? (
@@ -871,8 +1086,10 @@ function AppAccessPanel({
   onUserAiAccessSaved,
 }) {
   const isMobile = useIsMobile();
+  const { reloadPermissionRules } = useAppAccess();
   const catalogKeys = useMemo(() => (apps || []).map((app) => app.key), [apps]);
   const actorId = session?.supabaseUserId || session?.profile?.id;
+  const adminName = String(session?.profile?.firstName || '').trim();
   const [tab, setTab] = useState('people');
   const [activeRole, setActiveRole] = useState('precious_metal_analyst');
   const [draft, setDraft] = useState(() => defaultAccessByRole(catalogKeys));
@@ -895,10 +1112,35 @@ function AppAccessPanel({
   const [bulkFilterDraft, setBulkFilterDraft] = useState({});
   const [bulkSaving, setBulkSaving] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [rules, setRules] = useState([]);
+  const [rulesUnavailable, setRulesUnavailable] = useState(false);
+  const [removingRuleId, setRemovingRuleId] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
   const selectedRow = staff.find((row) => row.id === selectedId) || null;
+  const staffById = useMemo(() => new Map(staff.map((row) => [row.id, row])), [staff]);
+
+  // The assistant runs across several awaits in one turn; it reads the latest
+  // state through these refs and writes both the ref and the state.
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const aiDraftRef = useRef(aiDraft);
+  aiDraftRef.current = aiDraft;
+  const staffRef = useRef(staff);
+  staffRef.current = staff;
+  const staffByIdRef = useRef(staffById);
+  staffByIdRef.current = staffById;
+  const userAccessMapRef = useRef(userAccessMap);
+  userAccessMapRef.current = userAccessMap;
+  const userAiMapRef = useRef(userAiMap);
+  userAiMapRef.current = userAiMap;
+  const rulesRef = useRef(rules);
+  rulesRef.current = rules;
+  const rulesUnavailableRef = useRef(rulesUnavailable);
+  rulesUnavailableRef.current = rulesUnavailable;
+  const selectedRowRef = useRef(selectedRow);
+  selectedRowRef.current = selectedRow;
 
   const roleCounts = useMemo(() => {
     const counts = Object.fromEntries(USER_CATEGORY_KEYS.map((key) => [key, 0]));
@@ -965,11 +1207,12 @@ function AppAccessPanel({
       setLoading(true);
       setError('');
       try {
-        const [access, people, userAccess, userAi] = await Promise.all([
+        const [access, people, userAccess, userAi, ruleState] = await Promise.all([
           loadRoleAppAccess(catalogKeys),
           listStaffProfiles().catch(() => []),
           loadUserAppAccessMap(catalogKeys),
           loadUserAiAccessMap(),
+          loadPermissionRules(),
         ]);
         if (cancelled) return;
         setDraft(access.byRole);
@@ -977,8 +1220,11 @@ function AppAccessPanel({
         setStaff(people);
         setUserAccessMap(userAccess.byUser);
         setUserAiMap(userAi.byUser || {});
-        if (access.error || userAccess.error || userAi.error) {
-          setError(access.error || userAccess.error || userAi.error);
+        setRules(ruleState.rules || []);
+        setRulesUnavailable(Boolean(ruleState.unavailable));
+        const ruleError = ruleState.unavailable ? '' : ruleState.error;
+        if (access.error || userAccess.error || userAi.error || ruleError) {
+          setError(access.error || userAccess.error || userAi.error || ruleError);
         }
       } catch (nextError) {
         if (!cancelled) {
@@ -1038,30 +1284,43 @@ function AppAccessPanel({
     }));
   };
 
+  // Saves every role row (the table is upserted whole) and refreshes the
+  // open person's inherited drafts. Shared by the Save button and the assistant.
+  const persistRoleDefaults = useCallback(
+    async (nextDraft, nextAi) => {
+      const sanitizedAi = {};
+      for (const role of USER_CATEGORY_KEYS) {
+        sanitizedAi[role] = sanitizeAiScopes(nextAi?.[role], defaultAiScopesForRole(role));
+      }
+      const next = await saveRoleAppAccess(nextDraft, catalogKeys, actorId, sanitizedAi);
+      const byRole = next.byRole || next;
+      const aiByRole = { ...defaultAiScopesByRole(), ...(next.aiScopesByRole || sanitizedAi) };
+      draftRef.current = byRole;
+      aiDraftRef.current = aiByRole;
+      setDraft(byRole);
+      setAiDraft(aiByRole);
+      onAccessSaved?.(next);
+      const row = selectedRowRef.current;
+      if (row && !hasFullAppAccess(row)) {
+        if (!userAccessMapRef.current[row.id]) {
+          setPersonDraft(personDraftFromResolved(resolvedAccessForProfile(row, byRole, catalogKeys, null)));
+        }
+        if (!userAiMapRef.current[row.id]) {
+          setPersonAiDraft(sanitizeAiScopes(resolveAiScopes(row, aiByRole, null)));
+        }
+      }
+      return { byRole, aiScopesByRole: aiByRole };
+    },
+    [actorId, catalogKeys, onAccessSaved],
+  );
+
   const handleSaveDefaults = async () => {
     if (saving) return;
     setSaving(true);
     setError('');
     setMessage('');
     try {
-      const sanitizedAi = {};
-      for (const role of USER_CATEGORY_KEYS) {
-        sanitizedAi[role] = sanitizeAiScopes(aiDraft[role], defaultAiScopesForRole(role));
-      }
-      const next = await saveRoleAppAccess(draft, catalogKeys, actorId, sanitizedAi);
-      setDraft(next.byRole || next);
-      if (next.aiScopesByRole) setAiDraft({ ...defaultAiScopesByRole(), ...next.aiScopesByRole });
-      onAccessSaved?.(next);
-      if (selectedRow && !userAccessMap[selectedRow.id] && !hasFullAppAccess(selectedRow)) {
-        setPersonDraft(
-          personDraftFromResolved(
-            resolvedAccessForProfile(selectedRow, next.byRole || next, catalogKeys, null),
-          ),
-        );
-      }
-      if (selectedRow && !userAiMap[selectedRow.id] && !hasFullAppAccess(selectedRow)) {
-        setPersonAiDraft(sanitizeAiScopes(resolveAiScopes(selectedRow, next.aiScopesByRole || sanitizedAi, null)));
-      }
+      await persistRoleDefaults(draft, aiDraft);
       setMessage('Role defaults saved.');
     } catch (nextError) {
       setError(nextError?.message || 'Could not save permissions.');
@@ -1069,6 +1328,108 @@ function AppAccessPanel({
       setSaving(false);
     }
   };
+
+  const applyRules = useCallback(
+    (updater) => {
+      const next = updater(rulesRef.current);
+      rulesRef.current = next;
+      setRules(next);
+      reloadPermissionRules?.();
+      return next;
+    },
+    [reloadPermissionRules],
+  );
+
+  const handleRemoveRule = async (rule) => {
+    if (!rule?.id || removingRuleId) return;
+    setRemovingRuleId(rule.id);
+    setError('');
+    setMessage('');
+    try {
+      await deletePermissionRule(rule.id);
+      applyRules((current) => current.filter((item) => item.id !== rule.id));
+      setMessage(`Removed: ${describeRule(rule, { staffById })}`);
+    } catch (nextError) {
+      setError(nextError?.message || 'Could not remove that rule.');
+    } finally {
+      setRemovingRuleId('');
+    }
+  };
+
+  // What the permissions assistant (lib/permissionsAgent.js) reads and writes.
+  // Every write is the same lib call the buttons use, then state + shell refresh.
+  const agentStore = useMemo(
+    () => ({
+      snapshot: () => ({
+        apps: apps || [],
+        catalogKeys: new Set(catalogKeys),
+        staff: staffRef.current,
+        staffById: staffByIdRef.current,
+        roleApps: draftRef.current,
+        roleAi: aiDraftRef.current,
+        userApps: userAccessMapRef.current,
+        userAi: userAiMapRef.current,
+        rules: rulesRef.current,
+        rulesUnavailable: rulesUnavailableRef.current,
+      }),
+      setRoleApps: async (role, visibleApps) => {
+        const saved = await persistRoleDefaults({ ...draftRef.current, [role]: visibleApps }, aiDraftRef.current);
+        return saved.byRole[role] || visibleApps;
+      },
+      setRoleAiScopes: async (role, scopes) => {
+        const saved = await persistRoleDefaults(draftRef.current, { ...aiDraftRef.current, [role]: scopes });
+        return saved.aiScopesByRole?.[role] || scopes;
+      },
+      setPersonApps: async (userId, access) => {
+        const saved = await saveUserAppAccess(userId, access, catalogKeys, actorId);
+        userAccessMapRef.current = { ...userAccessMapRef.current, [userId]: saved };
+        setUserAccessMap(userAccessMapRef.current);
+        onUserAccessSaved?.(userId, saved);
+        if (selectedRowRef.current?.id === userId) setPersonDraft(personDraftFromResolved(saved));
+        return saved;
+      },
+      resetPersonApps: async (userId) => {
+        await clearUserAppAccess(userId);
+        const next = { ...userAccessMapRef.current };
+        delete next[userId];
+        userAccessMapRef.current = next;
+        setUserAccessMap(next);
+        onUserAccessSaved?.(userId, null);
+        const row = selectedRowRef.current;
+        if (row?.id === userId) {
+          setPersonDraft(personDraftFromResolved(resolvedAccessForProfile(row, draftRef.current, catalogKeys, null)));
+        }
+      },
+      setPersonAiScopes: async (userId, scopes) => {
+        const saved = await saveUserAiAccess(userId, scopes, actorId);
+        userAiMapRef.current = { ...userAiMapRef.current, [userId]: saved };
+        setUserAiMap(userAiMapRef.current);
+        onUserAiAccessSaved?.(userId, saved);
+        if (selectedRowRef.current?.id === userId) setPersonAiDraft(sanitizeAiScopes(saved));
+        return saved;
+      },
+      resetPersonAi: async (userId) => {
+        await clearUserAiAccess(userId);
+        const next = { ...userAiMapRef.current };
+        delete next[userId];
+        userAiMapRef.current = next;
+        setUserAiMap(next);
+        onUserAiAccessSaved?.(userId, null);
+        const row = selectedRowRef.current;
+        if (row?.id === userId) setPersonAiDraft(sanitizeAiScopes(resolveAiScopes(row, aiDraftRef.current, null)));
+      },
+      addRule: async (rule) => {
+        const saved = await savePermissionRule(rule, actorId);
+        applyRules((current) => [...current.filter((item) => item.id !== saved.id), saved]);
+        return saved;
+      },
+      removeRule: async (id) => {
+        await deletePermissionRule(id);
+        applyRules((current) => current.filter((item) => item.id !== id));
+      },
+    }),
+    [actorId, apps, applyRules, catalogKeys, onUserAccessSaved, onUserAiAccessSaved, persistRoleDefaults],
+  );
 
   const togglePersonApp = (appKey) => {
     if (hasFullAppAccess(selectedRow) || personSaving) return;
@@ -1350,42 +1711,45 @@ function AppAccessPanel({
     );
   }
 
-  const peopleList = (
-    <View style={styles.listPane}>
-      <SearchField
-        value={staffQuery}
-        onChangeText={setStaffQuery}
-        placeholder="Search name, role, store…"
-        style={styles.searchField}
-      />
-      <View style={styles.chipRow}>
-        <Chip
-          label="All"
-          count={staff.length}
-          selected={!roleFilter}
-          onPress={() => setRoleFilter('')}
-        />
-        {USER_CATEGORIES.map((category) => (
-          <Chip
-            key={category.key}
-            label={category.shortLabel}
-            count={roleCounts[category.key] || 0}
-            selected={roleFilter === category.key}
-            onPress={() => setRoleFilter((current) => (current === category.key ? '' : category.key))}
-          />
-        ))}
-      </View>
+  const closePerson = () => setSelectedId('');
 
-      <Pressable
-        onPress={() => setBulkOpen((open) => !open)}
-        style={styles.bulkToggle}
-        accessibilityRole="button"
-      >
-        <Ionicons name="options-outline" size={15} color={T.text} />
-        <Text style={styles.bulkToggleText}>Change filters for many people</Text>
-        {selectedCount > 0 ? <Text style={styles.bulkCount}>{selectedCount}</Text> : null}
-        <Ionicons name={bulkOpen ? 'chevron-up' : 'chevron-down'} size={15} color={T.secondary} />
-      </Pressable>
+  const peopleGrid = (
+    <View style={styles.peoplePane}>
+      <View style={styles.peopleToolbar}>
+        <SearchField
+          value={staffQuery}
+          onChangeText={setStaffQuery}
+          placeholder="Search name, role, store…"
+          style={styles.searchField}
+        />
+        <View style={styles.chipRow}>
+          <Chip
+            label="All"
+            count={staff.length}
+            selected={!roleFilter}
+            onPress={() => setRoleFilter('')}
+          />
+          {USER_CATEGORIES.map((category) => (
+            <Chip
+              key={category.key}
+              label={category.shortLabel}
+              count={roleCounts[category.key] || 0}
+              selected={roleFilter === category.key}
+              onPress={() => setRoleFilter((current) => (current === category.key ? '' : category.key))}
+            />
+          ))}
+        </View>
+        <Pressable
+          onPress={() => setBulkOpen((open) => !open)}
+          style={styles.bulkToggle}
+          accessibilityRole="button"
+        >
+          <Ionicons name="options-outline" size={15} color={T.text} />
+          <Text style={styles.bulkToggleText}>Change filters for many people</Text>
+          {selectedCount > 0 ? <Text style={styles.bulkCount}>{selectedCount}</Text> : null}
+          <Ionicons name={bulkOpen ? 'chevron-up' : 'chevron-down'} size={15} color={T.secondary} />
+        </Pressable>
+      </View>
 
       {bulkOpen ? (
         <View style={styles.ticketCard}>
@@ -1438,7 +1802,7 @@ function AppAccessPanel({
         </View>
       ) : null}
 
-      <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
+      <ScrollView style={styles.list} contentContainerStyle={styles.gridContent}>
         {staff.length === 0 ? (
           <EmptyState icon="people-outline" title="No staff yet" body="People appear here after they sign in." />
         ) : visibleStaff.length === 0 ? (
@@ -1450,49 +1814,19 @@ function AppAccessPanel({
                 {groupName}
                 {` · ${rows.length}`}
               </SectionLabel>
-              <View style={styles.peopleList}>
-                {rows.map((row, index) => {
-                  const selected = selectedId === row.id;
-                  const checked = selectedIds.has(row.id);
-                  return (
-                    <Pressable
-                      key={row.id}
-                      onPress={() => openPerson(row)}
-                      style={[
-                        styles.personRow,
-                        selected && styles.personRowSelected,
-                        !row.isActive && styles.personRowDisabled,
-                        index === rows.length - 1 && styles.personRowLast,
-                      ]}
-                    >
-                      {bulkOpen ? (
-                        <Pressable
-                          onPress={() => toggleSelected(row)}
-                          disabled={hasFullAppAccess(row) || bulkSaving}
-                          hitSlop={8}
-                          style={styles.checkHit}
-                        >
-                          <Ionicons
-                            name={checked ? 'checkbox' : 'square-outline'}
-                            size={18}
-                            color={checked ? T.text : T.tertiary}
-                          />
-                        </Pressable>
-                      ) : null}
-                      <StaffAvatar uri={row.avatarUrl} name={staffName(row)} size={40} />
-                      <View style={styles.flexCopy}>
-                        <Text style={styles.personName} numberOfLines={1}>
-                          {staffName(row)}
-                          {!row.isActive ? ' · Disabled' : ''}
-                        </Text>
-                        <Text style={styles.personMeta} numberOfLines={1}>
-                          {accessLine(row, draft, userAccessMap, catalogKeys, userAiMap)}
-                        </Text>
-                      </View>
-                      <RoleBadge role={row.appRole} isSystemAdmin={row.isSystemAdmin} />
-                    </Pressable>
-                  );
-                })}
+              <View style={styles.cardGrid}>
+                {rows.map((row) => (
+                  <PersonCard
+                    key={row.id}
+                    row={row}
+                    selected={selectedId === row.id}
+                    checked={selectedIds.has(row.id)}
+                    bulkOpen={bulkOpen}
+                    onPress={() => openPerson(row)}
+                    onToggle={() => toggleSelected(row)}
+                    accessText={accessLine(row, draft, userAccessMap, catalogKeys, userAiMap)}
+                  />
+                ))}
               </View>
             </View>
           ))
@@ -1501,7 +1835,7 @@ function AppAccessPanel({
     </View>
   );
 
-  const detail = selectedRow ? (
+  const personDetail = selectedRow ? (
     <PersonDetail
       row={selectedRow}
       actorId={actorId}
@@ -1518,7 +1852,7 @@ function AppAccessPanel({
       message={message}
       error={error}
       compact={isMobile}
-      onClose={() => setSelectedId('')}
+      onClose={closePerson}
       onRoleChange={(appRole) => handleStaffChange(selectedRow, { appRole })}
       onToggleAdmin={() =>
         handleStaffChange(selectedRow, {
@@ -1544,18 +1878,67 @@ function AppAccessPanel({
       onChangePersonScope={changePersonScope}
       onSaveAi={() => handleSavePersonAi(selectedRow)}
       onResetAi={() => handleResetPersonAi(selectedRow)}
+      rules={rules}
+      rulesUnavailable={rulesUnavailable}
+      staffById={staffById}
+      onRemoveRule={handleRemoveRule}
+      removingRuleId={removingRuleId}
     />
-  ) : (
-    <EmptyState
-      icon="person-circle-outline"
-      title="Choose someone"
-      body="Pick a person to change their role and the apps they can open."
+  ) : null;
+
+  const assistant = (
+    <PermissionsAiChat
+      context={
+        tab === 'roles'
+          ? { tab: 'roles', role: activeRole }
+          : { tab: 'people', personId: selectedId }
+      }
+      store={agentStore}
+      adminName={adminName}
+      compact={isMobile}
+      disabled={loading}
+      variant={isMobile ? 'dock' : 'rail'}
     />
   );
 
+  const main =
+    tab === 'roles' ? (
+      <RoleDefaultsPane
+        apps={apps}
+        draft={draft}
+        aiDraft={aiDraft}
+        activeRole={activeRole}
+        onRoleChange={setActiveRole}
+        onToggleRoleApp={toggleRoleApp}
+        onChangeRoleScope={changeRoleScope}
+        onSave={handleSaveDefaults}
+        saving={saving}
+        message={message}
+        error={error}
+        rules={rules}
+        rulesUnavailable={rulesUnavailable}
+        staffById={staffById}
+        onRemoveRule={handleRemoveRule}
+        removingRuleId={removingRuleId}
+      />
+    ) : selectedRow ? (
+      personDetail
+    ) : (
+      peopleGrid
+    );
+
   return (
     <View style={styles.panel}>
-      <TextTabs options={PERMISSION_TABS} value={tab} onChange={setTab} />
+      <View style={styles.tabStrip}>
+        <TextTabs
+          options={PERMISSION_TABS}
+          value={tab}
+          onChange={(next) => {
+            setTab(next);
+            if (next === 'people') setSelectedId('');
+          }}
+        />
+      </View>
       {tab === 'device' ? (
         isMobile ? (
           <IosPage>
@@ -1564,26 +1947,10 @@ function AppAccessPanel({
         ) : (
           <DevicePermissionsPanel />
         )
-      ) : tab === 'roles' ? (
-        <RoleDefaultsPane
-          apps={apps}
-          draft={draft}
-          aiDraft={aiDraft}
-          activeRole={activeRole}
-          onRoleChange={setActiveRole}
-          onToggleRoleApp={toggleRoleApp}
-          onChangeRoleScope={changeRoleScope}
-          onSave={handleSaveDefaults}
-          saving={saving}
-          message={message}
-          error={error}
-        />
-      ) : isMobile && selectedRow ? (
-        detail
       ) : (
-        <View style={[styles.split, isMobile && styles.splitMobile]}>
-          {peopleList}
-          {isMobile ? null : <View style={styles.detailPane}>{detail}</View>}
+        <View style={[styles.workspace, isMobile && styles.workspaceMobile]}>
+          <View style={styles.mainPane}>{main}</View>
+          <View style={[styles.assistantRail, isMobile && styles.assistantDock]}>{assistant}</View>
         </View>
       )}
     </View>
@@ -1618,19 +1985,23 @@ export default function PermissionsPanel({
     }
     return (
       <View style={styles.panel}>
-        <TextTabs
-          options={[
-            { key: 'people', label: 'People' },
-            { key: 'device', label: 'This device' },
-          ]}
-          value="device"
-          onChange={() => {}}
-        />
-        <View style={styles.ticketCard}>
-          <Text style={styles.cardTitle}>App visibility</Text>
-          <Text style={styles.cardIntro}>
-            A System Admin sets which apps you can open and whether you can filter inside each one.
-          </Text>
+        <View style={styles.tabStrip}>
+          <TextTabs
+            options={[
+              { key: 'people', label: 'People' },
+              { key: 'device', label: 'This device' },
+            ]}
+            value="device"
+            onChange={() => {}}
+          />
+        </View>
+        <View style={styles.deviceWrap}>
+          <View style={styles.ticketCard}>
+            <Text style={styles.cardTitle}>App visibility</Text>
+            <Text style={styles.cardIntro}>
+              A System Admin sets which apps you can open and whether you can filter inside each one.
+            </Text>
+          </View>
         </View>
         <DevicePermissionsPanel />
       </View>
@@ -1653,7 +2024,59 @@ const styles = StyleSheet.create({
   panel: {
     flex: 1,
     minHeight: 0,
-    marginTop: 8,
+    backgroundColor: CANVAS,
+  },
+  tabStrip: {
+    flexShrink: 0,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+  },
+  workspace: {
+    flex: 1,
+    minHeight: 0,
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+  workspaceMobile: {
+    flexDirection: 'column',
+  },
+  mainPane: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 0,
+  },
+  assistantRail: {
+    width: 340,
+    flexShrink: 0,
+    minHeight: 0,
+    flexDirection: 'column',
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderLeftColor: T.hairline,
+    backgroundColor: T.card,
+    ...Platform.select({
+      web: { overflow: 'hidden' },
+      default: {},
+    }),
+  },
+  assistantDock: {
+    width: 'auto',
+    flexShrink: 0,
+    borderLeftWidth: 0,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: T.hairline,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: T.card,
+  },
+  peoplePane: {
+    flex: 1,
+    minHeight: 0,
+    gap: 10,
+  },
+  peopleToolbar: {
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingTop: 12,
   },
   paneScroll: {
     flex: 1,
@@ -1662,12 +2085,14 @@ const styles = StyleSheet.create({
   rolesContent: {
     paddingBottom: 40,
     paddingTop: 12,
+    paddingHorizontal: 16,
     maxWidth: 720,
     gap: 12,
   },
   rolesContentWide: {
     paddingBottom: 40,
     paddingTop: 12,
+    paddingHorizontal: 16,
     maxWidth: 1080,
     gap: 12,
   },
@@ -1688,6 +2113,11 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
     textTransform: 'uppercase',
   },
+  matrixColHit: {
+    width: 52,
+    alignItems: 'center',
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
   matrixColLabel: {
     width: 52,
     textAlign: 'center',
@@ -1695,6 +2125,63 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
     color: T.secondary,
+  },
+  matrixColLabelActive: {
+    color: T.text,
+    textDecorationLine: 'underline',
+    textDecorationColor: T.text,
+  },
+  ruleList: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
+    borderRadius: 10,
+    overflow: 'hidden',
+  },
+  ruleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#ececef',
+  },
+  ruleRowLast: {
+    borderBottomWidth: 0,
+  },
+  ruleIcon: {
+    width: 26,
+    height: 26,
+    borderRadius: 7,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ruleIconHide: {
+    backgroundColor: '#FFF1F0',
+  },
+  ruleIconShow: {
+    backgroundColor: '#EAF6EE',
+  },
+  ruleText: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '600',
+    color: T.text,
+  },
+  ruleMeta: {
+    fontFamily: FONT,
+    fontSize: 11,
+    color: T.secondary,
+    marginTop: 2,
+  },
+  ruleRemove: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f4f4f5',
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
   matrixGroup: {
     fontFamily: FONT,
@@ -1846,39 +2333,20 @@ const styles = StyleSheet.create({
   deviceContent: {
     paddingBottom: 40,
     paddingTop: 12,
+    paddingHorizontal: 16,
     maxWidth: 560,
     gap: 12,
+  },
+  deviceWrap: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    maxWidth: 560,
   },
   centered: {
     flex: 1,
     minHeight: 160,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  split: {
-    flex: 1,
-    minHeight: 0,
-    flexDirection: 'row',
-    gap: 16,
-    paddingTop: 12,
-  },
-  splitMobile: {
-    flexDirection: 'column',
-  },
-  listPane: {
-    flex: 1.15,
-    minWidth: 0,
-    minHeight: 0,
-    gap: 10,
-  },
-  detailPane: {
-    flex: 1.2,
-    minWidth: 320,
-    maxWidth: 560,
-    minHeight: 0,
-    borderLeftWidth: StyleSheet.hairlineWidth,
-    borderLeftColor: T.hairline,
-    paddingLeft: 16,
   },
   searchField: {
     alignSelf: 'stretch',
@@ -1892,38 +2360,103 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
   },
-  listContent: {
-    paddingBottom: 32,
-    gap: 4,
+  gridContent: {
+    paddingHorizontal: 16,
+    paddingBottom: 40,
+    paddingTop: 4,
+    gap: 20,
   },
-  listGroup: {
-    marginBottom: 8,
+  cardGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 14,
+    ...Platform.select({
+      web: {
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+      },
+    }),
   },
-  peopleList: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: T.hairline,
+  personCard: {
+    alignItems: 'center',
+    paddingVertical: 20,
+    paddingHorizontal: 14,
     borderRadius: 12,
     backgroundColor: T.card,
-    overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: T.hairline,
+    gap: 4,
+    minWidth: 176,
+    flexGrow: 1,
+    flexBasis: 200,
+    ...Platform.select({
+      web: {
+        minWidth: 0,
+        flexGrow: 0,
+        flexBasis: 'auto',
+        cursor: 'pointer',
+      },
+    }),
   },
-  personRow: {
+  personCardHover: {
+    backgroundColor: '#F7F7F8',
+  },
+  personCardSelected: {
+    borderColor: T.text,
+  },
+  personCardInactive: {
+    opacity: 0.55,
+  },
+  personCardName: {
+    fontFamily: FONT,
+    fontSize: 16,
+    fontWeight: '700',
+    color: T.text,
+    letterSpacing: -0.3,
+    textAlign: 'center',
+    marginTop: 12,
+    alignSelf: 'stretch',
+  },
+  personCardRole: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: '500',
+    color: T.secondary,
+    textAlign: 'center',
+    alignSelf: 'stretch',
+  },
+  personCardMeta: {
+    fontFamily: FONT,
+    fontSize: 13,
+    color: T.secondary,
+    textAlign: 'center',
+    alignSelf: 'stretch',
+  },
+  personCardPills: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#ececef',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 6,
+  },
+  personCardHint: {
+    fontFamily: FONT,
+    fontSize: 12,
+    lineHeight: 16,
+    color: T.tertiary,
+    textAlign: 'center',
+    marginTop: 4,
+    alignSelf: 'stretch',
+  },
+  personCardCheck: {
+    position: 'absolute',
+    top: 10,
+    left: 10,
+    zIndex: 1,
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
-  personRowSelected: {
-    backgroundColor: '#F5F5F7',
-  },
-  personRowDisabled: {
-    opacity: 0.62,
-  },
-  personRowLast: {
-    borderBottomWidth: 0,
+  listGroup: {
+    marginBottom: 4,
   },
   personName: {
     fontFamily: FONT,
@@ -1949,8 +2482,30 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   detailContent: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
     paddingBottom: 40,
     gap: 12,
+    maxWidth: 720,
+  },
+  detailBackRow: {
+    alignSelf: 'stretch',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  detailBack: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  detailBackText: {
+    fontFamily: FONT,
+    fontSize: 15,
+    fontWeight: '600',
+    color: T.text,
   },
   heroCard: {
     alignItems: 'center',
@@ -2313,5 +2868,9 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     marginTop: 4,
+  },
+  deviceStatus: {
+    marginTop: 6,
+    alignSelf: 'flex-start',
   },
 });

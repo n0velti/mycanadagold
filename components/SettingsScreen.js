@@ -256,7 +256,7 @@ function SettingsHome({
           <View style={styles.menuTextWrap}>
             <Text style={styles.menuLabel}>Permissions</Text>
             <Text style={styles.menuHint}>
-              Pick a person, assign their role, and choose the apps they can open
+              People, role defaults, and which apps each person can open
             </Text>
           </View>
           <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />

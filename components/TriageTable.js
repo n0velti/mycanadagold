@@ -29,7 +29,7 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
   style.textContent = [
     '.cgold-triage-table-blur{background-color:rgb(252,252,251)!important;}',
     '.cgold-triage-table-row{cursor:pointer;background-color:transparent;}',
-    '.cgold-triage-table-row:hover,.cgold-triage-table-row:has(:hover),.cgold-triage-table-row.is-hover{background-color:#f5f5f5!important;}',
+    '.cgold-triage-table-row:hover,.cgold-triage-table-row:has(:hover),.cgold-triage-table-row.is-hover{background-color:rgba(60,60,67,0.06)!important;}',
     '.cgold-triage-table-row:hover > *,.cgold-triage-table-row:has(:hover) > *,.cgold-triage-table-row.is-hover > *{background-color:transparent!important;}',
   ].join('');
 }
@@ -62,7 +62,7 @@ const fontFamily = FONT;
 
 const TEXT = T.text;
 const SECONDARY = T.secondary;
-const FILL = '#f5f5f5';
+const FILL = 'rgba(60,60,67,0.06)';
 const HAIRLINE = T.hairline;
 const BLUE = T.text;
 

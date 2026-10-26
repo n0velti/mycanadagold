@@ -39,6 +39,8 @@ There is **no test suite** and no GitHub Actions CI. Quality gates are `npm run 
 | `lib/aiResults.js` | Result handles (`resultId`). Renderer tools (`draw_chart`, `show_table`, `export_spreadsheet`) draw from a handle, not from model-typed numbers |
 | `lib/bullionLedger.js`, `lib/cashVariance.js` | Audit reconciliation in code (ledger walk, ranked candidates, confidence). The model writes the result up; it does not investigate |
 | `lib/aiEval.js`, `components/AiEvalPanel.js` | Eval cases and the dev-only runner (Analytics → model sheet → "Run AI evals", `__DEV__` builds only). Rerun after changing tools, prompts, or loaders |
+| `lib/permissionRules.js`, `lib/permissionsAgent.js`, `components/PermissionsAiChat.js` | Granular rules (`PERMISSION_FEATURES`, resolved per person with `useAppAccess().canSee(key)`; `session.hiddenFeatures` carries them to the AI) and the Settings → Permissions assistant that edits roles, people, scopes, and rules through tools. Add a screen feature to the catalog, then gate the screen with `canSee` |
+| `lib/analyticsTopics.js` | `analytics.*` topics a rule can block in the AI (phone, hours, pay, transactions, …), mapped to the Analytics tools, `lookup_company_data` datasets, and `query_metrics` facts that reach them. `askAnalytics` and the chat loaders refuse those with `reason: 'permission'`. Add a topic here when a new dataset or tool appears |
 | `supabase/migrations/` | Schema, RLS, triggers. Additive SQL only |
 | `supabase/functions/aureus-login` | Sign-in (`verify_jwt` off; it validates itself) |
 | `supabase/functions/proxy` | Authenticated third-party gateway |

@@ -2,7 +2,7 @@
  * Triage dashboard: store tiles on home, then Overview / Lots / Errors / Analytics in a store.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import {
   applyTriageReviewToPo,
@@ -26,6 +26,7 @@ import {
 import { formatAmount } from '../lib/transactions';
 import { formatErrorAmount } from '../lib/triageDraft';
 import { formatInsightPercent } from '../lib/triageInsights';
+import { findEmployeeRosterPerson } from '../lib/employeeRoster';
 import { storesMatch } from '../lib/storeCatalog';
 import { storeMarkColor } from '../lib/storeMarks';
 import {
@@ -35,16 +36,26 @@ import {
   poInStore,
   summarizeStoreErrors,
 } from '../lib/triageStoreErrors';
-import { CANVAS, MOBILE, MOBILE_FILTER_INSET, NAV_TAB_ACTIVE_RADIUS, useIsMobile } from '../lib/mobileUi';
+import {
+  CANVAS,
+  CHIP_CARD,
+  CHIP_MOTION,
+  CHIP_WASH,
+  CHIP_WASH_HOVER,
+  MOBILE,
+  MOBILE_FILTER_INSET,
+  NAV_TAB_ACTIVE_RADIUS,
+  useIsMobile,
+} from '../lib/mobileUi';
 import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
 import {
-  ChromeHero,
-  ChromeListRow,
-  ChromePage,
   EmptyState,
   FONT,
   FONT_LIGHT,
+  ChipFilterButton,
   ProgressBar,
+  SearchField,
+  StaffAvatar,
   T,
   TextAction,
   TextTabs,
@@ -67,17 +78,28 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
   }
   style.textContent = [
     '.cgold-dash-card{cursor:pointer;}',
-    '.cgold-dash-card:hover{background-color:#f5f5f5!important;}',
+    '.cgold-dash-card:hover{background-color:rgba(60,60,67,0.06)!important;}',
     '.cgold-dash-row{cursor:pointer;}',
-    '.cgold-dash-row:hover{background-color:#f5f5f5!important;}',
-    '.cgold-triage-store-tile{cursor:pointer;}',
-    '.cgold-triage-store-tile:hover{background-color:#F2F2F7!important;}',
+    '.cgold-dash-row:hover{background-color:rgba(60,60,67,0.06)!important;}',
+    '.cgold-triage-store-tile{cursor:pointer;transition:background-color 120ms ease,border-color 120ms ease,box-shadow 120ms ease;}',
+    '.cgold-triage-store-tile:hover:not(.cgold-triage-store-tile-on){background-color:rgba(60,60,67,0.06)!important;}',
+    '.cgold-dash-card{cursor:pointer;transition:background-color 120ms ease,border-color 120ms ease,box-shadow 120ms ease;}',
+    '.cgold-dash-card:hover{background-color:rgba(60,60,67,0.06)!important;}',
   ].join('');
 }
 
 function staffName(row) {
   const name = errorEmployeeName(row);
   return name && name !== 'Unspecified' && name !== '—' ? name : '';
+}
+
+function personRole(name) {
+  const roster = findEmployeeRosterPerson(name);
+  return String(roster?.title || roster?.employeeType || '').trim() || 'Unspecified';
+}
+
+function roleKey(label) {
+  return String(label || 'Unspecified').trim().toLowerCase() || 'unspecified';
 }
 
 function errorTypeOf(row) {
@@ -286,10 +308,19 @@ function TriageHomeSort({ sortKey, sortDir, onSort, compact = false }) {
     return (
       <Pressable
         key={chip.key}
+        pressChrome={false}
         onPress={() => onSort(chip.key)}
-        style={styles.homeSortItem}
+        style={({ hovered, pressed }) => [
+          styles.homeSortItem,
+          Platform.OS !== 'web' && !active && (hovered || pressed) && styles.homeSortItemHover,
+          active && styles.homeSortItemActive,
+        ]}
         accessibilityRole="button"
+        accessibilityState={{ selected: active }}
         accessibilityLabel={`Sort by ${chip.label}, ${tileSortLabel(sortDir, active)}`}
+        {...(Platform.OS === 'web'
+          ? { className: ['cgold-home-chip', active && 'cgold-home-chip-active'].filter(Boolean).join(' ') }
+          : null)}
       >
         <Text style={[styles.homeSortText, active && styles.homeSortTextActive]}>{chip.label}</Text>
         <Ionicons name={tileSortIcon(chip.key, sortKey, sortDir)} size={13} color={active ? '#1d1d1f' : '#c7c7cc'} />
@@ -344,18 +375,27 @@ function TriageHomeStoreTile({ row, selected, loading, onPress }) {
   const accuracyTone = accuracy == null ? 'neutral' : accuracy < 0.8 ? 'low' : 'high';
   return (
     <Pressable
+      pressChrome={false}
       onPress={onPress}
       style={({ hovered, pressed }) => [
         styles.homeTile,
-        (hovered || pressed || selected) && styles.homeTilePressed,
+        selected && styles.homeTileSelected,
+        !selected && (hovered || pressed) && styles.homeTileHover,
       ]}
       accessibilityRole="button"
+      accessibilityState={{ selected }}
       accessibilityLabel={
         loading
           ? `${row.store}, loading`
           : `${row.store}, ${flagged}${accuracy == null ? '' : `, ${formatInsightPercent(accuracy)} accuracy`}`
       }
-      {...(Platform.OS === 'web' ? { className: 'cgold-triage-store-tile' } : null)}
+      {...(Platform.OS === 'web'
+        ? {
+            className: ['cgold-triage-store-tile', selected && 'cgold-triage-store-tile-on']
+              .filter(Boolean)
+              .join(' '),
+          }
+        : null)}
     >
       <View style={styles.homeTileTop}>
         <View style={[styles.homeTileIcon, { backgroundColor: storeMarkColor(row.store) }]}>
@@ -434,26 +474,12 @@ function TriageHomeStores({
   }, [rows, sort.dir, sort.key]);
 
   const search = typeof onQueryChange === 'function' ? (
-    <View style={[styles.homeSearch, isMobile && styles.homeSearchWide]}>
-      <Ionicons name="search-outline" size={16} color={MOBILE.secondary} />
-      <TextInput
-        style={styles.homeSearchInput}
-        value={query}
-        onChangeText={onQueryChange}
-        placeholder="Search stores"
-        placeholderTextColor={MOBILE.secondary}
-        autoCapitalize="none"
-        autoCorrect={false}
-        returnKeyType="search"
-        clearButtonMode="while-editing"
-        accessibilityLabel="Search stores"
-      />
-      {query ? (
-        <Pressable onPress={() => onQueryChange('')} hitSlop={8} accessibilityLabel="Clear store search">
-          <Ionicons name="close-circle" size={16} color="#c7c7cc" />
-        </Pressable>
-      ) : null}
-    </View>
+    <SearchField
+      value={query}
+      onChangeText={onQueryChange}
+      placeholder="Search stores"
+      style={[styles.homeSearch, isMobile && styles.homeSearchWide]}
+    />
   ) : null;
 
   return (
@@ -487,12 +513,13 @@ function TriageHomeStores({
                 },
           ]}
         >
-          {search ? (
+          {isMobile && search ? (
             <View style={styles.homeToolbar}>
-              {isMobile ? <View style={styles.homeSearchMobileWrap}>{search}</View> : search}
+              <View style={styles.homeSearchMobileWrap}>{search}</View>
             </View>
           ) : null}
-          <View style={styles.homeSortBar}>
+          <View style={[styles.homeToolbar, styles.homeGridToolbar]}>
+            {isMobile ? null : search}
             <View style={styles.homeSortLead}>
               <TriageHomeSort
                 sortKey={sort.key}
@@ -503,6 +530,7 @@ function TriageHomeStores({
             </View>
             {onAdd ? (
               <Pressable
+                pressChrome={false}
                 onPress={onAdd}
                 style={({ hovered, pressed }) => [
                   styles.homeAdd,
@@ -510,8 +538,9 @@ function TriageHomeStores({
                 ]}
                 accessibilityRole="button"
                 accessibilityLabel="Add a PO"
+                {...(Platform.OS === 'web' ? { className: 'cgold-home-chip' } : null)}
               >
-                <Ionicons name="add-circle-outline" size={17} color="#1F8A4E" />
+                <Ionicons name="add-circle-outline" size={15} color="#1F8A4E" />
                 <Text style={styles.homeAddLabel}>Add</Text>
               </Pressable>
             ) : null}
@@ -544,73 +573,312 @@ function TriageHomeStores({
   );
 }
 
-function StoreOverviewHead({ storeName, subtitle, stats = [], toolbar }) {
+function DashPage({
+  insetTop = 0,
+  title,
+  subtitle,
+  figure,
+  figureMeta,
+  stats = [],
+  toolbar,
+  children,
+  empty,
+}) {
+  const { isMobile, pagePad, tableMaxWidth } = useTriageHomeLayout();
+  const tabBarScroll = useMobileTabBarScrollProps();
   return (
-    <View style={styles.overviewHead}>
-      <View style={styles.overviewHeadRow}>
-        <View style={styles.overviewTitleBlock}>
-          <Text style={styles.overviewStoreName} numberOfLines={2}>
-            {storeName}
+    <View style={[styles.homeScreen, isMobile && styles.homeScreenMobile]}>
+      <ScrollView
+        style={styles.homeScroll}
+        contentContainerStyle={[
+          styles.homeScrollContent,
+          {
+            flexGrow: 1,
+            paddingTop: insetTop,
+            paddingBottom: isMobile ? mobileTabBarReserve() + 8 : 24,
+          },
+        ]}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        bounces={false}
+        overScrollMode="never"
+        {...tabBarScroll}
+        {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll' } : null)}
+      >
+        <View
+          style={[
+            styles.homeInset,
+            {
+              paddingHorizontal: pagePad,
+              width: '100%',
+              ...(isMobile || !tableMaxWidth ? null : { maxWidth: tableMaxWidth }),
+            },
+          ]}
+        >
+          {title || subtitle || figure != null || stats.length ? (
+            <View style={[styles.dashHero, isMobile && styles.dashHeroMobile]}>
+              {title ? (
+                <Text style={[styles.dashTitle, isMobile && styles.dashTitleMobile]} numberOfLines={2}>
+                  {title}
+                </Text>
+              ) : null}
+              {subtitle ? (
+                <Text style={styles.dashSubtitle} numberOfLines={2}>
+                  {subtitle}
+                </Text>
+              ) : null}
+              {figure != null && figure !== '' ? (
+                <View style={styles.dashFigureBlock}>
+                  <Text style={[styles.dashFigure, isMobile && styles.dashFigureMobile]} numberOfLines={1}>
+                    {figure}
+                  </Text>
+                  {figureMeta ? (
+                    <Text style={styles.dashFigureMeta} numberOfLines={1}>
+                      {figureMeta}
+                    </Text>
+                  ) : null}
+                </View>
+              ) : null}
+              {stats.length ? (
+                <View style={[styles.dashMetrics, isMobile && styles.dashMetricsMobile]}>
+                  {stats.map((row) => {
+                    const body = (
+                      <>
+                        <Text style={styles.homeTileStatLabel} numberOfLines={1}>
+                          {row.label}
+                        </Text>
+                        <Text style={styles.homeTileStatValue} numberOfLines={1}>
+                          {row.value}
+                        </Text>
+                      </>
+                    );
+                    if (row.onPress) {
+                      return (
+                        <Pressable
+                          key={row.key}
+                          onPress={row.onPress}
+                          style={({ hovered, pressed }) => [
+                            styles.dashMetric,
+                            (hovered || pressed) && styles.dashMetricHover,
+                          ]}
+                          accessibilityRole="button"
+                          accessibilityLabel={`${row.label} ${row.value}`}
+                        >
+                          {body}
+                        </Pressable>
+                      );
+                    }
+                    return (
+                      <View key={row.key} style={styles.dashMetric} accessibilityLabel={`${row.label} ${row.value}`}>
+                        {body}
+                      </View>
+                    );
+                  })}
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+          {toolbar ? <View style={[styles.dashToolbar, isMobile && styles.dashToolbarMobile]}>{toolbar}</View> : null}
+          {empty || children}
+        </View>
+      </ScrollView>
+    </View>
+  );
+}
+
+function OverviewToolTile({
+  icon,
+  iconColor,
+  title,
+  meta,
+  amount,
+  split,
+  stats = [],
+  loading,
+  onPress,
+}) {
+  return (
+    <Pressable
+      pressChrome={false}
+      onPress={onPress}
+      style={({ hovered, pressed }) => [styles.homeTile, (hovered || pressed) && styles.homeTileHover]}
+      accessibilityRole="button"
+      accessibilityLabel={loading ? `${title}, loading` : `${title}, ${amount || ''}`}
+      {...(Platform.OS === 'web' ? { className: 'cgold-triage-store-tile' } : null)}
+    >
+      <View style={styles.homeTileTop}>
+        <View style={[styles.homeTileIcon, { backgroundColor: iconColor }]}>
+          <Ionicons name={icon} size={16} color="#fff" />
+        </View>
+        <View style={styles.homeTileTitleCol}>
+          <Text style={styles.homeTileName} numberOfLines={1}>
+            {title}
           </Text>
-          {subtitle ? (
-            <Text style={styles.overviewStoreMeta} numberOfLines={2}>
-              {subtitle}
+          <Text style={styles.homeTileMeta} numberOfLines={1}>
+            {loading ? 'Loading…' : meta}
+          </Text>
+        </View>
+      </View>
+      <View style={styles.homeTileFigures}>
+        <Text style={styles.homeTileAmount} numberOfLines={1}>
+          {loading ? '—' : amount}
+        </Text>
+        <Text style={styles.homeTileSplit} numberOfLines={1}>
+          {loading ? ' ' : split}
+        </Text>
+      </View>
+      <View style={styles.homeTileMetrics}>
+        {stats.map((stat) => (
+          <TriageHomeTileStat
+            key={stat.label}
+            label={stat.label}
+            value={stat.value}
+            empty={loading || stat.empty}
+          />
+        ))}
+      </View>
+    </Pressable>
+  );
+}
+
+function DashListCard({ title, meta, value, leading, extra, trailing, onPress }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={!onPress}
+      style={({ hovered, pressed }) => [
+        styles.dashCard,
+        onPress && (hovered || pressed) && styles.dashCardHover,
+      ]}
+      accessibilityRole={onPress ? 'button' : undefined}
+      accessibilityLabel={value ? `${title}, ${value}` : title}
+      {...(Platform.OS === 'web' && onPress ? { className: 'cgold-dash-card' } : null)}
+    >
+      <View style={styles.dashCardTop}>
+        {leading ? <View style={styles.dashCardLead}>{leading}</View> : null}
+        <View style={styles.dashCardCopy}>
+          <Text style={styles.dashCardTitle} numberOfLines={1}>
+            {title}
+          </Text>
+          {meta ? (
+            <Text style={styles.dashCardMeta} numberOfLines={2}>
+              {meta}
             </Text>
           ) : null}
         </View>
-        {stats.length ? (
-          <View style={styles.overviewStatsBox}>
-            {stats.map((row, index) => {
-              const last = index === stats.length - 1;
-              const body = (
-                <>
-                  <View style={styles.overviewStatsLead}>
-                    <Ionicons name={row.icon} size={15} color={MOBILE.secondary} />
-                    <Text style={styles.overviewStatsLabel} numberOfLines={1}>
-                      {row.label}
-                    </Text>
-                  </View>
-                  <Text style={styles.overviewStatsValue} numberOfLines={1}>
-                    {row.value}
-                  </Text>
-                </>
-              );
-              if (row.onPress) {
-                return (
-                  <Pressable
-                    key={row.key}
-                    onPress={row.onPress}
-                    style={({ hovered, pressed }) => [
-                      styles.overviewStatsRow,
-                      last && styles.overviewStatsRowLast,
-                      (hovered || pressed) && styles.overviewStatsRowHover,
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel={`${row.label} ${row.value}`}
-                  >
-                    {body}
-                  </Pressable>
-                );
-              }
-              return (
-                <View
-                  key={row.key}
-                  style={[styles.overviewStatsRow, last && styles.overviewStatsRowLast]}
-                  accessibilityLabel={`${row.label} ${row.value}`}
-                >
-                  {body}
-                </View>
-              );
-            })}
-          </View>
+        {value != null && value !== '' ? (
+          <Text style={styles.dashCardValue} numberOfLines={1}>
+            {value}
+          </Text>
         ) : null}
+        {trailing}
       </View>
-      <View
-        style={styles.overviewHeadRule}
-        {...(Platform.OS === 'web' ? { className: 'cgold-home-row-rule' } : null)}
-      />
-      {toolbar ? <View style={styles.overviewToolbarWrap}>{toolbar}</View> : null}
-    </View>
+      {extra ? <View style={styles.dashCardExtra}>{extra}</View> : null}
+    </Pressable>
+  );
+}
+
+function StoreOverviewPage({ storeName, loading, lots, errors, people, onOpen, insetTop = 0 }) {
+  const { isMobile } = useTriageHomeLayout();
+  const peopleCount = (people?.employees || []).length;
+  const peopleAmount = (people?.employees || []).reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
+  const itemCount = (people?.items || []).length;
+  const tiles = [
+    {
+      key: 'lots',
+      icon: 'layers',
+      iconColor: '#8A6D1F',
+      title: 'Lots',
+      meta: lots.lots ? `${lots.evaluated} evaluated · ${lots.percent}%` : 'No lots yet',
+      amount: lots.expected ? `${lots.percent}%` : String(lots.lots || 0),
+      split: lots.expected
+        ? `${lots.evaluated} of ${lots.expected} melt POs`
+        : lots.lots
+          ? `${lots.lots} ${lots.lots === 1 ? 'lot' : 'lots'}`
+          : 'Finish a PO to create its lot',
+      stats: [
+        { label: 'Lots', value: String(lots.lots || 0), empty: !lots.lots },
+        { label: 'Progress', value: lots.expected ? `${lots.evaluated}/${lots.expected}` : '—', empty: !lots.expected },
+        { label: 'Errors', value: String(errors?.count || 0), empty: !errors?.count },
+      ],
+    },
+    {
+      key: 'errors',
+      icon: 'alert-circle',
+      iconColor: '#B91C1C',
+      title: 'Errors',
+      meta: errors?.count
+        ? errors.topType
+          ? `${errors.topType.label} most common`
+          : `${errors.count} flagged`
+        : 'No flagged POs yet',
+      amount: errors?.amount ? formatAmount(errors.amount) : String(errors?.count || 0),
+      split: errors?.count
+        ? `${errors.count} ${errors.count === 1 ? 'error' : 'errors'}${errors.amount ? ` · ${formatAmount(errors.amount)}` : ''}`
+        : 'Flagged POs land here after review',
+      stats: [
+        { label: 'Errors', value: String(errors?.count || 0), empty: !errors?.count },
+        { label: 'Types', value: String(errors?.types?.length || 0), empty: !errors?.types?.length },
+        { label: 'Amount', value: errors?.amount ? formatAmount(errors.amount) : '—', empty: !errors?.amount },
+      ],
+    },
+    {
+      key: 'people',
+      icon: 'people',
+      iconColor: '#1D4ED8',
+      title: 'People',
+      meta: peopleCount
+        ? `${peopleCount} ${peopleCount === 1 ? 'person' : 'people'} on flagged POs`
+        : 'Staff on flagged purchases',
+      amount: String(peopleCount || 0),
+      split: peopleAmount ? formatAmount(peopleAmount) : 'No staff on flagged POs',
+      stats: [
+        { label: 'People', value: String(peopleCount || 0), empty: !peopleCount },
+        { label: 'Errors', value: String(errors?.count || 0), empty: !errors?.count },
+        { label: 'Amount', value: peopleAmount ? formatAmount(peopleAmount) : '—', empty: !peopleAmount },
+      ],
+    },
+    {
+      key: 'analytics',
+      icon: 'analytics',
+      iconColor: '#4F46E5',
+      title: 'Analytics',
+      meta: errors?.count
+        ? `${errors.types.length} ${errors.types.length === 1 ? 'type' : 'types'} · error mix`
+        : 'Error type, item, employee, value',
+      amount: String(errors?.types?.length || 0),
+      split: errors?.count
+        ? `${itemCount} ${itemCount === 1 ? 'item' : 'items'} · ${peopleCount} staff`
+        : 'Break down flagged purchases',
+      stats: [
+        { label: 'Types', value: String(errors?.types?.length || 0), empty: !errors?.types?.length },
+        { label: 'Items', value: String(itemCount), empty: !itemCount },
+        { label: 'Staff', value: String(peopleCount || 0), empty: !peopleCount },
+      ],
+    },
+  ];
+
+  return (
+    <DashPage
+      insetTop={insetTop}
+      title={storeName}
+      subtitle={
+        loading
+          ? 'Loading store…'
+          : [
+              lots.lots ? `${lots.evaluated} evaluated · ${lots.percent}%` : 'No lots yet',
+              errors?.count ? `${errors.count} ${errors.count === 1 ? 'error' : 'errors'}` : 'No flagged POs',
+            ].join(' · ')
+      }
+    >
+      <View style={[styles.overviewGrid, isMobile && styles.overviewGridMobile]}>
+        {tiles.map((tile) => (
+          <View key={tile.key} style={styles.homeGridItem}>
+            <OverviewToolTile {...tile} loading={loading} onPress={() => onOpen(tile.key)} />
+          </View>
+        ))}
+      </View>
+    </DashPage>
   );
 }
 
@@ -1265,7 +1533,7 @@ const ANALYTICS_TABS = [
   { key: 'value', label: 'Value', short: 'Value', icon: 'cash', iconColor: '#B45309' },
 ];
 
-function AnalyticsPage({ rows = [], insetTop = 0, toolbar = null, storeName = '', desktopHead = false }) {
+function AnalyticsPage({ rows = [], insetTop = 0, toolbar = null, storeName = '' }) {
   const isMobile = useIsMobile();
   const [tab, setTab] = useState('type');
   const summary = useMemo(() => summarizeStoreErrors(rows), [rows]);
@@ -1303,117 +1571,337 @@ function AnalyticsPage({ rows = [], insetTop = 0, toolbar = null, storeName = ''
   }
 
   const analyticsStats = [
-    { key: 'errors', icon: 'alert-circle-outline', label: 'Errors', value: String(total) },
-    { key: 'types', icon: 'pricetag-outline', label: 'Types', value: String(summary.types.length) },
-    { key: 'items', icon: 'cube-outline', label: 'Items', value: String((summary.items || []).length) },
+    { key: 'errors', label: 'Errors', value: String(total) },
+    { key: 'types', label: 'Types', value: String(summary.types.length) },
+    { key: 'items', label: 'Items', value: String((summary.items || []).length) },
   ];
-  const analyticsTabs = (
-    <View style={isMobile ? styles.analyticsTabsMobile : styles.analyticsTabs}>
-      <TextTabs
-        options={tabOptions}
-        value={tab}
-        onChange={setTab}
-        size={isMobile ? 'md' : 'lg'}
-        layout={isMobile ? 'segment' : 'bar'}
-      />
-    </View>
-  );
-  const desktopHeader = desktopHead ? (
-    <StoreOverviewHead
-      storeName={storeName}
-      subtitle="Analytics"
-      stats={analyticsStats}
-      toolbar={
-        <>
-          {toolbar}
-          {rows.length ? analyticsTabs : null}
-        </>
-      }
+  const analyticsTabs = rows.length ? (
+    <TextTabs
+      options={tabOptions}
+      value={tab}
+      onChange={setTab}
+      size={isMobile ? 'md' : 'lg'}
+      layout={isMobile ? 'segment' : 'bar'}
+      style={isMobile ? styles.analyticsTabsMobile : styles.analyticsTabs}
     />
   ) : null;
+  const pageToolbar = (
+    <View style={styles.dashToolbarStack}>
+      {toolbar}
+      {analyticsTabs}
+    </View>
+  );
 
   if (!rows.length) {
-    return desktopHead ? (
-      <ChromePage insetTop={insetTop} tableHeader={desktopHeader}>
-        <EmptyState
-          icon="stats-chart-outline"
-          title="No analytics"
-          body="Flagged POs and SOs land here after triage reviews them."
-        />
-      </ChromePage>
-    ) : (
-      <View style={insetTop ? { flex: 1, paddingTop: insetTop } : null}>
-        <EmptyState
-          icon="stats-chart-outline"
-          title="No analytics"
-          body="Flagged POs and SOs land here after triage reviews them."
-        />
-      </View>
+    return (
+      <DashPage
+        insetTop={insetTop}
+        title="Analytics"
+        subtitle={storeName || undefined}
+        empty={
+          <EmptyState
+            icon="stats-chart-outline"
+            title="No analytics"
+            body="Flagged POs and SOs land here after triage reviews them."
+          />
+        }
+      />
     );
   }
 
   return (
-    <ChromePage
-      title={isMobile && !desktopHead ? 'Analytics' : undefined}
+    <DashPage
       insetTop={insetTop}
-      meta={`${total} ${total === 1 ? 'error' : 'errors'}`}
-      tableHeader={
-        desktopHeader || (
-          <>
-            {toolbar}
-            {analyticsTabs}
-          </>
-        )
-      }
-      data={desktopHead ? undefined : list}
-      extraData={tab}
-      keyExtractor={(row) => `${tab}-${row.label}`}
-      renderItem={
-        desktopHead
-          ? undefined
-          : ({ item: row, index }) => {
+      title="Analytics"
+      subtitle={storeName || undefined}
+      figure={String(total)}
+      figureMeta={`${total} ${total === 1 ? 'error' : 'errors'}`}
+      stats={analyticsStats}
+      toolbar={pageToolbar}
+    >
+      {isMobile ? (
+        list.length ? (
+          <View style={styles.dashCardList}>
+            {list.map((row) => {
               const countLabel = `${row.count} ${row.count === 1 ? 'error' : 'errors'}`;
               const meta =
-                tab === 'value' && row.amount ? `${countLabel} · ${formatAmount(row.amount)}` : countLabel;
+                tab === 'value' && row.amount
+                  ? `${countLabel} · ${formatAmount(row.amount)}`
+                  : tab === 'employees' && row.type
+                    ? `${countLabel} · ${row.type}`
+                    : countLabel;
               return (
-                <ChromeListRow
+                <DashListCard
+                  key={`${tab}-${row.label}`}
                   title={row.label}
                   meta={meta}
                   value={formatInsightPercent(row.percent, total)}
-                  icon={tabMeta.icon}
-                  iconColor={tabMeta.iconColor}
-                  last={index === list.length - 1}
-                  chevron={false}
+                  leading={
+                    <View style={[styles.dashCardIcon, { backgroundColor: tabMeta.iconColor }]}>
+                      <Ionicons name={tabMeta.icon} size={16} color="#fff" />
+                    </View>
+                  }
                   extra={
                     <ProgressBar
                       value={row.count}
                       total={total || row.count || 1}
                       tone="orange"
-                      height={isMobile ? 6 : 4}
-                      style={styles.analyticsRowBar}
+                      height={6}
                     />
                   }
                 />
               );
-            }
-      }
-    >
-      {desktopHead ? (
-        list.length ? (
-          <AnalyticsTable
-            rows={list}
-            tab={tab}
-            total={total}
-            icon={tabMeta.icon}
-            iconColor={tabMeta.iconColor}
-          />
+            })}
+          </View>
         ) : (
           emptyCopy(empty)
         )
-      ) : list.length ? null : (
+      ) : list.length ? (
+        <AnalyticsTable
+          rows={list}
+          tab={tab}
+          total={total}
+          icon={tabMeta.icon}
+          iconColor={tabMeta.iconColor}
+        />
+      ) : (
         emptyCopy(empty)
       )}
-    </ChromePage>
+    </DashPage>
+  );
+}
+
+function PeopleTable({ rows, onOpen }) {
+  const [sort, setSort] = useState({ key: null, dir: 'default' });
+  const sorted = useMemo(() => {
+    if (!sort.key || sort.dir === 'default') return rows || [];
+    const dir = sort.dir === 'asc' ? 1 : -1;
+    return [...(rows || [])].sort((a, b) => {
+      let delta = 0;
+      if (sort.key === 'name') delta = compareText(a.name, b.name);
+      else if (sort.key === 'role') delta = compareText(a.role, b.role);
+      else if (sort.key === 'count') delta = (Number(a.count) || 0) - (Number(b.count) || 0);
+      else delta = (Number(a.amount) || 0) - (Number(b.amount) || 0);
+      return delta ? dir * delta : compareText(a.name, b.name);
+    });
+  }, [rows, sort.dir, sort.key]);
+  const totals = useMemo(
+    () =>
+      (rows || []).reduce(
+        (sum, row) => ({
+          count: sum.count + (Number(row.count) || 0),
+          amount: sum.amount + (Number(row.amount) || 0),
+        }),
+        { count: 0, amount: 0 },
+      ),
+    [rows],
+  );
+  const columns = [
+    {
+      key: 'name',
+      label: 'Employee',
+      sortable: true,
+      render: (row) => (
+        <Text style={styles.storeName} numberOfLines={1}>
+          {row.name}
+        </Text>
+      ),
+    },
+    {
+      key: 'role',
+      label: 'Role',
+      sortable: true,
+      render: (row) => (
+        <Text style={styles.storeCell} numberOfLines={1}>
+          {row.role || '—'}
+        </Text>
+      ),
+    },
+    {
+      key: 'count',
+      label: 'Errors',
+      sortable: true,
+      render: (row) => (
+        <Text style={styles.storeCell} numberOfLines={1}>
+          {String(row.count || 0)}
+        </Text>
+      ),
+    },
+    {
+      key: 'amount',
+      label: 'Amount',
+      sortable: true,
+      render: (row) => (
+        <Text style={[styles.storeCell, styles.storeAmount]} numberOfLines={1}>
+          {row.amount ? formatAmount(row.amount) : '—'}
+        </Text>
+      ),
+    },
+  ];
+  return (
+    <ContextTable
+      columns={columns}
+      rows={sorted}
+      rowKey={(row) => row.name}
+      sort={sort}
+      onSort={(column) => setSort((current) => nextContextSort(current, column, column === 'name' || column === 'role'))}
+      onRowPress={onOpen}
+      renderLead={(row) => <StaffAvatar name={row.name} uri={row.photoUrl} size={28} />}
+      gridStyle={styles.contextGridPeople}
+      footer={
+        sorted.length ? (
+          <View style={[styles.storeRow, styles.storeTotal, styles.storeRowLast]}>
+            <View style={styles.storeIconWrap} />
+            <View style={[styles.contextRowBody, styles.contextGridPeople]}>
+              <View style={styles.contextCol}>
+                <Text style={styles.storeTotalLabel}>Total</Text>
+              </View>
+              <View style={styles.contextCol} />
+              <View style={styles.contextCol}>
+                <Text style={styles.storeTotalCell}>{String(totals.count)}</Text>
+              </View>
+              <View style={styles.contextCol}>
+                <Text style={[styles.storeTotalCell, styles.storeAmount]}>
+                  {totals.amount ? formatAmount(totals.amount) : '—'}
+                </Text>
+              </View>
+            </View>
+          </View>
+        ) : null
+      }
+    />
+  );
+}
+
+function PeoplePage({
+  rows = [],
+  query = '',
+  onQueryChange,
+  onOpen,
+  insetTop = 0,
+  toolbar = null,
+  storeName = '',
+}) {
+  const isMobile = useIsMobile();
+  const [roleFilter, setRoleFilter] = useState('all');
+  const summary = useMemo(() => summarizeStoreErrors(rows), [rows]);
+  const people = useMemo(
+    () =>
+      (summary.employees || []).map((row) => ({
+        ...row,
+        role: personRole(row.name),
+      })),
+    [summary],
+  );
+  const roleOptions = useMemo(() => {
+    const seen = new Map();
+    for (const row of people) {
+      const key = roleKey(row.role);
+      if (!seen.has(key)) seen.set(key, row.role || 'Unspecified');
+    }
+    return [
+      { key: 'all', label: 'All roles' },
+      ...[...seen.entries()]
+        .sort((a, b) => a[1].localeCompare(b[1], undefined, { sensitivity: 'base' }))
+        .map(([key, label]) => ({ key, label })),
+    ];
+  }, [people]);
+
+  useEffect(() => {
+    if (roleFilter !== 'all' && !roleOptions.some((option) => option.key === roleFilter)) {
+      setRoleFilter('all');
+    }
+  }, [roleFilter, roleOptions]);
+
+  const visible = useMemo(() => {
+    const q = String(query || '').trim().toLowerCase();
+    return people.filter((row) => {
+      if (roleFilter !== 'all' && roleKey(row.role) !== roleFilter) return false;
+      if (!q) return true;
+      return [row.name, row.role, row.type].filter(Boolean).join(' ').toLowerCase().includes(q);
+    });
+  }, [people, query, roleFilter]);
+
+  const amount = useMemo(() => visible.reduce((sum, row) => sum + (Number(row.amount) || 0), 0), [visible]);
+  const roleCount = useMemo(() => new Set(visible.map((row) => roleKey(row.role))).size, [visible]);
+  const peopleStats = [
+    { key: 'people', label: visible.length === 1 ? 'Person' : 'People', value: String(visible.length) },
+    { key: 'roles', label: roleCount === 1 ? 'Role' : 'Roles', value: String(roleCount) },
+    { key: 'errors', label: 'Errors', value: String(visible.reduce((sum, row) => sum + (Number(row.count) || 0), 0)) },
+    { key: 'amount', label: 'Amount', value: amount ? formatAmount(amount) : '—' },
+  ];
+  const peopleToolbar = (
+    <View style={styles.peopleToolbar}>
+      <SearchField
+        value={query}
+        onChangeText={onQueryChange}
+        placeholder="Person / role"
+        style={styles.peopleSearch}
+      />
+      <ChipFilterButton
+        value={roleFilter}
+        options={roleOptions}
+        onChange={setRoleFilter}
+        label="Role"
+        defaultKey="all"
+        accessibilityNoun="roles"
+      />
+      {toolbar}
+    </View>
+  );
+
+  if (!rows.length) {
+    return (
+      <DashPage
+        insetTop={insetTop}
+        title="People"
+        subtitle={storeName || undefined}
+        empty={
+          <EmptyState
+            icon="people-outline"
+            title="No people"
+            body="Staff on flagged POs show up here after triage reviews them."
+          />
+        }
+      />
+    );
+  }
+
+  const none = query.trim() || roleFilter !== 'all' ? 'No people match that search.' : 'No people.';
+
+  return (
+    <DashPage
+      insetTop={insetTop}
+      title="People"
+      subtitle={storeName || undefined}
+      figure={String(visible.length)}
+      figureMeta={`${visible.length} ${visible.length === 1 ? 'person' : 'people'}`}
+      stats={peopleStats}
+      toolbar={peopleToolbar}
+    >
+      {isMobile ? (
+        visible.length ? (
+          <View style={styles.dashCardList}>
+            {visible.map((row) => (
+              <DashListCard
+                key={row.name}
+                title={row.name}
+                meta={[row.role, `${row.count} ${row.count === 1 ? 'error' : 'errors'}`].filter(Boolean).join(' · ')}
+                value={row.amount ? formatAmount(row.amount) : ''}
+                leading={<StaffAvatar name={row.name} uri={row.photoUrl} size={36} />}
+                onPress={onOpen ? () => onOpen(row) : undefined}
+              />
+            ))}
+          </View>
+        ) : (
+          emptyCopy(none)
+        )
+      ) : visible.length ? (
+        <PeopleTable rows={visible} onOpen={onOpen} />
+      ) : (
+        emptyCopy(none)
+      )}
+    </DashPage>
   );
 }
 
@@ -1440,12 +1928,11 @@ function ErrorsPage({
   onDelete,
   inStore = false,
   sort = 'recent',
-  hideTitle = false,
   insetTop = 0,
   toolbar = null,
   storeName = '',
-  desktopHead = false,
 }) {
+  const isMobile = useIsMobile();
   const visible = useMemo(
     () => sortErrorRows(rows.filter((row) => matchesQuery(row, query)), sort),
     [query, rows, sort],
@@ -1458,96 +1945,53 @@ function ErrorsPage({
   );
 
   const errorStats = [
-    {
-      key: 'errors',
-      icon: 'alert-circle-outline',
-      label: visible.length === 1 ? 'Error' : 'Errors',
-      value: String(visible.length),
-    },
-    ...(inStore
-      ? []
-      : [
-          {
-            key: 'stores',
-            icon: 'storefront-outline',
-            label: storeCount === 1 ? 'Store' : 'Stores',
-            value: String(storeCount),
-          },
-        ]),
-    {
-      key: 'types',
-      icon: 'pricetag-outline',
-      label: types.length === 1 ? 'Type' : 'Types',
-      value: String(types.length),
-    },
-    {
-      key: 'amount',
-      icon: 'cash-outline',
-      label: 'Amount',
-      value: amount ? formatAmount(amount) : '—',
-    },
+    { key: 'errors', label: visible.length === 1 ? 'Error' : 'Errors', value: String(visible.length) },
+    ...(inStore ? [] : [{ key: 'stores', label: storeCount === 1 ? 'Store' : 'Stores', value: String(storeCount) }]),
+    { key: 'types', label: types.length === 1 ? 'Type' : 'Types', value: String(types.length) },
+    { key: 'amount', label: 'Amount', value: amount ? formatAmount(amount) : '—' },
   ];
-  const desktopHeader = desktopHead ? (
-    <StoreOverviewHead storeName={storeName} subtitle="Errors" stats={errorStats} toolbar={toolbar} />
-  ) : null;
+  const none = query.trim() ? `No error matches “${query.trim()}”.` : 'No errors.';
 
   if (!rows.length) {
-    return desktopHead ? (
-      <ChromePage insetTop={insetTop} tableHeader={desktopHeader}>
-        <EmptyState
-          icon="alert-circle-outline"
-          title="No errors"
-          body="Flagged POs and SOs land here after triage reviews them."
-        />
-      </ChromePage>
-    ) : (
-      <View style={insetTop ? { flex: 1, paddingTop: insetTop } : null}>
-        <EmptyState
-          icon="alert-circle-outline"
-          title="No errors"
-          body="Flagged POs and SOs land here after triage reviews them."
-        />
-      </View>
+    return (
+      <DashPage
+        insetTop={insetTop}
+        title="Errors"
+        subtitle={storeName || undefined}
+        empty={
+          <EmptyState
+            icon="alert-circle-outline"
+            title="No errors"
+            body="Flagged POs and SOs land here after triage reviews them."
+          />
+        }
+      />
     );
   }
 
   return (
-    <ChromePage
-      hero={
-        desktopHead ? undefined : (
-          <ChromeHero
-            icon="alert-circle"
-            iconColor="#B91C1C"
-            value={amount ? formatAmount(amount) : String(visible.length)}
-            stats={[
-              { label: visible.length === 1 ? 'Error' : 'Errors', value: String(visible.length) },
-              ...(inStore
-                ? []
-                : [{ label: storeCount === 1 ? 'Store' : 'Stores', value: String(storeCount) }]),
-              { label: types.length === 1 ? 'Type' : 'Types', value: String(types.length) },
-            ]}
-          />
-        )
-      }
-      title={hideTitle ? undefined : 'Errors'}
+    <DashPage
       insetTop={insetTop}
-      tableHeader={desktopHeader || toolbar}
-      meta={`${visible.length} error${visible.length === 1 ? '' : 's'}`}
-      data={desktopHead ? undefined : visible}
-      extraData={sort}
-      keyExtractor={(row) => `${row.triageId}-${row.id}`}
-      renderItem={
-        desktopHead
-          ? undefined
-          : ({ item: row, index }) => (
-              <ChromeListRow
+      title="Errors"
+      subtitle={storeName || undefined}
+      figure={amount ? formatAmount(amount) : String(visible.length)}
+      figureMeta={`${visible.length} ${visible.length === 1 ? 'error' : 'errors'}`}
+      stats={errorStats}
+      toolbar={toolbar}
+    >
+      {isMobile ? (
+        visible.length ? (
+          <View style={styles.dashCardList}>
+            {visible.map((row) => (
+              <DashListCard
+                key={`${row.triageId}-${row.id}`}
                 title={row.reference || 'Document'}
-                meta={[errorTypeOf(row), inStore ? null : row.storeName, staffName(row), row.dateLabel].filter(Boolean).join(' · ')}
+                meta={[errorTypeOf(row), inStore ? null : row.storeName, staffName(row), row.dateLabel]
+                  .filter(Boolean)
+                  .join(' · ')}
                 value={formatErrorAmount(row?.review?.errorAmount || '') || ''}
-                leading={<PoThumb urls={row.imageUrls} label={row.reference} size={46} />}
-                last={index === visible.length - 1}
+                leading={<PoThumb urls={row.imageUrls} label={row.reference} size={36} />}
                 onPress={() => onOpen(row)}
-                chevron={false}
                 trailing={
                   <View style={styles.errorRowActions}>
                     <ErrorRowIcon
@@ -1573,19 +2017,17 @@ function ErrorsPage({
                   </View>
                 }
               />
-            )
-      }
-    >
-      {desktopHead ? (
-        visible.length ? (
-          <ErrorsTable rows={visible} onOpen={onOpen} onDelete={onDelete} inStore={inStore} />
+            ))}
+          </View>
         ) : (
-          emptyCopy(query.trim() ? `No error matches “${query.trim()}”.` : 'No errors.')
+          emptyCopy(none)
         )
-      ) : visible.length ? null : (
-        emptyCopy(query.trim() ? `No error matches “${query.trim()}”.` : 'No errors.')
+      ) : visible.length ? (
+        <ErrorsTable rows={visible} onOpen={onOpen} onDelete={onDelete} inStore={inStore} />
+      ) : (
+        emptyCopy(none)
       )}
-    </ChromePage>
+    </DashPage>
   );
 }
 
@@ -1595,11 +2037,9 @@ function LotsPage({
   errors,
   query,
   onOpen,
-  hideTitle = false,
   insetTop = 0,
   toolbar = null,
   storeName = '',
-  desktopHead = false,
   openLotId = '',
   onOpenPo,
   onDeletePo,
@@ -1635,171 +2075,120 @@ function LotsPage({
 
   const lotStats = openLot
     ? [
-        {
-          key: 'pos',
-          icon: 'document-text-outline',
-          label: lotPos.length === 1 ? 'PO' : 'POs',
-          value: String((openLot.pos || []).length),
-        },
+        { key: 'pos', label: lotPos.length === 1 ? 'PO' : 'POs', value: String((openLot.pos || []).length) },
         {
           key: 'progress',
-          icon: 'speedometer-outline',
           label: 'Progress',
           value: lotProgress?.expected ? `${lotProgress.evaluated}/${lotProgress.expected}` : '—',
           onPress: () => setBreakdownOpen(true),
         },
-        {
-          key: 'errors',
-          icon: 'alert-circle-outline',
-          label: 'Errors',
-          value: String(openLot.incorrect || 0),
-        },
+        { key: 'errors', label: 'Errors', value: String(openLot.incorrect || 0) },
       ]
     : [
-        {
-          key: 'lots',
-          icon: 'layers-outline',
-          label: visible.length === 1 ? 'Lot' : 'Lots',
-          value: String(visible.length),
-        },
+        { key: 'lots', label: visible.length === 1 ? 'Lot' : 'Lots', value: String(visible.length) },
         {
           key: 'progress',
-          icon: 'speedometer-outline',
           label: 'Progress',
           value: totals.expected ? `${totals.evaluated}/${totals.expected}` : '—',
           onPress: lots.length ? () => setBreakdownOpen(true) : undefined,
         },
-        {
-          key: 'errors',
-          icon: 'alert-circle-outline',
-          label: 'Errors',
-          value: String(errors?.count || 0),
-        },
+        { key: 'errors', label: 'Errors', value: String(errors?.count || 0) },
       ];
-  const desktopHeader = desktopHead ? (
-    <StoreOverviewHead
-      storeName={storeName}
-      subtitle={openLot ? lotPeriodLabel(openLot) || openLot.id : 'Lots'}
-      stats={lotStats}
-      toolbar={toolbar}
-    />
-  ) : null;
+  const none = query.trim()
+    ? openLot
+      ? `No PO matches “${query.trim()}”.`
+      : `No lot matches “${query.trim()}”.`
+    : openLot
+      ? 'No purchases in this lot.'
+      : 'No lots.';
 
-  if (!lots.length) {
-    if (desktopHead) {
-      return (
-        <ChromePage insetTop={insetTop} tableHeader={desktopHeader}>
-          <EmptyState
-            icon="layers-outline"
-            title="No lots"
-            body="Finish a PO to create its lot. Lots group every PO / SO from the same store and month."
-          />
-        </ChromePage>
-      );
-    }
-    return (
-      <View style={insetTop ? { flex: 1, paddingTop: insetTop } : null}>
-        <EmptyState
-          icon="layers-outline"
-          title="No lots"
-          body="Finish a PO to create its lot. Lots group every PO / SO from the same store and month."
-        />
+  const body = !lots.length ? (
+    <EmptyState
+      icon="layers-outline"
+      title="No lots"
+      body="Finish a PO to create its lot. Lots group every PO / SO from the same store and month."
+    />
+  ) : isMobile ? (
+    visible.length ? (
+      <View style={styles.dashCardList}>
+        {visible.map((lot) => {
+          const progress = lotProgressOf(lot);
+          return (
+            <DashListCard
+              key={lot.id}
+              title={lot.id}
+              meta={[
+                lot.location,
+                lotPeriodLabel(lot),
+                `${lot.pos.length} ${lot.pos.length === 1 ? 'PO' : 'POs'}`,
+                lot.incorrect ? `${lot.incorrect} ${lot.incorrect === 1 ? 'error' : 'errors'}` : null,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+              value={progress.expected ? `${progress.evaluated}/${progress.expected}` : String(lot.pos.length)}
+              leading={
+                <View style={[styles.dashCardIcon, { backgroundColor: '#8A6D1F' }]}>
+                  <Ionicons name="layers" size={16} color="#fff" />
+                </View>
+              }
+              onPress={onOpen ? () => onOpen(lot) : undefined}
+              extra={
+                progress.expected ? (
+                  <ProgressBar
+                    value={progress.evaluated}
+                    total={progress.expected}
+                    tone={progress.done ? 'green' : 'blue'}
+                    height={6}
+                  />
+                ) : null
+              }
+            />
+          );
+        })}
       </View>
-    );
-  }
+    ) : (
+      emptyCopy(none)
+    )
+  ) : openLot ? (
+    lotPos.length ? (
+      <LotPosTable rows={lotPos} onOpen={onOpenPo} onDelete={onDeletePo} />
+    ) : (
+      emptyCopy(none)
+    )
+  ) : visible.length ? (
+    <LotsTable rows={visible} onOpen={onOpen} />
+  ) : (
+    emptyCopy(none)
+  );
 
   return (
     <>
-    <ChromePage
-      hero={
-        desktopHead ? undefined : (
-          <ChromeHero
-            icon="layers"
-            iconColor="#8A6D1F"
-            value={totals.expected ? `${totals.percent}%` : String(visible.length)}
-            stats={[
-              { label: visible.length === 1 ? 'Lot' : 'Lots', value: String(visible.length) },
-              {
-                label: 'Progress',
-                value: totals.expected ? `${totals.evaluated}/${totals.expected}` : '—',
-              },
-              { label: 'Errors', value: String(errors?.count || 0) },
-            ]}
-            footer={
-              totals.expected ? (
-                <ProgressBar
-                  value={totals.evaluated}
-                  total={totals.expected}
-                  height={7}
-                  tone={totals.done ? 'green' : 'blue'}
-                />
-              ) : null
-            }
-            onPress={() => setBreakdownOpen(true)}
-            accessibilityLabel="Open lot progress and metal weights"
-          />
-        )
-      }
-      title={hideTitle ? undefined : 'Lots'}
+    <DashPage
       insetTop={insetTop}
-      tableHeader={desktopHeader || toolbar}
-      meta={`${visible.length} ${visible.length === 1 ? 'lot' : 'lots'}`}
-      data={desktopHead ? undefined : visible}
-      keyExtractor={(lot) => lot.id}
-      renderItem={
-        desktopHead
-          ? undefined
-          : ({ item: lot, index }) => {
-              const progress = lotProgressOf(lot);
-              return (
-                <ChromeListRow
-                  title={lot.id}
-                  meta={[
-                    lot.location,
-                    lotPeriodLabel(lot),
-                    `${lot.pos.length} ${lot.pos.length === 1 ? 'PO' : 'POs'}`,
-                    lot.incorrect ? `${lot.incorrect} ${lot.incorrect === 1 ? 'error' : 'errors'}` : null,
-                  ]
-                    .filter(Boolean)
-                    .join(' · ')}
-                  value={progress.expected ? `${progress.evaluated}/${progress.expected}` : String(lot.pos.length)}
-                  icon="layers"
-                  iconColor="#8A6D1F"
-                  last={index === visible.length - 1}
-                  onPress={onOpen ? () => onOpen(lot) : undefined}
-                  chevron={Boolean(onOpen)}
-                  extra={
-                    progress.expected ? (
-                      <ProgressBar
-                        value={progress.evaluated}
-                        total={progress.expected}
-                        tone={progress.done ? 'green' : 'blue'}
-                        height={6}
-                        style={styles.lotRowBar}
-                      />
-                    ) : null
-                  }
-                />
-              );
-            }
+      title={openLot ? lotPeriodLabel(openLot) || openLot.id : 'Lots'}
+      subtitle={openLot ? storeName || openLot.id : storeName || undefined}
+      figure={openLot
+        ? lotProgress?.expected
+          ? `${lotProgress.percent}%`
+          : String((openLot.pos || []).length)
+        : totals.expected
+          ? `${totals.percent}%`
+          : String(visible.length)}
+      figureMeta={
+        openLot
+          ? lotProgress?.expected
+            ? `${lotProgress.evaluated} of ${lotProgress.expected} evaluated`
+            : `${(openLot.pos || []).length} ${(openLot.pos || []).length === 1 ? 'PO' : 'POs'}`
+          : totals.expected
+            ? `${totals.evaluated} of ${totals.expected} evaluated`
+            : `${visible.length} ${visible.length === 1 ? 'lot' : 'lots'}`
       }
+      stats={lots.length ? lotStats : []}
+      toolbar={toolbar}
+      empty={!lots.length ? body : null}
     >
-      {desktopHead ? (
-        openLot ? (
-          lotPos.length ? (
-            <LotPosTable rows={lotPos} onOpen={onOpenPo} onDelete={onDeletePo} />
-          ) : (
-            emptyCopy(query.trim() ? `No PO matches “${query.trim()}”.` : 'No purchases in this lot.')
-          )
-        ) : visible.length ? (
-          <LotsTable rows={visible} onOpen={onOpen} />
-        ) : (
-          emptyCopy(query.trim() ? `No lot matches “${query.trim()}”.` : 'No lots.')
-        )
-      ) : visible.length ? null : (
-        emptyCopy(query.trim() ? `No lot matches “${query.trim()}”.` : 'No lots.')
-      )}
-    </ChromePage>
+      {lots.length ? body : null}
+    </DashPage>
     <TriageDrawer
       visible={breakdownOpen}
       onClose={() => setBreakdownOpen(false)}
@@ -1946,6 +2335,7 @@ export default function TriageDashboardPanel({
     [errors, scopedEvaluated, selectedStore],
   );
   const lotSummary = useMemo(() => summarizeLots(scopedLots), [scopedLots]);
+  const storeInsight = useMemo(() => summarizeStoreErrors(scopedEvaluated), [scopedEvaluated]);
 
   const openPage = useCallback((key) => onPageChange?.(key || ''), [onPageChange]);
   const openStore = useCallback((storeName = '') => {
@@ -1971,7 +2361,7 @@ export default function TriageDashboardPanel({
   }, [closeStore, onPageChange, openLotId, page]);
 
   useEffect(() => {
-    if (page && page !== 'lots' && page !== 'errors' && page !== 'analytics') {
+    if (page && page !== 'lots' && page !== 'errors' && page !== 'analytics' && page !== 'people') {
       onPageChange?.('');
     }
   }, [onPageChange, page]);
@@ -2037,6 +2427,7 @@ export default function TriageDashboardPanel({
       errors: 'Errors',
       lots: 'Lots',
       analytics: 'Analytics',
+      people: 'People',
     };
     const label = page ? titles[page] || 'Dashboard' : selectedStore || 'Store';
     onBackChange?.(closePage, { dateLabel: label });
@@ -2087,96 +2478,16 @@ export default function TriageDashboardPanel({
     />
   );
 
-  const overviewStats = [
-    {
-      key: 'lots',
-      icon: 'layers-outline',
-      label: 'Lots',
-      value: countsLoading ? '—' : String(lotSummary.lots),
-      onPress: () => openPage('lots'),
-    },
-    {
-      key: 'errors',
-      icon: 'alert-circle-outline',
-      label: 'Errors',
-      value: countsLoading ? '—' : String(scopedErrors.count),
-      onPress: () => openPage('errors'),
-    },
-    {
-      key: 'analytics',
-      icon: 'analytics-outline',
-      label: 'Analytics',
-      value: countsLoading ? '—' : String(scopedErrors.types.length),
-      onPress: () => openPage('analytics'),
-    },
-  ];
-  const overviewMeta = countsLoading
-    ? 'Loading store…'
-    : [
-        scopedLots.length
-          ? `${lotSummary.evaluated} evaluated · ${lotSummary.percent}%`
-          : 'No lots yet',
-        scopedErrors.count
-          ? `${scopedErrors.count} ${scopedErrors.count === 1 ? 'error' : 'errors'}`
-          : 'No flagged POs',
-      ].join(' · ');
-
-  const storeTools = desktopRail ? (
-    <ChromePage filterPad={false} insetTop={insetTop}>
-      <StoreOverviewHead storeName={selectedStore} subtitle={overviewMeta} stats={overviewStats} />
-    </ChromePage>
-  ) : (
-    <ChromePage title={isMobile ? undefined : selectedStore} filterPad={false} insetTop={insetTop}>
-      <ChromeListRow
-        title="Lots"
-        meta={
-          scopedLots.length
-            ? `${lotSummary.evaluated} evaluated · ${lotSummary.percent}% · ${lotSummary.lots} ${lotSummary.lots === 1 ? 'lot' : 'lots'}`
-            : 'No lots yet'
-        }
-        value={String(lotSummary.lots)}
-        icon="layers"
-        iconColor="#8A6D1F"
-        onPress={() => openPage('lots')}
-      />
-      <ChromeListRow
-        title="Errors"
-        meta={
-          countsLoading
-            ? 'Loading errors…'
-            : scopedErrors.count
-              ? [
-                  scopedErrors.topType ? `${scopedErrors.topType.label} most common` : null,
-                  scopedErrors.amount ? formatAmount(scopedErrors.amount) : null,
-                  scopedErrors.stores ? `${scopedErrors.stores} ${scopedErrors.stores === 1 ? 'store' : 'stores'}` : null,
-                ]
-                  .filter(Boolean)
-                  .join(' · ')
-              : 'No flagged POs yet'
-        }
-        value={String(scopedErrors.count)}
-        loading={countsLoading}
-        icon="alert-circle"
-        iconColor="#B91C1C"
-        onPress={() => openPage('errors')}
-      />
-      <ChromeListRow
-        title="Analytics"
-        meta={
-          countsLoading
-            ? 'Loading errors…'
-            : scopedErrors.count
-              ? `${scopedErrors.types.length} ${scopedErrors.types.length === 1 ? 'type' : 'types'} · ${scopedErrors.stores} ${scopedErrors.stores === 1 ? 'store' : 'stores'}`
-              : 'Error type, item, employee, value'
-        }
-        value={scopedErrors.count ? `${scopedErrors.types.length}` : '0'}
-        loading={countsLoading}
-        icon="analytics"
-        iconColor="#4F46E5"
-        last
-        onPress={() => openPage('analytics')}
-      />
-    </ChromePage>
+  const storeTools = (
+    <StoreOverviewPage
+      storeName={selectedStore}
+      loading={countsLoading}
+      lots={lotSummary}
+      errors={scopedErrors}
+      people={storeInsight}
+      onOpen={openPage}
+      insetTop={insetTop}
+    />
   );
 
   return (
@@ -2196,11 +2507,9 @@ export default function TriageDashboardPanel({
             onDelete={deletePo}
             inStore={Boolean(selectedStore)}
             sort={errorSort}
-            hideTitle={desktopRail}
             insetTop={insetTop}
             toolbar={toolbar}
             storeName={selectedStore}
-            desktopHead={desktopRail}
           />
         )
       ) : page === 'analytics' ? (
@@ -2209,7 +2518,19 @@ export default function TriageDashboardPanel({
           insetTop={insetTop}
           toolbar={toolbar}
           storeName={selectedStore}
-          desktopHead={desktopRail}
+        />
+      ) : page === 'people' ? (
+        <PeoplePage
+          rows={scopedErrors.rows}
+          query={listQuery}
+          onQueryChange={onQueryChange}
+          onOpen={(person) => {
+            onQueryChange?.(person?.name || '');
+            openPage('errors');
+          }}
+          insetTop={insetTop}
+          toolbar={toolbar}
+          storeName={selectedStore}
         />
       ) : page === 'lots' ? (
         <LotsPage
@@ -2218,18 +2539,16 @@ export default function TriageDashboardPanel({
           errors={scopedErrors}
           query={listQuery}
           onOpen={
-            desktopRail
+            !isMobile
               ? (lot) => setOpenLotId(lot.id)
               : onOpenLot
                 ? (lot) => onOpenLot(lot.id)
                 : undefined
           }
-          hideTitle={desktopRail}
           insetTop={insetTop}
           toolbar={toolbar}
           storeName={selectedStore}
-          desktopHead={desktopRail}
-          openLotId={desktopRail ? openLotId : ''}
+          openLotId={!isMobile ? openLotId : ''}
           onOpenPo={(row) => {
             setOpenRow(row);
             setEditingError(true);
@@ -2291,6 +2610,10 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingBottom: 12,
   },
+  homeGridToolbar: {
+    paddingBottom: 10,
+    alignItems: 'center',
+  },
   homeSearchMobileWrap: {
     flexGrow: 1,
     flexShrink: 1,
@@ -2302,62 +2625,32 @@ const styles = StyleSheet.create({
   homeSearch: {
     flexGrow: 1,
     flexShrink: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    height: 32,
     minWidth: 0,
     maxWidth: 300,
-    paddingHorizontal: 10,
-    borderRadius: NAV_TAB_ACTIVE_RADIUS,
-    borderWidth: 1,
-    borderColor: '#d0d0d0',
-    backgroundColor: CANVAS,
-    ...Platform.select({
-      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
-      default: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.06,
-        shadowRadius: 2,
-        elevation: 1,
-      },
-    }),
-  },
-  homeSearchInput: {
-    flex: 1,
-    minWidth: 0,
-    height: 30,
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '400',
-    color: MOBILE.label,
-    paddingVertical: 0,
-    letterSpacing: -0.2,
-    ...Platform.select({
-      web: { outlineStyle: 'none' },
-      default: {},
-    }),
   },
   homeAdd: {
     flexDirection: 'row',
     alignItems: 'center',
     flexShrink: 0,
-    gap: 6,
-    height: 32,
-    paddingHorizontal: 10,
+    gap: 5,
+    height: 28,
+    paddingHorizontal: 8,
     borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    backgroundColor: CHIP_WASH,
+    ...CHIP_MOTION,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
   homeAddHover: {
-    backgroundColor: '#f5f5f5',
+    backgroundColor: CHIP_WASH_HOVER,
   },
   homeAddLabel: {
     fontFamily,
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '500',
     color: '#1F8A4E',
     letterSpacing: -0.2,
@@ -2392,12 +2685,22 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 3,
-    paddingVertical: 6,
-    paddingHorizontal: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 6,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    ...CHIP_MOTION,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
+  },
+  homeSortItemHover: {
+    backgroundColor: CHIP_WASH,
+  },
+  homeSortItemActive: {
+    ...CHIP_CARD,
   },
   homeSortText: {
     fontFamily,
@@ -2408,7 +2711,6 @@ const styles = StyleSheet.create({
   },
   homeSortTextActive: {
     color: '#1d1d1f',
-    fontWeight: '500',
   },
   homeGrid: {
     width: '100%',
@@ -2452,24 +2754,28 @@ const styles = StyleSheet.create({
     paddingTop: 18,
     paddingBottom: 16,
     borderRadius: NAV_TAB_ACTIVE_RADIUS,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(60,60,67,0.22)',
+    borderWidth: 1,
+    borderColor: 'rgba(60,60,67,0.10)',
     backgroundColor: '#fff',
     alignItems: 'stretch',
     gap: 16,
+    ...CHIP_MOTION,
     ...Platform.select({
-      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
+      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.04), 0 4px 14px rgba(0,0,0,0.05)' },
       default: {
         shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.06,
-        shadowRadius: 2,
-        elevation: 1,
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.08,
+        shadowRadius: 8,
+        elevation: 2,
       },
     }),
   },
-  homeTilePressed: {
-    backgroundColor: '#F2F2F7',
+  homeTileHover: {
+    backgroundColor: CHIP_WASH,
+  },
+  homeTileSelected: {
+    ...CHIP_CARD,
   },
   homeTileTop: {
     flexDirection: 'row',
@@ -2592,21 +2898,12 @@ const styles = StyleSheet.create({
     maxWidth: 960,
     marginHorizontal: 16,
     marginBottom: 16,
-    borderRadius: 6,
-    ...Platform.select({
-      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
-      default: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.06,
-        shadowRadius: 2,
-        elevation: 1,
-      },
-    }),
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    ...CHIP_CARD,
   },
   storeTableCard: {
     width: '100%',
-    borderRadius: 6,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
     borderWidth: 1,
     borderColor: '#d0d0d0',
     backgroundColor: CANVAS,
@@ -2630,7 +2927,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 0,
   },
   storeRowHover: {
-    backgroundColor: '#f5f5f5',
+    backgroundColor: CHIP_WASH,
   },
   storeHead: {
     minHeight: 34,
@@ -2642,7 +2939,7 @@ const styles = StyleSheet.create({
   },
   storeTotal: {
     minHeight: 46,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: CHIP_WASH,
     ...Platform.select({
       web: { cursor: 'default' },
       default: {},
@@ -2827,135 +3124,233 @@ const styles = StyleSheet.create({
     textAlign: 'left',
     width: '100%',
   },
-  overviewHead: {
-    marginBottom: 8,
-    paddingTop: 20,
-    paddingHorizontal: 48,
+  overviewGrid: {
+    width: '100%',
+    alignSelf: 'stretch',
+    overflow: 'visible',
+    ...Platform.select({
+      web: {
+        display: 'grid',
+        gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+        gap: 12,
+      },
+      default: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 12,
+      },
+    }),
   },
-  overviewHeadRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 24,
-    paddingBottom: 32,
+  overviewGridMobile: {
+    ...Platform.select({
+      web: { gridTemplateColumns: '1fr' },
+      default: {
+        flexDirection: 'column',
+        flexWrap: 'nowrap',
+      },
+    }),
   },
-  overviewTitleBlock: {
-    flex: 1,
-    minWidth: 0,
+  dashHero: {
+    paddingTop: 8,
+    paddingBottom: 18,
+    gap: 6,
+  },
+  dashHeroMobile: {
     paddingTop: 4,
-    gap: 10,
+    paddingBottom: 14,
   },
-  overviewStoreName: {
+  dashTitle: {
     fontFamily,
-    fontSize: 22,
-    lineHeight: 26,
+    fontSize: 28,
+    lineHeight: 32,
     fontWeight: '300',
     color: MOBILE.label,
-    letterSpacing: -0.3,
-    textAlign: 'left',
+    letterSpacing: -0.6,
   },
-  overviewStoreMeta: {
+  dashTitleMobile: {
+    fontSize: 26,
+    lineHeight: 30,
+  },
+  dashSubtitle: {
     fontFamily,
-    fontSize: 13,
+    fontSize: 14,
     lineHeight: 18,
     fontWeight: '400',
     color: MOBILE.secondary,
     letterSpacing: -0.15,
-    maxWidth: 420,
   },
-  overviewHeadRule: {
-    alignSelf: 'stretch',
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(42,38,30,0.16)',
-    marginTop: 4,
-    marginBottom: 4,
+  dashFigureBlock: {
+    paddingTop: 10,
+    gap: 2,
   },
-  overviewToolbarWrap: {
-    paddingTop: 24,
-    paddingBottom: 4,
+  dashFigure: {
+    fontFamily: FONT_LIGHT,
+    fontSize: 40,
+    lineHeight: 44,
+    fontWeight: '400',
+    color: '#1d1d1f',
+    letterSpacing: -1.2,
+    fontVariant: ['tabular-nums'],
   },
-  overviewStatsBox: {
-    width: 248,
-    flexShrink: 0,
+  dashFigureMobile: {
+    fontSize: 34,
+    lineHeight: 38,
+  },
+  dashFigureMeta: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+  },
+  dashMetrics: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    width: '100%',
+    gap: 16,
+    paddingTop: 16,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(60,60,67,0.12)',
+    marginTop: 14,
+  },
+  dashMetricsMobile: {
+    gap: 12,
+    paddingTop: 14,
+    marginTop: 12,
+  },
+  dashMetric: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+    paddingVertical: 2,
+    paddingHorizontal: 2,
     borderRadius: NAV_TAB_ACTIVE_RADIUS,
-    borderWidth: 1,
-    borderColor: '#d0d0d0',
-    backgroundColor: CANVAS,
-    overflow: 'hidden',
     ...Platform.select({
-      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
-      default: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.06,
-        shadowRadius: 2,
-        elevation: 1,
-      },
+      web: { cursor: 'default' },
+      default: {},
     }),
   },
-  overviewStatsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    minHeight: 32,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(42,38,30,0.08)',
+  dashMetricHover: {
+    backgroundColor: CHIP_WASH,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
-  overviewStatsRowLast: {
-    borderBottomWidth: 0,
-  },
-  overviewStatsRowHover: {
-    backgroundColor: '#f5f5f5',
-  },
-  overviewStatsLead: {
+  dashToolbar: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexWrap: 'wrap',
     gap: 8,
+    paddingBottom: 14,
+  },
+  dashToolbarMobile: {
+    paddingBottom: 12,
+  },
+  dashToolbarStack: {
+    width: '100%',
+    gap: 10,
+  },
+  dashCardList: {
+    gap: 12,
+    paddingBottom: 8,
+  },
+  dashCard: {
+    width: '100%',
+    paddingLeft: 16,
+    paddingRight: 16,
+    paddingTop: 14,
+    paddingBottom: 14,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: 'rgba(60,60,67,0.10)',
+    backgroundColor: '#fff',
+    gap: 10,
+    ...CHIP_MOTION,
+    ...Platform.select({
+      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.04), 0 4px 14px rgba(0,0,0,0.05)' },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.08,
+        shadowRadius: 8,
+        elevation: 2,
+      },
+    }),
+  },
+  dashCardHover: {
+    backgroundColor: CHIP_WASH,
+  },
+  dashCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    width: '100%',
+  },
+  dashCardLead: {
+    flexShrink: 0,
+  },
+  dashCardIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dashCardCopy: {
+    flex: 1,
     minWidth: 0,
+    gap: 2,
+  },
+  dashCardTitle: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    letterSpacing: -0.43,
+  },
+  dashCardMeta: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+  },
+  dashCardValue: {
+    fontFamily: FONT_LIGHT,
+    fontSize: 20,
+    lineHeight: 24,
+    fontWeight: '400',
+    color: '#1d1d1f',
+    letterSpacing: -0.4,
+    fontVariant: ['tabular-nums'],
+    flexShrink: 0,
+  },
+  dashCardExtra: {
+    width: '100%',
+  },
+  peopleToolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    width: '100%',
+  },
+  peopleSearch: {
+    width: 240,
+    maxWidth: '100%',
+    flexGrow: 1,
     flexShrink: 1,
   },
-  overviewStatsLabel: {
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '400',
-    color: MOBILE.secondary,
-    letterSpacing: -0.2,
-  },
-  overviewStatsValue: {
-    fontFamily,
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: '400',
-    color: MOBILE.label,
-    letterSpacing: -0.2,
-    fontVariant: ['tabular-nums'],
-    textAlign: 'right',
-  },
   contextTableWrap: {
-    paddingHorizontal: 48,
-    paddingBottom: 32,
+    paddingHorizontal: 0,
+    paddingBottom: 8,
   },
   contextTableShadow: {
     alignSelf: 'stretch',
     width: '100%',
-    borderRadius: 6,
-    ...Platform.select({
-      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
-      default: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.06,
-        shadowRadius: 2,
-        elevation: 1,
-      },
-    }),
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    ...CHIP_CARD,
   },
   contextRowBody: {
     flex: 1,
@@ -3044,6 +3439,15 @@ const styles = StyleSheet.create({
     },
     default: {},
   }),
+  contextGridPeople: Platform.select({
+    web: {
+      display: 'grid',
+      gridTemplateColumns: 'minmax(160px, 1.3fr) minmax(140px, 1.1fr) 80px 110px',
+      columnGap: 24,
+      alignItems: 'center',
+    },
+    default: {},
+  }),
   contextGridLotPos: Platform.select({
     web: {
       display: 'grid',
@@ -3060,13 +3464,11 @@ const styles = StyleSheet.create({
     color: '#15803D',
   },
   analyticsTabs: {
-    paddingHorizontal: 4,
-    paddingBottom: 8,
+    paddingBottom: 0,
   },
   analyticsTabsMobile: {
-    paddingHorizontal: 16,
-    paddingTop: 4,
-    paddingBottom: 10,
+    paddingTop: 0,
+    paddingBottom: 0,
   },
   analyticsRowBar: {
     marginTop: 6,
