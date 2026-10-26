@@ -13,7 +13,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import LowReviewMark from './LowReviewMark';
 import { fetchStoreCashPosition, peekStoreCashPosition } from '../lib/cashTill';
 import {
@@ -50,6 +50,7 @@ import {
   phoneHistoryNeeded,
 } from '../lib/phoneCalls';
 import { fetchTransferStores, preferStoreByName } from '../lib/locations';
+import { storesMatch } from '../lib/storeCatalog';
 import { formatPhoneNumber } from '../lib/ringcentral';
 import { storeKeyFromName } from '../lib/storeSettings';
 import { fetchWebsitePrices } from '../lib/websitePrices';
@@ -103,7 +104,6 @@ const PRIORITY_COLORS = {
 // Stores can carry hundreds of stocked SKUs; render a page at a time so the
 // drawer opens quickly and scrolls smoothly.
 const INVENTORY_PAGE = 12;
-const HOME_STORE_ROW_PAD = 8;
 const HOME_STORE_ICON_COL_WIDTH = 56;
 const HOME_STORE_BODY_LEADING = 12;
 const titleFontFamily = FONT_LIGHT;
@@ -163,13 +163,6 @@ const CASH_TABLE_COLS = [
   { key: 'ref', label: 'Reference', colStyle: 'appColMid' },
   { key: 'amount', label: 'Amount', colStyle: 'appColEnd', end: true },
 ];
-const PREORDER_TABLE_COLS = [
-  { key: 'customer', label: 'Customer', colStyle: 'appColMain' },
-  { key: 'item', label: 'Item', colStyle: 'appColWide' },
-  { key: 'status', label: 'Status', colStyle: 'appColMid' },
-  { key: 'amount', label: 'Amount', colStyle: 'appColEnd', end: true },
-];
-
 function filledIonicon(name) {
   return typeof name === 'string' && name.endsWith('-outline') ? name.slice(0, -8) : name;
 }
@@ -494,10 +487,8 @@ function TxColumnFilterMenu({ label, options, filter, onChange, onClose, anchor,
 }
 
 function pickStoreColumns(stores, storeName) {
-  const matches = (stores || []).filter((store) => namesMatch(store.name, storeName));
-  if (matches.length <= 1) return matches;
-  const linked = matches.find((store) => store.systemKey === 'gta' || store.systemKey === 'pmx');
-  return [linked || matches[0]];
+  const match = preferStoreByName(stores, storeName);
+  return match ? [match] : [];
 }
 
 function InventoryPriceRefresh({ onPress, loading = false, compact = false }) {
@@ -627,291 +618,6 @@ function storeAmountForFocus(store, focus) {
   if (focus === 'sales') return Number(store?.soAmount) || 0;
   if (focus === 'purchases') return Number(store?.poAmount) || 0;
   return Number(store?.totalAmount) || 0;
-}
-
-function StoreHomeHeroStat({ value, label, selected = false, onPress, compact = false, tone, mark = null, accessibilityLabel }) {
-  const valueStyle = [
-    compact ? styles.storeHomeHeroStatValueCompact : styles.storeHomeHeroStatValue,
-    selected &&
-      (compact ? styles.storeHomeHeroStatValueCompactSelected : styles.storeHomeHeroStatValueSelected),
-    tone === 'low' && styles.storeHomeHeroStatLow,
-    tone === 'ok' && styles.storeHomeHeroStatOk,
-  ];
-  const labelStyle = [
-    compact ? styles.storeHomeHeroStatLabelCompact : styles.storeHomeHeroStatLabel,
-    selected &&
-      (compact ? styles.storeHomeHeroStatLabelCompactSelected : styles.storeHomeHeroStatLabelSelected),
-  ];
-  const valueNode = mark ? (
-    <View style={styles.storeHomeHeroStatMarkRow}>
-      <Text style={valueStyle}>{value}</Text>
-      {mark}
-    </View>
-  ) : (
-    <Text style={valueStyle}>{value}</Text>
-  );
-  const body = compact ? (
-    <>
-      <Text style={labelStyle} numberOfLines={1}>
-        {label}
-      </Text>
-      {valueNode}
-    </>
-  ) : (
-    <>
-      <Text style={labelStyle}>{label}</Text>
-      {valueNode}
-    </>
-  );
-  const style = compact
-    ? [styles.storeHomeHeroStatCompact, selected && styles.storeHomeHeroStatCompactSelected]
-    : [styles.storeHomeHeroStat, selected && styles.storeHomeHeroStatSelected];
-  if (!onPress) {
-    return <View style={style}>{body}</View>;
-  }
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [...style, pressed && styles.storeHomeHeroStatPressed]}
-      accessibilityRole="button"
-      accessibilityState={{ selected }}
-      accessibilityLabel={accessibilityLabel || label}
-    >
-      {body}
-    </Pressable>
-  );
-}
-
-function StoreHeroBlock({ value, title, empty = false, onPress, children, tone, mark = null }) {
-  const amount = (
-    <Text
-      style={[
-        styles.storeHomeHeroAmount,
-        empty && styles.storeHomeHeroAmountEmpty,
-        !empty && tone === 'low' && styles.storeHomeHeroAmountLow,
-        !empty && tone === 'ok' && styles.storeHomeHeroAmountOk,
-      ]}
-      numberOfLines={1}
-      adjustsFontSizeToFit
-      minimumFontScale={0.55}
-    >
-      {empty ? '—' : value}
-    </Text>
-  );
-  const pair = (
-    <View style={styles.storeHomeHeroPair}>
-      <View style={styles.storeHomeHeroMetricStack}>
-        {mark ? (
-          <View style={styles.storeHomeHeroStatMarkRow}>
-            {amount}
-            {mark}
-          </View>
-        ) : (
-          amount
-        )}
-        <Text style={styles.storeHomeHeroBlockTitle}>{title}</Text>
-      </View>
-      {children}
-    </View>
-  );
-  if (!onPress) return pair;
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [pressed && styles.storeHomeHeroStatPressed]}
-      accessibilityRole="button"
-      accessibilityLabel={title}
-    >
-      {pair}
-    </Pressable>
-  );
-}
-
-function StoreHeroSide({ children }) {
-  return (
-    <View style={[styles.storeHomeHeroStats, styles.storeHomeHeroStatsSide, styles.storeHomeHeroStatsSideDesktop]}>
-      {children}
-    </View>
-  );
-}
-
-function StoreHomeHero({
-  store,
-  focus = 'all',
-  onFocus,
-  onPress,
-  onOpenApp,
-  txSelected = false,
-  isMobile = false,
-  dateHero = null,
-  periodLabel = 'Today',
-  emailCapture = null,
-  phoneRatio = null,
-  reviewStats = null,
-  cashCad = null,
-  cashLoading = false,
-}) {
-  const { money } = useDisplayCurrency();
-  const [opsFocus, setOpsFocus] = useState('email');
-  const total = storeAmountForFocus(store, focus);
-  const txCount = Number(store?.txCount) || 0;
-  const saleCount = Number(store?.saleCount) || 0;
-  const purchaseCount = Number(store?.purchaseCount) || 0;
-  const empty =
-    !total &&
-    !(focus === 'sales' ? saleCount : focus === 'purchases' ? purchaseCount : txCount);
-  const selectFocus = (next) => {
-    const resolved = next === 'all' ? 'all' : focus === next ? 'all' : next;
-    onFocus?.(resolved);
-    onPress?.();
-  };
-  const emailEmpty = !emailCapture || !emailCapture.customerCount;
-  const emailRate = emailEmpty ? null : Math.round(Number(emailCapture.rate));
-  const phoneEmpty = phoneRatio?.rate == null;
-  const bonusEmpty = !reviewStats || reviewStats.rate == null;
-  const cashValue = cashCad?.amount;
-  const cashEmpty = !Number.isFinite(Number(cashValue));
-  const opsApp =
-    opsFocus === 'phone' ? 'phone' : opsFocus === 'bonus' ? 'bonuses' : 'emails';
-  const opsValue =
-    opsFocus === 'phone'
-      ? phoneEmpty
-        ? '—'
-        : phoneRatio.ratio
-      : opsFocus === 'bonus'
-        ? bonusEmpty
-          ? '—'
-          : String(reviewStats.count)
-        : emailEmpty
-          ? '—'
-          : `${emailRate}%`;
-  const opsTitle = opsFocus === 'phone' ? 'Phone' : opsFocus === 'bonus' ? 'Bonus' : 'Email';
-  const opsEmpty =
-    opsFocus === 'phone' ? phoneEmpty : opsFocus === 'bonus' ? bonusEmpty : emailEmpty;
-  const rateTone = (empty, rate) => {
-    if (empty || rate == null || !Number.isFinite(Number(rate))) return undefined;
-    return Number(rate) < 80 ? 'low' : 'ok';
-  };
-  const emailTone = rateTone(emailEmpty, emailCapture?.rate);
-  const phoneTone = rateTone(phoneEmpty, phoneRatio?.rate);
-  const bonusTone = rateTone(bonusEmpty, reviewStats?.rate);
-  const opsTone = opsFocus === 'phone' ? phoneTone : opsFocus === 'bonus' ? bonusTone : emailTone;
-
-  const revenuePair = (
-    <StoreHeroBlock value={money(total)} title="Revenue" empty={empty} onPress={() => onOpenApp?.('transactions')}>
-      <StoreHeroSide>
-        <StoreHomeHeroStat
-          compact
-          value={txCount}
-          label="Tx"
-          selected={txSelected && focus === 'all'}
-          onPress={() => selectFocus('all')}
-        />
-        <StoreHomeHeroStat
-          compact
-          value={saleCount}
-          label="Sales"
-          selected={focus === 'sales'}
-          onPress={() => selectFocus('sales')}
-        />
-        <StoreHomeHeroStat
-          compact
-          value={purchaseCount}
-          label="Purchases"
-          selected={focus === 'purchases'}
-          onPress={() => selectFocus('purchases')}
-        />
-      </StoreHeroSide>
-    </StoreHeroBlock>
-  );
-  const extraMetrics = (
-    <>
-      <StoreHeroBlock
-        value={cashLoading && cashEmpty ? '…' : formatAmount(cashValue, 'CAD')}
-        title="Cash"
-        empty={!cashLoading && cashEmpty}
-        onPress={() => onOpenApp?.('financials')}
-      >
-        <StoreHeroSide>
-          <StoreHomeHeroStat
-            compact
-            value={cashCad?.opening == null ? '—' : formatAmount(cashCad.opening, 'CAD')}
-            label="Open"
-          />
-          <StoreHomeHeroStat
-            compact
-            value={cashCad?.moved == null ? '—' : formatAmount(cashCad.moved, 'CAD')}
-            label="Today"
-          />
-        </StoreHeroSide>
-      </StoreHeroBlock>
-      <StoreHeroBlock
-        value={opsValue}
-        title={opsTitle}
-        empty={opsEmpty}
-        tone={opsTone}
-        mark={
-          opsFocus === 'bonus' && !bonusEmpty ? (
-            <LowReviewMark count={reviewStats.negative || 0} size={15} countSize={16} />
-          ) : null
-        }
-        onPress={() => onOpenApp?.(opsApp)}
-      >
-        <StoreHeroSide>
-          <StoreHomeHeroStat
-            compact
-            value={emailEmpty ? '—' : `${emailRate}%`}
-            label="Email"
-            selected={opsFocus === 'email'}
-            tone={emailTone}
-            onPress={() => setOpsFocus('email')}
-          />
-          <StoreHomeHeroStat
-            compact
-            value={phoneEmpty ? '—' : phoneRatio.ratio}
-            label="Phone"
-            selected={opsFocus === 'phone'}
-            tone={phoneTone}
-            onPress={() => setOpsFocus('phone')}
-          />
-          <StoreHomeHeroStat
-            compact
-            value={bonusEmpty ? '—' : String(reviewStats.count)}
-            label="Bonus"
-            selected={opsFocus === 'bonus'}
-            tone={bonusTone}
-            mark={
-              opsFocus === 'bonus' || bonusEmpty ? null : (
-                <LowReviewMark count={reviewStats.negative || 0} size={12} countSize={13} />
-              )
-            }
-            accessibilityLabel={
-              bonusEmpty
-                ? 'Bonus'
-                : `Bonus ${reviewStats.count}, ${reviewStats.negative || 0} at 1 or 2 stars`
-            }
-            onPress={() => setOpsFocus('bonus')}
-          />
-        </StoreHeroSide>
-      </StoreHeroBlock>
-    </>
-  );
-
-  return (
-    <View style={styles.storeHomeHeroShell}>
-      <View style={[styles.storeHomeHeroSplit, isMobile && styles.storeHomeHeroSplitMobile]}>
-        {dateHero && !isMobile ? (
-          dateHero
-        ) : (
-          <StoreHeroBlock value={periodLabel} title="Date" />
-        )}
-        <View style={[styles.storeHomeHeroFigures, isMobile && styles.storeHomeHeroFiguresMobile]}>
-          {revenuePair}
-          {extraMetrics}
-        </View>
-      </View>
-    </View>
-  );
 }
 
 function OverviewHero({
@@ -2341,7 +2047,7 @@ function callsInRange(calls, startKey, endKey) {
 function storeEmailCapture(txRows, storeName) {
   const rows = buildEmailCaptureByStore(Array.isArray(txRows) ? txRows : []);
   if (!rows.length) return null;
-  return rows.find((row) => namesMatch(row.store, storeName)) || (rows.length === 1 ? rows[0] : null);
+  return rows.find((row) => storesMatch(row.store, storeName)) || (rows.length === 1 ? rows[0] : null);
 }
 
 function EmailsSnapshotBody({ storeName, txRows, periodLabel, ready, full = false, boxed = false }) {
@@ -4032,13 +3738,6 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     backgroundColor: 'transparent',
   },
-  storeHomeHeroPadMobile: {
-    paddingHorizontal: MOBILE_FILTER_INSET,
-  },
-  storeHomeHeroPadDesktop: {
-    paddingLeft: 32,
-    paddingRight: 24,
-  },
   storeHomeSheetPadDesktop: {
     paddingHorizontal: 16,
     paddingBottom: 24,
@@ -4052,294 +3751,8 @@ const styles = StyleSheet.create({
     paddingTop: 0,
     paddingBottom: 40,
   },
-  storeHomeHeroShell: {
-    alignSelf: 'stretch',
-    alignItems: 'stretch',
-    width: '100%',
-  },
-  storeHomeHeroSplit: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    flexWrap: 'wrap',
-    alignSelf: 'stretch',
-    width: '100%',
-    gap: 24,
-    rowGap: 22,
-  },
-  storeHomeHeroSplitMobile: {
-    gap: 16,
-    rowGap: 16,
-  },
-  storeHomeHeroFigures: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'flex-end',
-    marginLeft: 'auto',
-    flexShrink: 0,
-    gap: 36,
-  },
-  storeHomeHeroFiguresMobile: {
-    marginLeft: 0,
-    width: '100%',
-    justifyContent: 'space-between',
-    gap: 16,
-    flexWrap: 'wrap',
-  },
-  storeHomeHeroPair: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
-    flexShrink: 0,
-    gap: 6,
-  },
-  storeHomeHeroPairMobile: {
-    width: '100%',
-    justifyContent: 'space-between',
-  },
-  storeHomeHeroMetricStack: {
-    alignItems: 'flex-end',
-    gap: 2,
-    alignSelf: 'flex-start',
-  },
-  storeHomeHeroBlockTitle: {
-    fontFamily,
-    fontSize: 10,
-    fontWeight: '400',
-    color: '#aeaeb2',
-    letterSpacing: 0.02,
-    textAlign: 'right',
-  },
-  storeHomeHeroWithIconCol: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    alignSelf: 'stretch',
-  },
-  storeHomeHeroWithIconColMobile: {
-    gap: 0,
-    alignItems: 'flex-start',
-  },
-  storeHomeHeroIconCol: {
-    marginLeft: HOME_STORE_ROW_PAD,
-    width: HOME_STORE_ICON_COL_WIDTH,
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-    flexShrink: 0,
-    paddingTop: 1,
-  },
-  storeHomeHeroIconColMobile: {
-    marginLeft: 0,
-    width: HOME_STORE_ICON_COL_WIDTH,
-    paddingTop: 0,
-  },
-  storeHomeHeroIconWrap: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  storeHomeHeroIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  storeHomeHeroContentCol: {
-    flex: 1,
-    minWidth: 0,
-    marginLeft: HOME_STORE_BODY_LEADING,
-  },
-  storeHomeHeroContentColMobile: {
-    marginLeft: HOME_STORE_BODY_LEADING,
-  },
-  storeHomeHeroInset: {
-    alignSelf: 'stretch',
-    gap: 12,
-    paddingHorizontal: 0,
-    paddingTop: 0,
-    paddingBottom: 4,
-    backgroundColor: 'transparent',
-  },
-  storeHomeHeroInsetDesktop: {
-    gap: 10,
-    paddingBottom: 0,
-  },
-  storeHomeHeroPrimary: {
-    alignSelf: 'stretch',
-  },
-  storeHomeHeroMetricBlock: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
-    alignSelf: 'flex-start',
-    gap: 14,
-    overflow: 'visible',
-  },
-  storeHomeHeroMetricBlockDesktop: {
-    gap: 18,
-  },
-  storeHomeHeroMetricBlockMobile: {
-    alignSelf: 'stretch',
-    width: '100%',
-    justifyContent: 'space-between',
-  },
-  storeHomeHeroMetricMain: {
-    flexShrink: 0,
-    alignSelf: 'flex-start',
-  },
-  storeHomeHeroMetricMainMobile: {
-    flex: 1,
-    minWidth: 0,
-  },
-  storeHomeHeroAmountRow: {
-    flexShrink: 0,
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    flexWrap: 'nowrap',
-    gap: 10,
-    overflow: 'visible',
-  },
-  storeHomeHeroAmountRowMobile: {
-    flex: 1,
-    minWidth: 0,
-  },
-  storeHomeHeroAmount: {
-    flexShrink: 0,
-    fontFamily: titleFontFamily,
-    fontSize: 22,
-    lineHeight: 26,
-    fontWeight: '400',
-    color: '#1d1d1f',
-    letterSpacing: -0.4,
-    fontVariant: ['tabular-nums'],
-    textAlign: 'right',
-    alignSelf: 'flex-end',
-  },
-  storeHomeHeroAmountDesktop: {
-    alignSelf: 'flex-end',
-    fontSize: 22,
-    lineHeight: 26,
-  },
-  storeHomeHeroAmountLow: {
-    color: '#B91C1C',
-  },
-  storeHomeHeroAmountOk: {
-    color: '#15803D',
-  },
-  storeHomeHeroAmountEmpty: {
-    color: '#aeaeb2',
-  },
-  storeHomeHeroAmountMobile: {
-    flexShrink: 1,
-    minWidth: 0,
-    maxWidth: '100%',
-  },
-  storeHomeHeroStats: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    alignSelf: 'stretch',
-    gap: 20,
-    backgroundColor: 'transparent',
-  },
-  storeHomeHeroStatsSide: {
-    flexDirection: 'column',
-    flexGrow: 0,
-    flexShrink: 0,
-    alignSelf: 'stretch',
-    justifyContent: 'flex-start',
-    gap: 4,
-    minWidth: 108,
-    maxWidth: 132,
-    paddingTop: 2,
-    paddingLeft: 10,
-    borderLeftWidth: StyleSheet.hairlineWidth,
-    borderLeftColor: 'rgba(42,38,30,0.08)',
-  },
-  storeHomeHeroStatsSideDesktop: {
-    minWidth: 156,
-    maxWidth: 220,
-    paddingTop: 0,
-    paddingLeft: 10,
-  },
-  storeHomeHeroStat: {
-    flex: 1,
-    minWidth: 0,
-    gap: 3,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
   storeHomeHeroStatSelected: {},
-  storeHomeHeroStatPressed: {
-    opacity: 0.72,
-  },
-  storeHomeHeroStatValue: {
-    fontFamily,
-    fontSize: 17,
-    fontWeight: '500',
-    color: '#aeaeb2',
-    letterSpacing: -0.35,
-    fontVariant: ['tabular-nums'],
-  },
-  storeHomeHeroStatValueSelected: {
-    color: '#1d1d1f',
-    fontWeight: '600',
-  },
-  storeHomeHeroStatLabel: {
-    fontFamily,
-    fontSize: 11,
-    fontWeight: '500',
-    color: '#aeaeb2',
-    letterSpacing: 0.02,
-  },
-  storeHomeHeroStatLabelSelected: {
-    color: '#1d1d1f',
-    fontWeight: '600',
-  },
-  storeHomeHeroStatMarkRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexShrink: 0,
-    gap: 4,
-  },
-  storeHomeHeroStatCompact: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    justifyContent: 'space-between',
-    gap: 8,
-    paddingVertical: 2,
-    borderRadius: 6,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
   storeHomeHeroStatCompactSelected: {},
-  storeHomeHeroStatLabelCompact: {
-    flex: 1,
-    minWidth: 0,
-    fontFamily,
-    fontSize: 10,
-    fontWeight: '500',
-    color: '#aeaeb2',
-    letterSpacing: 0.02,
-  },
-  storeHomeHeroStatLabelCompactSelected: {
-    color: '#1d1d1f',
-    fontWeight: '600',
-  },
-  storeHomeHeroStatValueCompact: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '500',
-    color: '#aeaeb2',
-    letterSpacing: -0.2,
-    fontVariant: ['tabular-nums'],
-    textAlign: 'right',
-    flexShrink: 0,
-  },
-  storeHomeHeroStatValueCompactSelected: {
-    color: '#1d1d1f',
-    fontWeight: '600',
-  },
   storeHomeHeroStatLow: {
     color: '#B91C1C',
     fontWeight: '600',

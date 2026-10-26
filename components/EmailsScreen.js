@@ -12,7 +12,7 @@ import {
   View,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import {
   avatarColorForId,
   contactName,
@@ -50,6 +50,7 @@ import {
 import { useIsMobile } from '../lib/mobileUi';
 import EmailComposer from './EmailComposer';
 import ProfilePhotoModal from './ProfilePhotoModal';
+import ScreenGate from './ScreenGate';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -261,6 +262,7 @@ export default function EmailsScreen({
   onRequireLogin,
   onOpenProfile,
   focus = null,
+  onFocusConsumed,
   capture = null,
   storeFilter = '',
   embedded = false,
@@ -725,7 +727,7 @@ export default function EmailsScreen({
           ]}
         >
           {folder === 'sent' ? (
-            row.recipients.length > 1 ? (
+            (row.recipients || []).length > 1 ? (
               <View style={styles.stackAvatars}>
                 <PersonAvatar person={row.recipients[0]} size={36} />
                 <View style={styles.stackAvatarTwo}>
@@ -733,7 +735,7 @@ export default function EmailsScreen({
                 </View>
               </View>
             ) : (
-              <PersonAvatar person={row.recipients[0]} size={44} />
+              <PersonAvatar person={(row.recipients || [])[0]} size={44} />
             )
           ) : (
             <PersonAvatar person={row.sender} size={44} />
@@ -1049,7 +1051,9 @@ export default function EmailsScreen({
       ) : null}
 
       {folder === 'customers' ? (
-        <View style={styles.captureHost}>{capture}</View>
+        <View style={styles.captureHost}>
+          <ScreenGate resetKey="emails-capture">{capture}</ScreenGate>
+        </View>
       ) : !accountsReady ? (
         <View style={styles.connectHost}>
           <ActivityIndicator color="#1d1d1f" />

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { EmptyState, FONT, InlineNotice, ProgressBar, StatusPill, T, TONES, TriageDrawer } from './TriageKit';
 import { useIsMobile } from '../lib/mobileUi';
 import {

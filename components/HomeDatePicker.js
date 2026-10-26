@@ -9,7 +9,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { MOBILE_BREAKPOINT } from '../lib/mobileUi';
 import { formatDateParam, formatPickerDate, parseDateParam } from '../lib/transactions';
 import { FONT } from '../lib/typography';
@@ -515,14 +515,23 @@ const styles = StyleSheet.create({
     gap: 8,
     backgroundColor: '#fff',
     borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: 1,
     borderColor: BORDER,
     paddingHorizontal: 12,
     minHeight: 40,
     justifyContent: 'center',
     ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
+      web: {
+        cursor: 'pointer',
+        boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.06,
+        shadowRadius: 2,
+        elevation: 1,
+      },
     }),
   },
   fieldCompact: {

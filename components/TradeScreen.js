@@ -14,7 +14,7 @@ import {
   View,
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { textMatchesQuery } from '../lib/itemSearch';
 import { fetchTransferStores, posAuthForStore, preferStoreByName, uniquePreferredStores } from '../lib/locations';
 import { findStaffByEmployeeName, listStaffProfiles, staffDisplayName } from '../lib/permissions';

@@ -1,23 +1,39 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
-import { BarChart, LineChart, PieChart } from 'echarts/charts';
-import { GridComponent, LegendComponent, TooltipComponent, DataZoomComponent } from 'echarts/components';
-import * as echarts from 'echarts/core';
-import { CanvasRenderer } from 'echarts/renderers';
 import { formatMeasure } from '../lib/employeeMetrics';
 import { useIsMobile } from '../lib/mobileUi';
 import AnalyticsVizExpand from './AnalyticsVizExpand';
 
-echarts.use([
-  BarChart,
-  LineChart,
-  PieChart,
-  GridComponent,
-  LegendComponent,
-  TooltipComponent,
-  DataZoomComponent,
-  CanvasRenderer,
-]);
+// echarts arrives with the first chart (see lib/echarts.js); one promise is
+// shared so every card on the page waits on the same download.
+let echartsLoad = null;
+function loadEcharts() {
+  if (!echartsLoad) {
+    echartsLoad = import('../lib/echarts').then((module) => module.default);
+  }
+  return echartsLoad;
+}
+
+/** Start the download early (a chat is open) so the first chart draws at once. */
+export function warmCharts() {
+  loadEcharts().catch(() => {
+    echartsLoad = null;
+  });
+}
+
+function useEcharts() {
+  const [lib, setLib] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    loadEcharts().then((loaded) => {
+      if (alive) setLib(loaded);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return lib;
+}
 
 const INK = '#1d1d1f';
 const MUTED = '#8e8e93';
@@ -193,10 +209,11 @@ function pieOption(chart, { compact, expanded }) {
 
 function ChartPlot({ chart, expanded, compact }) {
   const ref = useRef(null);
+  const echarts = useEcharts();
 
   useEffect(() => {
     const node = hostNode(ref);
-    if (!node || !chart) return undefined;
+    if (!node || !chart || !echarts) return undefined;
     const instance = echarts.init(node);
     const sizing = { compact, expanded };
     instance.setOption(chart.type === 'pie' ? pieOption(chart, sizing) : lineOption(chart, sizing), true);
@@ -210,7 +227,7 @@ function ChartPlot({ chart, expanded, compact }) {
       window.removeEventListener('resize', onResize);
       instance.dispose();
     };
-  }, [chart, expanded, compact]);
+  }, [chart, expanded, compact, echarts]);
 
   return <View ref={ref} style={expanded ? styles.plotExpanded : compact ? styles.plotPhone : styles.plot} />;
 }

@@ -11,7 +11,7 @@ import {
   Vibration,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { isConnectedStatus } from '../lib/callState';
 import { callPartyLabel } from '../lib/phoneCalls';
 import { formatPhoneNumber } from '../lib/ringcentral';

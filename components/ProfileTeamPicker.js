@@ -10,7 +10,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { listTeams, setOwnTeam } from '../lib/teams';
 
 const fontFamily = Platform.select({

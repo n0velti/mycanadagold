@@ -13,7 +13,7 @@ import {
   View,
 } from 'react-native';
 import { BlurView } from 'expo-blur';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { parseDocReference } from '../lib/transactions';
 import { findStaffByEmployeeName, findStaffById, staffDisplayName } from '../lib/permissions';
 import { FONT, StaffAvatar, T } from './TriageKit';

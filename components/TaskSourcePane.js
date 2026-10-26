@@ -10,7 +10,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { draftFromMail, listGmailAccounts } from '../lib/gmail';
 import { sendDmMessage } from '../lib/messages';
 import { CANVAS, MOBILE, NAV_TAB_ACTIVE_RADIUS } from '../lib/mobileUi';

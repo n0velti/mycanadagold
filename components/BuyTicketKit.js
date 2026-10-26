@@ -14,7 +14,7 @@ import {
   View,
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { formatAmount, formatDateParam, parseDateParam } from '../lib/transactions';
 import { mobileSafeBottom, useIsMobile } from '../lib/mobileUi';
 import { StaffAvatar } from './TriageKit';

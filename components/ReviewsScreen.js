@@ -9,7 +9,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useIsMobile } from '../lib/mobileUi';
 import { BONUS_ACCESS_DENIED, canViewBonusReviewData } from '../lib/auth';
 import {

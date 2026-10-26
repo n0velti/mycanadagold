@@ -60,4 +60,32 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
   return next(context, moduleName, platform);
 };
 
+// Fast Refresh of App.js copies the HMR query (which includes shallow=true)
+// onto every React.lazy() chunk URL. A shallow chunk is only the screen
+// file, so unique deps like lib/docSearch.js never register and Search
+// dies with "Requiring unknown module 744". Drop shallow on those splits
+// so the first open still ships the screen's private graph.
+const upstreamEnhance = config.server?.enhanceMiddleware;
+config.server = {
+  ...config.server,
+  enhanceMiddleware: (metroMiddleware, metroServer) => {
+    const next = upstreamEnhance ? upstreamEnhance(metroMiddleware, metroServer) : metroMiddleware;
+    return (req, res, nextFn) => {
+      const raw = req.url || '';
+      if (raw.includes('.bundle') && raw.includes('modulesOnly=true') && /[?&]shallow=/.test(raw)) {
+        try {
+          const parsed = new URL(raw, 'http://metro.local');
+          if (parsed.searchParams.get('modulesOnly') === 'true') {
+            parsed.searchParams.delete('shallow');
+            req.url = `${parsed.pathname}${parsed.search}`;
+          }
+        } catch {
+          // Serve the original URL if the rewrite cannot be applied.
+        }
+      }
+      return next(req, res, nextFn);
+    };
+  },
+};
+
 module.exports = config;

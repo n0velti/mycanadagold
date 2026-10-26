@@ -12,7 +12,7 @@ import {
   View,
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useAppAccess } from '../lib/permissions';
 import {
   countedPhysicalTotal,
@@ -68,6 +68,7 @@ import {
   useTxnCashBreakdowns,
 } from '../lib/txnCashBreakdowns';
 import TxnCashBreakdownModal, { TxnCashIcon } from './TxnCashBreakdownModal';
+import { storesMatch } from '../lib/storeCatalog';
 import {
   formatDateParam,
   formatPickerDate,
@@ -149,11 +150,7 @@ function sameJson(a, b) {
 }
 
 function namesMatch(a, b) {
-  return (
-    String(a || '')
-      .trim()
-      .localeCompare(String(b || '').trim(), undefined, { sensitivity: 'base' }) === 0
-  );
+  return storesMatch(a, b);
 }
 
 function findBullionStore(stores, name) {
