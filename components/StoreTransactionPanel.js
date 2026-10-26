@@ -11,7 +11,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useDisplayCurrency } from '../lib/displayCurrency';
 import { CANVAS, MOBILE_FILTER_INSET, useIsMobile } from '../lib/mobileUi';
 import { mobileTabBarReserve } from '../lib/mobileTabBar';

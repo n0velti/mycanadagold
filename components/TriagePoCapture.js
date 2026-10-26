@@ -17,7 +17,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { assetToDataUrl } from '../lib/avatarCartoon';
 import {
   CANVAS,
@@ -232,7 +232,8 @@ function actorNameOf(session) {
 }
 
 function poBuyerLabel(po) {
-  return purchaseBuyerName(po) || '—';
+  const name = purchaseBuyerName(po);
+  return name || '—';
 }
 
 function PoDetailMetaTable({ po }) {

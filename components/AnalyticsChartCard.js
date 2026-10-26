@@ -1,6 +1,9 @@
 import { Text, View } from 'react-native';
 import { FONT } from './TriageKit';
 
+/** Charts draw on web only; nothing to fetch ahead of time here. */
+export function warmCharts() {}
+
 export default function AnalyticsChartCard({ chart }) {
   return (
     <View style={styles.card}>

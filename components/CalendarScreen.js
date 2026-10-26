@@ -7,7 +7,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { isClockedInName, reloadClockedIn, useIsClockedIn } from '../lib/clockedIn';
 import { useIsMobile } from '../lib/mobileUi';
 import {

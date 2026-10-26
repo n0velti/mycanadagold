@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Modal, Platform, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import TriageAccuracyPanel from './TriageAccuracyPanel';
 import TriagePoCapture from './TriagePoCapture';
 import TriageDailyReceiptsDrawer from './TriageDailyReceiptsDrawer';
@@ -34,7 +34,8 @@ import {
   summarizeDailyReceipts,
   useDailyReceipts,
 } from '../lib/triageDailyReceipts';
-import { syncTransferWorkflowRemote } from '../lib/transferWorkflow';
+import { syncTransferWorkflowRemote, useTransferWorkflow } from '../lib/transferWorkflow';
+import { backfillTriageErrorBuyers } from '../lib/triageStoreErrors';
 
 if (Platform.OS === 'web' && typeof document !== 'undefined') {
   const styleId = 'cgold-triage-row-hover';
@@ -272,6 +273,7 @@ export default function TriageScreen({
   onCrumbsChange,
 }) {
   const isMobile = useIsMobile();
+  const { triage } = useTransferWorkflow();
   const showStoreInsights = Boolean(embedded && storeFilter && canViewTriageInsights(session?.profile));
   const [activeTab, setActiveTab] = useState('transfers');
   const [dashPage, setDashPage] = useState('');
@@ -313,6 +315,17 @@ export default function TriageScreen({
     }
     return undefined;
   }, [session?.supabaseUserId, session?.token]);
+
+  useEffect(() => {
+    if (!session?.token) return undefined;
+    let cancelled = false;
+    backfillTriageErrorBuyers(session, triage).catch(() => {
+      if (cancelled) return;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [session, triage]);
 
   const accuracyTabOptions = useMemo(
     () => [
@@ -527,7 +540,7 @@ export default function TriageScreen({
       : DESKTOP_TOP_BAR_HEIGHT + 12;
 
   const desktopToolbar =
-    session?.token && !isMobile && !embedded && activeTab === 'transfers' && !inBatch && (!storeOpen || dashPage) ? (
+    session?.token && !isMobile && !embedded && activeTab === 'transfers' && !inBatch && dashPage ? (
       <View style={[styles.tableToolbar, storeOpen && styles.overviewToolbar]}>
         <SearchField
           value={listQuery}
@@ -549,20 +562,6 @@ export default function TriageScreen({
           <ErrorFilterButton value={errorSort} onChange={setErrorSort} />
         ) : null}
         <View style={styles.tableToolbarGrow} />
-        {!storeOpen && canAdd ? (
-          <Pressable
-            onPress={() => openScanRef.current()}
-            style={({ hovered, pressed }) => [
-              styles.tableAdd,
-              (hovered || pressed) && styles.tableAddHover,
-            ]}
-            accessibilityRole="button"
-            accessibilityLabel="Add a PO"
-          >
-            <Ionicons name="add-circle-outline" size={TAB_ICON_SIZE} color="#1F8A4E" />
-            <Text style={styles.tableAddLabel}>Add</Text>
-          </Pressable>
-        ) : null}
       </View>
     ) : null;
 
@@ -709,29 +708,13 @@ export default function TriageScreen({
     expandMobileTabBar();
   }, []);
 
-  const onTriageHome =
-    Boolean(session?.token) &&
-    activeTab === 'transfers' &&
-    !inBatch &&
-    !dashPage &&
-    !storesView.selectedStore;
-
   const onErrorsPage = activeTab === 'transfers' && !inBatch && dashPage === 'errors';
   const mobileTopBarTrailing = useMemo(
     () =>
-      canAdd || onTriageHome || onErrorsPage ? (
+      canAdd || onErrorsPage ? (
         <MobileFeedTopBarActions>
           {onErrorsPage ? (
             <ErrorFilterButton value={errorSort} onChange={setErrorSort} compact />
-          ) : null}
-          {onTriageHome ? (
-            <SearchField
-              value={listQuery}
-              onChangeText={setListQuery}
-              placeholder="Store"
-              size="sm"
-              style={styles.homeStoreSearch}
-            />
           ) : null}
           {canAdd ? (
             <MobileFeedAddButton
@@ -741,7 +724,7 @@ export default function TriageScreen({
           ) : null}
         </MobileFeedTopBarActions>
       ) : null,
-    [canAdd, errorSort, listQuery, onErrorsPage, onTriageHome],
+    [canAdd, errorSort, onErrorsPage],
   );
 
   useEffect(() => {
@@ -825,6 +808,8 @@ export default function TriageScreen({
           onRequireLogin={onRequireLogin}
           active={activeTab === 'transfers'}
           listQuery={listQuery}
+          onQueryChange={setListQuery}
+          onAdd={canAdd ? () => openScanRef.current() : undefined}
           page={dashPage}
           onPageChange={setDashPage}
           onBackChange={handleBackChange}

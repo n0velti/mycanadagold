@@ -12,7 +12,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { fetchTransferStores, uniquePreferredStores } from '../lib/locations';
 import { CANVAS, MOBILE, NAV_TAB_ACTIVE_RADIUS, useIsMobile } from '../lib/mobileUi';
 import { canonicalStoreName, HOME_PINNED_STORES, storesMatch } from '../lib/storeCatalog';
@@ -41,7 +41,6 @@ const SECONDARY = MOBILE.secondary;
 const TAB_BORDER = '#d0d0d0';
 const HAIRLINE = 'rgba(42,38,30,0.10)';
 const FILL = 'rgba(118, 118, 128, 0.12)';
-const PRESS = 'rgba(60, 60, 67, 0.045)';
 const BLUE = '#007AFF';
 const RED = '#FF3B30';
 const fontFamily = 'Sohne';

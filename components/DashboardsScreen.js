@@ -10,7 +10,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { loadGoogleMapsBrowserKey } from '../lib/aiKeys';
 import {
   cachedResult,
@@ -29,7 +29,7 @@ import {
 import { CANVAS, MOBILE, useIsMobile } from '../lib/mobileUi';
 import { formatDateParam, formatPickerDate, parseDateParam, parseDocReference } from '../lib/transactions';
 import { FONT, FONT_LIGHT } from '../lib/typography';
-import AnalyticsChartCard from './AnalyticsChartCard';
+import AnalyticsChartCard, { warmCharts } from './AnalyticsChartCard';
 import AnalyticsMapCard from './AnalyticsMapCard';
 import AnalyticsTableCard from './AnalyticsTableCard';
 import HomeDatePicker from './HomeDatePicker';
@@ -287,6 +287,8 @@ export default function DashboardsScreen({
     mountedRef.current = true;
     const controllers = controllersRef.current;
     const queue = queueRef;
+    // Dashboards are mostly charts; fetch the chart library right away.
+    warmCharts();
     return () => {
       mountedRef.current = false;
       controllers.forEach((controller) => controller.abort());

@@ -13,7 +13,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { API_BASE_URL } from '../lib/auth';
 import { MOBILE, mobileSafeBottom, mobileSafeTop } from '../lib/mobileUi';
 import {

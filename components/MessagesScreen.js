@@ -15,7 +15,8 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { AvatarRing } from '../lib/clockedIn';
 import {
   addDmGroupMembers,
@@ -79,9 +80,17 @@ import {
   prepareAttachment,
 } from '../lib/aiAttachments';
 import { uploadDmAttachments } from '../lib/dmAttachments';
-import { CANVAS, DESKTOP_TOP_BAR_HEIGHT, MOBILE, NAV_TAB_ACTIVE_BG, NAV_TAB_ACTIVE_RADIUS } from '../lib/mobileUi';
+import {
+  CANVAS,
+  DESKTOP_TOP_BAR_HEIGHT,
+  MOBILE,
+  NAV_TAB_ACTIVE_BG,
+  NAV_TAB_ACTIVE_RADIUS,
+  enterToSendProps,
+} from '../lib/mobileUi';
 import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
 import { useLiveRefresh } from '../lib/liveRefresh';
+import { useScreenVisible } from '../lib/screenVisibility';
 import {
   MAX_AGENT_REQUEST_IMAGES,
   normalizeAgentRequestImages,
@@ -1151,6 +1160,38 @@ export default function MessagesScreen({
   }, []);
   refreshInboxRef.current = refreshInbox;
 
+  // Live events arrive in bursts (a message, its likes, everyone's presence
+  // beat every 25s). Coalesce them into one inbox fetch, hold presence to one
+  // refresh every few seconds, and while this screen is hidden just remember
+  // that it is stale: the shell's unread badge has its own feed.
+  const screenVisible = useScreenVisible();
+  const screenVisibleRef = useRef(screenVisible);
+  screenVisibleRef.current = screenVisible;
+  const inboxTimerRef = useRef(null);
+  const inboxStaleRef = useRef(false);
+  const unreadWhileHiddenRef = useRef(false);
+  const presenceAtRef = useRef(0);
+  const scheduleInboxRefresh = useCallback(() => {
+    if (!screenVisibleRef.current) {
+      inboxStaleRef.current = true;
+      return;
+    }
+    if (inboxTimerRef.current) return;
+    inboxTimerRef.current = setTimeout(() => {
+      inboxTimerRef.current = null;
+      void refreshInboxRef.current();
+    }, 300);
+  }, []);
+  const onPresenceChange = useCallback(() => {
+    const now = Date.now();
+    if (now - presenceAtRef.current < 10_000) return;
+    presenceAtRef.current = now;
+    scheduleInboxRefresh();
+  }, [scheduleInboxRefresh]);
+  useEffect(() => () => {
+    if (inboxTimerRef.current) clearTimeout(inboxTimerRef.current);
+  }, []);
+
   const openConversation = useCallback(
     async (conversationId, { skipLoad } = {}) => {
       if (!conversationId) return;
@@ -1330,15 +1371,20 @@ export default function MessagesScreen({
                 return [...current, incoming];
               });
             });
-            markDmRead(conversationId)
-              .then(() => onUnreadChangeRef.current?.())
-              .catch(() => {});
+            // Only a thread the person can actually see counts as read.
+            if (screenVisibleRef.current) {
+              markDmRead(conversationId)
+                .then(() => onUnreadChangeRef.current?.())
+                .catch(() => {});
+            } else {
+              unreadWhileHiddenRef.current = true;
+            }
           }
         }
         if (payload.eventType === 'DELETE' && row?.id && conversationId === activeIdRef.current) {
           setMessages((current) => current.filter((item) => item.id !== row.id));
         }
-        refreshInbox();
+        scheduleInboxRefresh();
       },
       onHide: (payload) => {
         const messageId = payload.new?.message_id || payload.old?.message_id;
@@ -1348,7 +1394,7 @@ export default function MessagesScreen({
           setMessages((current) => current.filter((item) => item.id !== messageId));
           setMenuMessageId((current) => (current === messageId ? null : current));
         }
-        refreshInbox();
+        scheduleInboxRefresh();
       },
       onLike: (payload) => {
         const messageId = payload.new?.message_id || payload.old?.message_id;
@@ -1377,18 +1423,33 @@ export default function MessagesScreen({
           }),
         );
       },
-      onPresence: () => {
-        refreshInbox();
-      },
-      onConversation: () => {
-        refreshInbox();
-      },
-      onParticipant: () => {
-        refreshInbox();
-      },
+      onPresence: onPresenceChange,
+      onConversation: scheduleInboxRefresh,
+      onParticipant: scheduleInboxRefresh,
     });
     return unsubscribe;
-  }, [myId, refreshInbox]);
+  }, [myId, onPresenceChange, scheduleInboxRefresh]);
+
+  // Back on screen: catch up on anything that arrived while hidden.
+  useEffect(() => {
+    if (!screenVisible) return;
+    if (inboxStaleRef.current) {
+      inboxStaleRef.current = false;
+      scheduleInboxRefresh();
+    }
+    if (unreadWhileHiddenRef.current && activeIdRef.current) {
+      unreadWhileHiddenRef.current = false;
+      const conversationId = activeIdRef.current;
+      markDmRead(conversationId)
+        .then(() => {
+          onUnreadChangeRef.current?.();
+          setInbox((current) =>
+            current.map((row) => (row.conversationId === conversationId ? { ...row, unreadCount: 0 } : row)),
+          );
+        })
+        .catch(() => {});
+    }
+  }, [screenVisible, scheduleInboxRefresh]);
 
   useEffect(() => {
     let alive = true;
@@ -1854,14 +1915,6 @@ export default function MessagesScreen({
       sendingRef.current = false;
       setSending(false);
     }
-  };
-
-  const submitFromKeyboard = (event) => {
-    const key = event?.nativeEvent?.key || event?.key;
-    if (key !== 'Enter') return;
-    if (event?.nativeEvent?.shiftKey || event?.shiftKey) return;
-    event?.preventDefault?.();
-    void handleSend();
   };
 
   const onChangeDraft = (value) => {
@@ -3059,7 +3112,6 @@ export default function MessagesScreen({
                         placeholderTextColor={SECONDARY}
                         multiline
                         maxLength={4000}
-                        blurOnSubmit={false}
                         scrollEnabled={inputHeight >= composerMaxHeight}
                         onFocus={() => setComposerFocus(true)}
                         onBlur={() => setComposerFocus(false)}
@@ -3069,8 +3121,7 @@ export default function MessagesScreen({
                           android: { textAlignVertical: inputHeight > COMPOSER_LINE_HEIGHT ? 'top' : 'center' },
                           default: {},
                         })}
-                        onSubmitEditing={() => void handleSend()}
-                        onKeyPress={submitFromKeyboard}
+                        {...enterToSendProps(() => void handleSend())}
                       />
                       <Animated.View style={{ transform: [{ scale: sendScale }] }}>
                         <Pressable

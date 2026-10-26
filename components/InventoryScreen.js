@@ -9,13 +9,15 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { FlashList } from '@shopify/flash-list';
 import { fetchInventoryMatrix, formatQty, peekInventoryMatrix } from '../lib/inventory';
 import { INVENTORY_LIVE_MS, useLiveRefresh } from '../lib/liveRefresh';
 import { textMatchesQuery } from '../lib/itemSearch';
+import { preferStoreByName } from '../lib/locations';
 import { CANVAS, NAV_TAB_ACTIVE_BG, NAV_TAB_ACTIVE_RADIUS, useIsMobile } from '../lib/mobileUi';
 import { useAppAccess } from '../lib/permissions';
+import { storesMatch } from '../lib/storeCatalog';
 import { FONT_LIGHT } from '../lib/typography';
 
 const fontFamily = Platform.select({
@@ -253,17 +255,10 @@ export default function InventoryScreen({
   const lockedStores = useMemo(() => {
     if (!storeFilter) return stores;
     const target = String(storeFilter).trim();
-    const matches = stores.filter(
-      (store) =>
-        String(store.name || '')
-          .trim()
-          .localeCompare(target, undefined, { sensitivity: 'base' }) === 0,
-    );
+    const matches = stores.filter((store) => storesMatch(store.name, target));
     if (matches.length <= 1) return matches;
-    const linked = matches.find(
-      (store) => store.systemKey === 'gta' || store.systemKey === 'pmx',
-    );
-    return [linked || matches[0]];
+    const preferred = preferStoreByName(matches, target);
+    return preferred ? [preferred] : matches.slice(0, 1);
   }, [stores, storeFilter]);
 
   const baseStores = lockedStore ? lockedStores : stores;

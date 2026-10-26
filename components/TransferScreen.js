@@ -14,7 +14,7 @@ import {
   View,
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { persistOwnLocation, posEmployeeId as sessionPosEmployeeId } from '../lib/auth';
 import { fetchTransferStores } from '../lib/locations';
 import { CANVAS, useIsMobile } from '../lib/mobileUi';

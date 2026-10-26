@@ -1,9 +1,9 @@
 /**
- * Triage dashboard: store table on home, then Overview / Lots / Errors / Analytics in a store.
+ * Triage dashboard: store tiles on home, then Overview / Lots / Errors / Analytics in a store.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import {
   applyTriageReviewToPo,
   collectAccuracyTriagePos,
@@ -29,17 +29,21 @@ import { formatInsightPercent } from '../lib/triageInsights';
 import { storesMatch } from '../lib/storeCatalog';
 import { storeMarkColor } from '../lib/storeMarks';
 import {
+  backfillTriageErrorBuyers,
+  errorEmployeeName,
   listStoreErrorCounts,
   poInStore,
   summarizeStoreErrors,
 } from '../lib/triageStoreErrors';
-import { CANVAS, MOBILE, NAV_TAB_ACTIVE_RADIUS, useIsMobile } from '../lib/mobileUi';
+import { CANVAS, MOBILE, MOBILE_FILTER_INSET, NAV_TAB_ACTIVE_RADIUS, useIsMobile } from '../lib/mobileUi';
+import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
 import {
   ChromeHero,
   ChromeListRow,
   ChromePage,
   EmptyState,
   FONT,
+  FONT_LIGHT,
   ProgressBar,
   T,
   TextAction,
@@ -66,12 +70,14 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-dash-card:hover{background-color:#f5f5f5!important;}',
     '.cgold-dash-row{cursor:pointer;}',
     '.cgold-dash-row:hover{background-color:#f5f5f5!important;}',
+    '.cgold-triage-store-tile{cursor:pointer;}',
+    '.cgold-triage-store-tile:hover{background-color:#F2F2F7!important;}',
   ].join('');
 }
 
 function staffName(row) {
-  const name = String(row?.employeeName || '').trim();
-  return name && name !== '—' ? name : '';
+  const name = errorEmployeeName(row);
+  return name && name !== 'Unspecified' && name !== '—' ? name : '';
 }
 
 function errorTypeOf(row) {
@@ -210,10 +216,11 @@ function emptyCopy(text) {
 }
 
 function nextStoreSort(current, column) {
+  const text = column === 'store' || column === 'type';
   if (current.key !== column) {
-    return { key: column, dir: column === 'store' ? 'asc' : 'desc' };
+    return { key: column, dir: text ? 'asc' : 'desc' };
   }
-  if (column === 'store') {
+  if (text) {
     if (current.dir === 'asc') return { key: column, dir: 'desc' };
     return { key: null, dir: 'default' };
   }
@@ -238,75 +245,170 @@ function StoreTableHeaderCell({ label, column, sortKey, sortDir, onSort, align =
   );
 }
 
-function StoreTableRow({ row, last, selected, totalCount, loading, onPress }) {
-  const share = totalCount ? row.count / totalCount : 0;
+const HOME_GRID_MAX_WIDTH = 1480;
+const HOME_SORT_CHIPS = [
+  { key: 'store', label: 'Store' },
+  { key: 'errors', label: 'Errors' },
+  { key: 'amount', label: 'Amount' },
+  { key: 'accuracy', label: 'Accuracy' },
+  { key: 'type', label: 'Top type' },
+];
+
+function storeAccuracy(row) {
+  const evaluated = Number(row?.evaluated) || 0;
+  if (!evaluated) return null;
+  return Math.max(0, (evaluated - (Number(row?.count) || 0)) / evaluated);
+}
+
+function tileSortIcon(column, sortKey, sortDir) {
+  if (sortKey !== column || sortDir === 'default') return 'swap-vertical';
+  return sortDir === 'asc' ? 'chevron-up' : 'chevron-down';
+}
+
+function tileSortLabel(dir, active) {
+  if (!active || dir === 'default') return 'default';
+  return dir === 'asc' ? 'ascending' : 'descending';
+}
+
+function useTriageHomeLayout() {
+  const { width } = useWindowDimensions();
+  const isMobile = width < 768;
+  const pagePad = isMobile ? MOBILE_FILTER_INSET : width >= 1600 ? 24 : width >= 1200 ? 20 : 16;
+  const tableMaxWidth = isMobile
+    ? undefined
+    : Math.min(HOME_GRID_MAX_WIDTH, Math.max(720, width - pagePad * 2));
+  return { isMobile, pagePad, tableMaxWidth };
+}
+
+function TriageHomeSort({ sortKey, sortDir, onSort, compact = false }) {
+  const items = HOME_SORT_CHIPS.map((chip) => {
+    const active = sortKey === chip.key && sortDir !== 'default';
+    return (
+      <Pressable
+        key={chip.key}
+        onPress={() => onSort(chip.key)}
+        style={styles.homeSortItem}
+        accessibilityRole="button"
+        accessibilityLabel={`Sort by ${chip.label}, ${tileSortLabel(sortDir, active)}`}
+      >
+        <Text style={[styles.homeSortText, active && styles.homeSortTextActive]}>{chip.label}</Text>
+        <Ionicons name={tileSortIcon(chip.key, sortKey, sortDir)} size={13} color={active ? '#1d1d1f' : '#c7c7cc'} />
+      </Pressable>
+    );
+  });
+  if (compact) {
+    return (
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={[styles.homeSortRow, styles.homeSortRowCompact]}
+        style={styles.homeSortScroll}
+      >
+        {items}
+      </ScrollView>
+    );
+  }
+  return <View style={styles.homeSortRow}>{items}</View>;
+}
+
+function TriageHomeTileStat({ label, value, empty = false, tone = 'neutral' }) {
+  return (
+    <View style={styles.homeTileStat} accessibilityLabel={empty ? `${label}, none` : `${label} ${value}`}>
+      <Text style={styles.homeTileStatLabel}>{label}</Text>
+      <Text
+        style={[
+          styles.homeTileStatValue,
+          empty && styles.homeTileStatEmpty,
+          tone === 'low' && styles.homeTileStatLow,
+          tone === 'high' && styles.homeTileStatHigh,
+        ]}
+        numberOfLines={1}
+      >
+        {empty ? '—' : value}
+      </Text>
+    </View>
+  );
+}
+
+function TriageHomeStoreTile({ row, selected, loading, onPress }) {
+  const errors = Number(row.count) || 0;
+  const amount = Number(row.amount) || 0;
+  const evaluated = Number(row.evaluated) || 0;
+  const accuracy = storeAccuracy(row);
+  const flagged = evaluated ? `${errors} of ${evaluated} flagged` : errors ? `${errors} ${errors === 1 ? 'error' : 'errors'}` : 'No errors';
+  const split = errors
+    ? `${errors === 1 ? '1 error' : `${errors} errors`}${amount ? ` · ${formatAmount(amount)}` : ''}`
+    : evaluated
+      ? `${evaluated === 1 ? '1 PO evaluated' : `${evaluated} POs evaluated`}`
+      : 'No evaluated purchases';
+  const accuracyTone = accuracy == null ? 'neutral' : accuracy < 0.8 ? 'low' : 'high';
   return (
     <Pressable
       onPress={onPress}
       style={({ hovered, pressed }) => [
-        styles.storeRow,
-        last && styles.storeRowLast,
-        (hovered || pressed || selected) && styles.storeRowHover,
+        styles.homeTile,
+        (hovered || pressed || selected) && styles.homeTilePressed,
       ]}
       accessibilityRole="button"
       accessibilityLabel={
         loading
           ? `${row.store}, loading`
-          : `${row.store}, ${row.count} ${row.count === 1 ? 'error' : 'errors'}`
+          : `${row.store}, ${flagged}${accuracy == null ? '' : `, ${formatInsightPercent(accuracy)} accuracy`}`
       }
+      {...(Platform.OS === 'web' ? { className: 'cgold-triage-store-tile' } : null)}
     >
-      <View style={styles.storeIconWrap}>
-        <View style={[styles.storeIconTile, { backgroundColor: storeMarkColor(row.store) }]}>
-          <Ionicons name="storefront" size={14} color="#fff" />
+      <View style={styles.homeTileTop}>
+        <View style={[styles.homeTileIcon, { backgroundColor: storeMarkColor(row.store) }]}>
+          <Ionicons name="storefront" size={16} color="#fff" />
         </View>
-      </View>
-      <View style={styles.storeRowBody}>
-        <View style={styles.storeColStore}>
-          <Text style={styles.storeName} numberOfLines={1}>
+        <View style={styles.homeTileTitleCol}>
+          <Text style={styles.homeTileName} numberOfLines={1}>
             {row.store}
           </Text>
-        </View>
-        <View style={styles.storeColErrors}>
-          <Text style={styles.storeCell} numberOfLines={1}>
-            {loading ? '—' : String(row.count || 0)}
+          <Text style={styles.homeTileMeta} numberOfLines={1}>
+            {loading ? 'Loading…' : flagged}
           </Text>
-        </View>
-        <View style={styles.storeColAmount}>
-          <Text style={[styles.storeCell, styles.storeAmount]} numberOfLines={1}>
-            {loading || !row.amount ? '—' : formatAmount(row.amount)}
-          </Text>
-        </View>
-        <View style={styles.storeColShare}>
-          {loading || !totalCount ? (
-            <Text style={styles.storeShareEmpty}>—</Text>
-          ) : (
-            <>
-              <ProgressBar value={row.count} total={totalCount} tone="orange" height={4} style={styles.storeShareBar} />
-              <Text style={styles.storeSharePct}>{formatInsightPercent(share, 1)}</Text>
-            </>
-          )}
         </View>
       </View>
-      <View style={styles.storeChevron} pointerEvents="none">
-        <Ionicons name="chevron-forward" size={18} color="#8e8e93" />
+      <View style={styles.homeTileFigures}>
+        <Text style={styles.homeTileAmount} numberOfLines={1}>
+          {loading || !amount ? '—' : formatAmount(amount)}
+        </Text>
+        <Text style={styles.homeTileSplit} numberOfLines={1}>
+          {loading ? ' ' : split}
+        </Text>
+      </View>
+      <View style={styles.homeTileMetrics}>
+        <TriageHomeTileStat label="Errors" value={String(errors)} empty={loading} />
+        <TriageHomeTileStat
+          label="Accuracy"
+          value={accuracy == null ? '—' : formatInsightPercent(accuracy)}
+          empty={loading || accuracy == null}
+          tone={loading ? 'neutral' : accuracyTone}
+        />
+        <TriageHomeTileStat
+          label="Top type"
+          value={row.topType?.label || '—'}
+          empty={loading || !row.topType}
+        />
       </View>
     </Pressable>
   );
 }
 
-function TriageStoreTable({ rows, selectedStore, loading, onOpenStore }) {
+function TriageHomeStores({
+  rows,
+  selectedStore,
+  loading,
+  query,
+  onQueryChange,
+  onOpenStore,
+  onAdd,
+  insetTop = 0,
+}) {
+  const { isMobile, pagePad, tableMaxWidth } = useTriageHomeLayout();
+  const tabBarScroll = useMobileTabBarScrollProps();
   const [sort, setSort] = useState({ key: null, dir: 'default' });
-  const totals = useMemo(
-    () =>
-      (rows || []).reduce(
-        (sum, row) => ({
-          count: sum.count + (Number(row.count) || 0),
-          amount: sum.amount + (Number(row.amount) || 0),
-        }),
-        { count: 0, amount: 0 },
-      ),
-    [rows],
-  );
   const sorted = useMemo(() => {
     if (!sort.key || sort.dir === 'default') return rows || [];
     const dir = sort.dir === 'asc' ? 1 : -1;
@@ -316,82 +418,128 @@ function TriageStoreTable({ rows, selectedStore, loading, onOpenStore }) {
         delta = String(a.store || '').localeCompare(String(b.store || ''), undefined, { sensitivity: 'base' });
       } else if (sort.key === 'errors') {
         delta = (Number(a.count) || 0) - (Number(b.count) || 0);
-      } else {
+      } else if (sort.key === 'amount') {
         delta = (Number(a.amount) || 0) - (Number(b.amount) || 0);
+      } else if (sort.key === 'accuracy') {
+        delta = (storeAccuracy(a) ?? -1) - (storeAccuracy(b) ?? -1);
+      } else {
+        delta = String(a.topType?.label || '').localeCompare(String(b.topType?.label || ''), undefined, {
+          sensitivity: 'base',
+        });
       }
-      return delta ? dir * delta : String(a.store || '').localeCompare(String(b.store || ''), undefined, { sensitivity: 'base' });
+      return delta
+        ? dir * delta
+        : String(a.store || '').localeCompare(String(b.store || ''), undefined, { sensitivity: 'base' });
     });
   }, [rows, sort.dir, sort.key]);
 
+  const search = typeof onQueryChange === 'function' ? (
+    <View style={[styles.homeSearch, isMobile && styles.homeSearchWide]}>
+      <Ionicons name="search-outline" size={16} color={MOBILE.secondary} />
+      <TextInput
+        style={styles.homeSearchInput}
+        value={query}
+        onChangeText={onQueryChange}
+        placeholder="Search stores"
+        placeholderTextColor={MOBILE.secondary}
+        autoCapitalize="none"
+        autoCorrect={false}
+        returnKeyType="search"
+        clearButtonMode="while-editing"
+        accessibilityLabel="Search stores"
+      />
+      {query ? (
+        <Pressable onPress={() => onQueryChange('')} hitSlop={8} accessibilityLabel="Clear store search">
+          <Ionicons name="close-circle" size={16} color="#c7c7cc" />
+        </Pressable>
+      ) : null}
+    </View>
+  ) : null;
+
   return (
-    <View style={styles.storeTableShadow}>
-      <View style={styles.storeTableCard}>
-        <View style={[styles.storeRow, styles.storeHead]}>
-          <View style={styles.storeIconWrap} />
-          <View style={styles.storeRowBody}>
-            <View style={styles.storeColStore}>
-              <StoreTableHeaderCell
-                label="Store"
-                column="store"
+    <View style={[styles.homeScreen, isMobile && styles.homeScreenMobile]}>
+      <ScrollView
+        style={styles.homeScroll}
+        contentContainerStyle={[
+          styles.homeScrollContent,
+          {
+            flexGrow: 1,
+            paddingTop: insetTop,
+            paddingBottom: isMobile ? mobileTabBarReserve() + 8 : 24,
+          },
+        ]}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        bounces={false}
+        overScrollMode="never"
+        {...tabBarScroll}
+        {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll' } : null)}
+      >
+        <View
+          style={[
+            styles.homeInset,
+            isMobile
+              ? { paddingHorizontal: pagePad }
+              : {
+                  paddingHorizontal: pagePad,
+                  width: '100%',
+                  ...(tableMaxWidth ? { maxWidth: tableMaxWidth } : null),
+                },
+          ]}
+        >
+          {search ? (
+            <View style={styles.homeToolbar}>
+              {isMobile ? <View style={styles.homeSearchMobileWrap}>{search}</View> : search}
+            </View>
+          ) : null}
+          <View style={styles.homeSortBar}>
+            <View style={styles.homeSortLead}>
+              <TriageHomeSort
                 sortKey={sort.key}
                 sortDir={sort.dir}
                 onSort={(column) => setSort((current) => nextStoreSort(current, column))}
+                compact={isMobile}
               />
             </View>
-            <View style={styles.storeColErrors}>
-              <StoreTableHeaderCell
-                label="Errors"
-                column="errors"
-                sortKey={sort.key}
-                sortDir={sort.dir}
-                onSort={(column) => setSort((current) => nextStoreSort(current, column))}
-              />
-            </View>
-            <View style={styles.storeColAmount}>
-              <StoreTableHeaderCell
-                label="Amount"
-                column="amount"
-                sortKey={sort.key}
-                sortDir={sort.dir}
-                onSort={(column) => setSort((current) => nextStoreSort(current, column))}
-              />
-            </View>
-            <View style={styles.storeColShare}>
-              <Text style={styles.storeHeadText}>Progress</Text>
-            </View>
+            {onAdd ? (
+              <Pressable
+                onPress={onAdd}
+                style={({ hovered, pressed }) => [
+                  styles.homeAdd,
+                  (hovered || pressed) && styles.homeAddHover,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Add a PO"
+              >
+                <Ionicons name="add-circle-outline" size={17} color="#1F8A4E" />
+                <Text style={styles.homeAddLabel}>Add</Text>
+              </Pressable>
+            ) : null}
           </View>
+          {loading && !rows.length ? (
+            <View style={styles.homeEmpty}>
+              <ActivityIndicator color="#1d1d1f" />
+            </View>
+          ) : !rows.length ? (
+            <Text style={styles.homeEmptyText}>
+              {String(query || '').trim() ? 'No stores match that search.' : 'No stores.'}
+            </Text>
+          ) : (
+            <View style={[styles.homeGrid, isMobile && styles.homeGridCompact]}>
+              {sorted.map((row) => (
+                <View key={row.store} style={styles.homeGridItem}>
+                  <TriageHomeStoreTile
+                    row={row}
+                    selected={storesMatch(row.store, selectedStore)}
+                    loading={loading}
+                    onPress={() => onOpenStore(row.store)}
+                  />
+                </View>
+              ))}
+            </View>
+          )}
         </View>
-        {sorted.map((row, index) => (
-          <StoreTableRow
-            key={row.store}
-            row={row}
-            last={index === sorted.length - 1 && !totals.count}
-            selected={storesMatch(row.store, selectedStore)}
-            totalCount={totals.count}
-            loading={loading}
-            onPress={() => onOpenStore(row.store)}
-          />
-        ))}
-        {sorted.length ? (
-          <View style={[styles.storeRow, styles.storeTotal, styles.storeRowLast]}>
-            <View style={styles.storeIconWrap} />
-            <View style={styles.storeRowBody}>
-              <View style={styles.storeColStore}>
-                <Text style={styles.storeTotalLabel}>Total</Text>
-              </View>
-              <View style={styles.storeColErrors}>
-                <Text style={styles.storeTotalCell}>{loading ? '—' : String(totals.count)}</Text>
-              </View>
-              <View style={styles.storeColAmount}>
-                <Text style={[styles.storeTotalCell, styles.storeAmount]}>
-                  {loading || !totals.amount ? '—' : formatAmount(totals.amount)}
-                </Text>
-              </View>
-              <View style={styles.storeColShare} />
-            </View>
-          </View>
-        ) : null}
-      </View>
+      </ScrollView>
     </View>
   );
 }
@@ -1728,6 +1876,8 @@ export default function TriageDashboardPanel({
   onRequireLogin,
   active = true,
   listQuery = '',
+  onQueryChange,
+  onAdd,
   page = '',
   onPageChange,
   onBackChange,
@@ -1741,6 +1891,16 @@ export default function TriageDashboardPanel({
   toolbar = null,
 }) {
   const { triage, remoteLoaded = false, localReady = false } = useTransferWorkflow();
+  useEffect(() => {
+    if (!active || !session?.token) return undefined;
+    let cancelled = false;
+    backfillTriageErrorBuyers(session, triage).catch(() => {
+      if (cancelled) return;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [active, session, triage]);
   // Cached rows paint straight away; the delta pull refreshes them in place.
   const countsLoading = !remoteLoaded && !(localReady && triage.length > 0);
   const isMobile = useIsMobile();
@@ -1766,10 +1926,6 @@ export default function TriageDashboardPanel({
     if (!q) return storeRows;
     return storeRows.filter((row) => String(row.store || '').toLowerCase().includes(q));
   }, [listQuery, storeRows]);
-  const storeTotals = useMemo(
-    () => storeRows.reduce((sum, row) => sum + (Number(row.count) || 0), 0),
-    [storeRows],
-  );
   const scopedEvaluated = useMemo(
     () => (selectedStore ? evaluated.filter((row) => poInStore(row, selectedStore)) : evaluated),
     [evaluated, selectedStore],
@@ -1918,54 +2074,17 @@ export default function TriageDashboardPanel({
     );
   }
 
-  const storeList = isMobile ? (
-    <>
-      {visibleStoreRows.map((row, index) => (
-        <ChromeListRow
-          key={row.store}
-          title={row.store}
-          meta={
-            countsLoading
-              ? 'Loading errors…'
-              : row.count
-                ? `${row.count} ${row.count === 1 ? 'error' : 'errors'}`
-                : 'No errors'
-          }
-          value={String(row.count || 0)}
-          loading={countsLoading}
-          extra={
-            !countsLoading && storeTotals ? (
-              <ProgressBar
-                value={row.count}
-                total={storeTotals}
-                tone="orange"
-                height={4}
-                style={styles.regionBar}
-              />
-            ) : null
-          }
-          icon="storefront"
-          iconColor={storeMarkColor(row.store)}
-          last={index === visibleStoreRows.length - 1}
-          onPress={() => openStore(row.store)}
-        />
-      ))}
-    </>
-  ) : (
-    <TriageStoreTable
+  const home = (
+    <TriageHomeStores
       rows={visibleStoreRows}
       selectedStore={selectedStore}
       loading={countsLoading}
+      query={listQuery}
+      onQueryChange={onQueryChange}
       onOpenStore={openStore}
+      onAdd={isMobile ? undefined : onAdd}
+      insetTop={insetTop}
     />
-  );
-
-  const home = (
-    <ChromePage filterPad={false} insetTop={insetTop} tableHeader={toolbar}>
-      {visibleStoreRows.length
-        ? storeList
-        : emptyCopy(listQuery.trim() ? `No store matches “${listQuery.trim()}”.` : 'No stores.')}
-    </ChromePage>
   );
 
   const overviewStats = [
@@ -2145,6 +2264,313 @@ const styles = StyleSheet.create({
   },
   bodyMobile: {
     backgroundColor: CANVAS,
+  },
+  homeScreen: {
+    flex: 1,
+    minHeight: 0,
+    backgroundColor: CANVAS,
+  },
+  homeScreenMobile: {
+    backgroundColor: CANVAS,
+  },
+  homeScroll: {
+    flex: 1,
+  },
+  homeScrollContent: {
+    alignItems: 'stretch',
+    width: '100%',
+  },
+  homeInset: {
+    alignSelf: 'center',
+    width: '100%',
+  },
+  homeToolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingBottom: 12,
+  },
+  homeSearchMobileWrap: {
+    flexGrow: 1,
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  homeSearchWide: {
+    maxWidth: '100%',
+  },
+  homeSearch: {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    height: 32,
+    minWidth: 0,
+    maxWidth: 300,
+    paddingHorizontal: 10,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: 1,
+    borderColor: '#d0d0d0',
+    backgroundColor: CANVAS,
+    ...Platform.select({
+      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.06,
+        shadowRadius: 2,
+        elevation: 1,
+      },
+    }),
+  },
+  homeSearchInput: {
+    flex: 1,
+    minWidth: 0,
+    height: 30,
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: MOBILE.label,
+    paddingVertical: 0,
+    letterSpacing: -0.2,
+    ...Platform.select({
+      web: { outlineStyle: 'none' },
+      default: {},
+    }),
+  },
+  homeAdd: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 0,
+    gap: 6,
+    height: 32,
+    paddingHorizontal: 10,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  homeAddHover: {
+    backgroundColor: '#f5f5f5',
+  },
+  homeAddLabel: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#1F8A4E',
+    letterSpacing: -0.2,
+  },
+  homeSortBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingTop: 2,
+    paddingBottom: 14,
+  },
+  homeSortLead: {
+    flexGrow: 1,
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  homeSortScroll: {
+    flexGrow: 0,
+    marginHorizontal: -8,
+  },
+  homeSortRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 4,
+  },
+  homeSortRowCompact: {
+    flexWrap: 'nowrap',
+    paddingHorizontal: 8,
+  },
+  homeSortItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  homeSortText: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+  },
+  homeSortTextActive: {
+    color: '#1d1d1f',
+    fontWeight: '500',
+  },
+  homeGrid: {
+    width: '100%',
+    alignSelf: 'stretch',
+    overflow: 'visible',
+    ...Platform.select({
+      web: {
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 320px), 1fr))',
+        gap: 12,
+      },
+      default: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 12,
+      },
+    }),
+  },
+  homeGridCompact: {
+    ...Platform.select({
+      web: { gridTemplateColumns: '1fr' },
+      default: {
+        flexDirection: 'column',
+        flexWrap: 'nowrap',
+      },
+    }),
+  },
+  homeGridItem: {
+    minWidth: 0,
+    ...Platform.select({
+      web: { width: 'auto', maxWidth: '100%' },
+      default: { flexGrow: 1 },
+    }),
+  },
+  homeTile: {
+    width: '100%',
+    maxWidth: '100%',
+    minHeight: 196,
+    paddingLeft: 20,
+    paddingRight: 20,
+    paddingTop: 18,
+    paddingBottom: 16,
+    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(60,60,67,0.22)',
+    backgroundColor: '#fff',
+    alignItems: 'stretch',
+    gap: 16,
+    ...Platform.select({
+      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.06,
+        shadowRadius: 2,
+        elevation: 1,
+      },
+    }),
+  },
+  homeTilePressed: {
+    backgroundColor: '#F2F2F7',
+  },
+  homeTileTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    width: '100%',
+  },
+  homeTileIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  homeTileTitleCol: {
+    flex: 1,
+    minWidth: 0,
+    gap: 1,
+  },
+  homeTileName: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#1d1d1f',
+    letterSpacing: -0.43,
+  },
+  homeTileMeta: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+  },
+  homeTileFigures: {
+    gap: 2,
+  },
+  homeTileAmount: {
+    fontFamily: FONT_LIGHT,
+    fontSize: 34,
+    lineHeight: 38,
+    fontWeight: '400',
+    color: '#1d1d1f',
+    letterSpacing: -1.1,
+    fontVariant: ['tabular-nums'],
+  },
+  homeTileSplit: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+  },
+  homeTileMetrics: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    width: '100%',
+    gap: 16,
+    paddingTop: 14,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(60,60,67,0.12)',
+  },
+  homeTileStat: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  homeTileStatLabel: {
+    fontFamily,
+    fontSize: 12,
+    fontWeight: '400',
+    color: '#8e8e93',
+    letterSpacing: -0.08,
+  },
+  homeTileStatValue: {
+    fontFamily,
+    fontSize: 17,
+    fontWeight: '400',
+    color: '#1d1d1f',
+    letterSpacing: -0.43,
+    fontVariant: ['tabular-nums'],
+  },
+  homeTileStatEmpty: {
+    color: '#c7c7cc',
+  },
+  homeTileStatLow: {
+    color: '#FF3B30',
+  },
+  homeTileStatHigh: {
+    color: '#34C759',
+  },
+  homeEmpty: {
+    paddingTop: 48,
+    alignItems: 'center',
+  },
+  homeEmptyText: {
+    fontFamily,
+    fontSize: 15,
+    lineHeight: 20,
+    color: '#8e8e93',
+    paddingTop: 20,
   },
   emptyCopy: {
     fontFamily,

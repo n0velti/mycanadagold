@@ -12,7 +12,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { uploadOwnAvatar } from '../lib/profiles';
 import {
   canSwitchAppRoles,
@@ -26,7 +26,7 @@ import {
 import { listTeams, teamMemberName } from '../lib/teams';
 import { posEmployeeId } from '../lib/auth';
 import { fetchAureusEmployee } from '../lib/aureusEmployees';
-import { CANVAS, DESKTOP_TOP_BAR_HEIGHT, MOBILE, MOBILE_FILTER_INSET, useIsMobile } from '../lib/mobileUi';
+import { CANVAS, DESKTOP_TOP_BAR_HEIGHT, MOBILE_FILTER_INSET, useIsMobile } from '../lib/mobileUi';
 import { mobileTabBarReserve, useMobileTabBarScrollProps } from '../lib/mobileTabBar';
 import { formatPhoneNumber } from '../lib/ringcentral';
 import ProfilePhotoModal from './ProfilePhotoModal';
@@ -40,12 +40,16 @@ import { AvatarRing } from '../lib/clockedIn';
 import { formatInboxTime } from '../lib/messages';
 
 const fontFamily = 'Sohne';
-const LABEL = MOBILE.label;
-const SECONDARY = MOBILE.secondary;
+const LABEL = '#1d1d1f';
+const ACTIVE_LABEL = '#3A3A3C';
+const SECONDARY = '#8e8e93';
 const INK = '#1a1a1a';
 const HAIRLINE = 'rgba(42,38,30,0.08)';
 const CHIP_BORDER = '#d0d0d0';
-const CHIP_RADIUS = 6;
+const CHIP_RADIUS = 8;
+const CHIP_BG = '#fff';
+const HOVER_WASH = 'rgba(60,60,67,0.06)';
+const PRESS_WASH = 'rgba(60,60,67,0.10)';
 const PROFILE_ICON_COL = 26;
 const CHIP_SHADOW = Platform.select({
   web: { boxShadow: '0 1px 2px rgba(0,0,0,0.05)' },
@@ -57,6 +61,13 @@ const CHIP_SHADOW = Platform.select({
     elevation: 1,
   },
 });
+const CHIP_CARD = {
+  backgroundColor: CHIP_BG,
+  borderRadius: CHIP_RADIUS,
+  borderWidth: 1,
+  borderColor: CHIP_BORDER,
+  ...CHIP_SHADOW,
+};
 
 export { profileTargetFromPerson } from '../lib/profileTarget';
 
@@ -121,28 +132,69 @@ function ProfileAvatar({ uri, name, size = 24, style }) {
   );
 }
 
-function DetailRow({ label, value, last, onPress }) {
+function ProfileRow({
+  label,
+  value,
+  last,
+  onPress,
+  icon,
+  placeholder = '—',
+  link,
+  destructive,
+}) {
+  const isMobile = useIsMobile();
+  const empty = !String(value || '').trim();
+  const display = empty ? placeholder : value;
+  const showValue = value != null || placeholder;
+  const rowStyle = [
+    styles.row,
+    !isMobile && styles.rowDesk,
+    last && styles.rowLast,
+    onPress && styles.rowTappable,
+  ];
+  const valueStyle = [
+    styles.rowValue,
+    !isMobile && styles.rowValueDesk,
+    empty && styles.rowValueEmpty,
+    !empty && (link || onPress) && styles.rowValueLink,
+  ];
   const content = (
     <>
-      <Text style={styles.detailLabel}>{label}</Text>
-      <View style={styles.detailValueWrap}>
-        <Text style={styles.detailValue} numberOfLines={2}>
-          {value || '—'}
+      {isMobile && icon ? (
+        <View style={styles.rowIconCol}>
+          <Ionicons name={icon} size={17} color={destructive ? '#FF3B30' : empty ? SECONDARY : INK} />
+        </View>
+      ) : null}
+      <Text
+        style={[
+          styles.rowLabel,
+          !isMobile && styles.rowLabelDesk,
+          destructive && styles.rowLabelDestructive,
+        ]}
+        numberOfLines={1}
+      >
+        {label}
+      </Text>
+      {showValue && !destructive ? (
+        <Text style={valueStyle} numberOfLines={2}>
+          {display}
         </Text>
-      </View>
-      {onPress ? <Ionicons name="chevron-forward" size={14} color="#c7c7cc" /> : null}
+      ) : null}
+      {onPress && !destructive ? <Ionicons name="chevron-forward" size={14} color="#c7c7cc" /> : null}
     </>
   );
-
-  const rowStyle = [styles.detailRow, last && styles.detailRowLast, onPress && styles.detailRowTappable];
 
   if (onPress) {
     return (
       <Pressable
         onPress={onPress}
         accessibilityRole="button"
-        accessibilityLabel={`${label}, ${value || 'Not set'}`}
-        style={({ hovered, pressed }) => [rowStyle, (hovered || pressed) && styles.rowHovered]}
+        accessibilityLabel={destructive ? label : `${label}, ${display}`}
+        style={({ hovered, pressed }) => [
+          rowStyle,
+          hovered && styles.rowHover,
+          pressed && styles.rowPress,
+        ]}
       >
         {content}
       </Pressable>
@@ -152,17 +204,19 @@ function DetailRow({ label, value, last, onPress }) {
   return <View style={rowStyle}>{content}</View>;
 }
 
-function ContactAction({ icon, label, onPress, disabled, busy }) {
+function ContactAction({ icon, label, onPress, disabled, busy, fill }) {
   const inactive = disabled || busy;
-  const iconColor = inactive ? '#c7c7cc' : INK;
+  const iconColor = inactive ? SECONDARY : INK;
   return (
     <Pressable
       onPress={onPress}
       disabled={inactive}
       style={({ hovered, pressed }) => [
-        styles.contactAction,
-        (hovered || pressed) && !inactive && styles.contactActionPressed,
-        inactive && styles.contactActionDisabled,
+        styles.chip,
+        fill && styles.chipFill,
+        hovered && !inactive && styles.chipHover,
+        pressed && !inactive && styles.chipPress,
+        inactive && styles.chipDisabled,
       ]}
       accessibilityRole="button"
       accessibilityLabel={label}
@@ -171,70 +225,24 @@ function ContactAction({ icon, label, onPress, disabled, busy }) {
       {busy ? (
         <ActivityIndicator size="small" color={iconColor} />
       ) : (
-        <Ionicons name={icon} size={15} color={iconColor} />
+        <Ionicons name={icon} size={17} color={iconColor} />
       )}
-      <Text style={[styles.contactActionLabel, inactive && styles.contactActionLabelDisabled]} numberOfLines={1}>
+      <Text style={[styles.chipLabel, inactive && styles.chipLabelDisabled]} numberOfLines={1}>
         {label}
       </Text>
     </Pressable>
   );
 }
 
-function ContactRow({ caption, value, placeholder = 'None', last, onPress, link, icon }) {
-  const empty = !String(value || '').trim();
-  const display = empty ? placeholder : value;
-  const rowStyle = [styles.contactRow, last && styles.contactRowLast];
-  const valueStyle = [
-    styles.contactValue,
-    empty && styles.contactValueEmpty,
-    !empty && (link || onPress) && styles.contactValueLink,
-  ];
-  const content = (
-    <>
-      {icon ? (
-        <View style={styles.contactIconCol}>
-          <View style={styles.contactIcon}>
-            <Ionicons name={icon} size={15} color={empty ? SECONDARY : INK} />
-          </View>
-        </View>
-      ) : null}
-      <View style={styles.contactCopy}>
-        <Text style={styles.contactCaption}>{caption}</Text>
-      </View>
-      <Text style={valueStyle} numberOfLines={2}>
-        {display}
-      </Text>
-      {onPress ? (
-        <View style={styles.contactChevron}>
-          <Ionicons name="chevron-forward" size={16} color="#c7c7cc" />
-        </View>
-      ) : null}
-    </>
-  );
-
-  if (onPress) {
-    return (
-      <Pressable
-        onPress={onPress}
-        accessibilityRole="button"
-        accessibilityLabel={`${caption}, ${display}`}
-        style={({ pressed }) => [rowStyle, pressed && styles.contactRowPressed]}
-      >
-        {content}
-      </Pressable>
-    );
-  }
-
-  return <View style={rowStyle}>{content}</View>;
-}
-
 function Group({ children, style }) {
-  return <View style={[styles.mobileGroup, style]}>{children}</View>;
+  const isMobile = useIsMobile();
+  return <View style={[isMobile ? styles.stack : styles.card, style]}>{children}</View>;
 }
 
 function GroupLabel({ title, trailing }) {
+  const isMobile = useIsMobile();
   return (
-    <View style={styles.groupLabelRow}>
+    <View style={[styles.groupLabelRow, !isMobile && styles.groupLabelRowDesk]}>
       <Text style={styles.groupLabel}>{title}</Text>
       {trailing}
     </View>
@@ -307,7 +315,8 @@ function OrgChartModal({ visible, onClose, team, profileId, onOpenTeams, isMobil
               onPress={() => onOpenTeams(team?.id || '')}
               style={({ hovered, pressed }) => [
                 styles.orgOpenTeams,
-                (hovered || pressed) && styles.actionItemPressed,
+                hovered && styles.chipHover,
+                pressed && styles.chipPress,
               ]}
               accessibilityRole="button"
               accessibilityLabel="Open Teams"
@@ -493,12 +502,14 @@ export default function ProfileScreen({
       {
         key: 'store',
         label: 'Location',
+        icon: 'storefront-outline',
         value: locationName || 'Not set in Aureus',
         onPress: () => setLocationPickerOpen(true),
       },
       {
         key: 'team',
         label: 'Team',
+        icon: 'people-outline',
         value: profile?.teamName
           ? profile.isTeamIntake
             ? `${profile.teamName} · Intake`
@@ -514,15 +525,16 @@ export default function ProfileScreen({
         ? {
             key: 'category',
             label: canSwitchRole ? 'Role' : 'Category',
+            icon: 'shield-outline',
             value: accessLabel,
             onPress: canSwitchRole ? () => setRolePickerOpen(true) : undefined,
           }
         : null,
       profile?.employeeType
-        ? { key: 'employeeType', label: 'Employee type', value: profile.employeeType }
+        ? { key: 'employeeType', label: 'Employee type', icon: 'briefcase-outline', value: profile.employeeType }
         : null,
       profile?.role && profile.role !== profile.employeeType
-        ? { key: 'role', label: 'Aureus role', value: profile.role }
+        ? { key: 'role', label: 'Aureus role', icon: 'id-card-outline', value: profile.role }
         : null,
     ].filter(Boolean);
   }, [viewingOther, locationName, profile, accessLabel, canSwitchRole]);
@@ -620,13 +632,14 @@ export default function ProfileScreen({
   };
 
   const profileActions = (
-    <View style={styles.contactActions}>
+    <View style={[styles.contactActions, !isMobile && styles.contactActionsDesk]}>
       {viewingOther ? (
         <ContactAction
           icon="chatbubble-outline"
           label="Message"
           onPress={() => onMessage?.(profileId)}
           disabled={!messageEnabled}
+          fill={!isMobile}
         />
       ) : null}
       <ContactAction
@@ -635,6 +648,7 @@ export default function ProfileScreen({
         onPress={handlePhoneCall}
         disabled={!canPhone}
         busy={callBusy}
+        fill={!isMobile}
       />
       <ContactAction
         icon="videocam-outline"
@@ -642,195 +656,164 @@ export default function ProfileScreen({
         onPress={() => void handleVideoCall()}
         disabled={!canPhone}
         busy={callBusy}
+        fill={!isMobile}
       />
       <ContactAction
         icon="mail-outline"
         label="Mail"
         onPress={() => void handleMail()}
         disabled={!canMail}
+        fill={!isMobile}
       />
-      <ContactAction icon="people-outline" label="Org" onPress={openOrgChart} />
+      <ContactAction icon="people-outline" label="Org" onPress={openOrgChart} fill={!isMobile} />
     </View>
   );
 
-  const notifyCards = !viewingOther && Array.isArray(notifications) && notifications.length ? (
-    <>
-      <GroupLabel title="Notifications" />
-      <Group style={styles.mobileGroupSpaced}>
-        {notifications.slice(0, 12).map((item, index) => (
-          <ContactRow
-            key={item.id}
-            caption={item.title}
-            icon={item.readAt ? 'notifications-outline' : 'notifications'}
-            value={item.body || formatInboxTime(item.createdAt) || 'Open chat'}
-            onPress={
-              item.conversationId
-                ? () => onOpenNotification?.(item.conversationId)
-                : undefined
-            }
-            last={index === Math.min(notifications.length, 12) - 1}
-          />
-        ))}
-      </Group>
-    </>
+  const notifyRows =
+    !viewingOther && Array.isArray(notifications)
+      ? notifications.slice(0, 12)
+      : [];
+  const contactRows = [
+    {
+      key: 'phone',
+      label: 'Phone',
+      icon: 'call-outline',
+      value: phoneLabel,
+      placeholder: canPhone ? 'No number on file' : 'Phone isn’t available',
+      onPress: canCall ? handlePhoneCall : undefined,
+      link: canCall,
+    },
+    {
+      key: 'email',
+      label: 'Email',
+      icon: 'mail-outline',
+      value: email,
+      placeholder: 'No email on file',
+      onPress: canMail ? () => void handleMail() : undefined,
+      link: canMail,
+    },
+  ];
+  const workRows = [
+    {
+      key: 'location',
+      label: 'Location',
+      icon: 'storefront-outline',
+      value: locationName,
+      placeholder: canEdit ? 'Not set in Aureus' : 'None',
+      onPress: canEdit ? () => setLocationPickerOpen(true) : undefined,
+      link: canEdit,
+    },
+    jobTitle ? { key: 'title', label: 'Title', icon: 'briefcase-outline', value: jobTitle } : null,
+  ].filter(Boolean);
+
+  const logoutRow = canEdit ? (
+    <Group>
+      <ProfileRow label="Log Out" onPress={onLogout} destructive last />
+    </Group>
   ) : null;
 
-  const infoCards = (
-    <>
-      {notifyCards}
-      <Group style={styles.mobileGroupSpaced}>
-        <ContactRow
-          caption="Phone"
-          icon="call-outline"
-          value={phoneLabel}
-          placeholder={canPhone ? 'No number on file' : 'Phone isn’t available'}
-          onPress={canCall ? handlePhoneCall : undefined}
-          link={canCall}
-        />
-        <ContactRow
-          caption="Email"
-          icon="mail-outline"
-          value={email}
-          placeholder="No email on file"
-          last
-          onPress={canMail ? () => void handleMail() : undefined}
-          link={canMail}
-        />
-      </Group>
-
-      <Group style={styles.mobileGroupSpaced}>
-        {[
-          {
-            key: 'location',
-            caption: 'Location',
-            icon: 'storefront-outline',
-            value: locationName,
-            placeholder: canEdit ? 'Not set in Aureus' : 'None',
-            onPress: canEdit ? () => setLocationPickerOpen(true) : undefined,
-          },
-          jobTitle ? { key: 'title', caption: 'Title', icon: 'briefcase-outline', value: jobTitle } : null,
-        ]
-          .filter(Boolean)
-          .map((row, index, rows) => (
-            <ContactRow
-              key={row.key}
-              caption={row.caption}
-              icon={row.icon}
-              value={row.value}
-              placeholder={row.placeholder}
-              onPress={row.onPress}
-              link={Boolean(row.onPress)}
-              last={index === rows.length - 1}
+  const linkedBlock =
+    linkedSystems.length > 0 ? (
+      <>
+        <GroupLabel title="Linked POS" />
+        <Group>
+          {linkedSystems.map((linked, index) => (
+            <ProfileRow
+              key={linked.key}
+              label={linked.label}
+              icon="link-outline"
+              value={linked.token ? 'Connected' : linked.error || 'Not connected'}
+              last={index === linkedSystems.length - 1}
             />
           ))}
-      </Group>
-    </>
-  );
-
-  const mobileBody = (
-    <>
-      {actionError ? <Text style={styles.mobileError}>{actionError}</Text> : null}
-      {avatarError ? <Text style={styles.mobileError}>{avatarError}</Text> : null}
-
-      {infoCards}
-
-      <ProfileNotesTable profileId={profileId} myId={myId} />
-
-      {canEdit ? (
-        <Group style={styles.logoutGroupMobile}>
-          <Pressable
-            onPress={onLogout}
-            style={({ pressed }) => [styles.logoutRow, pressed && styles.contactRowPressed]}
-            accessibilityRole="button"
-            accessibilityLabel="Log out"
-          >
-            <Text style={styles.logoutText}>Log Out</Text>
-          </Pressable>
         </Group>
-      ) : null}
-    </>
-  );
+      </>
+    ) : null;
 
-  const desktopBody = settingsOpen && canEdit ? (
-    <>
-      {accountRows.length > 0 ? (
-        <View style={[styles.group, styles.groupIos]}>
-          {accountRows.map((row, index) => (
-            <DetailRow
-              key={row.key}
-              label={row.label}
-              value={row.value}
-              onPress={row.onPress}
-              last={index === accountRows.length - 1}
-            />
-          ))}
-        </View>
-      ) : null}
-
-      {linkedSystems.length > 0 ? (
-        <View style={styles.linkedBlock}>
-          <Text style={styles.sectionLabel}>Linked POS</Text>
-          <View style={[styles.group, styles.groupIos]}>
-            {linkedSystems.map((linked, index) => (
-              <DetailRow
-                key={linked.key}
-                label={linked.label}
-                value={linked.token ? 'Connected' : linked.error || 'Not connected'}
-                last={index === linkedSystems.length - 1}
-              />
-            ))}
-          </View>
-        </View>
-      ) : null}
-
-      <View style={[styles.group, styles.logoutGroup, styles.groupIos]}>
-        <Pressable
-          onPress={onLogout}
-          style={({ hovered, pressed }) => [
-            styles.logoutRow,
-            (hovered || pressed) && styles.rowHovered,
-          ]}
-          accessibilityRole="button"
-          accessibilityLabel="Log out"
-        >
-          <Text style={styles.logoutText}>Log Out</Text>
-        </Pressable>
-      </View>
-    </>
-  ) : (
+  const profileBody = (
     <>
       {actionError ? <Text style={styles.error}>{actionError}</Text> : null}
       {avatarError ? <Text style={styles.error}>{avatarError}</Text> : null}
-      {infoCards}
-      <ProfileNotesTable profileId={profileId} myId={myId} />
-      {linkedSystems.length > 0 ? (
+      {notifyRows.length > 0 ? (
         <>
-          <GroupLabel title="Linked POS" />
+          <GroupLabel title="Notifications" />
           <Group>
-            {linkedSystems.map((linked, index) => (
-              <ContactRow
-                key={linked.key}
-                caption={linked.label}
-                icon="link-outline"
-                value={linked.token ? 'Connected' : linked.error || 'Not connected'}
-                last={index === linkedSystems.length - 1}
+            {notifyRows.map((item, index) => (
+              <ProfileRow
+                key={item.id}
+                label={item.title}
+                icon={item.readAt ? 'notifications-outline' : 'notifications'}
+                value={item.body || formatInboxTime(item.createdAt) || 'Open chat'}
+                onPress={
+                  item.conversationId ? () => onOpenNotification?.(item.conversationId) : undefined
+                }
+                last={index === notifyRows.length - 1}
               />
             ))}
           </Group>
         </>
       ) : null}
-      {canEdit ? (
-        <Group style={styles.logoutGroupMobile}>
-          <Pressable
-            onPress={onLogout}
-            style={({ hovered, pressed }) => [styles.logoutRow, (hovered || pressed) && styles.rowHovered]}
-            accessibilityRole="button"
-            accessibilityLabel="Log out"
-          >
-            <Text style={styles.logoutText}>Log Out</Text>
-          </Pressable>
+      <View>
+        <GroupLabel title="Contact" />
+        <Group>
+          {contactRows.map((row, index) => (
+            <ProfileRow
+              key={row.key}
+              label={row.label}
+              icon={row.icon}
+              value={row.value}
+              placeholder={row.placeholder}
+              onPress={row.onPress}
+              link={row.link}
+              last={index === contactRows.length - 1}
+            />
+          ))}
         </Group>
+      </View>
+      <View>
+        <GroupLabel title="Work" />
+        <Group>
+          {workRows.map((row, index) => (
+            <ProfileRow
+              key={row.key}
+              label={row.label}
+              icon={row.icon}
+              value={row.value}
+              placeholder={row.placeholder}
+              onPress={row.onPress}
+              link={row.link}
+              last={index === workRows.length - 1}
+            />
+          ))}
+        </Group>
+      </View>
+      <ProfileNotesTable profileId={profileId} myId={myId} />
+      {logoutRow}
+    </>
+  );
+
+  const settingsBody = (
+    <>
+      {accountRows.length > 0 ? (
+        <View>
+          <GroupLabel title="Account" />
+          <Group>
+            {accountRows.map((row, index) => (
+              <ProfileRow
+                key={row.key}
+                label={row.label}
+                icon={row.icon}
+                value={row.value}
+                onPress={row.onPress}
+                link={Boolean(row.onPress)}
+                last={index === accountRows.length - 1}
+              />
+            ))}
+          </Group>
+        </View>
       ) : null}
+      {linkedBlock}
+      {logoutRow}
     </>
   );
 
@@ -846,116 +829,7 @@ export default function ProfileScreen({
   const topLabel = settingsOpen ? 'Settings' : viewingOther ? 'Staff' : 'Profile';
   const heroTitle = settingsOpen ? 'Settings' : name || 'Profile';
   const showBack = viewingOther || settingsOpen;
-
-  const desktopDetails = (
-    <View style={[styles.group, styles.groupIos]}>
-      {[
-        {
-          key: 'phone',
-          label: 'Phone',
-          value: phoneLabel || (canPhone ? 'No number on file' : 'Phone isn’t available'),
-          onPress: canCall ? handlePhoneCall : undefined,
-        },
-        {
-          key: 'email',
-          label: 'Email',
-          value: email || 'No email on file',
-          onPress: canMail ? () => void handleMail() : undefined,
-        },
-        {
-          key: 'location',
-          label: 'Location',
-          value: locationName || (canEdit ? 'Not set in Aureus' : 'None'),
-          onPress: canEdit ? () => setLocationPickerOpen(true) : undefined,
-        },
-        jobTitle ? { key: 'title', label: 'Title', value: jobTitle } : null,
-      ]
-        .filter(Boolean)
-        .map((row, index, rows) => (
-          <DetailRow
-            key={row.key}
-            label={row.label}
-            value={row.value}
-            onPress={row.onPress}
-            last={index === rows.length - 1}
-          />
-        ))}
-    </View>
-  );
-
-  const desktopSheet = settingsOpen && canEdit ? (
-    desktopBody
-  ) : (
-    <>
-      {actionError ? <Text style={styles.error}>{actionError}</Text> : null}
-      {avatarError ? <Text style={styles.error}>{avatarError}</Text> : null}
-      <View style={styles.deskStack}>
-        {desktopDetails}
-        <ProfileNotesTable profileId={profileId} myId={myId} />
-        {canEdit ? (
-          <View style={[styles.group, styles.logoutGroup, styles.groupIos]}>
-            <Pressable
-              onPress={onLogout}
-              style={({ hovered, pressed }) => [
-                styles.logoutRow,
-                (hovered || pressed) && styles.rowHovered,
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel="Log out"
-            >
-              <Text style={styles.logoutText}>Log Out</Text>
-            </Pressable>
-          </View>
-        ) : null}
-      </View>
-    </>
-  );
-
-  const mobileSettings = (
-    <>
-      {accountRows.length > 0 ? (
-        <Group>
-          {accountRows.map((row, index) => (
-            <ContactRow
-              key={row.key}
-              caption={row.label}
-              value={row.value}
-              onPress={row.onPress}
-              link={Boolean(row.onPress)}
-              last={index === accountRows.length - 1}
-            />
-          ))}
-        </Group>
-      ) : null}
-      {linkedSystems.length > 0 ? (
-        <>
-          <GroupLabel title="Linked POS" />
-          <Group>
-            {linkedSystems.map((linked, index) => (
-              <ContactRow
-                key={linked.key}
-                caption={linked.label}
-                value={linked.token ? 'Connected' : linked.error || 'Not connected'}
-                last={index === linkedSystems.length - 1}
-              />
-            ))}
-          </Group>
-        </>
-      ) : null}
-      {canEdit ? (
-        <Group style={styles.logoutGroupMobile}>
-          <Pressable
-            onPress={onLogout}
-            style={({ pressed }) => [styles.logoutRow, pressed && styles.contactRowPressed]}
-            accessibilityRole="button"
-            accessibilityLabel="Log out"
-          >
-            <Text style={styles.logoutText}>Log Out</Text>
-          </Pressable>
-        </Group>
-      ) : null}
-    </>
-  );
+  const body = settingsOpen && canEdit ? settingsBody : profileBody;
 
   const profileModals = (
     <>
@@ -1043,14 +917,74 @@ export default function ProfileScreen({
     </>
   );
 
-  const pagePad = isMobile
-    ? MOBILE_FILTER_INSET
-    : windowWidth >= 1600
-      ? 24
-      : windowWidth >= 1200
-        ? 20
-        : 16;
-  const body = settingsOpen && canEdit ? (isMobile ? mobileSettings : desktopBody) : isMobile ? mobileBody : desktopSheet;
+  const pagePad = isMobile ? MOBILE_FILTER_INSET : windowWidth >= 1440 ? 40 : 28;
+  const chromeChip = (onPress, label, icon) => (
+    <Pressable
+      onPress={onPress}
+      style={({ hovered, pressed }) => [
+        styles.chip,
+        !isMobile && styles.chipStretch,
+        hovered && styles.chipHover,
+        pressed && styles.chipPress,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+    >
+      <Ionicons name={icon} size={17} color={INK} />
+      <Text style={styles.chipLabel}>{label}</Text>
+    </Pressable>
+  );
+
+  const identityBlock = (
+    <View style={[styles.identity, !isMobile && styles.identityDesk]}>
+      {settingsOpen ? null : (
+        <Pressable
+          onPress={handleViewAvatar}
+          disabled={avatarBusy}
+          style={[styles.identityAvatar, !isMobile && styles.identityAvatarDesk]}
+          accessibilityRole="button"
+          accessibilityLabel={avatarUrl ? `View ${name || 'profile'} photo` : 'View photo'}
+        >
+          <ProfileAvatar uri={avatarUrl} name={name} size={isMobile ? 36 : 72} style={styles.avatar} />
+          {canEdit ? (
+            <Pressable
+              onPress={handlePickAvatar}
+              disabled={avatarBusy}
+              style={[styles.identityEdit, !isMobile && styles.identityEditDesk]}
+              accessibilityRole="button"
+              accessibilityLabel={avatarUrl ? 'Edit profile photo' : 'Add a profile photo'}
+              hitSlop={4}
+            >
+              {avatarBusy ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Ionicons name="pencil" size={isMobile ? 10 : 11} color="#fff" />
+              )}
+            </Pressable>
+          ) : null}
+        </Pressable>
+      )}
+      <View style={styles.identityCopy}>
+        <Text style={[styles.identityName, !isMobile && styles.identityNameDesk]} numberOfLines={2}>
+          {heroTitle}
+        </Text>
+        {!settingsOpen && subtitle ? (
+          <Text style={[styles.identityMeta, !isMobile && styles.identityMetaDesk]} numberOfLines={2}>
+            {subtitle}
+          </Text>
+        ) : settingsOpen ? (
+          <Text style={[styles.identityMeta, !isMobile && styles.identityMetaDesk]}>Account</Text>
+        ) : null}
+      </View>
+      {isMobile ? null : settingsOpen && canEdit ? null : profileActions}
+      {isMobile ? null : showBack ? chromeChip(goBack, 'Back', 'chevron-back') : null}
+      {isMobile
+        ? null
+        : canEdit && !viewingOther && !settingsOpen
+          ? chromeChip(() => setSettingsOpen(true), 'Settings', 'settings-outline')
+          : null}
+    </View>
+  );
 
   return (
     <View style={styles.screen}>
@@ -1062,7 +996,11 @@ export default function ProfileScreen({
               <Pressable
                 onPress={goBack}
                 hitSlop={8}
-                style={styles.iconChip}
+                style={({ hovered, pressed }) => [
+                  styles.chipIcon,
+                  hovered && styles.chipHover,
+                  pressed && styles.chipPress,
+                ]}
                 accessibilityRole="button"
                 accessibilityLabel="Back"
               >
@@ -1077,23 +1015,27 @@ export default function ProfileScreen({
             {canEdit && !viewingOther && !settingsOpen ? (
               <Pressable
                 onPress={() => setSettingsOpen(true)}
-                style={styles.textChip}
+                style={({ hovered, pressed }) => [
+                  styles.chip,
+                  hovered && styles.chipHover,
+                  pressed && styles.chipPress,
+                ]}
                 accessibilityRole="button"
                 accessibilityLabel="Settings"
               >
-                <Ionicons name="settings-outline" size={15} color={INK} />
-                <Text style={styles.textChipLabel}>Settings</Text>
+                <Ionicons name="settings-outline" size={17} color={INK} />
+                <Text style={styles.chipLabel}>Settings</Text>
               </Pressable>
             ) : null}
           </View>
         </View>
       ) : null}
       <ScrollView
-        style={styles.homeScroll}
+        style={styles.scroll}
         contentContainerStyle={{
           flexGrow: 1,
-          paddingTop: isMobile ? 60 : DESKTOP_TOP_BAR_HEIGHT + 16,
-          paddingBottom: isMobile ? mobileTabBarReserve() + 24 : 36,
+          paddingTop: isMobile ? 60 : DESKTOP_TOP_BAR_HEIGHT + 28,
+          paddingBottom: isMobile ? mobileTabBarReserve() + 24 : 48,
           paddingHorizontal: pagePad,
         }}
         showsVerticalScrollIndicator={false}
@@ -1103,71 +1045,20 @@ export default function ProfileScreen({
         {...(isMobile ? tabBarScroll : null)}
         {...(Platform.OS === 'web' ? { className: 'cgold-home-overlay-scroll' } : null)}
       >
-        <View style={styles.identity}>
-          {settingsOpen ? null : (
-            <Pressable
-              onPress={handleViewAvatar}
-              disabled={avatarBusy}
-              style={styles.identityAvatar}
-              accessibilityRole="button"
-              accessibilityLabel={avatarUrl ? `View ${name || 'profile'} photo` : 'View photo'}
-            >
-              <ProfileAvatar uri={avatarUrl} name={name} size={isMobile ? 44 : 52} style={styles.avatar} />
-              {canEdit ? (
-                <Pressable
-                  onPress={handlePickAvatar}
-                  disabled={avatarBusy}
-                  style={styles.identityEdit}
-                  accessibilityRole="button"
-                  accessibilityLabel={avatarUrl ? 'Edit profile photo' : 'Add a profile photo'}
-                  hitSlop={4}
-                >
-                  {avatarBusy ? (
-                    <ActivityIndicator size="small" color="#fff" />
-                  ) : (
-                    <Ionicons name="pencil" size={11} color="#fff" />
-                  )}
-                </Pressable>
-              ) : null}
-            </Pressable>
+        <View style={[styles.column, !isMobile && styles.columnDesk]}>
+          {isMobile ? (
+            <>
+              {identityBlock}
+              {settingsOpen && canEdit ? null : profileActions}
+              <View style={styles.tableBlock}>{body}</View>
+            </>
+          ) : (
+            <View style={styles.deskSplit}>
+              <View style={styles.deskAside}>{identityBlock}</View>
+              <View style={styles.deskMain}>{body}</View>
+            </View>
           )}
-          <View style={styles.identityCopy}>
-            <Text style={styles.identityName} numberOfLines={2}>
-              {heroTitle}
-            </Text>
-            {!settingsOpen && subtitle ? (
-              <Text style={styles.identityMeta} numberOfLines={2}>
-                {subtitle}
-              </Text>
-            ) : settingsOpen ? (
-              <Text style={styles.identityMeta}>Account</Text>
-            ) : null}
-          </View>
-          {!isMobile && showBack ? (
-            <Pressable
-              onPress={goBack}
-              style={styles.textChip}
-              accessibilityRole="button"
-              accessibilityLabel="Back"
-            >
-              <Ionicons name="chevron-back" size={16} color={INK} />
-              <Text style={styles.textChipLabel}>Back</Text>
-            </Pressable>
-          ) : null}
-          {!isMobile && canEdit && !viewingOther && !settingsOpen ? (
-            <Pressable
-              onPress={() => setSettingsOpen(true)}
-              style={styles.textChip}
-              accessibilityRole="button"
-              accessibilityLabel="Settings"
-            >
-              <Ionicons name="settings-outline" size={15} color={INK} />
-              <Text style={styles.textChipLabel}>Settings</Text>
-            </Pressable>
-          ) : null}
         </View>
-        {settingsOpen && canEdit ? null : profileActions}
-        <View style={styles.tableBlock}>{body}</View>
       </ScrollView>
       {profileModals}
     </View>
@@ -1192,11 +1083,11 @@ const styles = StyleSheet.create({
   },
   mobileBarFill: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(252,252,251,0.92)',
+    backgroundColor: 'rgba(252,252,251,0.72)',
     ...Platform.select({
       web: {
-        backdropFilter: 'saturate(120%) blur(12px)',
-        WebkitBackdropFilter: 'saturate(120%) blur(12px)',
+        backdropFilter: 'saturate(180%) blur(22px)',
+        WebkitBackdropFilter: 'saturate(180%) blur(22px)',
       },
       default: {},
     }),
@@ -1205,237 +1096,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    minHeight: 48,
+    minHeight: 52,
     paddingHorizontal: MOBILE_FILTER_INSET,
     paddingVertical: 8,
   },
   mobileBarTitle: {
     fontFamily,
     fontSize: 14,
-    fontWeight: '200',
-    color: INK,
+    fontWeight: '400',
+    color: ACTIVE_LABEL,
     letterSpacing: -0.2,
   },
   mobileBarSpacer: {
     flex: 1,
   },
-  iconChip: {
-    width: 32,
-    height: 32,
-    borderRadius: CHIP_RADIUS,
-    borderWidth: 1,
-    borderColor: CHIP_BORDER,
-    backgroundColor: CANVAS,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...CHIP_SHADOW,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  textChip: {
-    height: 32,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
-    borderRadius: CHIP_RADIUS,
-    borderWidth: 1,
-    borderColor: CHIP_BORDER,
-    backgroundColor: CANVAS,
-    ...CHIP_SHADOW,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  textChipLabel: {
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '400',
-    color: INK,
-    letterSpacing: -0.2,
-  },
-  identity: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingBottom: 16,
-  },
-  identityAvatar: {
-    position: 'relative',
-    flexShrink: 0,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  identityEdit: {
-    position: 'absolute',
-    right: -2,
-    bottom: -2,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: INK,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: CANVAS,
-    zIndex: 2,
-  },
-  identityCopy: {
-    flex: 1,
-    minWidth: 0,
-    gap: 2,
-  },
-  identityName: {
-    fontFamily,
-    fontSize: 16,
-    fontWeight: '600',
-    color: LABEL,
-    letterSpacing: -0.2,
-  },
-  identityMeta: {
-    fontFamily,
-    fontSize: 13,
-    color: SECONDARY,
-    letterSpacing: -0.1,
-  },
-  tableBlock: {
-    alignSelf: 'stretch',
-    width: '100%',
-    minWidth: 0,
-    gap: 16,
-  },
-  screenMobile: {
-    backgroundColor: CANVAS,
-  },
-  deskStack: {
-    width: '100%',
-    minWidth: 0,
-    gap: 16,
-  },
-  chromeRow: {
-    zIndex: 24,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    width: '100%',
-    minHeight: 44,
-    gap: 12,
-    paddingHorizontal: 32,
-    paddingTop: 16,
-    paddingBottom: 12,
-    backgroundColor: 'transparent',
-  },
-  chromeRowDesktop: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    paddingTop: DESKTOP_TOP_BAR_HEIGHT + 16,
-  },
-  chromeLead: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  chromeBack: {
-    width: 36,
-    height: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginLeft: -8,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  chromeTitle: {
-    flexShrink: 1,
-    minWidth: 0,
-    fontFamily,
-    fontSize: 22,
-    fontWeight: '600',
-    color: '#6B5E3A',
-    letterSpacing: -0.3,
-  },
-  chromeChip: {
-    height: 40,
-    borderRadius: 20,
-    overflow: 'hidden',
-    ...Platform.select({
-      web: {
-        cursor: 'pointer',
-        boxShadow: '0 10px 28px rgba(0,0,0,0.14), 0 1px 3px rgba(0,0,0,0.08)',
-      },
-      default: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.16,
-        shadowRadius: 18,
-        elevation: 12,
-      },
-    }),
-  },
-  chromeChipBlur: {
-    height: 40,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 14,
-    borderRadius: 20,
-    overflow: 'hidden',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(0,0,0,0.08)',
-    backgroundColor: 'rgba(255,255,255,0.56)',
-  },
-  chromeChipText: {
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: INK,
-  },
-  stage: {
-    flex: 1,
-    minHeight: 0,
-    position: 'relative',
-  },
-  pinnedTop: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 1,
-    elevation: 0,
-    paddingHorizontal: 16,
-    paddingTop: 6,
-    paddingBottom: 8,
-  },
-  pinnedTopDesktop: {
-    paddingHorizontal: 32,
-    paddingTop: DESKTOP_TOP_BAR_HEIGHT + 56,
-    paddingBottom: 4,
-  },
-  topDate: {
-    alignSelf: 'stretch',
-    minHeight: 44,
-    textAlign: 'center',
-    textAlignVertical: 'center',
-    fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#6B5E3A',
-    letterSpacing: 0.2,
-    lineHeight: 44,
-    marginBottom: 10,
-  },
-  overlayScroll: {
-    zIndex: 4,
+  scroll: {
     flex: 1,
     minHeight: 0,
     backgroundColor: 'transparent',
@@ -1448,153 +1123,60 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  sheet: {
-    zIndex: 2,
-    flexGrow: 1,
-    backgroundColor: '#F3F1EA',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    overflow: 'visible',
-    paddingHorizontal: 16,
-    paddingTop: 18,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(0,0,0,0.08)',
-    ...Platform.select({
-      web: {
-        boxShadow: '0 -8px 24px rgba(0,0,0,0.12), 0 -1px 0 rgba(255,255,255,0.9)',
-      },
-      default: {
-        shadowColor: '#000',
-        shadowOpacity: 0.14,
-        shadowRadius: 16,
-        shadowOffset: { width: 0, height: -6 },
-        elevation: 8,
-      },
-    }),
-  },
-  sheetDesktop: {
-    paddingHorizontal: 32,
-    paddingTop: 24,
+  column: {
     width: '100%',
+    maxWidth: 640,
+    alignSelf: 'flex-start',
+    gap: 10,
+  },
+  columnDesk: {
+    maxWidth: 980,
+    alignSelf: 'center',
+    gap: 0,
+  },
+  deskSplit: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 40,
+    width: '100%',
+  },
+  deskAside: {
+    width: 248,
+    flexShrink: 0,
+  },
+  deskMain: {
+    flex: 1,
     minWidth: 0,
-    alignSelf: 'stretch',
-    overflow: 'visible',
+    gap: 20,
+    paddingTop: 2,
   },
-  heroShell: {
-    alignSelf: 'stretch',
-    position: 'relative',
+  identity: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minHeight: 46,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    ...CHIP_CARD,
   },
-  heroLift: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: 20,
+  identityDesk: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 14,
+    minHeight: 0,
+    paddingVertical: 0,
+    paddingHorizontal: 0,
+    backgroundColor: 'transparent',
+    borderWidth: 0,
     ...Platform.select({
-      web: {
-        boxShadow: '0 1px 2px rgba(18,16,12,0.06), 0 10px 28px rgba(18,16,12,0.14)',
-      },
+      web: { boxShadow: 'none' },
       default: {
-        shadowColor: '#12100C',
-        shadowOpacity: 0.16,
-        shadowRadius: 18,
-        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0,
         elevation: 0,
       },
     }),
   },
-  heroInset: {
-    alignSelf: 'stretch',
-    paddingHorizontal: 18,
-    paddingTop: 18,
-    paddingBottom: 14,
-    borderRadius: 20,
-    backgroundColor: '#1F1E1B',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(212,175,55,0.32)',
-    ...Platform.select({
-      web: {
-        boxShadow:
-          'inset 0 1px 0 rgba(255,236,180,0.16), inset 0 -1px 0 rgba(0,0,0,0.38), 0 0 0 0.5px rgba(18,16,12,0.12)',
-      },
-      default: {},
-    }),
-  },
-  heroInsetDesktop: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 36,
-    paddingHorizontal: 28,
-    paddingVertical: 24,
-  },
-  heroInsetProfile: {
-    flexDirection: 'column',
-    alignItems: 'stretch',
-    gap: 18,
-    paddingTop: 22,
-    paddingBottom: 18,
-  },
-  heroInsetProfileDesktop: {
-    paddingHorizontal: 32,
-    paddingVertical: 28,
-    gap: 22,
-  },
-  heroLead: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    minWidth: 0,
-  },
-  heroLeadDesktop: {
-    flex: 1.1,
-  },
-  heroLeadProfile: {
-    flexDirection: 'column',
-    alignItems: 'center',
-    gap: 14,
-  },
-  heroCopyBlock: {
-    flex: 1,
-    minWidth: 0,
-    gap: 4,
-  },
-  heroCopyBlockCenter: {
-    alignItems: 'center',
-    flex: 0,
-    width: '100%',
-  },
-  heroPortrait: {
-    position: 'relative',
-    flexShrink: 0,
-  },
-  heroPortraitGlow: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: 999,
-    ...Platform.select({
-      web: {
-        boxShadow:
-          '0 0 0 1px rgba(18,16,12,0.45), 0 10px 22px rgba(0,0,0,0.32), 0 0 24px rgba(232,195,106,0.16)',
-      },
-      default: {
-        shadowColor: '#1d1d1f',
-        shadowOpacity: 0.28,
-        shadowRadius: 12,
-        shadowOffset: { width: 0, height: 4 },
-      },
-    }),
-  },
-  heroPortraitBezel: {
-    borderRadius: 999,
-    padding: 3,
-    borderWidth: 2,
-    borderColor: '#1d1d1f',
-    backgroundColor: '#161513',
-    ...Platform.select({
-      web: {
-        boxShadow:
-          'inset 0 1px 0 rgba(255,236,180,0.42), inset 0 -1px 0 rgba(0,0,0,0.45), 0 0 0 1px rgba(232,195,106,0.22)',
-      },
-      default: {},
-    }),
-  },
-  heroAvatarTap: {
+  identityAvatar: {
     position: 'relative',
     flexShrink: 0,
     ...Platform.select({
@@ -1602,200 +1184,251 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  heroAvatarEdit: {
+  identityAvatarDesk: {
+    alignSelf: 'flex-start',
+  },
+  identityEdit: {
     position: 'absolute',
-    right: -2,
-    bottom: -2,
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: '#1d1d1f',
+    right: -4,
+    bottom: -4,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: INK,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 2,
-    borderColor: '#1F1E1B',
+    borderColor: CHIP_BG,
     zIndex: 2,
   },
-  heroAvatarEditLarge: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    right: 2,
-    bottom: 2,
+  identityEditDesk: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    right: 0,
+    bottom: 0,
+    borderColor: CANVAS,
   },
-  heroAmount: {
-    flex: 1,
-    minWidth: 0,
-    fontFamily: fontFamily,
-    fontSize: 34,
-    lineHeight: 40,
-    fontWeight: '400',
-    color: '#F6F1E6',
-    letterSpacing: -1,
-  },
-  heroAmountDesktop: {
-    fontSize: 44,
-    lineHeight: 48,
-  },
-  heroAmountProfile: {
-    flex: 0,
-    textAlign: 'center',
-    fontSize: 32,
-    lineHeight: 36,
-  },
-  heroAmountProfileDesktop: {
-    fontSize: 42,
-    lineHeight: 46,
-  },
-  heroSubtitle: {
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#C4A35A',
-    letterSpacing: 0.1,
-    textAlign: 'center',
-  },
-  heroStats: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 16,
-    paddingVertical: 10,
-    paddingHorizontal: 8,
-    borderRadius: 14,
-    backgroundColor: 'rgba(0,0,0,0.28)',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(212,175,55,0.14)',
-  },
-  heroStatsDesktop: {
-    flex: 1,
-    marginTop: 0,
-    paddingVertical: 14,
-    paddingHorizontal: 12,
-  },
-  heroStatsBare: {
-    marginTop: 16,
-  },
-  heroStat: {
+  identityCopy: {
     flex: 1,
     minWidth: 0,
     gap: 1,
   },
-  heroStatDivider: {
-    width: StyleSheet.hairlineWidth,
-    height: 26,
-    marginHorizontal: 10,
-    backgroundColor: 'rgba(244,228,180,0.16)',
-  },
-  heroStatValue: {
+  identityName: {
     fontFamily,
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '600',
-    color: '#F6F1E6',
-    letterSpacing: -0.28,
+    color: ACTIVE_LABEL,
+    letterSpacing: -0.2,
   },
-  heroStatLabel: {
+  identityNameDesk: {
+    fontSize: 22,
+    lineHeight: 26,
+    fontWeight: '600',
+    letterSpacing: -0.4,
+  },
+  identityMeta: {
     fontFamily,
-    fontSize: 11,
-    fontWeight: '500',
-    color: '#C4A35A',
-    letterSpacing: 0.2,
+    fontSize: 13,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.2,
   },
-  chromeCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 32 / 2,
-    overflow: 'hidden',
-    zIndex: 24,
-    ...Platform.select({
-      web: {
-        cursor: 'pointer',
-        boxShadow: '0 1px 6px rgba(0,0,0,0.1)',
-      },
-      default: {
-        shadowColor: '#000',
-        shadowOpacity: 0.1,
-        shadowRadius: 6,
-        shadowOffset: { width: 0, height: 1 },
-        elevation: 3,
-      },
-    }),
-  },
-  chromeCircleBlur: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 32 / 2,
-    overflow: 'hidden',
-    backgroundColor: 'rgba(252,252,251,0.92)',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(0,0,0,0.08)',
-    ...Platform.select({
-      web: {
-        backdropFilter: 'saturate(120%) blur(12px)',
-        WebkitBackdropFilter: 'saturate(120%) blur(12px)',
-      },
-      default: {},
-    }),
-  },
-  backDock: {
-    position: 'absolute',
-    top: 8,
-    left: MOBILE_FILTER_INSET,
-    zIndex: 24,
-  },
-  filterDock: {
-    position: 'absolute',
-    top: 8,
-    right: MOBILE_FILTER_INSET,
-    zIndex: 24,
+  identityMetaDesk: {
+    fontSize: 14,
+    lineHeight: 18,
+    marginTop: 2,
   },
   avatar: {
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#e8e8ed',
   },
-  actionItem: {
-    flexGrow: 1,
-    flexShrink: 1,
-    flexBasis: 0,
-    maxWidth: 76,
-    minWidth: 56,
+  chip: {
+    height: 32,
+    flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+    paddingHorizontal: 10,
+    ...CHIP_CARD,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
     }),
   },
-  actionItemPressed: {
-    opacity: 0.72,
-  },
-  actionItemDisabled: {
-    opacity: 0.45,
-  },
-  actionIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#f2f2f7',
-    alignItems: 'center',
+  chipFill: {
+    flexGrow: 1,
+    minWidth: 108,
     justifyContent: 'center',
   },
-  actionLabel: {
-    fontFamily,
-    fontSize: 11,
-    fontWeight: '500',
-    color: '#1d1d1f',
-    letterSpacing: -0.1,
-    textAlign: 'center',
-    lineHeight: 14,
+  chipStretch: {
+    alignSelf: 'stretch',
+    justifyContent: 'center',
   },
-  actionLabelDisabled: {
-    color: '#8e8e93',
+  chipIcon: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...CHIP_CARD,
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  chipHover: {
+    backgroundColor: '#f4f4f5',
+  },
+  chipPress: {
+    backgroundColor: '#ececee',
+  },
+  chipDisabled: {
+    opacity: 0.45,
+  },
+  chipLabel: {
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: ACTIVE_LABEL,
+    letterSpacing: -0.2,
+  },
+  chipLabelDisabled: {
+    color: SECONDARY,
+  },
+  contactActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  contactActionsDesk: {
+    gap: 8,
+  },
+  stack: {
+    gap: 2,
+    width: '100%',
+  },
+  card: {
+    overflow: 'hidden',
+    paddingVertical: 4,
+    ...CHIP_CARD,
+  },
+  groupLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 10,
+    paddingTop: 8,
+    paddingBottom: 2,
+  },
+  groupLabelRowDesk: {
+    paddingHorizontal: 2,
+    paddingTop: 0,
+    paddingBottom: 8,
+  },
+  groupLabel: {
+    fontFamily,
+    fontSize: 13,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.2,
+  },
+  tableBlock: {
+    alignSelf: 'stretch',
+    width: '100%',
+    minWidth: 0,
+    gap: 10,
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 34,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    gap: 8,
+    borderRadius: CHIP_RADIUS,
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  rowDesk: {
+    minHeight: 40,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    gap: 16,
+    borderRadius: 0,
+    borderWidth: 0,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HAIRLINE,
+  },
+  rowLast: {
+    borderBottomWidth: 0,
+  },
+  rowTappable: {
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  rowHover: {
+    backgroundColor: HOVER_WASH,
+  },
+  rowPress: {
+    backgroundColor: PRESS_WASH,
+  },
+  rowIconCol: {
+    width: PROFILE_ICON_COL,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  rowLabel: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.2,
+  },
+  rowLabelDesk: {
+    flexGrow: 0,
+    flexShrink: 0,
+    width: 120,
+  },
+  rowLabelDestructive: {
+    color: '#FF3B30',
+  },
+  rowValue: {
+    maxWidth: '54%',
+    flexShrink: 1,
+    minWidth: 0,
+    fontFamily,
+    fontSize: 14,
+    fontWeight: '400',
+    color: ACTIVE_LABEL,
+    letterSpacing: -0.2,
+    textAlign: 'right',
+  },
+  rowValueDesk: {
+    flex: 1,
+    maxWidth: 'none',
+    textAlign: 'left',
+  },
+  rowValueEmpty: {
+    color: SECONDARY,
+  },
+  rowValueLink: {
+    color: LABEL,
+  },
+  error: {
+    fontFamily,
+    fontSize: 13,
+    color: '#b42318',
+    letterSpacing: -0.2,
+    paddingHorizontal: 8,
   },
   orgBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.35)',
+    backgroundColor: 'rgba(0,0,0,0.28)',
   },
   orgSheet: {
     ...StyleSheet.absoluteFillObject,
@@ -1811,17 +1444,12 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 420,
     maxHeight: '78%',
-    backgroundColor: CANVAS,
-    borderRadius: CHIP_RADIUS,
-    borderWidth: 1,
-    borderColor: CHIP_BORDER,
     overflow: 'hidden',
-    ...CHIP_SHADOW,
+    ...CHIP_CARD,
   },
   orgCardMobile: {
     maxWidth: '100%',
     maxHeight: '88%',
-    borderRadius: 16,
     borderBottomLeftRadius: 0,
     borderBottomRightRadius: 0,
   },
@@ -1830,7 +1458,7 @@ const styles = StyleSheet.create({
     width: 36,
     height: 5,
     borderRadius: 3,
-    backgroundColor: '#d1d1d6',
+    backgroundColor: '#d0d0d0',
     marginTop: 8,
     marginBottom: 2,
   },
@@ -1838,16 +1466,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e5e5ea',
+    borderBottomColor: HAIRLINE,
   },
   orgTitle: {
     fontFamily,
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '600',
-    color: '#1d1d1f',
+    color: ACTIVE_LABEL,
     letterSpacing: -0.2,
   },
   orgBody: {
@@ -1862,9 +1490,9 @@ const styles = StyleSheet.create({
   orgTeamName: {
     fontFamily,
     fontSize: 13,
-    fontWeight: '600',
-    color: '#8e8e93',
-    letterSpacing: -0.08,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.2,
     marginBottom: 6,
   },
   orgRow: {
@@ -1876,7 +1504,7 @@ const styles = StyleSheet.create({
   orgStem: {
     width: 2,
     height: 16,
-    backgroundColor: '#e5e5ea',
+    backgroundColor: HAIRLINE,
     borderRadius: 1,
   },
   orgPerson: {
@@ -1890,38 +1518,35 @@ const styles = StyleSheet.create({
   orgAvatarRing: {
     padding: 2,
     borderRadius: 40,
-    borderWidth: 2,
-    borderColor: '#1d1d1f',
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
   },
   orgPersonName: {
     fontFamily,
     fontSize: 12,
-    color: '#1d1d1f',
+    color: ACTIVE_LABEL,
     textAlign: 'center',
     letterSpacing: -0.1,
   },
   orgPersonNameCurrent: {
-    fontWeight: '700',
+    fontWeight: '600',
   },
   orgEmpty: {
     fontFamily,
     fontSize: 14,
-    color: '#8e8e93',
+    color: SECONDARY,
     textAlign: 'center',
     paddingHorizontal: 20,
     paddingVertical: 24,
+    letterSpacing: -0.2,
   },
   orgOpenTeams: {
-    margin: 16,
+    margin: 12,
     marginTop: 4,
     height: 32,
-    borderRadius: CHIP_RADIUS,
-    borderWidth: 1,
-    borderColor: CHIP_BORDER,
-    backgroundColor: CANVAS,
     alignItems: 'center',
     justifyContent: 'center',
-    ...CHIP_SHADOW,
+    ...CHIP_CARD,
     ...Platform.select({
       web: { cursor: 'pointer' },
       default: {},
@@ -1929,448 +1554,9 @@ const styles = StyleSheet.create({
   },
   orgOpenTeamsText: {
     fontFamily,
-    fontSize: 15,
-    fontWeight: '600',
-    color: INK,
-    letterSpacing: -0.2,
-  },
-  error: {
-    fontFamily,
-    fontSize: 13,
-    color: '#b42318',
-    marginBottom: 16,
-    textAlign: 'center',
-  },
-  group: {
-    backgroundColor: 'transparent',
-    borderRadius: 0,
-    overflow: 'hidden',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderColor: HAIRLINE,
-  },
-  groupIos: {
-    backgroundColor: 'transparent',
-    borderRadius: 0,
-  },
-  detailLabel: {
-    fontFamily,
-    width: 108,
-    flexShrink: 0,
-    fontSize: 13,
-    color: SECONDARY,
-    letterSpacing: -0.2,
-  },
-  detailLabelIos: {
-    width: 'auto',
-    flex: 1,
-    flexShrink: 1,
-    fontSize: 17,
-    fontWeight: '400',
-    color: '#000',
-    letterSpacing: -0.4,
-  },
-  detailValue: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '500',
-    color: INK,
-    letterSpacing: -0.2,
-    textAlign: 'right',
-  },
-  detailValueIos: {
-    fontSize: 17,
-    fontWeight: '400',
-    color: SECONDARY,
-    letterSpacing: -0.4,
-  },
-  sectionLabel: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#8e8e93',
-    letterSpacing: -0.08,
-    marginBottom: 8,
-    paddingHorizontal: 4,
-  },
-  detailRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 36,
-    paddingVertical: 8,
-    paddingHorizontal: 4,
-    gap: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#f2f2f2',
-  },
-  detailRowTappable: {
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  detailRowLast: {
-    borderBottomWidth: 0,
-  },
-  detailValueWrap: {
-    flex: 1,
-    minWidth: 0,
-    alignItems: 'flex-end',
-  },
-  rowHovered: {
-    backgroundColor: '#e8e8ed',
-  },
-  linkedBlock: {
-    marginTop: 24,
-  },
-  logoutGroup: {
-    marginTop: 28,
-  },
-  logoutRow: {
-    minHeight: 36,
-    alignItems: 'flex-start',
-    justifyContent: 'center',
-    paddingHorizontal: 4,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  logoutText: {
-    fontFamily,
     fontSize: 14,
     fontWeight: '400',
-    color: '#ff3b30',
+    color: ACTIVE_LABEL,
     letterSpacing: -0.2,
-  },
-  contactActions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 16,
-  },
-  contactActionsDesk: {
-    flexShrink: 0,
-    alignSelf: 'stretch',
-    marginTop: 22,
-    marginBottom: 0,
-    gap: 8,
-  },
-  contactAction: {
-    height: 32,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
-    borderRadius: CHIP_RADIUS,
-    borderWidth: 1,
-    borderColor: CHIP_BORDER,
-    backgroundColor: CANVAS,
-    ...CHIP_SHADOW,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  contactActionDesk: {
-    flex: 0,
-    width: 80,
-    minHeight: 72,
-    borderRadius: 14,
-    backgroundColor: '#F6F3EA',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(18,16,12,0.06)',
-  },
-  contactActionPressed: {
-    backgroundColor: '#f0f0f2',
-  },
-  contactActionDeskHover: {
-    backgroundColor: '#EFE8D8',
-  },
-  contactActionDisabled: {
-    opacity: 0.45,
-  },
-  contactActionGlyph: {
-    width: 28,
-    height: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  contactActionGlyphDesk: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(232,195,106,0.16)',
-  },
-  contactActionLabel: {
-    fontFamily,
-    fontSize: 14,
-    fontWeight: '400',
-    color: INK,
-    letterSpacing: -0.2,
-  },
-  contactActionLabelDesk: {
-    color: '#6B5E3A',
-    fontWeight: '600',
-  },
-  contactActionLabelDisabled: {
-    color: SECONDARY,
-  },
-  mobileError: {
-    fontFamily,
-    fontSize: 13,
-    color: '#ff3b30',
-    textAlign: 'center',
-    marginTop: 10,
-    marginBottom: 2,
-    paddingHorizontal: 8,
-  },
-  groupLabelRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: MOBILE_FILTER_INSET,
-    paddingTop: 16,
-    paddingBottom: 6,
-  },
-  groupLabel: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '400',
-    color: SECONDARY,
-    letterSpacing: -0.08,
-  },
-  mobileGroup: {
-    backgroundColor: 'transparent',
-    borderRadius: 0,
-    overflow: 'hidden',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: HAIRLINE,
-  },
-  mobileGroupSpaced: {
-    marginTop: 8,
-  },
-  contactRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 36,
-    paddingVertical: 8,
-    paddingHorizontal: 4,
-    gap: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#f2f2f2',
-  },
-  contactRowLast: {
-    borderBottomWidth: 0,
-  },
-  contactRowPressed: {
-    backgroundColor: '#f2f2f7',
-  },
-  contactIconCol: {
-    width: PROFILE_ICON_COL,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  contactIcon: {
-    width: 26,
-    height: 26,
-    borderRadius: CHIP_RADIUS,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  contactCopy: {
-    flex: 1,
-    minWidth: 0,
-  },
-  contactCaption: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '400',
-    color: SECONDARY,
-    letterSpacing: -0.2,
-  },
-  contactValue: {
-    maxWidth: '52%',
-    flexShrink: 1,
-    minWidth: 0,
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '500',
-    color: INK,
-    letterSpacing: -0.2,
-    textAlign: 'right',
-  },
-  contactValueEmpty: {
-    color: SECONDARY,
-    fontWeight: '400',
-  },
-  contactValueLink: {
-    color: LABEL,
-  },
-  contactChevron: {
-    width: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  logoutGroupMobile: {
-    marginTop: 16,
-  },
-  homeScroll: {
-    flex: 1,
-    minHeight: 0,
-    backgroundColor: 'transparent',
-    ...Platform.select({
-      web: {
-        overflowY: 'auto',
-        overflowX: 'hidden',
-        height: 0,
-      },
-      default: {},
-    }),
-  },
-  homeHeroPad: {
-    paddingHorizontal: MOBILE_FILTER_INSET,
-  },
-  homeHero: {
-    alignSelf: 'stretch',
-    paddingTop: 4,
-    paddingBottom: 12,
-  },
-  homeHeroRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    alignSelf: 'stretch',
-  },
-  homeHeroRowBare: {
-    alignItems: 'center',
-  },
-  homeHeroIconCol: {
-    width: PROFILE_ICON_COL,
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-    flexShrink: 0,
-  },
-  homeHeroAvatarTap: {
-    position: 'relative',
-    width: 48,
-    height: 48,
-    ...Platform.select({
-      web: { cursor: 'pointer' },
-      default: {},
-    }),
-  },
-  homeHeroAvatarEdit: {
-    position: 'absolute',
-    right: -4,
-    bottom: -4,
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: INK,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: CANVAS,
-    zIndex: 2,
-  },
-  homeHeroCopy: {
-    flex: 1,
-    minWidth: 0,
-    marginLeft: 12,
-    justifyContent: 'center',
-    minHeight: 48,
-  },
-  homeHeroCopyBare: {
-    marginLeft: 0,
-    minHeight: 40,
-  },
-  homeHeroName: {
-    fontFamily: fontFamily,
-    fontSize: 34,
-    lineHeight: 40,
-    fontWeight: '400',
-    color: LABEL,
-    letterSpacing: -0.8,
-  },
-  homeHeroStats: {
-    flexDirection: 'column',
-    flexGrow: 0,
-    flexShrink: 0,
-    alignSelf: 'stretch',
-    justifyContent: 'flex-start',
-    gap: 1,
-    minWidth: 108,
-    maxWidth: 132,
-    paddingTop: 6,
-    paddingLeft: 14,
-    borderLeftWidth: StyleSheet.hairlineWidth,
-    borderLeftColor: 'rgba(60, 60, 67, 0.12)',
-  },
-  homeHeroStat: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    justifyContent: 'space-between',
-    gap: 8,
-    paddingVertical: 2,
-  },
-  homeHeroStatLabel: {
-    flex: 1,
-    minWidth: 0,
-    fontFamily,
-    fontSize: 10,
-    fontWeight: '500',
-    color: '#aeaeb2',
-    letterSpacing: 0.02,
-  },
-  homeHeroStatValue: {
-    fontFamily,
-    fontSize: 13,
-    fontWeight: '500',
-    color: '#1d1d1f',
-    letterSpacing: -0.2,
-    textAlign: 'right',
-    flexShrink: 1,
-    maxWidth: '62%',
-  },
-  homeActionPad: {
-    paddingHorizontal: MOBILE_FILTER_INSET,
-    paddingTop: 4,
-    paddingBottom: 8,
-  },
-  homeSheet: {
-    backgroundColor: 'transparent',
-    marginTop: 8,
-    width: '100%',
-    alignSelf: 'stretch',
-  },
-  contactActionsPills: {
-    marginBottom: 0,
-    gap: 8,
-  },
-  contactActionPill: {
-    flex: 1,
-    minHeight: 34,
-    borderRadius: 8,
-    backgroundColor: '#fff',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(60, 60, 67, 0.18)',
-    paddingVertical: 8,
-    gap: 4,
-  },
-  contactActionPillPressed: {
-    backgroundColor: '#f2f2f7',
-  },
-  contactActionGlyphPill: {
-    width: 20,
-    height: 20,
-  },
-  contactActionLabelPill: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: LABEL,
-    letterSpacing: 0,
-    textTransform: 'capitalize',
   },
 });

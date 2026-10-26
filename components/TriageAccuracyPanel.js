@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { Image, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import {
   applyTriageReviewToPo,
   collectAllTriagePos,
@@ -21,6 +21,7 @@ import {
   summarizeLotsFineMetals,
 } from '../lib/triageLots';
 import { formatLineErrorSummary, MAX_REVIEW_IMAGES, normalizeReviewImages } from '../lib/triageDraft';
+import { backfillTriageErrorBuyers, errorEmployeeName } from '../lib/triageStoreErrors';
 import { captureTriagePhoto } from './TriageCorrectionImages';
 import {
   ColumnFilter,
@@ -94,8 +95,8 @@ const SORTERS = {
 };
 
 function staffName(row) {
-  const name = String(row?.employeeName || '').trim();
-  return name && name !== '—' ? name : '';
+  const name = errorEmployeeName(row);
+  return name && name !== 'Unspecified' && name !== '—' ? name : '';
 }
 
 function storeNameOf(row) {
@@ -379,6 +380,16 @@ export default function TriageAccuracyPanel({
   insetTop = 0,
 }) {
   const { triage } = useTransferWorkflow();
+  useEffect(() => {
+    if (!session?.token) return undefined;
+    let cancelled = false;
+    backfillTriageErrorBuyers(session, triage).catch(() => {
+      if (cancelled) return;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [session, triage]);
   const isMobile = useIsMobile();
   const [openRow, setOpenRow] = useState(null);
   const [openFilter, setOpenFilter] = useState(null);

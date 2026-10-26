@@ -23,7 +23,7 @@ import {
   View,
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import {
   CANVAS,
   MOBILE,
@@ -43,6 +43,12 @@ export const FONT = Platform.select({
   ios: 'Sohne',
   android: 'Sohne',
   default: 'Sohne',
+});
+
+export const FONT_LIGHT = Platform.select({
+  ios: 'SohneLeicht',
+  android: 'SohneLeicht',
+  default: 'SohneLeicht',
 });
 
 export const T = {

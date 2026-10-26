@@ -10,7 +10,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { textMatchesQuery } from '../lib/itemSearch';
 import { useLiveRefresh } from '../lib/liveRefresh';
 import { fetchWebsitePrices } from '../lib/websitePrices';

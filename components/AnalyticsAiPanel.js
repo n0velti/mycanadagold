@@ -13,7 +13,7 @@ import {
   View,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { ANALYTICS_CHAT_MODELS, askAnalytics, buildExportSheet, completeOpenRouter } from '../lib/analyticsChartTools';
 import { storedChart } from '../lib/analyticsStoredChart';
 import { createDashboardFromAnswers, dashboardableTurnIndexes } from '../lib/dashboards';
@@ -34,6 +34,7 @@ import {
   avatarColorForId,
   contactName,
   formatInboxTime,
+  hideDmConversation,
   initialsFromName,
   isDefaultAiTitle,
   listDmContacts,
@@ -46,10 +47,13 @@ import {
   hydrateAiDmChat,
   listSharedAiChats,
   mergeLocalAndSharedAiChats,
+  mergeTurns,
   persistMissingAiTurns,
   shareAiChat,
+  turnKey,
+  withLocalTurnMeta,
 } from '../lib/aiDmShare';
-import AnalyticsChartCard from './AnalyticsChartCard';
+import AnalyticsChartCard, { warmCharts } from './AnalyticsChartCard';
 import AnalyticsMapCard from './AnalyticsMapCard';
 import AnalyticsTableCard from './AnalyticsTableCard';
 import AnalyticsFileCard from './AnalyticsFileCard';
@@ -62,9 +66,9 @@ import {
   prepareAttachment,
   storableAttachment,
 } from '../lib/aiAttachments';
-import { CANVAS, MOBILE, NAV_TAB_ACTIVE_BG, NAV_TAB_ACTIVE_RADIUS } from '../lib/mobileUi';
+import { CANVAS, MOBILE, NAV_TAB_ACTIVE_BG, enterToSendProps } from '../lib/mobileUi';
 import { useScreenVisible } from '../lib/screenVisibility';
-import { FONT, FONT_LIGHT } from '../lib/typography';
+import { FONT } from '../lib/typography';
 import { MobileFeedTopBarActions } from './MobileChrome';
 
 const MODEL_KEY = 'cgold.analytics.aiModel';
@@ -75,7 +79,10 @@ const AiEvalPanel = __DEV__ ? require('./AiEvalPanel').default : null;
 
 const INK = '#1a1a1a';
 const CHIP_BORDER = '#d0d0d0';
-const CHIP_RADIUS = 6;
+const CHIP_RADIUS = 8;
+const FIELD_IDLE = 'rgba(60,60,67,0.06)';
+const FIELD_HOVER = 'rgba(60,60,67,0.10)';
+const TAB_HOVER = 'rgba(60,60,67,0.06)';
 const BUBBLE_RADIUS = 20;
 const BUBBLE_TAIL = 5;
 const RULE = 'rgba(42,38,30,0.08)';
@@ -125,26 +132,27 @@ const CHIP_SHADOW = Platform.select({
     elevation: 1,
   },
 });
-const COMPOSER_PILL_IDLE_SHADOW = Platform.select({
-  web: { boxShadow: '0 1px 2px rgba(0,0,0,0.03)' },
-  default: {
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.03,
-    shadowRadius: 2,
-    elevation: 0,
+const CHIP_CARD = {
+  backgroundColor: '#fff',
+  borderRadius: CHIP_RADIUS,
+  borderWidth: 1,
+  borderColor: CHIP_BORDER,
+  ...CHIP_SHADOW,
+};
+const WEB_CHIP_MOTION = Platform.select({
+  web: {
+    boxSizing: 'border-box',
+    transitionProperty: 'background-color, border-color, box-shadow',
+    transitionDuration: '120ms',
+    transitionTimingFunction: 'ease',
   },
+  default: {},
 });
-const COMPOSER_PILL_ACTIVE_SHADOW = Platform.select({
-  web: { boxShadow: '0 2px 8px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)' },
-  default: {
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 5,
-    elevation: 1,
-  },
-});
+
+function webClass(names) {
+  if (Platform.OS !== 'web') return null;
+  return { className: names.filter(Boolean).join(' ') };
+}
 const CHATS_KEY = 'cgold.analytics.aiChats';
 const ACTIVE_KEY = 'cgold.analytics.aiChat.active';
 const PROMPTS_KEY = 'cgold.analytics.savedPrompts';
@@ -411,13 +419,36 @@ function slimChats(chats, { stripCharts = false } = {}) {
   return (draft ? [draft, ...kept] : kept).sort(byChatOrder);
 }
 
+// Two panels can be mounted at once (Analytics, and the AI thread inside
+// Messages) and both write the same key, so a write folds in what is on disk
+// instead of replacing it. Chats removed this session are remembered here so
+// the other panel's next write does not bring them back.
+const removedChatKeys = new Set();
+const chatRemovedListeners = new Set();
+
+function isRemovedChat(chat) {
+  return removedChatKeys.has(String(chat?.id || '')) || removedChatKeys.has(String(chat?.conversationId || ''));
+}
+
+function forgetChat(chat) {
+  if (chat?.id) removedChatKeys.add(String(chat.id));
+  if (chat?.conversationId) removedChatKeys.add(String(chat.conversationId));
+  chatRemovedListeners.forEach((listener) => listener());
+}
+
 async function writeChats(userKey, chats) {
   const key = storageKey(userKey);
+  const onDisk = await loadStoredChats(key);
+  const merged = mergeChatLists(onDisk, chats).filter((chat) => !isRemovedChat(chat));
   try {
-    await AsyncStorage.setItem(key, JSON.stringify(slimChats(chats)));
+    await AsyncStorage.setItem(key, JSON.stringify(slimChats(merged)));
   } catch {
-    await AsyncStorage.setItem(key, JSON.stringify(slimChats(chats, { stripCharts: true })));
+    await AsyncStorage.setItem(key, JSON.stringify(slimChats(merged, { stripCharts: true })));
   }
+}
+
+function isPendingTurn(turn) {
+  return turn?.role === 'assistant' && !String(turn?.content || '').trim();
 }
 
 function isAbort(error) {
@@ -666,6 +697,7 @@ export default function AnalyticsAiPanel({
   const [error, setError] = useState('');
   const [mobileList, setMobileList] = useState(false);
   const [listQuery, setListQuery] = useState('');
+  const [listSearchFocus, setListSearchFocus] = useState(false);
   const [model, setModel] = useState(ANALYTICS_CHAT_MODELS[0].key);
   const [modelOpen, setModelOpen] = useState(false);
   // Dev-only eval runner (lib/aiEval.js); the button only renders under __DEV__.
@@ -678,6 +710,9 @@ export default function AnalyticsAiPanel({
   const [hoverChatId, setHoverChatId] = useState(null);
   const [people, setPeople] = useState([]);
   const [shareOpen, setShareOpen] = useState(false);
+  const [shareQuery, setShareQuery] = useState('');
+  const [shareSearchFocus, setShareSearchFocus] = useState(false);
+  const [sharePicked, setSharePicked] = useState(() => new Set());
   const [sharing, setSharing] = useState(false);
   const [mapsKey, setMapsKey] = useState('');
   // "+ Dashboard": check off answers in this chat, then Submit makes a tab.
@@ -713,7 +748,6 @@ export default function AnalyticsAiPanel({
   const [composerHover, setComposerHover] = useState(false);
   const [composerFocus, setComposerFocus] = useState(false);
   const [sentAnim, setSentAnim] = useState(null);
-  const composerActive = composerHover || composerFocus;
   const composerMaxHeight = COMPOSER_LINE_HEIGHT * COMPOSER_MAX_LINES;
 
   // Kept on each saved chat for older entries that recorded one; new chats
@@ -916,6 +950,14 @@ export default function AnalyticsAiPanel({
     };
   }, []);
 
+  // Charts are likely once a chat is open; fetch the chart library while the
+  // person is still typing so the first answer draws without a wait.
+  useEffect(() => {
+    if (!screenVisible) return undefined;
+    const timer = setTimeout(warmCharts, 1200);
+    return () => clearTimeout(timer);
+  }, [screenVisible]);
+
   useEffect(() => {
     let alive = true;
     listDmContacts()
@@ -929,6 +971,13 @@ export default function AnalyticsAiPanel({
       alive = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!shareOpen) return;
+    setShareQuery('');
+    setShareSearchFocus(false);
+    setSharePicked(new Set());
+  }, [shareOpen]);
 
   useEffect(() => {
     let alive = true;
@@ -946,7 +995,7 @@ export default function AnalyticsAiPanel({
         shared = [];
       }
       if (!alive) return;
-      let rows = mergeLocalAndSharedAiChats(local, shared);
+      let rows = mergeLocalAndSharedAiChats(local, shared).filter((chat) => !isRemovedChat(chat));
       const boundId = conversationIdRef.current;
       if (boundId) {
         const current = rows.find((chat) => chat.conversationId === boundId || chat.id === boundId);
@@ -997,8 +1046,9 @@ export default function AnalyticsAiPanel({
       }
       if (!alive) return;
       if (revisionRef.current !== seen) {
-        setReady(true);
-        return;
+        // A live message landed while loading; fold it in rather than drop
+        // either side.
+        rows = mergeChatLists(rows, chatsRef.current).filter((chat) => !isRemovedChat(chat));
       }
       chatsRef.current = rows;
       setChats(rows);
@@ -1019,11 +1069,15 @@ export default function AnalyticsAiPanel({
           for (const chat of unsynced) {
             if (!alive || !mountedRef.current) return;
             try {
-              const conversation = await ensureAiDmForChat(chat);
+              const ensured = await ensureAiDmForChat(chat);
               if (!alive || !mountedRef.current) return;
+              // Keep the stored turns (they carry message ids) so the next
+              // send does not write this history into the thread again.
               commit((current) =>
                 current.map((item) => (
-                  item.id === chat.id ? { ...item, conversationId: conversation } : item
+                  item.id === chat.id
+                    ? { ...item, conversationId: ensured.id, turns: mergeTurns(item.turns, ensured.turns) }
+                    : item
                 )),
                 { persist: true },
               );
@@ -1127,6 +1181,8 @@ export default function AnalyticsAiPanel({
 
   const startNewRef = useRef(startNew);
   startNewRef.current = startNew;
+  const busyIdRef = useRef('');
+  busyIdRef.current = busyId;
   useEffect(() => {
     if (!ready) return;
     if (startBlank) {
@@ -1135,6 +1191,9 @@ export default function AnalyticsAiPanel({
       return;
     }
     if (embedded || !screenVisible) return;
+    // Coming back while an answer is still being written keeps that chat on
+    // screen; a blank chat would look as though the answer never arrived.
+    if (busyIdRef.current && busyIdRef.current === activeIdRef.current) return;
     startNewRef.current();
     setMobileList(false);
   }, [ready, startBlank, embedded, screenVisible]);
@@ -1194,6 +1253,10 @@ export default function AnalyticsAiPanel({
     return () => setHeader(null);
   }, [compact, embedded, mobileTopBarTrailing]);
 
+  // The thread in Messages is the record of a chat; this device's copy shows
+  // at once and is replaced by the thread when it arrives, so a reply someone
+  // else got in the meantime is never missing. A send in flight keeps its
+  // "thinking" placeholder.
   const openChat = (id) => {
     selectChat(id);
     setDraft('');
@@ -1202,10 +1265,21 @@ export default function AnalyticsAiPanel({
     setSentAnim(null);
     const chat = chatsRef.current.find((item) => item.id === id);
     if (!chat?.conversationId) return;
-    if (!chat.previewOnly && (chat.turns || []).length > 1) return;
     hydrateAiDmChat(chat, myId)
       .then((hydrated) => {
-        commit((current) => current.map((item) => (item.id === id ? hydrated : item)));
+        if (!mountedRef.current) return;
+        commit((current) =>
+          current.map((item) => {
+            if (item.id !== id) return item;
+            const pending = (item.turns || []).filter(isPendingTurn);
+            const unsaved = (item.turns || []).filter((turn) => !turn.messageId && !isPendingTurn(turn));
+            const merged = withLocalTurnMeta(
+              { ...hydrated, id: item.id, turns: mergeTurns(hydrated.turns, unsaved) },
+              item,
+            );
+            return { ...merged, turns: [...merged.turns, ...pending] };
+          }),
+        );
       })
       .catch(() => {});
   };
@@ -1217,7 +1291,7 @@ export default function AnalyticsAiPanel({
     if (!chat) throw new Error('Open a chat first.');
     setSharing(true);
     try {
-      const conversation = await shareAiChat({
+      const { id: conversation, turns: storedTurns } = await shareAiChat({
         conversationId: chat.conversationId || conversationIdRef.current,
         title: chat.title,
         turns: chat.turns,
@@ -1232,6 +1306,7 @@ export default function AnalyticsAiPanel({
                 ...item,
                 id: conversation,
                 conversationId: conversation,
+                turns: [...mergeTurns(item.turns, storedTurns), ...(item.turns || []).filter(isPendingTurn)],
                 members: [...(item.members || []), ...added.filter((person) => !known.has(person.id))],
               }
             : item,
@@ -1261,6 +1336,9 @@ export default function AnalyticsAiPanel({
     const boundId = conversationId || activeChat?.conversationId;
     if (!boundId || !myId) return undefined;
     return subscribeDmRealtime({
+      onParticipant: () => {
+        onInboxChangedRef.current?.();
+      },
       onMessage: (payload) => {
         const row = payload?.new;
         if (!row?.id || row.conversation_id !== boundId) return;
@@ -1281,32 +1359,22 @@ export default function AnalyticsAiPanel({
               if (chat.conversationId !== boundId && chat.id !== boundId) return chat;
               const turns = chat.turns || [];
               if (turns.some((item) => item.messageId === mapped.id)) return chat;
-              const match = turns.findIndex(
-                (item) =>
-                  !item.messageId
-                  && item.role === turn.role
-                  && String(item.content || '').trim() === turn.content,
-              );
-              if (match >= 0) {
-                const nextTurns = turns.slice();
-                nextTurns[match] = { ...nextTurns[match], ...turn };
-                return { ...chat, previewOnly: false, turns: nextTurns };
-              }
+              // A send in flight keeps its "thinking" placeholder at the end;
+              // the reply that lands through this channel does not end it,
+              // the send does.
+              const pending = turns.filter(isPendingTurn);
               return {
                 ...chat,
                 placeholder: false,
                 previewOnly: false,
                 updatedAt: mapped.createdAt || chat.updatedAt,
-                turns: [...turns.filter((item) => String(item.content || '').trim() || item.role === 'user'), turn],
+                turns: [...mergeTurns(turns, [turn]), ...pending],
               };
             }),
           );
         }).catch(() => {});
       },
-      onParticipant: () => {
-        onInboxChangedRef.current?.();
-      },
-    });
+    }, { conversationId: boundId });
   }, [activeChat?.conversationId, conversationId, myId]);
 
   const removeChat = (id) => {
@@ -1315,13 +1383,31 @@ export default function AnalyticsAiPanel({
       sendingRef.current = false;
       setBusyId('');
     }
-    commit((current) => current.filter((chat) => chat.id !== id), { persist: true });
+    const chat = chatsRef.current.find((item) => item.id === id);
+    forgetChat(chat || { id });
+    commit((current) => current.filter((item) => item.id !== id), { persist: true });
+    // Hide the thread in Messages too (for this person only), or the next
+    // load lists it again from the inbox.
+    if (chat?.conversationId) hideDmConversation(chat.conversationId).catch(() => {});
     if (activeIdRef.current === id) {
       selectChat(null);
       setDraft('');
       setError('');
     }
   };
+
+  // A chat removed from the other mounted panel disappears here as well.
+  useEffect(() => {
+    const drop = () => {
+      if (!chatsRef.current.some(isRemovedChat)) return;
+      commit((current) => current.filter((chat) => !isRemovedChat(chat)));
+    };
+    chatRemovedListeners.add(drop);
+    return () => {
+      chatRemovedListeners.delete(drop);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const togglePin = (id) => {
     commit(
@@ -1429,13 +1515,15 @@ export default function AnalyticsAiPanel({
     const existing = activeIdRef.current
       ? chatsRef.current.find((chat) => chat.id === activeIdRef.current)
       : null;
-    const priorUsers = (existing?.turns || []).filter((turn) => turn.role === 'user' && String(turn.content || '').trim()).length;
+    // The whole chat stays on screen; only its tail goes to the model.
+    const allTurns = (existing?.turns || []).filter(
+      (turn) => (turn.role === 'user' || turn.role === 'assistant') && String(turn.content || '').trim(),
+    );
+    const priorUsers = allTurns.filter((turn) => turn.role === 'user').length;
     const id = existing?.id || chatId();
     const nameThis = priorUsers === 0;
     const now = new Date().toISOString();
-    const history = (existing?.turns || [])
-      .filter((turn) => (turn.role === 'user' || turn.role === 'assistant') && String(turn.content || '').trim())
-      .slice(-MAX_TURNS);
+    const history = allTurns.slice(-MAX_TURNS);
     const { gen, controller } = bump(id);
     sendingRef.current = true;
     setBusyId(id);
@@ -1455,51 +1543,60 @@ export default function AnalyticsAiPanel({
     }).start();
 
     const stored = attachments.map(storableAttachment).filter(Boolean);
+    const chatTitle = nameThis ? fallbackTitle(text) : (existing?.title || fallbackTitle(text));
     let boundId = existing?.conversationId || conversationId || '';
-    if (!boundId) {
-      try {
-        boundId = await ensureAiDmForChat({
-          title: nameThis ? fallbackTitle(text) : (existing?.title || fallbackTitle(text)),
-          turns: [],
-        });
-      } catch {
-        boundId = '';
-      }
-    }
     const userTurnBase = stored.length
       ? { role: 'user', content: text, attachments: stored, senderId: myId }
       : { role: 'user', content: text, senderId: myId };
+    // On screen at once; the thread in Messages is opened after.
     const nextChat = {
       id,
-      conversationId: boundId || existing?.conversationId || '',
-      title: nameThis ? fallbackTitle(text) : (existing?.title || fallbackTitle(text)),
+      conversationId: boundId,
+      title: chatTitle,
       scopeLabel: existing?.scopeLabel || scopeLabel,
       createdAt: existing?.createdAt || now,
       updatedAt: now,
       pinned: Boolean(existing?.pinned),
       placeholder: false,
       members: existing?.members || [],
-      turns: [...history, userTurnBase, { role: 'assistant', content: '' }],
+      turns: [...allTurns, userTurnBase, { role: 'assistant', content: '' }],
     };
     commit((current) => {
       const rest = current.filter((chat) => chat.id !== id);
       return [nextChat, ...rest];
     }, { persist: true });
 
-    if (boundId) {
-      persistMissingAiTurns(boundId, [...history, userTurnBase])
-        .then((stored) => {
-          if (genRef.current.get(id) !== gen) return;
+    if (!boundId) {
+      try {
+        boundId = (await ensureAiDmForChat({ title: chatTitle, turns: [] })).id;
+        if (boundId && genRef.current.get(id) === gen) {
           commit((current) =>
-            current.map((chat) => {
-              if (chat.id !== id) return chat;
-              const pending = (chat.turns || []).filter((turn) => turn.role === 'assistant' && !String(turn.content || '').trim());
-              return { ...chat, conversationId: boundId, turns: [...stored, ...pending] };
-            }),
+            current.map((chat) => (chat.id === id ? { ...chat, conversationId: boundId } : chat)),
           );
-        })
-        .catch(() => {});
+        }
+      } catch {
+        boundId = '';
+      }
     }
+
+    // The question goes into the shared thread right away so Messages shows
+    // it while the model works. The stored copies carry message ids, and the
+    // answer's save below starts from them, so the question is written once.
+    const questionStored = boundId
+      ? persistMissingAiTurns(boundId, [...allTurns, userTurnBase]).catch(() => null)
+      : Promise.resolve(null);
+    void questionStored.then((saved) => {
+      if (!saved || genRef.current.get(id) !== gen) return;
+      commit((current) =>
+        current.map((chat) => {
+          if (chat.id !== id) return chat;
+          const pending = (chat.turns || []).filter(isPendingTurn);
+          // The answer has already landed; nothing left to swap in.
+          if (!pending.length) return chat;
+          return { ...chat, conversationId: boundId, turns: [...mergeTurns(chat.turns, saved), ...pending] };
+        }),
+      );
+    });
 
     try {
       const result = await askAnalytics({
@@ -1520,11 +1617,15 @@ export default function AnalyticsAiPanel({
       const answer = String(result.text || '').trim();
       if (!answer) throw new Error('No answer came back. Try again.');
       const priced = priceUsage(result.usage, model, pricesRef.current);
-      const userTurn = priced ? { ...userTurnBase, usage: priced } : userTurnBase;
       const assistantTurn = priced
         ? { role: 'assistant', content: answer, charts: result.charts || [], usage: priced }
         : { role: 'assistant', content: answer, charts: result.charts || [] };
-      const savedTurns = [...history, userTurn, assistantTurn];
+      const base = (await questionStored) || [...allTurns, userTurnBase];
+      const questionAt = base.length - 1;
+      const savedTurns = [
+        ...base.map((turn, index) => (index === questionAt && priced ? { ...turn, usage: priced } : turn)),
+        assistantTurn,
+      ];
       let storedTurns = savedTurns;
       if (boundId) {
         try {
@@ -1533,10 +1634,17 @@ export default function AnalyticsAiPanel({
           // Keep the answer on this device even if the shared thread is late.
         }
       }
+      // Fold the exchange into whatever is on screen now (someone else's
+      // message may have landed meanwhile) rather than replacing it.
       commit((current) =>
         current.map((chat) => (
           chat.id === id
-            ? { ...chat, conversationId: boundId || chat.conversationId, turns: storedTurns, updatedAt: new Date().toISOString() }
+            ? {
+                ...chat,
+                conversationId: boundId || chat.conversationId,
+                turns: mergeTurns(chat.turns, storedTurns),
+                updatedAt: new Date().toISOString(),
+              }
             : chat
         )),
       { persist: true });
@@ -1546,14 +1654,13 @@ export default function AnalyticsAiPanel({
       if (named.usage) {
         const withTitle = priceUsage(addUsage(result.usage, named.usage), model, pricesRef.current);
         if (withTitle) {
+          const exchange = new Set(storedTurns.slice(-2).map(turnKey));
           commit((current) =>
             current.map((chat) => {
               if (chat.id !== id) return chat;
               return {
                 ...chat,
-                turns: chat.turns.map((turn, index) => (
-                  index >= chat.turns.length - 2 ? { ...turn, usage: withTitle } : turn
-                )),
+                turns: chat.turns.map((turn) => (exchange.has(turnKey(turn)) ? { ...turn, usage: withTitle } : turn)),
               };
             }),
           { persist: true });
@@ -1573,11 +1680,11 @@ export default function AnalyticsAiPanel({
       commit((current) =>
         current.flatMap((chat) => {
           if (chat.id !== id) return [chat];
-          const nextTurns = chat.turns.slice();
-          const last = nextTurns[nextTurns.length - 1];
-          if (last?.role === 'assistant' && !String(last.content || '').trim()) nextTurns.pop();
+          const nextTurns = chat.turns.filter((turn) => !isPendingTurn(turn));
           const prev = nextTurns[nextTurns.length - 1];
-          if (prev?.role === 'user' && prev.content === text) nextTurns.pop();
+          // A question already in the shared thread stays; one that never
+          // got there goes back into the composer.
+          if (prev?.role === 'user' && prev.content === text && !prev.messageId) nextTurns.pop();
           if (!nextTurns.some((turn) => turn.role === 'user' && String(turn.content || '').trim())) {
             return [{ ...chat, title: 'New chat', placeholder: true, turns: [] }];
           }
@@ -1850,91 +1957,200 @@ export default function AnalyticsAiPanel({
 
   const shareMemberIds = new Set(activeMembers.map((person) => person.id));
   const shareAddable = people.filter((person) => person.id !== myId && !shareMemberIds.has(person.id));
+  const shareNeedle = shareQuery.trim().toLowerCase();
+  const shareFiltered = shareAddable.filter((person) => {
+    if (!shareNeedle) return true;
+    const name = contactName(person).toLowerCase();
+    const first = String(person?.firstName || '').toLowerCase();
+    const last = String(person?.lastName || '').toLowerCase();
+    return name.includes(shareNeedle) || first.includes(shareNeedle) || last.includes(shareNeedle);
+  });
+  const sharePickedCount = sharePicked.size;
+  const closeShare = () => {
+    if (sharing) return;
+    setShareOpen(false);
+    setShareQuery('');
+    setShareSearchFocus(false);
+    setSharePicked(new Set());
+  };
+  const toggleSharePick = (id) => {
+    if (sharing) return;
+    setSharePicked((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const submitShare = () => {
+    const ids = [...sharePicked];
+    if (!ids.length || sharing) return;
+    void addPeopleToActive(ids)
+      .then(() => closeShare())
+      .catch((err) => {
+        setError(err?.message || 'Could not add those people.');
+      });
+  };
   const shareSheet = (
     <Modal
       visible={shareOpen}
       transparent
       animationType="fade"
-      onRequestClose={() => setShareOpen(false)}
+      onRequestClose={closeShare}
     >
-      <View style={styles.modelSheetRoot}>
+      <View style={styles.shareSheetRoot}>
         <Pressable
-          style={styles.modelSheetBackdrop}
+          style={styles.shareSheetBackdrop}
           accessibilityRole="button"
           accessibilityLabel="Close add people"
-          onPress={() => setShareOpen(false)}
+          onPress={closeShare}
         />
-        <View style={[styles.modelSheetCard, compact && styles.modelSheetCardPhone]}>
-          <View style={styles.modelSheetHead}>
-            <Text style={styles.modelSheetTitle}>Add people</Text>
-            <Text style={styles.modelSheetSubtitle}>
+        <View style={[styles.shareSheetCard, compact && styles.shareSheetCardPhone]}>
+          <View style={styles.shareSheetHead}>
+            <Text style={styles.shareSheetTitle}>Add people</Text>
+            <Text style={styles.shareSheetSubtitle}>
               They get this chat and its history, and can talk to the AI with you.
             </Text>
+            <View
+              {...webClass(['cgold-home-search', shareSearchFocus && 'cgold-home-search-active'])}
+              style={[styles.shareSearch, shareSearchFocus && styles.shareSearchOn]}
+            >
+              <Ionicons
+                name={shareSearchFocus || shareQuery ? 'search' : 'search-outline'}
+                size={16}
+                color={shareSearchFocus || shareQuery ? INK : SECONDARY}
+              />
+              <TextInput
+                value={shareQuery}
+                onChangeText={setShareQuery}
+                onFocus={() => setShareSearchFocus(true)}
+                onBlur={() => setShareSearchFocus(false)}
+                placeholder="Search people"
+                placeholderTextColor={SECONDARY}
+                style={styles.shareSearchInput}
+                autoCorrect={false}
+                autoCapitalize="none"
+                returnKeyType="search"
+              />
+              {shareQuery ? (
+                <Pressable
+                  onPress={() => setShareQuery('')}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Clear search"
+                >
+                  <Ionicons name="close-circle" size={16} color="#c7c7cc" />
+                </Pressable>
+              ) : null}
+            </View>
           </View>
           <ScrollView
-            style={styles.modelSheetScroll}
-            contentContainerStyle={styles.modelSheetScrollContent}
+            style={styles.shareSheetScroll}
+            contentContainerStyle={styles.shareSheetScrollContent}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
-            {activeMembers.length ? (
-              <View style={styles.modelSection}>
-                <Text style={styles.modelSectionTitle}>In this chat</Text>
+            {activeMembers.length && !shareNeedle ? (
+              <View style={styles.shareSection}>
+                <Text style={styles.shareSectionTitle}>In this chat</Text>
                 {activeMembers.map((person) => (
                   <View key={person.id} style={styles.sharePerson}>
-                    <PersonMark person={person} size={36} />
+                    <PersonMark person={person} size={32} />
                     <Text style={styles.sharePersonName} numberOfLines={1}>
                       {contactName(person)}
                     </Text>
+                    <Text style={styles.sharePersonMeta}>Added</Text>
                   </View>
                 ))}
               </View>
             ) : null}
-            <View style={styles.modelSection}>
-              <Text style={styles.modelSectionTitle}>Add</Text>
-              {shareAddable.length ? (
-                shareAddable.map((person) => (
-                  <Pressable
-                    key={person.id}
-                    disabled={sharing}
-                    onPress={() => {
-                      void addPeopleToActive([person.id]).catch((err) => {
-                        setError(err?.message || 'Could not add that person.');
-                      });
-                    }}
-                    style={({ hovered, pressed }) => [
-                      styles.sharePerson,
-                      (hovered || pressed) && styles.sharePersonHover,
-                    ]}
-                  >
-                    <PersonMark person={person} size={36} />
-                    <Text style={styles.sharePersonName} numberOfLines={1}>
-                      {contactName(person)}
-                    </Text>
-                    {sharing ? (
-                      <ActivityIndicator size="small" color={SECONDARY} />
-                    ) : (
-                      <Ionicons name="add-circle-outline" size={20} color={BUBBLE_MINE} />
-                    )}
-                  </Pressable>
-                ))
+            <View style={styles.shareSection}>
+              <Text style={styles.shareSectionTitle}>
+                {sharePickedCount ? `${sharePickedCount} selected` : 'Staff'}
+              </Text>
+              {shareFiltered.length ? (
+                shareFiltered.map((person) => {
+                  const pickedPerson = sharePicked.has(person.id);
+                  return (
+                    <Pressable
+                      key={person.id}
+                      disabled={sharing}
+                      pressChrome={false}
+                      onPress={() => toggleSharePick(person.id)}
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: pickedPerson }}
+                      accessibilityLabel={contactName(person)}
+                      {...webClass([pickedPerson && 'cgold-sidebar-item', pickedPerson && 'cgold-sidebar-item-active'])}
+                      style={({ hovered, pressed }) => [
+                        styles.sharePerson,
+                        styles.sharePersonPick,
+                        pickedPerson && styles.sharePersonOn,
+                        !pickedPerson && (hovered || pressed) && styles.sharePersonHover,
+                      ]}
+                    >
+                      <PersonMark person={person} size={32} />
+                      <Text
+                        style={[styles.sharePersonName, pickedPerson && styles.sharePersonNameOn]}
+                        numberOfLines={1}
+                      >
+                        {contactName(person)}
+                      </Text>
+                      <View style={[styles.shareCheck, pickedPerson && styles.shareCheckOn]}>
+                        {pickedPerson ? <Ionicons name="checkmark" size={13} color="#fff" /> : null}
+                      </View>
+                    </Pressable>
+                  );
+                })
               ) : (
-                <Text style={styles.promptEmpty}>
-                  {people.length ? 'Everyone you can add is already here.' : 'No other staff have signed in yet.'}
+                <Text style={styles.shareEmpty}>
+                  {shareNeedle
+                    ? 'No matching people.'
+                    : people.length
+                      ? 'Everyone you can add is already here.'
+                      : 'No other staff have signed in yet.'}
                 </Text>
               )}
             </View>
           </ScrollView>
-          <Pressable
-            onPress={() => setShareOpen(false)}
-            accessibilityRole="button"
-            style={({ hovered, pressed }) => [
-              styles.modelSheetDone,
-              (hovered || pressed) && styles.modelSheetDoneHover,
-            ]}
-          >
-            <Text style={styles.modelSheetDoneText}>Done</Text>
-          </Pressable>
+          <View style={styles.shareSheetFooter}>
+            <Pressable
+              onPress={closeShare}
+              disabled={sharing}
+              pressChrome={false}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel"
+              {...webClass(['cgold-home-chip'])}
+              style={({ hovered, pressed }) => [
+                styles.shareFooterBtn,
+                (hovered || pressed) && styles.shareFooterBtnHover,
+              ]}
+            >
+              <Text style={styles.shareFooterBtnText}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              onPress={submitShare}
+              disabled={sharing || !sharePickedCount}
+              pressChrome={false}
+              accessibilityRole="button"
+              accessibilityLabel={
+                sharePickedCount === 1 ? 'Add 1 person' : `Add ${sharePickedCount} people`
+              }
+              {...webClass(['cgold-home-chip', sharePickedCount && 'cgold-home-chip-active'])}
+              style={({ hovered, pressed }) => [
+                styles.shareFooterBtn,
+                sharePickedCount ? styles.shareFooterBtnOn : styles.shareFooterBtnOff,
+                sharePickedCount && (hovered || pressed) && styles.shareFooterBtnOnHover,
+              ]}
+            >
+              {sharing ? (
+                <ActivityIndicator size="small" color={INK} />
+              ) : (
+                <Text style={[styles.shareFooterBtnText, sharePickedCount && styles.shareFooterBtnTextOn]}>
+                  {sharePickedCount ? `Add ${sharePickedCount}` : 'Add'}
+                </Text>
+              )}
+            </Pressable>
+          </View>
         </View>
       </View>
     </Modal>
@@ -1945,7 +2161,6 @@ export default function AnalyticsAiPanel({
     const busy = busyId === chat.id;
     const pinned = Boolean(chat.pinned);
     const menuOpen = menuChatId === chat.id;
-    const showMore = menuOpen || hoverChatId === chat.id || Platform.OS !== 'web';
     const lastTurn = [...(chat.turns || [])].reverse().find((turn) => String(turn?.content || '').trim());
     const lastLine = lastTurn
       ? `${
@@ -1976,19 +2191,28 @@ export default function AnalyticsAiPanel({
             setMenuChatId(null);
             openChat(chat.id);
           }}
+          pressChrome={false}
           accessibilityRole="button"
           accessibilityState={{ selected }}
           accessibilityLabel={chat.title}
-          style={[
+          {...webClass([selected && 'cgold-sidebar-item', selected && 'cgold-sidebar-item-active'])}
+          style={({ hovered, pressed }) => [
             styles.chatRow,
             selected && styles.chatRowOn,
-            hoverChatId === chat.id && !selected && styles.chatRowHover,
+            !selected && (hovered || pressed || hoverChatId === chat.id) && styles.chatRowHover,
           ]}
         >
           <View style={styles.chatRowCopy}>
             <View style={styles.chatRowTitleLine}>
-              {pinned ? <Ionicons name="pin" size={11} color={SECONDARY} style={styles.chatRowPin} /> : null}
-              <Text style={[styles.chatRowTitle, selected && styles.chatRowTitleOn]} numberOfLines={1}>
+              {pinned ? <Ionicons name="pin" size={11} color={selected ? INK : SECONDARY} style={styles.chatRowPin} /> : null}
+              <Text
+                style={[
+                  styles.chatRowTitle,
+                  hoverChatId === chat.id && !selected && styles.chatRowTitleHover,
+                  selected && styles.chatRowTitleOn,
+                ]}
+                numberOfLines={1}
+              >
                 {chat.title}
               </Text>
               {busy ? (
@@ -1997,29 +2221,29 @@ export default function AnalyticsAiPanel({
                 <Text style={styles.chatRowTime}>{formatInboxTime(chat.updatedAt)}</Text>
               )}
             </View>
-            <Text style={styles.chatRowPreview} numberOfLines={2}>
-              {memberCount ? `${memberCount + 1} people · ${lastLine}` : lastLine}
-            </Text>
+            <View style={styles.chatRowPreviewLine}>
+              <Text style={styles.chatRowPreview} numberOfLines={1}>
+                {memberCount ? `${memberCount + 1} people · ${lastLine}` : lastLine}
+              </Text>
+              <Pressable
+                onPress={(event) => {
+                  event?.stopPropagation?.();
+                  event?.preventDefault?.();
+                  setMenuChatId(menuOpen ? null : chat.id);
+                }}
+                hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
+                accessibilityRole="button"
+                accessibilityLabel={`Options for ${chat.title}`}
+                style={({ hovered, pressed }) => [
+                  styles.chatMoreHit,
+                  (hovered || pressed || menuOpen) && styles.chatMoreHitOn,
+                ]}
+              >
+                <Ionicons name="ellipsis-horizontal" size={16} color={SECONDARY} />
+              </Pressable>
+            </View>
           </View>
         </Pressable>
-        {showMore ? (
-          <Pressable
-            onPress={(event) => {
-              event?.stopPropagation?.();
-              event?.preventDefault?.();
-              setMenuChatId(menuOpen ? null : chat.id);
-            }}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel={`Options for ${chat.title}`}
-            style={({ hovered, pressed }) => [
-              styles.chatMoreHit,
-              (hovered || pressed || menuOpen) && styles.chatMoreHitOn,
-            ]}
-          >
-            <Ionicons name="ellipsis-horizontal" size={16} color={SECONDARY} />
-          </Pressable>
-        ) : null}
         {menuOpen ? (
           <View style={styles.chatMenu}>
             <Pressable
@@ -2074,6 +2298,7 @@ export default function AnalyticsAiPanel({
     );
   };
 
+  const newChatSelected = !activeId || Boolean(activeChat && !hasUserMessage(activeChat));
   const listBody = (
     <>
       <View style={styles.listHead}>
@@ -2081,7 +2306,10 @@ export default function AnalyticsAiPanel({
           <Pressable
             onPress={() => (embedded ? setMobileList(false) : onClose?.())}
             hitSlop={8}
-            style={styles.chromeCircle}
+            style={({ hovered, pressed }) => [
+              styles.chromeCircle,
+              (hovered || pressed) && styles.chromeCircleHover,
+            ]}
             accessibilityRole="button"
             accessibilityLabel={embedded ? 'Back to the chat' : 'Close'}
           >
@@ -2089,30 +2317,36 @@ export default function AnalyticsAiPanel({
           </Pressable>
         ) : null}
         <View style={styles.listHeadCopy}>
-          <Text style={styles.listHeadKicker}>Analytics</Text>
           <Text style={styles.listHeadTitle}>Conversations</Text>
         </View>
         <Pressable
           onPress={startNew}
           hitSlop={8}
           accessibilityRole="button"
-          accessibilityState={{ selected: !activeId || Boolean(activeChat && !hasUserMessage(activeChat)) }}
+          accessibilityState={{ selected: newChatSelected }}
           accessibilityLabel="New chat"
+          {...webClass(['cgold-home-chip', newChatSelected && 'cgold-home-chip-active'])}
           style={({ hovered, pressed }) => [
             styles.listNewBtn,
-            (hovered || pressed) && styles.listNewBtnOn,
+            !newChatSelected && (hovered || pressed) && styles.listNewBtnOn,
+            newChatSelected && styles.listNewBtnSelected,
           ]}
         >
-          <Ionicons name="add" size={16} color={INK} />
-          <Text style={styles.listNewBtnText}>New</Text>
+          <Ionicons name="add" size={16} color={newChatSelected ? INK : SECONDARY} />
+          <Text style={[styles.listNewBtnText, newChatSelected && styles.listNewBtnTextOn]}>New</Text>
         </Pressable>
       </View>
-      <View style={styles.listSearchWrap}>
-        <Ionicons name="search" size={14} color={SECONDARY} />
+      <View
+        {...webClass(['cgold-home-search', listSearchFocus && 'cgold-home-search-active'])}
+        style={[styles.listSearchWrap, listSearchFocus && styles.listSearchWrapOn]}
+      >
+        <Ionicons name={listSearchFocus || listQuery ? 'search' : 'search-outline'} size={16} color={listSearchFocus || listQuery ? INK : SECONDARY} />
         <TextInput
           value={listQuery}
           onChangeText={setListQuery}
-          placeholder="Search conversations"
+          onFocus={() => setListSearchFocus(true)}
+          onBlur={() => setListSearchFocus(false)}
+          placeholder="Search"
           placeholderTextColor={SECONDARY}
           style={styles.listSearch}
           autoCorrect={false}
@@ -2126,7 +2360,7 @@ export default function AnalyticsAiPanel({
             accessibilityRole="button"
             accessibilityLabel="Clear search"
           >
-            <Ionicons name="close-circle" size={14} color={SECONDARY} />
+            <Ionicons name="close-circle" size={16} color="#c7c7cc" />
           </Pressable>
         ) : null}
       </View>
@@ -2178,7 +2412,10 @@ export default function AnalyticsAiPanel({
           <Pressable
             onPress={() => onClose?.()}
             hitSlop={8}
-            style={styles.chromeCircle}
+            style={({ hovered, pressed }) => [
+              styles.chromeCircle,
+              (hovered || pressed) && styles.chromeCircleHover,
+            ]}
             accessibilityRole="button"
             accessibilityLabel="Back to messages"
           >
@@ -2201,7 +2438,10 @@ export default function AnalyticsAiPanel({
           <Pressable
             onPress={() => setShareOpen(true)}
             hitSlop={8}
-            style={styles.chromeCircle}
+            style={({ hovered, pressed }) => [
+              styles.chromeCircle,
+              (hovered || pressed) && styles.chromeCircleHover,
+            ]}
             accessibilityRole="button"
             accessibilityLabel="Add people to this chat"
           >
@@ -2210,7 +2450,10 @@ export default function AnalyticsAiPanel({
           <Pressable
             onPress={startNew}
             hitSlop={8}
-            style={styles.chromeCircle}
+            style={({ hovered, pressed }) => [
+              styles.chromeCircle,
+              (hovered || pressed) && styles.chromeCircleHover,
+            ]}
             accessibilityRole="button"
             accessibilityLabel="New chat"
           >
@@ -2409,11 +2652,9 @@ export default function AnalyticsAiPanel({
           })
         ) : (
           <View style={[styles.empty, compact && styles.emptyPhone]}>
-            <View style={[styles.emptyMark, compact && styles.emptyMarkPhone]}>
-              <Ionicons name="sparkles" size={compact ? 16 : 18} color={INK} />
-            </View>
+            <Ionicons name="sparkles-outline" size={compact ? 18 : 20} color={SECONDARY} />
             <Text style={[styles.emptyGreeting, compact && styles.emptyGreetingPhone]}>
-              {firstName ? `Hi ${firstName} 👋` : 'Hi 👋'}
+              {firstName ? `Hi ${firstName}` : 'Hi'}
             </Text>
           </View>
         )}
@@ -2516,12 +2757,13 @@ export default function AnalyticsAiPanel({
             onPress={() => setShareOpen(true)}
             accessibilityRole="button"
             accessibilityLabel="Add people to this chat"
+            {...webClass(['cgold-home-chip'])}
             style={({ hovered, pressed }) => [
               styles.promptsHit,
               (hovered || pressed) && styles.promptsHitHover,
             ]}
           >
-            <Ionicons name="person-add-outline" size={13} color={INK} />
+            <Ionicons name="person-add-outline" size={14} color={SECONDARY} />
             <Text style={styles.promptsHitText}>
               {activeMembers.length ? `${activeMembers.length + 1} people` : 'Add people'}
             </Text>
@@ -2532,12 +2774,13 @@ export default function AnalyticsAiPanel({
             onPress={() => setPromptsOpen(true)}
             accessibilityRole="button"
             accessibilityLabel="Saved prompts"
+            {...webClass(['cgold-home-chip'])}
             style={({ hovered, pressed }) => [
               styles.promptsHit,
               (hovered || pressed) && styles.promptsHitHover,
             ]}
           >
-            <Ionicons name="bookmark-outline" size={13} color={INK} />
+            <Ionicons name="bookmark-outline" size={14} color={SECONDARY} />
             <Text style={styles.promptsHitText}>Saved</Text>
           </Pressable>
           )}
@@ -2547,6 +2790,7 @@ export default function AnalyticsAiPanel({
             disabled={Boolean(busyId)}
             accessibilityRole="button"
             accessibilityLabel="Add answers from this chat to a dashboard"
+            {...webClass(['cgold-home-chip'])}
             style={({ hovered, pressed }) => [
               styles.promptsHit,
               styles.dashboardHit,
@@ -2579,6 +2823,7 @@ export default function AnalyticsAiPanel({
                   onPress={() => send(item)}
                   disabled={Boolean(busyId) || blocked}
                   accessibilityRole="button"
+                  {...webClass(['cgold-home-chip'])}
                   style={({ hovered, pressed }) => [
                     styles.suggest,
                     styles.suggestPhone,
@@ -2605,6 +2850,7 @@ export default function AnalyticsAiPanel({
                 onPress={() => send(item)}
                 disabled={Boolean(busyId) || blocked}
                 accessibilityRole="button"
+                {...webClass(['cgold-home-chip'])}
                 style={({ hovered, pressed }) => [
                   styles.suggest,
                   (hovered || pressed) && styles.suggestHover,
@@ -2623,9 +2869,11 @@ export default function AnalyticsAiPanel({
           onHoverIn={() => setComposerHover(true)}
           onHoverOut={() => setComposerHover(false)}
           onPress={() => inputRef.current?.focus?.()}
+          {...webClass(['cgold-home-search', composerFocus && 'cgold-home-search-active'])}
           style={[
             styles.composerPill,
-            composerActive && styles.composerPillActive,
+            composerHover && !composerFocus && styles.composerPillHover,
+            composerFocus && styles.composerPillActive,
             inputHeight > COMPOSER_LINE_HEIGHT && styles.composerPillMultiline,
           ]}
         >
@@ -2650,7 +2898,6 @@ export default function AnalyticsAiPanel({
             placeholderTextColor={SECONDARY}
             editable={!busyId && !blocked}
             multiline
-            blurOnSubmit={false}
             scrollEnabled={inputHeight >= composerMaxHeight}
             style={[styles.composerInput, { height: inputHeight, maxHeight: composerMaxHeight }]}
             onFocus={() => setComposerFocus(true)}
@@ -2661,16 +2908,9 @@ export default function AnalyticsAiPanel({
               android: { textAlignVertical: inputHeight > COMPOSER_LINE_HEIGHT ? 'top' : 'center' },
               default: {},
             })}
-            onSubmitEditing={() => {
+            {...enterToSendProps(() => {
               if (canSend) void send();
-            }}
-            onKeyPress={(event) => {
-              const key = event?.nativeEvent?.key || event?.key;
-              if (key !== 'Enter') return;
-              if (event?.nativeEvent?.shiftKey || event?.shiftKey) return;
-              event?.preventDefault?.();
-              if (canSend) void send();
-            }}
+            })}
           />
           <View style={[styles.composerTrail, compact && styles.composerTrailPhone]}>
             {compact ? (
@@ -2811,24 +3051,24 @@ const styles = StyleSheet.create({
     minHeight: 0,
     borderRightWidth: StyleSheet.hairlineWidth,
     borderRightColor: RULE,
-    backgroundColor: '#f7f7f5',
+    backgroundColor: CANVAS,
   },
   sidebarPhone: {
     width: '100%',
     flex: 1,
     borderRightWidth: 0,
-    backgroundColor: '#f7f7f5',
+    backgroundColor: CANVAS,
   },
   listHead: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    minHeight: 56,
+    minHeight: 44,
     marginHorizontal: 0,
     paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 8,
-    gap: 10,
+    paddingTop: 12,
+    paddingBottom: 6,
+    gap: 8,
     flexShrink: 0,
   },
   listHeadCopy: {
@@ -2845,11 +3085,11 @@ const styles = StyleSheet.create({
   },
   listHeadTitle: {
     fontFamily: FONT,
-    fontSize: 18,
-    lineHeight: 22,
-    fontWeight: '600',
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '400',
     color: INK,
-    letterSpacing: -0.3,
+    letterSpacing: -0.2,
   },
   listHeadSpacer: {
     flex: 1,
@@ -2861,20 +3101,28 @@ const styles = StyleSheet.create({
     gap: 4,
     height: 32,
     paddingHorizontal: 10,
-    borderRadius: 8,
-    backgroundColor: '#fff',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(42,38,30,0.14)',
+    borderRadius: CHIP_RADIUS,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    backgroundColor: FIELD_IDLE,
     flexShrink: 0,
+    ...WEB_CHIP_MOTION,
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
   listNewBtnOn: {
-    backgroundColor: '#ecece8',
+    backgroundColor: FIELD_HOVER,
+  },
+  listNewBtnSelected: {
+    ...CHIP_CARD,
   },
   listNewBtnText: {
     fontFamily: FONT,
-    fontSize: 13,
-    fontWeight: '500',
+    fontSize: 14,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.2,
+  },
+  listNewBtnTextOn: {
     color: INK,
   },
   listNewChatHit: {
@@ -2893,35 +3141,41 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginHorizontal: 12,
+    marginHorizontal: 10,
     marginBottom: 10,
     paddingHorizontal: 10,
-    height: 34,
-    borderRadius: 8,
-    backgroundColor: '#fff',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(42,38,30,0.12)',
+    height: 32,
+    borderRadius: CHIP_RADIUS,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    backgroundColor: FIELD_IDLE,
     flexShrink: 0,
+    ...WEB_CHIP_MOTION,
+  },
+  listSearchWrapOn: {
+    ...CHIP_CARD,
   },
   listSearch: {
     flex: 1,
     minWidth: 0,
     fontFamily: FONT,
-    fontSize: 13,
+    fontSize: 14,
+    fontWeight: '400',
     color: INK,
+    letterSpacing: -0.2,
     paddingVertical: 0,
     ...Platform.select({ web: { outlineStyle: 'none' }, default: {} }),
   },
   listGroup: {
+    gap: 2,
     paddingBottom: 10,
   },
   listGroupTitle: {
     fontFamily: FONT,
-    fontSize: 11,
-    fontWeight: '600',
+    fontSize: 12,
+    fontWeight: '400',
     color: SECONDARY,
-    letterSpacing: 0.3,
-    textTransform: 'uppercase',
+    letterSpacing: -0.2,
     paddingHorizontal: 16,
     paddingTop: 8,
     paddingBottom: 4,
@@ -2932,8 +3186,9 @@ const styles = StyleSheet.create({
   },
   sideScrollContent: {
     marginHorizontal: 0,
-    paddingHorizontal: 8,
+    paddingHorizontal: 10,
     paddingBottom: 28,
+    gap: 2,
   },
   sideScrollEmpty: {
     flexGrow: 1,
@@ -2951,21 +3206,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   sideEmptyMark: {
-    width: 40,
-    height: 40,
-    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    width: 36,
+    height: 36,
+    borderRadius: CHIP_RADIUS,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: CHIP_BORDER,
+    backgroundColor: FIELD_IDLE,
     marginBottom: 4,
-    ...CHIP_SHADOW,
   },
   sideEmptyTitle: {
     fontFamily: FONT,
     fontSize: 14,
-    fontWeight: '500',
+    fontWeight: '400',
     color: INK,
     letterSpacing: -0.2,
     textAlign: 'center',
@@ -2984,14 +3236,17 @@ const styles = StyleSheet.create({
   chatRow: {
     width: '100%',
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-    minHeight: 56,
-    paddingVertical: 9,
+    alignItems: 'center',
+    gap: 8,
+    minHeight: 46,
+    paddingVertical: 6,
     paddingLeft: 10,
-    paddingRight: 28,
-    borderRadius: 8,
+    paddingRight: 8,
+    borderRadius: CHIP_RADIUS,
+    borderWidth: 1,
+    borderColor: 'transparent',
     backgroundColor: 'transparent',
+    ...WEB_CHIP_MOTION,
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
   chatRowMenuOpen: {
@@ -3010,20 +3265,10 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
   chatRowOn: {
-    backgroundColor: '#fff',
-    ...Platform.select({
-      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.04)' },
-      default: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.04,
-        shadowRadius: 2,
-        elevation: 1,
-      },
-    }),
+    ...CHIP_CARD,
   },
   chatRowHover: {
-    backgroundColor: 'rgba(255,255,255,0.7)',
+    ...CHIP_CARD,
   },
   chatRowTitle: {
     flex: 1,
@@ -3031,44 +3276,57 @@ const styles = StyleSheet.create({
     fontFamily: FONT,
     fontSize: 14,
     lineHeight: 18,
-    fontWeight: '500',
-    color: '#1d1d1f',
-    letterSpacing: -0.15,
+    fontWeight: '400',
+    color: '#636366',
+    letterSpacing: -0.2,
+  },
+  chatRowTitleHover: {
+    color: INK,
   },
   chatRowTitleOn: {
     color: INK,
-    fontWeight: '600',
+    fontWeight: '400',
   },
   chatRowTime: {
     fontFamily: FONT,
-    fontSize: 11,
+    fontSize: 12,
+    fontWeight: '400',
     color: SECONDARY,
+    letterSpacing: -0.2,
     flexShrink: 0,
   },
+  chatRowPreviewLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 1,
+  },
   chatRowPreview: {
-    fontFamily: FONT_LIGHT,
+    flex: 1,
+    minWidth: 0,
+    fontFamily: FONT,
     fontSize: 12,
     lineHeight: 16,
+    fontWeight: '400',
     color: SECONDARY,
-    marginTop: 3,
+    letterSpacing: -0.2,
   },
   chatRowSpinner: {
     flexShrink: 0,
   },
   chatMoreHit: {
-    position: 'absolute',
-    right: 4,
-    top: 6,
-    width: 28,
-    height: 28,
+    width: 22,
+    height: 16,
+    marginLeft: 'auto',
     zIndex: 3,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 8,
+    flexShrink: 0,
+    borderRadius: CHIP_RADIUS,
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
   chatMoreHitOn: {
-    backgroundColor: 'rgba(0,0,0,0.06)',
+    backgroundColor: TAB_HOVER,
   },
   chatMenu: {
     position: 'absolute',
@@ -3078,19 +3336,10 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 12,
     backgroundColor: '#fff',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(0,0,0,0.08)',
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
     zIndex: 5,
-    ...Platform.select({
-      web: { boxShadow: '0 8px 24px rgba(0,0,0,0.12)' },
-      default: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 6 },
-        shadowOpacity: 0.12,
-        shadowRadius: 16,
-        elevation: 6,
-      },
-    }),
+    ...CHIP_SHADOW,
   },
   chatMenuItem: {
     flexDirection: 'row',
@@ -3098,10 +3347,11 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingHorizontal: 12,
     paddingVertical: 8,
+    borderRadius: CHIP_RADIUS,
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
   chatMenuItemHover: {
-    backgroundColor: '#f5f5f7',
+    backgroundColor: TAB_HOVER,
   },
   chatMenuText: {
     fontFamily: FONT,
@@ -3137,15 +3387,18 @@ const styles = StyleSheet.create({
   chromeCircle: {
     width: 32,
     height: 32,
-    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderRadius: CHIP_RADIUS,
     borderWidth: 1,
-    borderColor: CHIP_BORDER,
-    backgroundColor: CANVAS,
+    borderColor: 'transparent',
+    backgroundColor: 'transparent',
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
-    ...CHIP_SHADOW,
+    ...WEB_CHIP_MOTION,
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  chromeCircleHover: {
+    backgroundColor: TAB_HOVER,
   },
   chromeCircleGhost: {
     width: 32,
@@ -3213,26 +3466,23 @@ const styles = StyleSheet.create({
   },
   empty: {
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
     paddingHorizontal: 8,
     width: '100%',
   },
   emptyMark: {
-    width: 44,
-    height: 44,
-    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    width: 36,
+    height: 36,
+    borderRadius: CHIP_RADIUS,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: CANVAS,
-    borderWidth: 1,
-    borderColor: CHIP_BORDER,
-    marginBottom: 4,
-    ...CHIP_SHADOW,
+    backgroundColor: FIELD_IDLE,
+    marginBottom: 0,
   },
   emptyTitle: {
     fontFamily: FONT,
     fontSize: 18,
-    fontWeight: '500',
+    fontWeight: '400',
     color: INK,
     letterSpacing: -0.3,
     textAlign: 'center',
@@ -3242,21 +3492,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   emptyMarkPhone: {
-    width: 36,
-    height: 36,
+    width: 32,
+    height: 32,
     marginBottom: 0,
   },
   emptyGreeting: {
-    fontFamily: FONT_LIGHT,
-    fontSize: 28,
-    fontWeight: '300',
+    fontFamily: FONT,
+    fontSize: 22,
+    fontWeight: '400',
     color: SECONDARY,
-    letterSpacing: -0.4,
+    letterSpacing: -0.3,
     textAlign: 'center',
   },
   emptyGreetingPhone: {
-    fontSize: 22,
-    letterSpacing: -0.3,
+    fontSize: 18,
+    letterSpacing: -0.2,
   },
   emptyBody: {
     fontFamily: FONT,
@@ -3299,29 +3549,30 @@ const styles = StyleSheet.create({
   },
   suggest: {
     flexShrink: 0,
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     paddingVertical: 6,
-    borderRadius: 999,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: BUBBLE_THEM_BORDER,
-    backgroundColor: '#fff',
-    ...CHIP_SHADOW,
+    minHeight: 32,
+    borderRadius: CHIP_RADIUS,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    backgroundColor: FIELD_IDLE,
+    ...WEB_CHIP_MOTION,
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
   suggestPhone: {
     paddingHorizontal: 10,
-    paddingVertical: 5,
+    paddingVertical: 6,
   },
   suggestHover: {
-    backgroundColor: NAV_TAB_ACTIVE_BG,
+    backgroundColor: FIELD_HOVER,
   },
   suggestText: {
     fontFamily: FONT,
-    fontSize: 13,
+    fontSize: 14,
     lineHeight: 18,
     fontWeight: '400',
     color: INK,
-    letterSpacing: -0.1,
+    letterSpacing: -0.2,
     ...Platform.select({ web: { whiteSpace: 'nowrap' }, default: {} }),
   },
   turnGroup: {
@@ -3353,7 +3604,7 @@ const styles = StyleSheet.create({
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
   pickRowHover: {
-    backgroundColor: 'rgba(0,0,0,0.04)',
+    backgroundColor: TAB_HOVER,
   },
   pickBox: {
     width: 20,
@@ -3389,8 +3640,8 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingVertical: 12,
     paddingHorizontal: 14,
-    borderRadius: 14,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: CHIP_RADIUS,
+    borderWidth: 1,
     borderColor: CHIP_BORDER,
     backgroundColor: '#fff',
     ...CHIP_SHADOW,
@@ -3426,7 +3677,7 @@ const styles = StyleSheet.create({
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
   pickGhostHover: {
-    backgroundColor: 'rgba(0,0,0,0.05)',
+    backgroundColor: TAB_HOVER,
   },
   pickGhostText: {
     fontFamily: FONT,
@@ -3656,23 +3907,26 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    minHeight: 32,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     borderRadius: CHIP_RADIUS,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: CHIP_BORDER,
-    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: 'transparent',
+    backgroundColor: FIELD_IDLE,
+    ...WEB_CHIP_MOTION,
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
   promptsHitHover: {
-    backgroundColor: NAV_TAB_ACTIVE_BG,
+    backgroundColor: FIELD_HOVER,
   },
   promptsHitText: {
     fontFamily: FONT,
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: '500',
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '400',
     color: INK,
+    letterSpacing: -0.2,
   },
   bubbleActions: {
     flexDirection: 'row',
@@ -3767,42 +4021,39 @@ const styles = StyleSheet.create({
   composerPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 48,
+    minHeight: 40,
     paddingLeft: 8,
     paddingRight: 8,
     paddingVertical: 4,
     gap: 4,
-    borderRadius: 999,
+    borderRadius: CHIP_RADIUS,
     borderWidth: 1,
-    borderColor: CHIP_BORDER,
-    backgroundColor: BUBBLE_THEM_BG,
-    ...COMPOSER_PILL_IDLE_SHADOW,
-    ...Platform.select({
-      web: { transition: 'box-shadow 180ms ease' },
-      default: {},
-    }),
+    borderColor: 'transparent',
+    backgroundColor: FIELD_IDLE,
+    ...WEB_CHIP_MOTION,
+  },
+  composerPillHover: {
+    backgroundColor: FIELD_HOVER,
   },
   composerPillActive: {
-    ...COMPOSER_PILL_ACTIVE_SHADOW,
+    ...CHIP_CARD,
   },
   composerPillMultiline: {
     alignItems: 'flex-end',
     paddingVertical: 8,
   },
   composerLead: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 32,
+    height: 32,
+    borderRadius: CHIP_RADIUS,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: CANVAS,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: BUBBLE_THEM_BORDER,
+    backgroundColor: 'transparent',
     flexShrink: 0,
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
   composerLeadHover: {
-    backgroundColor: NAV_TAB_ACTIVE_BG,
+    backgroundColor: TAB_HOVER,
   },
   composerLeadOff: {
     opacity: 0.4,
@@ -3838,7 +4089,7 @@ const styles = StyleSheet.create({
     paddingLeft: 6,
     paddingRight: 8,
     paddingVertical: 5,
-    borderRadius: NAV_TAB_ACTIVE_RADIUS,
+    borderRadius: CHIP_RADIUS,
     borderWidth: 1,
     borderColor: CHIP_BORDER,
     backgroundColor: CANVAS,
@@ -3898,7 +4149,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     backgroundColor: 'transparent',
     fontFamily: FONT,
-    fontSize: 15,
+    fontSize: 14,
     lineHeight: COMPOSER_LINE_HEIGHT,
     color: INK,
     ...Platform.select({
@@ -3934,7 +4185,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   composerModelHover: {
-    backgroundColor: 'rgba(0,0,0,0.04)',
+    backgroundColor: TAB_HOVER,
   },
   composerModelText: {
     flexShrink: 1,
@@ -3954,8 +4205,8 @@ const styles = StyleSheet.create({
   },
   composerAction: {
     width: 36,
-    height: 36,
-    borderRadius: 18,
+    height: 32,
+    borderRadius: CHIP_RADIUS,
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
@@ -4215,23 +4466,219 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: INK,
   },
+  shareSheetRoot: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    ...Platform.select({
+      web: { justifyContent: 'center', alignItems: 'center' },
+      default: {},
+    }),
+  },
+  shareSheetBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(42,38,30,0.18)',
+  },
+  shareSheetCard: {
+    maxHeight: '78%',
+    width: 420,
+    maxWidth: '92%',
+    marginHorizontal: 12,
+    marginBottom: 28,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
+    backgroundColor: CANVAS,
+    overflow: 'hidden',
+    ...CHIP_SHADOW,
+    ...Platform.select({
+      web: { marginBottom: 0 },
+      default: {},
+    }),
+  },
+  shareSheetCardPhone: {
+    width: '100%',
+    maxWidth: '100%',
+    marginHorizontal: 0,
+    marginBottom: 0,
+    maxHeight: '86%',
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
+    paddingBottom: 12,
+  },
+  shareSheetHead: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 12,
+    gap: 8,
+  },
+  shareSheetTitle: {
+    fontFamily: FONT,
+    fontSize: 14,
+    fontWeight: '400',
+    color: INK,
+    letterSpacing: -0.2,
+  },
+  shareSheetSubtitle: {
+    fontFamily: FONT,
+    fontSize: 13,
+    lineHeight: 18,
+    color: SECONDARY,
+    letterSpacing: -0.2,
+  },
+  shareSearch: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    height: 32,
+    paddingHorizontal: 10,
+    borderRadius: CHIP_RADIUS,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    backgroundColor: FIELD_IDLE,
+    ...WEB_CHIP_MOTION,
+  },
+  shareSearchOn: {
+    ...CHIP_CARD,
+  },
+  shareSearchInput: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: FONT,
+    fontSize: 14,
+    fontWeight: '400',
+    color: INK,
+    letterSpacing: -0.2,
+    paddingVertical: 0,
+    ...Platform.select({ web: { outlineStyle: 'none' }, default: {} }),
+  },
+  shareSheetScroll: {
+    maxHeight: 360,
+  },
+  shareSheetScrollContent: {
+    paddingHorizontal: 10,
+    paddingBottom: 12,
+    gap: 12,
+  },
+  shareSection: {
+    gap: 2,
+  },
+  shareSectionTitle: {
+    fontFamily: FONT,
+    fontSize: 12,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.2,
+    paddingHorizontal: 10,
+    paddingTop: 4,
+    paddingBottom: 4,
+  },
   sharePerson: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    paddingVertical: 8,
-    paddingHorizontal: 2,
+    gap: 10,
+    minHeight: 40,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: CHIP_RADIUS,
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  sharePersonPick: {
+    ...WEB_CHIP_MOTION,
     ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
   },
   sharePersonHover: {
-    backgroundColor: '#f5f5f7',
+    backgroundColor: TAB_HOVER,
+  },
+  sharePersonOn: {
+    ...CHIP_CARD,
   },
   sharePersonName: {
     flex: 1,
     minWidth: 0,
     fontFamily: FONT,
-    fontSize: 15,
-    fontWeight: '500',
+    fontSize: 14,
+    fontWeight: '400',
+    color: '#636366',
+    letterSpacing: -0.2,
+  },
+  sharePersonNameOn: {
+    color: INK,
+  },
+  sharePersonMeta: {
+    fontFamily: FONT,
+    fontSize: 12,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.2,
+    flexShrink: 0,
+  },
+  shareCheck: {
+    width: 20,
+    height: 20,
+    borderRadius: CHIP_RADIUS,
+    borderWidth: 1,
+    borderColor: CHIP_BORDER,
+    backgroundColor: 'transparent',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  shareCheckOn: {
+    backgroundColor: INK,
+    borderColor: INK,
+  },
+  shareEmpty: {
+    fontFamily: FONT,
+    fontSize: 13,
+    lineHeight: 18,
+    color: SECONDARY,
+    letterSpacing: -0.2,
+    paddingHorizontal: 10,
+    paddingVertical: 12,
+  },
+  shareSheetFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 14,
+  },
+  shareFooterBtn: {
+    minHeight: 32,
+    minWidth: 72,
+    paddingHorizontal: 12,
+    borderRadius: CHIP_RADIUS,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    backgroundColor: FIELD_IDLE,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...WEB_CHIP_MOTION,
+    ...Platform.select({ web: { cursor: 'pointer' }, default: {} }),
+  },
+  shareFooterBtnHover: {
+    backgroundColor: FIELD_HOVER,
+  },
+  shareFooterBtnOn: {
+    ...CHIP_CARD,
+  },
+  shareFooterBtnOnHover: {
+    backgroundColor: '#fff',
+  },
+  shareFooterBtnOff: {
+    opacity: 0.45,
+  },
+  shareFooterBtnText: {
+    fontFamily: FONT,
+    fontSize: 14,
+    fontWeight: '400',
+    color: SECONDARY,
+    letterSpacing: -0.2,
+  },
+  shareFooterBtnTextOn: {
     color: INK,
   },
   errorText: {

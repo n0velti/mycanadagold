@@ -11,7 +11,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { avatarColorForId, contactName, initialsFromName } from '../lib/messages';
 import {
   getGmailSignature,

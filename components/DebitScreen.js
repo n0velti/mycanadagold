@@ -11,7 +11,7 @@ import {
   View,
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { fetchTransferStores } from '../lib/locations';
 import {
   canManageMonerisTerminals,

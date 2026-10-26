@@ -332,6 +332,44 @@ export async function probeEmployeeVisibility(baseUrl: string, token: string): P
   };
 }
 
+export interface StaffPosLoginFailure {
+  key: PosSystemKey;
+  label: string;
+  status: number;
+  message: string;
+}
+
+/**
+ * The staff password on East, GTA, and PMX in one round trip. Every host
+ * that accepts it is a session the app reads that host with; each miss
+ * carries its status so the caller can say why (never the credentials).
+ */
+export async function loginToEveryStaffPos(
+  login: string,
+  password: string,
+): Promise<{ sessions: Map<PosSystemKey, AureusSession>; failures: StaffPosLoginFailure[] }> {
+  const results = await Promise.allSettled(
+    POS_SYSTEMS.map((system) => loginToPos(system.baseUrl, login, password)),
+  );
+  const sessions = new Map<PosSystemKey, AureusSession>();
+  const failures: StaffPosLoginFailure[] = [];
+  results.forEach((result, index) => {
+    const system = POS_SYSTEMS[index];
+    if (result.status === 'fulfilled') {
+      sessions.set(system.key, result.value);
+      return;
+    }
+    const reason = result.reason;
+    failures.push({
+      key: system.key,
+      label: system.label,
+      status: reason instanceof AureusError ? reason.status : 0,
+      message: reason instanceof Error ? reason.message : 'Login failed.',
+    });
+  });
+  return { sessions, failures };
+}
+
 /**
  * Every POS host that accepts this staff password. Used only by the
  * bonuses-authorization path. Does not replace loginToStaffPos or linked

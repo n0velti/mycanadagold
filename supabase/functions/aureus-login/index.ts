@@ -3,8 +3,9 @@
  *
  *   POST { action: "login", login, password, systemKey? }
  *     1. Throttles by IP + login.
- *     2. Verifies the credentials against East, GTA, and PMX
- *        (`systemKey` pins one host; otherwise first success wins).
+ *     2. Signs in to East, GTA, and PMX at once with the typed password and
+ *        keeps every host that accepts it (`systemKey` picks the primary;
+ *        otherwise the first host in POS_SYSTEMS order that accepted).
  *     3. Finds or creates the matching Supabase Auth user (email pre-confirmed,
  *        so no confirmation mail is ever sent) and stamps app_metadata with the
  *        Aureus identity (`aureus_user_id`) that RLS and the proxy check.
@@ -12,8 +13,9 @@
  *     5. Refuses deactivated staff.
  *     6. Mints a Supabase session with a server-held password (no magic-link
  *        email, so Auth email quota cannot block sign-in).
- *     7. Signs in to the other POS systems with server-held shared credentials
- *        so every staff session can load every store.
+ *     7. Fills any host the password did not open with the server-held shared
+ *        credentials; `linked` names every host, with a token or the reason
+ *        it is closed. Role sync and audit rows are written after the response.
  *
  *   POST { action: "join", email }
  *     Company Workspace domains (GOOGLE_MAIL_HOSTED_DOMAIN plus
@@ -44,13 +46,11 @@ import { bearerToken, clientIp, error, json, preflight, readJson, sha256Hex } fr
 import { aureusUserIdFromAppMetadata } from '../_shared/staff.ts';
 import {
   AUREUS_BASE_URL,
-  AureusError,
   fetchUserData,
   loginLinkedPosSystems,
   fetchEmployeeById,
   fetchEmployeeDirectory,
-  loginToAllStaffPos,
-  loginToStaffPos,
+  loginToEveryStaffPos,
   lookupLocationName,
   posSystemFromBaseUrl,
   probeEmployeeVisibility,
@@ -58,6 +58,8 @@ import {
   type AureusSession,
   type EmployeeVisibility,
   type LinkedPosResult,
+  type PosSystemKey,
+  type StaffPosLoginFailure,
 } from '../_shared/aureus.ts';
 import {
   authEmailForIdentity,
@@ -225,17 +227,28 @@ async function recordAttempt(admin: SupabaseClient, ipHash: string, loginHash: s
 }
 
 async function findAuthUserId(admin: SupabaseClient, identity: AureusIdentity, email: string): Promise<string | null> {
-  const byAureus = await admin
-    .from('profiles')
-    .select('id')
-    .eq('aureus_user_id', identity.aureusUserId)
-    .maybeSingle();
+  // Both lookups are independent; the Aureus id wins when it matches.
+  const [byAureus, byEmail] = await Promise.all([
+    admin.from('profiles').select('id').eq('aureus_user_id', identity.aureusUserId).maybeSingle(),
+    admin.rpc('auth_user_id_for_email', { p_email: email }),
+  ]);
   if (byAureus.error) throw byAureus.error;
   if (byAureus.data?.id) return byAureus.data.id as string;
-
-  const byEmail = await admin.rpc('auth_user_id_for_email', { p_email: email });
   if (byEmail.error) throw byEmail.error;
   return (byEmail.data as string | null) || null;
+}
+
+function sameAuthMetadata(
+  current: { app_metadata?: Record<string, unknown>; user_metadata?: Record<string, unknown> } | null | undefined,
+  appMetadata: Record<string, unknown>,
+  userMetadata: Record<string, unknown>,
+): boolean {
+  const app = current?.app_metadata || {};
+  const user = current?.user_metadata || {};
+  return (
+    Object.entries(appMetadata).every(([key, value]) => app[key] === value) &&
+    Object.entries(userMetadata).every(([key, value]) => (user[key] ?? null) === value)
+  );
 }
 
 async function ensureAuthUser(admin: SupabaseClient, identity: AureusIdentity, email: string): Promise<string> {
@@ -270,6 +283,15 @@ async function ensureAuthUser(admin: SupabaseClient, identity: AureusIdentity, e
     if (migrating) patch.password = randomPassword();
 
     const emailChanged = (current?.user?.email || '').toLowerCase() !== email.toLowerCase();
+    // A repeat sign-in with nothing to write skips the admin update round trip.
+    if (
+      !migrating &&
+      !emailChanged &&
+      Boolean(current?.user?.email_confirmed_at) &&
+      sameAuthMetadata(current?.user, appMetadata, userMetadata)
+    ) {
+      return existingId;
+    }
     const attempt = await admin.auth.admin.updateUserById(existingId, emailChanged ? { ...patch, email } : patch);
     if (attempt.error && emailChanged) {
       // Another auth user already owns that address; keep the stored email.
@@ -503,29 +525,23 @@ async function probeSessionVisibility(session: AureusSession): Promise<{
   };
 }
 
+function emptyBonusAccess(): BonusAccessResult {
+  return { granted: null, bySystem: emptyBonusBySystem(), bonusAuth: {}, staffPos: {} };
+}
+
 /**
- * Bonuses-only path. Tries the staff password on every POS host (the same
- * credentials they just typed) and checks GET /employees + names. Does not
- * write into `linked` — that stays the shared-credential auto-login.
+ * Bonuses-only grant from the sessions the staff password already opened:
+ * GET /employees + names on each host. No second sign-in; the sessions are
+ * the ones login collected.
  */
-async function evaluateBonusAccess(
-  login: string,
-  password: string,
-  primary: AureusSession,
+async function evaluateBonusAccessFromSessions(
+  staffSessions: Iterable<AureusSession>,
 ): Promise<BonusAccessResult> {
   const bySystem = emptyBonusBySystem();
   const bonusAuth: Record<string, LinkedPosResult> = {};
   const sessions = new Map<string, AureusSession>();
-  sessions.set(primary.systemKey, primary);
-
-  try {
-    const others = await loginToAllStaffPos(login, password, { exceptKey: primary.systemKey });
-    for (const session of others) {
-      // Keep the primary session as-is so linked auto-login is untouched.
-      if (!sessions.has(session.systemKey)) sessions.set(session.systemKey, session);
-    }
-  } catch (err) {
-    console.error('bonus pos login failed', err instanceof Error ? err.message : err);
+  for (const session of staffSessions) {
+    if (session?.token && !sessions.has(session.systemKey)) sessions.set(session.systemKey, session);
   }
 
   const probes = await Promise.all(
@@ -565,6 +581,57 @@ async function evaluateBonusAccess(
     bonusAuth,
     staffPos,
   };
+}
+
+/** Why a host stayed closed at sign-in. Status only; credentials never appear. */
+function describeStaffPosFailure(failure: StaffPosLoginFailure): string {
+  if (failure.status === 401 || failure.status === 403) {
+    return `Your Aureus login is not set up on ${failure.label}.`;
+  }
+  return `${failure.label} did not respond at sign-in.`;
+}
+
+/**
+ * One entry per POS host: the shared inventory login where configured, else
+ * the staff member's own session, else the reason it is closed. The client
+ * stops asking for a host that carries an error, so every host gets one.
+ */
+function linkedForLogin(
+  shared: Record<string, LinkedPosResult>,
+  staffPos: Record<string, LinkedPosResult>,
+  failures: StaffPosLoginFailure[],
+): Record<string, LinkedPosResult> {
+  const linked: Record<string, LinkedPosResult> = { ...shared };
+  for (const [key, entry] of Object.entries(staffPos || {})) {
+    if (!entry?.token || linked[key]?.token) continue;
+    linked[key] = { key, label: entry.label, baseUrl: entry.baseUrl, token: entry.token };
+  }
+  for (const system of POS_SYSTEMS) {
+    if (linked[system.key]?.token) continue;
+    const failure = failures.find((item) => item.key === system.key);
+    linked[system.key] = {
+      key: system.key,
+      label: system.label,
+      baseUrl: system.baseUrl,
+      error:
+        linked[system.key]?.error ||
+        (failure ? describeStaffPosFailure(failure) : `No login for ${system.label}.`),
+    };
+  }
+  return linked;
+}
+
+/**
+ * Work the response does not wait for (profile role sync, audit rows). The
+ * runtime keeps the isolate alive for it; without waitUntil it still starts.
+ */
+function afterResponse(label: string, task: Promise<unknown>): void {
+  const guarded = task.catch((err) => {
+    console.error(label, err instanceof Error ? err.message : err);
+  });
+  const runtime = (globalThis as { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } })
+    .EdgeRuntime;
+  if (runtime?.waitUntil) runtime.waitUntil(guarded);
 }
 
 async function persistBonusAccess(
@@ -747,20 +814,45 @@ async function handleLogin(req: Request, body: LoginBody): Promise<Response> {
   }
 
   const preferKey = POS_SYSTEMS.some((system) => system.key === String(body.systemKey || '').trim())
-    ? String(body.systemKey).trim()
+    ? (String(body.systemKey).trim() as PosSystemKey)
     : '';
 
-  let aureus;
-  try {
-    aureus = await loginToStaffPos(login, password, preferKey ? { preferKey } : {});
-  } catch (err) {
+  // East, GTA, and PMX in one round trip. Every host that takes the password
+  // stays open for this session; `systemKey` only chooses which one is primary.
+  const { sessions: staffSessions, failures: staffFailures } = await loginToEveryStaffPos(login, password);
+  const aureus =
+    (preferKey && staffSessions.get(preferKey)) ||
+    POS_SYSTEMS.map((system) => staffSessions.get(system.key)).find(Boolean) ||
+    null;
+  if (!aureus) {
     await recordAttempt(admin, ipHash, loginHash, false);
-    if (err instanceof AureusError && err.status === 401) {
-      return error(req, 401, err.message, 'invalid_credentials');
-    }
-    console.error('aureus login error', err instanceof Error ? err.message : err);
+    const rejected = staffFailures.find((failure) => failure.status === 401);
+    if (rejected) return error(req, 401, rejected.message, 'invalid_credentials');
+    console.error('aureus login error', staffFailures.map((failure) => `${failure.key}:${failure.status}`).join(' '));
     return error(req, 502, 'Aureus POS is unavailable. Try again shortly.', 'pos_unavailable');
   }
+  if (staffFailures.length) {
+    console.info(
+      'staff pos hosts',
+      [...staffSessions.keys()].join(','),
+      'closed',
+      staffFailures.map((failure) => `${failure.key}:${failure.status}`).join(' '),
+    );
+  }
+
+  // Neither depends on the account work below, so both overlap it: shared
+  // inventory logins for hosts the password did not open, and the bonuses
+  // probe on the sessions already in hand.
+  const sharedLinkedPromise = loginLinkedPosSystems({ exceptKey: aureus.systemKey, include: aureus }).catch(
+    (err) => {
+      console.error('linked pos login failed', err instanceof Error ? err.message : err);
+      return {} as Record<string, LinkedPosResult>;
+    },
+  );
+  const bonusPromise = evaluateBonusAccessFromSessions(staffSessions.values()).catch((err) => {
+    console.error('bonus access probe failed', err instanceof Error ? err.message : err);
+    return emptyBonusAccess();
+  });
 
   let user = aureus.user;
   if (!user || typeof user !== 'object' || Object.keys(user).length === 0) {
@@ -782,14 +874,17 @@ async function handleLogin(req: Request, body: LoginBody): Promise<Response> {
     aureusUserId: namespaceAureusUserId(aureus.systemKey, rawUserId),
   };
 
-  let directory: unknown[] = [];
+  // The full directory (paged) is only waited for when the direct lookup
+  // misses; otherwise it syncs the other profiles after the response.
+  const directoryPromise = fetchEmployeeDirectory(aureus.baseUrl, aureus.token).catch((err) => {
+    console.error('aureus directory failed', err instanceof Error ? err.message : err);
+    return [] as unknown[];
+  });
   try {
-    const [byId, rows] = await Promise.all([
-      fetchEmployeeById(aureus.baseUrl, aureus.token, rawUserId),
-      fetchEmployeeDirectory(aureus.baseUrl, aureus.token),
-    ]);
-    directory = rows;
-    const employee = byId || findEmployeeRecord(directory, { ...identity, aureusUserId: rawUserId });
+    let employee = await fetchEmployeeById(aureus.baseUrl, aureus.token, rawUserId);
+    if (!employee) {
+      employee = findEmployeeRecord(await directoryPromise, { ...identity, aureusUserId: rawUserId });
+    }
     if (employee) identity = mergeEmployeeIntoIdentity(identity, employee);
     identity = {
       ...identity,
@@ -810,11 +905,6 @@ async function handleLogin(req: Request, body: LoginBody): Promise<Response> {
   let firstLogin = false;
   try {
     userId = await ensureAuthUser(admin, identity, email);
-    if (directory.length) {
-      await applyDirectoryToProfiles(admin, directory, aureus.systemKey).catch((err) => {
-        console.error('staff role sync failed', err instanceof Error ? err.message : err);
-      });
-    }
     const upserted = await upsertProfile(admin, userId, identity);
     profile = upserted.profile;
     firstLogin = upserted.firstLogin;
@@ -835,46 +925,40 @@ async function handleLogin(req: Request, body: LoginBody): Promise<Response> {
   }
 
   let supabaseSession;
+  let teamed: ProfileRow;
+  let sharedLinked: Record<string, LinkedPosResult>;
+  let bonusAccess: BonusAccessResult;
   try {
-    supabaseSession = await mintSession(admin, userId, email);
+    [supabaseSession, teamed, sharedLinked, bonusAccess] = await Promise.all([
+      mintSession(admin, userId, email),
+      withTeamName(admin, profile),
+      sharedLinkedPromise,
+      bonusPromise,
+    ]);
   } catch (err) {
     console.error('session mint failed', err instanceof Error ? err.message : err);
     return error(req, 500, 'Could not start your session. Try again.', 'session_failed');
   }
 
-  const linked = await loginLinkedPosSystems({
-    exceptKey: aureus.systemKey,
-    include: aureus,
-  });
-
-  let bonusAccess: BonusAccessResult = {
-    granted: null,
-    bySystem: emptyBonusBySystem(),
-    bonusAuth: {},
-    staffPos: {},
+  // The hosts the password opened are the session, whether or not the
+  // bonuses probe on them succeeded.
+  const staffPos = {
+    ...staffPosFromSessions(staffSessions.values()),
+    ...bonusAccess.staffPos,
   };
-  try {
-    bonusAccess = await evaluateBonusAccess(login, password, aureus);
-    await persistBonusAccess(admin, userId, bonusAccess);
-    const refreshed = await selectProfileById(admin, userId);
-    if (refreshed.data) profile = refreshed.data;
-  } catch (err) {
-    console.error('bonus access probe failed', err instanceof Error ? err.message : err);
-  }
+  const linked = linkedForLogin(sharedLinked, staffPos, staffFailures);
 
-  for (const [key, entry] of Object.entries(bonusAccess.staffPos || {})) {
-    if (!entry?.token || linked[key]?.token) continue;
-    linked[key] = {
-      key,
-      label: entry.label,
-      baseUrl: entry.baseUrl,
-      token: entry.token,
-    };
-  }
+  const systemKey = aureus.systemKey;
+  afterResponse(
+    'staff role sync failed',
+    directoryPromise.then((directory) =>
+      directory.length ? applyDirectoryToProfiles(admin, directory, systemKey) : 0,
+    ),
+  );
+  afterResponse('bonus access persist failed', persistBonusAccess(admin, userId, bonusAccess));
+  afterResponse('login attempt log failed', recordAttempt(admin, ipHash, loginHash, true));
 
-  await recordAttempt(admin, ipHash, loginHash, true);
-
-  const published = publicProfile(await withTeamName(admin, profile));
+  const published = publicProfile(teamed);
   if (bonusAccess.granted != null) {
     published.canViewBonusData = bonusAccess.granted;
     published.bonusEmployeeVisibility = bonusAccess.bySystem;
@@ -893,17 +977,7 @@ async function handleLogin(req: Request, body: LoginBody): Promise<Response> {
     linked,
     bonusAccess: publicBonusAccess(bonusAccess),
     bonusAuth: bonusAccess.bonusAuth,
-    staffPos:
-      Object.keys(bonusAccess.staffPos || {}).length > 0
-        ? bonusAccess.staffPos
-        : {
-            [aureus.systemKey]: {
-              key: aureus.systemKey,
-              label: aureus.systemLabel || aureus.systemKey,
-              baseUrl: aureus.baseUrl,
-              token: aureus.token,
-            },
-          },
+    staffPos,
     profile: published,
     firstLogin,
   });
@@ -940,6 +1014,17 @@ async function handleRefreshLinked(req: Request): Promise<Response> {
   }
 
   const linked = await loginLinkedPosSystems();
+  // A host with no shared login still gets an answer, so the client records
+  // it once instead of asking on every poll.
+  for (const system of POS_SYSTEMS) {
+    if (linked[system.key]) continue;
+    linked[system.key] = {
+      key: system.key,
+      label: system.label,
+      baseUrl: system.baseUrl,
+      error: `No shared login is configured for ${system.label}.`,
+    };
+  }
   return json(req, 200, { linked });
 }
 
