@@ -1,4 +1,4 @@
-import { Image, Platform, StyleSheet, Text, View } from 'react-native';
+import { Image, Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -7,9 +7,21 @@ const fontFamily = Platform.select({
 });
 
 const TINT = '#FFF7ED';
+const ACCENT = '#B45309';
 const TROVE_APP_ICON = require('../assets/trove-app-icon.jpg');
+const TROVE_URL = 'https://gold-pos-staging.up.railway.app/login';
 
-export default function TroveScreen() {
+function openTrove() {
+  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    window.open(TROVE_URL, '_blank', 'noopener,noreferrer');
+    return;
+  }
+  void Linking.openURL(TROVE_URL);
+}
+
+export default function TroveScreen({ onOpen }) {
+  const open = onOpen || openTrove;
+
   return (
     <View style={styles.screen}>
       <View style={styles.emptyPanel}>
@@ -22,7 +34,19 @@ export default function TroveScreen() {
           />
         </View>
         <Text style={styles.emptyTitle}>Trove</Text>
-        <Text style={styles.emptyBody}>Collections and saved finds will live here.</Text>
+        <Text style={styles.emptyBody}>Buy and sell in Trove.</Text>
+        <Pressable
+          onPress={open}
+          accessibilityRole="link"
+          accessibilityLabel="Open Trove"
+          accessibilityHint="Opens Trove in a new tab"
+          style={({ hovered, pressed }) => [
+            styles.openButton,
+            (hovered || pressed) && styles.openButtonHover,
+          ]}
+        >
+          <Text style={styles.openButtonLabel}>Open Trove</Text>
+        </Pressable>
       </View>
     </View>
   );
@@ -71,5 +95,23 @@ const styles = StyleSheet.create({
     color: '#6b6b6b',
     textAlign: 'center',
     maxWidth: 320,
+    marginBottom: 18,
+  },
+  openButton: {
+    minHeight: 40,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    backgroundColor: ACCENT,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  openButtonHover: {
+    opacity: 0.9,
+  },
+  openButtonLabel: {
+    fontFamily,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#fff',
   },
 });

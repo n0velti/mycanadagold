@@ -20,6 +20,7 @@ import {
   Animated,
   Easing,
   Image,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -202,6 +203,16 @@ import { useScreenVisible } from './lib/screenVisibility';
 import { storeMarkColor, storeShortCode } from './lib/storeMarks';
 import { FONT, FONT_LIGHT, SOHNE_NATIVE_FONTS, SOHNE_WEB_FONTS } from './lib/typography';
 
+const TROVE_URL = 'https://gold-pos-staging.up.railway.app/login';
+
+function openTroveUrl() {
+  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    window.open(TROVE_URL, '_blank', 'noopener,noreferrer');
+    return;
+  }
+  void Linking.openURL(TROVE_URL);
+}
+
 // Every tool screen is loaded on demand. On web, Metro turns each `import()`
 // into its own chunk, so the first paint only ships the shell, login and home
 // instead of every screen in the app. The loaders are kept in a map so a
@@ -245,6 +256,28 @@ const SCREEN_LOADERS = {
   triage: () => import('./components/TriageScreen'),
   trove: () => import('./components/TroveScreen'),
 };
+
+/** A failed chunk used to stick — React.lazy caches the rejection. Retry a couple of times. */
+function withScreenRetry(loader) {
+  return async () => {
+    let last;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await loader();
+      } catch (error) {
+        last = error;
+        if (attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 280 * (attempt + 1)));
+        }
+      }
+    }
+    throw last;
+  };
+}
+
+for (const key of Object.keys(SCREEN_LOADERS)) {
+  SCREEN_LOADERS[key] = withScreenRetry(SCREEN_LOADERS[key]);
+}
 
 const AccountingScreen = lazy(SCREEN_LOADERS.accounting);
 const AnalyticsScreen = lazy(SCREEN_LOADERS.analytics);
@@ -464,7 +497,6 @@ const TOOL_SCREENS = {
     props: (c) => ({
       session: c.session,
       onRequireLogin: c.requireLogin,
-      onNavTabs: c.chrome('transfer', 'nav'),
       onLocationChanged: c.applyOwnLocation,
     }),
   },
@@ -542,7 +574,7 @@ const TOOL_SCREENS = {
       onCrumbsChange: c.chrome('triage', 'crumbs'),
     }),
   },
-  trove: { Component: TroveScreen, props: () => ({}) },
+  trove: { Component: TroveScreen, props: () => ({ onOpen: openTroveUrl }) },
 };
 
 /** Apps the desktop shell keeps mounted at once (most recently used win). */
@@ -732,9 +764,10 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     '.cgold-apps-toolbar-blur{-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);background-color:rgba(255,255,255,0.62)!important;}',
     '.cgold-home-toolbar-blur{-webkit-backdrop-filter:saturate(180%) blur(22px);backdrop-filter:saturate(180%) blur(22px);background-color:rgba(255,255,255,0.62)!important;}',
     '.cgold-home-top-blur{background:transparent!important;-webkit-backdrop-filter:saturate(140%) blur(18px);backdrop-filter:saturate(140%) blur(18px);-webkit-mask-image:linear-gradient(to bottom,#000 0%,rgba(0,0,0,0.5) 38%,transparent 100%);mask-image:linear-gradient(to bottom,#000 0%,rgba(0,0,0,0.5) 38%,transparent 100%);}',
-    '.cgold-home-overlay-scroll{position:relative;z-index:4;}',
+    '.cgold-flex-scroll{flex:1 1 0%!important;min-height:0!important;overflow-y:auto!important;overflow-x:hidden;}',
+    '.cgold-home-overlay-scroll{position:relative;z-index:4;min-height:0!important;overflow-y:auto!important;}',
     '.cgold-home-overlay-scroll,.cgold-home-overlay-scroll>div{background:transparent!important;overscroll-behavior:none;}',
-    '@media (max-width:767px){.cgold-home-overlay-scroll{-webkit-overflow-scrolling:touch;touch-action:pan-y;overflow-y:auto!important;pointer-events:auto!important;}}',
+    '.cgold-home-overlay-scroll{-webkit-overflow-scrolling:touch;touch-action:pan-y;pointer-events:auto!important;}',
     '@media (min-width:768px){.cgold-store-sheet,.cgold-store-sheet *{pointer-events:auto!important;}}',
     '.cgold-home-chip-blur{-webkit-backdrop-filter:saturate(140%) blur(10px);backdrop-filter:saturate(140%) blur(10px);background-color:rgba(255,255,255,0.56)!important;border-radius:999px;}',
     '.cgold-apps-view-blur{-webkit-backdrop-filter:saturate(140%) blur(10px);backdrop-filter:saturate(140%) blur(10px);background-color:rgba(255,255,255,0.56)!important;border-radius:20px;}',
@@ -1028,10 +1061,10 @@ function TxTableHeader({
 const APP_GRID_MAX_WIDTH = 1480;
 const APP_COLUMNS = 6;
 const APP_COLUMNS_MOBILE = 4;
-const APP_ICON_SIZE = 96;
+const APP_ICON_SIZE = 86;
 const APP_GAP = 18;
 const MOBILE_APP_GAP = 12;
-const MOBILE_APP_ICON_MAX = 74;
+const MOBILE_APP_ICON_MAX = 66;
 const APP_CELL_PAD = 40;
 const MOBILE_APP_CELL_PAD = 28;
 const MOBILE_BREAKPOINT = 768;
@@ -6960,8 +6993,9 @@ function HomeScreen({
                       styles.igHomeFiltersTroveBtn,
                       pressed && styles.topTroveButtonHover,
                     ]}
-                    accessibilityRole="button"
+                    accessibilityRole="link"
                     accessibilityLabel="Trove"
+                    accessibilityHint="Opens Trove in a new tab"
                   >
                     <Image
                       source={TROVE_LOGO}
@@ -8270,11 +8304,11 @@ function TopTroveButton({ active, onPress }) {
   return (
     <Pressable
       onPress={onPress}
-      accessibilityRole="button"
+      accessibilityRole="link"
       accessibilityLabel="Trove"
-      accessibilityHint="Collections and saved finds"
+      accessibilityHint="Opens Trove in a new tab"
       accessibilityState={{ selected: active }}
-      {...(Platform.OS === 'web' ? { title: 'Trove — collections and saved finds' } : null)}
+      {...(Platform.OS === 'web' ? { title: 'Open Trove' } : null)}
       {...(Platform.OS === 'web' ? { className: 'cgold-top-trove' } : null)}
       style={({ hovered, pressed }) => [
         styles.topTroveButton,
@@ -8514,61 +8548,6 @@ function useSpotRefreshFlash() {
   return pulse;
 }
 
-function spotLabelThrough(progress, chipW, chipH, labelX, labelW) {
-  if (!(chipW > 0) || !(chipH > 0) || !(labelW > 0)) return 0;
-  const perim = 2 * (chipW + chipH);
-  const lastLen = chipW / 2;
-  const start = Math.max(0, 1 - lastLen / perim);
-  if (progress <= start) return 0;
-  const traveled = ((progress - start) / Math.max(0.0001, 1 - start)) * lastLen;
-  return Math.max(0, Math.min(1, (traveled - labelX) / labelW));
-}
-
-function SpotMetalLegend({ label, compact = false, progress, breath, chip, lifted = false }) {
-  const [box, setBox] = useState({ x: 0, width: 0 });
-  const through = spotLabelThrough(progress, chip.width, chip.height, box.x, box.width);
-
-  return (
-    <View
-      pointerEvents="none"
-      onLayout={(event) => {
-        const { x, width } = event.nativeEvent.layout;
-        setBox((prev) => (prev.x === x && prev.width === width ? prev : { x, width }));
-      }}
-      style={[
-        styles.topSpotMetalHost,
-        compact && styles.topSpotMetalHostCompact,
-        lifted && styles.topSpotMetalOnCard,
-      ]}
-    >
-      <Text style={[styles.topSpotMetalLabel, compact && styles.topSpotMetalLabelCompact]} numberOfLines={1}>
-        {label}
-      </Text>
-      {through > 0 ? (
-        <View style={[styles.topSpotMetalClip, { width: box.width * through }]}>
-          <Animated.Text
-            style={[
-              styles.topSpotMetalLabel,
-              compact && styles.topSpotMetalLabelCompact,
-              styles.topSpotMetalLive,
-              {
-                width: box.width,
-                opacity: breath.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [0.52, 1],
-                }),
-              },
-            ]}
-            numberOfLines={1}
-          >
-            {label}
-          </Animated.Text>
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
 function SpotRefreshBorder({ compact = false, progress, breath }) {
   const [box, setBox] = useState({ width: 0, height: 0 });
   const radius = compact ? 12 : SIDEBAR_TAB_ACTIVE_RADIUS;
@@ -8637,7 +8616,6 @@ function SpotMetalToggle({ compact = false }) {
   const progress = useSpotRefreshProgress();
   const breath = useSpotBorderPulse();
   const flash = useSpotRefreshFlash();
-  const [chip, setChip] = useState({ width: 0, height: 0 });
   const [open, setOpen] = useState(false);
   const fieldRef = useRef(null);
   const [anchor, setAnchor] = useState(null);
@@ -8677,19 +8655,7 @@ function SpotMetalToggle({ compact = false }) {
   return (
     <>
       <View ref={fieldRef} collapsable={false} style={[styles.topSpotWrap, compact && styles.topSpotWrapCompact]}>
-        <SpotMetalLegend
-          label={label}
-          compact={compact}
-          progress={progress}
-          breath={breath}
-          chip={chip}
-          lifted={open && !compact}
-        />
         <View
-          onLayout={(event) => {
-            const { width, height } = event.nativeEvent.layout;
-            setChip((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
-          }}
           style={[styles.topSpot, compact && styles.topSpotCompact, open && !compact && styles.topSpotActive]}
           {...(compact ? null : homeChipWebProps(open))}
         >
@@ -8701,6 +8667,10 @@ function SpotMetalToggle({ compact = false }) {
             accessibilityState={{ expanded: open }}
             accessibilityLabel={`${label} spot ${empty ? 'unavailable' : `${formatSpotMoney(shown)} ${currency}`}`}
           >
+            <View style={[styles.topSpotDot, { backgroundColor: selected?.accent || TRADE_BUY.accent }]} />
+            <Text style={[styles.topSpotKind, compact && styles.topSpotKindCompact]} numberOfLines={1}>
+              {label}
+            </Text>
             <Animated.Text
               style={[
                 styles.topSpotPrice,
@@ -8794,16 +8764,6 @@ function CurrencyToggle({ compact = false }) {
   return (
     <>
       <View ref={fieldRef} collapsable={false} style={[styles.topSpotWrap, compact && styles.topSpotWrapCompact]}>
-        <Text
-          style={[
-            styles.topSpotMetal,
-            compact && styles.topSpotMetalCompact,
-            open && !compact && styles.topSpotMetalOnCard,
-          ]}
-          numberOfLines={1}
-        >
-          Currency
-        </Text>
         <View
           style={[
             styles.topSpot,
@@ -8820,6 +8780,11 @@ function CurrencyToggle({ compact = false }) {
             accessibilityState={{ expanded: open }}
             accessibilityLabel={currency === 'USD' ? 'US dollars' : 'Canadian dollars'}
           >
+            {compact ? (
+              <Text style={[styles.topSpotKind, styles.topSpotKindCompact]} numberOfLines={1}>
+                Currency
+              </Text>
+            ) : null}
             <Text style={[styles.topSpotPrice, compact && styles.topSpotPriceCompact]} numberOfLines={1}>
               {currency}
             </Text>
@@ -9852,7 +9817,7 @@ export default function App() {
         setPermissionRules(ruleState.rules || EMPTY_LIST);
         cancelWarmup = warmSessionCaches(restored);
         const reopenKey = storedOpenTool();
-        const reopen = TOOL_CARDS.find((tool) => tool.key === reopenKey);
+        const reopen = reopenKey !== 'trove' ? TOOL_CARDS.find((tool) => tool.key === reopenKey) : null;
         if (reopen) {
           setActiveTab('tools');
           setActiveTool(reopen);
@@ -10179,6 +10144,10 @@ export default function App() {
 
   const openTool = useStableCallback((tool) => {
     if (!hasApp(tool?.key)) return;
+    if (tool.key === 'trove') {
+      openTroveUrl();
+      return;
+    }
     expandMobileTabBar();
     if (isMobile && tool.key === 'messages') {
       selectTab('messages');
@@ -10190,6 +10159,10 @@ export default function App() {
 
   const openPinnedTool = useStableCallback((tool) => {
     if (!hasApp(tool?.key)) return;
+    if (tool.key === 'trove') {
+      openTroveUrl();
+      return;
+    }
     expandMobileTabBar();
     if (isMobile && tool.key === 'messages') {
       selectTab('messages');
@@ -10201,9 +10174,8 @@ export default function App() {
   });
 
   const selectTrove = useStableCallback(() => {
-    const tool = TOOL_CARDS.find((item) => item.key === 'trove');
-    if (!tool) return;
-    openPinnedTool(tool);
+    if (!hasApp('trove')) return;
+    openTroveUrl();
   });
 
   const openEmailsFromBonuses = useCallback((focus) => {
@@ -10555,7 +10527,8 @@ export default function App() {
       activeTool.key === 'bonuses' ||
       activeTool.key === 'phone' ||
       activeTool.key === 'settings' ||
-      activeTool.key === 'serphint'
+      activeTool.key === 'serphint' ||
+      activeTool.key === 'transfer'
     ) {
       return null;
     }
@@ -10603,7 +10576,7 @@ export default function App() {
             <Text style={styles.breadcrumbCurrent}>{activeTool.label}</Text>
           )}
         </View>
-        {(activeTool.key === 'triage' || activeTool.key === 'audit' || activeTool.key === 'transfer') && triageNav ? (
+        {(activeTool.key === 'triage' || activeTool.key === 'audit') && triageNav ? (
           <View style={styles.breadcrumbNav}>{triageNav}</View>
         ) : null}
       </View>
@@ -11427,7 +11400,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   topSpotWrapCompact: {
-    paddingTop: 8,
     alignSelf: 'stretch',
   },
   topDateField: {
@@ -11513,11 +11485,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     flexShrink: 0,
-    minWidth: 148,
+    minWidth: 168,
     height: 32,
     paddingLeft: 10,
     paddingRight: 6,
-    gap: 12,
+    gap: 8,
     borderRadius: SIDEBAR_TAB_ACTIVE_RADIUS,
     borderWidth: 1,
     borderColor: 'transparent',
@@ -11545,81 +11517,22 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     paddingHorizontal: 12,
   },
-  topSpotMetal: {
-    position: 'absolute',
-    top: -6,
-    left: 10,
-    zIndex: 1,
-    paddingHorizontal: 4,
-    backgroundColor: 'transparent',
+  topSpotDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    flexShrink: 0,
+  },
+  topSpotKind: {
     fontFamily,
-    fontSize: 10,
-    fontWeight: '400',
-    lineHeight: 12,
-    color: '#3A3A3C',
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#8e8e93',
     letterSpacing: -0.1,
-    ...Platform.select({
-      web: {
-        transitionProperty: 'background-color',
-        transitionDuration: '120ms',
-        transitionTimingFunction: 'ease',
-      },
-      default: {},
-    }),
+    flexShrink: 0,
   },
-  topSpotMetalCompact: {
-    left: 12,
-    backgroundColor: '#fff',
-    fontSize: 11,
-    lineHeight: 13,
-  },
-  topSpotMetalHost: {
-    position: 'absolute',
-    top: -6,
-    left: 10,
-    zIndex: 2,
-    backgroundColor: 'transparent',
-    ...Platform.select({
-      web: {
-        transitionProperty: 'background-color',
-        transitionDuration: '120ms',
-        transitionTimingFunction: 'ease',
-      },
-      default: {},
-    }),
-  },
-  topSpotMetalOnCard: {
-    backgroundColor: '#fff',
-  },
-  topSpotMetalHostCompact: {
-    left: 12,
-    backgroundColor: '#fff',
-  },
-  topSpotMetalLabel: {
-    paddingHorizontal: 4,
-    fontFamily,
-    fontSize: 10,
-    fontWeight: '400',
-    lineHeight: 12,
-    color: '#3A3A3C',
-    letterSpacing: -0.1,
-  },
-  topSpotMetalLabelCompact: {
-    fontSize: 11,
-    lineHeight: 13,
-  },
-  topSpotMetalClip: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    overflow: 'hidden',
-  },
-  topSpotMetalLive: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    color: TRADE_BUY.accent,
+  topSpotKindCompact: {
+    fontSize: 13,
   },
   topSpotPrice: {
     fontFamily,
@@ -11632,7 +11545,6 @@ const styles = StyleSheet.create({
   },
   topSpotBorder: {
     ...StyleSheet.absoluteFillObject,
-    zIndex: 1,
   },
   topSpotPriceCompact: {
     fontSize: 16,
@@ -12353,7 +12265,14 @@ const styles = StyleSheet.create({
   },
   contentScrollFix: {
     ...Platform.select({
-      web: { overflow: 'hidden', display: 'flex', flexDirection: 'column' },
+      web: {
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 0,
+        alignSelf: 'stretch',
+        height: '100%',
+      },
       default: {},
     }),
   },
@@ -14010,7 +13929,13 @@ const styles = StyleSheet.create({
     alignItems: 'stretch',
     width: '100%',
     ...Platform.select({
-      web: { overflow: 'hidden' },
+      web: {
+        display: 'flex',
+        flexDirection: 'column',
+        height: 0,
+        overflowY: 'auto',
+        overflowX: 'hidden',
+      },
       default: {},
     }),
   },

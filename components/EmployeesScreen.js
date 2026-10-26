@@ -2463,7 +2463,7 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
     ...Platform.select({
-      web: { overflowY: 'auto' },
+      web: { overflowY: 'auto', height: 0 },
     }),
   },
   pageContent: {
