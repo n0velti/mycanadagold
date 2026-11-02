@@ -673,10 +673,11 @@ function ReviewCard({
       </Text>
       <ReviewPhotos review={review} storeName={storeName} />
       <View style={styles.reviewFlags}>
-        {review.eligible && review.namedEmployees?.length ? (
+        {review.eligible ? (
           <Text style={styles.flagGood}>Eligible</Text>
-        ) : review.namedEmployees?.length ? (
-          <Text style={styles.flagBad}>{review.ineligibleReason || 'Named · not paid'}</Text>
+        ) : review.namedEmployees?.length ||
+          (review.attributionSource === 'transaction' && review.attributedEmployees?.length) ? (
+          <Text style={styles.flagBad}>{review.ineligibleReason || 'Not paid'}</Text>
         ) : (
           <Text style={styles.flagNames}>
             {review.rating === 5 ? 'No name' : review.ineligibleReason || 'No name'}
@@ -697,6 +698,12 @@ function ReviewCard({
         ) : null}
         {review.namedEmployees?.length ? (
           <Text style={styles.flagNames}>Named: {review.namedEmployees.join(', ')}</Text>
+        ) : null}
+        {review.attributionSource === 'transaction' && review.attributedEmployees?.length ? (
+          <Text style={styles.flagMatched}>
+            Matched {review.transactionMatch?.customerName || 'customer'} →{' '}
+            {review.attributedEmployees.join(', ')}
+          </Text>
         ) : null}
       </View>
       {review.ownerReply ? (
@@ -720,7 +727,7 @@ function ReviewCard({
       {showCount && !(review.eligible && Number(review.payout) > 0) ? (
         <View style={styles.skipBox}>
           <Text style={styles.skipBoxText}>
-            Not paid · {review.ineligibleReason || 'Name not in a payable 5★ review'}
+            Not paid · {review.ineligibleReason || 'Not credited to this person'}
           </Text>
         </View>
       ) : null}
