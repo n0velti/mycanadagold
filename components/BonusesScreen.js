@@ -44,6 +44,7 @@ import { formatDateParam, fetchTransactionsAcrossPos, parseDateParam } from '../
 import { FONT, FONT_LIGHT } from '../lib/typography';
 import HomeDatePicker from './HomeDatePicker';
 import ReviewAuthorLink from './ReviewAuthorLink';
+import ReviewPhotos, { openReviewPhoto } from './ReviewPhotos';
 
 const ACCENT = '#A16207';
 const ACCENT_SOFT = '#FEF9C3';
@@ -605,9 +606,18 @@ function shareLabel(share) {
   return `Split ${Math.round(value * 100)}%`;
 }
 
-function ReviewCard({ review, showCount = false, session, onOpenCustomer, boxed = false, last = false }) {
+function ReviewCard({
+  review,
+  storeName,
+  showCount = false,
+  session,
+  onOpenCustomer,
+  boxed = false,
+  last = false,
+}) {
   const counted = showCount && review.eligible;
   const split = shareLabel(review.share);
+  const photoCount = Math.max(Number(review.photoCount) || 0, (review.photoUrls || []).length);
   return (
     <View
       style={[
@@ -635,6 +645,7 @@ function ReviewCard({ review, showCount = false, session, onOpenCustomer, boxed 
       <Text style={styles.reviewText}>
         {review.text || '(No comment — 5★ still eligible)'}
       </Text>
+      <ReviewPhotos review={review} storeName={storeName} />
       <View style={styles.reviewFlags}>
         {review.eligible && review.namedEmployees?.length ? (
           <Text style={styles.flagGood}>Eligible</Text>
@@ -646,10 +657,17 @@ function ReviewCard({ review, showCount = false, session, onOpenCustomer, boxed 
           </Text>
         )}
         {review.hasPhotos ? (
-          <Text style={styles.flagPhoto}>
-            +{formatMoney(PHOTO_BONUS)} photo
-            {review.photoCount > 1 ? ` · ${review.photoCount}` : ''}
-          </Text>
+          <Pressable
+            onPress={() => openReviewPhoto(review, storeName)}
+            accessibilityRole="link"
+            accessibilityLabel="View review photo"
+            {...(Platform.OS === 'web' ? { className: 'cgold-triage-btn' } : null)}
+          >
+            <Text style={styles.flagPhoto}>
+              +{formatMoney(PHOTO_BONUS)} photo
+              {photoCount > 1 ? ` · ${photoCount}` : ''}
+            </Text>
+          </Pressable>
         ) : null}
         {review.namedEmployees?.length ? (
           <Text style={styles.flagNames}>Named: {review.namedEmployees.join(', ')}</Text>
@@ -873,6 +891,7 @@ function EmployeeBonusDrawer({ visible, employee, store, onClose, session, onOpe
                   <ReviewCard
                     key={review.id}
                     review={review}
+                    storeName={heldStore?.storeName}
                     showCount
                     session={session}
                     onOpenCustomer={onOpenCustomer}
@@ -903,6 +922,7 @@ function EmployeeBonusDrawer({ visible, employee, store, onClose, session, onOpe
                       <ReviewCard
                         key={review.id}
                         review={review}
+                        storeName={heldStore?.storeName}
                         showCount
                         session={session}
                         onOpenCustomer={onOpenCustomer}
@@ -995,6 +1015,7 @@ function UnassignedReviewsDrawer({ visible, store, onClose, session, onOpenCusto
                   <ReviewCard
                     key={review.id}
                     review={review}
+                    storeName={heldStore?.storeName}
                     session={session}
                     onOpenCustomer={onOpenCustomer}
                   />
@@ -1550,6 +1571,7 @@ export default function BonusesScreen({
           <ReviewCard
             key={review.id}
             review={review}
+            storeName={activeStore.storeName}
             session={session}
             onOpenCustomer={onOpenCustomer}
             boxed={embedded}
@@ -2741,6 +2763,10 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 6,
     overflow: 'hidden',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
   },
   flagNames: {
     fontFamily: FONT,

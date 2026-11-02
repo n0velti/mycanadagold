@@ -32,6 +32,7 @@ import { useAppDate } from '../lib/appDate';
 import { fetchTransactionsAcrossPos, formatDateParam, parseDateParam } from '../lib/transactions';
 import HomeDatePicker from './HomeDatePicker';
 import ReviewAuthorLink from './ReviewAuthorLink';
+import ReviewPhotos from './ReviewPhotos';
 
 const fontFamily = Platform.select({
   ios: 'Sohne',
@@ -210,6 +211,7 @@ function ReviewCard({ review, storeName, showStore, compact, session, onOpenCust
       <Text style={styles.reviewText}>
         {review.text || '(No written comment)'}
       </Text>
+      <ReviewPhotos review={review} storeName={storeName} />
       <View style={styles.reviewFlags}>
         {review.attributionSource === 'named' && review.namedEmployees?.length ? (
           <Text style={styles.flagNames}>Names you: {review.namedEmployees.join(', ')}</Text>
@@ -217,11 +219,6 @@ function ReviewCard({ review, storeName, showStore, compact, session, onOpenCust
         {review.attributionSource === 'transaction' && review.attributedEmployees?.length ? (
           <Text style={styles.flagMatched}>
             Matched via txn → {review.attributedEmployees.join(', ')}
-          </Text>
-        ) : null}
-        {review.hasPhotos ? (
-          <Text style={styles.flagPhoto}>
-            {review.photoCount} photo{review.photoCount === 1 ? '' : 's'}
           </Text>
         ) : null}
         {review.ownerReply ? (
