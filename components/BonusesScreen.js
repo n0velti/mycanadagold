@@ -22,10 +22,12 @@ import { BONUS_ACCESS_DENIED } from '../lib/auth';
 import {
   bonusReviewDetailSpreadsheetFilename,
   bonusSpreadsheetFilename,
+  bonusStoreEmployeeSpreadsheetFilename,
   bonusViewerMatchesEmployee,
   buildBonusBoard,
   buildBonusReviewDetailWorkbook,
   buildBonusSpreadsheetCsv,
+  buildBonusStoreEmployeeWorkbook,
   bonusBoardAccessDenied,
   canViewAllBonusCounts,
   canonicalBonusStoreName,
@@ -279,9 +281,10 @@ function RatingBreakdown({ breakdown, total, boxed = false }) {
   );
 }
 
-function StoreSelectCard({ store, selected, onPress, compact }) {
+function StoreSelectCard({ store, selected, onPress, onDownload, compact }) {
   const emailEmpty = !store.customerCount;
   const reviewsLoading = Boolean(store.reviewsLoading);
+  const downloadDisabled = reviewsLoading && !store.reviewCount;
   return (
     <Pressable
       onPress={onPress}
@@ -351,11 +354,38 @@ function StoreSelectCard({ store, selected, onPress, compact }) {
           <Text style={styles.storeSelectMetricLabel}>Negatives</Text>
         </View>
       </View>
+      {onDownload ? (
+        <Pressable
+          onPress={(event) => {
+            event?.preventDefault?.();
+            event?.stopPropagation?.();
+            if (!downloadDisabled) onDownload(store);
+          }}
+          disabled={downloadDisabled}
+          style={({ hovered, pressed }) => [
+            styles.storeSelectDownload,
+            (hovered || pressed) && !downloadDisabled && styles.storeSelectDownloadPressed,
+            downloadDisabled && styles.refreshDisabled,
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel={`Download ${store.storeName} Excel breakdown`}
+        >
+          <Ionicons name="download-outline" size={14} color={downloadDisabled ? '#c7c7cc' : '#4a4a4a'} />
+          <Text
+            style={[
+              styles.storeSelectDownloadText,
+              downloadDisabled && styles.spreadsheetBtnTextDisabled,
+            ]}
+          >
+            Excel breakdown
+          </Text>
+        </Pressable>
+      ) : null}
     </Pressable>
   );
 }
 
-function StoreCardGrid({ stores, selectedStore, onOpenStore, totals, compact }) {
+function StoreCardGrid({ stores, selectedStore, onOpenStore, onDownloadStore, totals, compact }) {
   const emailEmpty = !totals?.customerCount;
   const emailRate = totals?.customerCount > 0 ? (totals.withEmail / totals.customerCount) * 100 : 0;
   return (
@@ -366,6 +396,7 @@ function StoreCardGrid({ stores, selectedStore, onOpenStore, totals, compact }) 
           store={store}
           selected={selectedStore === store.storeName}
           onPress={() => onOpenStore(store)}
+          onDownload={onDownloadStore}
           compact={compact}
         />
       ))}
@@ -1183,6 +1214,24 @@ export default function BonusesScreen({
     );
   }, [endDate, startDate, storeFilter, visibleStores]);
 
+  const downloadStoreBreakdown = useCallback(
+    (store) => {
+      if (!store) return;
+      const bytes = buildBonusStoreEmployeeWorkbook(store);
+      const filename = bonusStoreEmployeeSpreadsheetFilename({
+        startDate,
+        endDate,
+        storeName: store.storeName,
+      });
+      downloadFile(
+        filename,
+        bytes,
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      );
+    },
+    [endDate, startDate],
+  );
+
   const openStore = (store) => {
     setSelectedStore(store.storeName);
   };
@@ -1420,9 +1469,18 @@ export default function BonusesScreen({
       ) : null}
 
       <View style={[styles.sectionHeader, embedded && styles.overviewSectionHead]}>
-        <Text style={[styles.sectionTitle, embedded && styles.overviewSectionTitle]}>
-          {viewAllCounts ? 'Employees' : 'Your payout'}
-        </Text>
+        <View style={styles.sectionHeaderRow}>
+          <Text style={[styles.sectionTitle, embedded && styles.overviewSectionTitle]}>
+            {viewAllCounts ? 'Employees' : 'Your payout'}
+          </Text>
+          {viewAllCounts ? (
+            <SpreadsheetButton
+              onPress={() => downloadStoreBreakdown(activeStore)}
+              disabled={!activeStore}
+              label="Excel breakdown"
+            />
+          ) : null}
+        </View>
         <Text style={styles.sectionHint}>
           {formatMoney(activeStore.perReviewBonus)} / eligible 5★
           {activeStore.photoReviewCount
@@ -1575,6 +1633,7 @@ export default function BonusesScreen({
             stores={visibleStores}
             selectedStore={activeStore?.storeName}
             onOpenStore={openStore}
+            onDownloadStore={downloadStoreBreakdown}
             totals={totals}
             compact={isMobile}
           />
@@ -2111,6 +2170,29 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#8e8e93',
   },
+  storeSelectDownload: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: '#f3f3f3',
+    ...Platform.select({
+      web: { cursor: 'pointer' },
+      default: {},
+    }),
+  },
+  storeSelectDownloadPressed: {
+    backgroundColor: '#e8e8e8',
+  },
+  storeSelectDownloadText: {
+    fontFamily: FONT,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#4a4a4a',
+  },
   storeIcon: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -2142,6 +2224,12 @@ const styles = StyleSheet.create({
   sectionHeader: {
     gap: 2,
     marginTop: 4,
+  },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
   },
   sectionTitle: {
     fontFamily: FONT,

@@ -38,8 +38,9 @@ import {
 } from '../lib/fintracLctr';
 import {
   buildIrsReportedByTxn,
-  fetchIrsReportingPayments,
+  fetchIrsReportingPaymentsAcrossPos,
   getIrsPaymentIdsToMark,
+  lookupIrsOverlay,
   markPaymentsReportedToIrs,
   normalizeAureusTxnId,
 } from '../lib/aureusIrs';
@@ -85,9 +86,14 @@ function statusLabel(status) {
 
 function isAddedInApp(item, linked) {
   if (item?.irsReported) return true;
-  if (linked?.status === FINTRAC_STATUS.submitted) return true;
   if (linked?.aureusMarked) return true;
+  if (linked?.status === FINTRAC_STATUS.submitted) return true;
   return false;
+}
+
+function needsAureusMark(item, linked) {
+  if (item?.irsReported || linked?.aureusMarked) return false;
+  return linked?.status === FINTRAC_STATUS.submitted;
 }
 
 function DateChip({ label, value, onChange, maximumDate, minimumDate }) {
@@ -282,6 +288,7 @@ function ReviewModal({
   onClose,
   onValidate,
   onSubmit,
+  onMarkAureus,
 }) {
   const [draft, setDraft] = useState(() => emptyMappedFields(row));
   const [dirty, setDirty] = useState(false);
@@ -347,6 +354,8 @@ function ReviewModal({
               ) : null}
               {linked.aureusMarked || row.irsReported ? (
                 <Text style={styles.reviewLine}>Aureus IRS flag: reported</Text>
+              ) : submitted ? (
+                <Text style={styles.reviewLine}>Aureus IRS flag: not marked</Text>
               ) : null}
             </View>
 
@@ -460,6 +469,21 @@ function ReviewModal({
                   <Text style={styles.primaryButtonText}>Submit to FINTRAC</Text>
                 )}
               </Pressable>
+            ) : needsAureusMark(row, linked) ? (
+              <Pressable
+                style={[
+                  styles.primaryButtonCompact,
+                  busy && styles.addButtonDisabled,
+                ]}
+                onPress={onMarkAureus}
+                disabled={Boolean(busy)}
+              >
+                {busy === 'aureus' ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.primaryButtonText}>Mark in Aureus</Text>
+                )}
+              </Pressable>
             ) : (
               <View style={styles.linkedBadge}>
                 <Ionicons name="checkmark-circle" size={14} color="#2F8A4E" />
@@ -546,10 +570,12 @@ function FintracRow({
   submitting,
   onAdd,
   onReview,
+  onMarkAureus,
   disabled,
 }) {
   const fintrac = isFintracCash(item);
   const added = isAddedInApp(item, linked);
+  const aureusPending = needsAureusMark(item, linked);
   const alreadyLinked = Boolean(linked?.incompleteReportUuid);
   const status = linked?.status || FINTRAC_STATUS.created;
   const missing = added ? [] : resolveMissingFields(item, linked);
@@ -590,7 +616,22 @@ function FintracRow({
         ) : null}
       </View>
       <View style={styles.colAction}>
-        {added ? (
+        {added && aureusPending ? (
+          <Pressable
+            style={styles.markAureusButton}
+            onPress={() => onMarkAureus(item)}
+            disabled={disabled || submitting}
+          >
+            {submitting ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <>
+                <Ionicons name="flag-outline" size={13} color="#fff" />
+                <Text style={styles.addedButtonText}>Mark Aureus</Text>
+              </>
+            )}
+          </Pressable>
+        ) : added ? (
           <Pressable
             style={styles.addedButton}
             onPress={() => (alreadyLinked ? onReview(item) : null)}
@@ -719,8 +760,7 @@ export default function FintracScreen({ session, onRequireLogin, storeFilter }) 
   const applyIrsOverlay = useCallback((txRows, irsMap) => {
     if (!irsMap || irsMap.size === 0) return txRows;
     return txRows.map((row) => {
-      const txnId = normalizeAureusTxnId(row.reference);
-      const entry = irsMap.get(txnId);
+      const entry = lookupIrsOverlay(irsMap, row);
       if (!entry) return row;
       return {
         ...row,
@@ -752,10 +792,9 @@ export default function FintracScreen({ session, onRequireLogin, storeFilter }) 
           endDate: endKey,
           includePurchases: false,
         }),
-        fetchIrsReportingPayments(session.token, {
+        fetchIrsReportingPaymentsAcrossPos(session, {
           startDate: startKey,
           endDate: endKey,
-          baseUrl: session.baseUrl,
         }).catch(() => []),
       ]);
       if (id !== requestId.current) return;
@@ -927,10 +966,7 @@ export default function FintracScreen({ session, onRequireLogin, storeFilter }) 
       );
 
       const mapped = buildLctrReportContentFromTransaction(enriched, detail);
-      const paymentIds =
-        getIrsPaymentIdsToMark(detail).length > 0
-          ? getIrsPaymentIdsToMark(detail)
-          : enriched.irsPaymentIds || [];
+      const paymentIds = getIrsPaymentIdsToMark(detail);
 
       if (!mapped.ok) {
         const nextLinked = await saveLinkedFintracReport(row.id, {
@@ -1012,6 +1048,99 @@ export default function FintracScreen({ session, onRequireLogin, storeFilter }) 
       setSubmittingId(null);
     }
   };
+
+  const markAureusForRow = useCallback(async (row, storedIds = []) => {
+    const auth = resolvePosAuthForRow(session, row);
+    let paymentIds = [];
+    try {
+      const detail = await fetchTransactionDetail(auth.token, {
+        type: row.type,
+        sourceId: row.sourceId,
+        baseUrl: auth.baseUrl,
+      });
+      const liveIds = getIrsPaymentIdsToMark(detail);
+      paymentIds = Array.from(
+        new Set(
+          [...(storedIds || []), ...liveIds, ...(row.irsPaymentIds || [])]
+            .map((id) => String(id || '').trim())
+            .filter((id) => id && id !== '[object Object]'),
+        ),
+      );
+      const enriched = withPaymentBreakdown(row, detail);
+      paymentCache.current[row.id] = enriched;
+      setRows((currentRows) =>
+        currentRows.map((entry) => (entry.id === row.id ? enriched : entry)),
+      );
+
+      if (!paymentIds.length) {
+        return {
+          paymentIds,
+          aureusMarked: false,
+          error: 'FINTRAC submitted, but no Aureus cash payment ids were found to mark.',
+        };
+      }
+
+      const result = await markPaymentsReportedToIrs(
+        auth.token,
+        paymentIds,
+        auth.baseUrl,
+      );
+      const ok = new Set([...(result.marked || []), ...(result.already || [])]);
+      const ownIds = liveIds.length ? liveIds : paymentIds;
+      const aureusMarked = ownIds.length > 0 && ownIds.every((id) => ok.has(String(id)));
+
+      if (aureusMarked) {
+        const txnId = normalizeAureusTxnId(row.reference);
+        const keys = [txnId, row.systemKey ? `${row.systemKey}:${txnId}` : '']
+          .filter(Boolean);
+        for (const key of keys) {
+          const existing = irsByTxnRef.current.get(key) || {
+            reported: false,
+            paymentIds: [],
+            payments: [],
+          };
+          irsByTxnRef.current.set(key, {
+            ...existing,
+            reported: true,
+            paymentIds: Array.from(
+              new Set([...(existing.paymentIds || []), ...paymentIds]),
+            ),
+          });
+        }
+        setRows((currentRows) =>
+          currentRows.map((entry) =>
+            entry.id === row.id
+              ? { ...entry, irsReported: true, irsPaymentIds: paymentIds }
+              : entry,
+          ),
+        );
+      }
+
+      if (!aureusMarked) {
+        const failText = (result.failed || [])
+          .map((item) => item.error)
+          .filter(Boolean)
+          .join(' ');
+        return {
+          paymentIds,
+          aureusMarked: false,
+          error:
+            failText ||
+            'FINTRAC submitted, but marking Aureus reported_to_irs failed.',
+        };
+      }
+
+      return { paymentIds, aureusMarked: true, error: '' };
+    } catch (markErr) {
+      return {
+        paymentIds,
+        aureusMarked: false,
+        error:
+          markErr?.message ||
+          'FINTRAC submitted, but marking Aureus reported_to_irs failed.',
+      };
+    }
+  }, [session]);
 
   const applyFieldsAndValidate = async (draftFields, { submitAfter = false } = {}) => {
     if (!reviewRow || !fintracConnected) return;
@@ -1116,82 +1245,20 @@ export default function FintracScreen({ session, onRequireLogin, storeFilter }) 
         submittingReportingEntityNumber: nextState.submittingReportingEntityNumber,
       });
 
-      let paymentIds = nextState.irsPaymentIds || [];
-      let aureusMarked = false;
-      let aureusMarkError = '';
-
-      try {
-        if (!paymentIds.length) {
-          const auth = resolvePosAuthForRow(session, reviewRow);
-          const detail = await fetchTransactionDetail(auth.token, {
-            type: reviewRow.type,
-            sourceId: reviewRow.sourceId,
-            baseUrl: auth.baseUrl,
-          });
-          paymentIds = getIrsPaymentIdsToMark(detail);
-          const enriched = withPaymentBreakdown(reviewRow, detail);
-          paymentCache.current[reviewRow.id] = enriched;
-          setRows((currentRows) =>
-            currentRows.map((entry) =>
-              entry.id === reviewRow.id ? { ...enriched, irsReported: true } : entry,
-            ),
-          );
-        }
-
-        if (paymentIds.length) {
-          const auth = resolvePosAuthForRow(session, reviewRow);
-          await markPaymentsReportedToIrs(
-            auth.token,
-            paymentIds,
-            auth.baseUrl,
-          );
-          aureusMarked = true;
-          const txnId = normalizeAureusTxnId(reviewRow.reference);
-          const existing = irsByTxnRef.current.get(txnId) || {
-            reported: false,
-            paymentIds: [],
-            payments: [],
-          };
-          irsByTxnRef.current.set(txnId, {
-            ...existing,
-            reported: true,
-            paymentIds: Array.from(
-              new Set([...(existing.paymentIds || []), ...paymentIds.map(String)]),
-            ),
-          });
-          setRows((currentRows) =>
-            currentRows.map((entry) =>
-              entry.id === reviewRow.id
-                ? {
-                    ...entry,
-                    irsReported: true,
-                    irsPaymentIds: paymentIds.map(String),
-                  }
-                : entry,
-            ),
-          );
-        } else {
-          aureusMarkError =
-            'FINTRAC submitted, but no Aureus cash payment ids were found to mark.';
-        }
-      } catch (markErr) {
-        aureusMarkError =
-          markErr?.message ||
-          'FINTRAC submitted, but marking Aureus reported_to_irs failed.';
-      }
+      const aureus = await markAureusForRow(reviewRow, nextState.irsPaymentIds);
 
       nextState = {
         ...nextState,
         ...result,
-        irsPaymentIds: paymentIds,
-        aureusMarked,
+        irsPaymentIds: aureus.paymentIds,
+        aureusMarked: aureus.aureusMarked,
         status: FINTRAC_STATUS.submitted,
       };
       const nextLinked = await saveLinkedFintracReport(reviewRow.id, nextState);
       setLinked(nextLinked);
 
-      if (aureusMarkError) {
-        setReviewError(aureusMarkError);
+      if (aureus.error) {
+        setReviewError(aureus.error);
         setReviewMessage(
           `Submitted to FINTRAC${result.reportingEntityReportReference ? ` · ${result.reportingEntityReportReference}` : ''}.`,
         );
@@ -1222,6 +1289,41 @@ export default function FintracScreen({ session, onRequireLogin, storeFilter }) 
 
   const handleSubmit = async (draftFields) => {
     await applyFieldsAndValidate(draftFields, { submitAfter: true });
+  };
+
+  const handleMarkAureus = async (row) => {
+    const target = row || reviewRow;
+    if (!target) return;
+    const current = linked[target.id] || {};
+    setReviewBusy('aureus');
+    setSubmittingId(target.id);
+    setReviewError('');
+    setActionError('');
+    try {
+      const aureus = await markAureusForRow(target, current.irsPaymentIds);
+      const nextLinked = await saveLinkedFintracReport(target.id, {
+        ...current,
+        irsPaymentIds: aureus.paymentIds.length
+          ? aureus.paymentIds
+          : current.irsPaymentIds,
+        aureusMarked: aureus.aureusMarked || current.aureusMarked,
+        status: current.status || FINTRAC_STATUS.submitted,
+      });
+      setLinked(nextLinked);
+      if (aureus.error) {
+        setReviewError(aureus.error);
+        setActionError(`${target.reference}: ${aureus.error}`);
+      } else {
+        setReviewMessage('Marked as reported in Aureus.');
+        setActionMessage(`${target.reference}: marked in Aureus`);
+      }
+    } catch (err) {
+      setReviewError(err?.message || 'Could not mark Aureus.');
+      setActionError(err?.message || 'Could not mark Aureus.');
+    } finally {
+      setReviewBusy('');
+      setSubmittingId(null);
+    }
   };
 
   const disconnect = async () => {
@@ -1425,6 +1527,7 @@ export default function FintracScreen({ session, onRequireLogin, storeFilter }) 
                   submitting={submittingId === item.id}
                   onAdd={handleAdd}
                   onReview={openReview}
+                  onMarkAureus={handleMarkAureus}
                   disabled={Boolean(submittingId)}
                 />
               ))
@@ -1453,6 +1556,7 @@ export default function FintracScreen({ session, onRequireLogin, storeFilter }) 
         onClose={closeReview}
         onValidate={handleValidate}
         onSubmit={handleSubmit}
+        onMarkAureus={() => handleMarkAureus(reviewRow)}
       />
     </View>
   );
@@ -1746,6 +1850,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 4,
     backgroundColor: ADDED_GREEN,
+    borderRadius: 7,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    minWidth: 112,
+    justifyContent: 'center',
+  },
+  markAureusButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: ACCENT,
     borderRadius: 7,
     paddingHorizontal: 10,
     paddingVertical: 7,
