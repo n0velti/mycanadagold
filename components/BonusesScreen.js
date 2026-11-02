@@ -308,7 +308,7 @@ function StoreSelectCard({ store, selected, onPress, onDownload, compact }) {
             {reviewsLoading
               ? 'Loading reviews…'
               : store.googleConfigured
-                ? `${store.reviewCount} review${store.reviewCount === 1 ? '' : 's'}`
+                ? `${store.reviewCount} review${store.reviewCount === 1 ? '' : 's'} · ${store.eligibleCount} paid`
                 : 'No Google link'}
           </Text>
         </View>
@@ -504,6 +504,18 @@ function PayoutMatrix({ matrix, activeTierId, activeColumnId, boxed = false }) {
   );
 }
 
+function employeeReviewLabel(row) {
+  const named = Number(row?.namedCount) || 0;
+  const paid = Number(row?.eligibleCount) || 0;
+  if (!named && !paid) {
+    return row.title ? `${row.title} · no reviews` : 'No reviews this period';
+  }
+  const namedLabel = `${named} named`;
+  if (!paid) return `${namedLabel} · none paid`;
+  const paidLabel = `${paid} paid`;
+  return named === paid ? `${paidLabel}` : `${namedLabel} · ${paidLabel}`;
+}
+
 function EmployeeList({ employees, selfOnly, onOpenEmployee, boxed = false }) {
   if (!employees.length) {
     return (
@@ -520,7 +532,7 @@ function EmployeeList({ employees, selfOnly, onOpenEmployee, boxed = false }) {
   return (
     <View style={[styles.employeeList, boxed && styles.overviewBox]}>
       {employees.map((row, index) => {
-        const inactive = Boolean(row.zeroPayout) || (Number(row.total) || 0) === 0;
+        const inactive = (Number(row.namedCount) || 0) === 0 && ((Number(row.total) || 0) === 0);
         return (
           <Pressable
             key={row.employeeName}
@@ -556,13 +568,8 @@ function EmployeeList({ employees, selfOnly, onOpenEmployee, boxed = false }) {
                 {row.employeeName}
               </Text>
               <Text style={[styles.employeeMeta, inactive && styles.employeeMetaInactive]} numberOfLines={1}>
-                {inactive
-                  ? row.title
-                    ? `${row.title} · no reviews`
-                    : 'No reviews this period'
-                  : `${row.eligibleCount} review${row.eligibleCount === 1 ? '' : 's'}${
-                      row.photoCount > 0 ? ` · ${row.photoCount} photo` : ''
-                    }`}
+                {employeeReviewLabel(row)}
+                {!inactive && row.photoCount > 0 ? ` · ${row.photoCount} photo` : ''}
               </Text>
             </View>
             <View style={styles.employeeTrailing}>
@@ -629,10 +636,14 @@ function ReviewCard({ review, showCount = false, session, onOpenCustomer, boxed 
         {review.text || '(No comment — 5★ still eligible)'}
       </Text>
       <View style={styles.reviewFlags}>
-        {review.eligible ? (
+        {review.eligible && review.namedEmployees?.length ? (
           <Text style={styles.flagGood}>Eligible</Text>
+        ) : review.namedEmployees?.length ? (
+          <Text style={styles.flagBad}>{review.ineligibleReason || 'Named · not paid'}</Text>
         ) : (
-          <Text style={styles.flagBad}>{review.ineligibleReason || 'Ineligible'}</Text>
+          <Text style={styles.flagNames}>
+            {review.rating === 5 ? 'No name' : review.ineligibleReason || 'No name'}
+          </Text>
         )}
         {review.hasPhotos ? (
           <Text style={styles.flagPhoto}>
@@ -640,25 +651,10 @@ function ReviewCard({ review, showCount = false, session, onOpenCustomer, boxed 
             {review.photoCount > 1 ? ` · ${review.photoCount}` : ''}
           </Text>
         ) : null}
-        {review.attributionSource === 'named' && review.namedEmployees?.length ? (
+        {review.namedEmployees?.length ? (
           <Text style={styles.flagNames}>Named: {review.namedEmployees.join(', ')}</Text>
         ) : null}
-        {review.attributionSource === 'transaction' && review.transactionMatch ? (
-          <Text style={styles.flagMatched}>
-            Matched via txn → {review.attributedEmployees.join(', ')}
-          </Text>
-        ) : null}
-        {review.attributionSource === 'unassigned' ? (
-          <Text style={styles.flagNames}>Unassigned</Text>
-        ) : null}
       </View>
-      {review.attributionSource === 'transaction' && review.transactionMatch ? (
-        <Text style={styles.matchDetail}>
-          Reviewer “{review.author}” matched customer {review.transactionMatch.customerName}
-          {review.transactionMatch.reference ? ` · ${review.transactionMatch.reference}` : ''}
-          {review.transactionMatch.dateLabel ? ` · ${review.transactionMatch.dateLabel}` : ''}.
-        </Text>
-      ) : null}
       {review.ownerReply ? (
         <View style={styles.ownerReply}>
           <Text style={styles.ownerReplyLabel}>
@@ -667,7 +663,7 @@ function ReviewCard({ review, showCount = false, session, onOpenCustomer, boxed 
           <Text style={styles.ownerReplyText}>{review.ownerReply}</Text>
         </View>
       ) : null}
-      {counted ? (
+      {counted && Number(review.payout) > 0 ? (
         <View style={styles.countBox}>
           <Text style={styles.countBoxTotal}>Counted {formatMoney(review.payout)}</Text>
           <Text style={styles.countBoxMeta}>
@@ -677,10 +673,10 @@ function ReviewCard({ review, showCount = false, session, onOpenCustomer, boxed 
           </Text>
         </View>
       ) : null}
-      {showCount && !review.eligible ? (
+      {showCount && !(review.eligible && Number(review.payout) > 0) ? (
         <View style={styles.skipBox}>
           <Text style={styles.skipBoxText}>
-            Not counted · {review.ineligibleReason || 'Ineligible'}
+            Not paid · {review.ineligibleReason || 'Name not in a payable 5★ review'}
           </Text>
         </View>
       ) : null}
@@ -770,10 +766,11 @@ function EmployeeBonusDrawer({ visible, employee, store, onClose, session, onOpe
 
   if (!mounted || !heldEmployee) return null;
 
-  const counted = heldEmployee.reviews || [];
-  const countedIds = new Set(counted.map((review) => review.id));
-  const named = reviewsNamedForEmployee(heldStore?.reviews, heldEmployee.employeeName);
-  const notCounted = named.filter((review) => !countedIds.has(review.id));
+  const named = (heldEmployee.reviews || []).length
+    ? heldEmployee.reviews
+    : reviewsNamedForEmployee(heldStore?.reviews, heldEmployee.employeeName);
+  const counted = named.filter((review) => Number(review.payout) > 0);
+  const notCounted = named.filter((review) => !(Number(review.payout) > 0));
   const splitCount = counted.filter((review) => Number(review.share) < 0.999).length;
   const visibleCounted = counted.filter((review) => reviewMatchesQuery(review, query));
   const visibleNotCounted = notCounted.filter((review) => reviewMatchesQuery(review, query));
@@ -823,8 +820,15 @@ function EmployeeBonusDrawer({ visible, employee, store, onClose, session, onOpe
               <Text style={styles.drawerHeroAmount}>{formatMoney(heldEmployee.total)}</Text>
               <View style={styles.drawerHeroStats}>
                 <View style={styles.drawerHeroStat}>
+                  <Text style={styles.drawerHeroStatValue}>
+                    {heldEmployee.namedCount ?? named.length}
+                  </Text>
+                  <Text style={styles.drawerHeroStatLabel}>Named</Text>
+                </View>
+                <View style={styles.drawerHeroStatDivider} />
+                <View style={styles.drawerHeroStat}>
                   <Text style={styles.drawerHeroStatValue}>{heldEmployee.eligibleCount}</Text>
-                  <Text style={styles.drawerHeroStatLabel}>Counted</Text>
+                  <Text style={styles.drawerHeroStatLabel}>Paid</Text>
                 </View>
                 <View style={styles.drawerHeroStatDivider} />
                 <View style={styles.drawerHeroStat}>
@@ -858,9 +862,9 @@ function EmployeeBonusDrawer({ visible, employee, store, onClose, session, onOpe
               placeholder={`Search ${heldEmployee.employeeName}'s reviews`}
             />
 
-            <Text style={styles.drawerSectionTitle}>Counted toward bonus</Text>
+            <Text style={styles.drawerSectionTitle}>Paid 5★ with their name</Text>
             <Text style={styles.drawerSectionHint}>
-              Eligible 5★ reviews attributed to {heldEmployee.employeeName}
+              Payable reviews that name {heldEmployee.employeeName}
               {heldStore?.storeName ? ` at ${heldStore.storeName}` : ''}.
             </Text>
             {visibleCounted.length ? (
@@ -888,10 +892,10 @@ function EmployeeBonusDrawer({ visible, employee, store, onClose, session, onOpe
             {notCounted.length ? (
               <>
                 <Text style={[styles.drawerSectionTitle, styles.drawerSectionSpaced]}>
-                  Mentioned, not counted
+                  Named, not paid
                 </Text>
                 <Text style={styles.drawerSectionHint}>
-                  These reviews name them but did not add to the payout.
+                  These reviews name them but are not payable 5★ bonuses.
                 </Text>
                 {visibleNotCounted.length ? (
                   <View style={styles.reviewList}>
@@ -1508,13 +1512,14 @@ export default function BonusesScreen({
           {viewAllCounts ? 'Reviews' : 'Your reviews'}
         </Text>
         <Text style={styles.sectionHint}>
-          {activeStore.reviews.length} in {periodLabel}
+          {activeStore.reviews.length} Google reviews in {periodLabel}
           {activeStore.reviewsLoading ? ' · loading…' : ''}
-          {activeStore.ineligibleFiveStarCount
-            ? ` · ${activeStore.ineligibleFiveStarCount} name-only 5★ excluded`
+          {activeStore.namedReviewCount
+            ? ` · ${activeStore.namedReviewCount} with a name`
             : ''}
-          {activeStore.transactionAttributedCount
-            ? ` · ${activeStore.transactionAttributedCount} matched via txn`
+          {` · ${activeStore.eligibleCount} paid`}
+          {activeStore.ineligibleFiveStarCount
+            ? ` · ${activeStore.ineligibleFiveStarCount} name-only 5★ excluded from pay`
             : ''}
         </Text>
       </View>
@@ -1523,12 +1528,11 @@ export default function BonusesScreen({
           style={[styles.emailJump, embedded && styles.overviewJump]}
           onPress={() => setUnassignedOpen(true)}
           accessibilityRole="button"
-          accessibilityLabel="Reviews with no allocation"
+          accessibilityLabel="Reviews with no staff name"
         >
           <Ionicons name="help-circle-outline" size={16} color={embedded ? MOBILE.secondary : ACCENT} />
           <Text style={[styles.emailJumpText, embedded && styles.overviewJumpText]}>
-            {(activeStore.reviews || []).filter(isUnallocatedReview).length} reviews with no
-            allocation
+            {(activeStore.reviews || []).filter(isUnallocatedReview).length} reviews with no name
           </Text>
           <Ionicons name="chevron-forward" size={16} color={embedded ? MOBILE.secondary : ACCENT} />
         </Pressable>
