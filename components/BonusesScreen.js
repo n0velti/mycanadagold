@@ -532,15 +532,18 @@ function PayoutMatrix({ matrix, activeTierId, activeColumnId, boxed = false }) {
 }
 
 function employeeReviewLabel(row) {
-  const named = Number(row?.namedCount) || 0;
+  const named = Number(row?.namedInReviewCount) || 0;
+  const matched = Number(row?.matchedCount) || 0;
   const paid = Number(row?.eligibleCount) || 0;
-  if (!named && !paid) {
+  if (!named && !matched && !paid) {
     return row.title ? `${row.title} · no reviews` : 'No reviews this period';
   }
-  const namedLabel = `${named} named`;
-  if (!paid) return `${namedLabel} · none paid`;
-  const paidLabel = `${paid} paid`;
-  return named === paid ? `${paidLabel}` : `${namedLabel} · ${paidLabel}`;
+  const parts = [];
+  if (named) parts.push(`${named} named`);
+  if (matched) parts.push(`${matched} matched`);
+  if (!paid) return `${parts.join(' · ') || 'none'} · none paid`;
+  if (!named && !matched) return `${paid} paid`;
+  return `${parts.join(' · ')} · ${paid} paid`;
 }
 
 function EmployeeList({ employees, selfOnly, onOpenEmployee, boxed = false }) {
@@ -872,21 +875,21 @@ function EmployeeBonusDrawer({ visible, employee, store, onClose, session, onOpe
               <View style={styles.drawerHeroStats}>
                 <View style={styles.drawerHeroStat}>
                   <Text style={styles.drawerHeroStatValue}>
-                    {heldEmployee.namedCount ?? named.length}
+                    {heldEmployee.namedInReviewCount ?? named.length}
                   </Text>
                   <Text style={styles.drawerHeroStatLabel}>Named</Text>
                 </View>
                 <View style={styles.drawerHeroStatDivider} />
                 <View style={styles.drawerHeroStat}>
-                  <Text style={styles.drawerHeroStatValue}>{heldEmployee.eligibleCount}</Text>
-                  <Text style={styles.drawerHeroStatLabel}>Paid</Text>
+                  <Text style={styles.drawerHeroStatValue}>
+                    {heldEmployee.matchedCount || 0}
+                  </Text>
+                  <Text style={styles.drawerHeroStatLabel}>Matched</Text>
                 </View>
                 <View style={styles.drawerHeroStatDivider} />
                 <View style={styles.drawerHeroStat}>
-                  <Text style={styles.drawerHeroStatValue}>
-                    {formatMoney(heldStore?.perReviewBonus || 0)}
-                  </Text>
-                  <Text style={styles.drawerHeroStatLabel}>Per review</Text>
+                  <Text style={styles.drawerHeroStatValue}>{heldEmployee.eligibleCount}</Text>
+                  <Text style={styles.drawerHeroStatLabel}>Paid</Text>
                 </View>
                 <View style={styles.drawerHeroStatDivider} />
                 <View style={styles.drawerHeroStat}>
