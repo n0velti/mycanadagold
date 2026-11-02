@@ -23,11 +23,13 @@ import {
   bonusReviewDetailSpreadsheetFilename,
   bonusSpreadsheetFilename,
   bonusStoreEmployeeSpreadsheetFilename,
+  bonusStoreReviewCountsSpreadsheetFilename,
   bonusViewerMatchesEmployee,
   buildBonusBoard,
   buildBonusReviewDetailWorkbook,
   buildBonusSpreadsheetCsv,
   buildBonusStoreEmployeeWorkbook,
+  buildBonusStoreReviewCountsWorkbook,
   bonusBoardAccessDenied,
   canViewAllBonusCounts,
   canonicalBonusStoreName,
@@ -282,7 +284,37 @@ function RatingBreakdown({ breakdown, total, boxed = false }) {
   );
 }
 
-function StoreSelectCard({ store, selected, onPress, onDownload, compact }) {
+function StoreSelectDownload({ label, store, disabled, onPress }) {
+  return (
+    <Pressable
+      onPress={(event) => {
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        if (!disabled) onPress(store);
+      }}
+      disabled={disabled}
+      style={({ hovered, pressed }) => [
+        styles.storeSelectDownload,
+        (hovered || pressed) && !disabled && styles.storeSelectDownloadPressed,
+        disabled && styles.refreshDisabled,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={`Download ${store.storeName} ${label}`}
+    >
+      <Ionicons name="download-outline" size={14} color={disabled ? '#c7c7cc' : '#4a4a4a'} />
+      <Text
+        style={[
+          styles.storeSelectDownloadText,
+          disabled && styles.spreadsheetBtnTextDisabled,
+        ]}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function StoreSelectCard({ store, selected, onPress, onDownload, onDownloadCounts, compact }) {
   const emailEmpty = !store.customerCount;
   const reviewsLoading = Boolean(store.reviewsLoading);
   const downloadDisabled = reviewsLoading && !store.reviewCount;
@@ -355,38 +387,31 @@ function StoreSelectCard({ store, selected, onPress, onDownload, compact }) {
           <Text style={styles.storeSelectMetricLabel}>Negatives</Text>
         </View>
       </View>
-      {onDownload ? (
-        <Pressable
-          onPress={(event) => {
-            event?.preventDefault?.();
-            event?.stopPropagation?.();
-            if (!downloadDisabled) onDownload(store);
-          }}
-          disabled={downloadDisabled}
-          style={({ hovered, pressed }) => [
-            styles.storeSelectDownload,
-            (hovered || pressed) && !downloadDisabled && styles.storeSelectDownloadPressed,
-            downloadDisabled && styles.refreshDisabled,
-          ]}
-          accessibilityRole="button"
-          accessibilityLabel={`Download ${store.storeName} Excel breakdown`}
-        >
-          <Ionicons name="download-outline" size={14} color={downloadDisabled ? '#c7c7cc' : '#4a4a4a'} />
-          <Text
-            style={[
-              styles.storeSelectDownloadText,
-              downloadDisabled && styles.spreadsheetBtnTextDisabled,
-            ]}
-          >
-            Excel breakdown
-          </Text>
-        </Pressable>
+      {onDownload || onDownloadCounts ? (
+        <View style={styles.storeSelectDownloads}>
+          {onDownload ? (
+            <StoreSelectDownload
+              label="Excel breakdown"
+              store={store}
+              disabled={downloadDisabled}
+              onPress={onDownload}
+            />
+          ) : null}
+          {onDownloadCounts ? (
+            <StoreSelectDownload
+              label="5★ photos"
+              store={store}
+              disabled={downloadDisabled}
+              onPress={onDownloadCounts}
+            />
+          ) : null}
+        </View>
       ) : null}
     </Pressable>
   );
 }
 
-function StoreCardGrid({ stores, selectedStore, onOpenStore, onDownloadStore, totals, compact }) {
+function StoreCardGrid({ stores, selectedStore, onOpenStore, onDownloadStore, onDownloadReviewCounts, totals, compact }) {
   const emailEmpty = !totals?.customerCount;
   const emailRate = totals?.customerCount > 0 ? (totals.withEmail / totals.customerCount) * 100 : 0;
   return (
@@ -398,6 +423,7 @@ function StoreCardGrid({ stores, selectedStore, onOpenStore, onDownloadStore, to
           selected={selectedStore === store.storeName}
           onPress={() => onOpenStore(store)}
           onDownload={onDownloadStore}
+          onDownloadCounts={onDownloadReviewCounts}
           compact={compact}
         />
       ))}
@@ -1257,6 +1283,24 @@ export default function BonusesScreen({
     [endDate, startDate],
   );
 
+  const downloadStoreReviewCounts = useCallback(
+    (store) => {
+      if (!store) return;
+      const bytes = buildBonusStoreReviewCountsWorkbook(store);
+      const filename = bonusStoreReviewCountsSpreadsheetFilename({
+        startDate,
+        endDate,
+        storeName: store.storeName,
+      });
+      downloadFile(
+        filename,
+        bytes,
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      );
+    },
+    [endDate, startDate],
+  );
+
   const openStore = (store) => {
     setSelectedStore(store.storeName);
   };
@@ -1660,6 +1704,7 @@ export default function BonusesScreen({
             selectedStore={activeStore?.storeName}
             onOpenStore={openStore}
             onDownloadStore={downloadStoreBreakdown}
+            onDownloadReviewCounts={downloadStoreReviewCounts}
             totals={totals}
             compact={isMobile}
           />
@@ -2196,13 +2241,20 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#8e8e93',
   },
+  storeSelectDownloads: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 8,
+    marginTop: 12,
+  },
   storeSelectDownload: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    marginTop: 12,
     paddingVertical: 8,
+    paddingHorizontal: 6,
     borderRadius: 10,
     backgroundColor: '#f3f3f3',
     ...Platform.select({
