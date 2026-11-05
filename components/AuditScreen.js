@@ -15,6 +15,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useAppAccess } from '../lib/permissions';
 import {
+  buildUnbalancedBullionItems,
   countedPhysicalTotal,
   fetchBullionAudit,
   fetchBullionAuditStores,
@@ -27,22 +28,11 @@ import {
   saveLocalBullionCounts,
   saveNightCount,
 } from '../lib/bullionNight';
-import { buildUnbalancedBullionItems } from '../lib/bullionAuditAi';
-import {
-  analyzeBullionRange,
-  analyzeCashRange,
-  continueRangeChat,
-  formatRangeLabel,
-  MAX_RANGE_DAYS,
-  normalizeAuditRange,
-} from '../lib/auditRangeAi';
-import { useAuditRangeChat } from '../lib/useAuditRangeChat';
 import {
   AUDIT_CASH_STORES,
   fetchStoreCashPosition,
   formatAmount,
   QUEBEC_STORES,
-  shiftDateParam,
 } from '../lib/cashTill';
 import {
   CASH_DENOMS,
@@ -75,15 +65,10 @@ import {
   normalizeHomeStoreName,
   parseDateParam,
 } from '../lib/transactions';
-import {
-  formatModelReleased,
-  getModelMeta,
-  OPENROUTER_MODELS,
-} from '../lib/openrouter';
 import { mobileSafeBottom, NAV_TAB_ACTIVE_RADIUS, useIsMobile } from '../lib/mobileUi';
 import { FONT_LIGHT } from '../lib/typography';
 import { AUREUS_CASH_LIVE_MS, useLiveRefresh } from '../lib/liveRefresh';
-import { AuditAiChat, AuditTxnDrawer, useAuditTxnDrawer } from './AuditAiOutput';
+import { AuditTxnDrawer, useAuditTxnDrawer } from './AuditAiOutput';
 import ItemAuditPanel from './ItemAuditPanel';
 import { BarButton, IconAction, SearchField, T } from './TriageKit';
 
@@ -287,11 +272,6 @@ function GroupSection({ title, children, style }) {
   );
 }
 
-const MODEL_OPTIONS = OPENROUTER_MODELS;
-const DEFAULT_MODEL =
-  MODEL_OPTIONS.find((model) => model.key === 'anthropic/claude-sonnet-5')?.key ||
-  MODEL_OPTIONS[0].key;
-
 function parseQtyInput(value) {
   const cleaned = String(value || '')
     .replace(/[^0-9.-]/g, '')
@@ -469,177 +449,6 @@ function DateChip({ label, value, onChange, maximumDate, variant = 'chip' }) {
   );
 }
 
-const RANGE_PRESETS = [7, 14, 30];
-
-/**
- * From/To pickers + "Review range" + its own chat. The chat keeps the saved
- * transcript for the last review so follow-ups stay on that request.
- */
-function RangeReviewSection({
-  title = 'Review a date range',
-  isMobile,
-  startDate,
-  endDate,
-  onChangeRange,
-  chat,
-  onRun,
-  onSend,
-  canRun,
-  runHint,
-  placeholder,
-  onOpenReference,
-  model,
-  onChangeModel,
-  modelMenuOpen,
-  onToggleModelMenu,
-}) {
-  const today = new Date();
-  const range = normalizeAuditRange(startDate, endDate);
-  const reviewing = chat.busy && !chat.hasContext;
-
-  const setStart = (next) => {
-    const key = formatDateParam(next);
-    onChangeRange(key, key > endDate ? key : endDate);
-  };
-  const setEnd = (next) => {
-    const key = formatDateParam(next);
-    onChangeRange(key < startDate ? key : startDate, key);
-  };
-  const applyPreset = (days) => {
-    onChangeRange(shiftDateParam(endDate, -(days - 1)), endDate);
-  };
-
-  return (
-    <GroupSection title={title}>
-      <View style={styles.rangePresetRow}>
-        <View style={styles.rangeDatePick}>
-          <Text style={styles.rangeDateCaption}>From</Text>
-          <DateChip label="From" value={startDate} onChange={setStart} maximumDate={today} />
-        </View>
-        <View style={styles.rangeDatePick}>
-          <Text style={styles.rangeDateCaption}>To</Text>
-          <DateChip label="To" value={endDate} onChange={setEnd} maximumDate={today} />
-        </View>
-        {RANGE_PRESETS.map((days) => {
-          const active = shiftDateParam(endDate, -(days - 1)) === startDate;
-          return (
-            <Pressable
-              key={days}
-              style={[styles.rangePreset, active && styles.rangePresetActive]}
-              onPress={() => applyPreset(days)}
-              accessibilityRole="button"
-              accessibilityState={{ selected: active }}
-            >
-              <Text style={[styles.rangePresetText, active && styles.rangePresetTextActive]}>
-                {days} days
-              </Text>
-            </Pressable>
-          );
-        })}
-        <Text style={styles.rangeHint} numberOfLines={1}>
-          {range.days} day{range.days === 1 ? '' : 's'}
-          {range.clamped ? ` · capped at ${MAX_RANGE_DAYS}` : ''}
-        </Text>
-      </View>
-
-      <View style={[styles.aiRow, isMobile && styles.aiRowMobile]}>
-        <View style={[styles.modelDropdownWrap, isMobile && styles.modelDropdownWrapMobile]}>
-          <Pressable
-            style={[styles.modelDropdown, modelMenuOpen && styles.modelDropdownOpen]}
-            onPress={() => onToggleModelMenu((open) => !open)}
-          >
-            <View style={styles.modelDropdownMain}>
-              <Text style={styles.modelDropdownValue} numberOfLines={1}>
-                {getModelMeta(model, MODEL_OPTIONS)?.label || model}
-              </Text>
-              <Text style={styles.modelDropdownMeta} numberOfLines={1}>
-                {modelOptionMetaLine(getModelMeta(model, MODEL_OPTIONS) || MODEL_OPTIONS[0])}
-              </Text>
-            </View>
-            <Ionicons
-              name={modelMenuOpen ? 'chevron-up' : 'chevron-down'}
-              size={16}
-              color={SECONDARY}
-            />
-          </Pressable>
-          {modelMenuOpen ? (
-            <ScrollView style={styles.modelMenu} nestedScrollEnabled>
-              {MODEL_OPTIONS.map((option) => {
-                const active = option.key === model;
-                return (
-                  <Pressable
-                    key={option.key}
-                    style={[styles.modelOption, active && styles.modelOptionActive]}
-                    onPress={() => {
-                      onChangeModel(option.key);
-                      onToggleModelMenu(false);
-                    }}
-                  >
-                    <View style={styles.modelOptionCopy}>
-                      <Text
-                        style={[
-                          styles.modelOptionText,
-                          active && styles.modelOptionTextActive,
-                        ]}
-                      >
-                        {option.label}
-                      </Text>
-                      <Text style={styles.modelOptionStats}>{modelOptionMetaLine(option)}</Text>
-                      {option.blurb ? (
-                        <Text style={styles.modelOptionBlurb}>{option.blurb}</Text>
-                      ) : null}
-                    </View>
-                    {active ? <Ionicons name="checkmark" size={20} color={ACCENT} /> : null}
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-          ) : null}
-        </View>
-        <Pressable
-          style={[
-            styles.findWhyButton,
-            isMobile && styles.findWhyButtonMobile,
-            (chat.busy || !canRun) && styles.findWhyButtonDisabled,
-          ]}
-          onPress={onRun}
-          disabled={chat.busy || !canRun}
-        >
-          {reviewing ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <Ionicons name="sparkles" size={16} color="#fff" />
-          )}
-          <Text style={styles.findWhyButtonText}>{reviewing ? 'Reviewing…' : 'Review range'}</Text>
-        </Pressable>
-      </View>
-      {runHint ? (
-        <Text style={[styles.rangeDescription, isMobile && styles.rangeDescriptionMobile]}>{runHint}</Text>
-      ) : null}
-
-      {chat.label && chat.hasContext ? (
-        <Text style={styles.aiProgress}>Reviewed {chat.label}. Follow-ups use this review.</Text>
-      ) : null}
-      {chat.busy && chat.progress ? <Text style={styles.aiProgress}>{chat.progress}</Text> : null}
-      {chat.status === 'error' && chat.error ? (
-        <Text style={[styles.errorText, styles.aiProgress]}>{chat.error}</Text>
-      ) : null}
-      <View style={styles.aiChatWrap}>
-        <AuditAiChat
-          turns={chat.turns}
-          draft={chat.draft}
-          onChangeDraft={chat.setDraft}
-          onSend={onSend}
-          busy={chat.busy}
-          disabled={!chat.hasContext}
-          placeholder={placeholder}
-          onOpenReference={onOpenReference}
-        />
-      </View>
-    </GroupSection>
-  );
-}
-
 function parseMoneyInput(value) {
   const cleaned = String(value || '')
     .replace(/[^0-9.-]/g, '')
@@ -665,15 +474,6 @@ const EMPTY_CASH_TOTALS = {
 
 function moneySum(values) {
   return Math.round(values.reduce((sum, value) => sum + (Number(value) || 0), 0) * 100) / 100;
-}
-
-function modelOptionMetaLine(option) {
-  const parts = [];
-  if (option.provider) parts.push(option.provider);
-  parts.push(`Speed: ${option.speed}`);
-  parts.push(`Accuracy: ${option.accuracy}`);
-  if (option.released) parts.push(`Released ${formatModelReleased(option.released)}`);
-  return parts.join('  ·  ');
 }
 
 function DiffBadge({ total, systemCount, confirmed, compact = false }) {
@@ -1217,8 +1017,6 @@ function BullionAuditPanel({
   const [hideZero, setHideZero] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [model, setModel] = useState(DEFAULT_MODEL);
-  const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const requestId = useRef(0);
   const storesRequestId = useRef(0);
   const qtyInputRefs = useRef(new Map());
@@ -1251,14 +1049,6 @@ function BullionAuditPanel({
   const applyLookup = useCallback(() => {
     setTxnLookup([...lookupRef.current.day, ...lookupRef.current.range]);
   }, [setTxnLookup]);
-
-  const rangeChat = useAuditRangeChat();
-  const resetRangeChat = rangeChat.reset;
-  const [rangeDates, setRangeDates] = useState(() => ({
-    start: shiftDateParam(dateKey, -6),
-    end: dateKey,
-  }));
-  const setRange = useCallback((start, end) => setRangeDates({ start, end }), []);
 
   useEffect(() => {
     if (storeFilter) setSelectedStoreName(storeFilter);
@@ -1368,13 +1158,6 @@ function BullionAuditPanel({
     applyLookup();
     closeTxnDrawer();
   }, [dateKey, selectedStore?.id, selectedStore?.systemKey, applyLookup, closeTxnDrawer]);
-
-  // The range review survives day changes; only a different store clears it.
-  useEffect(() => {
-    resetRangeChat();
-    lookupRef.current.range = [];
-    applyLookup();
-  }, [selectedStore?.id, selectedStore?.systemKey, resetRangeChat, applyLookup]);
 
   const visibleRows = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -1706,40 +1489,6 @@ function BullionAuditPanel({
 
   const saveAll = () => writeAll({ aureus: false });
   const updateAll = () => writeAll({ aureus: true });
-
-  const runRangeReview = () => {
-    if (!(selectedStore?.token || session?.token) || !selectedStore?.id || rangeChat.busy) return;
-    setModelMenuOpen(false);
-    const range = normalizeAuditRange(rangeDates.start, rangeDates.end);
-    const store = selectedStore;
-    rangeChat.run(
-      ({ signal, onProgress, onDelta }) =>
-        analyzeBullionRange({
-          session,
-          startDate: range.startDate,
-          endDate: range.endDate,
-          storeName: store.name,
-          locationId: store.id,
-          systemKey: store.systemKey,
-          products: rows,
-          focusProductIds: unbalancedItems.map((item) => item.id),
-          model,
-          signal,
-          onProgress,
-          onDelta,
-        }).then((result) => {
-          lookupRef.current.range = result.context?.lookupTransactions || [];
-          applyLookup();
-          return result;
-        }),
-      { label: `${store.name} · ${formatRangeLabel(range.startDate, range.endDate)}` },
-    );
-  };
-
-  const sendRangeFollowUp = () =>
-    rangeChat.send(({ messages, userMessage, signal, onDelta }) =>
-      continueRangeChat({ kind: 'bullion', messages, userMessage, model, signal, onDelta }),
-    );
 
   if (!session?.token) {
     return (
@@ -2213,23 +1962,6 @@ function BullionAuditPanel({
         )}
 
         {renderBullionAi()}
-        <RangeReviewSection
-          isMobile={isMobile}
-          startDate={rangeDates.start}
-          endDate={rangeDates.end}
-          onChangeRange={setRange}
-          chat={rangeChat}
-          onRun={runRangeReview}
-          onSend={sendRangeFollowUp}
-          canRun={Boolean(selectedStore?.id)}
-          runHint="Walks every vault count, sale, purchase, transfer, delivery, payment, and POS edit for this store across the selected dates, then explains when and why each metal drifted."
-          placeholder="Ask about a metal, a day, an SO/PO/TR, or an undelivered line…"
-          onOpenReference={txnDrawer.openReference}
-          model={model}
-          onChangeModel={setModel}
-          modelMenuOpen={modelMenuOpen}
-          onToggleModelMenu={setModelMenuOpen}
-        />
       </ScrollView>
 
       {isMobile ? (
@@ -2282,8 +2014,6 @@ function CashAuditPanel({
   const [cashDrawer, setCashDrawer] = useState('cad');
   const [paymentsOpen, setPaymentsOpen] = useState(false);
   const [tillOpen, setTillOpen] = useState(false);
-  const [model, setModel] = useState(DEFAULT_MODEL);
-  const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const requestId = useRef(0);
   const cashInputRefs = useRef(new Map());
   const cashCountHydrating = useRef(false);
@@ -2309,14 +2039,6 @@ function CashAuditPanel({
   const applyLookup = useCallback(() => {
     setTxnLookup([...lookupRef.current.day, ...lookupRef.current.range]);
   }, [setTxnLookup]);
-
-  const rangeChat = useAuditRangeChat();
-  const resetRangeChat = rangeChat.reset;
-  const [rangeDates, setRangeDates] = useState(() => ({
-    start: shiftDateParam(dateKey, -6),
-    end: dateKey,
-  }));
-  const setRange = useCallback((start, end) => setRangeDates({ start, end }), []);
 
   const storeOptions = useMemo(() => {
     const names = new Set(AUDIT_CASH_STORES);
@@ -2450,13 +2172,6 @@ function CashAuditPanel({
     applyLookup();
     closeTxnDrawer();
   }, [dateKey, selectedStore, applyLookup, closeTxnDrawer]);
-
-  // The range review survives day changes; only a different store clears it.
-  useEffect(() => {
-    resetRangeChat();
-    lookupRef.current.range = [];
-    applyLookup();
-  }, [selectedStore, resetRangeChat, applyLookup]);
 
   const isUsdDrawer = cashDrawer === 'usd';
   const currency = isUsdDrawer ? 'USD' : 'CAD';
@@ -2709,36 +2424,6 @@ function CashAuditPanel({
   const hasCount = cashOnHand != null;
   const variance = hasCount ? cashOnHand - expectedOnHand : null;
   const balanced = variance != null && Math.abs(variance) < 0.005;
-
-  const runRangeReview = () => {
-    if (!session?.token || !selectedStore || rangeChat.busy) return;
-    setModelMenuOpen(false);
-    const range = normalizeAuditRange(rangeDates.start, rangeDates.end);
-    const storeName = selectedStore;
-    rangeChat.run(
-      ({ signal, onProgress, onDelta }) =>
-        analyzeCashRange({
-          session,
-          startDate: range.startDate,
-          endDate: range.endDate,
-          storeName,
-          model,
-          signal,
-          onProgress,
-          onDelta,
-        }).then((result) => {
-          lookupRef.current.range = result.context?.lookupTransactions || [];
-          applyLookup();
-          return result;
-        }),
-      { label: `${storeName} · ${formatRangeLabel(range.startDate, range.endDate)}` },
-    );
-  };
-
-  const sendRangeFollowUp = () =>
-    rangeChat.send(({ messages, userMessage, signal, onDelta }) =>
-      continueRangeChat({ kind: 'cash', messages, userMessage, model, signal, onDelta }),
-    );
 
   if (!session?.token) {
     return (
@@ -3289,23 +2974,6 @@ function CashAuditPanel({
         {renderCashHero()}
         {renderCashCount()}
         {renderCashActivity()}
-        <RangeReviewSection
-          isMobile={isMobile}
-          startDate={rangeDates.start}
-          endDate={rangeDates.end}
-          onChangeRange={setRange}
-          chat={rangeChat}
-          onRun={runRangeReview}
-          onSend={sendRangeFollowUp}
-          canRun={Boolean(selectedStore)}
-          runHint="Rebuilds Till 1 CAD and USD day by day across the selected dates: opening vs prior count, every cash, debit, and cheque payment, till entries, whether each sale and purchase was actually paid, transfers, and POS edits."
-          placeholder="Ask about a day, a drawer, an SO/PO, or whether something was paid…"
-          onOpenReference={txnDrawer.openReference}
-          model={model}
-          onChangeModel={setModel}
-          modelMenuOpen={modelMenuOpen}
-          onToggleModelMenu={setModelMenuOpen}
-        />
       </ScrollView>
 
       {isMobile ? (

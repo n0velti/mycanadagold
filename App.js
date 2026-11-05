@@ -150,7 +150,6 @@ import {
   mobileTabBarReserve,
   useMobileTabBarScrollProps,
 } from './lib/mobileTabBar';
-import { profileTargetFromPerson } from './lib/profileTarget';
 import ProfileLocationPicker from './components/ProfileLocationPicker';
 import { PhoneCallProvider, PhoneIncomingDock, usePhoneCalls } from './components/PhoneCallProvider';
 import MobilePhoneDock from './components/MobilePhoneDock';
@@ -189,7 +188,6 @@ import {
 } from './lib/bonuses';
 import { captureTokenFromLocation } from './lib/qrCode';
 import { fetchAureusEmployee } from './lib/aureusEmployees';
-import { useDirectMessages } from './lib/messages';
 import { notificationBadgeText, useStaffNotifications } from './lib/notifications';
 import {
   CANVAS,
@@ -219,12 +217,10 @@ function openTroveUrl() {
 // screen can also be warmed ahead of time (see `warmScreen`).
 const SCREEN_LOADERS = {
   accounting: () => import('./components/AccountingScreen'),
-  analytics: () => import('./components/AnalyticsScreen'),
   audit: () => import('./components/AuditScreen'),
   bonuses: () => import('./components/BonusesScreen'),
   calendar: () => import('./components/CalendarScreen'),
   customers: () => import('./components/CustomersScreen'),
-  dashboards: () => import('./components/DashboardsScreen'),
   debit: () => import('./components/DebitScreen'),
   documents: () => import('./components/DocumentsScreen'),
   emails: () => import('./components/EmailsScreen'),
@@ -244,10 +240,8 @@ const SCREEN_LOADERS = {
   profile: () => import('./components/ProfileScreen'),
   reviews: () => import('./components/ReviewsScreen'),
   search: () => import('./components/SearchScreen'),
-  serphint: () => import('./components/SerphintScreen'),
   settings: () => import('./components/SettingsScreen'),
   supplies: () => import('./components/SuppliesScreen'),
-  tasks: () => import('./components/TasksScreen'),
   'shared-services': () => import('./components/SharedServicesScreen'),
   'store-settings': () => import('./components/StoreSettingsPanel'),
   teams: () => import('./components/TeamsScreen'),
@@ -282,12 +276,10 @@ for (const key of Object.keys(SCREEN_LOADERS)) {
 }
 
 const AccountingScreen = lazy(SCREEN_LOADERS.accounting);
-const AnalyticsScreen = lazy(SCREEN_LOADERS.analytics);
 const AuditScreen = lazy(SCREEN_LOADERS.audit);
 const BonusesScreen = lazy(SCREEN_LOADERS.bonuses);
 const CalendarScreen = lazy(SCREEN_LOADERS.calendar);
 const CustomersScreen = lazy(SCREEN_LOADERS.customers);
-const DashboardsScreen = lazy(SCREEN_LOADERS.dashboards);
 const DebitScreen = lazy(SCREEN_LOADERS.debit);
 const DocumentsScreen = lazy(SCREEN_LOADERS.documents);
 const EmailsScreen = lazy(SCREEN_LOADERS.emails);
@@ -299,19 +291,14 @@ const InventoryScreen = lazy(SCREEN_LOADERS.inventory);
 const LinePhotoCapturePage = lazy(SCREEN_LOADERS['line-photo-capture']);
 const LogsScreen = lazy(SCREEN_LOADERS.logs);
 const MarketingScreen = lazy(SCREEN_LOADERS.marketing);
-const MessagesScreen = lazy(SCREEN_LOADERS.messages);
 const NumismaticScreen = lazy(SCREEN_LOADERS.numismatic);
 const PhoneScreen = lazy(SCREEN_LOADERS.phone);
 const PreordersScreen = lazy(SCREEN_LOADERS.preorders);
 const PricingScreen = lazy(SCREEN_LOADERS.pricing);
-const ProfileScreen = lazy(SCREEN_LOADERS.profile);
 const ReviewsScreen = lazy(SCREEN_LOADERS.reviews);
-const SearchScreen = lazy(SCREEN_LOADERS.search);
-const SerphintScreen = lazy(SCREEN_LOADERS.serphint);
 const SettingsScreen = lazy(SCREEN_LOADERS.settings);
 const SharedServicesScreen = lazy(SCREEN_LOADERS['shared-services']);
 const SuppliesScreen = lazy(SCREEN_LOADERS.supplies);
-const TasksScreen = lazy(SCREEN_LOADERS.tasks);
 const TeamsScreen = lazy(SCREEN_LOADERS.teams);
 const TradeScreen = lazy(SCREEN_LOADERS.trade);
 const TransferScreen = lazy(SCREEN_LOADERS.transfer);
@@ -404,6 +391,34 @@ function PlaceholderToolScreen({ label }) {
   return <Text style={styles.toolPageBody}>{label} page</Text>;
 }
 
+function ComingSoonScreen({ title, icon, accent, onLogout }) {
+  return (
+    <View style={[styles.storeDrawerPlaceholder, styles.comingSoonFill]}>
+      <View
+        style={[
+          styles.toolIconTile,
+          styles.storeDrawerPlaceholderIcon,
+          { backgroundColor: accent },
+        ]}
+      >
+        <Ionicons name={filledIonicon(icon)} size={28} color="#fff" />
+      </View>
+      <Text style={styles.storeDrawerPlaceholderTitle}>{title}</Text>
+      <Text style={styles.storeDrawerPlaceholderBody}>Coming soon.</Text>
+      {onLogout ? (
+        <Pressable
+          onPress={onLogout}
+          style={styles.comingSoonLogout}
+          accessibilityRole="button"
+          accessibilityLabel="Log out"
+        >
+          <Text style={styles.comingSoonLogoutText}>Log Out</Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
 /**
  * Which component each app key renders and which shell props it needs. The
  * selector receives the shell context built in App and must return only what
@@ -433,28 +448,6 @@ const TOOL_SCREENS = {
     Component: AccountingScreen,
     props: (c) => ({ session: c.session, onRequireLogin: c.requireLogin, storeFilter: c.storeFilter }),
   },
-  analytics: {
-    Component: AnalyticsScreen,
-    props: (c) => ({
-      session: c.session,
-      storeFilter: c.storeFilter,
-      onOpenCustomer: c.openCustomerProfile,
-      onOpenDocument: c.openSearchDocument,
-      onMobileHeader: c.chrome('analytics', 'mobileHeader'),
-      onOpenDashboard: c.openDashboardsApp,
-    }),
-  },
-  dashboards: {
-    Component: DashboardsScreen,
-    props: (c) => ({
-      session: c.session,
-      onOpenCustomer: c.openCustomerProfile,
-      onOpenDocument: c.openSearchDocument,
-      onOpenAnalytics: c.openAnalyticsApp,
-      focusId: c.dashboardFocusId,
-      onFocusConsumed: c.clearDashboardFocus,
-    }),
-  },
   audit: {
     Component: AuditScreen,
     props: (c) => ({
@@ -476,7 +469,6 @@ const TOOL_SCREENS = {
       capture: c.emailsCapture,
     }),
   },
-  serphint: { Component: SerphintScreen, props: () => ({}) },
   '100-ways': {
     Component: HundredWaysScreen,
     props: (c) => ({ session: c.session, onRequireLogin: c.requireLogin }),
@@ -554,14 +546,6 @@ const TOOL_SCREENS = {
   marketing: { Component: MarketingScreen, props: () => ({}) },
   'shared-services': { Component: SharedServicesScreen, props: () => ({}) },
   supplies: { Component: SuppliesScreen, props: (c) => ({ session: c.session, storeFilter: c.storeFilter }) },
-  tasks: {
-    Component: TasksScreen,
-    props: (c) => ({
-      session: c.session,
-      onRequireLogin: c.requireLogin,
-      onOpenEmails: c.canOpenEmails ? c.openEmailsFromTasks : null,
-    }),
-  },
   logs: { Component: LogsScreen, props: (c) => ({ session: c.session }) },
   triage: {
     Component: TriageScreen,
@@ -1284,15 +1268,12 @@ const TOOL_CATALOG = [
   { key: 'financials', label: 'Financials', icon: 'wallet-outline', tint: '#F0F8EE', accent: '#3D8B4F' },
   { key: 'debit', label: 'Debit', icon: 'card-outline', tint: '#EEF4FF', accent: '#1D4ED8' },
   { key: 'accounting', label: 'Accounting', icon: 'calculator-outline', tint: '#EEF2FF', accent: '#3730A3' },
-  { key: 'analytics', label: 'Analytics', icon: 'analytics-outline', tint: '#EEF2FF', accent: '#4F46E5' },
-  { key: 'dashboards', label: 'Dashboards', icon: 'grid-outline', tint: '#EEF2FF', accent: '#4338CA' },
   { key: 'pricing', label: 'Pricing', icon: 'pricetag-outline', tint: '#F8F1E3', accent: '#A67C2D' },
   { key: 'numismatic', label: 'Numismatic', icon: 'disc-outline', tint: '#FEF6E6', accent: '#B45309' },
   { key: 'bonuses', label: 'Bonuses', icon: 'gift-outline', tint: '#FEF9C3', accent: '#A16207' },
   { key: 'leaderboards', label: 'Leaderboards', icon: 'trophy-outline', tint: '#FFF8E8', accent: '#B8860B' },
   { key: 'police-report', label: 'Police Report', icon: 'shield-outline', tint: '#F4F4F5', accent: '#3F3F46' },
   { key: 'security', label: 'Security', icon: 'lock-closed-outline', tint: '#EEF2FF', accent: '#374151' },
-  { key: 'serphint', label: 'Serphint', icon: 'eye-outline', tint: '#F5F5F7', accent: '#1a1a1a' },
   { key: 'supplies', label: 'Supplies', icon: 'bag-handle-outline', tint: '#FFF1F2', accent: '#BE123C' },
   { key: 'employees', label: 'Employees', icon: 'people-outline', tint: '#EFF6FF', accent: '#1D4ED8' },
   { key: 'phone', label: 'Phone', icon: 'call-outline', tint: '#ECFDF5', accent: '#15803D' },
@@ -1304,7 +1285,6 @@ const TOOL_CATALOG = [
   { key: 'notifications', label: 'Notifications', icon: 'notifications-outline', tint: '#FEE2E2', accent: '#B91C1C' },
   { key: 'reviews', label: 'Reviews', icon: 'star-outline', tint: '#FEF9C3', accent: '#A16207' },
   { key: 'emails', label: 'Emails', icon: 'mail-outline', tint: '#E0E7FF', accent: '#4338CA' },
-  { key: 'tasks', label: 'Tasks', icon: 'checkbox-outline', tint: '#ECFDF5', accent: '#059669' },
   { key: 'documents', label: 'Documents', icon: 'folder-outline', tint: '#E2E8F0', accent: '#475569' },
   { key: 'contacts', label: 'Contacts', icon: 'book-outline', tint: '#FCE7F3', accent: '#BE185D' },
   { key: 'triage', label: 'Triage', icon: 'medkit-outline', tint: '#FFEDD5', accent: '#C2410C' },
@@ -1335,15 +1315,12 @@ const APP_CARD_META = {
   financials: { category: 'Money', blurb: 'Tills · Cash' },
   debit: { category: 'Payments', blurb: 'Terminals' },
   accounting: { category: 'Money', blurb: 'Books' },
-  analytics: { category: 'Insights', blurb: 'Performance' },
-  dashboards: { category: 'Insights', blurb: 'Boards' },
   pricing: { category: 'Sales', blurb: 'Spot · Tickets' },
   numismatic: { category: 'Sales', blurb: 'Coins · Notes' },
   bonuses: { category: 'People', blurb: 'Bonuses' },
   leaderboards: { category: 'People', blurb: 'Rankings' },
   'police-report': { category: 'Compliance', blurb: 'Holds' },
   security: { category: 'Admin', blurb: 'Access' },
-  serphint: { category: 'Insights', blurb: 'Watch list' },
   supplies: { category: 'Ops', blurb: 'Store supply checklist' },
   employees: { category: 'People', blurb: 'Staff' },
   phone: { category: 'Comms', blurb: 'Calls' },
@@ -1355,7 +1332,6 @@ const APP_CARD_META = {
   notifications: { category: 'Comms', blurb: 'Alerts' },
   reviews: { category: 'Comms', blurb: 'Reviews' },
   emails: { category: 'Comms', blurb: 'Inbox' },
-  tasks: { category: 'Ops', blurb: 'Tasks' },
   documents: { category: 'Ops', blurb: 'Files' },
   contacts: { category: 'People', blurb: 'Directory' },
   triage: { category: 'Stock', blurb: 'Incoming' },
@@ -1408,7 +1384,7 @@ const STORE_DRAWER_TABS = STORE_DRAWER_TAB_KEYS.map((key) =>
   TOOL_CARDS.find((tool) => tool.key === key),
 ).filter(Boolean);
 
-const TRANSACTION_DETAIL_TAB_KEYS = ['triage', 'serphint'];
+const TRANSACTION_DETAIL_TAB_KEYS = ['triage'];
 
 const TRANSACTION_DETAIL_TABS = TRANSACTION_DETAIL_TAB_KEYS.map((key) =>
   TOOL_CARDS.find((tool) => tool.key === key),
@@ -6123,7 +6099,6 @@ function HomeScreen({
   onOpenPerson,
   onOpenCustomer,
   onOpenTrove,
-  onOpenAnalytics,
   homeRootTick = 0,
   onSelectedStoreChange,
   onSelectedDocumentChange,
@@ -9382,12 +9357,7 @@ const PinnedToolsList = memo(function PinnedToolsList({
                     !sidebarCollapsed && styles.tabGlyphExpanded,
                   ]}
                 >
-                  <SidebarTabGlyph
-                    icon={tool.icon}
-                    active={isActive}
-                    hovered={hoveredKey === tool.key}
-                    accent={tool.accent}
-                  />
+                  <AppSwitchIcon tool={tool} size={22} />
                 </View>
                 <Text
                   style={[
@@ -9483,7 +9453,6 @@ export default function App() {
   const [appsSearchQuery, setAppsSearchQuery] = useState('');
   const [searchDoc, setSearchDoc] = useState(null);
   const [customerFocus, setCustomerFocus] = useState(null);
-  const [dashboardFocusId, setDashboardFocusId] = useState('');
   const [searchDocDetail, setSearchDocDetail] = useState(null);
   const [searchDocLoading, setSearchDocLoading] = useState(false);
   const [searchDocError, setSearchDocError] = useState('');
@@ -9570,11 +9539,7 @@ export default function App() {
   const [aiScopesByRole, setAiScopesByRole] = useState(null);
   const [ownAiAccess, setOwnAiAccess] = useState(null);
   const [permissionRules, setPermissionRules] = useState(EMPTY_LIST);
-  const [viewedProfile, setViewedProfile] = useState(null);
-  const [dmFocusUserId, setDmFocusUserId] = useState('');
-  const [dmFocusConversationId, setDmFocusConversationId] = useState('');
   const [teamsFocusId, setTeamsFocusId] = useState('');
-  const [profileReturnTo, setProfileReturnTo] = useState(null);
   const [locationPickerOpen, setLocationPickerOpen] = useState(false);
   const emailsFocusSeq = useRef(0);
 
@@ -9613,7 +9578,6 @@ export default function App() {
   const triageBatch = activeChrome.batch || null;
   const triageNav = activeChrome.nav || null;
   const triageMobileHeader = activeToolKey === 'triage' ? activeChrome.mobileHeader || null : null;
-  const analyticsMobileHeader = activeToolKey === 'analytics' ? activeChrome.mobileHeader || null : null;
   const triageMobileOverlay = Boolean(activeChrome.overlay);
   const triageCrumbs = activeChrome.crumbs || EMPTY_LIST;
   const messagesChrome = toolChrome.messages || EMPTY_CHROME;
@@ -9637,7 +9601,7 @@ export default function App() {
     (key) => canFilterApp(session?.profile, key, ownUserAccess, allowedToolKeys),
     [session?.profile, ownUserAccess, allowedToolKeys],
   );
-  // Granular screen rules (Settings → Permissions assistant). Admins are never
+  // Granular screen rules (Settings → Permissions). Admins are never
   // affected; everyone else resolves the role / store / person rules that match.
   const featureFlags = useMemo(
     () => resolveFeatureFlags(session?.profile, permissionRules),
@@ -9667,8 +9631,7 @@ export default function App() {
   const pinnedKeysSignature = pinnedKeys.join('|');
   useEffect(() => {
     if (Platform.OS !== 'web' || bootstrapping || !isLoggedIn) return undefined;
-    const keys = ['trade', 'profile', ...pinnedKeysSignature.split('|').filter(Boolean)];
-    if (allowedToolKeys.has('messages')) keys.push('messages');
+    const keys = ['trade', ...pinnedKeysSignature.split('|').filter(Boolean)];
     let cancelled = false;
     const run = () => {
       if (cancelled) return;
@@ -9681,19 +9644,10 @@ export default function App() {
       if (hasIdle) cancelIdleCallback(handle);
       else clearTimeout(handle);
     };
-  }, [bootstrapping, isLoggedIn, pinnedKeysSignature, allowedToolKeys]);
+  }, [bootstrapping, isLoggedIn, pinnedKeysSignature]);
 
-  const { unread: messagesUnread, refreshUnread: refreshMessagesUnread } = useDirectMessages(
-    session,
-    {
-      enabled: isLoggedIn && hasApp('messages'),
-    },
-  );
-  const {
-    unread: notifyUnread,
-    items: notifyItems,
-    markRead: markNotificationsRead,
-  } = useStaffNotifications(session, { enabled: isLoggedIn });
+  const messagesUnread = 0;
+  const { unread: notifyUnread } = useStaffNotifications(session, { enabled: isLoggedIn });
   const profileUnread = (Number(messagesUnread) || 0) + (Number(notifyUnread) || 0);
 
   const pinnedTools = useMemo(
@@ -9734,11 +9688,7 @@ export default function App() {
     setHomeDocRef('');
     setHomeStoreCrumbs([]);
     setSettingsPanel(null);
-    setViewedProfile(null);
-    setDmFocusUserId('');
-    setDmFocusConversationId('');
     setTeamsFocusId('');
-    setProfileReturnTo(null);
     setLocationPickerOpen(false);
     setLoginSwitcherOpen(false);
     setSwitchError('');
@@ -9978,11 +9928,6 @@ export default function App() {
     if (tabKey === 'home' && activeTab === 'home') {
       setHomeRootTick((tick) => tick + 1);
     }
-    if (tabKey === 'profile') {
-      setViewedProfile(null);
-      setProfileReturnTo(null);
-    }
-
     // On mobile, leaving an app for another tab keeps that app mounted.
     // Tapping Apps again opens it where it was. Tapping Apps while already
     // inside the app returns to the apps library.
@@ -10044,38 +9989,7 @@ export default function App() {
     });
   }, []);
 
-  const openAnalyticsApp = useCallback(() => {
-    const tool = TOOL_CARDS.find((item) => item.key === 'analytics');
-    if (!tool || !hasApp('analytics')) return;
-    startTransition(() => {
-      setActiveTab('tools');
-      activateTool(tool);
-      setSettingsPanel(null);
-    });
-  }, [hasApp, activateTool]);
-
-  // From "+ Dashboard" in Analytics: open the Dashboards app on the new tab.
-  const openDashboardsApp = useCallback((dashboardId) => {
-    const tool = TOOL_CARDS.find((item) => item.key === 'dashboards');
-    if (!tool || !hasApp('dashboards')) return;
-    setDashboardFocusId(String(dashboardId || ''));
-    startTransition(() => {
-      setActiveTab('tools');
-      activateTool(tool);
-      setSettingsPanel(null);
-    });
-  }, [hasApp, activateTool]);
-
-  const openPersonProfile = useStableCallback((raw) => {
-    const person = profileTargetFromPerson(raw);
-    const myId = session?.supabaseUserId || session?.profile?.id || '';
-    if (person?.profileId && myId && person.profileId === myId) {
-      setViewedProfile(null);
-      setProfileReturnTo(null);
-    } else {
-      setViewedProfile(person);
-      setProfileReturnTo(activeTab === 'home' || activeTab === 'search' ? activeTab : null);
-    }
+  const openPersonProfile = useStableCallback(() => {
     setActiveTab('profile');
     if (!isMobile) {
       setActiveTool(null);
@@ -10083,28 +9997,6 @@ export default function App() {
     } else if (activeTab === 'tools' && activeTool && Platform.OS === 'web' && typeof document !== 'undefined') {
       document.activeElement?.blur?.();
     }
-  });
-
-  const messagePerson = useStableCallback((profileId) => {
-    if (!profileId || !hasApp('messages')) return;
-    setDmFocusUserId(profileId);
-    selectTab('messages');
-  });
-
-  const openNotificationChat = useStableCallback((conversationId) => {
-    if (!conversationId || !hasApp('messages')) return;
-    setDmFocusConversationId(conversationId);
-    void markNotificationsRead(conversationId);
-    selectTab('messages');
-  });
-
-  const openTeamsFromProfile = useStableCallback((teamId) => {
-    if (!hasApp('teams')) return;
-    setTeamsFocusId(teamId || '');
-    const teamsTool = TOOL_CARDS.find((tool) => tool.key === 'teams');
-    setActiveTab('tools');
-    activateTool(teamsTool || { key: 'teams', label: 'Teams' });
-    setSettingsPanel(null);
   });
 
   const closeSearchDocument = useCallback(() => {
@@ -10203,15 +10095,6 @@ export default function App() {
     setSettingsPanel(null);
   }, [hasApp, activateTool]);
 
-  // Tasks only needs the Emails app itself (to connect or read an inbox); no store focus.
-  const openEmailsFromTasks = useCallback(() => {
-    if (!hasApp('emails')) return;
-    const emailsTool = TOOL_CARDS.find((tool) => tool.key === 'emails');
-    setActiveTab('tools');
-    activateTool(emailsTool || { key: 'emails', label: 'Emails' });
-    setSettingsPanel(null);
-  }, [hasApp, activateTool]);
-
   const togglePin = useStableCallback((toolKey) => {
     setPinnedKeys((current) => {
       const next = current.includes(toolKey)
@@ -10226,9 +10109,6 @@ export default function App() {
 
   const clearCustomerFocus = useCallback(() => setCustomerFocus(null), []);
   const clearEmailsFocus = useCallback(() => setEmailsFocus(null), []);
-  const clearDashboardFocus = useCallback(() => setDashboardFocusId(''), []);
-  const clearDmFocusUser = useCallback(() => setDmFocusUserId(''), []);
-  const clearDmFocusConversation = useCallback(() => setDmFocusConversationId(''), []);
 
   // Employees → own row edited: mirror the fields the shell shows.
   const applyProfileUpdate = useCallback((profile) => {
@@ -10255,27 +10135,6 @@ export default function App() {
       };
     });
   }, []);
-
-  // Profile → own profile edited (avatar, role flags).
-  const applyProfilePatch = useCallback((patch) => {
-    setSession((current) => {
-      if (!current?.profile) return current;
-      const profile = { ...current.profile, ...patch };
-      if (shouldPrefetchTriage(profile)) {
-        import('./lib/transferWorkflow')
-          .then((mod) => mod.warmTriageWorkflow())
-          .catch(() => {});
-      }
-      return { ...current, profile };
-    });
-  }, []);
-
-  const backFromViewedProfile = useStableCallback(() => {
-    const next = profileReturnTo;
-    setViewedProfile(null);
-    setProfileReturnTo(null);
-    if (next && next !== 'profile') selectTab(next);
-  });
 
   const reorderPinned = useCallback((fromIndex, toIndex) => {
     setPinnedKeys((current) => {
@@ -10352,18 +10211,6 @@ export default function App() {
       return { ...current, aiScopes: next };
     });
   }, [session?.profile?.id, session?.profile?.appRole, session?.profile?.isSystemAdmin, aiScopesByRole, ownAiAccess]);
-
-  // The AI assistants read blocked analytics.* topics from the session
-  // (lib/analyticsTopics.js), the same way they read aiScopes.
-  useEffect(() => {
-    setSession((current) => {
-      if (!current?.profile) return current;
-      const next = [...featureFlags.hidden].sort();
-      const prev = Array.isArray(current.hiddenFeatures) ? current.hiddenFeatures : [];
-      if (prev.length === next.length && prev.every((key, index) => key === next[index])) return current;
-      return { ...current, hiddenFeatures: next };
-    });
-  }, [featureFlags]);
 
   const enterSession = async (next) => {
     const [pins, access, userAccess, userAi, ruleState] = await Promise.all([
@@ -10531,13 +10378,10 @@ export default function App() {
       activeTool.key === 'financials' ||
       activeTool.key === 'accounting' ||
       activeTool.key === 'audit' ||
-      activeTool.key === 'analytics' ||
       activeTool.key === 'supplies' ||
-      activeTool.key === 'tasks' ||
       activeTool.key === 'bonuses' ||
       activeTool.key === 'phone' ||
       activeTool.key === 'settings' ||
-      activeTool.key === 'serphint' ||
       activeTool.key === 'transfer'
     ) {
       return null;
@@ -10600,13 +10444,9 @@ export default function App() {
 
   // Screens mount the first time they are shown and then stay (hidden) so
   // the tab bar is a switch, not a reload. Tools are a bounded MRU list.
-  const mountMessages = canUseMessages && (seenScreens.messages || showingMessages);
-  const mountSearch = seenScreens.search || activeTab === 'search';
   const mountTrade = seenScreens.trade || showingTrade;
   useEffect(() => {
     const seen = {
-      messages: showingMessages && canUseMessages,
-      search: activeTab === 'search',
       trade: showingTrade,
     };
     setSeenScreens((prev) => {
@@ -10616,7 +10456,7 @@ export default function App() {
       for (const key of missing) next[key] = true;
       return next;
     });
-  }, [activeTab, canUseMessages, showingMessages, showingTrade]);
+  }, [showingTrade]);
   const [lastTradeMode, setLastTradeMode] = useState('buy');
   const tradeMode = showingTrade ? activeTab : lastTradeMode;
   useEffect(() => {
@@ -10644,11 +10484,7 @@ export default function App() {
     chrome,
     openCustomerProfile,
     openSearchDocument,
-    openDashboardsApp,
-    openAnalyticsApp,
     openPersonProfile,
-    dashboardFocusId,
-    clearDashboardFocus,
     emailsFocus,
     clearEmailsFocus,
     emailsCapture,
@@ -10660,8 +10496,6 @@ export default function App() {
     handleUserAiAccessSaved,
     applyOwnLocation,
     openEmailsFromBonuses,
-    openEmailsFromTasks,
-    canOpenEmails: hasApp('emails'),
     customerFocus,
     clearCustomerFocus,
     applyProfileUpdate,
@@ -10675,7 +10509,6 @@ export default function App() {
     onOpenPerson: openPersonProfile,
     onOpenCustomer: openCustomerProfile,
     onOpenTrove: hasApp('trove') ? selectTrove : undefined,
-    onOpenAnalytics: openAnalyticsApp,
     onSelectedStoreChange: setHomeStoreName,
     onSelectedDocumentChange: setHomeDocRef,
     onCrumbsChange: setHomeStoreCrumbs,
@@ -10685,29 +10518,6 @@ export default function App() {
     onStaffAccessSaved: handleStaffAccessSaved,
     onUserAccessSaved: handleUserAccessSaved,
     onUserAiAccessSaved: handleUserAiAccessSaved,
-  };
-
-  const messagesScreenProps = {
-    session,
-    onUnreadChange: refreshMessagesUnread,
-    openUserId: dmFocusUserId,
-    onOpenedUser: clearDmFocusUser,
-    openConversationId: dmFocusConversationId,
-    onOpenedConversation: clearDmFocusConversation,
-    onConversationSeen: markNotificationsRead,
-    onOpenProfile: openPersonProfile,
-    onMobileHeader: chrome('messages', 'mobileHeader'),
-    onOpenThreadChange: chrome('messages', 'thread'),
-    onOpenCustomer: openCustomerProfile,
-    onOpenDocument: openSearchDocument,
-  };
-
-  const searchScreenProps = {
-    session,
-    onOpenPerson: openPersonProfile,
-    onOpenDocument: openSearchDocument,
-    onOpenCustomer: openCustomerProfile,
-    onMessage: messagePerson,
   };
 
   const tradeScreenProps = { mode: tradeMode, hideHeader: isMobile, session };
@@ -10721,25 +10531,6 @@ export default function App() {
       Component={HomeScreen}
       screenProps={homeScreenProps}
     />,
-    mountMessages ? (
-      <KeptScreen
-        key="messages"
-        visible={showingMessages}
-        gateKey="messages"
-        style={styles.messagesHost}
-        Component={MessagesScreen}
-        screenProps={messagesScreenProps}
-      />
-    ) : null,
-    mountSearch ? (
-      <KeptScreen
-        key="search"
-        visible={activeTab === 'search'}
-        gateKey="search"
-        Component={SearchScreen}
-        screenProps={searchScreenProps}
-      />
-    ) : null,
     mountTrade ? (
       <KeptScreen
         key="trade"
@@ -10772,22 +10563,12 @@ export default function App() {
   const renderContent = () => {
     if (activeTab === 'profile') {
       return (
-        <ScreenGate resetKey={viewedProfile?.profileId || 'self'}>
-          <ProfileScreen
-            session={session}
-            person={viewedProfile}
-            canMessage={canUseMessages}
-            canPhone={hasApp('phone')}
-            canTeams={hasApp('teams')}
-            onMessage={messagePerson}
-            onOpenNotification={openNotificationChat}
-            notifications={notifyItems}
-            onOpenTeams={openTeamsFromProfile}
-            onBack={backFromViewedProfile}
-            onLogout={handleLogout}
-            onProfileChange={applyProfilePatch}
-          />
-        </ScreenGate>
+        <ComingSoonScreen
+          title="Profile"
+          icon={PROFILE_TAB.icon}
+          accent="#52525B"
+          onLogout={handleLogout}
+        />
       );
     }
 
@@ -10805,15 +10586,19 @@ export default function App() {
       );
     }
 
-    if (activeTab === 'messages' && !canUseMessages) {
+    if (activeTab === 'search') {
       return (
-        <View style={styles.centered}>
-          <Text style={styles.toolsEmpty}>You don’t have access to Direct Messages.</Text>
-        </View>
+        <ComingSoonScreen title="Search" icon={SEARCH_APP.icon} accent={SEARCH_APP.accent} />
       );
     }
 
-    if (activeTab === 'home' || activeTab === 'search' || activeTab === 'messages' || showingTrade) {
+    if (activeTab === 'messages') {
+      return (
+        <ComingSoonScreen title="Messages" icon="chatbubbles-outline" accent="#16A34A" />
+      );
+    }
+
+    if (activeTab === 'home' || showingTrade) {
       return null;
     }
 
@@ -10828,7 +10613,6 @@ export default function App() {
     (activeTool?.key === 'transactions' ||
       activeTool?.key === 'inventory' ||
       activeTool?.key === 'audit' ||
-      activeTool?.key === 'serphint' ||
       activeTool?.key === 'financials' ||
       activeTool?.key === 'accounting' ||
       activeTool?.key === 'debit' ||
@@ -10840,15 +10624,13 @@ export default function App() {
       activeTool?.key === 'calendar' ||
       activeTool?.key === 'employees' ||
       activeTool?.key === 'customers' ||
-      activeTool?.key === 'analytics' ||
       activeTool?.key === 'triage' ||
       activeTool?.key === 'supplies' ||
-      activeTool?.key === 'tasks' ||
       activeTool?.key === 'phone'));
 
   const isAppsLibrary = activeTab === 'tools' && !activeTool;
   const settingsSubPanels = {
-    'ai-models': 'AI Models',
+    'ai-models': 'Maps',
     permissions: 'Permissions',
     database: 'Database',
     'store-settings': 'Store Settings',
@@ -10915,7 +10697,6 @@ export default function App() {
       (activeTool?.key === 'employees' ||
         activeTool?.key === 'customers' ||
         activeTool?.key === 'triage' ||
-        activeTool?.key === 'analytics' ||
         (activeTool?.key === 'settings' && settingsPanel === 'permissions')) &&
       styles.contentAppsLibrary,
     !isMobile &&
@@ -11040,9 +10821,7 @@ export default function App() {
                   ? dmMobileHeader?.trailing
                   : activeTool?.key === 'triage'
                     ? triageMobileHeader?.trailing
-                    : activeTool?.key === 'analytics'
-                      ? analyticsMobileHeader?.trailing
-                      : null
+                    : null
               }
             />
           ) : null}
@@ -13216,6 +12995,24 @@ const styles = StyleSheet.create({
     paddingVertical: 64,
     paddingHorizontal: 24,
     gap: 12,
+  },
+  comingSoonFill: {
+    flex: 1,
+    minHeight: 0,
+  },
+  comingSoonLogout: {
+    marginTop: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    minHeight: 40,
+    justifyContent: 'center',
+  },
+  comingSoonLogoutText: {
+    fontFamily,
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FF3B30',
+    letterSpacing: -0.2,
   },
   storeDrawerPlaceholderIcon: {
     width: 56,

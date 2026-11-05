@@ -28,8 +28,6 @@ import {
   formatInboxTime,
   formatLastSeen,
   formatThreadStamp,
-  findBlankAiDm,
-  getOrCreateAiDm,
   getOrCreateDm,
   hideDmConversation,
   hideDmMessage,
@@ -110,19 +108,15 @@ import {
   openPreviewUrl,
 } from './AgentPreviewTv';
 import { usePhoneCalls } from './PhoneCallProvider';
-import ScreenGate from './ScreenGate';
 
-// The AI conversation is the Analytics panel itself, hosted in the thread pane.
-const AnalyticsAiPanel = lazy(() => import('./AnalyticsAiPanel'));
 const AnalyticsChartCard = lazy(() => import('./AnalyticsChartCard'));
 const AnalyticsMapCard = lazy(() => import('./AnalyticsMapCard'));
 const AnalyticsTableCard = lazy(() => import('./AnalyticsTableCard'));
 const AnalyticsFileCard = lazy(() => import('./AnalyticsFileCard'));
-const AI_TITLE = 'MyCanadaGold AI';
 
 const fontFamily = FONT;
 
-// Same visual tokens as AnalyticsAiPanel so both chats read as one product.
+// Chat bubble ink.
 const BLUE = '#1a1a1a';
 const INK = '#1a1a1a';
 const CHIP_BORDER = '#d0d0d0';
@@ -234,9 +228,6 @@ function agentAvatarTheme(conversationId) {
   };
 }
 const MOBILE_BREAKPOINT = 768;
-// Same default as ANALYTICS_CHAT_MODELS[0]. Loaded with askAnalytics only when @ai is used,
-// so a broken analytics chunk cannot take down the inbox.
-const AI_MENTION_MODEL = 'anthropic/claude-sonnet-5';
 
 const EMOJI_GROUPS = [
   {
@@ -323,27 +314,6 @@ function PersonAvatar({ person, size = 40, showOnline = false }) {
       ) : null}
     </View>
   );
-}
-
-const AI_MENTION_RE = /(^|[\s([{<"'“‘])(@ai)\b/gi;
-
-function mentionsAi(text) {
-  AI_MENTION_RE.lastIndex = 0;
-  return AI_MENTION_RE.test(String(text || ''));
-}
-
-function mentionDraftQuery(text) {
-  const match = String(text || '').match(/(^|[\s([{<"'“‘])@([^\s]*)$/);
-  return match ? String(match[2] || '').toLowerCase() : null;
-}
-
-function insertAiMention(text) {
-  const source = String(text || '');
-  if (mentionDraftQuery(source) != null) {
-    return source.replace(/(^|[\s([{<"'“‘])@([^\s]*)$/, '$1@ai ');
-  }
-  if (mentionsAi(source)) return source.endsWith(' ') ? source : `${source} `;
-  return source ? `${source.replace(/\s+$/, '')} @ai ` : '@ai ';
 }
 
 function attachmentIcon(kind) {
@@ -462,32 +432,6 @@ function MessageViz({ charts, mapsKey, onOpenCustomer, onOpenDocument }) {
   );
 }
 
-function formatDmThreadForAi({ messages, peopleById, myId, myName, thread }) {
-  const title = conversationTitle(thread);
-  const lines = (messages || [])
-    .slice(-40)
-    .map((item) => {
-      const files = (item.attachments || []).map((file) => file.name).filter(Boolean);
-      const body = String(item.body || '').replace(/\s+/g, ' ').trim().slice(0, 400);
-      if (!body && !files.length) return '';
-      const extra = files.length ? ` [${files.join(', ')}]` : '';
-      const name = item.isAssistant
-        ? 'MyCanadaGold AI'
-        : item.senderId === myId
-          ? myName || 'You'
-          : contactName(peopleById?.get?.(item.senderId)) || 'Teammate';
-      return `${name}: ${body || 'Attachment'}${extra}`;
-    })
-    .filter(Boolean);
-  return [
-    'You are MyCanadaGold AI answering inside a staff Direct Message. Everyone in this chat can see your reply.',
-    'You have the same tools and company data as Analytics: transactions, inventory, hours, charts, maps, documents, and the rest.',
-    `Thread: ${title}`,
-    'Use this conversation as context and answer the latest @AI request. Be concise and specific.',
-    lines.length ? `Recent messages:\n${lines.join('\n')}` : 'No earlier messages.',
-  ].join('\n\n');
-}
-
 function MessageImages({ urls, mine }) {
   const list = (Array.isArray(urls) ? urls : []).filter(Boolean);
   if (!list.length) return null;
@@ -578,7 +522,7 @@ function ConversationAvatar({ conversation, size = 52 }) {
     );
   }
   if (conversation?.isAi) {
-    // Same mark Analytics puts beside its replies.
+    // Circle beside a received cluster: the sender.
     return (
       <View
         style={[
@@ -754,7 +698,7 @@ function MessageBubble({
   const [burst, setBurst] = useState(0);
   const [hovered, setHovered] = useState(false);
   const radius = BUBBLE_RADIUS;
-  // Same corners as Analytics: a short tail on the sender's bottom corner,
+  // A short tail on the sender's bottom corner,
   // tighter joins inside a cluster.
   const cluster = {
     borderTopLeftRadius: !mine && groupedWithPrev ? BUBBLE_TAIL : radius,
@@ -1004,8 +948,6 @@ export default function MessagesScreen({
   openConversationId,
   onOpenedConversation,
   onConversationSeen,
-  openAiKey,
-  onOpenedAi,
   onOpenProfile,
   onMobileHeader,
   onOpenThreadChange,
@@ -1034,7 +976,6 @@ export default function MessagesScreen({
   const [agentPhotoBusy, setAgentPhotoBusy] = useState(false);
   const [pendingFiles, setPendingFiles] = useState([]);
   const [attaching, setAttaching] = useState('');
-  const [aiStartBlank, setAiStartBlank] = useState(false);
   const [mapsKey, setMapsKey] = useState('');
   const [contacts, setContacts] = useState([]);
   const [query, setQuery] = useState('');
@@ -1052,7 +993,6 @@ export default function MessagesScreen({
   const [loadingInbox, setLoadingInbox] = useState(true);
   const [loadingThread, setLoadingThread] = useState(false);
   const [sending, setSending] = useState(false);
-  const [aiThinkingId, setAiThinkingId] = useState(null);
   const [error, setError] = useState('');
   const [photoPerson, setPhotoPerson] = useState(null);
   const [menuConversation, setMenuConversation] = useState(null);
@@ -1069,7 +1009,6 @@ export default function MessagesScreen({
   const sendingRef = useRef(false);
   const typingRef = useRef(null);
   const activeIdRef = useRef(null);
-  const aiShareRef = useRef(null);
   const inboxRef = useRef(inbox);
   const agentInboxRef = useRef(agentInbox);
   const agentMessagesRef = useRef(agentMessages);
@@ -1100,7 +1039,7 @@ export default function MessagesScreen({
       rows.push(row);
     });
     inbox.forEach((row) => {
-      if (!row?.conversationId || seen.has(row.conversationId) || row.isAgent) return;
+      if (!row?.conversationId || seen.has(row.conversationId) || row.isAgent || row.isAi) return;
       seen.add(row.conversationId);
       rows.push(row);
     });
@@ -1489,7 +1428,7 @@ export default function MessagesScreen({
     requestAnimationFrame(() => {
       threadRef.current?.scrollToEnd?.({ animated: false });
     });
-  }, [messages.length, typingByUser, activeId, aiThinkingId]);
+  }, [messages.length, typingByUser, activeId]);
 
   const peopleIndex = useMemo(() => {
     const byId = new Map(contacts.map((person) => [person.id, person]));
@@ -1869,42 +1808,6 @@ export default function MessagesScreen({
       await refreshInbox();
       sendingRef.current = false;
       setSending(false);
-      if (!mentionsAi(text)) return;
-      const conversationId = activeId;
-      const thread = activeThread;
-      setAiThinkingId(conversationId);
-      try {
-        const prior = messages.filter((item) => item.body && !String(item.id).startsWith('temp-'));
-        const question = text.replace(AI_MENTION_RE, '$1').trim()
-          || (preparedFiles.length ? 'Look at the attached files and answer in this chat.' : text);
-        const { askAnalytics } = await import('../lib/analyticsChartTools');
-        const result = await askAnalytics({
-          model: AI_MENTION_MODEL,
-          history: [
-            {
-              role: 'user',
-              content: formatDmThreadForAi({ messages: prior, peopleById, myId, myName, thread }),
-            },
-            { role: 'assistant', content: 'Understood. I have the thread. What is the question?' },
-          ],
-          question,
-          attachments: preparedFiles,
-          session,
-          mapsKey,
-        });
-        const reply = await sendDmMessage(conversationId, result.text || 'I could not answer that.', {
-          assistant: true,
-          charts: result.charts || [],
-        });
-        setMessages((current) => (
-          current.some((item) => item.id === reply.id) ? current : [...current, reply]
-        ));
-        await refreshInbox();
-      } catch (err) {
-        setError(err.message || 'Could not get an AI answer.');
-      } finally {
-        setAiThinkingId(null);
-      }
       return;
     } catch (err) {
       setMessages((current) => current.filter((item) => item.id !== tempId));
@@ -1932,9 +1835,6 @@ export default function MessagesScreen({
     );
   };
 
-  const mentionQuery = mentionDraftQuery(draft);
-  const showAiMention = mentionQuery != null && 'ai'.startsWith(mentionQuery);
-  const aiThinking = Boolean(aiThinkingId && aiThinkingId === activeId);
   const typingNames = Object.values(typingByUser).filter(Boolean);
   const typingLabel =
     typingNames.length === 0
@@ -1947,29 +1847,6 @@ export default function MessagesScreen({
 
   const showInbox = !isMobile || !activeId;
   const showThread = !isMobile || Boolean(activeId);
-
-  const openAiConversation = useCallback(async () => {
-    try {
-      const blank = findBlankAiDm(inboxRef.current);
-      const conversationId = blank?.conversationId || (await getOrCreateAiDm());
-      setAiStartBlank(true);
-      await refreshInbox();
-      await openConversation(conversationId);
-    } catch (err) {
-      setError(err.message || 'Could not open MyCanadaGold AI.');
-    }
-  }, [openConversation, refreshInbox]);
-
-  const openedAiRef = useRef(0);
-  useEffect(() => {
-    if (!openAiKey) {
-      openedAiRef.current = 0;
-      return;
-    }
-    if (openedAiRef.current === openAiKey) return;
-    openedAiRef.current = openAiKey;
-    void openAiConversation().finally(() => onOpenedAi?.());
-  }, [openAiKey, openAiConversation, onOpenedAi]);
 
   const openAgentConversation = useCallback(() => {
     const conversationId = newAgentConversationId();
@@ -2204,43 +2081,6 @@ export default function MessagesScreen({
 
   const renderInboxList = () => {
     if (composeOpen) {
-      const aiQuery = query.trim().toLowerCase();
-      const showAiPin = !aiQuery || 'talk to ai mycanadagold'.includes(aiQuery);
-      const aiPin = showAiPin ? (
-        <Pressable
-          key="talk-to-ai"
-          onPress={() => void openAiConversation()}
-          {...(Platform.OS === 'web' ? { className: 'cgold-dm-row' } : null)}
-          style={({ hovered, pressed }) => [
-            styles.personRow,
-            isMobile && styles.personRowCompact,
-            isMobile && styles.aiPinRowMobile,
-            (hovered || pressed) && styles.rowPressed,
-          ]}
-          accessibilityLabel="Talk to AI"
-        >
-          <View
-            style={[
-              styles.avatar,
-              styles.teamAvatar,
-              styles.aiPinAvatar,
-              isMobile && styles.teamAvatarCompact,
-            ]}
-          >
-            <Ionicons name="sparkles" size={isMobile ? 16 : 20} color={BUBBLE_MINE} />
-          </View>
-          <View style={styles.personCopy}>
-            <Text style={[styles.personName, isMobile && styles.aiPinNameMobile]} numberOfLines={1}>
-              Talk to AI
-            </Text>
-            <Text style={styles.personSub} numberOfLines={1}>
-              {isMobile ? 'New chat · charts, stock, hours' : 'Charts, maps, stock, hours, and documents'}
-            </Text>
-          </View>
-          <Ionicons name="chevron-forward" size={16} color="#c7c7cc" />
-        </Pressable>
-      ) : null;
-
       const peopleRows = filteredPeople.map((person) => {
         const checked = selectedIds.includes(person.id);
         return (
@@ -2274,7 +2114,7 @@ export default function MessagesScreen({
         );
       });
 
-      if (!aiPin && peopleRows.length === 0) {
+      if (peopleRows.length === 0) {
         return (
           <Text style={styles.emptyHint}>
             {peopleIndex.length === 0
@@ -2286,7 +2126,6 @@ export default function MessagesScreen({
 
       return (
         <>
-          {aiPin}
           {peopleRows.length > 0 ? (
             <>
               <Text style={styles.composeSection}>People</Text>
@@ -2543,29 +2382,7 @@ export default function MessagesScreen({
 
       {showThread ? (
         <View style={[styles.thread, isMobile && styles.canvasMobile, !isMobile && styles.threadDesktop]}>
-          {threadLive && activeThread.isAi ? (
-            // The tab bar floats over Messages on a phone; keep the AI composer above it.
-            <View style={[styles.aiHost, isMobile && styles.aiHostMobile, !isMobile && styles.aiHostDesktop]}>
-              <ScreenGate resetKey={activeThread.conversationId || 'ai'}>
-                <AnalyticsAiPanel
-                  embedded
-                  title={AI_TITLE}
-                  session={session}
-                  compact={isMobile}
-                  conversationId={activeThread.conversationId}
-                  members={activeThread.members}
-                  startBlank={aiStartBlank}
-                  onBlankStarted={() => setAiStartBlank(false)}
-                  onClose={() => setActiveId(null)}
-                  onNewChat={() => void openAiConversation()}
-                  onInboxChanged={() => void refreshInbox()}
-                  shareApiRef={aiShareRef}
-                  onOpenCustomer={onOpenCustomer}
-                  onOpenDocument={onOpenDocument}
-                />
-              </ScreenGate>
-            </View>
-          ) : threadLive ? (
+          {threadLive ? (
             <>
               <View style={[styles.threadHeader, isMobile && styles.threadHeaderMobile, !isMobile && styles.threadHeaderDesktop]}>
                 {isMobile && !activeThread.isAgent ? (
@@ -2625,7 +2442,7 @@ export default function MessagesScreen({
                       numberOfLines={1}
                     >
                       {conversationSubtitle(activeThread, {
-                        typingLabel: aiThinking ? 'Thinking…' : typingLabel,
+                        typingLabel,
                       })}
                     </Text>
                     )}
@@ -2776,11 +2593,7 @@ export default function MessagesScreen({
                               key={person.id}
                               onPress={async () => {
                                 try {
-                                  if (activeThread.isAi && aiShareRef.current?.addPeople) {
-                                    await aiShareRef.current.addPeople([person.id]);
-                                  } else {
-                                    await addDmGroupMembers(activeThread.conversationId, [person.id]);
-                                  }
+                                  await addDmGroupMembers(activeThread.conversationId, [person.id]);
                                   await refreshInbox();
                                 } catch (err) {
                                   setError(err.message || 'Could not add that person.');
@@ -2887,9 +2700,7 @@ export default function MessagesScreen({
                               composerRef={composerPillRef}
                               senderLabel={
                                 message.isAssistant
-                                  ? activeThread.isAgent || message.isAgentAck
-                                    ? AGENT_CONVERSATION_TITLE
-                                    : AI_TITLE
+                                  ? AGENT_CONVERSATION_TITLE
                                   : activeThread.isGroup && !mine
                                     ? firstNameOf(sender)
                                     : null
@@ -2917,21 +2728,7 @@ export default function MessagesScreen({
                         );
                       })
                     )}
-                    {aiThinking ? (
-                      <View style={[styles.msgGap, styles.turnRow, styles.turnRowTheirs]}>
-                        <View style={styles.turnAvatarSlot}>
-                          <View style={styles.turnAvatar}>
-                            <Ionicons name="sparkles" size={14} color={BUBBLE_MINE} />
-                          </View>
-                        </View>
-                        <View>
-                          <Text style={styles.senderLabel}>{AI_TITLE}</Text>
-                          <View style={styles.typingRow}>
-                            <TypingDots />
-                          </View>
-                        </View>
-                      </View>
-                    ) : typingNames.length > 0 ? (
+                    {typingNames.length > 0 ? (
                       <View style={[styles.msgGap, styles.turnRow, styles.turnRowTheirs]}>
                         <View style={styles.turnAvatarSlot} />
                         <View style={styles.typingRow}>
@@ -2947,34 +2744,6 @@ export default function MessagesScreen({
                       onChangeDraft(`${draft}${emoji}`);
                     }}
                   />
-
-                  {!activeThread?.isAgent && showAiMention ? (
-                    <View style={styles.mentionSheet}>
-                      <Pressable
-                        onPress={() => {
-                          onChangeDraft(insertAiMention(draft));
-                          setEmojiOpen(false);
-                          requestAnimationFrame(() => composerInputRef.current?.focus?.());
-                        }}
-                        style={({ hovered, pressed }) => [
-                          styles.mentionRow,
-                          (hovered || pressed) && styles.mentionRowOn,
-                        ]}
-                        accessibilityLabel="Mention MyCanadaGold AI"
-                      >
-                        <View style={styles.mentionAvatar}>
-                          <Ionicons name="sparkles" size={14} color={BUBBLE_MINE} />
-                        </View>
-                        <View style={styles.mentionCopy}>
-                          <Text style={styles.mentionTitle}>MyCanadaGold AI</Text>
-                          <Text style={styles.mentionSub} numberOfLines={1}>
-                            Answers here so everyone in this chat can see
-                          </Text>
-                        </View>
-                        <Text style={styles.mentionToken}>@ai</Text>
-                      </Pressable>
-                    </View>
-                  ) : null}
 
                   {attaching && !activeThread?.isAgent ? (
                     <View style={styles.attachBusy}>
@@ -3064,24 +2833,6 @@ export default function MessagesScreen({
                             )}
                           </Pressable>
                           <Pressable
-                            onPress={() => {
-                              onChangeDraft(insertAiMention(draft));
-                              setEmojiOpen(false);
-                              requestAnimationFrame(() => composerInputRef.current?.focus?.());
-                            }}
-                            style={({ hovered, pressed }) => [
-                              styles.composerLead,
-                              (hovered || pressed || mentionsAi(draft)) && styles.composerLeadHover,
-                            ]}
-                            accessibilityLabel="Mention MyCanadaGold AI"
-                          >
-                            <Ionicons
-                              name="sparkles"
-                              size={16}
-                              color={mentionsAi(draft) ? BUBBLE_MINE : SECONDARY}
-                            />
-                          </Pressable>
-                          <Pressable
                             onPress={() => setEmojiOpen((current) => !current)}
                             style={({ hovered, pressed }) => [
                               styles.composerLead,
@@ -3145,7 +2896,7 @@ export default function MessagesScreen({
                     <Text style={styles.composerHint}>
                       {activeThread?.isAgent
                         ? 'Enter to send · Shift+Enter for a new line'
-                        : 'Type @ai to ask MyCanadaGold AI · Enter to send'}
+                        : 'Enter to send · Shift+Enter for a new line'}
                     </Text>
                   </View>
                 </>

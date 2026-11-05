@@ -13,8 +13,6 @@ const DEFAULT_ALLOWED_HEADERS = [
   'x-upstream-authorization',
   'x-upstream-api-key',
   'x-fintrac-referer',
-  'anthropic-version',
-  'anthropic-beta',
 ].join(', ');
 
 function allowedOrigins(): string[] {

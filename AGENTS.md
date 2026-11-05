@@ -6,7 +6,7 @@ This file is for agents. Operational setup (Supabase release, staff disable, key
 
 # MyCanadaGold (`cgold`)
 
-Staff-only tools for Canada Gold stores. One Expo app on web (primary), iOS, and Android. There is no public signup. Access requires an **active Aureus POS login**. The app talks to three POS tenants (East, GTA, PMX), a locked-down Supabase project, and third parties (AI, FINTRAC, Rippling, Gmail, Google reviews, Moneris, RingCentral) only through the `proxy` Edge Function.
+Staff-only tools for Canada Gold stores. One Expo app on web (primary), iOS, and Android. There is no public signup. Access requires an **active Aureus POS login**. The app talks to three POS tenants (East, GTA, PMX), a locked-down Supabase project, and third parties (FINTRAC, Rippling, Gmail, Google reviews, Moneris, RingCentral) only through the `proxy` Edge Function.
 
 Live web: `https://www.mycanadagold.ca` (Vercel also serves `https://mycanadagold.vercel.app`).
 
@@ -34,13 +34,9 @@ There is **no test suite** and no GitHub Actions CI. Quality gates are `npm run 
 | `components/` | Screens (`*Screen.js`) and shared UI. Default-export screens |
 | `lib/` | Client logic. `auth.js`, `proxy.js`, `supabase.js`, vendor clients |
 | `lib/typography/`, `lib/actionLog/` | Metro wrappers. Do not import them directly from screens |
-| `lib/semantics/` | `glossary.js` (domain terms, in every data prompt), `metrics.js` (every metric the assistants report: fact, formula, format, supported dimensions), and `records.js` (every record kind an app screen shows: app, tab, source, fields, filters, and the tool that lists it — the prompt's "what is in the app" catalog). Add a metric or a record kind here, never in a prompt |
-| `lib/data/facts.js`, `lib/data/records.js` | `facts.js`: sources reduced to rows at natural grain with shared keys (`store`, `date`, `employee`, `docRef`); `lib/metricsQuery.js` joins them for `query_metrics`. `records.js`: the rows a screen lists (calls with caller numbers, voicemails, punches, shifts, payments, triage errors, bonus credits, transfers, supplies, activity log), loaded for the `list_records` tool. When a screen gets a new tab or list, add its kind to `semantics/records.js` and a loader here |
-| `lib/aiResults.js` | Result handles (`resultId`). Renderer tools (`draw_chart`, `show_table`, `export_spreadsheet`) draw from a handle, not from model-typed numbers |
-| `lib/bullionLedger.js`, `lib/cashVariance.js` | Audit reconciliation in code (ledger walk, ranked candidates, confidence). The model writes the result up; it does not investigate |
-| `lib/aiEval.js`, `components/AiEvalPanel.js` | Eval cases and the dev-only runner (Analytics → model sheet → "Run AI evals", `__DEV__` builds only). Rerun after changing tools, prompts, or loaders |
-| `lib/permissionRules.js`, `lib/permissionsAgent.js`, `components/PermissionsAiChat.js` | Granular rules (`PERMISSION_FEATURES`, resolved per person with `useAppAccess().canSee(key)`; `session.hiddenFeatures` carries them to the AI) and the Settings → Permissions assistant that edits roles, people, scopes, and rules through tools. Add a screen feature to the catalog, then gate the screen with `canSee` |
-| `lib/analyticsTopics.js` | `analytics.*` topics a rule can block in the AI (phone, hours, pay, transactions, …), mapped to the Analytics tools, `lookup_company_data` datasets, and `query_metrics` facts that reach them. `askAnalytics` and the chat loaders refuse those with `reason: 'permission'`. Add a topic here when a new dataset or tool appears |
+| `lib/permissionRules.js` | Granular rules (`PERMISSION_FEATURES`, resolved per person with `useAppAccess().canSee(key)`). Add a screen feature to the catalog, then gate the screen with `canSee` |
+| `lib/aiScopes.js` | Pay/hours/performance scopes used by Bonuses (`self` / `store` / `company`) |
+| `lib/aiKeys.js` | Company Google Maps key in Settings (System Admin / GM) |
 | `supabase/migrations/` | Schema, RLS, triggers. Additive SQL only |
 | `supabase/functions/aureus-login` | Sign-in (`verify_jwt` off; it validates itself) |
 | `supabase/functions/proxy` | Authenticated third-party gateway |

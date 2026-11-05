@@ -5,7 +5,7 @@ export default function AnalyticsMapCard({ chart }) {
   return (
     <View style={styles.card}>
       <Text style={styles.title}>{chart?.title || 'Map'}</Text>
-      <Text style={styles.body}>Open Analytics in the browser to use the map.</Text>
+      <Text style={styles.body}>Open this app in the browser to use the map.</Text>
     </View>
   );
 }

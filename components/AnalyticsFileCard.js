@@ -41,7 +41,7 @@ export default function AnalyticsFileCard({ chart, onRebuild }) {
     try {
       let ready = chart;
       if (!sheetsReady(chart)) {
-        if (!onRebuild) throw new Error('Reopen Analytics to rebuild this file.');
+        if (!onRebuild) throw new Error('Reopen this chart in the browser to rebuild this file.');
         setNote('Rebuilding the data…');
         ready = await onRebuild(chart);
       }
@@ -51,7 +51,7 @@ export default function AnalyticsFileCard({ chart, onRebuild }) {
       });
       setSize(bytes.length);
       if (!downloadXlsx(bytes, fileName)) {
-        setNote('Downloads work in the web app. Open Analytics in a browser to save this file.');
+        setNote('Downloads work in the web app. Open this app in a browser to save this file.');
         return;
       }
       setNote(`Saved ${fileName}`);

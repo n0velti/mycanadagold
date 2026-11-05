@@ -22,8 +22,7 @@ export function measureWindow(ref, callback) {
 }
 
 /**
- * Sent bubble lifts out of the composer and springs into the thread. Shared by
- * Analytics and Direct Messages so a sent message moves the same way everywhere.
+ * Sent bubble lifts out of the composer and springs into the thread.
  */
 export default function SendFromInput({ active, originRef, children, onSettled }) {
   const progress = useRef(new Animated.Value(1)).current;
