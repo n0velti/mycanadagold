@@ -12,7 +12,7 @@ import {
   View,
 } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { prepareAvatarAsset, stylizeAvatarPhoto } from '../lib/avatarCartoon';
+import { assetToDataUrl, prepareAvatarAsset } from '../lib/avatarCartoon';
 import { getVideoElement, useWebcam, webcamSupported } from '../lib/webcam';
 
 const fontFamily = 'Sohne';
@@ -51,9 +51,8 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
   const abortRef = useRef(null);
   const [step, setStep] = useState('source');
   const [sourceUri, setSourceUri] = useState('');
-  const [cartoonUri, setCartoonUri] = useState('');
-  const [cartoonVerified, setCartoonVerified] = useState(null);
-  const [status, setStatus] = useState('');
+  const [previewUri, setPreviewUri] = useState('');
+  const [opening, setOpening] = useState(false);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const { videoRef, cameraState, startCamera, stopStream, setVideoNode } = useWebcam({
@@ -69,9 +68,8 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
       stopStream();
       setStep('source');
       setSourceUri('');
-      setCartoonUri('');
-      setCartoonVerified(null);
-      setStatus('');
+      setPreviewUri('');
+      setOpening(false);
       setError('');
       setSaving(false);
       return undefined;
@@ -85,34 +83,25 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
     onClose?.();
   };
 
-  const stylize = async (asset) => {
+  const acceptPhoto = async (asset) => {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     setError('');
-    setCartoonUri('');
-    setCartoonVerified(null);
-    setStatus('Checking your photo…');
-    setStep('stylizing');
-    const source = typeof asset === 'string' ? asset : asset?.uri || '';
+    setPreviewUri('');
+    setOpening(true);
     try {
-      setSourceUri(source);
-      const result = await stylizeAvatarPhoto(asset, {
-        signal: controller.signal,
-        onStatus: (text) => {
-          if (!controller.signal.aborted) setStatus(text);
-        },
-      });
+      const source = await assetToDataUrl(asset);
       if (controller.signal.aborted) return;
-      setCartoonUri(result.image);
-      setCartoonVerified(result.verified);
+      setSourceUri(source);
+      setPreviewUri(source);
       setStep('preview');
     } catch (err) {
       if (err?.name === 'AbortError' || controller.signal.aborted) return;
-      setError(err?.message || 'Could not draw that portrait. Try another photo.');
-      setStep(source ? 'preview' : 'source');
+      setError(err?.message || 'Could not read that photo. Try another.');
+      setStep('source');
     } finally {
-      setStatus('');
+      setOpening(false);
       if (abortRef.current === controller) abortRef.current = null;
     }
   };
@@ -129,7 +118,7 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
       }
       const result = await ImagePicker.launchImageLibraryAsync(PICKER_OPTIONS);
       if (result.canceled || !result.assets?.[0]) return;
-      await stylize(result.assets[0]);
+      await acceptPhoto(result.assets[0]);
     } catch (err) {
       setError(err?.message || 'Could not open the photo library.');
     }
@@ -148,7 +137,7 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
         cameraType: 'front',
       });
       if (result.canceled || !result.assets?.[0]) return;
-      await stylize(result.assets[0]);
+      await acceptPhoto(result.assets[0]);
     } catch (err) {
       setError(err?.message || 'Could not open the camera.');
     }
@@ -172,15 +161,15 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
       return;
     }
     stopStream();
-    void stylize({ uri: dataUrl, mimeType: 'image/jpeg' });
+    void acceptPhoto({ uri: dataUrl, mimeType: 'image/jpeg' });
   };
 
   const handleUsePortrait = async () => {
-    if (!cartoonUri || saving) return;
+    if (!previewUri || saving) return;
     setSaving(true);
     setError('');
     try {
-      const asset = await prepareAvatarAsset(cartoonUri);
+      const asset = await prepareAvatarAsset(previewUri);
       await onConfirm?.(asset);
     } catch (err) {
       setError(err?.message || 'Could not save that portrait.');
@@ -198,12 +187,11 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
         <View style={[styles.card, { width: cardWidth }]}>
           {step === 'source' ? (
             <>
-              <Text style={styles.title}>Canada Gold portrait</Text>
+              <Text style={styles.title}>Profile photo</Text>
               <Text style={styles.body}>
-                Take a photo or choose one. We redraw you as a fun Disney cartoon that still
-                looks like you — your face, with a unique shirt and background.
+                Take a photo or choose one. This picture shows next to your name.
               </Text>
-              <Pressable style={styles.choice} onPress={handleTakePhoto}>
+              <Pressable style={styles.choice} onPress={handleTakePhoto} disabled={opening}>
                 <View style={[styles.choiceIcon, { backgroundColor: '#EEF4FF' }]}>
                   <Ionicons name="camera-outline" size={18} color="#3B6FE0" />
                 </View>
@@ -215,7 +203,7 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
                 </View>
                 <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
               </Pressable>
-              <Pressable style={styles.choice} onPress={() => void pickFromLibrary()}>
+              <Pressable style={styles.choice} onPress={() => void pickFromLibrary()} disabled={opening}>
                 <View style={[styles.choiceIcon, { backgroundColor: '#F4F4F5' }]}>
                   <Ionicons name="images-outline" size={18} color="#52525B" />
                 </View>
@@ -225,8 +213,14 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
                 </View>
                 <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
               </Pressable>
+              {opening ? (
+                <View style={styles.openingRow}>
+                  <ActivityIndicator color="#1d1d1f" />
+                  <Text style={styles.openingText}>Opening photo…</Text>
+                </View>
+              ) : null}
               {error ? <Text style={styles.error}>{error}</Text> : null}
-              <Pressable style={styles.cancel} onPress={close}>
+              <Pressable style={styles.cancel} onPress={close} disabled={opening}>
                 <Text style={styles.cancelText}>Cancel</Text>
               </Pressable>
             </>
@@ -236,8 +230,7 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
             <>
               <Text style={styles.title}>Take a photo</Text>
               <Text style={styles.body}>
-                Center your face in the oval, in good light, with only you in the frame. We draw a Disney
-                cartoon that still looks like you.
+                Center your face in the oval, in good light.
               </Text>
               <View style={styles.previewShell}>
                 {Platform.OS === 'web'
@@ -284,15 +277,25 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
                   </View>
                 ) : null}
               </View>
+              {opening ? (
+                <View style={styles.openingRow}>
+                  <ActivityIndicator color="#1d1d1f" />
+                  <Text style={styles.openingText}>Opening photo…</Text>
+                </View>
+              ) : null}
               {error ? <Text style={styles.error}>{error}</Text> : null}
               <View style={styles.actions}>
-                <Pressable style={styles.secondary} onPress={() => setStep('source')}>
-                  <Text style={styles.secondaryText}>Back</Text>
+                <Pressable
+                  style={styles.secondary}
+                  onPress={() => setStep('source')}
+                  disabled={opening}
+                >
+                  <Text style={[styles.secondaryText, opening && styles.secondaryDisabled]}>Back</Text>
                 </Pressable>
                 <Pressable
-                  style={[styles.primary, cameraState !== 'live' && styles.primaryDisabled]}
+                  style={[styles.primary, (cameraState !== 'live' || opening) && styles.primaryDisabled]}
                   onPress={captureWebcam}
-                  disabled={cameraState !== 'live'}
+                  disabled={cameraState !== 'live' || opening}
                 >
                   <Text style={styles.primaryText}>Capture</Text>
                 </Pressable>
@@ -300,41 +303,17 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
             </>
           ) : null}
 
-          {step === 'stylizing' ? (
-            <>
-              <Text style={styles.title}>Drawing your portrait</Text>
-              <Text style={styles.body}>
-                Drawing you as a Disney cartoon from this photo, then checking it still looks like you.
-                This usually takes about a minute.
-              </Text>
-              <View style={styles.previewShell}>
-                {sourceUri ? (
-                  <Image source={{ uri: sourceUri }} style={styles.previewImage} />
-                ) : null}
-                <View style={styles.overlay}>
-                  <ActivityIndicator color="#fff" />
-                  <Text style={[styles.overlayTitle, styles.overlaySpaced]}>{status || 'Redrawing you…'}</Text>
-                </View>
-              </View>
-              <Pressable style={styles.cancel} onPress={close}>
-                <Text style={styles.cancelText}>Cancel</Text>
-              </Pressable>
-            </>
-          ) : null}
-
           {step === 'preview' ? (
             <>
-              <Text style={styles.title}>{cartoonUri ? 'Your Canada Gold portrait' : 'Could not draw it'}</Text>
+              <Text style={styles.title}>{previewUri ? 'Your profile photo' : 'Could not use that photo'}</Text>
               <Text style={styles.body}>
-                {cartoonUri
-                  ? cartoonVerified === false
-                    ? 'This is the closest match we could draw. If it does not look like you, try again facing the camera in brighter light.'
-                    : 'This is the cartoon version of you that will show next to your name.'
+                {previewUri
+                  ? 'This picture will show next to your name.'
                   : 'Try another photo, or take one with the webcam.'}
               </Text>
               <View style={styles.previewShell}>
-                {cartoonUri || sourceUri ? (
-                  <Image source={{ uri: cartoonUri || sourceUri }} style={styles.previewImage} />
+                {previewUri || sourceUri ? (
+                  <Image source={{ uri: previewUri || sourceUri }} style={styles.previewImage} />
                 ) : null}
               </View>
               {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -348,7 +327,7 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
                     Try again
                   </Text>
                 </Pressable>
-                {cartoonUri ? (
+                {previewUri ? (
                   <Pressable
                     style={[styles.primary, saving && styles.primaryDisabled]}
                     onPress={() => void handleUsePortrait()}
@@ -357,7 +336,7 @@ export default function ProfilePhotoPicker({ visible, onClose, onConfirm }) {
                     {saving ? (
                       <ActivityIndicator color="#fff" />
                     ) : (
-                      <Text style={styles.primaryText}>Use this portrait</Text>
+                      <Text style={styles.primaryText}>Use this photo</Text>
                     )}
                   </Pressable>
                 ) : null}
@@ -493,8 +472,16 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 8,
   },
-  overlaySpaced: {
-    marginTop: 10,
+  openingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 12,
+  },
+  openingText: {
+    fontFamily,
+    fontSize: 13,
+    color: '#6e6e73',
   },
   retry: {
     marginTop: 14,

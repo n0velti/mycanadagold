@@ -52,10 +52,8 @@ import {
   loadPermissionRules,
   roleRulesFor,
   rulesForProfile,
-  savePermissionRule,
 } from '../lib/permissionRules';
 import { IosGroup, IosPage, IosRow } from './IosSettings';
-import PermissionsAiChat from './PermissionsAiChat';
 import {
   Chip,
   EmptyState,
@@ -78,7 +76,7 @@ const PERMISSION_ITEMS = [
   {
     key: 'camera',
     label: 'Camera',
-    description: 'Used for Canada Gold portraits and by Serphint to capture video',
+    description: 'Used for Canada Gold portraits, triage photos, and line photos',
     icon: 'camera-outline',
     tint: '#EEF4FF',
     accent: '#3B6FE0',
@@ -87,7 +85,7 @@ const PERMISSION_ITEMS = [
   {
     key: 'microphone',
     label: 'Microphone',
-    description: 'Used by Serphint when recording with audio',
+    description: 'Used by the in-browser phone to answer and place calls',
     icon: 'mic-outline',
     tint: '#F3EEFF',
     accent: '#6B4DE6',
@@ -307,10 +305,10 @@ function personDraftFromResolved(resolved) {
 }
 
 function accessLine(row, accessByRole, userAccessMap, catalogKeys, userAiMap) {
-  if (hasFullAppAccess(row)) return 'Every app · Company Analytics';
+  if (hasFullAppAccess(row)) return 'Every app · Company pay and hours';
   const resolved = resolvedAccessForProfile(row, accessByRole, catalogKeys, userAccessMap[row.id]);
   const customApps = resolved.inherited ? 'Role defaults' : 'Custom apps';
-  const customAi = userAiMap?.[row.id] ? 'Custom Analytics' : null;
+  const customAi = userAiMap?.[row.id] ? 'Custom pay and hours' : null;
   return `${resolved.visibleApps.length} apps · ${[customApps, customAi].filter(Boolean).join(' · ')}`;
 }
 
@@ -520,7 +518,7 @@ function DevicePermissionsPanel() {
         header="Privacy"
         footer={
           message ||
-          'Camera and microphone are used for portraits and Serphint. If a row says Blocked, allow access in this browser’s site settings.'
+          'Camera is used for portraits and ticket photos. Microphone is used by the in-browser phone. If a row says Blocked, allow access in this browser’s site settings.'
         }
       >
         {PERMISSION_ITEMS.map((item) => {
@@ -547,8 +545,8 @@ function DevicePermissionsPanel() {
       <View style={styles.ticketCard}>
         <Text style={styles.cardTitle}>This browser</Text>
         <Text style={styles.cardIntro}>
-          Camera and microphone are used for portraits and Serphint. If access was blocked, allow it
-          in this browser’s site settings.
+          Camera is used for portraits and ticket photos. Microphone is used by the in-browser phone.
+          If access was blocked, allow it in this browser’s site settings.
         </Text>
         {PERMISSION_ITEMS.map((item, index) => {
           const status = statuses[item.key];
@@ -630,9 +628,9 @@ function RoleDefaultsPane({
       <View style={styles.ticketCard}>
         <Text style={styles.cardTitle}>Role defaults</Text>
         <Text style={styles.cardIntro}>
-          Each role starts with these apps and Analytics scopes. A person keeps them until you save
-          a custom set. System Admin is always every app and Company scope. These Analytics scopes
-          also apply to Messages @ai, not only the Analytics app.
+          Each role starts with these apps and pay/hours scopes. A person keeps them until you save
+          a custom set. System Admin is always every app and Company scope. Pay and hours scopes
+          also apply to Bonuses.
         </Text>
         <View style={styles.chipRow}>
           {USER_CATEGORIES.map((category) => (
@@ -647,7 +645,6 @@ function RoleDefaultsPane({
         {activeCategory ? (
           <Text style={styles.fieldHint}>
             {activeCategory.description}
-            {isMobile ? '' : ' The assistant talks about this role unless you name another.'}
           </Text>
         ) : null}
       </View>
@@ -705,10 +702,10 @@ function RoleDefaultsPane({
       </View>
 
       <View style={styles.ticketCard}>
-        <Text style={styles.cardTitle}>Analytics</Text>
+        <Text style={styles.cardTitle}>Pay and hours</Text>
         <Text style={styles.cardIntro}>
           Self is only their own figures. Store is people at their allocated store. Company is
-          everyone.
+          everyone. Bonuses uses these scopes.
         </Text>
         <View style={styles.matrixHead}>
           <Text style={[styles.matrixCorner, styles.matrixAppName]}>Capability</Text>
@@ -750,7 +747,7 @@ function RoleDefaultsPane({
 
       <RulesCard
         title={`Rules · ${activeCategory?.label || 'Role'}`}
-        intro="Parts of a screen this role cannot see, and topics the Analytics AI refuses for it, saved the moment they are made. Rules can be limited to stores. Ask the assistant, for example “Branch Managers in Quebec should not see revenue on Home” or “PMAs should not ask about phone data in Analytics”."
+        intro="Parts of a screen this role cannot see, saved the moment they are made. Rules can be limited to stores."
         rules={roleRules}
         staffById={staffById}
         onRemove={onRemoveRule}
@@ -1004,13 +1001,13 @@ function PersonDetail({
       </View>
 
       <View style={styles.ticketCard}>
-        <Text style={styles.cardTitle}>Analytics</Text>
+        <Text style={styles.cardTitle}>Pay and hours</Text>
         <Text style={styles.cardIntro}>
           {lockedPerson
             ? 'System Admin always has Company scope for pay, hours, and per-person performance.'
             : personAiInherited
-              ? `Using ${getCategory(row.appRole)?.label || 'role'} Analytics defaults.`
-              : 'Custom Analytics scopes for this person. Does not change the apps they can open.'}
+              ? `Using ${getCategory(row.appRole)?.label || 'role'} pay and hours defaults.`
+              : 'Custom pay and hours scopes for this person. Does not change the apps they can open.'}
         </Text>
         {AI_SCOPE_CAPABILITIES.map((capability) => (
           <View key={capability.key} style={styles.personScopeRow}>
@@ -1035,7 +1032,7 @@ function PersonDetail({
               {personAiSaving ? (
                 <ActivityIndicator color="#fff" />
               ) : (
-                <Text style={styles.saveButtonText}>Save analytics</Text>
+                <Text style={styles.saveButtonText}>Save scopes</Text>
               )}
             </Pressable>
             {!personAiInherited ? (
@@ -1056,7 +1053,7 @@ function PersonDetail({
         intro={
           lockedPerson
             ? 'Rules never apply to a System Admin.'
-            : 'Parts of a screen hidden for this person and topics the Analytics AI refuses for them, from their own rules and from rules on their role or store. Ask the assistant to add or change one.'
+            : 'Parts of a screen hidden for this person, from their own rules and from rules on their role or store.'
         }
         rules={personRules}
         staffById={staffById}
@@ -1089,7 +1086,6 @@ function AppAccessPanel({
   const { reloadPermissionRules } = useAppAccess();
   const catalogKeys = useMemo(() => (apps || []).map((app) => app.key), [apps]);
   const actorId = session?.supabaseUserId || session?.profile?.id;
-  const adminName = String(session?.profile?.firstName || '').trim();
   const [tab, setTab] = useState('people');
   const [activeRole, setActiveRole] = useState('precious_metal_analyst');
   const [draft, setDraft] = useState(() => defaultAccessByRole(catalogKeys));
@@ -1121,24 +1117,16 @@ function AppAccessPanel({
   const selectedRow = staff.find((row) => row.id === selectedId) || null;
   const staffById = useMemo(() => new Map(staff.map((row) => [row.id, row])), [staff]);
 
-  // The assistant runs across several awaits in one turn; it reads the latest
-  // state through these refs and writes both the ref and the state.
   const draftRef = useRef(draft);
   draftRef.current = draft;
   const aiDraftRef = useRef(aiDraft);
   aiDraftRef.current = aiDraft;
-  const staffRef = useRef(staff);
-  staffRef.current = staff;
-  const staffByIdRef = useRef(staffById);
-  staffByIdRef.current = staffById;
   const userAccessMapRef = useRef(userAccessMap);
   userAccessMapRef.current = userAccessMap;
   const userAiMapRef = useRef(userAiMap);
   userAiMapRef.current = userAiMap;
   const rulesRef = useRef(rules);
   rulesRef.current = rules;
-  const rulesUnavailableRef = useRef(rulesUnavailable);
-  rulesUnavailableRef.current = rulesUnavailable;
   const selectedRowRef = useRef(selectedRow);
   selectedRowRef.current = selectedRow;
 
@@ -1285,7 +1273,7 @@ function AppAccessPanel({
   };
 
   // Saves every role row (the table is upserted whole) and refreshes the
-  // open person's inherited drafts. Shared by the Save button and the assistant.
+  // open person's inherited drafts.
   const persistRoleDefaults = useCallback(
     async (nextDraft, nextAi) => {
       const sanitizedAi = {};
@@ -1355,81 +1343,6 @@ function AppAccessPanel({
       setRemovingRuleId('');
     }
   };
-
-  // What the permissions assistant (lib/permissionsAgent.js) reads and writes.
-  // Every write is the same lib call the buttons use, then state + shell refresh.
-  const agentStore = useMemo(
-    () => ({
-      snapshot: () => ({
-        apps: apps || [],
-        catalogKeys: new Set(catalogKeys),
-        staff: staffRef.current,
-        staffById: staffByIdRef.current,
-        roleApps: draftRef.current,
-        roleAi: aiDraftRef.current,
-        userApps: userAccessMapRef.current,
-        userAi: userAiMapRef.current,
-        rules: rulesRef.current,
-        rulesUnavailable: rulesUnavailableRef.current,
-      }),
-      setRoleApps: async (role, visibleApps) => {
-        const saved = await persistRoleDefaults({ ...draftRef.current, [role]: visibleApps }, aiDraftRef.current);
-        return saved.byRole[role] || visibleApps;
-      },
-      setRoleAiScopes: async (role, scopes) => {
-        const saved = await persistRoleDefaults(draftRef.current, { ...aiDraftRef.current, [role]: scopes });
-        return saved.aiScopesByRole?.[role] || scopes;
-      },
-      setPersonApps: async (userId, access) => {
-        const saved = await saveUserAppAccess(userId, access, catalogKeys, actorId);
-        userAccessMapRef.current = { ...userAccessMapRef.current, [userId]: saved };
-        setUserAccessMap(userAccessMapRef.current);
-        onUserAccessSaved?.(userId, saved);
-        if (selectedRowRef.current?.id === userId) setPersonDraft(personDraftFromResolved(saved));
-        return saved;
-      },
-      resetPersonApps: async (userId) => {
-        await clearUserAppAccess(userId);
-        const next = { ...userAccessMapRef.current };
-        delete next[userId];
-        userAccessMapRef.current = next;
-        setUserAccessMap(next);
-        onUserAccessSaved?.(userId, null);
-        const row = selectedRowRef.current;
-        if (row?.id === userId) {
-          setPersonDraft(personDraftFromResolved(resolvedAccessForProfile(row, draftRef.current, catalogKeys, null)));
-        }
-      },
-      setPersonAiScopes: async (userId, scopes) => {
-        const saved = await saveUserAiAccess(userId, scopes, actorId);
-        userAiMapRef.current = { ...userAiMapRef.current, [userId]: saved };
-        setUserAiMap(userAiMapRef.current);
-        onUserAiAccessSaved?.(userId, saved);
-        if (selectedRowRef.current?.id === userId) setPersonAiDraft(sanitizeAiScopes(saved));
-        return saved;
-      },
-      resetPersonAi: async (userId) => {
-        await clearUserAiAccess(userId);
-        const next = { ...userAiMapRef.current };
-        delete next[userId];
-        userAiMapRef.current = next;
-        setUserAiMap(next);
-        onUserAiAccessSaved?.(userId, null);
-        const row = selectedRowRef.current;
-        if (row?.id === userId) setPersonAiDraft(sanitizeAiScopes(resolveAiScopes(row, aiDraftRef.current, null)));
-      },
-      addRule: async (rule) => {
-        const saved = await savePermissionRule(rule, actorId);
-        applyRules((current) => [...current.filter((item) => item.id !== saved.id), saved]);
-        return saved;
-      },
-      removeRule: async (id) => {
-        await deletePermissionRule(id);
-        applyRules((current) => current.filter((item) => item.id !== id));
-      },
-    }),
-    [actorId, apps, applyRules, catalogKeys, onUserAccessSaved, onUserAiAccessSaved, persistRoleDefaults],
-  );
 
   const togglePersonApp = (appKey) => {
     if (hasFullAppAccess(selectedRow) || personSaving) return;
@@ -1501,16 +1414,16 @@ function AppAccessPanel({
         });
         setPersonAiDraft(inherited);
         onUserAiAccessSaved?.(row.id, null);
-        setMessage(`Restored Analytics for ${staffName(row)} to role defaults.`);
+        setMessage(`Restored pay and hours for ${staffName(row)} to role defaults.`);
         return;
       }
       const saved = await saveUserAiAccess(row.id, next, actorId);
       setUserAiMap((current) => ({ ...current, [row.id]: saved }));
       setPersonAiDraft(sanitizeAiScopes(saved));
       onUserAiAccessSaved?.(row.id, saved);
-      setMessage(`Saved Analytics for ${staffName(row)}.`);
+      setMessage(`Saved pay and hours for ${staffName(row)}.`);
     } catch (nextError) {
-      setError(nextError?.message || "Could not save that person's Analytics permissions.");
+      setError(nextError?.message || "Could not save that person's pay and hours scopes.");
     } finally {
       setPersonAiSaving(false);
     }
@@ -1531,9 +1444,9 @@ function AppAccessPanel({
       const inherited = sanitizeAiScopes(resolveAiScopes(row, aiDraft, null));
       setPersonAiDraft(inherited);
       onUserAiAccessSaved?.(row.id, null);
-      setMessage(`Restored Analytics for ${staffName(row)} to ${getCategory(row.appRole)?.label || 'role'} defaults.`);
+      setMessage(`Restored pay and hours for ${staffName(row)} to ${getCategory(row.appRole)?.label || 'role'} defaults.`);
     } catch (nextError) {
-      setError(nextError?.message || 'Could not restore Analytics defaults.');
+      setError(nextError?.message || 'Could not restore pay and hours defaults.');
     } finally {
       setPersonAiSaving(false);
     }
@@ -1886,21 +1799,6 @@ function AppAccessPanel({
     />
   ) : null;
 
-  const assistant = (
-    <PermissionsAiChat
-      context={
-        tab === 'roles'
-          ? { tab: 'roles', role: activeRole }
-          : { tab: 'people', personId: selectedId }
-      }
-      store={agentStore}
-      adminName={adminName}
-      compact={isMobile}
-      disabled={loading}
-      variant={isMobile ? 'dock' : 'rail'}
-    />
-  );
-
   const main =
     tab === 'roles' ? (
       <RoleDefaultsPane
@@ -1950,7 +1848,6 @@ function AppAccessPanel({
       ) : (
         <View style={[styles.workspace, isMobile && styles.workspaceMobile]}>
           <View style={styles.mainPane}>{main}</View>
-          <View style={[styles.assistantRail, isMobile && styles.assistantDock]}>{assistant}</View>
         </View>
       )}
     </View>
@@ -2044,29 +1941,6 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     minHeight: 0,
-  },
-  assistantRail: {
-    width: 340,
-    flexShrink: 0,
-    minHeight: 0,
-    flexDirection: 'column',
-    borderLeftWidth: StyleSheet.hairlineWidth,
-    borderLeftColor: T.hairline,
-    backgroundColor: T.card,
-    ...Platform.select({
-      web: { overflow: 'hidden' },
-      default: {},
-    }),
-  },
-  assistantDock: {
-    width: 'auto',
-    flexShrink: 0,
-    borderLeftWidth: 0,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: T.hairline,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: T.card,
   },
   peoplePane: {
     flex: 1,

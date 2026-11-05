@@ -8,7 +8,7 @@ export default function AnalyticsChartCard({ chart }) {
   return (
     <View style={styles.card}>
       <Text style={styles.title}>{chart?.title || 'Chart'}</Text>
-      <Text style={styles.body}>Open Analytics in the browser to use this chart.</Text>
+      <Text style={styles.body}>Open this app in the browser to use this chart.</Text>
     </View>
   );
 }

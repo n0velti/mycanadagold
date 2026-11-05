@@ -12,13 +12,6 @@ import {
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useIsMobile } from '../lib/mobileUi';
 import { AI_MODEL_PROVIDERS, canManageCompanyAiKeys, loadCompanyAiKeyState, saveAiApiKeys } from '../lib/aiKeys';
-import {
-  AI_INSTRUCTION_ASSISTANTS,
-  AI_INSTRUCTION_LIMIT,
-  emptyAiInstructions,
-  loadAiInstructionState,
-  saveAiInstructions,
-} from '../lib/aiInstructions';
 import { canManageAppAccess, useAppAccess } from '../lib/permissions';
 import { getSupabaseConnectionStatus } from '../lib/supabase';
 import StoreSettingsPanel from './StoreSettingsPanel';
@@ -118,13 +111,13 @@ function SettingsHome({
 
         <IosGroup
           header="Company"
-          footer="Who can open each app, purchase price-check tolerance, Rippling, shared AI keys, and how Analytics and AI chat should answer."
+          footer="Who can open each app, purchase price-check tolerance, Rippling, and the Google Maps key for customer maps."
         >
           {canManageAiKeys ? (
             <IosRow
               icon="sparkles"
               iconColor="#AF52DE"
-              label="AI Models"
+              label="Maps"
               onPress={onOpenAiModels}
             />
           ) : null}
@@ -244,9 +237,9 @@ function SettingsHome({
               <Ionicons name="sparkles-outline" size={16} color="#6B4DE6" />
             </View>
             <View style={styles.menuTextWrap}>
-              <Text style={styles.menuLabel}>AI models</Text>
-              <Text style={styles.menuHint}>
-                Company keys, and how Analytics and AI chat should answer
+            <Text style={styles.menuLabel}>Maps</Text>
+            <Text style={styles.menuHint}>
+                Google Maps key for customer maps in Direct Messages
               </Text>
             </View>
             <Ionicons name="chevron-forward" size={16} color="#9a9a9a" />
@@ -273,8 +266,6 @@ function SettingsHome({
 function AiModelsPanel() {
   const isMobile = useIsMobile();
   const [keys, setKeys] = useState(emptyKeys);
-  const [instructions, setInstructions] = useState(emptyAiInstructions);
-  const [instructionsUnavailable, setInstructionsUnavailable] = useState(false);
   const [shared, setShared] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -288,16 +279,11 @@ function AiModelsPanel() {
 
     (async () => {
       try {
-        const [state, instructionState] = await Promise.all([
-          loadCompanyAiKeyState(),
-          loadAiInstructionState(),
-        ]);
+        const state = await loadCompanyAiKeyState();
         if (cancelled) return;
         setKeys(state.keys);
         setShared(Boolean(state.shared));
         setUnavailable(Boolean(state.unavailable));
-        setInstructions(instructionState.instructions);
-        setInstructionsUnavailable(Boolean(instructionState.unavailable));
       } catch (nextError) {
         if (cancelled) return;
         setError(nextError?.message || 'Could not load API keys.');
@@ -317,15 +303,6 @@ function AiModelsPanel() {
     setKeys((current) => ({ ...current, [providerKey]: value }));
   };
 
-  const updateInstruction = (assistant, value) => {
-    setSaved(false);
-    setError('');
-    setInstructions((current) => ({
-      ...current,
-      [assistant]: String(value || '').slice(0, AI_INSTRUCTION_LIMIT),
-    }));
-  };
-
   const toggleReveal = (providerKey) => {
     setRevealed((current) => ({ ...current, [providerKey]: !current[providerKey] }));
   };
@@ -339,12 +316,9 @@ function AiModelsPanel() {
         Object.entries(keys).map(([key, value]) => [key, String(value || '').trim()]),
       );
       await saveAiApiKeys(trimmed);
-      const nextInstructions = await saveAiInstructions(instructions);
       setKeys(trimmed);
-      setInstructions(nextInstructions);
       setShared(true);
       setUnavailable(false);
-      setInstructionsUnavailable(false);
       setSaved(true);
     } catch (nextError) {
       setError(nextError?.message || 'Could not save API keys.');
@@ -445,41 +419,17 @@ function AiModelsPanel() {
             </View>
           </IosGroup>
         ))}
-        {instructionsUnavailable ? (
-          <IosGroup footer="The instructions table is not in the database yet. Run the latest Supabase migration, then save again.">
-            <IosRow label="Instructions" value="Unavailable" />
-          </IosGroup>
-        ) : null}
-        {AI_INSTRUCTION_ASSISTANTS.map((assistant) => (
-          <IosGroup
-            key={assistant.key}
-            header={assistant.label}
-            footer={assistant.description}
-          >
-            <View style={styles.iosKeyRow}>
-              <TextInput
-                style={styles.iosInstructionInput}
-                value={instructions[assistant.key] || ''}
-                onChangeText={(value) => updateInstruction(assistant.key, value)}
-                placeholder={assistant.placeholder}
-                placeholderTextColor="#8E8E93"
-                multiline
-                textAlignVertical="top"
-              />
-            </View>
-          </IosGroup>
-        ))}
         {error ? (
           <IosGroup footer={error}>
             <IosRow label="Save" value="Failed" />
           </IosGroup>
         ) : null}
         {saved ? (
-          <IosGroup footer="API keys and AI instructions saved for everyone in the app.">
+          <IosGroup footer="Maps key saved for everyone in the app.">
             <IosRow icon="checkmark-circle" iconColor="#34C759" label="Saved" value="Everyone" />
           </IosGroup>
         ) : null}
-        <IosGroup footer="These keys and instructions are shared with every signed-in employee. Analytics chat uses OpenRouter. The Google Maps key loads customer maps. Only a System Admin or General Manager can open this screen.">
+        <IosGroup footer="The Google Maps key is shared with signed-in staff so customer maps can load. Only a System Admin or General Manager can open this screen.">
           <IosActionRow label={saving ? 'Saving…' : 'Save'} onPress={handleSave} disabled={saving} />
         </IosGroup>
       </IosPage>
@@ -489,10 +439,9 @@ function AiModelsPanel() {
   return (
     <ScrollView style={styles.body} contentContainerStyle={styles.aiContent}>
       <Text style={styles.aiIntro}>
-        These keys are shared with every signed-in employee. Analytics chat uses the
-        OpenRouter key so you can switch models. The Google Maps key is a browser key for
-        customer maps. Only a System Admin or General Manager can open this screen or see
-        the values. The notes below are added to Analytics and to AI chat in Messages, for everyone.
+        The Google Maps browser key is shared with signed-in staff so customer maps in Direct
+        Messages can load. Restrict it by HTTP referrer in Google Cloud. Only a System Admin
+        or General Manager can open this screen or see the value.
       </Text>
       {unavailable ? (
         <Text style={styles.errorText}>
@@ -508,32 +457,9 @@ function AiModelsPanel() {
 
       {keyFields}
 
-      <Text style={styles.sectionTitle}>How it should behave</Text>
-      {instructionsUnavailable ? (
-        <Text style={styles.errorText}>
-          The instructions table is not in the database yet. Run the latest Supabase migration, then
-          save again.
-        </Text>
-      ) : null}
-      {AI_INSTRUCTION_ASSISTANTS.map((assistant) => (
-        <View key={assistant.key} style={styles.providerBlock}>
-          <Text style={styles.providerLabel}>{assistant.label}</Text>
-          <Text style={styles.providerDescription}>{assistant.description}</Text>
-          <TextInput
-            style={styles.instructionInput}
-            value={instructions[assistant.key] || ''}
-            onChangeText={(value) => updateInstruction(assistant.key, value)}
-            placeholder={assistant.placeholder}
-            placeholderTextColor="#8E8E93"
-            multiline
-            textAlignVertical="top"
-          />
-        </View>
-      ))}
-
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
       {saved ? (
-        <Text style={styles.savedText}>API keys and AI instructions saved for everyone in the app.</Text>
+        <Text style={styles.savedText}>Maps key saved for everyone in the app.</Text>
       ) : null}
 
       <Pressable
@@ -556,8 +482,8 @@ function AiModelsDenied() {
   if (isMobile) {
     return (
       <IosPage>
-        <IosGroup footer="Company AI keys are managed by a System Admin or General Manager. Ask them if portraits or AI chat are not working.">
-          <IosRow icon="sparkles" iconColor="#AF52DE" label="AI Models" value="Restricted" />
+        <IosGroup footer="The Google Maps key is managed by a System Admin or General Manager.">
+          <IosRow icon="map" iconColor="#AF52DE" label="Maps" value="Restricted" />
         </IosGroup>
       </IosPage>
     );
@@ -565,10 +491,9 @@ function AiModelsDenied() {
 
   return (
     <ScrollView style={styles.body} contentContainerStyle={styles.aiContent}>
-      <Text style={styles.sectionTitle}>AI models</Text>
+      <Text style={styles.sectionTitle}>Maps</Text>
       <Text style={styles.aiIntro}>
-        Company AI keys are managed by a System Admin or General Manager. Ask them if portraits
-        or AI chat are not working.
+        The Google Maps key is managed by a System Admin or General Manager.
       </Text>
     </ScrollView>
   );

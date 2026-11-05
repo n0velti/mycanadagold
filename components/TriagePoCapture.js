@@ -51,7 +51,7 @@ import {
   saveTriageErrorType,
 } from '../lib/triageErrorTypes';
 import { uploadTriageErrorPhotos } from '../lib/triageErrorPhotos';
-import { lookupPurchasesByPoNumber, normalizePoNumber, readPoNumberFromPhoto } from '../lib/triagePoRead';
+import { lookupPurchasesByPoNumber, normalizePoNumber } from '../lib/triagePoRead';
 import { formatAmount, formatUnitCost, purchaseBuyerName } from '../lib/transactions';
 import { weightPairLabel } from '../lib/triageAllocations';
 import { lotFromPo } from '../lib/triageLots';
@@ -1033,20 +1033,14 @@ export default function TriagePoCapture({ session, openerRef, onFlowOpenChange }
     setPo(null);
     setResultOpen(false);
     setNotice('');
-    setPhase('Reading the PO number…');
+    setPhase('Attaching photo…');
     try {
       const raw = await assetToDataUrl(asset);
       if (token !== requestRef.current) return;
       setPhotoUri(raw);
-      const poNumber = await readPoNumberFromPhoto(raw);
-      if (token !== requestRef.current) return;
-      if (!poNumber) {
-        setPhase('');
-        setError('Could not read a PO number from that photo. Tap PO #.');
-        return;
-      }
-      setPoInput(poNumber);
-      await loadPo(poNumber, token);
+      setPhase('');
+      setError('');
+      setNotice('Enter the PO number from the photo, then look it up.');
     } catch (err) {
       if (token !== requestRef.current) return;
       setPhase('');
