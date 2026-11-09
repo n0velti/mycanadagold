@@ -35,6 +35,7 @@ import {
   canonicalBonusStoreName,
   currentBonusMonth,
   formatMoney,
+  isBonusPoolRow,
   monthRange,
   NEGATIVE_COLUMNS,
   PHOTO_BONUS,
@@ -201,6 +202,8 @@ function boardTotals(stores) {
       acc.negativeCount += Number(store.negativeCount) || 0;
       acc.reviewCount += Number(store.reviewCount) || 0;
       acc.fiveStarCount += Number(store.fiveStarCount) || 0;
+      acc.poolTotal += Number(store.poolTotal) || 0;
+      acc.poolCount += Number(store.poolCount) || 0;
       return acc;
     },
     {
@@ -212,6 +215,8 @@ function boardTotals(stores) {
       negativeCount: 0,
       reviewCount: 0,
       fiveStarCount: 0,
+      poolTotal: 0,
+      poolCount: 0,
     },
   );
 }
@@ -355,6 +360,7 @@ function StoreSelectCard({ store, selected, onPress, onDownload, onDownloadCount
       <Text style={styles.storeSelectAmount}>{formatMoney(store.totalPayout)}</Text>
       <Text style={styles.storeSelectPerReview}>
         {formatMoney(store.perReviewBonus)} per eligible 5★
+        {store.poolTotal ? ` · ${formatMoney(store.poolTotal)} pool` : ''}
       </Text>
 
       <View style={styles.storeSelectMetrics}>
@@ -439,6 +445,9 @@ function StoreCardGrid({ stores, selectedStore, onOpenStore, onDownloadStore, on
           <Text style={styles.storeSelectAmount}>{formatMoney(totals.totalPayout)}</Text>
           <Text style={styles.storeSelectPerReview}>
             {totals.reviewCount} review{totals.reviewCount === 1 ? '' : 's'}
+            {totals.poolCount
+              ? ` · ${formatMoney(totals.poolTotal)} pool`
+              : ''}
           </Text>
           <View style={styles.storeSelectMetrics}>
             <View style={styles.storeSelectMetric}>
@@ -532,6 +541,12 @@ function PayoutMatrix({ matrix, activeTierId, activeColumnId, boxed = false }) {
 }
 
 function employeeReviewLabel(row) {
+  if (isBonusPoolRow(row)) {
+    const paid = Number(row?.eligibleCount) || 0;
+    return paid
+      ? `${paid} blank/jargon 5★ matched to POS`
+      : 'No pooled reviews this period';
+  }
   const named = Number(row?.namedInReviewCount) || 0;
   const matched = Number(row?.matchedCount) || 0;
   const paid = Number(row?.eligibleCount) || 0;
@@ -562,7 +577,8 @@ function EmployeeList({ employees, selfOnly, onOpenEmployee, boxed = false }) {
   return (
     <View style={[styles.employeeList, boxed && styles.overviewBox]}>
       {employees.map((row, index) => {
-        const inactive = (Number(row.namedCount) || 0) === 0 && ((Number(row.total) || 0) === 0);
+        const pool = isBonusPoolRow(row);
+        const inactive = !pool && (Number(row.namedCount) || 0) === 0 && ((Number(row.total) || 0) === 0);
         return (
           <Pressable
             key={row.employeeName}
@@ -570,6 +586,7 @@ function EmployeeList({ employees, selfOnly, onOpenEmployee, boxed = false }) {
             style={({ hovered, pressed }) => [
               styles.employeeRow,
               boxed && styles.overviewRow,
+              pool && styles.employeeRowPool,
               index === employees.length - 1 && styles.employeeRowLast,
               inactive && !boxed && styles.employeeRowInactive,
               (hovered || pressed) && (boxed ? styles.overviewRowHover : styles.employeeRowPressed),
@@ -581,10 +598,14 @@ function EmployeeList({ employees, selfOnly, onOpenEmployee, boxed = false }) {
               style={[
                 styles.employeeAvatar,
                 boxed && styles.employeeAvatarBoxed,
-                { backgroundColor: inactive ? '#c7c7cc' : storeAccent(row.employeeName) },
+                { backgroundColor: pool ? ACCENT : inactive ? '#c7c7cc' : storeAccent(row.employeeName) },
               ]}
             >
-              <Text style={styles.employeeAvatarText}>{initialsFromName(row.employeeName)}</Text>
+              {pool ? (
+                <Ionicons name="layers-outline" size={16} color="#fff" />
+              ) : (
+                <Text style={styles.employeeAvatarText}>{initialsFromName(row.employeeName)}</Text>
+              )}
             </View>
             <View style={styles.employeeCopy}>
               <Text
@@ -653,7 +674,8 @@ function ReviewCard({
         styles.reviewRow,
         boxed && styles.overviewReviewRow,
         boxed && last && styles.overviewReviewRowLast,
-        !boxed && review.eligible && styles.reviewRowEligible,
+        !boxed && review.pooled && styles.reviewRowPooled,
+        !boxed && review.eligible && !review.pooled && styles.reviewRowEligible,
         !boxed && review.rating <= 2 && styles.reviewRowNegative,
         !boxed && showCount && !review.eligible && styles.reviewRowSkipped,
       ]}
@@ -672,13 +694,17 @@ function ReviewCard({
         <Text style={styles.reviewWhen}>{formatWhen(review)}</Text>
       </View>
       <Text style={styles.reviewText}>
-        {review.text || '(No comment — 5★ still eligible)'}
+        {review.text ||
+          (review.pooled ? '(No comment — store pool)' : '(No comment — 5★ still eligible)')}
       </Text>
       <ReviewPhotos review={review} storeName={storeName} />
       <View style={styles.reviewFlags}>
-        {review.eligible ? (
+        {review.pooled ? (
+          <Text style={styles.flagPool}>Pool</Text>
+        ) : review.eligible ? (
           <Text style={styles.flagGood}>Eligible</Text>
         ) : review.namedEmployees?.length ||
+          review.namedInOwnerReply?.length ||
           (review.attributionSource === 'transaction' && review.attributedEmployees?.length) ? (
           <Text style={styles.flagBad}>{review.ineligibleReason || 'Not paid'}</Text>
         ) : (
@@ -702,10 +728,17 @@ function ReviewCard({
         {review.namedEmployees?.length ? (
           <Text style={styles.flagNames}>Named: {review.namedEmployees.join(', ')}</Text>
         ) : null}
+        {review.namedInOwnerReply?.length ? (
+          <Text style={styles.flagNames}>
+            Named in reply (not paid): {review.namedInOwnerReply.join(', ')}
+          </Text>
+        ) : null}
         {review.attributionSource === 'transaction' && review.attributedEmployees?.length ? (
           <Text style={styles.flagMatched}>
             Matched {review.transactionMatch?.customerName || 'customer'} →{' '}
-            {review.attributedEmployees.join(', ')}
+            {review.pooled
+              ? `pool (not ${review.attributedEmployees.join(', ')})`
+              : review.attributedEmployees.join(', ')}
           </Text>
         ) : null}
       </View>
@@ -718,8 +751,10 @@ function ReviewCard({
         </View>
       ) : null}
       {counted && Number(review.payout) > 0 ? (
-        <View style={styles.countBox}>
-          <Text style={styles.countBoxTotal}>Counted {formatMoney(review.payout)}</Text>
+        <View style={[styles.countBox, review.pooled && styles.countBoxPool]}>
+          <Text style={[styles.countBoxTotal, review.pooled && styles.countBoxTotalPool]}>
+            {review.pooled ? `Pool ${formatMoney(review.payout)}` : `Counted ${formatMoney(review.payout)}`}
+          </Text>
           <Text style={styles.countBoxMeta}>
             {formatMoney(review.reviewShare)} review
             {review.photoShare > 0 ? ` + ${formatMoney(review.photoShare)} photo` : ''}
@@ -745,6 +780,7 @@ function reviewSearchHay(review) {
     review?.ownerReply,
     review?.ineligibleReason,
     ...(review?.namedEmployees || []),
+    ...(review?.namedInOwnerReply || []),
     ...(review?.attributedEmployees || []),
   ]
     .filter(Boolean)
@@ -788,7 +824,11 @@ function ReviewSearchBar({ value, onChange, placeholder }) {
 function reviewsNamedForEmployee(reviews, employeeName) {
   const key = String(employeeName || '').trim();
   if (!key) return [];
+  if (isBonusPoolNameLike(key)) {
+    return (reviews || []).filter((review) => review?.pooled);
+  }
   return (reviews || []).filter((review) => {
+    if (review?.pooled) return false;
     const names = [
       ...(review.attributedEmployees || []),
       ...(review.namedEmployees || []),
@@ -801,6 +841,10 @@ function reviewsNamedForEmployee(reviews, employeeName) {
       );
     });
   });
+}
+
+function isBonusPoolNameLike(name) {
+  return isBonusPoolRow({ employeeName: name });
 }
 
 function EmployeeBonusDrawer({ visible, employee, store, onClose, session, onOpenCustomer }) {
@@ -820,6 +864,7 @@ function EmployeeBonusDrawer({ visible, employee, store, onClose, session, onOpe
 
   if (!mounted || !heldEmployee) return null;
 
+  const pool = isBonusPoolRow(heldEmployee);
   const named = (heldEmployee.reviews || []).length
     ? heldEmployee.reviews
     : reviewsNamedForEmployee(heldStore?.reviews, heldEmployee.employeeName);
@@ -873,53 +918,80 @@ function EmployeeBonusDrawer({ visible, employee, store, onClose, session, onOpe
               </Text>
               <Text style={styles.drawerHeroAmount}>{formatMoney(heldEmployee.total)}</Text>
               <View style={styles.drawerHeroStats}>
-                <View style={styles.drawerHeroStat}>
-                  <Text style={styles.drawerHeroStatValue}>
-                    {heldEmployee.namedInReviewCount ?? named.length}
-                  </Text>
-                  <Text style={styles.drawerHeroStatLabel}>Named</Text>
-                </View>
-                <View style={styles.drawerHeroStatDivider} />
-                <View style={styles.drawerHeroStat}>
-                  <Text style={styles.drawerHeroStatValue}>
-                    {heldEmployee.matchedCount || 0}
-                  </Text>
-                  <Text style={styles.drawerHeroStatLabel}>Matched</Text>
-                </View>
-                <View style={styles.drawerHeroStatDivider} />
-                <View style={styles.drawerHeroStat}>
-                  <Text style={styles.drawerHeroStatValue}>{heldEmployee.eligibleCount}</Text>
-                  <Text style={styles.drawerHeroStatLabel}>Paid</Text>
-                </View>
-                <View style={styles.drawerHeroStatDivider} />
-                <View style={styles.drawerHeroStat}>
-                  <Text style={styles.drawerHeroStatValue}>
-                    {heldEmployee.photoCount > 0 ? heldEmployee.photoCount : '—'}
-                  </Text>
-                  <Text style={styles.drawerHeroStatLabel}>Photos</Text>
-                </View>
+                {pool ? (
+                  <>
+                    <View style={styles.drawerHeroStat}>
+                      <Text style={styles.drawerHeroStatValue}>{heldEmployee.eligibleCount}</Text>
+                      <Text style={styles.drawerHeroStatLabel}>Pooled</Text>
+                    </View>
+                    <View style={styles.drawerHeroStatDivider} />
+                    <View style={styles.drawerHeroStat}>
+                      <Text style={styles.drawerHeroStatValue}>
+                        {heldEmployee.photoCount > 0 ? heldEmployee.photoCount : '—'}
+                      </Text>
+                      <Text style={styles.drawerHeroStatLabel}>Photos</Text>
+                    </View>
+                  </>
+                ) : (
+                  <>
+                    <View style={styles.drawerHeroStat}>
+                      <Text style={styles.drawerHeroStatValue}>
+                        {heldEmployee.namedInReviewCount ?? named.length}
+                      </Text>
+                      <Text style={styles.drawerHeroStatLabel}>Named</Text>
+                    </View>
+                    <View style={styles.drawerHeroStatDivider} />
+                    <View style={styles.drawerHeroStat}>
+                      <Text style={styles.drawerHeroStatValue}>
+                        {heldEmployee.matchedCount || 0}
+                      </Text>
+                      <Text style={styles.drawerHeroStatLabel}>Matched</Text>
+                    </View>
+                    <View style={styles.drawerHeroStatDivider} />
+                    <View style={styles.drawerHeroStat}>
+                      <Text style={styles.drawerHeroStatValue}>{heldEmployee.eligibleCount}</Text>
+                      <Text style={styles.drawerHeroStatLabel}>Paid</Text>
+                    </View>
+                    <View style={styles.drawerHeroStatDivider} />
+                    <View style={styles.drawerHeroStat}>
+                      <Text style={styles.drawerHeroStatValue}>
+                        {heldEmployee.photoCount > 0 ? heldEmployee.photoCount : '—'}
+                      </Text>
+                      <Text style={styles.drawerHeroStatLabel}>Photos</Text>
+                    </View>
+                  </>
+                )}
               </View>
               <Text style={styles.drawerHeroMeta}>
                 {formatMoney(heldEmployee.reviewBonus)} reviews
                 {heldEmployee.photoBonus > 0
                   ? ` + ${formatMoney(heldEmployee.photoBonus)} photos`
                   : ''}
-                {splitCount
-                  ? ` · ${splitCount} shared with another teammate`
-                  : ''}
+                {pool
+                  ? ' · blank or jargon 5★ matched to POS'
+                  : splitCount
+                    ? ` · ${splitCount} shared with another teammate`
+                    : ''}
               </Text>
             </View>
 
             <ReviewSearchBar
               value={query}
               onChange={setQuery}
-              placeholder={`Search ${heldEmployee.employeeName}'s reviews`}
+              placeholder={
+                pool
+                  ? 'Search pooled reviews'
+                  : `Search ${heldEmployee.employeeName}'s reviews`
+              }
             />
 
-            <Text style={styles.drawerSectionTitle}>Paid 5★ with their name</Text>
+            <Text style={styles.drawerSectionTitle}>
+              {pool ? 'Pooled 5★ (blank or jargon)' : 'Paid 5★ with their name'}
+            </Text>
             <Text style={styles.drawerSectionHint}>
-              Payable reviews that name {heldEmployee.employeeName}
-              {heldStore?.storeName ? ` at ${heldStore.storeName}` : ''}.
+              {pool
+                ? `These reviews matched a POS customer${heldStore?.storeName ? ` at ${heldStore.storeName}` : ''} but had no written experience, so the bonus sits in the store pool.`
+                : `Payable reviews that name ${heldEmployee.employeeName}${heldStore?.storeName ? ` at ${heldStore.storeName}` : ''}.`}
             </Text>
             {visibleCounted.length ? (
               <View style={styles.reviewList}>
@@ -939,12 +1011,14 @@ function EmployeeBonusDrawer({ visible, employee, store, onClose, session, onOpe
                 <Text style={styles.emptyText}>
                   {query
                     ? 'No counted reviews match that search.'
-                    : 'No reviews were counted for this person.'}
+                    : pool
+                      ? 'No blank or jargon reviews were pooled this period.'
+                      : 'No reviews were counted for this person.'}
                 </Text>
               </View>
             )}
 
-            {notCounted.length ? (
+            {!pool && notCounted.length ? (
               <>
                 <Text style={[styles.drawerSectionTitle, styles.drawerSectionSpaced]}>
                   Named, not paid
@@ -1414,6 +1488,13 @@ export default function BonusesScreen({
       <Text style={styles.heroAmount} numberOfLines={1} adjustsFontSizeToFit>
         {formatMoney(totals.totalPayout)}
       </Text>
+      {viewAllCounts && totals.poolTotal ? (
+        <Text style={styles.heroMeta}>
+          {formatMoney(totals.totalPayout - totals.poolTotal)} allocated
+          {' · '}
+          {formatMoney(totals.poolTotal)} pool
+        </Text>
+      ) : null}
       <View style={styles.heroStats}>
         {viewAllCounts ? (
           <>
@@ -1470,6 +1551,13 @@ export default function BonusesScreen({
       <Text style={[styles.heroAmount, embedded && styles.heroAmountEmbedded]} numberOfLines={1} adjustsFontSizeToFit>
         {formatMoney(activeStore.totalPayout)}
       </Text>
+      {viewAllCounts && activeStore.poolTotal ? (
+        <Text style={styles.heroMeta}>
+          {formatMoney(activeStore.totalPayout - activeStore.poolTotal)} allocated
+          {' · '}
+          {formatMoney(activeStore.poolTotal)} pool
+        </Text>
+      ) : null}
       <View style={styles.heroStats}>
         {viewAllCounts ? (
           <>
@@ -1565,6 +1653,9 @@ export default function BonusesScreen({
           {activeStore.photoReviewCount
             ? ` · ${activeStore.photoReviewCount} photo × ${formatMoney(PHOTO_BONUS)}`
             : ''}
+          {viewAllCounts && activeStore.poolTotal
+            ? ` · ${formatMoney(activeStore.poolTotal)} pool`
+            : ''}
           {viewAllCounts && activeStore.aureusEmployeeCount
             ? ` · ${activeStore.aureusEmployeeCount} analysts & managers on roster`
             : ''}
@@ -1593,6 +1684,9 @@ export default function BonusesScreen({
             ? ` · ${activeStore.namedReviewCount} with a name`
             : ''}
           {` · ${activeStore.eligibleCount} paid`}
+          {activeStore.poolCount
+            ? ` · ${activeStore.poolCount} blank/jargon 5★ in the pool`
+            : ''}
           {activeStore.ineligibleFiveStarCount
             ? ` · ${activeStore.ineligibleFiveStarCount} name-only 5★ excluded from pay`
             : ''}
@@ -2420,6 +2514,9 @@ const styles = StyleSheet.create({
   employeeRowPressed: {
     backgroundColor: '#f5f5f5',
   },
+  employeeRowPool: {
+    backgroundColor: '#FFFBEB',
+  },
   employeeRowInactive: {
     backgroundColor: '#fafafa',
   },
@@ -2552,6 +2649,9 @@ const styles = StyleSheet.create({
   reviewRowEligible: {
     backgroundColor: '#F7FBF6',
   },
+  reviewRowPooled: {
+    backgroundColor: '#FFFBEB',
+  },
   reviewRowNegative: {
     backgroundColor: '#FFF8F8',
   },
@@ -2566,11 +2666,17 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     gap: 2,
   },
+  countBoxPool: {
+    backgroundColor: '#FEF3C7',
+  },
   countBoxTotal: {
     fontFamily: FONT,
     fontSize: 13,
     fontWeight: '700',
     color: '#2F8A4E',
+  },
+  countBoxTotalPool: {
+    color: '#A16207',
   },
   countBoxMeta: {
     fontFamily: FONT,
@@ -2799,6 +2905,17 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#2F8A4E',
     backgroundColor: '#EAF6EE',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    overflow: 'hidden',
+  },
+  flagPool: {
+    fontFamily: FONT,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#A16207',
+    backgroundColor: '#FEF3C7',
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,

@@ -1618,6 +1618,11 @@ export default function PhoneScreen({ session, onRequireLogin, storeFilter, onSt
           </View>
           {historyNote}
           {warning ? <Text style={styles.warningText}>{warning}</Text> : null}
+          {error && showStores ? (
+            <View style={styles.errorBanner}>
+              <Text style={styles.errorText}>{error}</Text>
+            </View>
+          ) : null}
           {loading && rows.length === 0 ? (
             <View style={styles.centered}>
               <ActivityIndicator color={MOBILE.label} />

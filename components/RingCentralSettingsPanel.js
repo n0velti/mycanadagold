@@ -370,7 +370,7 @@ function StoreEditor({ session, storeName, account, onBack, onAccountChange, onR
       <Text style={styles.storeTitle}>{storeName}</Text>
       <Text style={styles.intro}>
         Paste the REST API app client ID, client secret, and JWT from the RingCentral Developer Console.
-        Leave a field blank to keep the value already saved. Secrets never come back to this screen.
+        Leave a field blank to keep the value already saved.
       </Text>
 
       <View style={styles.statusCard}>
