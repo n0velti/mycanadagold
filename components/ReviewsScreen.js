@@ -217,8 +217,10 @@ function ReviewCard({ review, storeName, showStore, compact, session, onOpenCust
           <Text style={styles.flagNames}>Names you: {review.namedEmployees.join(', ')}</Text>
         ) : null}
         {review.attributionSource === 'transaction' && review.attributedEmployees?.length ? (
-          <Text style={styles.flagMatched}>
-            Matched via txn → {review.attributedEmployees.join(', ')}
+          <Text style={review.pooled ? styles.flagPool : styles.flagMatched}>
+            {review.pooled
+              ? `Matched via txn → pool (not ${review.attributedEmployees.join(', ')})`
+              : `Matched via txn → ${review.attributedEmployees.join(', ')}`}
           </Text>
         ) : null}
         {review.ownerReply ? (
@@ -1257,6 +1259,17 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#1D4ED8',
     backgroundColor: '#EFF6FF',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    overflow: 'hidden',
+  },
+  flagPool: {
+    fontFamily,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#A16207',
+    backgroundColor: '#FEF3C7',
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,
