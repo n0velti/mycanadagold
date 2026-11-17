@@ -2,7 +2,7 @@
  * Triage dashboard: store tiles on home, then Overview / Lots / Errors / Analytics in a store.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import {
   applyTriageReviewToPo,
@@ -11,6 +11,7 @@ import {
   deleteTriageDocument,
   persistTransferWorkflowNow,
   saveTriagePoReview,
+  fetchTriageExportSnapshot,
   triageEditorFromSession,
   triagePoNeedsCorrection,
   useTransferWorkflow,
@@ -65,6 +66,8 @@ import {
 import { PoThumb } from './TriageTable';
 import TriageReviewDrawer from './TriageReviewDrawer';
 import { PoErrorSummaryPage } from './TriagePoCapture';
+import { buildTriageExportWorkbook, triageExportFilename } from '../lib/triageExport';
+import { downloadXlsx } from '../lib/xlsx';
 
 const fontFamily = FONT;
 
@@ -436,6 +439,27 @@ function TriageHomeStoreTile({ row, selected, loading, onPress }) {
   );
 }
 
+function HomeToolbarChip({ label, icon, color, onPress, disabled, accessibilityLabel }) {
+  return (
+    <Pressable
+      pressChrome={false}
+      onPress={onPress}
+      disabled={disabled}
+      style={({ hovered, pressed }) => [
+        styles.homeAdd,
+        (hovered || pressed) && !disabled && styles.homeAddHover,
+        disabled && styles.homeAddDisabled,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel || label}
+      {...(Platform.OS === 'web' ? { className: 'cgold-home-chip' } : null)}
+    >
+      <Ionicons name={icon} size={15} color={disabled ? '#c7c7cc' : color} />
+      <Text style={[styles.homeAddLabel, { color: disabled ? '#c7c7cc' : color }]}>{label}</Text>
+    </Pressable>
+  );
+}
+
 function TriageHomeStores({
   rows,
   selectedStore,
@@ -444,6 +468,8 @@ function TriageHomeStores({
   onQueryChange,
   onOpenStore,
   onAdd,
+  onExport,
+  exporting = false,
   insetTop = 0,
 }) {
   const { isMobile, pagePad, tableMaxWidth } = useTriageHomeLayout();
@@ -528,21 +554,24 @@ function TriageHomeStores({
                 compact={isMobile}
               />
             </View>
+            {onExport ? (
+              <HomeToolbarChip
+                label={exporting ? 'Exporting…' : 'Export'}
+                icon="download-outline"
+                color="#1d1d1f"
+                onPress={onExport}
+                disabled={exporting}
+                accessibilityLabel="Export all triage data to Excel"
+              />
+            ) : null}
             {onAdd ? (
-              <Pressable
-                pressChrome={false}
+              <HomeToolbarChip
+                label="Add"
+                icon="add-circle-outline"
+                color="#1F8A4E"
                 onPress={onAdd}
-                style={({ hovered, pressed }) => [
-                  styles.homeAdd,
-                  (hovered || pressed) && styles.homeAddHover,
-                ]}
-                accessibilityRole="button"
                 accessibilityLabel="Add a PO"
-                {...(Platform.OS === 'web' ? { className: 'cgold-home-chip' } : null)}
-              >
-                <Ionicons name="add-circle-outline" size={15} color="#1F8A4E" />
-                <Text style={styles.homeAddLabel}>Add</Text>
-              </Pressable>
+              />
             ) : null}
           </View>
           {loading && !rows.length ? (
@@ -2280,6 +2309,7 @@ export default function TriageDashboardPanel({
   toolbar = null,
 }) {
   const { triage, remoteLoaded = false, localReady = false } = useTransferWorkflow();
+  const [exporting, setExporting] = useState(false);
   useEffect(() => {
     if (!active || !session?.token) return undefined;
     let cancelled = false;
@@ -2452,6 +2482,22 @@ export default function TriageDashboardPanel({
     [session],
   );
 
+  const exportTriage = useCallback(async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const snap = await fetchTriageExportSnapshot();
+      const bytes = buildTriageExportWorkbook(snap.triage, snap.deleted);
+      if (!downloadXlsx(bytes, triageExportFilename())) {
+        Alert.alert('Export', 'Spreadsheet download is available in the web app.');
+      }
+    } catch (err) {
+      Alert.alert('Export failed', err?.message || 'Could not export triage data.');
+    } finally {
+      setExporting(false);
+    }
+  }, [exporting]);
+
   if (!session?.token) {
     return (
       <View style={[styles.body, isMobile && styles.bodyMobile]}>
@@ -2474,6 +2520,8 @@ export default function TriageDashboardPanel({
       onQueryChange={onQueryChange}
       onOpenStore={openStore}
       onAdd={isMobile ? undefined : onAdd}
+      onExport={session?.token ? exportTriage : undefined}
+      exporting={exporting}
       insetTop={insetTop}
     />
   );
@@ -2647,6 +2695,9 @@ const styles = StyleSheet.create({
   },
   homeAddHover: {
     backgroundColor: CHIP_WASH_HOVER,
+  },
+  homeAddDisabled: {
+    opacity: 0.6,
   },
   homeAddLabel: {
     fontFamily,

@@ -1,6 +1,7 @@
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Linking,
   Modal,
   Platform,
@@ -29,6 +30,8 @@ import { syncStaffRoles } from '../lib/auth';
 import { reloadClockedIn, useIsClockedIn } from '../lib/clockedIn';
 import { mergeEmployeesWithProfiles } from '../lib/aureusEmployees';
 import { mergeStaffWithEmployeeRoster } from '../lib/employeeRoster';
+import { buildEmployeeAvatarExport, employeeExportFilename, fetchEmployeeExportSnapshot } from '../lib/employeeExport';
+import { downloadZip } from '../lib/xlsx';
 import { storesMatch } from '../lib/storeCatalog';
 import { getGmailRedirectUri, loadGmailOAuthApp } from '../lib/gmail';
 import { categoryLabel, listStaffProfiles, useAppAccess } from '../lib/permissions';
@@ -1142,6 +1145,7 @@ function AppEmployeesPanel({ session, onProfileUpdated, storeFilter, hours }) {
   const [location, setLocation] = useState(lockedLocation || null);
   const [selectedId, setSelectedId] = useState(null);
   const [photoPerson, setPhotoPerson] = useState(null);
+  const [exporting, setExporting] = useState(false);
   const onProfileUpdatedRef = useRef(onProfileUpdated);
   onProfileUpdatedRef.current = onProfileUpdated;
 
@@ -1238,6 +1242,35 @@ function AppEmployeesPanel({ session, onProfileUpdated, storeFilter, hours }) {
     [locations],
   );
 
+  const exportEmployees = useCallback(async () => {
+    if (exporting) return;
+    setExporting(true);
+    setError('');
+    try {
+      const rows = await fetchEmployeeExportSnapshot();
+      const bytes = await buildEmployeeAvatarExport(rows);
+      if (!downloadZip(bytes, employeeExportFilename())) {
+        Alert.alert('Download', 'Employee photo download is available in the web app.');
+      }
+    } catch (err) {
+      const message = err?.message || 'Could not download employee photos.';
+      setError(message);
+      Alert.alert('Download failed', message);
+    } finally {
+      setExporting(false);
+    }
+  }, [exporting]);
+
+  const exportButton = (
+    <BarButton
+      icon="download-outline"
+      label={exporting ? 'Downloading…' : isMobile ? 'Download' : 'Download photos'}
+      onPress={exportEmployees}
+      disabled={exporting}
+      accessibilityLabel="Download employee avatars, emails, and Aureus logins"
+    />
+  );
+
   const searchField = (
     <View style={[styles.pageSearch, isMobile && styles.pageSearchMobile]}>
       <Ionicons
@@ -1282,6 +1315,7 @@ function AppEmployeesPanel({ session, onProfileUpdated, storeFilter, hours }) {
         <View style={styles.mobileToolbar}>
           {searchField}
           {filterDropdown}
+          {exportButton}
         </View>
       ) : (
         <View style={styles.pageHeader}>
@@ -1292,6 +1326,7 @@ function AppEmployeesPanel({ session, onProfileUpdated, storeFilter, hours }) {
           <View style={styles.pageControls}>
             {searchField}
             {filterDropdown}
+            {exportButton}
             {loading && people.length > 0 ? <ActivityIndicator size="small" color="#8e8e93" /> : null}
           </View>
         </View>
@@ -2371,6 +2406,7 @@ const styles = StyleSheet.create({
   },
   mobileToolbar: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     gap: 8,
     paddingHorizontal: 16,
